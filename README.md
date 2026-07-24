@@ -51,21 +51,21 @@ Argent drives a growing set of targets through a single toolkit, each with the r
 ## Physical iOS devices (experimental)
 
 Argent can drive a **physical iPhone** — no app installed on the device — over Apple's
-CoreDevice "remote control" services (the same path Xcode's device window uses), via
-[`pymobiledevice3`](https://github.com/doronz88/pymobiledevice3). Supported interactions:
-`screenshot`, `gesture-tap`, `gesture-swipe`, `button`, `launch-app`, and `describe` (the
-live on-screen accessibility tree — see the note below). The device shows up in `list-devices` with
-`kind: "device"`. Interactions run through one persistent `pymobiledevice3` helper per
-device (connected once), so a tap/screenshot costs a socket write rather than a fresh
-Python cold-start.
+CoreDevice "remote control" services (the same path Xcode's device window uses). The device
+interaction runs natively inside the bundled **simulator-server** (radon's `ios_device`
+controller), so there is **no Python, no `pymobiledevice3`, and no root**: the CoreDevice
+tunnel is a userspace TCP stack over the USB connection, so every command runs unprivileged
+with no admin prompt. Supported interactions: `screenshot`, `gesture-tap`, `gesture-swipe`,
+`button`, `launch-app`, and `describe` (the live on-screen accessibility tree — see the note
+below). The device shows up in `list-devices` with `kind: "device"`.
 
 **Requirements**
 
-- **iOS 27 or later for tap/swipe** — Apple gates host-driven touch input to iOS 27+; on
-  earlier versions those commands report `CoreDeviceError 9021`. Screenshot and hardware
-  buttons work on earlier iOS versions too.
-- macOS with Xcode, and `pymobiledevice3` installed (e.g. `pipx install pymobiledevice3`).
+- macOS with **Xcode** installed (its CoreDevice Developer Disk Image must have been mounted
+  once — connecting the device in Xcode does that).
 - The iPhone connected, unlocked, trusted, with **Developer Mode** on.
+- Verified on **iOS 27**; `describe` needs the RSDCheckin handshake iOS 26 added (the
+  sim-server performs it).
 
 **Setup**
 
@@ -75,16 +75,9 @@ Python cold-start.
    ```
 2. Connect the iPhone (unlocked, trusted, Developer Mode on).
 
-`list-devices` then includes the iPhone, and the supported tools work against its UDID.
-The first interaction (or `boot-device`) starts the required CoreDevice tunnel
-automatically: Argent shows a standard macOS authorization prompt (Touch ID / password)
-to launch `pymobiledevice3 remote tunneld` as root (creating the tunnel interface needs
-root once; every other command runs unprivileged). No manual `sudo`. When the signed
-`argent-device-auth` helper is installed, the prompt is branded as Argent; otherwise it's
-the system's default admin prompt.
-
-If the prompt is declined or there's no GUI session (headless), start the tunnel manually
-and leave it running: `sudo pymobiledevice3 remote tunneld`.
+`list-devices` then includes the iPhone, and the supported tools work against its UDID. The
+first interaction (or `boot-device`) starts the CoreDevice session automatically over USB —
+no manual step, no `sudo`.
 
 **Limitations / notes**
 
@@ -94,16 +87,13 @@ and leave it running: `sudo pymobiledevice3 remote tunneld`.
   for the elements the accessibility audit reports and **interpolated** from reading-order
   neighbours for the rest (Apple doesn't expose per-element geometry on a physical device), so
   they're good enough to tap a row in a vertical list — but confirm with `screenshot` before a
-  precise tap, especially for controls like toggles. (This needs the RSDCheckin handshake iOS 26
-  added; the helper performs it. For pixel-exact in-app frames + taps you'd need an on-device
-  XCUITest runner, which requires code-signing.)
+  precise tap, especially for controls like toggles. (For pixel-exact in-app frames + taps you'd
+  need an on-device XCUITest runner, which requires code-signing.)
 - Not supported yet (return a clear "not supported" error): keyboard/typing, pinch & rotate
   (multi-touch), `open-url`, `reinstall-app`, `restart-app`, and the native inspection /
   profiling tools (`native-*`, `native-profiler-*`, `screenshot-diff`). `launch-app` (via
-  `devicectl`) works independently of the CoreDevice tunnel — it can succeed even before the
-  tunnel setup above has run.
-- Overrides: `ARGENT_PYMOBILEDEVICE3` (path to the binary), `ARGENT_PMD3_TUNNELD_PORT`
-  (defaults to `49151`).
+  `devicectl`) works independently of the CoreDevice session — it can succeed even before the
+  first interaction has warmed it.
 
 ---
 

@@ -111,7 +111,9 @@ export async function describeIos(
     // now native in the sim-server — no pmd3 tunnel from argent).
     const ref = simulatorServerRef(device);
     const api = (await registry.resolveService(ref.urn, ref.options)) as SimulatorServerApi;
-    const axtree = await httpAxTree(api);
+    // Bound the fetch so a wedged /api/ax-tree on a sleeping device can't hang
+    // describe with no tool-layer timeout (mirrors the screenshot path).
+    const axtree = await httpAxTree(api, undefined, AbortSignal.timeout(16_000));
     return {
       tree: adaptCoreDeviceAxToDescribeResult(axtree),
       source: "coredevice-ax",
