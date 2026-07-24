@@ -19,11 +19,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import request from "supertest";
 import { Registry, TypedEventEmitter } from "@argent/registry";
 
-const execFileMock = vi.fn();
-vi.mock("node:child_process", async () => {
-  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-  return { ...actual, execFile: (...args: unknown[]) => execFileMock(...args) };
-});
+// `probe()` resolves PATH deps (xcrun, sim-remote) through `commandOnPath`, so
+// stub that seam rather than the raw child_process.execFile it wraps.
+const commandOnPathMock = vi.fn();
+vi.mock("../src/utils/command-on-path", () => ({
+  commandOnPath: (name: string) => commandOnPathMock(name),
+}));
 
 const resolveAndroidBinaryMock = vi.fn();
 vi.mock("../src/utils/android-binary", () => ({
@@ -37,20 +38,12 @@ import { nativeDescribeScreenTool } from "../src/tools/native-devtools/native-de
 import { nativeDevtoolsBlueprint, type NativeDevtoolsApi } from "../src/blueprints/native-devtools";
 
 // Controls which host binaries the real dep-check treats as available: any dep
-// in `missing` fails its `command -v` probe, everything else resolves.
+// in `missing` resolves to null (absent), everything else to a fake path.
+// `probe()` routes xcrun / sim-remote through `commandOnPath` and adb / emulator
+// through `resolveAndroidBinary`, so both seams are stubbed.
 function stubProbe(missing: readonly string[]): void {
-  execFileMock.mockImplementation(
-    (
-      _cmd: string,
-      args: string[],
-      _opts: unknown,
-      cb: (err: Error | null, stdout?: string, stderr?: string) => void
-    ) => {
-      const script = args[1] ?? "";
-      const dep = script.replace("command -v ", "").trim();
-      if (missing.includes(dep)) cb(new Error(`not found: ${dep}`));
-      else cb(null, `/usr/bin/${dep}\n`, "");
-    }
+  commandOnPathMock.mockImplementation(async (name: string) =>
+    missing.includes(name) ? null : `/usr/bin/${name}`
   );
   resolveAndroidBinaryMock.mockImplementation(async (name: string) =>
     missing.includes(name) ? null : `/usr/bin/${name}`
@@ -108,7 +101,7 @@ const PHYSICAL_UDID = "00008120-000E6D0C0ABBA01E";
 describe("native-devtools tools — per-device-kind dependency gating", () => {
   beforeEach(() => {
     __resetDepCacheForTests();
-    execFileMock.mockReset();
+    commandOnPathMock.mockReset();
     resolveAndroidBinaryMock.mockReset();
   });
 
