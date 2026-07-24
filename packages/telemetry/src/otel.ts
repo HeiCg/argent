@@ -31,13 +31,19 @@ const SERVICE_NAME = "argent";
 /** Logger instrumentation-scope name. */
 const LOGGER_NAME = "@argent/telemetry";
 
-// Batching parameters mirror the previous PostHog client so drain/flush timing is
-// unchanged: queue up to 20 records, flush every 10s, and bound each export at 3s
-// (short enough that a stalled flush can't hold a short-lived command open past
-// its bounded shutdown()).
+// Batching parameters: queue up to 20 records and flush every 10s (mirroring the
+// previous PostHog client's flushAt/flushInterval). EXPORT_TIMEOUT_MS bounds each
+// export AND caps the OTLP exporter's built-in retry loop, which treats a
+// connection failure (ECONNREFUSED, timeout, DNS) as retryable and would otherwise
+// keep re-sending with backoff. It is deliberately kept at or below index.ts's
+// SHORT_FLUSH_TIMEOUT_MS drain budget so a stalled export to an unreachable/slow
+// collector can't hold a short-lived command's process open past shutdown()'s
+// bounded drain: the exporter's in-flight socket and retry timer are the only
+// things keeping the event loop alive, and this deadline is what abandons them. A
+// reachable collector answers in well under this bound, so delivery is unaffected.
 const MAX_EXPORT_BATCH_SIZE = 20;
 const SCHEDULED_DELAY_MS = 10_000;
-const EXPORT_TIMEOUT_MS = 3_000;
+const EXPORT_TIMEOUT_MS = 1_500;
 
 /** One analytics event, ready to become a single OTLP log record. */
 export interface EmitRecord {

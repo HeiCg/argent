@@ -123,11 +123,12 @@ describe("otel endpoint invariance", () => {
   });
 
   it("bounds each export so a stalled flush can't hold the event loop open", () => {
-    // The previous PostHog transport set fetchRetryCount:0 for the same reason; the
-    // OTel exporter instead bounds the export with a 3s timeout, and the batch
-    // processor's shutdown/force-flush is joined under the caller's bounded race.
+    // The previous PostHog transport set fetchRetryCount:0 for the same reason. The
+    // OTel exporter retries connection failures with backoff, so the export timeout
+    // is the only cap on that loop; it is kept at/below the caller's drain budget
+    // (index.ts SHORT_FLUSH_TIMEOUT_MS) so a stalled export can't outlive shutdown().
     getClient();
-    expect(otelMock.exporters[0]!.opts.timeoutMillis).toBe(3_000);
-    expect(otelMock.processors[0]!.opts.exportTimeoutMillis).toBe(3_000);
+    expect(otelMock.exporters[0]!.opts.timeoutMillis).toBe(1_500);
+    expect(otelMock.processors[0]!.opts.exportTimeoutMillis).toBe(1_500);
   });
 });
