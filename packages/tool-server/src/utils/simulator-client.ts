@@ -1,7 +1,6 @@
 import WebSocket from "ws";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { SimulatorServerApi } from "../blueprints/simulator-server";
-import type { CoreDeviceAxTree } from "../blueprints/core-device";
 import { toSimulatorNetworkError } from "./format-error";
 import { sleep } from "./timing";
 import {
@@ -144,6 +143,21 @@ async function simulatorPost<T>(
   }
 
   return { res, body };
+}
+
+export interface CoreDeviceAxElement {
+  /** VoiceOver caption: label + value + traits, e.g. "Wi-Fi, 1, Button, Toggle". */
+  caption: string;
+  /** Per-element identifier (hex) — stable within a single snapshot. */
+  id: string;
+  /** On-screen rect "{{x, y}, {w, h}}" in points, when the audit reported one. */
+  rect?: string;
+}
+
+export interface CoreDeviceAxTree {
+  elements: CoreDeviceAxElement[];
+  /** Screen size in points, for normalizing rects to 0..1. */
+  screen?: { w?: number; h?: number };
 }
 
 /**

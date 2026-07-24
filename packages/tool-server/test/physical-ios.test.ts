@@ -6,7 +6,6 @@ import {
   isPhysicalIosUdid,
 } from "../src/utils/device-info";
 import { parsePhysicalIosDevices } from "../src/utils/ios-devices";
-import { toHid, tunneldStartCommand, appleScriptQuote } from "../src/blueprints/core-device";
 import { createLaunchAppTool } from "../src/tools/launch-app";
 import { createRestartAppTool } from "../src/tools/restart-app";
 import { devicesToPreviewEntries } from "../src/preview";
@@ -97,38 +96,6 @@ describe("parsePhysicalIosDevices (devicectl JSON)", () => {
   it("returns [] for empty/missing input", () => {
     expect(parsePhysicalIosDevices({})).toEqual([]);
     expect(parsePhysicalIosDevices({ result: { devices: [] } })).toEqual([]);
-  });
-});
-
-describe("toHid (normalized 0..1 → 0..65535)", () => {
-  it("maps endpoints and midpoint", () => {
-    expect(toHid(0)).toBe(0);
-    expect(toHid(1)).toBe(65535);
-    expect(toHid(0.5)).toBe(32768);
-  });
-
-  it("clamps out-of-range input", () => {
-    expect(toHid(-0.2)).toBe(0);
-    expect(toHid(1.5)).toBe(65535);
-  });
-});
-
-describe("privileged tunnel start command", () => {
-  it("single-quotes the binary path, pins HOME, passes the port + daemonize flag", () => {
-    const cmd = tunneldStartCommand("/Users/me/.local/bin/pymobiledevice3", 49151);
-    expect(cmd).toContain("HOME=/var/root");
-    expect(cmd).toContain("'/Users/me/.local/bin/pymobiledevice3' remote tunneld --port 49151 -d");
-  });
-
-  it("escapes a single quote in the path so it can't break out of the sh word", () => {
-    const cmd = tunneldStartCommand("/Users/o'brien/pmd3", 5000);
-    // ' -> '\'' so the whole path stays one shell word
-    expect(cmd).toContain(`'/Users/o'\\''brien/pmd3' remote tunneld`);
-  });
-
-  it("escapes backslashes and double-quotes for the AppleScript string literal", () => {
-    expect(appleScriptQuote('a "b" c')).toBe('a \\"b\\" c');
-    expect(appleScriptQuote("a\\b")).toBe("a\\\\b");
   });
 });
 

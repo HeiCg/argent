@@ -1,4 +1,4 @@
-import type { CoreDeviceAxTree } from "../../../../blueprints/core-device";
+import type { CoreDeviceAxTree } from "../../../../utils/simulator-client";
 import { parseDescribeResult, type DescribeNode } from "../../contract";
 
 /**

@@ -5,33 +5,31 @@
  *
  *  - discovery must NOT surface the host's iOS simulators as phantom physical
  *    devices (devicectl enumerates them with transportType "sameMachine");
- *  - the `button` CoreDevice HID mapping + rejection of buttons with no HID;
- *  - the privileged-tunnel flag gate (root escalation must be opt-in);
+ *  - `button` routes a physical iPhone to the sim-server `ios_device` controller
+ *    and rejects the buttons with no hardware HID equivalent;
+ *  - launch-app enforces the opt-in flag itself (it shells `devicectl`, not the
+ *    sim-server, so it can't ride the factory's gate);
  *  - tools that are unsupported on physical iOS reject with a 400-mapped
  *    UnsupportedOperationError, not a generic 500 (open-url/reinstall/restart,
- *    describe, native-profiler), while staying supported on simulators/Android;
+ *    native-profiler), while `describe` returns the CoreDevice ax tree and stays
+ *    supported on simulators/Android;
  *  - run-sequence must not eagerly hold simulator-server for a physical iPhone;
- *  - gesture-swipe routes to CoreDevice, and rejects the simulator-only `settle`
- *    flag rather than silently returning a flinging swipe;
- *  - swipe duration clamping + timeout scaling.
+ *  - gesture-swipe routes a physical iPhone to the sim-server and honors `settle`.
  */
 import { describe, it, expect, vi } from "vitest";
 
-// core-device is the only module under test that reads the feature flag; mock it
-// so the flag gate can be exercised deterministically regardless of the host's
-// ~/.argent/flags.json. (See variant-flag-gate.test.ts for the same pattern.)
+// assertPhysicalIosEnabled reads the feature flag; mock isFlagEnabled so the gate
+// can be exercised deterministically regardless of the host's ~/.argent/flags.json.
+// (See variant-flag-gate.test.ts for the same pattern.)
 vi.mock("@argent/configuration-core", () => ({ isFlagEnabled: vi.fn() }));
 import { isFlagEnabled } from "@argent/configuration-core";
 
 import { resolveDevice, isPhysicalIosUdid } from "../src/utils/device-info";
 import { parsePhysicalIosDevices } from "../src/utils/ios-devices";
 import { UnsupportedOperationError, assertSupported } from "../src/utils/capability";
-import {
-  swipeDragParams,
-  ensureCoreDeviceTunnel,
-  assertPhysicalIosEnabled,
-} from "../src/blueprints/core-device";
+import { assertPhysicalIosEnabled } from "../src/blueprints/simulator-server";
 import { buttonTool } from "../src/tools/button";
+import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { createRunSequenceTool } from "../src/tools/run-sequence";
 import { describeIos } from "../src/tools/describe/platforms/ios";
 import { iosImpl as openUrlIos } from "../src/tools/open-url/platforms/ios";
@@ -147,13 +145,30 @@ describe("button on physical iOS routes to the sim-server ios_device controller"
   });
 });
 
-describe("privileged tunnel start is gated behind the feature flag", () => {
-  it("rejects with the enable hint when physical-ios-devices is off", async () => {
-    mockFlag.mockReturnValue(false);
-    await expect(ensureCoreDeviceTunnel(PHYSICAL_UDID)).rejects.toThrow(
-      /Physical iOS support is disabled.*argent enable physical-ios-devices/s
-    );
-    expect(mockFlag).toHaveBeenCalledWith("physical-ios-devices");
+describe("boot-device on physical iOS prepares the sim-server (no pmd3 tunnel)", () => {
+  // The old path opened an argent-side pmd3 CoreDevice tunnel here; boot now just
+  // resolves (spawns) the sim-server's `ios_device` controller, which owns the one
+  // USB tunnel. Assert boot resolves exactly that service and reports booted — a
+  // regression back to pmd3 would resolve no SimulatorServer service.
+  it("resolves the simulator-server for the physical udid and returns booted", async () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mockFlag.mockReturnValue(true);
+    try {
+      const resolved: string[] = [];
+      const registry = {
+        resolveService: async (urn: string) => {
+          resolved.push(urn);
+          return {};
+        },
+      };
+      const tool = createBootDeviceTool(registry as never);
+      const res = await tool.execute({} as never, { udid: PHYSICAL_UDID } as never);
+      expect(res).toEqual({ platform: "ios", udid: PHYSICAL_UDID, booted: true });
+      expect(resolved).toEqual([`SimulatorServer:${PHYSICAL_UDID}`]);
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
   });
 });
 
@@ -326,34 +341,5 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
     expect(() =>
       assertSupported("native-profiler-start", nativeProfilerStartTool.capability, androidEmu)
     ).not.toThrow();
-  });
-});
-
-describe("swipeDragParams — clamping and timeout scaling", () => {
-  it("clamps a typical swipe and scales the timeout past the drag duration", () => {
-    const p = swipeDragParams(300);
-    expect(p.seconds).toBe("0.300");
-    expect(p.steps).toBe(19);
-    expect(p.timeoutMs).toBe(15_300);
-  });
-
-  it("a long swipe gets a timeout that outlasts the drag (the bug this fixes)", () => {
-    const p = swipeDragParams(20_000);
-    expect(p.seconds).toBe("20.000");
-    expect(p.steps).toBe(60); // step count is capped
-    expect(p.timeoutMs).toBe(35_000);
-    expect(p.timeoutMs).toBeGreaterThan(20_000);
-  });
-
-  it("floors degenerate (zero/negative) durations to a real dwell", () => {
-    expect(swipeDragParams(0).seconds).toBe("0.050");
-    expect(swipeDragParams(-100).seconds).toBe("0.050");
-    expect(swipeDragParams(0).steps).toBeGreaterThanOrEqual(2);
-  });
-
-  it("caps a pathological duration", () => {
-    const p = swipeDragParams(10_000_000);
-    expect(p.seconds).toBe("60.000");
-    expect(p.timeoutMs).toBe(75_000);
   });
 });

@@ -32,7 +32,7 @@ import { ensureDep } from "../../utils/check-deps";
 import { linuxBootDiagnostics } from "../../utils/linux-preflight";
 import { listIosSimulators } from "../../utils/ios-devices";
 import { isPhysicalIosUdid, classifyDevice, stripRemotePrefix } from "../../utils/device-info";
-import { ensureCoreDeviceTunnel } from "../../blueprints/core-device";
+import { simulatorServerRef } from "../../blueprints/simulator-server";
 import {
   simctlBoot as simRemoteBoot,
   simctlBootstatus as simRemoteBootstatus,
@@ -480,12 +480,15 @@ async function bootIos(
   }
 
   // A physical iPhone is already powered on — there is nothing to "boot". It is
-  // driven over CoreDevice (see core-device blueprint), not the simulator-server.
-  // Use this as the explicit "prepare" step: ensure the CoreDevice tunnel is up,
-  // auto-starting it via the macOS authorization prompt if needed (no manual
-  // sudo). Surfaces a clear error if the prompt is declined / unavailable.
+  // driven through the radon simulator-server's `ios_device` controller, which
+  // brings up its own USB CoreDevice tunnel (root-free) on the first command.
+  // Treat boot as the explicit "prepare" step: resolve (spawn) the sim-server
+  // now, so the opt-in flag gate and a missing/unauthorized device surface here
+  // rather than on the first screenshot/tap. The registry caches the instance,
+  // so the subsequent tool calls reuse this same session.
   if (isPhysicalIosUdid(udid)) {
-    await ensureCoreDeviceTunnel(udid);
+    const ref = simulatorServerRef({ id: udid, platform: "ios", kind: "device" });
+    await registry.resolveService(ref.urn, ref.options);
     return { platform: "ios", udid, booted: true };
   }
 

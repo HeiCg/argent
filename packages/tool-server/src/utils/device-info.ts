@@ -120,7 +120,7 @@ export function resolveDevice(udid: string): DeviceInfo {
   return { id: udid, platform, kind };
 }
 
-/** A physical iOS device (driven via CoreDevice/pymobiledevice3, not the simulator-server). */
+/** A physical iOS device (driven over CoreDevice by the simulator-server's ios_device controller). */
 export function isPhysicalIos(device: DeviceInfo): boolean {
   return device.platform === "ios" && device.kind === "device";
 }

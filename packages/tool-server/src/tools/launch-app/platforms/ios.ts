@@ -11,7 +11,7 @@ import {
   precheckNativeDevtools,
   type NativeDevtoolsApi,
 } from "../../../blueprints/native-devtools";
-import { assertPhysicalIosEnabled } from "../../../blueprints/core-device";
+import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import type { LaunchAppParams, LaunchAppResult } from "../types";
 

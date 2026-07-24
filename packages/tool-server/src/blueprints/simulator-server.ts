@@ -131,6 +131,27 @@ const SAFE_SIMULATOR_DEVICE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const PHYSICAL_IOS_DEVICES_FLAG = "physical-ios-devices";
 
 /**
+ * Throw the standard "enable the flag" error unless physical-iOS support is on.
+ * Physical iOS is opt-in: the sim-server factory funnels every CoreDevice-backed
+ * tool (tap/swipe/button/screenshot/describe) through this check, and `launch-app`
+ * — which drives a real device via `devicectl` rather than the sim-server — calls
+ * it directly so it can't bypass the opt-in.
+ */
+export function assertPhysicalIosEnabled(): void {
+  if (!isFlagEnabled(PHYSICAL_IOS_DEVICES_FLAG)) {
+    throw new FailureError(
+      `Physical iOS support is disabled. Enable it with: argent enable ${PHYSICAL_IOS_DEVICES_FLAG}`,
+      {
+        error_code: FAILURE_CODES.CORE_DEVICE_FLAG_DISABLED,
+        failure_stage: "core_device_flag_gate",
+        failure_area: "tool_server",
+        error_kind: "unsupported",
+      }
+    );
+  }
+}
+
+/**
  * The simulator-server subcommand that drives a given device. iOS simulators and
  * Android emulators each have their own controller; a physical device is a
  * separate controller selected by `kind === "device"` rather than by platform
@@ -365,17 +386,9 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
           );
         }
         await ensureAutomationEnabled(device.id).catch(() => {});
-      } else if (!isFlagEnabled(PHYSICAL_IOS_DEVICES_FLAG)) {
+      } else {
         // A physical iPhone (`kind === "device"`) is behind the opt-in flag.
-        throw new FailureError(
-          `Physical iOS support is disabled. Enable it with: argent enable ${PHYSICAL_IOS_DEVICES_FLAG}`,
-          {
-            error_code: FAILURE_CODES.CORE_DEVICE_FLAG_DISABLED,
-            failure_stage: "simulator_server_factory_physical_ios_flag",
-            failure_area: "tool_server",
-            error_kind: "unsupported",
-          }
-        );
+        assertPhysicalIosEnabled();
       }
     } else if (device.platform === "android") {
       // Both the emulator and the physical-device controller talk to the target
