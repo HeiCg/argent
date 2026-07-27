@@ -108,7 +108,7 @@ Steps:
 - If tap misses target: re-run discovery tool (`describe` / `debugger-component-tree`), retry once with new coordinates.
 - If a permission dialog or modal is visible: re-run `describe` first. Stay in screenshot-driven navigation only when the overlay is not exposed reliably, then switch back to `describe` / `debugger-component-tree` as soon as it is dismissed.
 - If tap fails twice at same coordinates: stop, re-discover, report if element not found.
-- If a **saved flow** fails during `flow-execute` replay (as opposed to live test steps above): follow `argent-create-flow` skill §10 for structured diagnosis and correction.
+- If a **saved flow** fails during `flow-execute` replay (as opposed to live test steps above): follow the `argent-create-flow` skill ("When a flow breaks", detailed in its `references/repair.md`) for structured diagnosis and correction.
 
 ## Tips
 
