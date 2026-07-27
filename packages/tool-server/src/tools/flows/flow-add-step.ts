@@ -3,9 +3,8 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Registry, ToolDefinition } from "@argent/registry";
 import {
-  getActiveFlow,
-  getRecordingSession,
-  appendStepToActiveFlow,
+  requireRecordingSession,
+  appendStepToFlow,
   parseFlow,
   assertSafeFlowName,
   describeSelector,
@@ -27,6 +26,14 @@ import {
 } from "../../utils/ui-tree-match";
 
 const zodSchema = z.object({
+  name: z
+    .string()
+    .describe("Name of the flow being recorded — the one passed to flow-start-recording."),
+  project_root: z
+    .string()
+    .describe(
+      "Absolute path to the project root of the flow being recorded — the same value passed to flow-start-recording. Together with `name` it identifies which recording this step belongs to."
+    ),
   command: z.string().describe('MCP tool name (e.g. "tap", "screenshot", "launch-app")'),
   args: z
     .string()
@@ -132,24 +139,24 @@ const RUN_TARGET_COMMAND = "flow-execute";
  * host can't read the client's sibling files to validate).
  */
 async function captureRunTarget(
-  session: RecordingSession | null,
+  session: RecordingSession,
   args: Record<string, unknown>
 ): Promise<{ flow?: string; warning?: string }> {
   const name = args.name;
   if (typeof name !== "string") {
     return { warning: "flow-execute call had no flow name; kept the raw step" };
   }
-  if (!session || session.persist !== "host") {
+  if (session.persist !== "host") {
     return {
       warning: `kept the raw flow-execute step — run: composition is host-resolved, so a remote recording can't reference "${name}" portably`,
     };
   }
   try {
     assertSafeFlowName(name);
-    // Resolve against the recording's own flows dir (the running flow-execute
-    // may have mutated the active-project-root global), not getFlowsDir().
-    // Parsing validates the sibling exists and is a well-formed flow; a failure
-    // falls through to keeping the raw step.
+    // Resolve against THIS recording's own flows dir: `run:` composes siblings
+    // of the flow being recorded, which is not necessarily the project the
+    // nested flow-execute ran in. Parsing validates the sibling exists and is a
+    // well-formed flow; a failure falls through to keeping the raw step.
     const fragPath = path.join(path.dirname(session.filePath), `${name}.yaml`);
     parseFlow(await fs.readFile(fragPath, "utf8"));
     return { flow: name };
@@ -169,17 +176,19 @@ export function createFlowAddStepTool(
   return {
     id: "flow-add-step",
     interaction: {
-      startedMsg: ({ params }) => `Adding ${params.command} step to recorded flow`,
-      completedMsg: ({ params }) => `Added ${params.command} step to recorded flow`,
+      // Name the flow: recordings are concurrent, so several of these lines can
+      // interleave in one log and "the recorded flow" would not identify which.
+      startedMsg: ({ params }) => `Adding ${params.command} step to flow ${params.name}`,
+      completedMsg: ({ params }) => `Added ${params.command} step to flow ${params.name}`,
       failedMsg: ({ params, failureSignal }) =>
-        `Failed to add ${params.command} step to recorded flow: ${failureSignal.error_code}`,
+        `Failed to add ${params.command} step to flow ${params.name}: ${failureSignal.error_code}`,
     },
-    description: `Execute a tool call and record it as a step in the active flow. Use when recording a flow with flow-start-recording and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier (otherwise coordinates are kept with a warning); a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow). Returns { message, toolResult, flowFile } on success. If it fails an error is returned and nothing is recorded.
+    description: `Execute a tool call and record it as a step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). Use when recording a flow and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier (otherwise coordinates are kept with a warning); a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow). Returns { message, toolResult, flowFile } on success. If it fails an error is returned and nothing is recorded.
 If a step was recorded by mistake, edit the .yaml file directly to remove it.`,
     zodSchema,
     services: () => ({}),
     async execute(_services, params, ctx) {
-      const flowName = getActiveFlow();
+      const session = requireRecordingSession(params.project_root, params.name);
       const args: Record<string, unknown> = params.args ? JSON.parse(params.args) : {};
 
       // Selector capture must read the tree BEFORE the tap runs: a navigating
@@ -205,7 +214,6 @@ If a step was recorded by mistake, edit the .yaml file directly to remove it.`,
 
       // Running a fragment via flow-execute mid-recording is recorded as a
       // `run:` composition directive rather than a raw, non-portable tool call.
-      const session = getRecordingSession();
       const runTarget =
         params.command === RUN_TARGET_COMMAND && params.delayMs === undefined
           ? await captureRunTarget(session, args)
@@ -260,10 +268,10 @@ If a step was recorded by mistake, edit the .yaml file directly to remove it.`,
         };
       }
 
-      const { flowFile, savedTo } = await appendStepToActiveFlow(step);
+      const { flowFile, savedTo } = await appendStepToFlow(session, step);
 
       return {
-        message: `Step added to "${flowName}" flow${warning ? ` — ${warning}` : ""}`,
+        message: `Step added to "${params.name}" flow${warning ? ` — ${warning}` : ""}`,
         toolResult,
         flowFile,
         savedTo,

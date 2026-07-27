@@ -19,7 +19,6 @@ import {
   getFlowPath,
   isE2eFlow,
   parseFlow,
-  setActiveProjectRoot,
   type FlowFile,
   type FlowSelector,
   type FlowStep,
@@ -1149,6 +1148,10 @@ function errMsg(err: unknown): string {
  * let a caller execute (and, under --update-baselines, write PNGs next to) any
  * YAML on the host, bypassing the project-root containment the rest of the
  * module enforces. Name and project_root are validated in every branch.
+ *
+ * Resolution is pure: it reads and mutates no shared state, so replaying a flow
+ * in one project can never rebind the paths of a recording in progress in
+ * another (or in the same project on another agent).
  */
 export function resolveFlowFilePath(
   params: {
@@ -1159,8 +1162,7 @@ export function resolveFlowFilePath(
   fileInput?: ResolvedFileInput
 ): string {
   assertSafeFlowName(params.name);
-  setActiveProjectRoot(params.project_root);
-  const expected = getFlowPath(params.name);
+  const expected = getFlowPath(params.project_root, params.name);
   if (!params.flow_file) return expected;
   // A path the boundary materialized from uploaded content is a fresh temp
   // file this process itself created (see file-inputs.ts) — trusted as-is.

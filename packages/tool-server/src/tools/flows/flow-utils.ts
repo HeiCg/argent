@@ -25,38 +25,12 @@ const FLOWS_DIR_NAME = path.join(".argent", "flows");
 
 // ── Paths ────────────────────────────────────────────────────────────
 
-// ── Active session state ─────────────────────────────────────────────
-
-let activeFlowName: string | null = null;
-let activeProjectRoot: string | null = null;
-
 /**
- * Where the active recording's YAML is persisted:
- * - `"host"`   — this process writes `<project_root>/.argent/flows/<name>.yaml`
- *                directly (the original behavior; correct whenever the caller's
- *                project root is on this machine).
- * - `"client"` — the caller's project root is NOT on this machine (remote
- *                tool-server). The flow lives in memory here and every mutating
- *                tool returns a {@link ClientFileDirective} so the *client*
- *                writes the YAML into the agent's project.
+ * Validate a caller-supplied `project_root`. Every path helper below joins the
+ * flows dir under this root, so the two rules it enforces (absolute, no "..")
+ * are what keep a recording's files inside the project the agent named.
  */
-export type FlowPersistMode = "host" | "client";
-
-export interface RecordingSession {
-  persist: FlowPersistMode;
-  /**
-   * Absolute path of the flow file as the CALLER knows it. A real host path in
-   * "host" mode; in "client" mode it is only echoed back inside the directive
-   * (it names a file on the client's machine, never touched here).
-   */
-  filePath: string;
-  /** In-memory flow content — authoritative in "client" mode. */
-  flow: FlowFile;
-}
-
-let recordingSession: RecordingSession | null = null;
-
-export function setActiveProjectRoot(root: string): void {
+export function assertValidProjectRoot(root: string): void {
   if (!path.isAbsolute(root)) {
     throw new FailureError(
       `project_root must be an absolute path (got "${root}"). ` +
@@ -82,30 +56,11 @@ export function setActiveProjectRoot(root: string): void {
       error_kind: "validation",
     });
   }
-  activeProjectRoot = root;
 }
 
-export function requireActiveProjectRoot(): string {
-  if (!activeProjectRoot) {
-    throw new FailureError(
-      "No active project root. The calling flow tool must pass project_root before any path is resolved.",
-      {
-        error_code: FAILURE_CODES.FLOW_PROJECT_ROOT_REQUIRED,
-        failure_stage: "flow_project_root_require",
-        failure_area: "tool_server",
-        error_kind: "validation",
-      }
-    );
-  }
-  return activeProjectRoot;
-}
-
-export function clearActiveProjectRoot(): void {
-  activeProjectRoot = null;
-}
-
-export function getFlowsDir(): string {
-  return path.join(requireActiveProjectRoot(), FLOWS_DIR_NAME);
+export function getFlowsDir(projectRoot: string): string {
+  assertValidProjectRoot(projectRoot);
+  return path.join(projectRoot, FLOWS_DIR_NAME);
 }
 
 const FLOW_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -125,12 +80,20 @@ export function assertSafeFlowName(name: string): void {
   }
 }
 
-export function getFlowPath(name: string): string {
+/**
+ * The flow file `<project_root>/.argent/flows/<name>.yaml`. Pure path math over
+ * two validated inputs — it reads no shared state, so two callers naming two
+ * different projects can never collide. `path.join` normalizes the root, so a
+ * trailing slash cannot mint a second identity for the same file (this path
+ * doubles as the recording-session key, see {@link startRecordingSession}).
+ */
+export function getFlowPath(projectRoot: string, name: string): string {
+  const flowsDir = getFlowsDir(projectRoot);
   assertSafeFlowName(name);
-  const filePath = path.join(getFlowsDir(), `${name}.yaml`);
+  const filePath = path.join(flowsDir, `${name}.yaml`);
   // Defense-in-depth: ensure the resolved path stays inside the flows
   // directory even if the regex above is ever weakened.
-  const rel = path.relative(getFlowsDir(), filePath);
+  const rel = path.relative(flowsDir, filePath);
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new FailureError(`Invalid flow name "${name}": resolves outside the flows directory.`, {
       error_code: FAILURE_CODES.FLOW_NAME_INVALID,
@@ -142,52 +105,150 @@ export function getFlowPath(name: string): string {
   return filePath;
 }
 
-export function setActiveFlow(name: string): void {
-  activeFlowName = name;
+// ── Recording sessions ───────────────────────────────────────────────
+
+/**
+ * Where a recording's YAML is persisted:
+ * - `"host"`   — this process writes `<project_root>/.argent/flows/<name>.yaml`
+ *                directly (the original behavior; correct whenever the caller's
+ *                project root is on this machine).
+ * - `"client"` — the caller's project root is NOT on this machine (remote
+ *                tool-server). The flow lives in memory here and every mutating
+ *                tool returns a {@link ClientFileDirective} so the *client*
+ *                writes the YAML into the agent's project.
+ */
+export type FlowPersistMode = "host" | "client";
+
+export interface RecordingSession {
+  /** Flow name, as passed to every recording tool. */
+  name: string;
+  /** Caller-supplied project root, as passed to every recording tool. */
+  projectRoot: string;
+  persist: FlowPersistMode;
+  /**
+   * Absolute path of the flow file as the CALLER knows it. A real host path in
+   * "host" mode; in "client" mode it is only echoed back inside the directive
+   * (it names a file on the client's machine, never touched here).
+   */
+  filePath: string;
+  /** In-memory flow content — authoritative in "client" mode. */
+  flow: FlowFile;
+  /** Serializes appends to this session — see {@link appendStepToFlow}. */
+  tail: Promise<unknown>;
+  /** Wall-clock of the last touch, for the LRU eviction backstop. */
+  lastTouchedAtMs: number;
 }
 
-/** Begin a recording session (replacing any abandoned one). */
-export function startRecordingSession(name: string, session: RecordingSession): void {
-  activeFlowName = name;
-  recordingSession = session;
-}
+/**
+ * Live recordings, keyed by {@link getFlowPath} — the identity of the artifact
+ * being built. Two sessions on one key mean two writers on one output file (a
+ * genuine collision); two different keys are independent, so concurrent agents
+ * recording different flows — in one project or across projects, against one
+ * device or several — never see each other's state.
+ *
+ * The tool-server is a host-wide singleton shared by every MCP client, subagent
+ * and CLI call on the machine, so this map is the only thing standing between
+ * two agents and a clobbered flow file.
+ */
+const recordings = new Map<string, RecordingSession>();
 
-export function getRecordingSession(): RecordingSession | null {
-  return recordingSession;
-}
+/**
+ * Leak backstop only. Sessions are small and auto-spawned servers idle out
+ * after 30 min, but a long-lived server could accumulate recordings an agent
+ * started and never finished. Well past any realistic concurrent-agent count,
+ * so evicting is never something an agent should observe.
+ */
+const MAX_RECORDINGS = 32;
 
-function requireRecordingSession(): RecordingSession {
-  if (!activeFlowName || !recordingSession) {
-    throw new FailureError("No active flow. Call flow-start-recording first.", {
-      error_code: FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING,
-      failure_stage: "flow_require_recording",
-      failure_area: "tool_server",
-      error_kind: "validation",
-    });
+function evictIfOverCapacity(): void {
+  while (recordings.size > MAX_RECORDINGS) {
+    let oldestKey: string | undefined;
+    let oldestAt = Infinity;
+    for (const [key, session] of recordings) {
+      if (session.lastTouchedAtMs < oldestAt) {
+        oldestAt = session.lastTouchedAtMs;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey === undefined) return;
+    recordings.delete(oldestKey);
   }
-  return recordingSession;
 }
 
-/** Returns the active flow name, or null if none is active. */
-export function getActiveFlowOrNull(): string | null {
-  return activeFlowName;
+export interface RecordingSessionInit {
+  name: string;
+  projectRoot: string;
+  persist: FlowPersistMode;
+  filePath: string;
+  flow: FlowFile;
 }
 
-export function getActiveFlow(): string {
-  if (!activeFlowName) {
-    throw new FailureError("No active flow. Call flow-start-recording first.", {
-      error_code: FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING,
-      failure_stage: "flow_active_recording_require",
-      failure_area: "tool_server",
-      error_kind: "validation",
-    });
+/**
+ * Begin a recording. Returns the session it replaced when one was already live
+ * on the same key (a re-record of the same flow, which discards the earlier
+ * take), or null — the common case, including starting a second, unrelated
+ * recording while others are in progress.
+ */
+export function startRecordingSession(init: RecordingSessionInit): RecordingSession | null {
+  const key = getFlowPath(init.projectRoot, init.name);
+  const previous = recordings.get(key) ?? null;
+  recordings.set(key, {
+    ...init,
+    tail: Promise.resolve(),
+    lastTouchedAtMs: Date.now(),
+  });
+  evictIfOverCapacity();
+  return previous;
+}
+
+export function getRecordingSession(
+  projectRoot: string,
+  name: string
+): RecordingSession | undefined {
+  return recordings.get(getFlowPath(projectRoot, name));
+}
+
+/** Every live recording, for diagnostics and the not-found error message. */
+export function listActiveRecordings(): { name: string; projectRoot: string; steps: number }[] {
+  return [...recordings.values()].map((s) => ({
+    name: s.name,
+    projectRoot: s.projectRoot,
+    steps: s.flow.steps.length,
+  }));
+}
+
+export function requireRecordingSession(projectRoot: string, name: string): RecordingSession {
+  const session = getRecordingSession(projectRoot, name);
+  if (!session) {
+    // Name what was asked for AND what is live: with concurrent recordings the
+    // usual cause is a typo or the wrong project_root, and the agent can only
+    // self-correct if it can see the keys that do exist.
+    const active = listActiveRecordings();
+    const activeList = active.length
+      ? active.map((r) => `"${r.name}" (${r.projectRoot})`).join(", ")
+      : "none";
+    throw new FailureError(
+      `No active recording for flow "${name}" in ${projectRoot}. ` +
+        `Call flow-start-recording first. Active recordings: ${activeList}.`,
+      {
+        error_code: FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING,
+        failure_stage: "flow_require_recording",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      }
+    );
   }
-  return activeFlowName;
+  session.lastTouchedAtMs = Date.now();
+  return session;
 }
 
-export function clearActiveFlow(): void {
-  activeFlowName = null;
-  recordingSession = null;
+export function clearRecordingSession(projectRoot: string, name: string): void {
+  recordings.delete(getFlowPath(projectRoot, name));
+}
+
+/** Drop every recording — test reset. */
+export function clearAllRecordings(): void {
+  recordings.clear();
 }
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -2009,28 +2070,50 @@ export function clientFileDirective(filePath: string, content: string): ClientFi
 export type FlowSavedTo = string | ClientFileDirective;
 
 /**
- * Append a step to the active recording and persist it. In "host" mode the
- * file on disk is re-read first (the original behavior — a manual edit made
- * mid-recording is honored); in "client" mode this process never sees the
- * client's disk, so the in-memory copy is authoritative and the updated YAML
- * travels back in the directive.
+ * Serialize work against one recording. `appendStep` is read → await → write,
+ * a lost-update window that only mattered while a single recording could have
+ * a single caller; now that an agent can legitimately have two `flow-add-step`
+ * calls in flight (and two agents can share one server), appends on a session
+ * are chained so the second reads what the first wrote.
+ *
+ * Per session, not global: two recordings write two different files and must
+ * not queue behind each other.
  */
-export async function appendStepToActiveFlow(
+async function withSessionLock<T>(session: RecordingSession, fn: () => Promise<T>): Promise<T> {
+  // `.then(fn, fn)` — a prior append that rejected must not wedge the chain,
+  // and `session.tail` swallows the result so an unobserved rejection on the
+  // tail can never surface as an unhandled rejection.
+  const run = session.tail.then(fn, fn);
+  session.tail = run.catch(() => {});
+  return run;
+}
+
+/**
+ * Append a step to a recording and persist it. In "host" mode the file on disk
+ * is re-read first (the original behavior — a manual edit made mid-recording is
+ * honored); in "client" mode this process never sees the client's disk, so the
+ * in-memory copy is authoritative and the updated YAML travels back in the
+ * directive.
+ */
+export async function appendStepToFlow(
+  session: RecordingSession,
   step: FlowStep
-): Promise<{ flowFile: string; savedTo: FlowSavedTo; session: RecordingSession }> {
-  const session = requireRecordingSession();
-  if (session.persist === "host") {
-    const flowFile = await appendStep(session.filePath, step);
-    session.flow = parseFlow(flowFile);
-    return { flowFile, savedTo: session.filePath, session };
-  }
-  session.flow.steps.push(step);
-  try {
-    validateFlow(session.flow);
-  } catch (err) {
-    session.flow.steps.pop(); // keep the in-memory copy consistent: nothing recorded
-    throw err;
-  }
-  const flowFile = serializeFlow(session.flow);
-  return { flowFile, savedTo: clientFileDirective(session.filePath, flowFile), session };
+): Promise<{ flowFile: string; savedTo: FlowSavedTo }> {
+  return withSessionLock(session, async () => {
+    session.lastTouchedAtMs = Date.now();
+    if (session.persist === "host") {
+      const flowFile = await appendStep(session.filePath, step);
+      session.flow = parseFlow(flowFile);
+      return { flowFile, savedTo: session.filePath };
+    }
+    session.flow.steps.push(step);
+    try {
+      validateFlow(session.flow);
+    } catch (err) {
+      session.flow.steps.pop(); // keep the in-memory copy consistent: nothing recorded
+      throw err;
+    }
+    const flowFile = serializeFlow(session.flow);
+    return { flowFile, savedTo: clientFileDirective(session.filePath, flowFile) };
+  });
 }

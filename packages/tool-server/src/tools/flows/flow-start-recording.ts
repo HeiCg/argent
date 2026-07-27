@@ -4,8 +4,6 @@ import type { FileInputSpec, ToolDefinition } from "@argent/registry";
 import {
   getFlowsDir,
   getFlowPath,
-  getActiveFlowOrNull,
-  setActiveProjectRoot,
   startRecordingSession,
   clientFileDirective,
   serializeFlow,
@@ -45,7 +43,13 @@ const fileInputs: FileInputSpec[] = [
 
 export const flowStartRecordingTool: ToolDefinition<
   z.infer<typeof zodSchema>,
-  { message: string; previousFlow?: string; flowFile: string; savedTo: FlowSavedTo }
+  {
+    message: string;
+    restarted?: true;
+    discardedSteps?: number;
+    flowFile: string;
+    savedTo: FlowSavedTo;
+  }
 > = {
   id: "flow-start-recording",
   interaction: {
@@ -55,8 +59,13 @@ export const flowStartRecordingTool: ToolDefinition<
   },
   description: `Start recording a new flow. Creates a .yaml file in the .argent/flows/ directory.
 Use when you want to capture a reusable sequence of device interactions for later replay.
-Returns { message, flowFile, savedTo } and optionally { previousFlow } if a prior recording was abandoned.
+Returns { message, flowFile, savedTo }, plus { restarted, discardedSteps } when this call re-started a recording of the SAME flow — the earlier take is discarded and its .yaml is reset to an empty flow, so re-record from the top rather than expecting to resume.
 Fails if the .argent/flows/ directory cannot be created or the flow file cannot be written.
+
+Recordings are independent: several flows can be recorded at once (different
+names, different projects, different devices) with no cross-talk. Every
+subsequent recording tool takes the same \`name\` + \`project_root\` to say which
+one it is addressing.
 
 After starting, use flow-add-step to append tool calls — each step is executed
 LIVE so you can verify it works before it gets recorded. For a self-contained
@@ -71,10 +80,7 @@ to remove or reorder steps.`,
   fileInputs,
   services: () => ({}),
   async execute(_services, params, ctx) {
-    setActiveProjectRoot(params.project_root);
-    const previousFlow = getActiveFlowOrNull();
-
-    const filePath = getFlowPath(params.name);
+    const filePath = getFlowPath(params.project_root, params.name);
     // A recording's type emerges from its steps: recording a `restart-app`
     // first makes it an e2e flow (captured as a leading `launch` step by
     // flow-add-step); declaring an executionPrerequisite documents a fragment.
@@ -92,21 +98,32 @@ to remove or reorder steps.`,
 
     let savedTo: FlowSavedTo;
     if (persist === "host") {
-      await fs.mkdir(getFlowsDir(), { recursive: true });
+      await fs.mkdir(getFlowsDir(params.project_root), { recursive: true });
       await fs.writeFile(filePath, flowFile, "utf8");
       savedTo = filePath;
     } else {
       savedTo = clientFileDirective(filePath, flowFile);
     }
-    startRecordingSession(params.name, { persist, filePath, flow });
+    const replaced = startRecordingSession({
+      name: params.name,
+      projectRoot: params.project_root,
+      persist,
+      filePath,
+      flow,
+    });
 
-    if (previousFlow && previousFlow !== params.name) {
+    // Only a same-key restart replaces anything — the documented "re-record it
+    // to fix it" workflow. Starting a *different* flow abandons nothing, so
+    // there is no longer a switched-away-from flow to report.
+    if (replaced) {
+      const discardedSteps = replaced.flow.steps.length;
       return {
         message:
-          `Switched active flow from "${previousFlow}" to "${params.name}". ` +
-          `Recording "${previousFlow}" was abandoned - but the flow .yaml file has been saved to disk. ` +
-          `Now recording "${params.name}".`,
-        previousFlow,
+          `Restarted recording "${params.name}" — the previous take ` +
+          `(${discardedSteps} step${discardedSteps === 1 ? "" : "s"}) was discarded and ` +
+          `${filePath} reset to an empty flow.`,
+        restarted: true,
+        discardedSteps,
         flowFile,
         savedTo,
       };
