@@ -34,7 +34,9 @@ function startServer(cap: Captured): Promise<{ url: string; close: () => Promise
           tools: [
             {
               name: "flow-add-step",
-              description: "Add a step to the active flow recording",
+              // Leading sentence of the real tool description, verbatim.
+              description:
+                "Execute a tool call and record it as a step in the flow named by `name` + `project_root` (the recording must already be open — see flow-start-recording).",
               // Mirrors what the registry advertises for the real tool —
               // zodObjectToJsonSchema over the zod schema in
               // packages/tool-server/src/tools/flows/flow-add-step.ts. `name`
