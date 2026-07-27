@@ -331,13 +331,22 @@ export function listActiveRecordings(): { name: string; projectRoot: string; ste
 export function requireRecordingSession(projectRoot: string, name: string): RecordingSession {
   const session = getRecordingSession(projectRoot, name);
   if (!session) {
-    // Name what was asked for AND what is live: with concurrent recordings the
-    // usual cause is a typo or the wrong project_root, and the agent can only
-    // self-correct if it can see the keys that do exist.
+    // Name what was asked for AND what is live, so the agent can self-correct:
+    // with concurrent recordings the usual cause is a typo in `name` or the
+    // wrong `project_root`.
+    //
+    // Only this project's recordings are named. The others are counted, not
+    // listed: a tool-server bound beyond loopback is shared by unrelated
+    // callers (that is what "client" persist mode exists for), and their flow
+    // names and absolute project paths are not this caller's to see. A typo in
+    // your own project — the case worth recovering from — is still spelled out.
     const active = listActiveRecordings();
-    const activeList = active.length
-      ? active.map((r) => `"${r.name}" (${r.projectRoot})`).join(", ")
-      : "none";
+    const here = active.filter((r) => r.projectRoot === projectRoot);
+    const elsewhere = active.length - here.length;
+    const others = elsewhere > 0 ? ` (plus ${elsewhere} in other projects)` : "";
+    const activeList = here.length
+      ? `${here.map((r) => `"${r.name}"`).join(", ")}${others}`
+      : `none in this project${others}`;
     throw new FailureError(
       `No active recording for flow "${name}" in ${projectRoot}. ` +
         `Call flow-start-recording first. Active recordings: ${activeList}.`,

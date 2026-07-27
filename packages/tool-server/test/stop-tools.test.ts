@@ -11,7 +11,15 @@ function createMockRegistry(services: Map<string, { state: ServiceState; depende
       namespaces: [],
       tools: [],
     })),
-    disposeService: vi.fn(async () => {}),
+    // The real `disposeService` returns the node to IDLE and LEAVES IT IN the
+    // map (Registry._teardown), rather than removing it — so a second stop of
+    // the same device still sees its URNs, in IDLE. Mirror that here: a mock
+    // that forgets disposed nodes would hide exactly the sequence the
+    // stop-one-then-stop-the-rest tests below exist to pin.
+    disposeService: vi.fn(async (urn: string) => {
+      const node = services.get(urn);
+      if (node) node.state = ServiceState.IDLE;
+    }),
   } as unknown as Registry;
 }
 
@@ -462,34 +470,101 @@ describe("stop-all-simulator-servers unmatched ids", () => {
     expect(result).not.toHaveProperty("unmatched");
   });
 
-  it("counts an id whose only service is IDLE as unmatched — nothing was stopped for it", async () => {
+  it("does not report an all-IDLE device as unmatched — it still owns those nodes", async () => {
+    // `disposeService` returns a node to IDLE without removing it, so this is
+    // precisely the state a device is left in by a stop THIS session already
+    // performed. `unmatched` means "this id owns nothing on the machine, look
+    // for a typo"; saying it about a device we just tore down ourselves is a
+    // false alarm on the routine stop-one-then-stop-the-rest sequence.
     const services = new Map([
       [`SimulatorServer:${MINE}`, { state: ServiceState.IDLE, dependents: [] }],
+      [`NativeDevtools:${MINE}`, { state: ServiceState.IDLE, dependents: [] }],
       [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
     ]);
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    const result = await tool.execute!({}, { devices: [MINE] });
+    const result = await tool.execute!({}, { devices: [MINE, "GHOST-9999"] });
 
-    expect(result).toEqual({ stopped: [], unmatched: [MINE] });
+    // Nothing left to stop for MINE, but only the id that owns no node at all
+    // is a miss.
+    expect(result).toEqual({ stopped: [], unmatched: ["GHOST-9999"] });
     expect(registry.disposeService).not.toHaveBeenCalled();
   });
 
-  it("does not report an ERROR-only device as unmatched — its dead node was cleaned up", async () => {
-    // The boundary against the IDLE case above: an ERROR node is never reported
-    // as `stopped` (it never ran), but it IS disposed, so the id did own
-    // something and calling it unmatched would be a false alarm.
+  it("reports nothing unmatched when the same device is stopped twice in a row", async () => {
+    // The session-end sequence the argent rules prescribe: stop the device you
+    // finished with, then sweep the rest. The second call finds every URN the
+    // first one left behind in IDLE, and must not read that as a mistyped id.
     const services = new Map([
-      [`SimulatorServer:${MINE}`, { state: ServiceState.ERROR, dependents: [] }],
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
     ]);
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    const result = await tool.execute!({}, { devices: [MINE] });
+    const first = await tool.execute!({}, { devices: [MINE] });
+    expect(first).toEqual({
+      stopped: [`SimulatorServer:${MINE}`, `NativeDevtools:${MINE}`],
+    });
+    expect(first).not.toHaveProperty("unmatched");
+
+    const second = await tool.execute!({}, { devices: [MINE] });
+    expect(second).toEqual({ stopped: [] });
+    expect(second).not.toHaveProperty("unmatched");
+    // The second call had nothing live to tear down.
+    expect(registry.disposeService).toHaveBeenCalledTimes(2);
+  });
+
+  it("names a repeated missing id only once", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    // A device list assembled from several sources can repeat an id; the
+    // warning is about the id, not about how many times it was passed.
+    const result = await tool.execute!({}, { devices: [MINE, "GHOST-9999", MINE, "GHOST-9999"] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`],
+      unmatched: ["GHOST-9999"],
+    });
+  });
+
+  it("reports neither spelling when one device is named twice in different cases", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    // Matching is case-insensitive, so both spellings name the same device —
+    // and the device matched. Neither is a miss.
+    const result = await tool.execute!({}, { devices: [MINE, MINE.toLowerCase()] });
+
+    expect(result).toEqual({ stopped: [`SimulatorServer:${MINE}`] });
+    expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).toHaveBeenCalledOnce();
+  });
+
+  it("does not report an ERROR-only device as unmatched — its dead node was cleaned up", async () => {
+    // The other side of the IDLE case above: neither state is a miss (both own
+    // nodes), but an ERROR node is still DISPOSED — it never ran, so it never
+    // shows up in `stopped`, yet the dead node has to be cleared.
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.ERROR, dependents: [] }],
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.IDLE, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE, THEIRS] });
 
     expect(result).toEqual({ stopped: [] });
     expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).toHaveBeenCalledOnce();
     expect(registry.disposeService).toHaveBeenCalledWith(`SimulatorServer:${MINE}`);
   });
 

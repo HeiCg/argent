@@ -65,7 +65,7 @@ export const flowStartRecordingTool: ToolDefinition<
 Use when you want to capture a reusable sequence of device interactions for later replay.
 Returns { message, flowFile, savedTo }.
 Starting ALWAYS truncates <project_root>/.argent/flows/<name>.yaml to an empty flow — including a name that exists only as a saved file with no recording in progress, so starting under the name of a committed flow overwrites it. { restarted, discardedSteps } is added only when a LIVE recording of the same flow was discarded; its absence does NOT mean nothing was overwritten. Either way, re-record from the top rather than expecting to resume.
-Fails if the .argent/flows/ directory cannot be created or the flow file cannot be written.
+Fails before anything is written on a \`project_root\` that is not absolute or contains a ".." segment, or a \`name\` outside letters/digits/underscore/hyphen. It can also fail on the .argent/flows/ directory not being creatable or the file not being writable - but only when the project root is on the tool-server host; against a remote client the YAML travels back in \`savedTo\` for the client to write and no host filesystem access happens.
 
 Recording state is independent: several flows can be recorded at once (different
 names, different projects) and one recording's steps never land in another's

@@ -38,7 +38,9 @@ import {
  * an await — a restart's truncate-then-register, a finish's read-then-clear, an
  * append's read-then-write — so each is covered by the per-flow-file lock, and a
  * step that resolved its session before some other tool superseded it must fail
- * rather than write into a file that now belongs to a different take.
+ * rather than write into a file that now belongs to a different take. A finish
+ * that fails inside its critical section must also leave the recording live, so
+ * the take survives the failure and can be finished on a retry.
  */
 
 const IOS_DEVICE = "00000000-0000-0000-0000-0000000000ab";
@@ -314,7 +316,7 @@ describe("the same flow name under two project roots", () => {
 // ── Addressing a key that isn't live ─────────────────────────────────
 
 describe("addressing an unknown recording key", () => {
-  it("fails with FLOW_NO_ACTIVE_RECORDING and lists the live recordings", async () => {
+  it("fails with FLOW_NO_ACTIVE_RECORDING and names this project's live recordings", async () => {
     const rootA = await makeRoot("unknown-a");
     const rootB = await makeRoot("unknown-b");
     await start(rootA, "alpha");
@@ -326,9 +328,11 @@ describe("addressing an unknown recording key", () => {
     const message = (err as Error).message;
     expect(message).toContain('No active recording for flow "never-started"');
     expect(message).toContain(rootA);
-    // The live keys are named so the agent can self-correct.
-    expect(message).toContain(`"alpha" (${rootA})`);
-    expect(message).toContain(`"beta" (${rootB})`);
+    // This project's live keys are named so the agent can self-correct…
+    expect(message).toContain('Active recordings: "alpha" (plus 1 in other projects)');
+    // …while another caller's flow name and project path stay theirs.
+    expect(message).not.toContain('"beta"');
+    expect(message).not.toContain(rootB);
   });
 
   it("fails the same way for the right name under the wrong project_root", async () => {
@@ -339,7 +343,9 @@ describe("addressing an unknown recording key", () => {
     const err = await captureFailure(addStep(rootB, "alpha", "stray"));
 
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
-    expect((err as Error).message).toContain(`"alpha" (${rootA})`);
+    const message = (err as Error).message;
+    expect(message).toContain("Active recordings: none in this project (plus 1 in other projects)");
+    expect(message).not.toContain(rootA);
 
     // The misdirected step was not recorded anywhere.
     expect(await readMarkers(rootA, "alpha")).toEqual([]);
@@ -350,7 +356,8 @@ describe("addressing an unknown recording key", () => {
     const root = await makeRoot("nothing-live");
     const err = await captureFailure(finish(root, "alpha"));
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
-    expect((err as Error).message).toContain("Active recordings: none.");
+    // No parenthetical: there is nothing elsewhere to count either.
+    expect((err as Error).message).toContain("Active recordings: none in this project.");
   });
 });
 
@@ -726,6 +733,102 @@ describe("a finish that lands while a step is still running", () => {
     // The finished file is exactly what the finish reported.
     expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
     expect(markers(parseFlow(finished.flowFile).steps)).toEqual(["tool:a1"]);
+  });
+});
+
+// ── A finish whose file a hand-edit broke ────────────────────────────
+
+describe("a finish on a flow file that no longer parses", () => {
+  // Hand-editing the .yaml mid-recording is a documented workflow, so parseFlow
+  // can legitimately throw inside flow-finish-recording's critical section. The
+  // session must survive that: clearing the key first leaves the agent unable to
+  // retry the finish after repairing the file — flow-finish-recording answers
+  // "No active recording", and the only tool that re-establishes the key,
+  // flow-start-recording, truncates the very take it would be recovering.
+
+  /** `steps` present but not a list — a shape parseFlow rejects outright. */
+  const NOT_A_LIST = 'executionPrerequisite: ""\nsteps: oops\n';
+
+  it("keeps the recording live and finishable once the file is repaired", async () => {
+    const root = await makeRoot("finish-unparseable");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+    await addEcho(root, "alpha", "a2");
+    const session = getRecordingSession(root, "alpha");
+    const repaired = await fs.readFile(flowPath(root, "alpha"), "utf8");
+
+    await fs.writeFile(flowPath(root, "alpha"), NOT_A_LIST, "utf8");
+
+    const err = await captureFailure(finish(root, "alpha"));
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_FILE_INVALID);
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_file_parse");
+
+    // The finish reads and clears; it never writes — the botched edit is still
+    // on disk byte for byte, so the agent can diff it against what it typed.
+    expect(await fs.readFile(flowPath(root, "alpha"), "utf8")).toBe(NOT_A_LIST);
+
+    // The take survived the failure, as the same session object.
+    expect(getRecordingSession(root, "alpha")).toBe(session);
+    expect(session?.flow.steps).toHaveLength(2);
+
+    // A retry while the file is still broken fails the same way — the recording
+    // is live (the call got past requireRecordingSession), the FILE is at fault.
+    const again = await captureFailure(finish(root, "alpha"));
+    expect(getFailureSignal(again)?.error_code).toBe(FAILURE_CODES.FLOW_FILE_INVALID);
+
+    // Repair the file the way the agent would, then carry on recording…
+    await fs.writeFile(flowPath(root, "alpha"), repaired, "utf8");
+    await addEcho(root, "alpha", "a3");
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a1", "echo:a2", "echo:a3"]);
+
+    // …and the retried finish succeeds, reporting the repaired file.
+    const finished = await finish(root, "alpha");
+    expect(finished.steps).toBe(3);
+    expect(finished.summary).toHaveLength(3);
+    expect(markers(parseFlow(finished.flowFile).steps)).toEqual(["tool:a1", "echo:a2", "echo:a3"]);
+    expect(getRecordingSession(root, "alpha")).toBeUndefined();
+  });
+
+  it("leaves a concurrent recording — and its own key — exactly as they were", async () => {
+    const root = await makeRoot("finish-unparseable-step");
+    await start(root, "alpha");
+    await start(root, "beta");
+    await addStep(root, "alpha", "a1");
+    await addEcho(root, "beta", "b1");
+
+    // A second botched-edit shape: a step whose directive key is a typo.
+    await fs.writeFile(
+      flowPath(root, "alpha"),
+      'executionPrerequisite: ""\nsteps:\n  - ecko: oops\n',
+      "utf8"
+    );
+
+    const err = await captureFailure(finish(root, "alpha"));
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED);
+
+    // Both keys are still live, each bound to its own file.
+    expect(
+      listActiveRecordings()
+        .map((r) => r.name)
+        .sort()
+    ).toEqual(["alpha", "beta"]);
+    expect(getRecordingSession(root, "alpha")?.filePath).toBe(flowPath(root, "alpha"));
+
+    // beta neither lost its file nor its ability to finish.
+    expect(await readMarkers(root, "beta")).toEqual(["echo:b1"]);
+    const finishedBeta = await finish(root, "beta");
+    expect(markers(parseFlow(finishedBeta.flowFile).steps)).toEqual(["echo:b1"]);
+
+    // alpha outlived beta's finish too, and finishes on the repaired file.
+    expect(getRecordingSession(root, "alpha")).toBeDefined();
+    await fs.writeFile(
+      flowPath(root, "alpha"),
+      'executionPrerequisite: ""\nsteps:\n  - echo: repaired\n',
+      "utf8"
+    );
+    const finishedAlpha = await finish(root, "alpha");
+    expect(markers(parseFlow(finishedAlpha.flowFile).steps)).toEqual(["echo:repaired"]);
+    expect(listActiveRecordings()).toEqual([]);
   });
 });
 
