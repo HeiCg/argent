@@ -543,7 +543,7 @@ describe("restarting a recording on one key", () => {
     expect(await readMarkers(root, "alpha")).toEqual(["tool:a3"]);
   });
 
-  it("does not restart a same-named recording in another project", async () => {
+  it("restarts this project's take and leaves the same name elsewhere alone", async () => {
     const rootA = await makeRoot("restart-a");
     const rootB = await makeRoot("restart-b");
 
@@ -552,13 +552,14 @@ describe("restarting a recording on one key", () => {
     await start(rootB, "alpha");
     await addStep(rootB, "alpha", "b1");
 
-    // Same name, different root ⇒ a different key ⇒ not a restart.
+    // Same name AND same root ⇒ the same key ⇒ this take is restarted…
     const restarted = await start(rootB, "alpha");
     expect(restarted.restarted).toBe(true);
     expect(restarted.discardedSteps).toBe(1);
     expect(await readMarkers(rootB, "alpha")).toEqual([]);
 
-    // The other project's recording kept its step and its session.
+    // …while the same name under the other root — a different key — is not
+    // touched: that recording kept its step and its session.
     expect(await readMarkers(rootA, "alpha")).toEqual(["tool:a1"]);
     expect(getRecordingSession(rootA, "alpha")?.flow.steps).toHaveLength(1);
   });
@@ -633,6 +634,60 @@ describe("a restart that lands while a step is still running", () => {
     expect(restarted.discardedSteps).toBe(1);
     expect(await readMarkers(root, "alpha")).toEqual([]);
     expect(getRecordingSession(root, "alpha")).not.toBe(firstSession);
+  });
+
+  it("keeps a step queued behind the restart out of the new take", async () => {
+    const root = await makeRoot("restart-queued-append");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+    const discarded = getRecordingSession(root, "alpha");
+
+    // Park a holder on alpha's file lock. Everything issued below queues behind
+    // it, so the interleaving is fixed by the lock's arrival order rather than
+    // by how long any I/O happens to take.
+    const holder = openGate();
+    const held = withFlowFileLock(root, "alpha", () => holder.promise);
+
+    // Second in the queue: the restart — truncate the file, swap the session.
+    const restarting = start(root, "alpha");
+    // Third: a step for the take the restart is discarding. flow-add-echo
+    // resolves its session and takes the lock in one synchronous block, so this
+    // append is bound to the OLD session and enters the lock the instant the
+    // restart's critical section ends — the window a truncate that is not fused
+    // to the session swap leaves open, onto a file that is already empty.
+    const appending = addEcho(root, "alpha", "stray");
+    expect(getRecordingSession(root, "alpha")).toBe(discarded);
+
+    holder.open();
+    const [restartResult, appendResult] = await Promise.allSettled([restarting, appending]);
+    await held;
+
+    if (restartResult.status === "rejected") throw restartResult.reason;
+    expect(restartResult.value.restarted).toBe(true);
+    expect(restartResult.value.discardedSteps).toBe(1);
+
+    // The step belongs to a take that no longer exists: it must be reported as
+    // rejected, never as recorded.
+    expect(appendResult.status).toBe("rejected");
+    const failure =
+      appendResult.status === "rejected" ? getFailureSignal(appendResult.reason) : undefined;
+    expect(failure?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect(failure?.failure_stage).toBe("flow_session_superseded");
+
+    // The invariant: the new take's file is what the new take says it is, and
+    // carries nothing from the discarded one.
+    const session = getRecordingSession(root, "alpha");
+    expect(session).toBeDefined();
+    expect(session).not.toBe(discarded);
+    const onDisk = await readMarkers(root, "alpha");
+    expect(onDisk).toEqual(markers(session!.flow.steps));
+    expect(onDisk).not.toContain("echo:stray");
+
+    // …and the new take records from there as a fresh recording.
+    await addStep(root, "alpha", "a2");
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a2"]);
+    const finished = await finish(root, "alpha");
+    expect(finished.steps).toBe(1);
   });
 });
 

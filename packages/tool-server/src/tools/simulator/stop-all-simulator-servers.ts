@@ -114,9 +114,16 @@ Returns { stopped } - the URNs of the services that were actually live and got s
       // a clean machine unless we say so — and that id is usually a typo, or a
       // device NAME passed where an id belongs, in which case its
       // simulator-server, devtools and (on tvOS) two --timeout 3600 daemons are
-      // being left running. Compared case-insensitively to match the lookup,
-      // and de-duplicated so a repeated id is reported once.
-      const unmatched = [...new Set(devices)].filter((id) => !matchedIds.has(id.toLowerCase()));
+      // being left running. Compared AND de-duplicated case-insensitively, to
+      // match the lookup: two spellings of one id are one mistake, reported in
+      // the caller's first spelling.
+      const seen = new Set<string>();
+      const unmatched = devices.filter((id) => {
+        const key = id.toLowerCase();
+        if (matchedIds.has(key) || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
       return unmatched.length > 0 ? { stopped, unmatched } : { stopped };
     },
   };

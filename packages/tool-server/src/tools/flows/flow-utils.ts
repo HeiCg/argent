@@ -319,7 +319,10 @@ export function getRecordingSession(
   return recordings.get(getFlowPath(projectRoot, name));
 }
 
-/** Every live recording, for diagnostics and the not-found error message. */
+/**
+ * Every live recording. Feeds the not-found error message, which names only
+ * the caller's own project; `steps` is carried for tests and diagnostics.
+ */
 export function listActiveRecordings(): { name: string; projectRoot: string; steps: number }[] {
   return [...recordings.values()].map((s) => ({
     name: s.name,
@@ -341,7 +344,12 @@ export function requireRecordingSession(projectRoot: string, name: string): Reco
     // names and absolute project paths are not this caller's to see. A typo in
     // your own project — the case worth recovering from — is still spelled out.
     const active = listActiveRecordings();
-    const here = active.filter((r) => r.projectRoot === projectRoot);
+    // Compare roots the way the key does (path.join-normalized), or a caller
+    // that spells its own root with a trailing slash would be told its live
+    // recording is in "another project" — degrading the message in exactly the
+    // wrong-project_root case it exists to diagnose.
+    const hereDir = getFlowsDir(projectRoot);
+    const here = active.filter((r) => getFlowsDir(r.projectRoot) === hereDir);
     const elsewhere = active.length - here.length;
     const others = elsewhere > 0 ? ` (plus ${elsewhere} in other projects)` : "";
     const activeList = here.length
