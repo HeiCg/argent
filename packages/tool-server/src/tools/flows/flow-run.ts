@@ -129,9 +129,10 @@ export interface StepReport {
    */
   target?: string;
   /**
-   * Baseline key stem (`<name>__<platform>-WxH`) for snapshot steps that carry
-   * artifacts — clients exporting them to a durable location (the CLI's
-   * `--output`) name files by it.
+   * Baseline key stem (`<name>__<platform>-WxH`, plus `-crop-<hash>` for
+   * cropOn snapshots) for snapshot steps that carry artifacts — clients
+   * exporting them to a durable location (the CLI's `--output`) name files
+   * by it.
    */
   snapshotKey?: string;
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
@@ -444,8 +445,9 @@ holds; \`tap\`/\`long-press\` alternatively take a raw normalized point — bare
 two-finger rotation gesture (\`rotate: { on?, by }\` — degrees, + clockwise, within ±3000°; screen center
 when \`on\` is omitted; distinct from the \`rotate\` tool, which changes device orientation); \`await\` waits
 for a UI condition; \`wait\` pauses for a fixed number of milliseconds; \`assert\` checks one now; \`snapshot\`
-diffs a screenshot against a stored baseline (a missing baseline fails the step — set updateBaselines
-to adopt the current screen); \`echo\` annotates; \`run\` executes a referenced fragment inline.
+diffs a screenshot — or, with \`cropOn: <selector>\`, one element's cropped region — against a stored
+baseline (a missing baseline fails the step — set updateBaselines to adopt the current screen; a
+cropped element whose size drifted fails on dimensions); \`echo\` annotates; \`run\` executes a referenced fragment inline.
 A \`when:\` block (condition + \`steps:\`, no else) runs its steps only if the condition holds —
 checked once with the short assert grace — for one-sided divergences like interstitials and coach
 marks; a skipped block reports distinctly and failures inside an entered block are real failures.
@@ -759,7 +761,7 @@ function stepTarget(step: FlowStep): string | undefined {
       return step.selector ? `${selectorLabel(step.selector)} (${by})` : by;
     }
     case "snapshot":
-      return `"${step.name}"`;
+      return step.cropOn ? `"${step.name}" cropOn ${selectorLabel(step.cropOn)}` : `"${step.name}"`;
     default:
       return undefined;
   }
@@ -1065,6 +1067,7 @@ async function execLeafStep(
           name: step.name,
           maxMismatch: step.maxMismatch ?? DEFAULT_MAX_MISMATCH,
           updateBaselines: state.updateBaselines,
+          cropOn: step.cropOn,
         });
         return {
           ...base,
