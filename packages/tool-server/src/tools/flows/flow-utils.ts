@@ -202,8 +202,8 @@ export interface RecordingSession {
   filePath: string;
   /** In-memory flow content — authoritative in "client" mode. */
   flow: FlowFile;
-  /** Wall-clock of the last touch, for the LRU eviction backstop. */
-  lastTouchedAtMs: number;
+  /** Order of the last touch, for the LRU eviction backstop. See {@link touch}. */
+  lastTouchedSeq: number;
 }
 
 /**
@@ -275,13 +275,26 @@ export function withFlowFileLock<T>(
  */
 const MAX_RECORDINGS = 32;
 
+/**
+ * Stamp a session as most-recently-used. A counter rather than `Date.now()`:
+ * wall-clock has millisecond resolution, so sessions touched inside one
+ * millisecond tie, and the eviction scan's tie-break is map insertion order —
+ * which can drop the session that was touched most recently while keeping one
+ * that was not touched at all. A counter cannot tie, so "least recently used"
+ * means exactly that.
+ */
+let touchSeq = 0;
+function touch(): number {
+  return ++touchSeq;
+}
+
 function evictIfOverCapacity(): void {
   while (recordings.size > MAX_RECORDINGS) {
     let oldestKey: string | undefined;
-    let oldestAt = Infinity;
+    let oldestSeq = Infinity;
     for (const [key, session] of recordings) {
-      if (session.lastTouchedAtMs < oldestAt) {
-        oldestAt = session.lastTouchedAtMs;
+      if (session.lastTouchedSeq < oldestSeq) {
+        oldestSeq = session.lastTouchedSeq;
         oldestKey = key;
       }
     }
@@ -307,7 +320,7 @@ export interface RecordingSessionInit {
 export function startRecordingSession(init: RecordingSessionInit): RecordingSession | null {
   const key = getFlowPath(init.projectRoot, init.name);
   const previous = recordings.get(key) ?? null;
-  recordings.set(key, { ...init, lastTouchedAtMs: Date.now() });
+  recordings.set(key, { ...init, lastTouchedSeq: touch() });
   evictIfOverCapacity();
   return previous;
 }
@@ -366,7 +379,7 @@ export function requireRecordingSession(projectRoot: string, name: string): Reco
       }
     );
   }
-  session.lastTouchedAtMs = Date.now();
+  session.lastTouchedSeq = touch();
   return session;
 }
 
@@ -2378,7 +2391,7 @@ export async function appendStepToFlow(
 ): Promise<{ flowFile: string; savedTo: FlowSavedTo }> {
   return withFlowFileLock(session.projectRoot, session.name, async () => {
     assertSessionStillLive(session);
-    session.lastTouchedAtMs = Date.now();
+    session.lastTouchedSeq = touch();
     if (session.persist === "host") {
       const flowFile = await appendStep(session.filePath, step);
       session.flow = parseFlow(flowFile);
