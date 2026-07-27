@@ -39,8 +39,10 @@ const LOGGER_NAME = "@argent/telemetry";
 // SHORT_FLUSH_TIMEOUT_MS drain budget so a stalled export to an unreachable/slow
 // collector can't hold a short-lived command's process open past shutdown()'s
 // bounded drain: the exporter's in-flight socket and retry timer are the only
-// things keeping the event loop alive, and this deadline is what abandons them. A
-// reachable collector answers in well under this bound, so delivery is unaffected.
+// things keeping the event loop alive, and this deadline is what abandons them —
+// but only once the socket is connected, so it is paired with an agent-level
+// socket timeout below that covers connection establishment as well. A reachable
+// collector answers in well under this bound, so delivery is unaffected.
 const MAX_EXPORT_BATCH_SIZE = 20;
 const SCHEDULED_DELAY_MS = 10_000;
 const EXPORT_TIMEOUT_MS = 1_500;
@@ -109,6 +111,15 @@ class OtelClient implements TelemetryClient {
       url: config.endpoint,
       headers: { authorization: `Bearer ${config.token}` },
       timeoutMillis: EXPORT_TIMEOUT_MS,
+      // The exporter bounds a request with `req.setTimeout()`, which Node only
+      // arms once the socket is CONNECTED — so a collector whose address drops
+      // packets (corporate egress filter, dead host behind a firewall) leaves a
+      // socket stuck in the connecting state that no export deadline can reach,
+      // holding the process open for the OS connect timeout (~75s on macOS)
+      // after shutdown() has already resolved. The agent's socket timeout is
+      // armed when the socket is CREATED, so it also covers connect: it fires,
+      // the request emits 'timeout', and the exporter's handler destroys it.
+      httpAgentOptions: { timeout: EXPORT_TIMEOUT_MS },
     });
     this.provider = new LoggerProvider({
       resource: resourceFromAttributes({ "service.name": SERVICE_NAME }),

@@ -10,7 +10,12 @@ interface ProviderInstance {
 }
 const otelMock = vi.hoisted(() => ({
   exporters: [] as Array<{
-    opts: { url: string; headers: Record<string, string>; timeoutMillis: number };
+    opts: {
+      url: string;
+      headers: Record<string, string>;
+      timeoutMillis: number;
+      httpAgentOptions?: { timeout?: number };
+    };
   }>,
   processors: [] as Array<{ opts: Record<string, unknown> }>,
   providers: [] as ProviderInstance[],
@@ -130,5 +135,17 @@ describe("otel endpoint invariance", () => {
     getClient();
     expect(otelMock.exporters[0]!.opts.timeoutMillis).toBe(1_500);
     expect(otelMock.processors[0]!.opts.exportTimeoutMillis).toBe(1_500);
+  });
+
+  it("bounds connection establishment too, not just the request", () => {
+    // timeoutMillis alone is NOT enough: the exporter applies it with
+    // req.setTimeout(), which Node arms only once the socket is CONNECTED. A
+    // collector address that drops packets (corporate egress filter, dead host
+    // behind a firewall) therefore leaves a socket stuck connecting that no
+    // export deadline reaches, holding a short-lived command open for the OS
+    // connect timeout (~75s on macOS) after shutdown() already resolved. The
+    // agent's socket timeout is armed at socket CREATION, so it covers connect.
+    getClient();
+    expect(otelMock.exporters[0]!.opts.httpAgentOptions).toEqual({ timeout: 1_500 });
   });
 });
