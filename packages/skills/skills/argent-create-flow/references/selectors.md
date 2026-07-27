@@ -67,8 +67,10 @@ An element sitting _inside_ the anchor does not follow it — containment is not
 - **"Follows" is not transitive**, so nesting `after` is not the same as chaining CSS `~`: against a tall anchor, an element can follow something that itself follows the anchor without following the anchor directly. `{ after: { …, after: … } }` can match elements a single `after` excludes. Nest only when each link is a container-sized step.
 - **It matters which side carries the scope.** `{ role: Button, next: { text: Name, within: { id: card-b } } }` scopes the _anchor_ — one label, so one pick, but that pick may land outside card-b. `{ role: Button, next: { text: Name }, within: { id: card-b } }` scopes the _target_ — every label is still an anchor, but only card-b's buttons can be picked. They agree on a well-formed screen and diverge when card-b has no button: the first reaches on to the next card's, the second returns nothing. Scope the target when the container is the thing you trust.
 
+### `any: true`
+
+It works for actions — `tap: { any: true, next: { text: Airplane Mode } }` taps whatever sits right after that label — but on a real tree "whatever" includes spacers and wrappers. Name the target (`role`, `id`) whenever you can, and keep `any` for conditions and for `next`, which reduces to one element per anchor.
+
 ### Scopes in conditions
 
 Conditions honor scopes like any other selector. `assert: { hidden: { text: Saved, within: { id: toast-area } } }` holds when nothing matching "Saved" is inside the toast area — matches elsewhere on screen don't count. A missing scope element satisfies `hidden` and fails `visible`/`exists`.
-
-`any: true` works for actions too — `tap: { any: true, next: { text: Airplane Mode } }` taps whatever sits right after that label — but on a real tree "whatever" includes spacers and wrappers. Name the target (`role`, `id`) whenever you can, and keep `any` for conditions and for `next`, which reduces to one element per anchor.
