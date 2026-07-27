@@ -11,11 +11,7 @@ import { flowFinishRecordingTool } from "../../src/tools/flows/flow-finish-recor
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { createRunFlowTool, resolveFlowFilePath } from "../../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
-import {
-  clearActiveFlow,
-  clearActiveProjectRoot,
-  parseFlow,
-} from "../../src/tools/flows/flow-utils";
+import { clearAllRecordings, parseFlow } from "../../src/tools/flows/flow-utils";
 
 /**
  * Remote-mode flow behavior: the agent's project_root does NOT exist on this
@@ -28,11 +24,16 @@ import {
 const CLIENT_ROOT = path.join(os.tmpdir(), "definitely-not-on-this-host", "agent-project");
 const CLIENT_FLOW_PATH = path.join(CLIENT_ROOT, ".argent", "flows", "remote-flow.yaml");
 
-function remoteCtx(): ToolContext {
+// A SECOND client project — a different agent recording a flow of the same
+// name. Same host, same flow name, different project root.
+const OTHER_CLIENT_ROOT = path.join(os.tmpdir(), "definitely-not-on-this-host", "other-project");
+const OTHER_CLIENT_FLOW_PATH = path.join(OTHER_CLIENT_ROOT, ".argent", "flows", "remote-flow.yaml");
+
+function remoteCtx(root: string = CLIENT_ROOT): ToolContext {
   return {
     artifacts: new ArtifactStore(),
     fileInputs: {
-      project_root: { clientPath: CLIENT_ROOT, presentOnHost: false, viaUpload: false },
+      project_root: { clientPath: root, presentOnHost: false, viaUpload: false },
     },
   };
 }
@@ -59,13 +60,13 @@ function createMockRegistry(tools: Record<string, { result: unknown }> = {}) {
 }
 
 beforeEach(() => {
-  clearActiveFlow();
+  clearAllRecordings();
 });
 
 afterEach(async () => {
-  clearActiveFlow();
-  clearActiveProjectRoot();
+  clearAllRecordings();
   await fs.rm(CLIENT_ROOT, { recursive: true, force: true });
+  await fs.rm(OTHER_CLIENT_ROOT, { recursive: true, force: true });
 });
 
 describe("flow recording with a remote client (probe miss)", () => {
@@ -96,8 +97,14 @@ describe("flow recording with a remote client (probe miss)", () => {
       remoteCtx()
     );
 
-    await flowInsertEchoTool.execute({}, { message: "label" });
-    const stepResult = await addStep.execute({}, { command: "tap", args: '{"x":0.5}' });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, message: "label" }
+    );
+    const stepResult = await addStep.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, command: "tap", args: '{"x":0.5}' }
+    );
 
     const directive = stepResult.savedTo as { path: string; content: string };
     expect(directive.path).toBe(CLIENT_FLOW_PATH);
@@ -114,16 +121,85 @@ describe("flow recording with a remote client (probe miss)", () => {
       { name: "remote-flow", project_root: CLIENT_ROOT, executionPrerequisite: "Home" },
       remoteCtx()
     );
-    await flowInsertEchoTool.execute({}, { message: "only step" });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, message: "only step" }
+    );
 
-    const result = await flowFinishRecordingTool.execute({}, {});
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT }
+    );
 
     expect(result.steps).toBe(1);
     expect(result.summary).toEqual(["1. echo: only step"]);
     expect(result.path).toBe(CLIENT_FLOW_PATH);
     expect(result.savedTo).toMatchObject({ [CLIENT_FILE_MARKER]: true });
 
-    await expect(flowFinishRecordingTool.execute({}, {})).rejects.toThrow("No active flow");
+    await expect(
+      flowFinishRecordingTool.execute({}, { name: "remote-flow", project_root: CLIENT_ROOT })
+    ).rejects.toThrow("No active recording");
+  });
+
+  it("keeps same-named recordings under different client roots isolated", async () => {
+    const registry = createMockRegistry({ tap: { result: { tapped: true } } });
+    const addStep = createFlowAddStepTool(registry);
+
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, executionPrerequisite: "Home" },
+      remoteCtx()
+    );
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: OTHER_CLIENT_ROOT, executionPrerequisite: "Settings" },
+      remoteCtx(OTHER_CLIENT_ROOT)
+    );
+
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, message: "first client" }
+    );
+    const otherStep = await addStep.execute(
+      {},
+      { name: "remote-flow", project_root: OTHER_CLIENT_ROOT, command: "tap", args: '{"x":0.5}' }
+    );
+
+    // Each directive names its OWN client's file and carries only that
+    // recording's steps — the second agent's tap never joins the first's flow.
+    const otherDirective = otherStep.savedTo as { path: string; content: string };
+    expect(otherDirective.path).toBe(OTHER_CLIENT_FLOW_PATH);
+    expect(parseFlow(otherDirective.content).steps).toEqual([
+      { kind: "tool", name: "tap", args: { x: 0.5 } },
+    ]);
+    expect(parseFlow(otherDirective.content).executionPrerequisite).toBe("Settings");
+
+    // Finishing one leaves the other live, with its own path and steps.
+    const first = await flowFinishRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT }
+    );
+    expect(first.path).toBe(CLIENT_FLOW_PATH);
+    expect(first.summary).toEqual(["1. echo: first client"]);
+    expect(first.savedTo).toMatchObject({
+      [CLIENT_FILE_MARKER]: true,
+      path: CLIENT_FLOW_PATH,
+    });
+
+    const other = await flowFinishRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: OTHER_CLIENT_ROOT }
+    );
+    expect(other.path).toBe(OTHER_CLIENT_FLOW_PATH);
+    expect(other.summary).toEqual(['1. tool: tap {"x":0.5}']);
+    expect(other.savedTo).toMatchObject({
+      [CLIENT_FILE_MARKER]: true,
+      path: OTHER_CLIENT_FLOW_PATH,
+    });
+
+    // Neither client's directory layout was recreated on this host.
+    await expect(fs.stat(CLIENT_ROOT)).rejects.toThrow();
+    await expect(fs.stat(OTHER_CLIENT_ROOT)).rejects.toThrow();
   });
 });
 

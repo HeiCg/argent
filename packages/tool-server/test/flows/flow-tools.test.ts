@@ -15,9 +15,8 @@ import {
 } from "../../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
 import {
-  clearActiveFlow,
-  setActiveProjectRoot,
-  clearActiveProjectRoot,
+  clearAllRecordings,
+  getRecordingSession,
   parseFlow,
   serializeFlow,
   type FlowStep,
@@ -34,6 +33,9 @@ function assertFlowRunResult(
 }
 
 let tmpDir: string;
+// A second project root. Recordings are keyed by <project_root>/<name>, so it
+// is what the cross-project cases address: same flow name, different project.
+let otherDir: string;
 
 function createMockRegistry(
   tools: Record<string, { result: unknown; outputHint?: string; throws?: boolean }> = {}
@@ -53,8 +55,8 @@ function createMockRegistry(
   } as unknown as Registry;
 }
 
-async function readFlowFile(name: string): Promise<string> {
-  return fs.readFile(path.join(tmpDir, ".argent", "flows", `${name}.yaml`), "utf8");
+async function readFlowFile(name: string, projectRoot: string = tmpDir): Promise<string> {
+  return fs.readFile(path.join(projectRoot, ".argent", "flows", `${name}.yaml`), "utf8");
 }
 
 const PREREQ = "App on home screen";
@@ -63,14 +65,14 @@ const PREREQ = "App on home screen";
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "flow-test-"));
-  setActiveProjectRoot(tmpDir);
-  clearActiveFlow();
+  otherDir = await fs.mkdtemp(path.join(os.tmpdir(), "flow-test-other-"));
+  clearAllRecordings();
 });
 
 afterEach(async () => {
-  clearActiveFlow();
-  clearActiveProjectRoot();
+  clearAllRecordings();
   await fs.rm(tmpDir, { recursive: true, force: true });
+  await fs.rm(otherDir, { recursive: true, force: true });
 });
 
 // ── flow-start-recording ─────────────────────────────────────────────
@@ -89,12 +91,15 @@ describe("flow-start-recording", () => {
     expect(flow.steps).toEqual([]);
   });
 
-  it("sets the active flow", async () => {
+  it("opens a recording addressable by name + project_root", async () => {
     await flowStartRecordingTool.execute(
       {},
       { name: "my-flow", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    const result = await flowInsertEchoTool.execute({}, { message: "test" });
+    const result = await flowInsertEchoTool.execute(
+      {},
+      { name: "my-flow", project_root: tmpDir, message: "test" }
+    );
     expect(result.message).toContain("my-flow");
   });
 
@@ -103,7 +108,10 @@ describe("flow-start-recording", () => {
       {},
       { name: "overwrite", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await flowInsertEchoTool.execute({}, { message: "line1" });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "overwrite", project_root: tmpDir, message: "line1" }
+    );
 
     // Start again with same name — should reset
     await flowStartRecordingTool.execute(
@@ -129,7 +137,7 @@ describe("flow-start-recording", () => {
 // ── flow-start-recording edge cases ──────────────────────────────────
 
 describe("flow-start-recording edge cases", () => {
-  it("starting a new flow while another is recording notifies about the switch", async () => {
+  it("starting a differently-named flow leaves the earlier recording live", async () => {
     await flowStartRecordingTool.execute(
       {},
       { name: "first-flow", project_root: tmpDir, executionPrerequisite: PREREQ }
@@ -139,52 +147,108 @@ describe("flow-start-recording edge cases", () => {
       { name: "second-flow", project_root: tmpDir, executionPrerequisite: "Different" }
     );
 
-    // Should mention both the old and new flow
-    expect(result.message).toContain("first-flow");
+    // A second recording abandons nothing, so there is no switch to report.
     expect(result.message).toContain("second-flow");
-    expect(result.previousFlow).toBe("first-flow");
+    expect(result.message).not.toContain("first-flow");
+    expect(result.restarted).toBeUndefined();
+    expect(result.discardedSteps).toBeUndefined();
 
-    // Adding a step should target second-flow, not first-flow
-    const echoResult = await flowInsertEchoTool.execute({}, { message: "goes to second" });
-    expect(echoResult.message).toContain("second-flow");
+    // Both recordings still take steps, each addressed by its own name.
+    const secondEcho = await flowInsertEchoTool.execute(
+      {},
+      { name: "second-flow", project_root: tmpDir, message: "goes to second" }
+    );
+    expect(secondEcho.message).toContain("second-flow");
+    const firstEcho = await flowInsertEchoTool.execute(
+      {},
+      { name: "first-flow", project_root: tmpDir, message: "goes to first" }
+    );
+    expect(firstEcho.message).toContain("first-flow");
 
-    // first-flow should still exist on disk but be empty
-    const firstContent = await readFlowFile("first-flow");
-    const firstFlow = parseFlow(firstContent);
-    expect(firstFlow.steps).toEqual([]);
-
-    // second-flow should have the echo
-    const secondContent = await readFlowFile("second-flow");
-    const secondFlow = parseFlow(secondContent);
-    expect(secondFlow.steps).toEqual([{ kind: "echo", message: "goes to second" }]);
+    // …and each file ends up holding only its own steps.
+    expect(parseFlow(await readFlowFile("first-flow")).steps).toEqual([
+      { kind: "echo", message: "goes to first" },
+    ]);
+    expect(parseFlow(await readFlowFile("second-flow")).steps).toEqual([
+      { kind: "echo", message: "goes to second" },
+    ]);
   });
 
-  it("restarting the same flow does not report a switch", async () => {
+  it("keeps same-named recordings in different projects independent", async () => {
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "shared-name", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    const result = await flowStartRecordingTool.execute(
+      {},
+      { name: "shared-name", project_root: otherDir, executionPrerequisite: PREREQ }
+    );
+
+    // Same name, other project — a different key, so nothing was restarted.
+    expect(result.restarted).toBeUndefined();
+    expect(result.discardedSteps).toBeUndefined();
+
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "shared-name", project_root: tmpDir, message: "in first project" }
+    );
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "shared-name", project_root: otherDir, message: "in second project" }
+    );
+
+    expect(parseFlow(await readFlowFile("shared-name")).steps).toEqual([
+      { kind: "echo", message: "in first project" },
+    ]);
+    expect(parseFlow(await readFlowFile("shared-name", otherDir)).steps).toEqual([
+      { kind: "echo", message: "in second project" },
+    ]);
+  });
+
+  it("restarting the same flow reports the discarded steps and resets the file", async () => {
     await flowStartRecordingTool.execute(
       {},
       { name: "same-flow", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await flowInsertEchoTool.execute({}, { message: "will be reset" });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "same-flow", project_root: tmpDir, message: "will be reset" }
+    );
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "same-flow", project_root: tmpDir, message: "also reset" }
+    );
 
     const result = await flowStartRecordingTool.execute(
       {},
       { name: "same-flow", project_root: tmpDir, executionPrerequisite: "Updated prereq" }
     );
 
-    // Should NOT mention a switch — it's the same flow being restarted
-    expect(result.message).not.toContain("Switched");
-    expect(result.previousFlow).toBeUndefined();
+    expect(result.restarted).toBe(true);
+    expect(result.discardedSteps).toBe(2);
     expect(result.message).toContain("same-flow");
+
+    // The earlier take is gone from the file too, prerequisite included.
+    const flow = parseFlow(await readFlowFile("same-flow"));
+    expect(flow.steps).toEqual([]);
+    expect(flow.executionPrerequisite).toBe("Updated prereq");
+
+    // The restarted recording is the live one, and it starts from empty.
+    const echo = await flowInsertEchoTool.execute(
+      {},
+      { name: "same-flow", project_root: tmpDir, message: "new take" }
+    );
+    expect(parseFlow(echo.flowFile).steps).toEqual([{ kind: "echo", message: "new take" }]);
   });
 
-  it("does not report a switch when no flow was previously active", async () => {
+  it("does not report a restart when the flow was not already recording", async () => {
     const result = await flowStartRecordingTool.execute(
       {},
       { name: "fresh-start", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
 
-    expect(result.message).not.toContain("Switched");
-    expect(result.previousFlow).toBeUndefined();
+    expect(result.restarted).toBeUndefined();
+    expect(result.discardedSteps).toBeUndefined();
   });
 });
 
@@ -196,7 +260,10 @@ describe("flow-add-echo", () => {
       {},
       { name: "echo-test", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    const result = await flowInsertEchoTool.execute({}, { message: "Hello world" });
+    const result = await flowInsertEchoTool.execute(
+      {},
+      { name: "echo-test", project_root: tmpDir, message: "Hello world" }
+    );
 
     expect(result.message).toContain("echo-test");
     const flow = parseFlow(result.flowFile);
@@ -208,8 +275,14 @@ describe("flow-add-echo", () => {
       {},
       { name: "multi-echo", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await flowInsertEchoTool.execute({}, { message: "First" });
-    const result = await flowInsertEchoTool.execute({}, { message: "Second" });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "multi-echo", project_root: tmpDir, message: "First" }
+    );
+    const result = await flowInsertEchoTool.execute(
+      {},
+      { name: "multi-echo", project_root: tmpDir, message: "Second" }
+    );
 
     const flow = parseFlow(result.flowFile);
     expect(flow.steps).toEqual([
@@ -218,10 +291,29 @@ describe("flow-add-echo", () => {
     ]);
   });
 
-  it("throws when no active flow", async () => {
-    await expect(flowInsertEchoTool.execute({}, { message: "oops" })).rejects.toThrow(
-      "No active flow"
+  it("throws when that flow has no recording in progress", async () => {
+    await expect(
+      flowInsertEchoTool.execute(
+        {},
+        { name: "not-recording", project_root: tmpDir, message: "oops" }
+      )
+    ).rejects.toThrow("No active recording");
+  });
+
+  it("throws when the recording is open under a different project root", async () => {
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "wrong-root", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
+
+    // Right name, wrong project — a different key, so no recording is found.
+    const err = await flowInsertEchoTool
+      .execute({}, { name: "wrong-root", project_root: otherDir, message: "oops" })
+      .catch((e: unknown) => e as Error);
+
+    expect(err.message).toContain("No active recording");
+    // The error names what IS live, so a wrong project_root is self-correcting.
+    expect(err.message).toContain(`Active recordings: "wrong-root" (${tmpDir})`);
   });
 });
 
@@ -238,7 +330,15 @@ describe("flow-add-step", () => {
       {},
       { name: "step-test", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    const result = await tool.execute({}, { command: "tap", args: '{"x":0.5,"y":0.3}' });
+    const result = await tool.execute(
+      {},
+      {
+        name: "step-test",
+        project_root: tmpDir,
+        command: "tap",
+        args: '{"x":0.5,"y":0.3}',
+      }
+    );
 
     expect(result.toolResult).toEqual({ tapped: true });
     const flow = parseFlow(result.flowFile);
@@ -260,7 +360,11 @@ describe("flow-add-step", () => {
       {},
       { name: "tele-step", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await tool.execute({}, { command: "tap", args: '{"x":0.5}' }, ctx);
+    await tool.execute(
+      {},
+      { name: "tele-step", project_root: tmpDir, command: "tap", args: '{"x":0.5}' },
+      ctx
+    );
 
     expect(recordChildInvocation).toHaveBeenCalledOnce();
     const childId = recordChildInvocation.mock.calls[0]![0];
@@ -284,9 +388,12 @@ describe("flow-add-step", () => {
       {},
       { name: "fail-test", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await expect(tool.execute({}, { command: "tap", args: '{"x":0.5}' })).rejects.toThrow(
-      'Tool "tap" failed'
-    );
+    await expect(
+      tool.execute(
+        {},
+        { name: "fail-test", project_root: tmpDir, command: "tap", args: '{"x":0.5}' }
+      )
+    ).rejects.toThrow('Tool "tap" failed');
 
     const content = await readFlowFile("fail-test");
     const flow = parseFlow(content);
@@ -303,7 +410,7 @@ describe("flow-add-step", () => {
       {},
       { name: "no-args", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await tool.execute({}, { command: "screenshot" });
+    await tool.execute({}, { name: "no-args", project_root: tmpDir, command: "screenshot" });
 
     const content = await readFlowFile("no-args");
     const flow = parseFlow(content);
@@ -311,15 +418,20 @@ describe("flow-add-step", () => {
     expect(registry.invokeTool).toHaveBeenCalledWith("screenshot", {});
   });
 
-  it("throws when no active flow", async () => {
+  it("throws when that flow has no recording in progress", async () => {
     const registry = createMockRegistry({
       tap: { result: { ok: true } },
     });
     const tool = createFlowAddStepTool(registry);
 
-    await expect(tool.execute({}, { command: "tap", args: '{"x":0.5}' })).rejects.toThrow(
-      "No active flow"
-    );
+    await expect(
+      tool.execute(
+        {},
+        { name: "not-recording", project_root: tmpDir, command: "tap", args: '{"x":0.5}' }
+      )
+    ).rejects.toThrow("No active recording");
+    // The step must not run either — the recording is resolved first.
+    expect(registry.invokeTool).not.toHaveBeenCalled();
   });
 
   it("records a restart-app as a portable launch step (device id dropped)", async () => {
@@ -331,7 +443,12 @@ describe("flow-add-step", () => {
     await flowStartRecordingTool.execute({}, { name: "launch-rewrite", project_root: tmpDir });
     const result = await tool.execute(
       {},
-      { command: "restart-app", args: '{"udid":"ABC","bundleId":"com.acme.app"}' }
+      {
+        name: "launch-rewrite",
+        project_root: tmpDir,
+        command: "restart-app",
+        args: '{"udid":"ABC","bundleId":"com.acme.app"}',
+      }
     );
 
     // Ran live with the full args…
@@ -353,6 +470,8 @@ describe("flow-add-step", () => {
     const result = await tool.execute(
       {},
       {
+        name: "launch-activity",
+        project_root: tmpDir,
         command: "restart-app",
         args: '{"udid":"ABC","bundleId":"com.acme.app","activity":".Main"}',
       }
@@ -380,7 +499,15 @@ describe("flow-add-step", () => {
       { name: "contradiction", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
     await expect(
-      tool.execute({}, { command: "restart-app", args: '{"bundleId":"com.acme.app"}' })
+      tool.execute(
+        {},
+        {
+          name: "contradiction",
+          project_root: tmpDir,
+          command: "restart-app",
+          args: '{"bundleId":"com.acme.app"}',
+        }
+      )
     ).rejects.toThrow(/must not declare executionPrerequisite/i);
 
     const flow = parseFlow(await readFlowFile("contradiction"));
@@ -403,6 +530,8 @@ describe("flow-add-step", () => {
     const result = await tool.execute(
       {},
       {
+        name: "compose-test",
+        project_root: tmpDir,
         command: "flow-execute",
         args: JSON.stringify({
           name: "login",
@@ -431,6 +560,8 @@ describe("flow-add-step", () => {
     const result = await tool.execute(
       {},
       {
+        name: "compose-e2e",
+        project_root: tmpDir,
         command: "flow-execute",
         args: JSON.stringify({ name: "other-e2e", project_root: tmpDir, device: "ABC" }),
       }
@@ -451,6 +582,8 @@ describe("flow-add-step", () => {
     const result = await tool.execute(
       {},
       {
+        name: "compose-missing",
+        project_root: tmpDir,
         command: "flow-execute",
         args: JSON.stringify({ name: "elsewhere", project_root: tmpDir }),
       }
@@ -473,7 +606,10 @@ describe("flow-add-step", () => {
       { name: "bad-json", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
     await expect(
-      tool.execute({}, { command: "tap", args: "not valid json {{{" })
+      tool.execute(
+        {},
+        { name: "bad-json", project_root: tmpDir, command: "tap", args: "not valid json {{{" }
+      )
     ).rejects.toThrow();
 
     // Flow file should remain unchanged (no step recorded)
@@ -490,9 +626,12 @@ describe("flow-add-step", () => {
       {},
       { name: "missing-tool", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await expect(tool.execute({}, { command: "nonexistent-tool", args: "{}" })).rejects.toThrow(
-      'Tool "nonexistent-tool" not found'
-    );
+    await expect(
+      tool.execute(
+        {},
+        { name: "missing-tool", project_root: tmpDir, command: "nonexistent-tool", args: "{}" }
+      )
+    ).rejects.toThrow('Tool "nonexistent-tool" not found');
 
     // Flow file should remain unchanged
     const content = await readFlowFile("missing-tool");
@@ -504,28 +643,61 @@ describe("flow-add-step", () => {
 // ── flow-finish-recording ────────────────────────────────────────────
 
 describe("flow-finish-recording", () => {
-  it("returns summary with prerequisite and clears active flow", async () => {
+  it("returns summary with prerequisite and clears that recording", async () => {
     await flowStartRecordingTool.execute(
       {},
       { name: "finish-test", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await flowInsertEchoTool.execute({}, { message: "Step 1" });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "finish-test", project_root: tmpDir, message: "Step 1" }
+    );
 
-    const result = await flowFinishRecordingTool.execute({}, {});
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "finish-test", project_root: tmpDir }
+    );
 
     expect(result.message).toContain("finish-test");
     expect(result.executionPrerequisite).toBe(PREREQ);
     expect(result.steps).toBe(1);
     expect(result.summary).toEqual(["1. echo: Step 1"]);
 
-    // Active flow should be cleared
-    await expect(flowInsertEchoTool.execute({}, { message: "after finish" })).rejects.toThrow(
-      "No active flow"
-    );
+    // The recording is gone — no more steps can be added to it.
+    await expect(
+      flowInsertEchoTool.execute(
+        {},
+        { name: "finish-test", project_root: tmpDir, message: "after finish" }
+      )
+    ).rejects.toThrow("No active recording");
   });
 
-  it("throws when no active flow", async () => {
-    await expect(flowFinishRecordingTool.execute({}, {})).rejects.toThrow("No active flow");
+  it("leaves other recordings in progress untouched", async () => {
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "finish-one", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "keep-going", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    await flowFinishRecordingTool.execute({}, { name: "finish-one", project_root: tmpDir });
+
+    const result = await flowInsertEchoTool.execute(
+      {},
+      { name: "keep-going", project_root: tmpDir, message: "still open" }
+    );
+    expect(result.message).toContain("keep-going");
+    expect(parseFlow(await readFlowFile("keep-going")).steps).toEqual([
+      { kind: "echo", message: "still open" },
+    ]);
+  });
+
+  it("throws when that flow has no recording in progress", async () => {
+    await expect(
+      flowFinishRecordingTool.execute({}, { name: "not-recording", project_root: tmpDir })
+    ).rejects.toThrow("No active recording");
   });
 
   it("handles empty flow", async () => {
@@ -533,7 +705,10 @@ describe("flow-finish-recording", () => {
       {},
       { name: "empty", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    const result = await flowFinishRecordingTool.execute({}, {});
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "empty", project_root: tmpDir }
+    );
 
     expect(result.steps).toBe(0);
     expect(result.summary).toEqual([]);
@@ -544,10 +719,12 @@ describe("flow-finish-recording", () => {
       {},
       { name: "double-finish", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await flowFinishRecordingTool.execute({}, {});
+    await flowFinishRecordingTool.execute({}, { name: "double-finish", project_root: tmpDir });
 
-    // Second call should fail — active flow was cleared
-    await expect(flowFinishRecordingTool.execute({}, {})).rejects.toThrow("No active flow");
+    // Second call should fail — the recording was cleared
+    await expect(
+      flowFinishRecordingTool.execute({}, { name: "double-finish", project_root: tmpDir })
+    ).rejects.toThrow("No active recording");
   });
 
   it("returns the file path so the agent knows where it was written", async () => {
@@ -555,7 +732,10 @@ describe("flow-finish-recording", () => {
       {},
       { name: "path-check", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    const result = await flowFinishRecordingTool.execute({}, {});
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "path-check", project_root: tmpDir }
+    );
 
     expect(result.path).toContain(path.join(".argent", "flows"));
     expect(result.path).toContain("path-check.yaml");
@@ -571,10 +751,19 @@ describe("flow-finish-recording", () => {
       {},
       { name: "summary-test", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await flowInsertEchoTool.execute({}, { message: "Before tap" });
-    await addStep.execute({}, { command: "tap", args: '{"x":0.5}' });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "summary-test", project_root: tmpDir, message: "Before tap" }
+    );
+    await addStep.execute(
+      {},
+      { name: "summary-test", project_root: tmpDir, command: "tap", args: '{"x":0.5}' }
+    );
 
-    const result = await flowFinishRecordingTool.execute({}, {});
+    const result = await flowFinishRecordingTool.execute(
+      {},
+      { name: "summary-test", project_root: tmpDir }
+    );
     expect(result.summary).toEqual(["1. echo: Before tap", '2. tool: tap {"x":0.5}']);
   });
 
@@ -621,7 +810,7 @@ describe("flow-finish-recording", () => {
       })
     );
 
-    const result = await flowFinishRecordingTool.execute({}, {});
+    const result = await flowFinishRecordingTool.execute({}, { name, project_root: tmpDir });
 
     expect(result.summary).toEqual([
       '1. await: text {"id":"status"} contains "Ready \\"now\\"\\nnext"',
@@ -681,7 +870,7 @@ describe("flow-finish-recording", () => {
       })
     );
 
-    const result = await flowFinishRecordingTool.execute({}, {});
+    const result = await flowFinishRecordingTool.execute({}, { name, project_root: tmpDir });
 
     expect(result.summary).toEqual([
       '1. when: text {"id":"status"} contains "Ready \\"now\\"\\nnext" (1 step)',
@@ -714,11 +903,23 @@ describe("flow-execute", () => {
       {},
       { name: "run-test", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    await flowInsertEchoTool.execute({}, { message: "Tap button" });
-    await addStep.execute({}, { command: "tap", args: '{"x":0.5}' });
-    await flowInsertEchoTool.execute({}, { message: "Take screenshot" });
-    await addStep.execute({}, { command: "screenshot", args: "{}" });
-    await flowFinishRecordingTool.execute({}, {});
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "run-test", project_root: tmpDir, message: "Tap button" }
+    );
+    await addStep.execute(
+      {},
+      { name: "run-test", project_root: tmpDir, command: "tap", args: '{"x":0.5}' }
+    );
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "run-test", project_root: tmpDir, message: "Take screenshot" }
+    );
+    await addStep.execute(
+      {},
+      { name: "run-test", project_root: tmpDir, command: "screenshot", args: "{}" }
+    );
+    await flowFinishRecordingTool.execute({}, { name: "run-test", project_root: tmpDir });
 
     // Reset mock call counts
     vi.mocked(registry.invokeTool).mockClear();
@@ -1128,28 +1329,60 @@ describe("flow-execute", () => {
       tap: { result: { ok: true } },
     });
     const runFlow = createRunFlowTool(registry);
+    const addStep = createFlowAddStepTool(registry);
 
-    // Write a flow to run
-    const dir = path.join(tmpDir, ".argent", "flows");
-    await fs.mkdir(dir, { recursive: true });
+    // A flow to run in the recording's own project AND one in another project —
+    // replay must be inert for the recording either way, and a replay under a
+    // different project_root is exactly what a second agent's run looks like.
     const content = serializeFlow({
       executionPrerequisite: "",
       steps: [{ kind: "tool", name: "tap", args: { x: 0.1 } }],
     });
-    await fs.writeFile(path.join(dir, "side-effect.yaml"), content);
+    for (const root of [tmpDir, otherDir]) {
+      const dir = path.join(root, ".argent", "flows");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "side-effect.yaml"), content);
+    }
 
     // Start recording a different flow
     await flowStartRecordingTool.execute(
       {},
       { name: "recording", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
+    const before = getRecordingSession(tmpDir, "recording");
+    expect(before).toBeDefined();
 
-    // Execute a saved flow — this should NOT affect the active recording
+    // Execute saved flows — neither should affect the active recording
     await runFlow.execute({}, { name: "side-effect", project_root: tmpDir, device: DEVICE });
+    await runFlow.execute({}, { name: "side-effect", project_root: otherDir, device: DEVICE });
 
-    // We should still be able to add steps to the recording
-    const result = await flowInsertEchoTool.execute({}, { message: "still recording" });
+    // The recording still points at the flow it was opened for, in its own
+    // project — a replay elsewhere must not rebind name/root/file.
+    const after = getRecordingSession(tmpDir, "recording");
+    expect(after).toBe(before);
+    expect(after).toMatchObject({
+      name: "recording",
+      projectRoot: tmpDir,
+      filePath: path.join(tmpDir, ".argent", "flows", "recording.yaml"),
+    });
+
+    // We should still be able to add steps to the recording…
+    const result = await flowInsertEchoTool.execute(
+      {},
+      { name: "recording", project_root: tmpDir, message: "still recording" }
+    );
     expect(result.message).toContain("recording");
+    await addStep.execute(
+      {},
+      { name: "recording", project_root: tmpDir, command: "tap", args: '{"x":0.9}' }
+    );
+
+    // …and they land in the original flow's file, not the replayed project's.
+    expect(parseFlow(await readFlowFile("recording")).steps).toEqual([
+      { kind: "echo", message: "still recording" },
+      { kind: "tool", name: "tap", args: { x: 0.9 } },
+    ]);
+    await expect(readFlowFile("recording", otherDir)).rejects.toThrow();
   });
 });
 

@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import * as path from "node:path";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   serializeFlow,
   parseFlow,
   describeSelector,
-  setActiveFlow,
-  getActiveFlow,
-  getActiveFlowOrNull,
-  clearActiveFlow,
-  setActiveProjectRoot,
-  clearActiveProjectRoot,
+  assertValidProjectRoot,
+  startRecordingSession,
+  getRecordingSession,
+  requireRecordingSession,
+  clearRecordingSession,
+  listActiveRecordings,
+  clearAllRecordings,
   getFlowPath,
   appIdForPlatform,
   chromiumLaunchSpec,
@@ -964,99 +966,206 @@ describe("native launch shorthand", () => {
   });
 });
 
-// ── Active flow state ────────────────────────────────────────────────
+// ── Recording sessions ───────────────────────────────────────────────
 
-describe("active flow state", () => {
+// Recordings live in a map keyed by the resolved flow file path, so a session
+// has no identity beyond (project_root, name) — two agents recording at once
+// must never observe each other's state.
+describe("recording sessions", () => {
   beforeEach(() => {
-    clearActiveFlow();
+    clearAllRecordings();
   });
 
-  it("throws when no active flow", () => {
-    expect(() => getActiveFlow()).toThrow("No active flow");
+  const emptyFlow = (): FlowFile => ({ executionPrerequisite: "", steps: [] });
+
+  const start = (projectRoot: string, name: string, flow: FlowFile = emptyFlow()) =>
+    startRecordingSession({
+      name,
+      projectRoot,
+      persist: "host",
+      filePath: getFlowPath(projectRoot, name),
+      flow,
+    });
+
+  it("throws when the key has no recording", () => {
+    expect(() => requireRecordingSession("/tmp/proj-a", "my-flow")).toThrow(
+      /No active recording for flow "my-flow"/
+    );
   });
 
-  it("returns the active flow after setActiveFlow", () => {
-    setActiveFlow("my-flow");
-    expect(getActiveFlow()).toBe("my-flow");
+  it("classifies the not-found throw as FLOW_NO_ACTIVE_RECORDING", () => {
+    let caught: unknown;
+    try {
+      requireRecordingSession("/tmp/proj-a", "my-flow");
+    } catch (err) {
+      caught = err;
+    }
+    expect(getFailureSignal(caught)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
   });
 
-  it("clears the active flow", () => {
-    setActiveFlow("my-flow");
-    clearActiveFlow();
-    expect(() => getActiveFlow()).toThrow("No active flow");
+  it("names the asked-for key and lists the live recordings in the not-found message", () => {
+    // With concurrent recordings the usual cause is a typo or the wrong
+    // project_root; the agent can only self-correct if it sees the live keys.
+    start("/tmp/proj-a", "checkout");
+    start("/tmp/proj-b", "login");
+    expect(() => requireRecordingSession("/tmp/proj-a", "chekout")).toThrow(
+      /No active recording for flow "chekout" in \/tmp\/proj-a\./
+    );
+    expect(() => requireRecordingSession("/tmp/proj-a", "chekout")).toThrow(
+      /Active recordings: "checkout" \(\/tmp\/proj-a\), "login" \(\/tmp\/proj-b\)\./
+    );
   });
 
-  it("overwrites previous active flow", () => {
-    setActiveFlow("first");
-    setActiveFlow("second");
-    expect(getActiveFlow()).toBe("second");
+  it('reports "none" when nothing is being recorded', () => {
+    expect(() => requireRecordingSession("/tmp/proj-a", "my-flow")).toThrow(
+      /Active recordings: none\./
+    );
   });
 
-  it("getActiveFlowOrNull returns null when no active flow", () => {
-    expect(getActiveFlowOrNull()).toBeNull();
+  it("returns the session that was started for that key", () => {
+    start("/tmp/proj-a", "my-flow");
+    const session = requireRecordingSession("/tmp/proj-a", "my-flow");
+    expect(session.name).toBe("my-flow");
+    expect(session.projectRoot).toBe("/tmp/proj-a");
+    expect(session.persist).toBe("host");
+    expect(session.filePath).toBe(getFlowPath("/tmp/proj-a", "my-flow"));
   });
 
-  it("getActiveFlowOrNull returns the active flow name", () => {
-    setActiveFlow("my-flow");
-    expect(getActiveFlowOrNull()).toBe("my-flow");
+  it("getRecordingSession returns undefined for a key with no recording", () => {
+    expect(getRecordingSession("/tmp/proj-a", "my-flow")).toBeUndefined();
   });
 
-  it("getActiveFlowOrNull returns null after clearing", () => {
-    setActiveFlow("my-flow");
-    clearActiveFlow();
-    expect(getActiveFlowOrNull()).toBeNull();
+  it("getRecordingSession returns the live session", () => {
+    start("/tmp/proj-a", "my-flow");
+    expect(getRecordingSession("/tmp/proj-a", "my-flow")?.name).toBe("my-flow");
+  });
+
+  it("clearRecordingSession removes only that key", () => {
+    start("/tmp/proj-a", "my-flow");
+    start("/tmp/proj-a", "other-flow");
+    clearRecordingSession("/tmp/proj-a", "my-flow");
+    expect(getRecordingSession("/tmp/proj-a", "my-flow")).toBeUndefined();
+    expect(() => requireRecordingSession("/tmp/proj-a", "my-flow")).toThrow(
+      /No active recording for flow "my-flow"/
+    );
+    // The unrelated recording is untouched.
+    expect(requireRecordingSession("/tmp/proj-a", "other-flow").name).toBe("other-flow");
+  });
+
+  it("keeps same-named recordings under different project roots independent", () => {
+    start("/tmp/proj-a", "my-flow", { executionPrerequisite: "A", steps: [] });
+    start("/tmp/proj-b", "my-flow", { executionPrerequisite: "B", steps: [] });
+    expect(requireRecordingSession("/tmp/proj-a", "my-flow").flow.executionPrerequisite).toBe("A");
+    expect(requireRecordingSession("/tmp/proj-b", "my-flow").flow.executionPrerequisite).toBe("B");
+    // Finishing one leaves the other recording.
+    clearRecordingSession("/tmp/proj-a", "my-flow");
+    expect(getRecordingSession("/tmp/proj-a", "my-flow")).toBeUndefined();
+    expect(requireRecordingSession("/tmp/proj-b", "my-flow").flow.executionPrerequisite).toBe("B");
+  });
+
+  it("returns null when starting a recording on a free key", () => {
+    expect(start("/tmp/proj-a", "my-flow")).toBeNull();
+    // A second, unrelated recording is the common concurrent case — not a replace.
+    expect(start("/tmp/proj-a", "other-flow")).toBeNull();
+    expect(start("/tmp/proj-b", "my-flow")).toBeNull();
+  });
+
+  it("returns the replaced session when re-recording the same key", () => {
+    start("/tmp/proj-a", "my-flow", { executionPrerequisite: "first take", steps: [] });
+    const replaced = start("/tmp/proj-a", "my-flow", {
+      executionPrerequisite: "second take",
+      steps: [],
+    });
+    expect(replaced?.flow.executionPrerequisite).toBe("first take");
+    // The later take wins — one key, one writer.
+    expect(requireRecordingSession("/tmp/proj-a", "my-flow").flow.executionPrerequisite).toBe(
+      "second take"
+    );
+  });
+
+  it("listActiveRecordings reflects what is live", () => {
+    expect(listActiveRecordings()).toEqual([]);
+    start("/tmp/proj-a", "my-flow", {
+      executionPrerequisite: "",
+      steps: [{ kind: "echo", message: "hi" }],
+    });
+    start("/tmp/proj-b", "my-flow");
+    expect(listActiveRecordings()).toEqual([
+      { name: "my-flow", projectRoot: "/tmp/proj-a", steps: 1 },
+      { name: "my-flow", projectRoot: "/tmp/proj-b", steps: 0 },
+    ]);
+    clearRecordingSession("/tmp/proj-a", "my-flow");
+    expect(listActiveRecordings()).toEqual([
+      { name: "my-flow", projectRoot: "/tmp/proj-b", steps: 0 },
+    ]);
+    clearAllRecordings();
+    expect(listActiveRecordings()).toEqual([]);
+  });
+
+  it("keys a session by the normalized flow path, so a trailing slash rejoins it", () => {
+    start("/tmp/proj-a", "my-flow");
+    expect(requireRecordingSession("/tmp/proj-a/", "my-flow").name).toBe("my-flow");
+    expect(start("/tmp/proj-a/", "my-flow")).not.toBeNull();
+    expect(listActiveRecordings()).toHaveLength(1);
   });
 });
 
 // ── getFlowPath name validation ──────────────────────────────────────
 
 describe("getFlowPath name validation", () => {
-  beforeEach(() => {
-    clearActiveProjectRoot();
-    setActiveProjectRoot("/tmp/argent-flow-name-test");
-  });
+  // Pure path math over two explicit inputs — the root is a parameter, never
+  // shared state, so two callers naming two projects can never collide.
+  const root = "/tmp/argent-flow-name-test";
 
   it("accepts plain alphanumeric names", () => {
-    expect(getFlowPath("my-flow_1")).toBe(
-      path.join("/tmp/argent-flow-name-test", ".argent", "flows", "my-flow_1.yaml")
+    expect(getFlowPath(root, "my-flow_1")).toBe(
+      path.join(root, ".argent", "flows", "my-flow_1.yaml")
     );
   });
 
+  it("normalizes a trailing slash on the project root", () => {
+    // The flow path doubles as the recording-session key: a trailing slash must
+    // not mint a second identity for the same file.
+    expect(getFlowPath("/tmp/x/", "f")).toBe(getFlowPath("/tmp/x", "f"));
+  });
+
   it("rejects path-traversal segments", () => {
-    expect(() => getFlowPath("../../etc/passwd")).toThrow(/Invalid flow name/);
-    expect(() => getFlowPath("../foo")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "../../etc/passwd")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "../foo")).toThrow(/Invalid flow name/);
   });
 
   it("rejects path separators", () => {
-    expect(() => getFlowPath("foo/bar")).toThrow(/Invalid flow name/);
-    expect(() => getFlowPath("/abs/path")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "foo/bar")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "/abs/path")).toThrow(/Invalid flow name/);
   });
 
   it("rejects names with spaces or shell metacharacters", () => {
-    expect(() => getFlowPath("foo bar")).toThrow(/Invalid flow name/);
-    expect(() => getFlowPath("foo;bar")).toThrow(/Invalid flow name/);
-    expect(() => getFlowPath("foo$(id)")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "foo bar")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "foo;bar")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "foo$(id)")).toThrow(/Invalid flow name/);
   });
 
   it("rejects empty names", () => {
-    expect(() => getFlowPath("")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "")).toThrow(/Invalid flow name/);
   });
 });
 
 // PR #194 follow-up C: project_root must be absolute AND free of ".."
 // segments (path.join collapses ".." and would relocate the flows dir).
-describe("setActiveProjectRoot validation", () => {
+describe("assertValidProjectRoot validation", () => {
   it("rejects a relative project_root", () => {
-    expect(() => setActiveProjectRoot("relative/path")).toThrow(/absolute path/);
+    expect(() => assertValidProjectRoot("relative/path")).toThrow(/absolute path/);
   });
 
   it('rejects an absolute project_root containing ".." segments', () => {
-    expect(() => setActiveProjectRoot("/a/../../../etc")).toThrow(/must not contain "\.\."/);
-    expect(() => setActiveProjectRoot("/home/user/../../root")).toThrow(/must not contain "\.\."/);
+    expect(() => assertValidProjectRoot("/a/../../../etc")).toThrow(/must not contain "\.\."/);
+    expect(() => assertValidProjectRoot("/home/user/../../root")).toThrow(
+      /must not contain "\.\."/
+    );
   });
 
   it("accepts a clean absolute project_root", () => {
-    expect(() => setActiveProjectRoot("/tmp/argent-pr194-c-test")).not.toThrow();
+    expect(() => assertValidProjectRoot("/tmp/argent-pr194-c-test")).not.toThrow();
   });
 });
 
