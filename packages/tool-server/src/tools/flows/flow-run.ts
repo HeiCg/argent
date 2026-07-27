@@ -26,6 +26,7 @@ import {
   type Launch,
   type WhenCondition,
   LAUNCH_PLATFORMS,
+  SELECTOR_RELATIONS,
 } from "./flow-utils";
 import type { TextMatchMode, WaitCondition } from "../../utils/ui-tree-match";
 import { sleepOrAbort } from "../../utils/timing";
@@ -439,7 +440,13 @@ export function createRunFlowTool(
 Steps run in order: \`launch\` starts an app from scratch (terminate + relaunch) and waits until it is
 ready; \`tool\` calls dispatch through the registry; \`tap\`/\`long-press\`/\`type\` resolve a selector to an
 element and act on it (\`tap: { on, times: 2 }\` double-taps; \`long-press: { on, duration }\` presses and
-holds; \`tap\`/\`long-press\` alternatively take a raw normalized point — bare \`{ x, y }\` or \`on: { x, y }\`);
+holds; \`tap\`/\`long-press\` alternatively take a raw normalized point — bare \`{ x, y }\` or \`on: { x, y }\`;
+any selector may scope its matches geometrically, the CSS combinators read off frames: \`within: <selector>\`
+(descendant — inside that container's frame), \`after: <selector>\` (CSS \`~\` — following it in reading
+order), \`next: <selector>\` (CSS \`+\` — the nearest such follower, which unlike CSS reaches past a
+non-matching neighbour rather than failing), plus \`any: true\` (CSS \`*\` — legal only WITH a scope and
+never beside text/id/role). Scopes nest to disambiguate — \`within: { id: card, within: { id: list } }\`
+reads "inside card inside list", each container's frame inside the next);
 \`scroll-to\` scrolls (momentum-free) until a target is visible; \`pinch\` zooms
 (\`pinch: { on?, scale }\` — scale > 1 in, < 1 out; screen center when \`on\` is omitted); \`rotate\` is the
 two-finger rotation gesture (\`rotate: { on?, by }\` — degrees, + clockwise, within ±3000°; screen center
@@ -700,10 +707,22 @@ function pushReport(state: ExecState, report: StepReport): void {
 
 function selectorLabel(sel: FlowSelector): string {
   const parts: string[] = [];
+  // The universal selector prints as CSS spells it, so a scope-only target
+  // never renders as an empty label.
+  if (sel.any) parts.push("*");
   if (sel.text !== undefined) parts.push(`"${sel.text}"`);
   if (sel.textMatches !== undefined) parts.push(`/${sel.textMatches}/`);
   if (sel.identifier) parts.push(`id=${sel.identifier}`);
   if (sel.role) parts.push(`role=${sel.role}`);
+  // Each relational scope renders after the fields, parenthesized and
+  // recursive, so two steps that differ only by scope don't collapse to the
+  // same target label in the report — mirroring `describeSelector`'s
+  // reason-string spelling so the two surfaces stay in lockstep (see
+  // `conditionLabel`).
+  for (const relation of SELECTOR_RELATIONS) {
+    const scope = sel[relation];
+    if (scope !== undefined) parts.push(`${relation} (${selectorLabel(scope)})`);
+  }
   return parts.join(" ");
 }
 
