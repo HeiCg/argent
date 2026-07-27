@@ -29,7 +29,6 @@ import {
   getFlowPath,
   parseFlow,
   runTargetName,
-  setActiveProjectRoot,
   type FlowFile,
   type FlowSelector,
   type FlowStep,
@@ -2195,6 +2194,10 @@ function errMsg(err: unknown): string {
  * carries, and the name is what keys the report and `__baselines__/` (see
  * {@link classifyOnDiskSpelling}). Name and project_root are validated in every
  * branch.
+ *
+ * Resolution is pure: it reads and mutates no shared state, so replaying a flow
+ * in one project can never rebind the paths of a recording in progress in
+ * another (or in the same project on another agent).
  */
 export async function resolveFlowSource(
   params: {
@@ -2217,8 +2220,6 @@ export async function resolveFlowSource(
       error_kind: "validation",
     });
   }
-
-  setActiveProjectRoot(params.project_root);
 
   if (params.flow_path !== undefined) {
     if (flowPathInput?.viaUpload) {
@@ -2390,7 +2391,7 @@ export async function resolveFlowSource(
 
   const flowName = params.name!;
   assertSafeFlowName(flowName);
-  const expected = getFlowPath(flowName);
+  const expected = getFlowPath(params.project_root, flowName);
   // A path the boundary materialized from uploaded content is a fresh temp
   // file this process itself created (see file-inputs.ts) — trusted as-is, and
   // returned ahead of the on-disk-spelling gate below deliberately: the only
