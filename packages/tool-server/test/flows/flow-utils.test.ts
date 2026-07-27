@@ -1146,6 +1146,27 @@ describe("recording sessions", () => {
     );
   });
 
+  it("evicts the least recently USED recording, not the oldest one", () => {
+    // The cap is a leak backstop, but which entry it drops matters: evicting a
+    // recording an agent is actively using would strand its steps. Fill past
+    // the cap, touching the first-registered key just before the overflow — it
+    // must survive and the untouched next-oldest must go. A FIFO eviction, or
+    // an LRU keyed on a millisecond clock (every one of these registers inside
+    // the same millisecond, so they would all tie), fails this.
+    const cap = 32;
+    for (let i = 0; i < cap; i++) start("/tmp/proj-a", `flow-${i}`);
+    expect(listActiveRecordings()).toHaveLength(cap);
+
+    requireRecordingSession("/tmp/proj-a", "flow-0"); // now most-recently-used
+    start("/tmp/proj-a", "overflow");
+
+    const live = new Set(listActiveRecordings().map((r) => r.name));
+    expect(live.size).toBe(cap);
+    expect(live.has("flow-0")).toBe(true); // touched, so kept
+    expect(live.has("flow-1")).toBe(false); // untouched and now the oldest use
+    expect(live.has("overflow")).toBe(true);
+  });
+
   it("listActiveRecordings reflects what is live", () => {
     expect(listActiveRecordings()).toEqual([]);
     start("/tmp/proj-a", "my-flow", {
