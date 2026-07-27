@@ -111,8 +111,15 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
           flowFile = await fs.readFile(filePath, "utf8");
           savedTo = filePath;
         }
+        // Parse BEFORE clearing. Hand-editing the .yaml mid-recording is a
+        // documented workflow, so parseFlow can legitimately throw here on a
+        // botched edit — and clearing first would destroy the session on the
+        // way out, leaving the agent unable to retry the finish after repairing
+        // the file (the only tool that re-establishes the key,
+        // flow-start-recording, truncates the take it would be recovering).
+        const flow = parseFlow(flowFile);
         clearRecordingSession(params.project_root, params.name);
-        return { filePath, flowFile, savedTo, flow: parseFlow(flowFile) };
+        return { filePath, flowFile, savedTo, flow };
       }
     );
 

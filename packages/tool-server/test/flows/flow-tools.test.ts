@@ -312,8 +312,12 @@ describe("flow-add-echo", () => {
       .catch((e: unknown) => e as Error);
 
     expect(err.message).toContain("No active recording");
-    // The error names what IS live, so a wrong project_root is self-correcting.
-    expect(err.message).toContain(`Active recordings: "wrong-root" (${tmpDir})`);
+    // The error names the key that was asked for, and counts — without naming —
+    // the recordings live under other roots, so a wrong project_root is
+    // recognizable without disclosing another project's flows.
+    expect(err.message).toContain(`No active recording for flow "wrong-root" in ${otherDir}`);
+    expect(err.message).toContain("Active recordings: none in this project (plus 1 in other");
+    expect(err.message).not.toContain(tmpDir);
   });
 });
 

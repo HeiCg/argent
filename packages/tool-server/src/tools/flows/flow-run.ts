@@ -77,7 +77,7 @@ const zodSchema = z.object({
     .enum(LAUNCH_PLATFORMS)
     .optional()
     .describe(
-      "Restrict auto-detection to this platform when several devices are booted. `chromium` does more than filter: with no `device` it makes an e2e flow boot its own Electron instance from its `launch` step's chromium app path and tear it down after the run (a single-key `launch: { chromium: … }` map does that on its own; a bare-string `launch:` never does)."
+      "Restrict auto-detection to this platform when several devices are booted. `chromium` does more than filter: with no `device` it SELECTS the self-boot branch for an e2e flow - the runner boots an Electron instance from the `launch` step's chromium value and tears it down after the run (a single-key `launch: { chromium: … }` map selects it on its own, without this parameter). It never falls back to device auto-detection, and the launch value must be a real Electron app path on the tool-server host: a bare-string `launch:` - what the recorder writes - holds an installed-app bundle id, so passing `chromium` for one fails the whole run with `Electron boot: path does not exist`. Edit the launch to `{ chromium: <app path> }` first."
     ),
   updateBaselines: z
     .boolean()

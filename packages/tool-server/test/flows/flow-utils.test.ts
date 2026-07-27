@@ -1003,7 +1003,7 @@ describe("recording sessions", () => {
     expect(getFailureSignal(caught)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
   });
 
-  it("names the asked-for key and lists the live recordings in the not-found message", () => {
+  it("names the asked-for key and this project's live recordings in the not-found message", () => {
     // With concurrent recordings the usual cause is a typo or the wrong
     // project_root; the agent can only self-correct if it sees the live keys.
     start("/tmp/proj-a", "checkout");
@@ -1012,13 +1012,35 @@ describe("recording sessions", () => {
       /No active recording for flow "chekout" in \/tmp\/proj-a\./
     );
     expect(() => requireRecordingSession("/tmp/proj-a", "chekout")).toThrow(
-      /Active recordings: "checkout" \(\/tmp\/proj-a\), "login" \(\/tmp\/proj-b\)\./
+      /Active recordings: "checkout" \(plus 1 in other projects\)\./
     );
   });
 
-  it('reports "none" when nothing is being recorded', () => {
+  it("counts other projects' recordings without naming them", () => {
+    // A tool-server bound beyond loopback serves unrelated callers; another
+    // project's flow names and absolute paths are not this caller's to see.
+    start("/tmp/proj-b", "login");
+    start("/tmp/proj-c", "secret-onboarding");
+    const message = (() => {
+      try {
+        requireRecordingSession("/tmp/proj-a", "my-flow");
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error("expected a throw");
+    })();
+    expect(message).toMatch(
+      /Active recordings: none in this project \(plus 2 in other projects\)\./
+    );
+    expect(message).not.toContain("login");
+    expect(message).not.toContain("secret-onboarding");
+    expect(message).not.toContain("/tmp/proj-b");
+    expect(message).not.toContain("/tmp/proj-c");
+  });
+
+  it('reports "none in this project" when nothing is being recorded', () => {
     expect(() => requireRecordingSession("/tmp/proj-a", "my-flow")).toThrow(
-      /Active recordings: none\./
+      /Active recordings: none in this project\./
     );
   });
 

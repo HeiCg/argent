@@ -78,7 +78,7 @@ export function createStopAllSimulatorServersTool(
     },
     description: `Stop running simulator-server processes (iOS + Android), native devtools services, and Chromium CDP sessions, freeing their resources. Call this when your session ends or the user says they are done.
 PASS \`devices\` with the device ids this session used — the tool-server is a host-wide singleton shared with every other agent and CLI call on the machine, and an unscoped call tears down THEIR devices too (a mid-recording devtools teardown degrades another agent's flow to brittle coordinate taps, silently). Omit \`devices\` only when a machine-wide cleanup is what you actually want.
-Returns { stopped } — an array of URNs that were shut down — plus { unmatched } naming any id in \`devices\` that owned no services, so a mistyped id or a device name passed where an id was expected does not read as a clean machine. Never throws.`,
+Returns { stopped } - the URNs of the services that were actually live and got shut down; ERROR/TERMINATING nodes are disposed too but never appear there, so an empty \`stopped\` only means nothing was still running. { unmatched } is present ONLY when \`devices\` was supplied AND at least one of its ids owns no service at all in these namespaces - absent on an unscoped call and when every id matched - so a mistyped id, or a device NAME passed where an id was expected, does not read as a clean machine. Stopping the same device twice does not report it unmatched: ownership counts regardless of service state. Never throws.`,
     zodSchema,
     services: () => ({}),
     async execute(_services, params) {
@@ -93,8 +93,13 @@ Returns { stopped } — an array of URNs that were shut down — plus { unmatche
       for (const [urn, entry] of snapshot.services) {
         const matchedId = scoped ? matchingDeviceId(urn, devices) : undefined;
         const matches = scoped ? matchedId !== undefined : PREFIXES.some((p) => urn.startsWith(p));
+        // Ownership is recorded regardless of state. `disposeService` moves a
+        // node to IDLE without removing it, so a device this session already
+        // stopped would otherwise be reported as unmatched by the next scoped
+        // call — turning the routine "stop one, then stop the rest" sequence
+        // into a false alarm about a mistyped id.
+        if (matchedId !== undefined) matchedIds.add(matchedId.toLowerCase());
         if (matches && entry.state !== ServiceState.IDLE) {
-          if (matchedId !== undefined) matchedIds.add(matchedId);
           // Dispose any non-IDLE node (this also clears ERROR/TERMINATING
           // nodes), but only report the ones that were actually live — an
           // ERROR node (e.g. a tvOS SimulatorServer that refused to start)
@@ -105,11 +110,13 @@ Returns { stopped } — an array of URNs that were shut down — plus { unmatche
         }
       }
       if (!scoped) return { stopped };
-      // A scoped stop that matched nothing is indistinguishable from a clean
-      // machine unless we say so — and the ids that miss are exactly the ones
-      // whose simulator-server, devtools and (on tvOS) two --timeout 3600
-      // daemons are being left running.
-      const unmatched = devices.filter((id) => !matchedIds.has(id));
+      // A scoped stop that named an id owning nothing is indistinguishable from
+      // a clean machine unless we say so — and that id is usually a typo, or a
+      // device NAME passed where an id belongs, in which case its
+      // simulator-server, devtools and (on tvOS) two --timeout 3600 daemons are
+      // being left running. Compared case-insensitively to match the lookup,
+      // and de-duplicated so a repeated id is reported once.
+      const unmatched = [...new Set(devices)].filter((id) => !matchedIds.has(id.toLowerCase()));
       return unmatched.length > 0 ? { stopped, unmatched } : { stopped };
     },
   };

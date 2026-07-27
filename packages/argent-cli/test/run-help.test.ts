@@ -24,18 +24,29 @@ vi.mock("@argent/tools-client", () => ({
 
 vi.mock("@argent/telemetry", () => telemetryMock);
 
-// A tool (like flow-add-step) that owns its `args` field.
+// A tool (like flow-add-step) that owns its `args` field. Schema and
+// description mirror what the registry advertises for the real tool -
+// zodObjectToJsonSchema over the zod schema in
+// packages/tool-server/src/tools/flows/flow-add-step.ts. Recordings are keyed
+// by `name` + `project_root`, so both are required alongside `command` and only
+// `args` / `delayMs` are optional; a fixture still describing a single "active"
+// recording with one required field would render help for a tool that no longer
+// exists.
 const flowAddStepMeta = {
   name: "flow-add-step",
-  description: "Add a step to the active flow recording",
+  // Leading sentence of the real tool description, verbatim.
+  description:
+    "Execute a tool call and record it as a step in the flow named by `name` + `project_root` (the recording must already be open — see flow-start-recording).",
   inputSchema: {
     type: "object",
     properties: {
+      name: { type: "string" },
+      project_root: { type: "string" },
       command: { type: "string" },
       args: { type: "string" },
-      delayMs: { type: "integer" },
+      delayMs: { type: "integer", minimum: 0, maximum: 9007199254740991 },
     },
-    required: ["command"],
+    required: ["name", "project_root", "command"],
   },
 };
 
@@ -98,6 +109,27 @@ describe("argent run --help — whole-payload --args advertisement", () => {
     // block (rendered as `--args <value>` by formatSchemaUsage), so suppression
     // removes the whole-payload hatch without hiding the field itself.
     expect(help).toContain("--args <value>");
+    expect(toolsClientMock.callTool).not.toHaveBeenCalled();
+  });
+
+  it("renders each required flag with the (required) marker and leaves the optionals unmarked", async () => {
+    toolsClientMock.fetchTool.mockResolvedValue(flowAddStepMeta);
+
+    await run(["flow-add-step", "--help"], { paths: {} as never });
+
+    const help = capturedHelp();
+    // The tool's own prose is printed above the flag block, so the help names
+    // the recording a step is being added to rather than an implicit active one.
+    expect(help).toContain(flowAddStepMeta.description);
+    // The recording identity is required alongside `command`: omitting either
+    // flag fails the server's zod validation, so the help has to say so up front
+    // instead of presenting them as optional extras.
+    expect(help).toMatch(/--name <value>\s+string \(required\)/);
+    expect(help).toMatch(/--project_root <value>\s+string \(required\)/);
+    expect(help).toMatch(/--command <value>\s+string \(required\)/);
+    // ...while the two genuinely optional fields must NOT carry the marker.
+    expect(help).toMatch(/--args <value>\s+string(?! \(required\))/);
+    expect(help).toMatch(/--delayMs <value>\s+integer(?! \(required\))/);
     expect(toolsClientMock.callTool).not.toHaveBeenCalled();
   });
 });
