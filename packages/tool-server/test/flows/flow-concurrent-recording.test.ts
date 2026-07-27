@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,11 +13,12 @@ import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { createRunFlowTool } from "../../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
 import {
-  clearAllRecordings,
+  __resetRecordingsForTesting,
   getRecordingSession,
   listActiveRecordings,
   parseFlow,
   serializeFlow,
+  withFlowFileLock,
   type FlowFile,
   type FlowStep,
 } from "../../src/tools/flows/flow-utils";
@@ -30,9 +32,33 @@ import {
  * one recording's steps never land in another's file, addressing a key that
  * isn't live fails loudly (naming the ones that are), replaying a flow
  * elsewhere rebinds nothing, and appends to one session can't lose each other.
+ *
+ * The second half pins the *mutual exclusion* that makes the above hold when
+ * the tools genuinely overlap. Every recording tool's critical section straddles
+ * an await — a restart's truncate-then-register, a finish's read-then-clear, an
+ * append's read-then-write — so each is covered by the per-flow-file lock, and a
+ * step that resolved its session before some other tool superseded it must fail
+ * rather than write into a file that now belongs to a different take.
  */
 
 const IOS_DEVICE = "00000000-0000-0000-0000-0000000000ab";
+
+/**
+ * The concurrent-recording cap is internal to flow-utils, and a copy of it here
+ * would silently stop testing the real backstop the day it changes. Read it out
+ * of the source instead.
+ */
+function readMaxRecordings(): number {
+  const source = readFileSync(
+    path.resolve(__dirname, "../../src/tools/flows/flow-utils.ts"),
+    "utf8"
+  );
+  const match = /^const MAX_RECORDINGS = (\d+);$/m.exec(source);
+  if (!match) throw new Error("could not read MAX_RECORDINGS out of flow-utils.ts");
+  return Number(match[1]);
+}
+
+const MAX_RECORDINGS = readMaxRecordings();
 
 // ── Harness ──────────────────────────────────────────────────────────
 
@@ -45,6 +71,39 @@ async function makeRoot(label: string): Promise<string> {
   return dir;
 }
 
+/** A promise plus the function that resolves it. */
+function openGate(): { promise: Promise<void>; open: () => void } {
+  let open!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    open = () => resolve();
+  });
+  return { promise, open };
+}
+
+/** Installed by {@link gateNextSubTool}; consumed by the mock registry. */
+let subToolGate: (() => Promise<void>) | null = null;
+
+/**
+ * Suspend the NEXT live sub-tool execution and report when it is reached.
+ *
+ * flow-add-step resolves its recording session, runs the step LIVE (which can
+ * take minutes on a device), and only then appends. Parking a step inside that
+ * window is what puts an append genuinely in flight across a concurrent
+ * restart / finish / eviction — deterministically, with no timing guesses.
+ */
+function gateNextSubTool(): { reached: Promise<void>; release: () => void } {
+  const arrived = openGate();
+  const held = openGate();
+  subToolGate = async () => {
+    // One-shot: later calls (including the ones asserting the recording still
+    // works afterwards) run straight through.
+    subToolGate = null;
+    arrived.open();
+    await held.promise;
+  };
+  return { reached: arrived.promise, release: held.open };
+}
+
 function createMockRegistry(): Registry {
   return {
     invokeTool: vi.fn(async (id: string) => {
@@ -53,6 +112,7 @@ function createMockRegistry(): Registry {
       // so this is what lets several calls issued without an await in between
       // reach the append phase concurrently (see the lost-update test).
       await new Promise((resolve) => setTimeout(resolve, 0));
+      if (subToolGate) await subToolGate();
       return { ok: true };
     }),
     getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
@@ -69,17 +129,13 @@ function start(root: string, name: string, executionPrerequisite?: string) {
   return flowStartRecordingTool.execute({}, { name, project_root: root, executionPrerequisite });
 }
 
+function addRawStep(root: string, name: string, command: string, args: Record<string, unknown>) {
+  return addStepTool.execute({}, { name, project_root: root, command, args: JSON.stringify(args) });
+}
+
 /** Record a `tool` step tagged with `marker`, so its file of origin is provable. */
 function addStep(root: string, name: string, marker: string) {
-  return addStepTool.execute(
-    {},
-    {
-      name,
-      project_root: root,
-      command: "keyboard",
-      args: JSON.stringify({ text: marker }),
-    }
-  );
+  return addRawStep(root, name, "keyboard", { text: marker });
 }
 
 function addEcho(root: string, name: string, message: string) {
@@ -104,17 +160,68 @@ function markers(steps: FlowStep[]): string[] {
   });
 }
 
+async function readSteps(root: string, name: string): Promise<FlowStep[]> {
+  return parseFlow(await fs.readFile(flowPath(root, name), "utf8")).steps;
+}
+
 async function readMarkers(root: string, name: string): Promise<string[]> {
-  return markers(parseFlow(await fs.readFile(flowPath(root, name), "utf8")).steps);
+  return markers(await readSteps(root, name));
+}
+
+async function captureFailure(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected the call to fail");
+}
+
+/** Let real timers and in-flight fs I/O drain, so "still blocked" means blocked. */
+function settle(ms = 25): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Resolve to `label` if `promise` settles in time, else to "timed-out". */
+async function within<T>(promise: Promise<T>, label: string, ms = 2000): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<string>((resolve) => {
+    timer = setTimeout(() => resolve("timed-out"), ms);
+  });
+  try {
+    return await Promise.race([promise.then(() => label), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The LRU backstop compares `Date.now()` stamps, and dozens of recordings can be
+ * started and touched inside one millisecond — so drive its clock explicitly
+ * rather than depending on wall-clock resolution.
+ */
+function useMonotonicClock(): { restore: () => void } {
+  let ticks = Date.now();
+  const spy = vi.spyOn(Date, "now").mockImplementation(() => ++ticks);
+  return { restore: () => spy.mockRestore() };
+}
+
+/** Fill the recording table exactly to its cap; returns the names, oldest first. */
+async function fillRecordings(root: string): Promise<string[]> {
+  const names = Array.from({ length: MAX_RECORDINGS }, (_, i) => `rec-${i}`);
+  for (const name of names) await start(root, name);
+  return names;
 }
 
 beforeEach(() => {
-  clearAllRecordings();
+  __resetRecordingsForTesting();
+  subToolGate = null;
   roots = [];
 });
 
 afterEach(async () => {
-  clearAllRecordings();
+  __resetRecordingsForTesting();
+  subToolGate = null;
   await Promise.all(roots.map((dir) => fs.rm(dir, { recursive: true, force: true })));
   roots = [];
 });
@@ -207,15 +314,6 @@ describe("the same flow name under two project roots", () => {
 // ── Addressing a key that isn't live ─────────────────────────────────
 
 describe("addressing an unknown recording key", () => {
-  async function captureFailure(promise: Promise<unknown>): Promise<unknown> {
-    try {
-      await promise;
-    } catch (err) {
-      return err;
-    }
-    throw new Error("expected the call to fail");
-  }
-
   it("fails with FLOW_NO_ACTIVE_RECORDING and lists the live recordings", async () => {
     const rootA = await makeRoot("unknown-a");
     const rootB = await makeRoot("unknown-b");
@@ -266,7 +364,7 @@ describe("concurrent flow-add-step calls on one recording", () => {
     const tags = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
     // Fire without awaiting in between: every call is past its live execution
     // and inside the append phase before the first one writes. appendStep is
-    // read → await → write, so without the per-session mutex these would all
+    // read → await → write, so without the per-file lock these would all
     // read the same file and the last write would drop the others.
     const inflight = tags.map((tag) => addStep(root, "burst", tag));
     await Promise.all(inflight);
@@ -281,13 +379,11 @@ describe("concurrent flow-add-step calls on one recording", () => {
     expect(finished.steps).toBe(tags.length);
   });
 
-  it("does not serialize a second recording behind the first one's appends", async () => {
+  it("keeps two concurrent bursts on their own files", async () => {
     const root = await makeRoot("append-race-two");
     await start(root, "alpha");
     await start(root, "beta");
 
-    // Both bursts in flight together — the lock is per session, so neither
-    // file may pick up the other's steps.
     await Promise.all([
       ...["a0", "a1", "a2", "a3"].map((tag) => addStep(root, "alpha", tag)),
       ...["b0", "b1", "b2", "b3"].map((tag) => addStep(root, "beta", tag)),
@@ -305,6 +401,52 @@ describe("concurrent flow-add-step calls on one recording", () => {
       "tool:b2",
       "tool:b3",
     ]);
+  });
+});
+
+// ── The lock is per flow file, not one global mutex ──────────────────
+
+describe("the flow-file lock", () => {
+  it("lets one recording append while another recording's file is locked", async () => {
+    const root = await makeRoot("per-file-lock");
+    await start(root, "alpha");
+    await start(root, "beta");
+
+    // Hold alpha's file lock — this is exactly the state an alpha append is in
+    // while it is mid read-modify-write. Whether beta can make progress *during*
+    // that window is the property under test: a single global lock passes any
+    // assertion about final file contents, and fails this one.
+    const order: string[] = [];
+    const alphaLock = openGate();
+    const alphaHeld = withFlowFileLock(root, "alpha", () => alphaLock.promise);
+
+    // A second append to alpha must queue behind the holder…
+    const alphaAppend = addStep(root, "alpha", "a1").then((r) => {
+      order.push("alpha-appended");
+      return r;
+    });
+    const betaAppend = addStep(root, "beta", "b1").then((r) => {
+      order.push("beta-appended");
+      return r;
+    });
+
+    // …while beta's append, on a different file, runs to completion inside it.
+    expect(await within(betaAppend, "beta-appended")).toBe("beta-appended");
+    await settle();
+    expect(order).toEqual(["beta-appended"]);
+    expect(await readMarkers(root, "beta")).toEqual(["tool:b1"]);
+    expect(await readMarkers(root, "alpha")).toEqual([]);
+
+    order.push("alpha-lock-released");
+    alphaLock.open();
+    await alphaHeld;
+    expect(await within(alphaAppend, "alpha-appended")).toBe("alpha-appended");
+
+    // beta finished strictly inside alpha's critical section — real overlap,
+    // not a serialization that happened to be fast.
+    expect(order).toEqual(["beta-appended", "alpha-lock-released", "alpha-appended"]);
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
+    expect(await readMarkers(root, "beta")).toEqual(["tool:b1"]);
   });
 });
 
@@ -412,5 +554,294 @@ describe("restarting a recording on one key", () => {
     // The other project's recording kept its step and its session.
     expect(await readMarkers(rootA, "alpha")).toEqual(["tool:a1"]);
     expect(getRecordingSession(rootA, "alpha")?.flow.steps).toHaveLength(1);
+  });
+});
+
+// ── A restart landing on top of an in-flight append ──────────────────
+
+describe("a restart that lands while a step is still running", () => {
+  it("rejects the in-flight step instead of writing it into the new take", async () => {
+    const root = await makeRoot("restart-inflight");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+
+    // The step resolves its session, then parks in its LIVE execution.
+    const gate = gateNextSubTool();
+    const appending = addStep(root, "alpha", "a2");
+    await gate.reached;
+
+    // The take that step belongs to is discarded while it is still running.
+    const restarted = await start(root, "alpha");
+    expect(restarted.restarted).toBe(true);
+    expect(restarted.discardedSteps).toBe(1);
+
+    gate.release();
+    const err = await captureFailure(appending);
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
+    expect((err as Error).message).toContain("restarted while this step was running");
+    expect((err as Error).message).toContain("Nothing was recorded");
+
+    // The new take is empty — no step from the discarded one leaked into it.
+    expect(await readMarkers(root, "alpha")).toEqual([]);
+    expect(getRecordingSession(root, "alpha")?.flow.steps).toHaveLength(0);
+
+    // …and the restarted recording still works.
+    await addStep(root, "alpha", "a3");
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a3"]);
+    const finished = await finish(root, "alpha");
+    expect(finished.steps).toBe(1);
+  });
+
+  it("truncates and re-registers only once the flow's lock is free", async () => {
+    const root = await makeRoot("restart-lock");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+    const firstSession = getRecordingSession(root, "alpha");
+
+    // Stand in for an append that is mid read-modify-write on alpha's file.
+    const order: string[] = [];
+    const lock = openGate();
+    const held = withFlowFileLock(root, "alpha", () => lock.promise);
+
+    const restarting = start(root, "alpha").then((r) => {
+      order.push("restart-returned");
+      return r;
+    });
+
+    await settle();
+    // The restart is a truncate AND a session swap; neither half may happen
+    // while another writer holds the file.
+    expect(order).toEqual([]);
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
+    expect(getRecordingSession(root, "alpha")).toBe(firstSession);
+
+    order.push("lock-released");
+    lock.open();
+    await held;
+    const restarted = await restarting;
+
+    expect(order).toEqual(["lock-released", "restart-returned"]);
+    expect(restarted.restarted).toBe(true);
+    expect(restarted.discardedSteps).toBe(1);
+    expect(await readMarkers(root, "alpha")).toEqual([]);
+    expect(getRecordingSession(root, "alpha")).not.toBe(firstSession);
+  });
+});
+
+// ── A finish landing on top of an in-flight append ───────────────────
+
+describe("a finish that lands while a step is still running", () => {
+  it("never reports steps, a summary or YAML the file disagrees with", async () => {
+    // Vary how far the append has progressed when the finish arrives, so both
+    // outcomes are exercised: the append wins the lock (and must be included in
+    // what finish reports) or the finish wins it (and the append must fail).
+    for (const microtasks of [0, 1, 2, 3, 4, 6, 8]) {
+      const root = await makeRoot(`finish-inflight-${microtasks}`);
+      await start(root, "alpha");
+      await addStep(root, "alpha", "a1");
+
+      const gate = gateNextSubTool();
+      const appending = addStep(root, "alpha", "a2");
+      await gate.reached;
+      gate.release();
+      for (let i = 0; i < microtasks; i++) await Promise.resolve();
+
+      const [appended, finished] = await Promise.allSettled([appending, finish(root, "alpha")]);
+
+      if (finished.status === "rejected") throw finished.reason;
+      const report = finished.value;
+      const onDisk = await readMarkers(root, "alpha");
+
+      // The whole report is one snapshot of one file state.
+      expect(markers(parseFlow(report.flowFile).steps)).toEqual(onDisk);
+      expect(report.steps).toBe(onDisk.length);
+      expect(report.summary).toHaveLength(onDisk.length);
+      expect(report.path).toBe(flowPath(root, "alpha"));
+      expect(report.savedTo).toBe(flowPath(root, "alpha"));
+
+      if (appended.status === "rejected") {
+        expect(getFailureSignal(appended.reason)?.error_code).toBe(
+          FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING
+        );
+        expect(onDisk).toEqual(["tool:a1"]);
+      } else {
+        expect(onDisk).toEqual(["tool:a1", "tool:a2"]);
+      }
+
+      // Either way the recording is gone, and nothing can be appended to it.
+      expect(getRecordingSession(root, "alpha")).toBeUndefined();
+    }
+  });
+
+  it("reads the file back and clears the session only once the lock is free", async () => {
+    const root = await makeRoot("finish-lock");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+
+    const order: string[] = [];
+    const lock = openGate();
+    const held = withFlowFileLock(root, "alpha", () => lock.promise);
+
+    const finishing = finish(root, "alpha").then((r) => {
+      order.push("finish-returned");
+      return r;
+    });
+
+    await settle();
+    expect(order).toEqual([]);
+    // The session is still live: resolve-read-clear is one critical section.
+    expect(getRecordingSession(root, "alpha")).toBeDefined();
+
+    order.push("lock-released");
+    lock.open();
+    await held;
+    const finished = await finishing;
+
+    expect(order).toEqual(["lock-released", "finish-returned"]);
+    expect(finished.steps).toBe(1);
+    expect(markers(parseFlow(finished.flowFile).steps)).toEqual(["tool:a1"]);
+    expect(getRecordingSession(root, "alpha")).toBeUndefined();
+  });
+
+  it("rejects a step whose recording was already finished", async () => {
+    const root = await makeRoot("append-after-finish");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+
+    const gate = gateNextSubTool();
+    const appending = addStep(root, "alpha", "a2");
+    await gate.reached;
+
+    // The finish completes end-to-end before the step comes back.
+    const finished = await finish(root, "alpha");
+    expect(finished.steps).toBe(1);
+
+    gate.release();
+    const err = await captureFailure(appending);
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
+    expect((err as Error).message).toContain("no longer active");
+
+    // The finished file is exactly what the finish reported.
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
+    expect(markers(parseFlow(finished.flowFile).steps)).toEqual(["tool:a1"]);
+  });
+});
+
+// ── The concurrent-recording cap ─────────────────────────────────────
+
+describe("the concurrent-recording cap", () => {
+  it("evicts the least recently touched recording and keeps the rest", async () => {
+    const root = await makeRoot("evict");
+    const clock = useMonotonicClock();
+    try {
+      const names = await fillRecordings(root);
+      expect(listActiveRecordings()).toHaveLength(MAX_RECORDINGS);
+
+      // Touch everything except the first, so `rec-0` is unambiguously the
+      // least recently touched recording.
+      for (const name of names.slice(1)) await addEcho(root, name, "touch");
+
+      await start(root, "overflow");
+
+      const live = listActiveRecordings()
+        .map((r) => r.name)
+        .sort();
+      expect(live).toHaveLength(MAX_RECORDINGS);
+      expect(live).toEqual([...names.slice(1), "overflow"].sort());
+      expect(getRecordingSession(root, "rec-0")).toBeUndefined();
+      // The survivors are still usable — eviction dropped one, not the table.
+      expect(getRecordingSession(root, names[1])).toBeDefined();
+      await addEcho(root, names[1], "still-live");
+      expect(await readMarkers(root, names[1])).toEqual(["echo:touch", "echo:still-live"]);
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it("rejects an append whose recording was evicted while the step ran", async () => {
+    const root = await makeRoot("evict-inflight");
+    const clock = useMonotonicClock();
+    try {
+      const names = await fillRecordings(root);
+
+      // The step resolves rec-0's session (touching it) and parks.
+      const gate = gateNextSubTool();
+      const appending = addStep(root, "rec-0", "victim");
+      await gate.reached;
+
+      // Every other recording is touched, then one more overflows the cap —
+      // rec-0 is now the LRU and gets dropped out from under the running step.
+      for (const name of names.slice(1)) await addEcho(root, name, "touch");
+      await start(root, "overflow");
+      expect(getRecordingSession(root, "rec-0")).toBeUndefined();
+
+      gate.release();
+      const err = await captureFailure(appending);
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+      expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
+      expect((err as Error).message).toContain("concurrent-recording cap");
+      expect(await readMarkers(root, "rec-0")).toEqual([]);
+
+      // A fresh call on the evicted key fails the ordinary not-live way.
+      const late = await captureFailure(addEcho(root, "rec-0", "late"));
+      expect(getFailureSignal(late)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+      expect(getFailureSignal(late)?.failure_stage).toBe("flow_require_recording");
+    } finally {
+      clock.restore();
+    }
+  });
+});
+
+// ── Recording a flow-execute step ────────────────────────────────────
+
+describe("recording a flow-execute step while several projects are in play", () => {
+  const fragment: FlowFile = {
+    executionPrerequisite: "",
+    steps: [{ kind: "echo", message: "helper" }],
+  };
+
+  it("keeps the raw step when the target is not a sibling of the RECORDING", async () => {
+    const recordingRoot = await makeRoot("run-target-recording");
+    const executedRoot = await makeRoot("run-target-executed");
+
+    // The fragment exists in the project the nested flow-execute ran in, but
+    // NOT next to the flow being recorded — so `run: helper` would be a
+    // dangling reference at replay, which resolves siblings of the recording.
+    await writeSavedFlow(executedRoot, "helper", fragment);
+
+    await start(recordingRoot, "wrapper");
+    const res = await addRawStep(recordingRoot, "wrapper", "flow-execute", {
+      name: "helper",
+      project_root: executedRoot,
+      udid: IOS_DEVICE,
+    });
+
+    expect(res.message).toContain('could not resolve "helper" as a sibling fragment');
+    expect(res.message).toContain("kept the raw flow-execute step");
+    expect(await readSteps(recordingRoot, "wrapper")).toEqual([
+      { kind: "tool", name: "flow-execute", args: { name: "helper", project_root: executedRoot } },
+    ]);
+  });
+
+  it("records run: when the target sits next to the recording", async () => {
+    const recordingRoot = await makeRoot("run-target-sibling");
+    const executedRoot = await makeRoot("run-target-elsewhere");
+
+    // Mirror image: the fragment is a sibling of the flow being recorded and is
+    // absent from the executed project.
+    await writeSavedFlow(recordingRoot, "helper", fragment);
+    await fs.mkdir(path.join(executedRoot, ".argent", "flows"), { recursive: true });
+
+    await start(recordingRoot, "wrapper");
+    const res = await addRawStep(recordingRoot, "wrapper", "flow-execute", {
+      name: "helper",
+      project_root: executedRoot,
+      udid: IOS_DEVICE,
+    });
+
+    expect(res.message).not.toContain("kept the raw flow-execute step");
+    expect(await readSteps(recordingRoot, "wrapper")).toEqual([{ kind: "run", flow: "helper" }]);
   });
 });

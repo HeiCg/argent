@@ -215,13 +215,13 @@ describe("stop-all-simulator-servers", () => {
   });
 });
 
-describe("stop-all-simulator-servers device scoping", () => {
-  // The tool-server is a host-wide singleton, so an unscoped teardown reaps
-  // whatever device another agent is mid-session on. `devices` narrows the
-  // sweep to the ids the calling session actually used.
-  const MINE = "AAAA-1111";
-  const THEIRS = "BBBB-2222";
+// The tool-server is a host-wide singleton, so an unscoped teardown reaps
+// whatever device another agent is mid-session on. `devices` narrows the sweep
+// to the ids the calling session actually used.
+const MINE = "AAAA-1111";
+const THEIRS = "BBBB-2222";
 
+describe("stop-all-simulator-servers device scoping", () => {
   function twoAgentServices() {
     return new Map([
       [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
@@ -280,6 +280,34 @@ describe("stop-all-simulator-servers device scoping", () => {
       ],
     });
     expect(registry.disposeService).toHaveBeenCalledTimes(5);
+    // Nothing was requested, so there is nothing that could have missed.
+    expect(result).not.toHaveProperty("unmatched");
+  });
+
+  it("scopes the non-simulator namespaces too (ChromiumCdp / TvControl / AndroidTvControl)", async () => {
+    // Every namespace in PREFIXES must honour `devices`, not just
+    // SimulatorServer/NativeDevtools: a TvControl daemon left running holds two
+    // spawned --timeout 3600 processes, and reaping another agent's is exactly
+    // the cross-session damage scoping exists to prevent.
+    const chromium = "chromium-cdp-9222";
+    const appleTv = "APPLE-TV-UDID";
+    const androidTv = "emulator-5556";
+    const services = new Map([
+      [`ChromiumCdp:${chromium}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`TvControl:${appleTv}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`AndroidTvControl:${androidTv}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`TvControl:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [chromium, appleTv, androidTv] });
+
+    expect(result).toEqual({
+      stopped: [`ChromiumCdp:${chromium}`, `TvControl:${appleTv}`, `AndroidTvControl:${androidTv}`],
+    });
+    expect(registry.disposeService).toHaveBeenCalledTimes(3);
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`TvControl:${THEIRS}`);
   });
 
   it("matches a transport-suffixed URN (NativeDevtools:<udid>:tcp)", async () => {
@@ -340,6 +368,9 @@ describe("stop-all-simulator-servers device scoping", () => {
     const result = await tool.execute!({}, { devices: [] });
 
     expect(result).toEqual({ stopped: [] });
+    // No id was requested, so nothing missed: an empty `unmatched` would read
+    // as a warning where there is nothing to warn about.
+    expect(result).not.toHaveProperty("unmatched");
     expect(registry.disposeService).not.toHaveBeenCalled();
   });
 
@@ -369,6 +400,116 @@ describe("stop-all-simulator-servers device scoping", () => {
 
     expect(result).toEqual({ stopped: [`NativeDevtools:${MINE}`] });
     expect(registry.disposeService).toHaveBeenCalledOnce();
+  });
+});
+
+describe("stop-all-simulator-servers unmatched ids", () => {
+  // A scoped stop whose ids owned nothing used to return a bare `{ stopped: [] }`
+  // — byte-identical to the answer on a genuinely clean machine. So a mistyped
+  // id, a device *name* passed where an id was expected, or an empty string all
+  // read as success while the services they were meant to reap (on tvOS, two
+  // spawned --timeout 3600 daemons) stayed running. `unmatched` names them.
+
+  it("names an unknown id in unmatched while still stopping the live device", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE, "GHOST-9999"] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`, `NativeDevtools:${MINE}`],
+      unmatched: ["GHOST-9999"],
+    });
+    expect(registry.disposeService).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a typo, a device name, and an empty-string id — the shapes that used to look clean", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const typo = `${MINE}0`;
+    const deviceName = "iPhone 15 Pro";
+    const result = await tool.execute!({}, { devices: [MINE, typo, deviceName, ""] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`],
+      unmatched: [typo, deviceName, ""],
+    });
+  });
+
+  it("omits unmatched entirely when every requested id matched something", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      ["AndroidDevtools:emulator-5554", { state: ServiceState.RUNNING, dependents: [] }],
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE, "emulator-5554"] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`, "AndroidDevtools:emulator-5554"],
+    });
+    // Absent, not an empty array — a clean scoped stop must carry no warning.
+    expect(result).not.toHaveProperty("unmatched");
+  });
+
+  it("counts an id whose only service is IDLE as unmatched — nothing was stopped for it", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.IDLE, dependents: [] }],
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [], unmatched: [MINE] });
+    expect(registry.disposeService).not.toHaveBeenCalled();
+  });
+
+  it("does not report an ERROR-only device as unmatched — its dead node was cleaned up", async () => {
+    // The boundary against the IDLE case above: an ERROR node is never reported
+    // as `stopped` (it never ran), but it IS disposed, so the id did own
+    // something and calling it unmatched would be a false alarm.
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.ERROR, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [] });
+    expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).toHaveBeenCalledWith(`SimulatorServer:${MINE}`);
+  });
+
+  it("counts a case-differing id as matched and echoes the caller's own spelling for the miss", async () => {
+    // The registry holds the upper-case UDID; the caller passes lower-case.
+    // The hit must not be reported as a miss (matching is case-insensitive),
+    // and the miss must come back spelled exactly as the caller typed it so the
+    // agent can find it in its own device list.
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE.toLowerCase(), "Mine-Typo"] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`],
+      unmatched: ["Mine-Typo"],
+    });
   });
 });
 

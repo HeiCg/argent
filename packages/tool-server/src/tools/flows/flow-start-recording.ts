@@ -1,10 +1,11 @@
 import { z } from "zod";
 import * as fs from "node:fs/promises";
 import type { FileInputSpec, ToolDefinition } from "@argent/registry";
+import * as path from "node:path";
 import {
-  getFlowsDir,
   getFlowPath,
   startRecordingSession,
+  withFlowFileLock,
   clientFileDirective,
   serializeFlow,
   validateFlow,
@@ -62,13 +63,17 @@ export const flowStartRecordingTool: ToolDefinition<
   },
   description: `Start recording a new flow. Creates a .yaml file in the .argent/flows/ directory.
 Use when you want to capture a reusable sequence of device interactions for later replay.
-Returns { message, flowFile, savedTo }, plus { restarted, discardedSteps } when this call re-started a recording of the SAME flow — the earlier take is discarded and its .yaml is reset to an empty flow, so re-record from the top rather than expecting to resume.
+Returns { message, flowFile, savedTo }.
+Starting ALWAYS truncates <project_root>/.argent/flows/<name>.yaml to an empty flow — including a name that exists only as a saved file with no recording in progress, so starting under the name of a committed flow overwrites it. { restarted, discardedSteps } is added only when a LIVE recording of the same flow was discarded; its absence does NOT mean nothing was overwritten. Either way, re-record from the top rather than expecting to resume.
 Fails if the .argent/flows/ directory cannot be created or the flow file cannot be written.
 
-Recordings are independent: several flows can be recorded at once (different
-names, different projects, different devices) with no cross-talk. Every
-subsequent recording tool takes the same \`name\` + \`project_root\` to say which
-one it is addressing.
+Recording state is independent: several flows can be recorded at once (different
+names, different projects) and one recording's steps never land in another's
+file. Steps still execute LIVE on a device, so give each concurrent recording its
+own device. Every subsequent recording tool takes the same \`name\` +
+\`project_root\` to say which one it is addressing — and the (project_root, name)
+key has no ownership check, so pick a name unique to your task or another agent
+starting the same one takes the key and your next step lands in its recording.
 
 After starting, use flow-add-step to append tool calls — each step is executed
 LIVE so you can verify it works before it gets recorded. For a self-contained
@@ -99,21 +104,32 @@ to remove or reorder steps.`,
     const probe = ctx?.fileInputs?.project_root;
     const persist = probe && !probe.presentOnHost ? "client" : "host";
 
-    let savedTo: FlowSavedTo;
-    if (persist === "host") {
-      await fs.mkdir(getFlowsDir(params.project_root), { recursive: true });
-      await fs.writeFile(filePath, flowFile, "utf8");
-      savedTo = filePath;
-    } else {
-      savedTo = clientFileDirective(filePath, flowFile);
-    }
-    const replaced = startRecordingSession({
-      name: params.name,
-      projectRoot: params.project_root,
-      persist,
-      filePath,
-      flow,
-    });
+    // Truncate-and-register is one critical section. Held under the flow-file
+    // lock, so a step from the take being discarded can neither slip into the
+    // file between the reset and the swap, nor be written after both: it finds
+    // its session superseded and fails instead.
+    const { savedTo, replaced } = await withFlowFileLock(
+      params.project_root,
+      params.name,
+      async () => {
+        let savedTo: FlowSavedTo;
+        if (persist === "host") {
+          await fs.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.writeFile(filePath, flowFile, "utf8");
+          savedTo = filePath;
+        } else {
+          savedTo = clientFileDirective(filePath, flowFile);
+        }
+        const replaced = startRecordingSession({
+          name: params.name,
+          projectRoot: params.project_root,
+          persist,
+          filePath,
+          flow,
+        });
+        return { savedTo, replaced };
+      }
+    );
 
     // Only a same-key restart replaces anything — the documented "re-record it
     // to fix it" workflow. Starting a *different* flow abandons nothing, so

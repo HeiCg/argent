@@ -15,7 +15,7 @@ vi.mock("../../src/tools/flows/flow-tree", () => ({
 
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
-import { clearAllRecordings, parseFlow } from "../../src/tools/flows/flow-utils";
+import { __resetRecordingsForTesting, parseFlow } from "../../src/tools/flows/flow-utils";
 
 const DEVICE = "00000000-0000-0000-0000-0000000000AB"; // iOS UDID shape
 const FLOW = "rec";
@@ -65,7 +65,7 @@ async function recordedSteps() {
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "flow-record-tap-"));
-  clearAllRecordings();
+  __resetRecordingsForTesting();
   await flowStartRecordingTool.execute(
     {},
     { name: FLOW, project_root: tmpDir, executionPrerequisite: PREREQ }
@@ -73,7 +73,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  clearAllRecordings();
+  __resetRecordingsForTesting();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
