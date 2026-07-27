@@ -4,6 +4,7 @@ import type { ToolDefinition } from "@argent/registry";
 import {
   requireRecordingSession,
   clearRecordingSession,
+  withFlowFileLock,
   clientFileDirective,
   parseFlow,
   serializeFlow,
@@ -87,22 +88,33 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
   zodSchema,
   services: () => ({}),
   async execute(_services, params) {
-    const session = requireRecordingSession(params.project_root, params.name);
+    // Resolve, read and clear as ONE critical section under the flow-file lock.
+    // Host mode's `await fs.readFile` is a yield, and an append that lands in it
+    // would be on disk while the summary and step count reported here — taken
+    // from the pre-append read — say otherwise.
+    const { filePath, flowFile, savedTo, flow } = await withFlowFileLock(
+      params.project_root,
+      params.name,
+      async () => {
+        const session = requireRecordingSession(params.project_root, params.name);
 
-    // Host mode re-reads the file so manual edits made during the recording
-    // survive into the summary; in client mode this host never has the file,
-    // so the in-memory copy is the truth and travels back in the directive.
-    const filePath = session.filePath;
-    let flowFile: string;
-    let savedTo: FlowSavedTo;
-    if (session.persist === "client") {
-      flowFile = serializeFlow(session.flow);
-      savedTo = clientFileDirective(filePath, flowFile);
-    } else {
-      flowFile = await fs.readFile(filePath, "utf8");
-      savedTo = filePath;
-    }
-    const flow = parseFlow(flowFile);
+        // Host mode re-reads the file so manual edits made during the recording
+        // survive into the summary; in client mode this host never has the file,
+        // so the in-memory copy is the truth and travels back in the directive.
+        const filePath = session.filePath;
+        let flowFile: string;
+        let savedTo: FlowSavedTo;
+        if (session.persist === "client") {
+          flowFile = serializeFlow(session.flow);
+          savedTo = clientFileDirective(filePath, flowFile);
+        } else {
+          flowFile = await fs.readFile(filePath, "utf8");
+          savedTo = filePath;
+        }
+        clearRecordingSession(params.project_root, params.name);
+        return { filePath, flowFile, savedTo, flow: parseFlow(flowFile) };
+      }
+    );
 
     const summary = flow.steps.map((step, i) => {
       const n = i + 1;
@@ -158,8 +170,6 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
           return `${n}. tool: ${step.name} ${JSON.stringify(step.args)}`;
       }
     });
-
-    clearRecordingSession(params.project_root, params.name);
 
     return {
       message: `Finished recording "${params.name}" flow (${flow.steps.length} steps)`,

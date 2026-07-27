@@ -33,29 +33,32 @@ const zodSchema = z.object({
 });
 
 /**
- * Does `urn` belong to `deviceId`? Every URN in {@link PREFIXES} is
- * `<Namespace>:<device.id>`, optionally with a trailing transport discriminator
- * (`NativeDevtools:<udid>:tcp`). Device ids can themselves contain a colon (a
- * wireless-adb serial is `192.168.1.5:5555`), so the tail is compared whole
- * rather than split on ":".
+ * Which entry of `deviceIds` owns `urn`, if any. Every URN in {@link PREFIXES}
+ * is `<Namespace>:<device.id>`, optionally with a trailing transport
+ * discriminator (`NativeDevtools:<udid>:tcp`). Device ids can themselves contain
+ * a colon (a wireless-adb serial is `192.168.1.5:5555`), so the tail is compared
+ * whole rather than split on ":".
+ *
+ * Returns the caller's spelling of the id so the tool can report which requested
+ * ids matched nothing.
  */
-function urnTargetsDevice(urn: string, deviceIds: string[]): boolean {
+function matchingDeviceId(urn: string, deviceIds: string[]): string | undefined {
   const prefix = PREFIXES.find((p) => urn.startsWith(p));
-  if (!prefix) return false;
-  const tail = urn.slice(prefix.length);
+  if (!prefix) return undefined;
   // Case-insensitive: iOS UDIDs are conventionally upper-case but agents pass
   // through whatever they were given, and a case mismatch must not silently
-  // widen a scoped stop into a no-op.
-  return deviceIds.some((id) => {
+  // widen a scoped stop into a no-op. No two distinct devices can differ only
+  // by case in any id space we support (UUID, emulator-N, chromium-cdp-N).
+  const tail = urn.slice(prefix.length).toLowerCase();
+  return deviceIds.find((id) => {
     const lower = id.toLowerCase();
-    const t = tail.toLowerCase();
-    return t === lower || t.startsWith(`${lower}:`);
+    return tail === lower || tail.startsWith(`${lower}:`);
   });
 }
 
 export function createStopAllSimulatorServersTool(
   registry: Registry
-): ToolDefinition<z.infer<typeof zodSchema>, { stopped: string[] }> {
+): ToolDefinition<z.infer<typeof zodSchema>, { stopped: string[]; unmatched?: string[] }> {
   return {
     id: "stop-all-simulator-servers",
     interaction: {
@@ -75,22 +78,23 @@ export function createStopAllSimulatorServersTool(
     },
     description: `Stop running simulator-server processes (iOS + Android), native devtools services, and Chromium CDP sessions, freeing their resources. Call this when your session ends or the user says they are done.
 PASS \`devices\` with the device ids this session used — the tool-server is a host-wide singleton shared with every other agent and CLI call on the machine, and an unscoped call tears down THEIR devices too (a mid-recording devtools teardown degrades another agent's flow to brittle coordinate taps, silently). Omit \`devices\` only when a machine-wide cleanup is what you actually want.
-Returns { stopped } — an array of URNs that were shut down. Fails silently if no matching servers are running.`,
+Returns { stopped } — an array of URNs that were shut down — plus { unmatched } naming any id in \`devices\` that owned no services, so a mistyped id or a device name passed where an id was expected does not read as a clean machine. Never throws.`,
     zodSchema,
     services: () => ({}),
     async execute(_services, params) {
-      const devices = params?.devices;
+      const devices = params.devices;
       // Present-but-empty scopes to nothing rather than falling back to the
       // machine-wide sweep: a caller that computed a device list and got none
       // must not accidentally tear down every other agent's services.
       const scoped = devices !== undefined;
       const snapshot = registry.getSnapshot();
       const stopped: string[] = [];
+      const matchedIds = new Set<string>();
       for (const [urn, entry] of snapshot.services) {
-        const matches = scoped
-          ? urnTargetsDevice(urn, devices)
-          : PREFIXES.some((p) => urn.startsWith(p));
+        const matchedId = scoped ? matchingDeviceId(urn, devices) : undefined;
+        const matches = scoped ? matchedId !== undefined : PREFIXES.some((p) => urn.startsWith(p));
         if (matches && entry.state !== ServiceState.IDLE) {
+          if (matchedId !== undefined) matchedIds.add(matchedId);
           // Dispose any non-IDLE node (this also clears ERROR/TERMINATING
           // nodes), but only report the ones that were actually live — an
           // ERROR node (e.g. a tvOS SimulatorServer that refused to start)
@@ -100,7 +104,13 @@ Returns { stopped } — an array of URNs that were shut down. Fails silently if 
           if (wasLive) stopped.push(urn);
         }
       }
-      return { stopped };
+      if (!scoped) return { stopped };
+      // A scoped stop that matched nothing is indistinguishable from a clean
+      // machine unless we say so — and the ids that miss are exactly the ones
+      // whose simulator-server, devtools and (on tvOS) two --timeout 3600
+      // daemons are being left running.
+      const unmatched = devices.filter((id) => !matchedIds.has(id));
+      return unmatched.length > 0 ? { stopped, unmatched } : { stopped };
     },
   };
 }

@@ -11,7 +11,7 @@ import {
   requireRecordingSession,
   clearRecordingSession,
   listActiveRecordings,
-  clearAllRecordings,
+  __resetRecordingsForTesting,
   getFlowPath,
   appIdForPlatform,
   chromiumLaunchSpec,
@@ -1014,7 +1014,7 @@ describe("native launch shorthand", () => {
 // must never observe each other's state.
 describe("recording sessions", () => {
   beforeEach(() => {
-    clearAllRecordings();
+    __resetRecordingsForTesting();
   });
 
   const emptyFlow = (): FlowFile => ({ executionPrerequisite: "", steps: [] });
@@ -1139,7 +1139,7 @@ describe("recording sessions", () => {
     expect(listActiveRecordings()).toEqual([
       { name: "my-flow", projectRoot: "/tmp/proj-b", steps: 0 },
     ]);
-    clearAllRecordings();
+    __resetRecordingsForTesting();
     expect(listActiveRecordings()).toEqual([]);
   });
 
