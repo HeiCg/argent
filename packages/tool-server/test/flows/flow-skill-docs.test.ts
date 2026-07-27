@@ -8,13 +8,19 @@ import { parseFlow } from "../../src/tools/flows/flow-utils";
  * a snippet that no longer parses is a live defect: an agent copies it and the
  * flow fails at parse. Guards the examples against parser drift.
  */
-const SKILL = path.resolve(__dirname, "../../../skills/skills/argent-create-flow/SKILL.md");
+const SELECTORS_DOC = path.resolve(
+  __dirname,
+  "../../../skills/skills/argent-create-flow/references/selectors.md"
+);
 
 function scopesSection(): string {
-  const md = readFileSync(SKILL, "utf8");
-  const after = md.split("#### Scopes")[1];
-  expect(after, "the scopes section is missing from SKILL.md").toBeDefined();
-  return after!.split("\nSelectors resolve against")[0]!;
+  const md = readFileSync(SELECTORS_DOC, "utf8");
+  // Everything from the `## Scopes` heading to the end of the document. The
+  // `\n## ` prefix keeps the `### Scopes in conditions` subsection inside the
+  // slice instead of ending it.
+  const after = md.split(/\n## Scopes\n/)[1];
+  expect(after, "the scopes section is missing from selectors.md").toBeDefined();
+  return after!;
 }
 
 // `…` marks an illustrative fragment (`within: <sel>`, and the deliberately
@@ -46,7 +52,7 @@ describe("create-flow SKILL.md scope snippets", () => {
     // The docs tell agents to write `{ role: Switch, next: … }` and NOT
     // `{ any: true, role: Switch, next: … }`. If the parser ever started
     // accepting the second, the advice would be noise.
-    expect(scopesSection()).toContain("may **not** sit beside");
+    expect(scopesSection()).toContain("may not sit beside");
     expect(() =>
       parseFlow("steps:\n  - tap: { any: true, role: Switch, next: { text: Wi-Fi } }\n")
     ).toThrow(/already matches every element/);
