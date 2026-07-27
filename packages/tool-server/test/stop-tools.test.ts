@@ -141,7 +141,7 @@ describe("stop-all-simulator-servers", () => {
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    const result = await tool.execute!({}, undefined);
+    const result = await tool.execute!({}, {});
 
     expect(result).toEqual({
       stopped: ["SimulatorServer:AAA", "SimulatorServer:BBB"],
@@ -156,7 +156,7 @@ describe("stop-all-simulator-servers", () => {
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    const result = await tool.execute!({}, undefined);
+    const result = await tool.execute!({}, {});
 
     expect(result).toEqual({ stopped: [] });
     expect(registry.disposeService).not.toHaveBeenCalled();
@@ -170,7 +170,7 @@ describe("stop-all-simulator-servers", () => {
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    const result = await tool.execute!({}, undefined);
+    const result = await tool.execute!({}, {});
 
     expect(result).toEqual({ stopped: ["SimulatorServer:BBB"] });
     expect(registry.disposeService).toHaveBeenCalledOnce();
@@ -184,7 +184,7 @@ describe("stop-all-simulator-servers", () => {
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    const result = await tool.execute!({}, undefined);
+    const result = await tool.execute!({}, {});
 
     // Both get disposed (cleanup), but only the live one is reported as stopped.
     expect(result).toEqual({ stopped: ["SimulatorServer:BBB"] });
@@ -204,7 +204,7 @@ describe("stop-all-simulator-servers", () => {
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    const result = await tool.execute!({}, undefined);
+    const result = await tool.execute!({}, {});
 
     expect(result).toEqual({
       stopped: ["TvControl:APPLE-TV", "AndroidTvControl:emulator-5556", "SimulatorServer:BBB"],
@@ -212,6 +212,163 @@ describe("stop-all-simulator-servers", () => {
     expect(registry.disposeService).toHaveBeenCalledWith("TvControl:APPLE-TV");
     expect(registry.disposeService).toHaveBeenCalledWith("AndroidTvControl:emulator-5556");
     expect(registry.disposeService).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("stop-all-simulator-servers device scoping", () => {
+  // The tool-server is a host-wide singleton, so an unscoped teardown reaps
+  // whatever device another agent is mid-session on. `devices` narrows the
+  // sweep to the ids the calling session actually used.
+  const MINE = "AAAA-1111";
+  const THEIRS = "BBBB-2222";
+
+  function twoAgentServices() {
+    return new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+      ["ChromiumCdp:chromium-cdp-9222", { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+  }
+
+  it("disposes only the named device's URNs and leaves the other device live", async () => {
+    const registry = createMockRegistry(twoAgentServices());
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`, `NativeDevtools:${MINE}`],
+    });
+    expect(registry.disposeService).toHaveBeenCalledTimes(2);
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`SimulatorServer:${THEIRS}`);
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`NativeDevtools:${THEIRS}`);
+    expect(registry.disposeService).not.toHaveBeenCalledWith("ChromiumCdp:chromium-cdp-9222");
+  });
+
+  it("scopes across platforms when several device ids are named", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      ["AndroidDevtools:emulator-5554", { state: ServiceState.RUNNING, dependents: [] }],
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE, "emulator-5554"] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`, "AndroidDevtools:emulator-5554"],
+    });
+    expect(registry.disposeService).toHaveBeenCalledTimes(2);
+  });
+
+  it("still disposes everything when no devices are named", async () => {
+    const registry = createMockRegistry(twoAgentServices());
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, {});
+
+    expect(result).toEqual({
+      stopped: [
+        `SimulatorServer:${MINE}`,
+        `NativeDevtools:${MINE}`,
+        `SimulatorServer:${THEIRS}`,
+        `NativeDevtools:${THEIRS}`,
+        "ChromiumCdp:chromium-cdp-9222",
+      ],
+    });
+    expect(registry.disposeService).toHaveBeenCalledTimes(5);
+  });
+
+  it("matches a transport-suffixed URN (NativeDevtools:<udid>:tcp)", async () => {
+    const services = new Map([
+      [`NativeDevtools:${MINE}:tcp`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${THEIRS}:tcp`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`NativeDevtools:${MINE}:tcp`] });
+    expect(registry.disposeService).toHaveBeenCalledOnce();
+    expect(registry.disposeService).toHaveBeenCalledWith(`NativeDevtools:${MINE}:tcp`);
+  });
+
+  it("matches a device id that itself contains a colon (wireless adb serial)", async () => {
+    const wireless = "192.168.1.5:5555";
+    const services = new Map([
+      [`AndroidDevtools:${wireless}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [wireless] });
+
+    expect(result).toEqual({ stopped: [`AndroidDevtools:${wireless}`] });
+    expect(registry.disposeService).toHaveBeenCalledOnce();
+  });
+
+  it("matches the device id case-insensitively", async () => {
+    // iOS UDIDs are conventionally upper-case, but an agent passes through
+    // whatever it was handed — a case mismatch must not silently no-op.
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${MINE.toLowerCase()}:tcp`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE.toLowerCase()] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`, `NativeDevtools:${MINE.toLowerCase()}:tcp`],
+    });
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`SimulatorServer:${THEIRS}`);
+  });
+
+  it("scopes to nothing for devices: [] rather than sweeping the machine", async () => {
+    // A caller that computed a device list and got none must not fall back to
+    // tearing down every other agent's services.
+    const registry = createMockRegistry(twoAgentServices());
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [] });
+
+    expect(result).toEqual({ stopped: [] });
+    expect(registry.disposeService).not.toHaveBeenCalled();
+  });
+
+  it("does not match a device id that is a prefix of another device's id", async () => {
+    const services = new Map([
+      ["SimulatorServer:AAAA", { state: ServiceState.RUNNING, dependents: [] }],
+      ["SimulatorServer:AAAA-EXTRA", { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: ["AAAA"] });
+
+    expect(result).toEqual({ stopped: ["SimulatorServer:AAAA"] });
+    expect(registry.disposeService).toHaveBeenCalledOnce();
+  });
+
+  it("skips an IDLE service on the named device", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.IDLE, dependents: [] }],
+      [`NativeDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`NativeDevtools:${MINE}`] });
+    expect(registry.disposeService).toHaveBeenCalledOnce();
   });
 });
 

@@ -2,12 +2,7 @@ import { createServer, type Server } from "node:http";
 import { describe, it, expect, afterEach } from "vitest";
 import { FAILURE_CODES, getFailureSignal, type FailureCode } from "@argent/registry";
 
-import {
-  setActiveProjectRoot,
-  clearActiveProjectRoot,
-  assertSafeFlowName,
-  getFlowPath,
-} from "../src/tools/flows/flow-utils";
+import { assertValidProjectRoot, assertSafeFlowName } from "../src/tools/flows/flow-utils";
 import type { DeviceInfo, Registry } from "@argent/registry";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
 import { chromiumCdpBlueprint } from "../src/blueprints/chromium-cdp";
@@ -77,8 +72,6 @@ function startServer(handler: (path: string, res: import("node:http").ServerResp
 }
 
 afterEach(async () => {
-  // setActiveProjectRoot mutates module state; reset so cases don't leak.
-  clearActiveProjectRoot();
   // Tear down any local servers a case spun up.
   await Promise.all(openServers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))));
 });
@@ -86,23 +79,15 @@ afterEach(async () => {
 describe("flow-utils classifications", () => {
   it("classifies a relative project_root as FLOW_PROJECT_ROOT_INVALID", () => {
     expectCode(
-      captureSync(() => setActiveProjectRoot("relative/path")),
+      captureSync(() => assertValidProjectRoot("relative/path")),
       FAILURE_CODES.FLOW_PROJECT_ROOT_INVALID
     );
   });
 
   it("classifies a project_root containing '..' as FLOW_PROJECT_ROOT_INVALID", () => {
     expectCode(
-      captureSync(() => setActiveProjectRoot("/a/../b")),
+      captureSync(() => assertValidProjectRoot("/a/../b")),
       FAILURE_CODES.FLOW_PROJECT_ROOT_INVALID
-    );
-  });
-
-  it("classifies path resolution with no active project_root as FLOW_PROJECT_ROOT_REQUIRED", () => {
-    // No active root → getFlowPath → getFlowsDir → requireActiveProjectRoot throws.
-    expectCode(
-      captureSync(() => getFlowPath("valid-name")),
-      FAILURE_CODES.FLOW_PROJECT_ROOT_REQUIRED
     );
   });
 

@@ -126,21 +126,21 @@ The standalone command uses only the auto-started local tool server. It is unava
 
 ## Tools
 
-| Tool                     | Purpose                                                                                                   |
-| ------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `flow-start-recording`   | Start recording — takes a name and (fragments only) an optional `executionPrerequisite`; creates the file |
-| `flow-add-step`          | Execute a tool call live and record it if it succeeds                                                     |
-| `flow-add-echo`          | Add a label/comment that prints during replay                                                             |
-| `flow-finish-recording`  | Stop recording and get a summary                                                                          |
-| `flow-read-prerequisite` | Read a flow's execution prerequisite without running it (same `name`/`flow_path` sources)                 |
-| `flow-execute`           | Replay a flow — a saved one by `name`, or any flow YAML by absolute `flow_path`                           |
+| Tool                     | Purpose                                                                                                                    |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `flow-start-recording`   | Start recording — takes `name` + `project_root` and (fragments only) an optional `executionPrerequisite`; creates the file |
+| `flow-add-step`          | Execute a tool call live and, if it succeeds, record it into the flow named by `name` + `project_root`                     |
+| `flow-add-echo`          | Add a label/comment that prints during replay, into the flow named by `name` + `project_root`                              |
+| `flow-finish-recording`  | Stop recording the flow named by `name` + `project_root` and get a summary                                                 |
+| `flow-read-prerequisite` | Read a flow's execution prerequisite without running it (same `name`/`flow_path` sources)                                  |
+| `flow-execute`           | Replay a flow — a saved one by `name`, or any flow YAML by absolute `flow_path`                                            |
 
 Every tool during recording returns the current flow file contents, so you can track what has been recorded. Rules:
 
 - **Every step runs live.** You see the real tool result (including screenshots) — verify the step worked before continuing. **Only successful steps are recorded**: a failed call writes nothing to the flow file; fix the issue and try again.
-- **Pass `project_root` once.** Give the absolute `project_root` (an error is returned if the path is not absolute) to `flow-start-recording` — it is stored for the session and used by all subsequent flow tools. You do **not** pass a flow name to `flow-add-step`, `flow-add-echo`, or `flow-finish-recording` — the active flow is tracked automatically.
-- **Start before adding.** Calling those tools without an active recording returns _"No active flow. Call flow-start-recording first."_
-- **One flow at a time.** `flow-start-recording` while already recording switches to the new flow — the response tells you which flow was abandoned and which is now active; the old flow's file remains on disk.
+- **Every recording tool takes `name` + `project_root`.** `flow-add-step`, `flow-add-echo`, and `flow-finish-recording` each name the recording they address, repeating the `name` and the absolute `project_root` (an error is returned if the path is not absolute) given to `flow-start-recording`. Nothing is carried over between calls.
+- **Concurrent recordings are isolated.** A recording is keyed by its output file, `<project_root>/.argent/flows/<name>.yaml`, so several can be open at once — different names, different projects, on one device or several — and never cross-talk. Re-calling `flow-start-recording` for the **same** name + project restarts that one and only that one: the response carries `restarted: true` and `discardedSteps`, and the `.yaml` is reset to an empty flow. Starting a _different_ flow abandons nothing.
+- **Start before adding.** Calling those tools for a flow with no recording in progress returns `No active recording for flow "<name>" in <project_root>. Call flow-start-recording first. Active recordings: ...` — the tail lists every live recording as `"name" (project_root)`, or `none`, so a typo or a wrong `project_root` is visible in the error itself.
 - **Mistakes can be edited out.** Edit the `.yaml` file directly to remove or reorder steps.
 
 ### flow-add-step arguments
@@ -176,22 +176,22 @@ Every other recorded tool (a velocity-dependent `gesture-swipe`, a fixed-distanc
 
 ```
 flow-start-recording  { name: "open-about", project_root: "/Users/dev/MyApp" }
-flow-add-echo  { message: "Start Settings from scratch" }
-flow-add-step  { command: "restart-app", args: "{\"udid\": \"ABC\", \"bundleId\": \"com.apple.Preferences\"}" }   # ⇒ captured as `- launch: com.apple.Preferences` — this is now an e2e flow
-flow-add-echo  { message: "On the Settings root list, tapping the 'General' row" }
-flow-add-step  { command: "gesture-tap", args: "{\"udid\": \"ABC\", \"x\": 0.5, \"y\": 0.35}" }   # ⇒ captured as `- tap: { text: General }` (portable selector, no udid)
-flow-add-step  { command: "await-ui-element", args: "{\"udid\": \"ABC\", \"condition\": \"visible\", \"selector\": {\"text\": \"About\"}}" }   # gate the transition
-flow-add-echo  { message: "On Settings > General, tapping 'About'" }
-flow-add-step  { command: "gesture-tap", args: "{\"udid\": \"ABC\", \"x\": 0.5, \"y\": 0.17}" }
-flow-add-step  { command: "await-ui-element", args: "{\"udid\": \"ABC\", \"condition\": \"visible\", \"selector\": {\"text\": \"Model Name\"}}" }
-flow-finish-recording  {}
+flow-add-echo  { name: "open-about", project_root: "/Users/dev/MyApp", message: "Start Settings from scratch" }
+flow-add-step  { name: "open-about", project_root: "/Users/dev/MyApp", command: "restart-app", args: "{\"udid\": \"ABC\", \"bundleId\": \"com.apple.Preferences\"}" }   # ⇒ captured as `- launch: com.apple.Preferences` — this is now an e2e flow
+flow-add-echo  { name: "open-about", project_root: "/Users/dev/MyApp", message: "On the Settings root list, tapping the 'General' row" }
+flow-add-step  { name: "open-about", project_root: "/Users/dev/MyApp", command: "gesture-tap", args: "{\"udid\": \"ABC\", \"x\": 0.5, \"y\": 0.35}" }   # ⇒ captured as `- tap: { text: General }` (portable selector, no udid)
+flow-add-step  { name: "open-about", project_root: "/Users/dev/MyApp", command: "await-ui-element", args: "{\"udid\": \"ABC\", \"condition\": \"visible\", \"selector\": {\"text\": \"About\"}}" }   # gate the transition
+flow-add-echo  { name: "open-about", project_root: "/Users/dev/MyApp", message: "On Settings > General, tapping 'About'" }
+flow-add-step  { name: "open-about", project_root: "/Users/dev/MyApp", command: "gesture-tap", args: "{\"udid\": \"ABC\", \"x\": 0.5, \"y\": 0.17}" }
+flow-add-step  { name: "open-about", project_root: "/Users/dev/MyApp", command: "await-ui-element", args: "{\"udid\": \"ABC\", \"condition\": \"visible\", \"selector\": {\"text\": \"Model Name\"}}" }
+flow-finish-recording  { name: "open-about", project_root: "/Users/dev/MyApp" }
 ```
 
 Then polish the saved file: the two `await-ui-element` steps become `await:` directives (see the file below).
 
 ## Replaying
 
-Call `flow-execute` with exactly one flow source: `name` for a flow saved under `.argent/flows/` (this form also works through a remote tool server), or `flow_path` — an absolute path to any flow `.yaml`. A flow's `run:` targets and `__baselines__/` resolve on the **tool server's** filesystem, beside the YAML it actually reads. `flow_path` requires the agent and the tool server to share a filesystem and is refused when they don't; `name` is what still runs then, but it is not a way to keep siblings and baselines — a remote call reaches the server as an upload of that one YAML into a fresh temp directory, so a `run:` target errors as a missing fragment and a `snapshot` step fails for a missing baseline under a temp path (and `updateBaselines` writes the baseline there, to be deleted with the directory). Remotely, replay self-contained flows; a flow that composes or snapshots needs the agent and the tool server on one filesystem. Pass `project_root` too — it is always required here; the stored-for-the-session shortcut applies only to the recording tools. If the flow has an execution prerequisite, the tool returns a **notice** with the prerequisite text instead of running — verify the prerequisite is met (you can also inspect it beforehand with `flow-read-prerequisite`, which takes the same `name`/`flow_path` pair) and call `flow-execute` again with `prerequisiteAcknowledged: true`. A flow without a prerequisite runs immediately. The run executes all steps in order and returns a structured report: `{ ok, passed, failed, skipped, errored, steps }`.
+Call `flow-execute` with exactly one flow source: `name` for a flow saved under `.argent/flows/` (this form also works through a remote tool server), or `flow_path` — an absolute path to any flow `.yaml`. A flow's `run:` targets and `__baselines__/` resolve on the **tool server's** filesystem, beside the YAML it actually reads. `flow_path` requires the agent and the tool server to share a filesystem and is refused when they don't; `name` is what still runs then, but it is not a way to keep siblings and baselines — a remote call reaches the server as an upload of that one YAML into a fresh temp directory, so a `run:` target errors as a missing fragment and a `snapshot` step fails for a missing baseline under a temp path (and `updateBaselines` writes the baseline there, to be deleted with the directory). Remotely, replay self-contained flows; a flow that composes or snapshots needs the agent and the tool server on one filesystem. Pass `project_root` too — it is always required here, and replaying reads no recording state, so an in-progress recording never stands in for it. **Pass `device` explicitly whenever more than one device is booted:** auto-detection resolves only when exactly one booted device matches — optionally narrowed by `platform` — and otherwise throws, listing what is available. (A Chromium e2e flow is the exception: with no `device` it boots its own instance from the `launch` path and tears it down after, so leave `device` unset there unless you mean to attach to a running one.) If the flow has an execution prerequisite, the tool returns a **notice** with the prerequisite text instead of running — verify the prerequisite is met (you can also inspect it beforehand with `flow-read-prerequisite`, which takes the same `name`/`flow_path` pair) and call `flow-execute` again with `prerequisiteAcknowledged: true`. A flow without a prerequisite runs immediately. The run executes all steps in order and returns a structured report: `{ ok, passed, failed, skipped, errored, steps }`.
 
 **What each step reports.** Raw `tool:` steps include the underlying tool's full `result` (screenshots and other outputs render as usual). The directive steps are summarized: `tap`/`type`/`await`/`assert` report only `status` + `reason`, and `snapshot` adds `artifacts` only when there is something to look at — a failed comparison (baseline/current/diff paths), a missing-baseline failure (`current` only), or a baseline write; a clean pass reports just `status` + `reason`. So converting a `tool: gesture-tap` into a `tap:` directive during cleanup drops only that tap's (uninteresting) raw result — output-bearing tools like `screenshot` have no directive form and stay `tool:` steps, so their results keep flowing through.
 
@@ -250,6 +250,11 @@ For silent misfires and partial divergence, echo annotations (see _Making flows 
 1. Note the failure step index and error message (if hard error).
 2. Call `screenshot` to see where the app actually is now.
 3. Call `describe` or `debugger-component-tree` to get the current element tree. Remember `describe` shows less than the flow tree — a testID missing from its output can still resolve as a selector (see Selectors).
+
+   `debugger-component-tree` is an **authoring aid only — never record a `debugger-*` step into a flow.** `device_id` is stripped at record time and re-injected at replay, but `port` is not a device-bind key, so a recorded debugger step carries whatever `port` it was given (or falls through to the 8081 default at replay) and runs against whatever Metro happens to be on that port.
+
+   When calling it directly, mind the shared-Metro rules: `port` is the **only** project discriminator (default `8081`), so with two RN projects running, pass the `port` of the one under test — otherwise the call lands on whichever Metro owns 8081. And a legacy-inspector device (RN 0.72 / Vega) reports no `logicalDeviceId`, so it cannot be singled out of a Metro shared with other devices — give it its own Metro port.
+
 4. Compare current state to what the failed step expected. Classify the root cause:
 
 | Root cause       | Symptoms                                                        |
