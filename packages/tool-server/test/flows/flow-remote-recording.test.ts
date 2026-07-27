@@ -11,7 +11,7 @@ import { flowFinishRecordingTool } from "../../src/tools/flows/flow-finish-recor
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { createRunFlowTool, resolveFlowFilePath } from "../../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
-import { clearAllRecordings, parseFlow } from "../../src/tools/flows/flow-utils";
+import { __resetRecordingsForTesting, parseFlow } from "../../src/tools/flows/flow-utils";
 
 /**
  * Remote-mode flow behavior: the agent's project_root does NOT exist on this
@@ -60,11 +60,11 @@ function createMockRegistry(tools: Record<string, { result: unknown }> = {}) {
 }
 
 beforeEach(() => {
-  clearAllRecordings();
+  __resetRecordingsForTesting();
 });
 
 afterEach(async () => {
-  clearAllRecordings();
+  __resetRecordingsForTesting();
   await fs.rm(CLIENT_ROOT, { recursive: true, force: true });
   await fs.rm(OTHER_CLIENT_ROOT, { recursive: true, force: true });
 });
@@ -139,6 +139,88 @@ describe("flow recording with a remote client (probe miss)", () => {
     await expect(
       flowFinishRecordingTool.execute({}, { name: "remote-flow", project_root: CLIENT_ROOT })
     ).rejects.toThrow("No active recording");
+  });
+
+  it("a rejected append leaves the session usable instead of poisoning it", async () => {
+    // In client mode the in-memory flow is the ONLY copy, so a step the append
+    // refuses must not stay in it — every later append, and the finish itself,
+    // would re-hit the same error with no way to recover. Both gates are
+    // exercised: serializeFlow (an unrepresentable step) and validateFlow (a
+    // cross-field violation).
+    const registry = createMockRegistry({
+      "gesture-tap": { result: { tapped: true } },
+      "restart-app": { result: { restarted: true } },
+    });
+    const addStep = createFlowAddStepTool(registry);
+    const device = "00000000-0000-0000-0000-0000000000ab";
+
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, executionPrerequisite: "Home" },
+      remoteCtx()
+    );
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, message: "before" }
+    );
+
+    // serializeFlow rejects: a tap carrying pixel coordinates, not the
+    // normalized 0–1 fractions a YAML gesture target can represent. (Selector
+    // capture can't reach a device here, so the coordinates are kept as-is.)
+    await expect(
+      addStep.execute(
+        {},
+        {
+          name: "remote-flow",
+          project_root: CLIENT_ROOT,
+          command: "gesture-tap",
+          args: JSON.stringify({ udid: device, x: 250, y: 400 }),
+        }
+      )
+    ).rejects.toThrow("not pixels");
+
+    // validateFlow rejects: a `restart-app` is recorded as a `launch`, and this
+    // recording declared an executionPrerequisite — a flow that begins by
+    // launching controls its own start state and must not declare one.
+    await expect(
+      addStep.execute(
+        {},
+        {
+          name: "remote-flow",
+          project_root: CLIENT_ROOT,
+          command: "restart-app",
+          args: JSON.stringify({ udid: device, bundleId: "com.example.app" }),
+        }
+      )
+    ).rejects.toThrow("must not declare executionPrerequisite");
+
+    // The session survived both rejections: the next append succeeds, and its
+    // directive carries only the accepted steps — neither rejected step is in
+    // the flow, and neither error is replayed.
+    const after = await flowInsertEchoTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, message: "after" }
+    );
+    const directive = after.savedTo as { path: string; content: string };
+    expect(directive.path).toBe(CLIENT_FLOW_PATH);
+    expect(parseFlow(directive.content).steps).toEqual([
+      { kind: "echo", message: "before" },
+      { kind: "echo", message: "after" },
+    ]);
+    expect(parseFlow(directive.content).executionPrerequisite).toBe("Home");
+
+    // And the recording still finishes — the whole point of rolling back.
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT }
+    );
+    expect(finished.steps).toBe(2);
+    expect(finished.summary).toEqual(["1. echo: before", "2. echo: after"]);
+    expect(finished.savedTo).toMatchObject({
+      [CLIENT_FILE_MARKER]: true,
+      path: CLIENT_FLOW_PATH,
+    });
+    await expect(fs.stat(CLIENT_ROOT)).rejects.toThrow();
   });
 
   it("keeps same-named recordings under different client roots isolated", async () => {

@@ -82,10 +82,17 @@ export function assertSafeFlowName(name: string): void {
 
 /**
  * The flow file `<project_root>/.argent/flows/<name>.yaml`. Pure path math over
- * two validated inputs — it reads no shared state, so two callers naming two
- * different projects can never collide. `path.join` normalizes the root, so a
- * trailing slash cannot mint a second identity for the same file (this path
- * doubles as the recording-session key, see {@link startRecordingSession}).
+ * two validated inputs, and the recording-session key (see
+ * {@link startRecordingSession}).
+ *
+ * Two different projects can never collide on one key. The converse is only
+ * true up to `path.join`, which folds a trailing slash, `//` and `.` segments
+ * but NOT symlinks or case: a caller that spells one root two ways (`/tmp/p`
+ * vs `/private/tmp/p` on macOS, or a case-variant on APFS) gets two sessions
+ * writing one file, and their appends can lose each other. Callers pass a
+ * cwd-derived root, so this needs two callers disagreeing about the spelling of
+ * the same directory; resolving symlinks here is not an option because in
+ * "client" mode the root does not exist on this host at all.
  */
 export function getFlowPath(projectRoot: string, name: string): string {
   const flowsDir = getFlowsDir(projectRoot);
@@ -133,8 +140,6 @@ export interface RecordingSession {
   filePath: string;
   /** In-memory flow content — authoritative in "client" mode. */
   flow: FlowFile;
-  /** Serializes appends to this session — see {@link appendStepToFlow}. */
-  tail: Promise<unknown>;
   /** Wall-clock of the last touch, for the LRU eviction backstop. */
   lastTouchedAtMs: number;
 }
@@ -153,10 +158,58 @@ export interface RecordingSession {
 const recordings = new Map<string, RecordingSession>();
 
 /**
+ * Serializes every mutation of ONE flow file: an append, the reset+register a
+ * `flow-start-recording` performs, and the read+clear a `flow-finish-recording`
+ * performs. Each of those is a read/await/write straddling at least one
+ * microtask, and Express dispatches tool calls concurrently, so without this
+ * two of them interleave and one silently loses.
+ *
+ * Keyed by the flow path, NOT by the session object: a restart *replaces* the
+ * session, so a lock the session owned could not exclude the very operation
+ * that supersedes it — the restart would truncate the file while an append from
+ * the discarded take was mid-flight, and that step would land in the new take.
+ *
+ * Per file, not global: two recordings write two different files and must not
+ * queue behind each other.
+ */
+const flowFileLocks = new Map<string, Promise<unknown>>();
+
+async function withFlowLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = flowFileLocks.get(key) ?? Promise.resolve();
+  // `previous` is always an already-swallowed promise, so a failed holder can
+  // never wedge or reject the chain.
+  const run = previous.then(() => fn());
+  const held = run.catch(() => {});
+  flowFileLocks.set(key, held);
+  // Drop the entry once this holder is the last one, so the map does not grow
+  // by one permanent entry per flow ever recorded.
+  void held.then(() => {
+    if (flowFileLocks.get(key) === held) flowFileLocks.delete(key);
+  });
+  return run;
+}
+
+/**
+ * Run `fn` with exclusive access to one flow file. Exported so the tools whose
+ * critical section spans more than an append — `flow-start-recording`'s
+ * truncate-then-register, `flow-finish-recording`'s read-then-clear — hold the
+ * same lock that {@link appendStepToFlow} takes.
+ */
+export function withFlowFileLock<T>(
+  projectRoot: string,
+  name: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  return withFlowLock(getFlowPath(projectRoot, name), fn);
+}
+
+/**
  * Leak backstop only. Sessions are small and auto-spawned servers idle out
  * after 30 min, but a long-lived server could accumulate recordings an agent
  * started and never finished. Well past any realistic concurrent-agent count,
- * so evicting is never something an agent should observe.
+ * so evicting should never be something an agent observes — and if it ever is,
+ * {@link assertSessionStillLive} makes the next append fail loudly rather than
+ * write into a recording the server has forgotten.
  */
 const MAX_RECORDINGS = 32;
 
@@ -192,11 +245,7 @@ export interface RecordingSessionInit {
 export function startRecordingSession(init: RecordingSessionInit): RecordingSession | null {
   const key = getFlowPath(init.projectRoot, init.name);
   const previous = recordings.get(key) ?? null;
-  recordings.set(key, {
-    ...init,
-    tail: Promise.resolve(),
-    lastTouchedAtMs: Date.now(),
-  });
+  recordings.set(key, { ...init, lastTouchedAtMs: Date.now() });
   evictIfOverCapacity();
   return previous;
 }
@@ -246,9 +295,9 @@ export function clearRecordingSession(projectRoot: string, name: string): void {
   recordings.delete(getFlowPath(projectRoot, name));
 }
 
-/** Drop every recording — test reset. */
-export function clearAllRecordings(): void {
+export function __resetRecordingsForTesting(): void {
   recordings.clear();
+  flowFileLocks.clear();
 }
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -2070,22 +2119,33 @@ export function clientFileDirective(filePath: string, content: string): ClientFi
 export type FlowSavedTo = string | ClientFileDirective;
 
 /**
- * Serialize work against one recording. `appendStep` is read → await → write,
- * a lost-update window that only mattered while a single recording could have
- * a single caller; now that an agent can legitimately have two `flow-add-step`
- * calls in flight (and two agents can share one server), appends on a session
- * are chained so the second reads what the first wrote.
- *
- * Per session, not global: two recordings write two different files and must
- * not queue behind each other.
+ * A tool resolves its session up front, then runs the step LIVE — which can take
+ * minutes — before appending. In that window the recording it holds may have
+ * been finished, restarted or evicted, leaving it with a session object that is
+ * no longer the one registered for its key. Writing anyway is the worst outcome:
+ * the step lands in a file that now belongs to a *different* take and the caller
+ * is told it succeeded. Re-check identity at write time — inside the flow-file
+ * lock, so the check sees the state the write will see — and fail loudly.
  */
-async function withSessionLock<T>(session: RecordingSession, fn: () => Promise<T>): Promise<T> {
-  // `.then(fn, fn)` — a prior append that rejected must not wedge the chain,
-  // and `session.tail` swallows the result so an unobserved rejection on the
-  // tail can never surface as an unhandled rejection.
-  const run = session.tail.then(fn, fn);
-  session.tail = run.catch(() => {});
-  return run;
+function assertSessionStillLive(session: RecordingSession): void {
+  const current = recordings.get(getFlowPath(session.projectRoot, session.name));
+  if (current === session) return;
+  // A key that is occupied by a DIFFERENT session was restarted; an empty key
+  // was either finished or evicted by the MAX_RECORDINGS backstop, which the
+  // server cannot tell apart after the fact — so name both rather than guess.
+  const why = current
+    ? "it was restarted while this step was running, so the step belongs to the discarded take"
+    : "it was finished (or dropped by the concurrent-recording cap) while this step was running";
+  throw new FailureError(
+    `Recording of "${session.name}" in ${session.projectRoot} is no longer active — ${why}. ` +
+      `Nothing was recorded. Call flow-start-recording and re-record the step.`,
+    {
+      error_code: FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING,
+      failure_stage: "flow_session_superseded",
+      failure_area: "tool_server",
+      error_kind: "validation",
+    }
+  );
 }
 
 /**
@@ -2099,7 +2159,8 @@ export async function appendStepToFlow(
   session: RecordingSession,
   step: FlowStep
 ): Promise<{ flowFile: string; savedTo: FlowSavedTo }> {
-  return withSessionLock(session, async () => {
+  return withFlowFileLock(session.projectRoot, session.name, async () => {
+    assertSessionStillLive(session);
     session.lastTouchedAtMs = Date.now();
     if (session.persist === "host") {
       const flowFile = await appendStep(session.filePath, step);
@@ -2108,12 +2169,18 @@ export async function appendStepToFlow(
     }
     session.flow.steps.push(step);
     try {
+      // Both of these can reject on a bad step — validateFlow on a cross-field
+      // violation, serializeFlow on an unrepresentable one (e.g. a tap with
+      // un-normalized coordinates). Roll back on either: in client mode this
+      // in-memory copy is the ONLY copy, so leaving the rejected step in it
+      // poisons the recording — every later append, and the finish itself,
+      // would re-hit the same error with no way to recover.
       validateFlow(session.flow);
+      const flowFile = serializeFlow(session.flow);
+      return { flowFile, savedTo: clientFileDirective(session.filePath, flowFile) };
     } catch (err) {
       session.flow.steps.pop(); // keep the in-memory copy consistent: nothing recorded
       throw err;
     }
-    const flowFile = serializeFlow(session.flow);
-    return { flowFile, savedTo: clientFileDirective(session.filePath, flowFile) };
   });
 }

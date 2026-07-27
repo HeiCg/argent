@@ -71,12 +71,14 @@ const zodSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Device id to run against (iOS UDID, Android/Vega serial, Chromium id). Auto-detected when omitted."
+      "Device id to run against (iOS UDID, Android/Vega serial, Chromium id) — the id list-devices reports. Auto-detected when omitted, but only when exactly one booted device matches (optionally narrowed by `platform`); with several booted the run fails and lists them, so pass this explicitly whenever more than one device is up."
     ),
   platform: z
     .enum(LAUNCH_PLATFORMS)
     .optional()
-    .describe("Restrict auto-detection to this platform when several devices are booted."),
+    .describe(
+      "Restrict auto-detection to this platform when several devices are booted. `chromium` does more than filter: with no `device` it makes an e2e flow boot its own Electron instance from its `launch` step's chromium app path and tear it down after the run (a single-key `launch: { chromium: … }` map does that on its own; a bare-string `launch:` never does)."
+    ),
   updateBaselines: z
     .boolean()
     .optional()

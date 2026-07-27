@@ -117,20 +117,22 @@ Since a `tv-remote` path is positional (like a coordinate tap), gate each naviga
 
 ## Tools
 
-| Tool                     | Purpose                                                                                                                    |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `flow-start-recording`   | Start recording — takes `name` + `project_root` and (fragments only) an optional `executionPrerequisite`; creates the file |
-| `flow-add-step`          | Execute a tool call live and, if it succeeds, record it into the flow named by `name` + `project_root`                     |
-| `flow-add-echo`          | Add a label/comment that prints during replay, into the flow named by `name` + `project_root`                              |
-| `flow-finish-recording`  | Stop recording the flow named by `name` + `project_root` and get a summary                                                 |
-| `flow-read-prerequisite` | Read a flow's execution prerequisite without running it                                                                    |
-| `flow-execute`           | Replay a saved flow by name                                                                                                |
+| Tool                     | Purpose                                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flow-start-recording`   | Start recording — takes `name` + `project_root` and (fragments only) an optional `executionPrerequisite`; creates the file, truncating any existing one |
+| `flow-add-step`          | Execute a tool call live and, if it succeeds, record it into the flow named by `name` + `project_root`                                                  |
+| `flow-add-echo`          | Add a label/comment that prints during replay, into the flow named by `name` + `project_root`                                                           |
+| `flow-finish-recording`  | Stop recording the flow named by `name` + `project_root` and get a summary                                                                              |
+| `flow-read-prerequisite` | Read the execution prerequisite of the flow named by `name` + `project_root`, without running it                                                        |
+| `flow-execute`           | Replay the saved flow named by `name` + `project_root`                                                                                                  |
 
 Every tool during recording returns the current flow file contents, so you can track what has been recorded. Rules:
 
 - **Every step runs live.** You see the real tool result (including screenshots) — verify the step worked before continuing. **Only successful steps are recorded**: a failed call writes nothing to the flow file; fix the issue and try again.
 - **Every recording tool takes `name` + `project_root`.** `flow-add-step`, `flow-add-echo`, and `flow-finish-recording` each name the recording they address, repeating the `name` and the absolute `project_root` (an error is returned if the path is not absolute) given to `flow-start-recording`. Nothing is carried over between calls.
-- **Concurrent recordings are isolated.** A recording is keyed by its output file, `<project_root>/.argent/flows/<name>.yaml`, so several can be open at once — different names, different projects, on one device or several — and never cross-talk. Re-calling `flow-start-recording` for the **same** name + project restarts that one and only that one: the response carries `restarted: true` and `discardedSteps`, and the `.yaml` is reset to an empty flow. Starting a _different_ flow abandons nothing.
+- **Recording _state_ is isolated; the device is not.** A recording is keyed by its output file, `<project_root>/.argent/flows/<name>.yaml`, so several can be open at once — different names, different projects — and one recording's steps never land in another's file. Nothing is isolated on the device: every step runs live, so two recordings driving one device interleave real UI actions, and one flow's recorded `restart-app` resets the app under the other. Give each concurrent recording its own device.
+- **Starting always truncates the `.yaml`.** `flow-start-recording` resets `<project_root>/.argent/flows/<name>.yaml` to an empty flow on every call — including a name that is only a saved file with no recording in progress, so starting under the name of a committed flow wipes it. `restarted: true` + `discardedSteps` report only a discarded _in-memory_ take; their **absence does not mean nothing was overwritten**. Starting a _different_ flow abandons nothing.
+- **Pick a name unique to your task.** The key is `(project_root, name)` with no ownership check: if another agent starts the same name + project while you are recording, your file is truncated and it takes the key. The symptom is a step in flight failing with `Recording of "<name>" in <project_root> is no longer active — it was restarted while this step was running…`; your _next_ `flow-add-step`/`flow-add-echo` then succeeds — into the other agent's recording. Restart under a fresh name instead of re-adding the step.
 - **Start before adding.** Calling those tools for a flow with no recording in progress returns `No active recording for flow "<name>" in <project_root>. Call flow-start-recording first. Active recordings: ...` — the tail lists every live recording as `"name" (project_root)`, or `none`, so a typo or a wrong `project_root` is visible in the error itself.
 - **Mistakes can be edited out.** Edit the `.yaml` file directly to remove or reorder steps.
 
@@ -146,14 +148,22 @@ command: "await-ui-element"
 args: "{\"udid\": \"<UDID>\", \"condition\": \"visible\", \"selector\": {\"text\": \"Continue\"}}"
 ```
 
+Recording a `flow-execute` step carries **two** `name`s: the top-level `name` is the recording being appended to, `args.name` is the flow being run (captured as a `run:` step).
+
+```
+name: "checkout-e2e"   project_root: "/Users/dev/MyApp"
+command: "flow-execute"
+args: "{\"name\": \"login\", \"project_root\": \"/Users/dev/MyApp\"}"
+```
+
 Record an `await-ui-element` step to **gate** the next step on a screen transition — it blocks until the element is `visible`/`hidden` (or contains `text`), so the following step runs only once the screen has actually settled; prefer this over a fixed `delayMs`. If its condition is not met before the timeout, replay **stops at that step** (the steps after it assume the transition happened). See the `await-ui-element` section of `argent-device-interact` for the full condition/selector reference. The live call sees only the trimmed `describe` tree — if it can't find an identifier you know exists, gate on visible text to get the step recorded, then retarget the identifier in the `await:` form during polish (the directive resolves the full hierarchy — see Selectors); don't conclude the testID is unusable in the flow.
 
 ## Recording
 
 1. **Start, then launch as the first step (e2e) or set the stage yourself (fragment).** Call `flow-start-recording` with a descriptive name and the absolute `project_root`. For an **e2e** flow, record a `restart-app` of the app under test as the **first** step — it runs live (resetting the device for the rest of the recording) and is captured as the flow's `launch` step. For a **fragment**, bring the device to the entry state _before_ recording and pass an `executionPrerequisite` describing it (e.g. "App on the login screen") to `flow-start-recording` instead.
-2. **Build step-by-step**: for each action, call `flow-add-step` with the tool name and args. The tool runs immediately — check the result before moving on, and gate each navigation with an `await-ui-element` step.
-3. **Add labels**: use `flow-add-echo` between steps — echo the expected state, not just the action (see _Making flows resilient_).
-4. **Finish**: call `flow-finish-recording`. It returns the file path where the flow was saved and a summary of all steps.
+2. **Build step-by-step**: for each action, call `flow-add-step` with the same `name` + `project_root`, plus the tool name and args. The tool runs immediately — check the result before moving on, and gate each navigation with an `await-ui-element` step.
+3. **Add labels**: use `flow-add-echo` (same `name` + `project_root`) between steps — echo the expected state, not just the action (see _Making flows resilient_).
+4. **Finish**: call `flow-finish-recording` with the same `name` + `project_root`. It returns the file path where the flow was saved and a summary of all steps.
 5. **Polish**: **read the saved `.yaml` file** and convert the raw `tool:` steps that have a cleaner directive form (the recorder leaves these as tools):
    - `tool: keyboard` typing into a field → `type: { into: "<field>", text: "…" }`, folding in the `tap` that focused the field.
    - `tool: await-ui-element` gating a transition → `await: { visible: "…" }` / `{ hidden: … }` / `{ text: { in: …, equals: … } }`, carrying a custom `timeoutMs` over as a `timeout` sibling key. Converting also upgrades the wait from the trimmed `describe` tree to the flow's full-hierarchy tree (see Selectors). Keep the raw `tool: await-ui-element` step only when it sets a custom `pollIntervalMs`/`bundleId` the directive can't express.
@@ -182,7 +192,7 @@ Then polish the saved file: the two `await-ui-element` steps become `await:` dir
 
 ## Replaying
 
-Call `flow-execute` with the flow `name` and its `project_root` (both are required — replaying reads no recording state, so an in-progress recording never stands in for them). **Pass `device` explicitly whenever more than one device is booted:** auto-detection resolves only when exactly one booted device matches — optionally narrowed by `platform` — and otherwise throws, listing what is available. (A Chromium e2e flow is the exception: with no `device` it boots its own instance from the `launch` path and tears it down after, so leave `device` unset there unless you mean to attach to a running one.) If the flow has an execution prerequisite, the tool returns a **notice** with the prerequisite text instead of running — verify the prerequisite is met (you can also inspect it beforehand with `flow-read-prerequisite`) and call `flow-execute` again with `prerequisiteAcknowledged: true`. A flow without a prerequisite runs immediately. The run executes all steps in order and returns a structured report: `{ ok, passed, failed, skipped, errored, steps }`.
+Call `flow-execute` with the flow `name` and its `project_root` (both are required — replaying reads no recording state, so an in-progress recording never stands in for them). **Pass `device` explicitly whenever more than one device is booted:** auto-detection resolves only when exactly one booted device matches — optionally narrowed by `platform` — and otherwise throws, listing what is available. (A Chromium e2e flow can boot its own instance from the `launch` path and tear it down after, but only with no `device` **and** an unambiguous chromium target: an explicit `platform: "chromium"`, or a single-key `launch: { chromium: … }` map. A bare-string `launch:` — what the recorder always writes — or a multi-platform map carries no hint and falls through to ordinary device auto-detection, so pass `platform: "chromium"` when you want the self-boot.) If the flow has an execution prerequisite, the tool returns a **notice** with the prerequisite text instead of running — verify the prerequisite is met (you can also inspect it beforehand with `flow-read-prerequisite`) and call `flow-execute` again with `prerequisiteAcknowledged: true`. A flow without a prerequisite runs immediately. The run executes all steps in order and returns a structured report: `{ ok, passed, failed, skipped, errored, steps }`.
 
 **What each step reports.** Raw `tool:` steps include the underlying tool's full `result` (screenshots and other outputs render as usual). The directive steps are summarized: `tap`/`type`/`await`/`assert` report only `status` + `reason`, and `snapshot` adds `artifacts` only when there is something to look at — a failed comparison (baseline/current/diff paths), a missing-baseline failure (`current` only), or a baseline write; a clean pass reports just `status` + `reason`. So converting a `tool: gesture-tap` into a `tap:` directive during cleanup drops only that tap's (uninteresting) raw result — output-bearing tools like `screenshot` have no directive form and stay `tool:` steps, so their results keep flowing through.
 
@@ -244,7 +254,7 @@ For silent misfires and partial divergence, echo annotations (see _Making flows 
 
    `debugger-component-tree` is an **authoring aid only — never record a `debugger-*` step into a flow.** `device_id` is stripped at record time and re-injected at replay, but `port` is not a device-bind key, so a recorded debugger step carries whatever `port` it was given (or falls through to the 8081 default at replay) and runs against whatever Metro happens to be on that port.
 
-   When calling it directly, mind the shared-Metro rules: `port` is the **only** project discriminator (default `8081`), so with two RN projects running, pass the `port` of the one under test — otherwise the call lands on whichever Metro owns 8081. And a legacy-inspector device (RN 0.72 / Vega) reports no `logicalDeviceId`, so it cannot be singled out of a Metro shared with other devices — give it its own Metro port.
+   When calling any `debugger-*` tool directly, mind the shared-Metro rules: `port` is the **only** project discriminator (default `8081`), so with two RN projects running, pass the `port` of the one under test — otherwise the call lands on whichever Metro owns 8081. And a legacy-inspector device (RN 0.72 / Vega) reports no `logicalDeviceId`, so it cannot be singled out of a Metro shared with other devices — give it its own Metro port. That last one does not rescue `debugger-component-tree` itself: it is capability-gated off Vega, and on RN 0.72's Hermes it hangs until timeout (the binding it delivers the tree over is never installed) — use `describe` there.
 
 4. Compare current state to what the failed step expected. Classify the root cause:
 
@@ -269,10 +279,10 @@ Read `.argent/flows/<flow-name>.yaml`, update the broken step's `x`/`y`, `bundle
 Manually execute the failed step with corrected coordinates from the Diagnose step, then manually execute remaining steps. Does not fix the YAML — use only when re-recording is not worth it.
 
 **Strategy 3 — Re-record from failure point** (structural changes, new intermediate screens).
-Navigate the app to the state just before the failure point. Call `flow-start-recording` with the same flow name (overwrites). Re-add the working prefix steps via `flow-add-step`, then continue recording new steps from the divergence point. Call `flow-finish-recording`.
+Navigate the app to the state just before the failure point. Call `flow-start-recording` with the same `name` + `project_root` — the start truncates the saved `.yaml` immediately, so copy the working prefix out of the file first. Re-add that prefix via `flow-add-step` (same `name` + `project_root`), then continue recording new steps from the divergence point. Call `flow-finish-recording` with the same `name` + `project_root`.
 
 **Strategy 4 — Full re-record** (major changes, unclear diagnosis, or 3+ broken steps).
-Reset the app to prerequisite state (`restart-app` + `launch-app`). Record from scratch with the same flow name.
+Reset the app to prerequisite state (`restart-app` + `launch-app`). Record from scratch with the same `name` + `project_root` — the start truncates the old `.yaml`, so keep a copy if you may want to diff against it.
 
 **Decision heuristic:**
 

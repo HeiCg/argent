@@ -15,7 +15,7 @@ import {
 } from "../../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
 import {
-  clearAllRecordings,
+  __resetRecordingsForTesting,
   getRecordingSession,
   parseFlow,
   serializeFlow,
@@ -66,11 +66,11 @@ const PREREQ = "App on home screen";
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "flow-test-"));
   otherDir = await fs.mkdtemp(path.join(os.tmpdir(), "flow-test-other-"));
-  clearAllRecordings();
+  __resetRecordingsForTesting();
 });
 
 afterEach(async () => {
-  clearAllRecordings();
+  __resetRecordingsForTesting();
   await fs.rm(tmpDir, { recursive: true, force: true });
   await fs.rm(otherDir, { recursive: true, force: true });
 });
