@@ -33,11 +33,19 @@ const zodSchema = z.object({
 });
 
 /**
- * Which entry of `deviceIds` owns `urn`, if any. Every URN in {@link PREFIXES}
- * is `<Namespace>:<device.id>`, optionally with a trailing transport
- * discriminator (`NativeDevtools:<udid>:tcp`). Device ids can themselves contain
- * a colon (a wireless-adb serial is `192.168.1.5:5555`), so the tail is compared
- * whole rather than split on ":".
+ * The only discriminator any URN in {@link PREFIXES} appends after the device id
+ * (`NativeDevtools:<udid>:tcp` — every other namespace is a bare
+ * `<Namespace>:<device.id>`). Enumerated rather than matched as "anything after
+ * a colon", because a device id can itself end in `:<something>`: an adb serial
+ * over wifi is `192.168.1.5:5555`, so a suffix wildcard would let the bare
+ * `192.168.1.5` claim every device at that address and tear down another
+ * agent's — while reporting nothing unmatched.
+ */
+const URN_SUFFIXES = ["", ":tcp"] as const;
+
+/**
+ * Which entry of `deviceIds` owns `urn`, if any. The tail after the namespace
+ * is compared whole (never split on ":", see {@link URN_SUFFIXES}).
  *
  * Returns the caller's spelling of the id so the tool can report which requested
  * ids matched nothing.
@@ -52,7 +60,7 @@ function matchingDeviceId(urn: string, deviceIds: string[]): string | undefined 
   const tail = urn.slice(prefix.length).toLowerCase();
   return deviceIds.find((id) => {
     const lower = id.toLowerCase();
-    return tail === lower || tail.startsWith(`${lower}:`);
+    return URN_SUFFIXES.some((suffix) => tail === `${lower}${suffix}`);
   });
 }
 

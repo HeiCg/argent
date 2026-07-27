@@ -348,6 +348,23 @@ describe("stop-all-simulator-servers device scoping", () => {
     expect(registry.disposeService).toHaveBeenCalledOnce();
   });
 
+  it("does not let a bare IP claim every wireless device at that address", async () => {
+    // An adb serial is `ip:port`, so treating "anything after a colon" as the
+    // transport discriminator would let a caller who dropped the port tear down
+    // a second agent's device — and report nothing unmatched while doing it.
+    const services = new Map([
+      ["AndroidDevtools:192.168.1.5:5555", { state: ServiceState.RUNNING, dependents: [] }],
+      ["SimulatorServer:192.168.1.5:5556", { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: ["192.168.1.5"] });
+
+    expect(result).toEqual({ stopped: [], unmatched: ["192.168.1.5"] });
+    expect(registry.disposeService).not.toHaveBeenCalled();
+  });
+
   it("matches the device id case-insensitively", async () => {
     // iOS UDIDs are conventionally upper-case, but an agent passes through
     // whatever it was handed — a case mismatch must not silently no-op.
