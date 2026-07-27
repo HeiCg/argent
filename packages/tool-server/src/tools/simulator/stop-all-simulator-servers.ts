@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { ServiceState, isLiveServiceState } from "@argent/registry";
 import type { Registry, ToolDefinition } from "@argent/registry";
 import { SIMULATOR_SERVER_NAMESPACE } from "../../blueprints/simulator-server";
@@ -22,25 +23,74 @@ const PREFIXES = [
   `${ANDROID_TV_CONTROL_NAMESPACE}:`,
 ];
 
+const zodSchema = z.object({
+  devices: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Device ids (iOS UDID / Android serial / Chromium id) to scope the teardown to — pass the devices THIS session actually used. Omit only for a deliberate machine-wide cleanup: the tool-server is shared by every agent on the host, so an unscoped stop also kills devices another agent is mid-session on."
+    ),
+});
+
+/**
+ * Does `urn` belong to `deviceId`? Every URN in {@link PREFIXES} is
+ * `<Namespace>:<device.id>`, optionally with a trailing transport discriminator
+ * (`NativeDevtools:<udid>:tcp`). Device ids can themselves contain a colon (a
+ * wireless-adb serial is `192.168.1.5:5555`), so the tail is compared whole
+ * rather than split on ":".
+ */
+function urnTargetsDevice(urn: string, deviceIds: string[]): boolean {
+  const prefix = PREFIXES.find((p) => urn.startsWith(p));
+  if (!prefix) return false;
+  const tail = urn.slice(prefix.length);
+  // Case-insensitive: iOS UDIDs are conventionally upper-case but agents pass
+  // through whatever they were given, and a case mismatch must not silently
+  // widen a scoped stop into a no-op.
+  return deviceIds.some((id) => {
+    const lower = id.toLowerCase();
+    const t = tail.toLowerCase();
+    return t === lower || t.startsWith(`${lower}:`);
+  });
+}
+
 export function createStopAllSimulatorServersTool(
   registry: Registry
-): ToolDefinition<void, { stopped: string[] }> {
+): ToolDefinition<z.infer<typeof zodSchema>, { stopped: string[] }> {
   return {
     id: "stop-all-simulator-servers",
     interaction: {
-      startedMsg: () => "Stopping all simulator servers",
+      // "all" only holds for the unscoped sweep; a scoped call touches just the
+      // ids it was given, and saying otherwise would misreport a teardown that
+      // deliberately left another agent's devices running.
+      startedMsg: ({ params }) => {
+        const devices = params?.devices;
+        return devices
+          ? `Stopping simulator servers for ${devices.length} ${devices.length === 1 ? "device" : "devices"}`
+          : "Stopping all simulator servers";
+      },
       completedMsg: ({ result }) =>
         `Stopped ${result.stopped.length} simulator ${result.stopped.length === 1 ? "server" : "servers"}`,
       failedMsg: ({ failureSignal }) =>
         `Failed to stop simulator servers: ${failureSignal.error_code}`,
     },
-    description: `Stop all running simulator-server processes (iOS + Android), native devtools services, and Chromium CDP sessions, freeing their resources. Call this when your session ends or the user says they are done. Returns { stopped } — an array of URNs that were shut down. Fails silently if no servers are running.`,
+    description: `Stop running simulator-server processes (iOS + Android), native devtools services, and Chromium CDP sessions, freeing their resources. Call this when your session ends or the user says they are done.
+PASS \`devices\` with the device ids this session used — the tool-server is a host-wide singleton shared with every other agent and CLI call on the machine, and an unscoped call tears down THEIR devices too (a mid-recording devtools teardown degrades another agent's flow to brittle coordinate taps, silently). Omit \`devices\` only when a machine-wide cleanup is what you actually want.
+Returns { stopped } — an array of URNs that were shut down. Fails silently if no matching servers are running.`,
+    zodSchema,
     services: () => ({}),
-    async execute() {
+    async execute(_services, params) {
+      const devices = params?.devices;
+      // Present-but-empty scopes to nothing rather than falling back to the
+      // machine-wide sweep: a caller that computed a device list and got none
+      // must not accidentally tear down every other agent's services.
+      const scoped = devices !== undefined;
       const snapshot = registry.getSnapshot();
       const stopped: string[] = [];
       for (const [urn, entry] of snapshot.services) {
-        if (PREFIXES.some((p) => urn.startsWith(p)) && entry.state !== ServiceState.IDLE) {
+        const matches = scoped
+          ? urnTargetsDevice(urn, devices)
+          : PREFIXES.some((p) => urn.startsWith(p));
+        if (matches && entry.state !== ServiceState.IDLE) {
           // Dispose any non-IDLE node (this also clears ERROR/TERMINATING
           // nodes), but only report the ones that were actually live — an
           // ERROR node (e.g. a tvOS SimulatorServer that refused to start)

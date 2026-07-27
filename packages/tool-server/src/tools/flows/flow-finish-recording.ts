@@ -2,10 +2,8 @@ import { z } from "zod";
 import * as fs from "node:fs/promises";
 import type { ToolDefinition } from "@argent/registry";
 import {
-  getFlowPath,
-  getActiveFlow,
-  getRecordingSession,
-  clearActiveFlow,
+  requireRecordingSession,
+  clearRecordingSession,
   clientFileDirective,
   parseFlow,
   serializeFlow,
@@ -41,7 +39,16 @@ function textConditionLabel(
       : `text ${selector} contains ${JSON.stringify(expected)}`;
 }
 
-const zodSchema = z.object({});
+const zodSchema = z.object({
+  name: z
+    .string()
+    .describe("Name of the flow being recorded — the one passed to flow-start-recording."),
+  project_root: z
+    .string()
+    .describe(
+      "Absolute path to the project root of the flow being recorded — the same value passed to flow-start-recording. Together with `name` it identifies which recording to finish."
+    ),
+});
 
 export const flowFinishRecordingTool: ToolDefinition<
   z.infer<typeof zodSchema>,
@@ -57,7 +64,13 @@ export const flowFinishRecordingTool: ToolDefinition<
 > = {
   id: "flow-finish-recording",
   interaction: {
-    startedMsg: () => "Finishing flow recording",
+    // Name the flow: other recordings stay live across this call, so an
+    // unqualified "Finishing flow recording" would not identify which one.
+    startedMsg: ({ params }) => `Finishing recording of flow ${params.name}`,
+    // Derived from the resolved path rather than `params.name` so the line
+    // reports the file that was actually written. Holds in client mode too:
+    // `path` is still the resolved spelling, it just names a file on the
+    // client's disk rather than this host's, and only its basename is read.
     completedMsg: ({ result }) => {
       const flowName =
         result.path
@@ -66,24 +79,23 @@ export const flowFinishRecordingTool: ToolDefinition<
           ?.replace(/\.ya?ml$/, "") ?? "flow";
       return `Saved recorded flow ${flowName}`;
     },
-    failedMsg: ({ failureSignal }) =>
-      `Failed to finish flow recording: ${failureSignal.error_code}`,
+    failedMsg: ({ params, failureSignal }) =>
+      `Failed to finish recording of flow ${params.name}: ${failureSignal.error_code}`,
   },
-  description: `Finish recording the active flow. Returns a summary of all recorded steps and the final YAML content. Use when you have added all desired steps and want to finalize the flow file. Fails if no active flow recording is in progress.
+  description: `Finish recording the flow named by \`name\` + \`project_root\`, leaving any other recordings in progress untouched. Returns a summary of all recorded steps and the final YAML content. Use when you have added all desired steps and want to finalize the flow file. Fails if that flow has no recording in progress.
 You can still edit the .yaml file directly afterwards to remove or reorder steps.`,
   zodSchema,
   services: () => ({}),
-  async execute(_services, _params) {
-    const flowName = getActiveFlow();
-    const session = getRecordingSession();
+  async execute(_services, params) {
+    const session = requireRecordingSession(params.project_root, params.name);
 
     // Host mode re-reads the file so manual edits made during the recording
     // survive into the summary; in client mode this host never has the file,
     // so the in-memory copy is the truth and travels back in the directive.
-    const filePath = session?.filePath ?? getFlowPath(flowName);
+    const filePath = session.filePath;
     let flowFile: string;
     let savedTo: FlowSavedTo;
-    if (session?.persist === "client") {
+    if (session.persist === "client") {
       flowFile = serializeFlow(session.flow);
       savedTo = clientFileDirective(filePath, flowFile);
     } else {
@@ -147,10 +159,10 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
       }
     });
 
-    clearActiveFlow();
+    clearRecordingSession(params.project_root, params.name);
 
     return {
-      message: `Finished recording "${flowName}" flow (${flow.steps.length} steps)`,
+      message: `Finished recording "${params.name}" flow (${flow.steps.length} steps)`,
       path: filePath,
       executionPrerequisite: flow.executionPrerequisite,
       steps: flow.steps.length,
