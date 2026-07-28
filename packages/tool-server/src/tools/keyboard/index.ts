@@ -58,6 +58,14 @@ const zodSchema = z.object({
     .describe(
       "Named key to press: enter, escape, backspace, tab, space, arrow-up, arrow-down, arrow-left, arrow-right, f1–f12. Cannot be combined with `text` in one call — one call per action; to type and then press a key, put two `keyboard` steps in one `run-sequence`. Not supported on TV targets — move focus with `tv-remote` (up/down/left/right) instead."
     ),
+  clear: z
+    .boolean()
+    .optional()
+    .describe(
+      "Empty the focused text field before typing (select-all, then delete). Use this whenever a field may already hold a value — typing alone APPENDS, it does not replace. " +
+        '`{ clear: true, text: "new@example.com" }` replaces a field\'s contents in one call; `{ clear: true }` alone just empties it. ' +
+        "Supported on iOS, Android and Chromium; rejected on Vega and TV targets, whose input transports cannot send the select-all chord."
+    ),
   delayMs: z
     .number()
     .optional()
@@ -126,16 +134,18 @@ export function createKeyboardTool(registry: Registry): ToolDefinition<Params, K
     },
     description: `Type text or press special keys on the device (iOS simulator, Android emulator or device, Chromium app, Vega Virtual Device, or Apple TV / Android TV) using keyboard events.
 Use when you need to enter text or trigger a named key such as enter, escape, or arrow keys. On Vega and Apple TV / Android TV, prefer the remote tools for D-pad navigation; use keyboard to type into a focused text field (e.g. a search or login box).
-Returns { typed: string, keys: number }. Fails if text and key are both given in one call (rejected before anything is typed), if an unsupported key name is provided, or if the device's input backend is not reachable.
-A failure is not rolled back. An unsupported key name is always rejected before anything is sent. Un-typeable text is not: the iOS simulator and Chromium reject it mid-string and leave the characters before it in the field (Android, Vega and TV targets check the whole string up front). A transport failure partway also leaves the text already sent. On a retry, read the field's actual contents — do not assume it is unchanged.
+Returns { typed: string, keys: number, cleared?: boolean }. Fails if text and key are both given in one call (rejected before anything is typed), if an unsupported key name is provided, if \`clear\` is used on a platform that cannot do it, or if the device's input backend is not reachable.
+A failure is not rolled back. An unsupported key name is always rejected before anything is sent, and so is a \`clear\` on a platform that cannot do it — a rejected request never empties the field. Un-typeable text is not: the iOS simulator and Chromium reject it mid-string and leave the characters before it in the field (Android, Vega and TV targets check the whole string up front). A transport failure partway also leaves the text already sent. On a retry, read the field's actual contents — do not assume it is unchanged.
 - text: types a string (supports uppercase, digits, common punctuation). To type a credential, use \`{{secret:<NAME>}}\` — resolved server-side from the \`ARGENT_SECRET_<NAME>\` env var or an argent secrets file (\`.argent/secrets.env\` in the project, \`~/.argent/secrets.env\`, or an \`ARGENT_SECRET_\`-prefixed key in the project's \`.env\`/\`.env.local\`), so the plaintext never enters agent context; the result echoes the placeholder, not the value, and the after-typing auto-screenshot is skipped. To submit after typing a secret, put both steps in ONE \`run-sequence\` — that keeps the skip covering the Enter, which a second bare \`keyboard\` call would not.
 - key: presses a single named key (enter, escape, backspace, tab, arrow-up/down/left/right, f1–f12) — NOT supported on TV targets; move focus with \`tv-remote\` instead.
+- clear: empties the focused field before typing. Typing alone APPENDS — against a field that already holds a value (a remembered login, a restored draft, a re-run step) the old text stays and the new text lands after it. Use \`{ clear: true, text: "…" }\` to replace a value, \`{ clear: true }\` alone to just empty it. iOS/Android/Chromium only; rejected on Vega and TV targets.
 On a TV target (runtimeKind 'tv') only \`text\` applies — focus a text field first (with \`tv-remote\`), then type into it (injected HID keyboard on Apple TV, \`adb input text\` on Android TV).
-One call does one action: pass text OR key, never both. To type and then press a key, send two \`keyboard\` steps in one \`run-sequence\` — { text: "hello" } then { key: "enter" } — which also keeps it to a single round-trip.`,
+One call does one typing action: pass text OR key, never both. \`clear\` rides along with either, and the order within a call is always clear → text, or clear → key. To type and then press a key, send two \`keyboard\` steps in one \`run-sequence\` — { clear: true, text: "hello" } then { key: "enter" } — which also keeps it to a single round-trip.`,
     zodSchema,
     capability,
     searchHint:
-      "type text keyboard input named key enter escape arrow tv vega fire tv search field hid leanback",
+      "type text keyboard input named key enter escape arrow tv vega fire tv search field hid leanback " +
+      "clear erase empty field reset delete contents replace value select all backspace",
     // No eager service: each branch resolves its backend lazily (TV control,
     // simulator-server, CDP, or Vega adb), since distinguishing a TV target is
     // async and a tvOS udid must never resolve simulator-server.

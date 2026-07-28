@@ -1,7 +1,13 @@
 import type { DeviceInfo, Registry } from "@argent/registry";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { isAndroidTv } from "../../../utils/adb";
-import { injectAndroidNamedKey, injectAndroidText } from "../../../utils/android-input";
+import {
+  assertTypeableAndroidText,
+  injectAndroidClear,
+  injectAndroidNamedKey,
+  injectAndroidText,
+  resolveAndroidNamedKeycode,
+} from "../../../utils/android-input";
 import type { KeyboardParams, KeyboardResult } from "../types";
 import { typeTv } from "./tv";
 
@@ -16,9 +22,18 @@ async function typeAndroidPhone(
   params: KeyboardParams
 ): Promise<KeyboardResult> {
   let keysPressed = 0;
-  // The tool rejects a request carrying both `text` and `key` (see ../index.ts),
-  // so at most one of these two branches runs — there is no ordering to get right
-  // here, and no combined request whose halves could disagree.
+  // Validate the text and the key name BEFORE anything is injected: an unknown
+  // key name must fail fast rather than reject only once the text has landed on
+  // the device, and `clear` empties the field, so a request bad in either half
+  // has to reject with the field still intact — not emptied and then 400. Both
+  // checks are pure; `injectAndroidText` re-runs the text one, so hoisting it
+  // alongside only decides which error a request bad in BOTH halves reports
+  // (the text one).
+  if (params.text) assertTypeableAndroidText(params.text);
+  if (params.key) resolveAndroidNamedKeycode(params.key);
+  // Clear first: `keyboard { clear: true, text: "…" }` replaces a field's value
+  // in one call.
+  if (params.clear) await injectAndroidClear(device.id);
   if (params.text) {
     await injectAndroidText(device.id, params.text);
     // `injectAndroidText` (via `assertTypeableAndroidText`) has already rejected
@@ -31,7 +46,11 @@ async function typeAndroidPhone(
     await injectAndroidNamedKey(device.id, params.key);
     keysPressed++;
   }
-  return { typed: params.text ?? params.key ?? "", keys: keysPressed };
+  return {
+    typed: params.text ?? params.key ?? "",
+    keys: keysPressed,
+    ...(params.clear ? { cleared: true } : {}),
+  };
 }
 
 // An Android TV emulator classifies as platform "android" by serial shape, so
