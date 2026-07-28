@@ -1,11 +1,10 @@
 import { z } from "zod";
-import * as fs from "node:fs/promises";
 import type { FileInputSpec, ToolDefinition } from "@argent/registry";
-import * as path from "node:path";
 import {
   getFlowPath,
   startRecordingSession,
   withFlowFileLock,
+  writeNewFlowFile,
   clientFileDirective,
   serializeFlow,
   validateFlow,
@@ -114,8 +113,7 @@ to remove or reorder steps.`,
       async () => {
         let savedTo: FlowSavedTo;
         if (persist === "host") {
-          await fs.mkdir(path.dirname(filePath), { recursive: true });
-          await fs.writeFile(filePath, flowFile, "utf8");
+          await writeNewFlowFile(filePath, flowFile);
           savedTo = filePath;
         } else {
           savedTo = clientFileDirective(filePath, flowFile);

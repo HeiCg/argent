@@ -491,6 +491,112 @@ describe("the flow-file lock", () => {
   });
 });
 
+// ── What a READER of the flow file can observe ───────────────────────
+
+describe("flow-file writes as seen by a concurrent reader", () => {
+  // The lock serializes writers, but no reader of a flow YAML joins it —
+  // `flow-execute`'s own load, its `run:` fragment load, flow-read-prerequisite,
+  // flow-add-step's sibling-fragment check, and the `argent` CLI reading from
+  // another process, where an in-process lock cannot reach at all. A plain
+  // `fs.writeFile` opens O_TRUNC, so such a reader could observe the file empty
+  // or half-written — and `parseFlow("")` returns `{ steps: [] }` with no error,
+  // which `flow-execute` summarizes as a top-level PASS over zero steps. So the
+  // writes must be atomic swaps rather than in-place truncations.
+
+  /** The file's identity on disk. A rename replaces it; a truncate does not. */
+  async function inode(root: string, name: string): Promise<number> {
+    return (await fs.stat(flowPath(root, name))).ino;
+  }
+
+  /** Anything the writer left behind next to the flow file. */
+  async function strayFiles(root: string, name: string): Promise<string[]> {
+    const entries = await fs.readdir(path.dirname(flowPath(root, name)));
+    return entries.filter((entry) => entry !== `${name}.yaml`);
+  }
+
+  it("replaces the file on append instead of truncating it in place", async () => {
+    const root = await makeRoot("append-atomic");
+    await start(root, "alpha");
+    const before = await inode(root, "alpha");
+
+    await addStep(root, "alpha", "a1");
+    const after = await inode(root, "alpha");
+
+    // Different inode == the reader either had the old file open (still whole)
+    // or opens the new one (whole). There is no window where the path resolves
+    // to a zero-length file.
+    expect(after).not.toBe(before);
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
+  });
+
+  it("replaces the file on start, so a reset is never observable as a partial file", async () => {
+    const root = await makeRoot("start-atomic");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+    const before = await inode(root, "alpha");
+
+    // A restart truncates to an empty flow — the write most likely to be caught
+    // mid-flight, since it is what a concurrent flow-execute would read as a
+    // green run over zero steps.
+    await start(root, "alpha");
+    expect(await inode(root, "alpha")).not.toBe(before);
+    expect(await readMarkers(root, "alpha")).toEqual([]);
+  });
+
+  it("leaves no scratch file behind in the flows directory", async () => {
+    // The swap writes a sibling temp file first. Nothing enumerates this
+    // directory today, but a leftover must not accumulate per append either.
+    const root = await makeRoot("no-scratch");
+    await start(root, "alpha");
+    expect(await strayFiles(root, "alpha")).toEqual([]);
+
+    await addStep(root, "alpha", "a1");
+    await addEcho(root, "alpha", "note");
+    await addStep(root, "alpha", "a2");
+
+    expect(await strayFiles(root, "alpha")).toEqual([]);
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a1", "echo:note", "tool:a2"]);
+  });
+
+  it("never exposes an empty or unparseable file while appends are in flight", async () => {
+    // The property the two inode assertions above encode, observed the way a
+    // reader actually experiences it: poll the path as fast as the event loop
+    // allows across a run of appends, and require every single observation to
+    // be a complete, parseable flow. Against an in-place `fs.writeFile` this
+    // catches zero-length reads.
+    const root = await makeRoot("reader-race");
+    await start(root, "alpha");
+
+    let polling = true;
+    const observed: number[] = [];
+    let torn: string | undefined;
+    const reader = (async () => {
+      while (polling) {
+        try {
+          const raw = await fs.readFile(flowPath(root, "alpha"), "utf8");
+          observed.push(parseFlow(raw).steps.length);
+        } catch (err) {
+          // ENOENT is equally a failure here: the path must resolve to a
+          // complete file at every instant, never to a gap.
+          torn = `${(err as Error).message} — content boundary observed`;
+          break;
+        }
+      }
+    })();
+
+    for (let i = 0; i < 40; i++) await addStep(root, "alpha", `a${i}`);
+    polling = false;
+    await reader;
+
+    expect(torn).toBeUndefined();
+    // The reader has to have actually looked, or it proves nothing.
+    expect(observed.length).toBeGreaterThan(0);
+    // Step counts only ever grow: no observation caught a reset-to-empty file.
+    expect(observed).toEqual([...observed].sort((a, b) => a - b));
+    expect((await readSteps(root, "alpha")).length).toBe(40);
+  });
+});
+
 // ── The append path's source of truth ────────────────────────────────
 
 describe("appending to a recording whose file was hand-edited", () => {

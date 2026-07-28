@@ -1,11 +1,8 @@
 import { z } from "zod";
 import { ServiceState, isLiveServiceState } from "@argent/registry";
 import type { Registry, ToolDefinition } from "@argent/registry";
-import { SIMULATOR_SERVER_NAMESPACE } from "../../blueprints/simulator-server";
-import { CHROMIUM_CDP_NAMESPACE } from "../../blueprints/chromium-cdp";
-import { TV_CONTROL_NAMESPACE } from "../../blueprints/tv-control";
-import { ANDROID_TV_CONTROL_NAMESPACE } from "../../blueprints/android-tv-control";
 import { resolveDevice } from "../../utils/device-info";
+import { deviceIdOwningUrn, transportNamespacesForPlatform } from "./device-services";
 
 const zodSchema = z.object({
   udid: z
@@ -33,24 +30,22 @@ export function createStopSimulatorServerTool(
       const udid = (params as { udid: string }).udid;
       // A single device id can back more than one service: the transport
       // (SimulatorServer / ChromiumCdp) and — for a TV target — the focus-driven
-      // TvControl daemon, which owns the spawned tvos-ax/tvos-hid processes. A
-      // tvOS UDID is iOS-shaped, so we can't tell it apart from a phone here
-      // without an async probe; instead, dispose every namespace this id could
-      // own and report `stopped` if any of them was live. Shape narrows the set:
-      // chromium ids only have a CDP session; everything else can be a simulator
-      // server and/or a TV-control service.
+      // TvControl daemon, which owns the spawned tvos-ax/tvos-hid processes.
+      // Shape narrows the set; see `transportNamespacesForPlatform` for why it
+      // stops there rather than draining everything this device owns.
       const platform = resolveDevice(udid).platform;
-      const namespaces =
-        platform === "chromium"
-          ? [CHROMIUM_CDP_NAMESPACE]
-          : platform === "android"
-            ? [SIMULATOR_SERVER_NAMESPACE, ANDROID_TV_CONTROL_NAMESPACE]
-            : [SIMULATOR_SERVER_NAMESPACE, TV_CONTROL_NAMESPACE];
+      const namespaces = transportNamespacesForPlatform(platform);
 
       const snapshot = registry.getSnapshot();
       let stopped = false;
-      for (const namespace of namespaces) {
-        const urn = `${namespace}:${udid}`;
+      // Scanned rather than looked up by exact URN, so this agrees with
+      // `stop-all-simulator-servers` on which services a device id owns: the
+      // match is case-insensitive and covers the `:tcp` transport suffix, both
+      // of which an exact `services.get()` silently missed.
+      const urns = [...snapshot.services.keys()].filter(
+        (urn) => deviceIdOwningUrn(urn, namespaces, [udid]) !== undefined
+      );
+      for (const urn of urns) {
         const entry = snapshot.services.get(urn);
         if (!entry || entry.state === ServiceState.IDLE) continue;
         // A non-live node (ERROR / TERMINATING) holds no running process — e.g.
