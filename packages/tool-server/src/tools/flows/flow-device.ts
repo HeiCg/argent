@@ -34,7 +34,11 @@ function deviceEntryId(d: RawDevice): string | undefined {
 function isBooted(d: RawDevice): boolean {
   switch (d.platform) {
     case "ios":
-      return d.state === "Booted";
+      // "Booted" is a simulator; a connected physical iPhone reports
+      // "connected", the same way `list-devices` ranks both as ready. Without
+      // the second arm auto-detection skips an attached iPhone and reports "no
+      // booted device found" while listing it in the same error.
+      return d.state === "Booted" || d.state === "connected";
     case "android":
       return d.state === "device";
     case "vega":

@@ -12,14 +12,17 @@ export const iosImpl: PlatformImpl<OpenUrlServices, OpenUrlParams, OpenUrlResult
   requires: ["xcrun"],
   handler: async (_services, params, device) => {
     if (device.kind === "device") {
-      // CoreDevice/devicectl has no deep-link/open-url surface for physical
-      // iOS; only screenshot, describe, gesture-tap, gesture-swipe, button, and
-      // launch-app are supported there today. UnsupportedOperationError maps to
+      // Not wired up for physical iOS yet: the supported surface there is
+      // screenshot, describe, gesture-tap, gesture-swipe, button and launch-app.
+      // `xcrun devicectl device process openURL` is the mechanism this would use
+      // — the same binary the launch-app branch already shells — so this is a
+      // scope boundary, not a platform limit. UnsupportedOperationError maps to
       // a clean 400 (a plain Error would surface as a generic 500).
       throw new UnsupportedOperationError(
         "open-url",
         device,
-        "CoreDevice has no deep-link/open-url surface for physical iOS"
+        "opening URLs on a physical iPhone is not implemented yet — launch the app with launch-app, " +
+          "or open the link by driving the UI (gesture-tap / keyboard on a simulator)"
       );
     }
     try {

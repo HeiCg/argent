@@ -73,12 +73,17 @@ type PreviewEntry = {
  * accepts Android serials via `resolveDevice(udid)`.
  *
  * Chromium is excluded because it has no simulator-server WebSocket to stream
- * frames from at all. Physical iPhones are excluded by choice: simulator-server
- * does drive them (the `ios_device` subcommand), but they are behind the
- * opt-in `physical-ios-devices` flag and the preview UI has no flag-aware
- * path — offering one in the dropdown would produce a target that fails to
- * connect whenever the flag is off. Both should be driven through the MCP tools
- * (screenshot, describe, gesture-*) directly.
+ * frames from at all. Physical iPhones are excluded because the preview's
+ * describe-driven overlay places its bubbles from element frames, and the
+ * CoreDevice accessibility read reports no geometry — every frame is synthesised
+ * from list position, so the overlay would anchor to positions no element
+ * occupies. (`ios_device` does stream frames, so lifting this is a matter of the
+ * overlay gaining a geometry-free mode, not of the transport.) Both should be
+ * driven through the MCP tools (screenshot, describe, gesture-*) directly.
+ *
+ * This is also the whitelist the preview's device-id guard is built from, so a
+ * target excluded here is rejected by /simulator-server/:udid, /describe/:udid,
+ * /boot and /shutdown too.
  */
 export function devicesToPreviewEntries(devices: ListDevicesResult["devices"]): PreviewEntry[] {
   return devices.flatMap<PreviewEntry>((d) => {
@@ -193,26 +198,20 @@ export function createPreviewRouter(registry: Registry): Router {
   let knownDevices: { ids: Set<string>; at: number } | null = null;
   let knownDevicesInFlight: Promise<Set<string>> | null = null;
 
-  // Mirror the original `.some()` guard exactly: an iOS device is keyed by its
-  // udid, every other platform by its serial (a chromium entry has neither, so
-  // it's skipped — it was never a valid preview target anyway).
-  function deviceIdSet(
-    devices: ReadonlyArray<{ platform: string; udid?: string; serial?: string | null }>
-  ): Set<string> {
-    const ids = new Set<string>();
-    for (const d of devices) {
-      const id = d.platform === "ios" ? d.udid : d.serial;
-      if (typeof id === "string") ids.add(id);
-    }
-    return ids;
+  // The guard set is exactly what the dropdown offers: `devicesToPreviewEntries`
+  // already keys every entry by the id the preview routes take (udid for iOS,
+  // serial remapped onto `udid` for Android) and drops the targets the preview
+  // can't drive. Deriving the guard from it keeps the two from disagreeing —
+  // otherwise a target the UI refuses to list is still accepted by
+  // /simulator-server/:udid, /describe/:udid, /boot and /shutdown.
+  function deviceIdSet(devices: ListDevicesResult["devices"]): Set<string> {
+    return new Set(devicesToPreviewEntries(devices).map((e) => e.udid));
   }
 
   // Record a freshly-resolved device list into the cache (used by both the
   // dedicated refresh below and the /simulators handler, which already fetches
   // the full list for its dropdown).
-  function rememberDevices(
-    devices: ReadonlyArray<{ platform: string; udid?: string; serial?: string | null }>
-  ): void {
+  function rememberDevices(devices: ListDevicesResult["devices"]): void {
     knownDevices = { ids: deviceIdSet(devices), at: Date.now() };
   }
 
@@ -226,9 +225,7 @@ export function createPreviewRouter(registry: Registry): Router {
     }
     if (knownDevicesInFlight) return knownDevicesInFlight;
     knownDevicesInFlight = registry
-      .invokeTool<{
-        devices: Array<{ platform: string; udid?: string; serial?: string }>;
-      }>(listDevicesTool.id)
+      .invokeTool<ListDevicesResult>(listDevicesTool.id)
       .then((data) => {
         rememberDevices(data.devices);
         return knownDevices!.ids;
@@ -407,11 +404,11 @@ export function createPreviewRouter(registry: Registry): Router {
       // One fresh `list-devices` (boot is a rare, user-initiated action, never
       // hot-polled) drives the already-running check below; it also re-warms the
       // cache for the connect/describe poll that follows a successful boot.
-      const data = await registry.invokeTool<{
-        devices: Array<{ platform: string; udid?: string; serial?: string; state?: string }>;
-      }>(listDevicesTool.id);
+      const data = await registry.invokeTool<ListDevicesResult>(listDevicesTool.id);
       rememberDevices(data.devices); // warm the connect/describe validation cache
-      const entry = data.devices.find((d) => (d.platform === "ios" ? d.udid : d.serial) === udid);
+      // Match against the same mapped entries the guard and the dropdown use, so
+      // "known" means the same thing on all three paths.
+      const entry = devicesToPreviewEntries(data.devices).find((e) => e.udid === udid);
       if (!entry) {
         res
           .status(400)

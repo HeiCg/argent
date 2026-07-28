@@ -29,13 +29,18 @@ export function makeIosImpl(
     handler: async (_services, params, device) => {
       const { udid, bundleId } = params;
       if (device.kind === "device") {
-        // Physical iOS is driven over CoreDevice and has no relaunch path (the
-        // native-devtools injection is simulator-only). UnsupportedOperationError
-        // maps to a clean 400 (a plain Error would surface as a generic 500).
+        // The simulator path restarts *through* native-devtools so the relaunched
+        // process comes back injected; that injection is simulator-only, so there
+        // is nothing for this tool to preserve on hardware and it is not wired up
+        // for physical iOS. (`devicectl device process launch --terminate-existing`
+        // would relaunch a plain, uninjected app — see launch-app.)
+        // UnsupportedOperationError maps to a clean 400 (a plain Error would
+        // surface as a generic 500).
         throw new UnsupportedOperationError(
           "restart-app",
           device,
-          "physical iOS is driven over CoreDevice and has no relaunch path"
+          "restarting an app on a physical iPhone is not implemented yet — use launch-app to bring " +
+            "it back to the foreground"
         );
       }
       const ndRef = nativeDevtoolsRef(device);

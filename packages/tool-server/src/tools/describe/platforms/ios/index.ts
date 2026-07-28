@@ -48,19 +48,47 @@ const TVOS_HINT =
   "See the argent-tv-interact skill.";
 
 // Physical iPhones expose their real on-screen accessibility tree app-free via
-// the iOS-26+ axAudit service (read over CoreDevice). Captions (label + value +
-// traits) and reading order are exact for every element, but the payload carries
-// no geometry at all — Apple exposes none app-free on hardware — so EVERY frame
-// is interpolated from reading order. This hint makes that boundary explicit so
-// the agent doesn't trust a frame it shouldn't.
+// the iOS-26+ axAudit service (read over CoreDevice). The element SET and their
+// captions are exact; neither their order nor their frames are:
+//   - The audit walks from wherever the device's VoiceOver inspector cursor
+//     currently sits and leaves it one step further along, so consecutive reads
+//     of an unchanged screen return the same elements ROTATED by one. The
+//     sequence is a rotation of the true reading order with an arbitrary,
+//     per-call starting offset.
+//   - The payload carries no geometry at all (Apple exposes none app-free on
+//     hardware), so every frame is synthesised from list position — and because
+//     the position rotates, a given element's frame is different on every call.
+// The hint states both so the agent neither taps a synthesised frame nor treats
+// two reads as comparable.
 const PHYSICAL_IOS_AX_HINT =
   "This is the live accessibility tree of the frontmost app (or the home screen), read over " +
-  "CoreDevice. Element labels, values, traits and reading order are exact. Frames are NOT — Apple " +
-  "exposes no per-element geometry on a physical device, so every frame here is APPROXIMATE, " +
-  "interpolated from reading order (elements are assumed to be full-width rows stacked top to " +
-  "bottom). That is good enough to tap a row in a vertical list, but anything else — toggles, " +
-  "side-by-side controls, grids, anything off the vertical axis — must be located with screenshot " +
-  "first. screenshot is authoritative for positions.";
+  "CoreDevice. The set of elements and their labels/values/traits are exact. Their ORDER and " +
+  "FRAMES are not: the read starts from the device's current VoiceOver cursor, so each call " +
+  "returns the same elements rotated by one, and since the device exposes no per-element " +
+  "geometry, every frame is synthesised from list position and therefore changes between calls. " +
+  "Use this to learn WHAT is on screen, never WHERE. Locate anything you intend to tap with " +
+  "screenshot first — screenshot is authoritative for positions — and do not compare two describe " +
+  "results to decide whether the screen changed (use screenshot for that too).";
+
+// The frontmost app has no focusable elements when the phone is asleep or on the
+// lock screen: the audit walk finds nothing and returns an empty list, which is
+// indistinguishable from "an app that renders nothing". Say so rather than
+// letting the agent read an empty tree as a successful read of a blank app.
+const PHYSICAL_IOS_EMPTY_HINT =
+  "The accessibility read returned no elements. On a physical iPhone that usually means the " +
+  "screen is off or locked rather than that the app is empty — take a screenshot to check, and " +
+  "press `button` home to wake it. It can also mean the frontmost app exposes no accessibility " +
+  "elements at all.";
+
+// Matches the sim-server's own default for /api/ax-tree. Sent explicitly so the
+// ceiling is visible here (and so a truncated read can be reported below)
+// instead of being an invisible property of whichever sim-server build is
+// installed.
+const PHYSICAL_IOS_AX_LIMIT = 120;
+
+const PHYSICAL_IOS_TRUNCATED_HINT =
+  `Only the first ${PHYSICAL_IOS_AX_LIMIT} elements were read; the screen has more. Anything past ` +
+  `that is missing from this tree, so a "not found" here is not proof of absence.`;
 
 // Apple system apps (`com.apple.*`) can never load argent's injected dylib, so
 // the native-devtools fallback can't read their view hierarchy and restarting
@@ -110,27 +138,31 @@ export async function describeIos(
 ): Promise<DescribeTreeData> {
   // Physical iPhones are driven over CoreDevice. describe reads the device's real
   // on-screen accessibility tree app-free via the iOS-26+ axAudit service (the
-  // `…axAuditDaemon.remoteserver.shim.remote` DTX daemon). This works in ANY app
-  // and on the home screen — the same VoiceOver-style walk. It needs the RSDCheckin
-  // handshake that iOS 26 added (the sim-server performs it); without it the daemon
-  // drops the connection on the first byte. Apple exposes no per-element geometry
-  // app-free on hardware, so the payload is captions + reading order only and every
-  // frame is interpolated by the adapter (see the adapter + hint). The two
-  // simulator backends below can't run against hardware (they shell `simctl spawn`).
+  // `…axAuditDaemon.remoteserver.shim.remote` DTX daemon), served by the
+  // simulator-server on `/api/ax-tree`. This works in ANY app and on the home
+  // screen — the same VoiceOver-style walk. It needs the RSDCheckin handshake
+  // that iOS 26 added (the sim-server performs it); without it the daemon drops
+  // the connection on the first byte. The payload is captions only, in a rotated
+  // order, so the adapter synthesises every frame — see PHYSICAL_IOS_AX_HINT.
+  // The two simulator backends below can't run against hardware (they shell
+  // `simctl spawn`).
   if (isPhysicalIos(device)) {
-    // The physical iPhone is driven by the radon simulator-server over CoreDevice;
-    // it reads the on-screen accessibility tree app-free via the axAudit service
-    // and serves it on `/api/ax-tree` (same VoiceOver-style walk the sidecar did,
-    // now native in the sim-server — no pmd3 tunnel from argent).
     const ref = simulatorServerRef(device);
     const api = (await registry.resolveService(ref.urn, ref.options)) as SimulatorServerApi;
     // Bound the fetch so a wedged /api/ax-tree on a sleeping device can't hang
-    // describe with no tool-layer timeout (mirrors the screenshot path).
-    const axtree = await httpAxTree(api, undefined, AbortSignal.timeout(16_000));
+    // describe with no tool-layer timeout. Unlike the screenshot path there is no
+    // caller signal to honour here — describeIos takes no ToolContext.
+    const axtree = await httpAxTree(api, PHYSICAL_IOS_AX_LIMIT, AbortSignal.timeout(16_000));
+    const count = axtree.elements.length;
     return {
       tree: adaptCoreDeviceAxToDescribeResult(axtree),
       source: "coredevice-ax",
-      hint: PHYSICAL_IOS_AX_HINT,
+      hint:
+        count === 0
+          ? PHYSICAL_IOS_EMPTY_HINT
+          : count >= PHYSICAL_IOS_AX_LIMIT
+            ? `${PHYSICAL_IOS_AX_HINT} ${PHYSICAL_IOS_TRUNCATED_HINT}`
+            : PHYSICAL_IOS_AX_HINT,
     };
   }
 

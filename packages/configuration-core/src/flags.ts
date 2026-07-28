@@ -66,7 +66,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   {
     name: "physical-ios-devices",
     description:
-      "Discover and control physical iOS devices over Apple CoreDevice. Device interaction runs natively in the bundled simulator-server over USB — no pymobiledevice3, no root, no admin prompt. Supports screenshot, tap, swipe, hardware buttons, describe, and launch-app.",
+      "Discover and control physical iOS devices over Apple CoreDevice. Device interaction runs natively in the bundled simulator-server over the USB connection, unprivileged and with no admin prompt. Supports screenshot, tap, swipe, hardware buttons, describe, and launch-app.",
   },
   {
     name: "tool-server-event-log",

@@ -16,7 +16,8 @@ import { simulatorServerBinaryPath, simulatorServerBinaryDir } from "@argent/nat
 import { ensureAutomationEnabled } from "./ax-service";
 import { ensureDep } from "../utils/check-deps";
 import { isTvOsSimulator } from "../utils/ios-devices";
-import { UnsupportedOperationError } from "../utils/capability";
+import { isPhysicalIos } from "../utils/device-info";
+import { InvalidToolInputError, UnsupportedOperationError } from "../utils/capability";
 import { openMoqClient } from "../utils/moq-client";
 import { createMoqTransport } from "../utils/simulator-client";
 import { simctlPbcopy } from "../utils/sim-remote";
@@ -35,11 +36,22 @@ type SimulatorServerFactoryOptions = Record<string, unknown> & { device: DeviceI
  * `DeviceInfo`. Tool `services()` callbacks should call this rather than
  * hand-building the URN string, so the blueprint factory always receives the
  * device through the registry's `options` channel and never has to reclassify.
+ * It is the one path every simulator-server-backed consumer goes through: each
+ * tool's `services()`, `describe`'s inline resolve, `boot-device`, and the
+ * preview router.
+ *
+ * For a physical iPhone this is also where the opt-in gate runs. It has to be
+ * here rather than in `factory` below: the registry caches a RUNNING instance
+ * and hands it back without re-entering the factory, so a factory-only gate
+ * would keep serving taps and screenshots to a device for the rest of the
+ * server's life after `argent disable physical-ios-devices`. Building the ref
+ * happens on every call, so the flag is re-read on every call.
  */
 export function simulatorServerRef(device: DeviceInfo): {
   urn: string;
   options: SimulatorServerFactoryOptions;
 } {
+  if (isPhysicalIos(device)) assertPhysicalIosEnabled();
   return {
     urn: `${SIMULATOR_SERVER_NAMESPACE}:${device.id}`,
     options: { device },
@@ -125,21 +137,24 @@ async function buildRemoteInstance(
 // per-tool zod schemas and the /preview device-list check.
 const SAFE_SIMULATOR_DEVICE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
-// Physical-iOS support is experimental and opt-in. The sim-server factory is the
-// one chokepoint every physical-iPhone tool (tap/swipe/button/screenshot)
-// resolves through, so gating it here keeps the whole surface behind the flag.
+// Physical-iOS support is experimental and opt-in.
 const PHYSICAL_IOS_DEVICES_FLAG = "physical-ios-devices";
 
 /**
  * Throw the standard "enable the flag" error unless physical-iOS support is on.
- * Physical iOS is opt-in: the sim-server factory funnels every CoreDevice-backed
- * tool (tap/swipe/button/screenshot/describe) through this check, and `launch-app`
- * — which drives a real device via `devicectl` rather than the sim-server — calls
- * it directly so it can't bypass the opt-in.
+ * Physical iOS is opt-in: `simulatorServerRef` above runs this for every
+ * CoreDevice-backed consumer (tap/swipe/button/screenshot/describe/boot-device),
+ * and `launch-app` — which drives a real device via `devicectl` rather than the
+ * sim-server — calls it directly so it can't bypass the opt-in.
+ *
+ * `InvalidToolInputError` (not `FailureError`) so this maps to a 400: a flag the
+ * caller has not enabled is a configuration error, not an internal fault. The
+ * signal override keeps the granular `CORE_DEVICE_FLAG_DISABLED` telemetry
+ * bucket alongside the 400.
  */
 export function assertPhysicalIosEnabled(): void {
   if (!isFlagEnabled(PHYSICAL_IOS_DEVICES_FLAG)) {
-    throw new FailureError(
+    throw new InvalidToolInputError(
       `Physical iOS support is disabled. Enable it with: argent enable ${PHYSICAL_IOS_DEVICES_FLAG}`,
       {
         error_code: FAILURE_CODES.CORE_DEVICE_FLAG_DISABLED,
@@ -159,7 +174,7 @@ export function assertPhysicalIosEnabled(): void {
  * over adb), and a physical iPhone drives `ios_device` (Apple CoreDevice over
  * USB), so physical iOS is "just another sim-server subcommand" like the rest.
  */
-function subcommandForDevice(
+export function subcommandForDevice(
   device: DeviceInfo
 ): "ios" | "ios_device" | "android" | "android_device" {
   if (device.platform === "ios") return device.kind === "device" ? "ios_device" : "ios";
@@ -241,29 +256,43 @@ function spawnSimulatorServerProcess(
     // bubbles up as `uncaughtException`, which the tool-server treats as
     // fatal. Tag with "?" instead of dereferencing.
     const udidTag = typeof udid === "string" && udid.length > 0 ? udid.slice(0, 8) : "?";
+    // The child's own diagnosis of why it died only ever went to the tool-server's
+    // stderr, so a caller saw a bare "exited before becoming ready" with nothing
+    // to act on — including for the two failures a user is most likely to hit:
+    // a device that isn't paired / has Developer Mode off, and a bundled
+    // simulator-server too old to know this subcommand. Keep a bounded tail to
+    // put in the error. Bounded because a crash loop can emit unbounded output.
+    let stderrTail = "";
     proc.stderr?.on("data", (data: Buffer) => {
       process.stderr.write(`[sim ${udidTag}] ${data}`);
+      stderrTail = (stderrTail + data.toString()).slice(-2000);
     });
 
     proc.on("exit", (code, signal) => {
+      const detail = stderrTail.trim().split("\n").slice(-4).join(" | ");
       settle(() =>
         reject(
-          new FailureError("simulator-server exited with code before becoming ready", {
-            error_code: FAILURE_CODES.SIMULATOR_SERVER_READY_EXITED,
-            failure_stage: "simulator_server_spawn_ready",
-            failure_area: "tool_server",
-            error_kind: "subprocess",
-            failure_command: "simulator_server",
-            ...(typeof code === "number" ? { failure_exit_code: code } : {}),
-            ...(signal === "SIGABRT" ||
-            signal === "SIGHUP" ||
-            signal === "SIGINT" ||
-            signal === "SIGKILL" ||
-            signal === "SIGQUIT" ||
-            signal === "SIGTERM"
-              ? { failure_signal: signal }
-              : {}),
-          })
+          new FailureError(
+            `simulator-server (${subcommand}) exited before becoming ready` +
+              `${typeof code === "number" ? ` with code ${code}` : ""}.` +
+              (detail ? ` Last output: ${detail}` : ""),
+            {
+              error_code: FAILURE_CODES.SIMULATOR_SERVER_READY_EXITED,
+              failure_stage: "simulator_server_spawn_ready",
+              failure_area: "tool_server",
+              error_kind: "subprocess",
+              failure_command: "simulator_server",
+              ...(typeof code === "number" ? { failure_exit_code: code } : {}),
+              ...(signal === "SIGABRT" ||
+              signal === "SIGHUP" ||
+              signal === "SIGINT" ||
+              signal === "SIGKILL" ||
+              signal === "SIGQUIT" ||
+              signal === "SIGTERM"
+                ? { failure_signal: signal }
+                : {}),
+            }
+          )
         )
       );
     });
@@ -364,10 +393,10 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
 
     if (device.platform === "ios") {
       // A physical iPhone (`kind === "device"`) drives the `ios_device`
-      // controller over Apple CoreDevice; it needs none of the simulator-only
-      // prep below (no `xcrun simctl` tvOS probe, no automation toggle — those
-      // target sim runtimes and would just error on a hardware UDID), so fall
-      // straight through to the spawn.
+      // controller over Apple CoreDevice and needs none of the simulator-only
+      // prep below: the tvOS probe and the automation toggle both target sim
+      // runtimes and would only error on a hardware UDID. Its opt-in gate runs
+      // per call in `simulatorServerRef`, not here.
       if (device.kind !== "device") {
         // A tvOS sim classifies as platform "ios" by UDID shape, but simulator-server
         // cannot drive the Apple TV focus engine. Its transport (`sendCommand`) is
@@ -386,9 +415,6 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
           );
         }
         await ensureAutomationEnabled(device.id).catch(() => {});
-      } else {
-        // A physical iPhone (`kind === "device"`) is behind the opt-in flag.
-        assertPhysicalIosEnabled();
       }
     } else if (device.platform === "android") {
       // Both the emulator and the physical-device controller talk to the target

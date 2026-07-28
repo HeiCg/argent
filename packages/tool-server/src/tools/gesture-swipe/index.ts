@@ -49,7 +49,7 @@ const capability: ToolCapability = {
 
 export const gestureSwipeTool: ToolDefinition<Params, Result> = {
   id: "gesture-swipe",
-  description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator or Android emulator). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
+  description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator, physical iPhone, or Android emulator). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
 Generates interpolated Move events for a natural feel (~60fps).
 Swipe up (fromY > toY) to scroll content down.
 Use when you need to scroll a list, dismiss a modal, drag an element, or navigate between pages. Not supported on Chromium — use gesture-scroll there instead.

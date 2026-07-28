@@ -1,58 +1,90 @@
 import type { CoreDeviceAxTree } from "../../../../utils/simulator-client";
 import { parseDescribeResult, type DescribeNode } from "../../contract";
+import { mapNativeTraitsToDescribeRole } from "./ios-native-adapter";
 
 /**
  * Adapts a physical iPhone's on-screen accessibility tree (from the iOS-26+
  * axAudit service, read app-free over CoreDevice) into a describe tree.
  *
- * The audit gives a rich VoiceOver caption (label + value + traits) and reading
- * order for EVERY on-screen element, but Apple doesn't expose per-element
- * geometry app-free on hardware. **Today the sim-server therefore sends no
- * geometry at all** — no `screen`, no per-element `rect` — so in practice every
- * frame below is interpolated: elements are laid out as full-width rows spread
- * top to bottom in reading order. That's enough to tap a row in a vertical list;
- * the tool's hint tells the agent to confirm with screenshot for anything else.
+ * The audit gives a rich VoiceOver caption (label + value + traits) for EVERY
+ * on-screen element. It gives nothing else: Apple exposes no per-element
+ * geometry app-free on hardware, so the payload carries no `screen` and no
+ * `rect`, and the order is a rotation of the true reading order (the walk starts
+ * at the device's current VoiceOver cursor). Every frame below is therefore
+ * **synthesised from list position** — full-width rows spread top to bottom —
+ * which makes them a rendering convenience, not a measurement. `describe`'s hint
+ * and the formatter header both tell the agent to get real positions from
+ * `screenshot`; nothing here should be read as a claim about where an element is.
  *
  * `parseRect` (with `tree.screen` as the normalizing basis) is nonetheless
- * honoured whenever the payload does carry geometry, so re-adding a geometry
- * source on the sim-server side (a tracked follow-up) is a producer-only change.
- * radon's `ax_tree_payload_carries_no_geometry` test pins the current
- * no-geometry shape, and `ios-coredevice-ax-adapter.test.ts` covers both.
+ * honoured whenever the payload does carry geometry, so adding a geometry source
+ * on the sim-server side is a producer-only change. `ios-coredevice-ax-adapter.test.ts`
+ * covers both the current no-geometry payload and that forward-compatible path.
  */
 
-// AX trait tokens that appear (comma-separated) at the tail of a VoiceOver
-// caption, mapped to a describe role. Order matters: the first structural trait
-// found wins.
-const TRAIT_ROLE: Array<[RegExp, string]> = [
-  [/^Button$/i, "AXButton"],
-  [/^Link$/i, "AXLink"],
-  [/^Header$/i, "AXHeader"],
-  [/^(Toggle|Switch)$/i, "AXSwitch"],
-  [/^Adjustable$/i, "AXSlider"],
-  [/^Search Field$/i, "AXSearchField"],
-  [/^Text Field$/i, "AXTextField"],
-  [/^Tab$/i, "AXTab"],
-  [/^Image$/i, "AXImage"],
+// VoiceOver caption trait tokens → the trait names `mapNativeTraitsToDescribeRole`
+// speaks. Going through that shared mapper (rather than emitting role strings
+// directly) is what keeps this backend in the same vocabulary as the other two
+// iOS describe adapters: selectors, `format-tree`'s CONTENT_ROLES and Lens's
+// exact `role ===` match all key off those names, so a private spelling here
+// would make every role-based selector work on a simulator and match nothing on
+// a device. Order matters: the first structural trait found wins.
+const TRAIT_TOKEN_TO_NATIVE: Array<[RegExp, string]> = [
+  [/^Button$/i, "button"],
+  [/^(Toggle|Switch)$/i, "toggleButton"],
+  [/^Link$/i, "link"],
+  [/^Header$/i, "header"],
+  [/^Adjustable$/i, "adjustable"],
+  [/^Search Field$/i, "searchField"],
+  [/^Text Field$/i, "searchField"],
+  [/^Tab$/i, "tabBar"],
+  [/^Image$/i, "image"],
 ];
-// Trailing tokens that are traits/states (stripped from the label).
+// Trailing tokens that are traits/states rather than content (stripped from the
+// caption before it is split into label + value).
 const TRAIT_TOKEN =
-  /^(Button|Link|Header|Toggle|Switch|Adjustable|Search Field|Text Field|Tab|Image|Selected|Not Selected|Dimmed|Disabled)$/i;
+  /^(Button|Link|Header|Toggle|Switch|Adjustable|Search Field|Text Field|Tab|Image|Selected|Not Selected|Dimmed|Disabled|Not Enabled)$/i;
 
-function parseCaption(caption: string): { label: string; role: string } {
+// Roles whose elements can carry a value worth splitting out. Static text and
+// headings are prose: their captions routinely contain commas mid-sentence, so
+// treating the last comma-separated run as a value would truncate the label
+// instead of finding one. Restricting the split to value-bearing roles keeps the
+// common "Wi-Fi, 1" / "Ask to Join Networks, Notify" cases while leaving a
+// sentence intact.
+const VALUE_BEARING_ROLES = new Set(["AXButton", "AXTextField", "AXAdjustable"]);
+
+/**
+ * Split a VoiceOver caption ("Wi-Fi, FiberMansion, Button") into the describe
+ * node's `label`, `value` and `role`.
+ *
+ * The audit hands back one flat comma-joined string; the sibling adapters get
+ * label and value as separate fields and every selector matcher treats `value`
+ * as first-class, so collapsing both into `label` here would silently downgrade
+ * `{ value: … }` selectors to label-substring guesses. The audit's own ordering
+ * is label first, then value, then traits — so once the trailing traits are
+ * dropped, the last remaining run is the value on a value-bearing role.
+ */
+function parseCaption(caption: string): { label: string; value?: string; role: string } {
   const tokens = caption.split(/,\s*/).filter((t) => t.length > 0);
-  let role = "AXStaticText";
-  for (const [re, r] of TRAIT_ROLE) {
+  let traits: string[] = [];
+  for (const [re, native] of TRAIT_TOKEN_TO_NATIVE) {
     if (tokens.some((t) => re.test(t))) {
-      role = r;
+      traits = [native];
       break;
     }
   }
-  // Drop trailing trait/state tokens to get a cleaner label; keep the full
-  // caption if that would leave nothing.
+  if (traits.length === 0) traits = ["staticText"];
+  const role = mapNativeTraitsToDescribeRole(traits);
+  // Drop trailing trait/state tokens; keep the full caption if that leaves
+  // nothing (a caption that is only traits).
   let end = tokens.length;
   while (end > 0 && TRAIT_TOKEN.test(tokens[end - 1])) end--;
-  const label = (end > 0 ? tokens.slice(0, end) : tokens).join(", ") || caption;
-  return { label, role };
+  const content = end > 0 ? tokens.slice(0, end) : tokens;
+  if (content.length === 0) return { label: caption, role };
+  if (content.length === 1 || !VALUE_BEARING_ROLES.has(role)) {
+    return { label: content.join(", "), role };
+  }
+  return { label: content.slice(0, -1).join(", "), value: content[content.length - 1], role };
 }
 
 const RECT_RE = /-?\d+(?:\.\d+)?/g;
@@ -116,9 +148,10 @@ export function adaptCoreDeviceAxToDescribeResult(tree: CoreDeviceAxTree): Descr
   const frames = fillFrames(rectFrames);
 
   const children: DescribeNode[] = els.map((e, i) => {
-    const { label, role } = parseCaption(e.caption ?? "");
+    const { label, value, role } = parseCaption(e.caption ?? "");
     const node: DescribeNode = { role, frame: frames[i], children: [] };
     if (label) node.label = label;
+    if (value) node.value = value;
     return node;
   });
 

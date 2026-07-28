@@ -1,9 +1,5 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { readFile, rm } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
 import { isPhysicalIosUdid } from "./device-info";
 import { SIMCTL_KILL_SIGNAL } from "./simctl-config";
 
@@ -83,15 +79,8 @@ export async function listIosSimulators(): Promise<IosSimulator[]> {
 }
 
 /**
- * List connected physical iOS devices via `xcrun devicectl list devices`.
- *
- * devicectl only emits stable machine output to a file (`--json-output`), never
- * stdout, so we write to a temp file and parse it. We keep only devices that are
- * actually reachable right now: iOS platform with a `connectionProperties.transportType`
- * (wired/network). Paired-but-offline devices carry a `tunnelState: "unavailable"`
- * and no `transportType`, and are dropped — listing them would invite taps that
- * can't land. Returns an empty array on any failure so the rest of `list-devices`
- * stays usable on non-mac hosts or without Xcode.
+ * Filter a `devicectl list devices` payload down to the physical iOS devices
+ * that are reachable right now. See the per-branch reasoning inline.
  */
 export function parsePhysicalIosDevices(data: DevicectlOutput): IosPhysicalDevice[] {
   const out: IosPhysicalDevice[] = [];
@@ -121,21 +110,34 @@ export function parsePhysicalIosDevices(data: DevicectlOutput): IosPhysicalDevic
   return out;
 }
 
+/**
+ * List connected physical iOS devices via `xcrun devicectl list devices`.
+ *
+ * `--json-output -` writes the machine-readable payload to stdout (devicectl's
+ * own documented spelling for it), so this parses stdout like every other
+ * discovery backend here rather than routing through a temp file. `--quiet`
+ * keeps the human-readable table off stdout so the JSON is the whole stream.
+ *
+ * `killSignal` mirrors `listIosSimulators` above: `execFile`'s `timeout` only
+ * sends SIGTERM, which a wedged Xcode CLI can trap and ignore — the promise
+ * would then never settle and the child would outlive the call. `list-devices`
+ * runs often, so that would leak one stuck process per invocation.
+ *
+ * Returns an empty array on any failure so the rest of `list-devices` stays
+ * usable on non-mac hosts or without Xcode.
+ */
 export async function listIosDevices(): Promise<IosPhysicalDevice[]> {
   if (process.platform !== "darwin") return [];
-  const outPath = join(tmpdir(), `argent-devicectl-${randomUUID()}.json`);
   try {
-    await execFileAsync(
+    const { stdout } = await execFileAsync(
       "xcrun",
-      ["devicectl", "list", "devices", "--quiet", "--json-output", outPath],
-      { timeout: 15_000 }
+      ["devicectl", "list", "devices", "--quiet", "--json-output", "-"],
+      { timeout: 15_000, killSignal: SIMCTL_KILL_SIGNAL }
     );
-    const data: DevicectlOutput = JSON.parse(await readFile(outPath, "utf8"));
+    const data: DevicectlOutput = JSON.parse(stdout);
     return parsePhysicalIosDevices(data);
   } catch {
     return [];
-  } finally {
-    await rm(outPath, { force: true }).catch(() => {});
   }
 }
 
@@ -152,8 +154,16 @@ const runtimeKindCache = new Map<string, "mobile" | "tv">();
  * `resolveDevice` classifies by UDID shape alone and can't tell tvOS from iOS —
  * both are 8-4-4-4-12 UUIDs tagged `platform: "ios"`. Code paths that must
  * branch on tvOS (describe, screenshot) call this to get the real runtime.
+ *
+ * A physical-iPhone UDID short-circuits: hardware is never a simulator runtime,
+ * so `simctl` could only ever answer "not found". The memo caches successful
+ * lookups only, so without this guard every describe / screenshot / await-* call
+ * against a physical device would re-spawn `simctl list devices` (~0.3s and a
+ * process each) forever, and the closest thing to a positive answer would still
+ * be undefined.
  */
 export async function getSimulatorRuntimeKind(udid: string): Promise<"mobile" | "tv" | undefined> {
+  if (isPhysicalIosUdid(udid)) return undefined;
   const cached = runtimeKindCache.get(udid);
   if (cached) return cached;
   const kind = (await listIosSimulators()).find((s) => s.udid === udid)?.runtimeKind;

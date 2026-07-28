@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { adaptCoreDeviceAxToDescribeResult } from "../src/tools/describe/platforms/ios/ios-coredevice-ax-adapter";
+import { mapNativeTraitsToDescribeRole } from "../src/tools/describe/platforms/ios/ios-native-adapter";
 
 interface Node {
   role: string;
   frame: { x: number; y: number; width: number; height: number };
   children: Node[];
   label?: string;
+  value?: string;
 }
 function flatten(n: Node, out: Node[] = []): Node[] {
   out.push(n);
@@ -49,7 +51,7 @@ describe("adaptCoreDeviceAxToDescribeResult (production payload: no geometry)", 
   it("still parses roles and labels from the captions", () => {
     expect(nodes.map((n) => n.role)).toEqual([
       "AXButton",
-      "AXHeader",
+      "AXHeading",
       "AXButton",
       "AXButton",
       "AXStaticText",
@@ -57,16 +59,64 @@ describe("adaptCoreDeviceAxToDescribeResult (production payload: no geometry)", 
     expect(nodes[1].label).toBe("Wi-Fi");
   });
 
+  // The roles must be the ones `mapNativeTraitsToDescribeRole` produces for the
+  // other two iOS backends: selectors, format-tree's CONTENT_ROLES and Lens's
+  // exact `role ===` all key off those spellings, so a private vocabulary here
+  // would make every role selector work on a simulator and match nothing on a
+  // device. Pinned against the shared mapper itself, not a copied literal.
+  it("emits the same role vocabulary as the sibling iOS adapters", () => {
+    for (const [trait, caption] of [
+      ["button", "Send, Button"],
+      ["header", "Wi-Fi, Header"],
+      ["link", "Learn more, Link"],
+      ["image", "Avatar, Image"],
+      ["adjustable", "Volume, Adjustable"],
+      ["tabBar", "Home, Tab"],
+      ["searchField", "Query, Search Field"],
+      ["staticText", "just text"],
+    ] as const) {
+      const [node] = adaptCoreDeviceAxToDescribeResult({
+        elements: [{ caption, id: "x" }],
+      }).children as Node[];
+      expect(node.role).toBe(mapNativeTraitsToDescribeRole([trait]));
+    }
+  });
+
+  // The audit hands back one comma-joined caption; the sibling adapters expose
+  // label and value separately and every selector matcher treats `value` as a
+  // first-class field, so collapsing both into `label` would silently downgrade
+  // `{ value }` selectors to label-substring guesses.
+  it("splits a caption's trailing content token into `value`", () => {
+    const [node] = adaptCoreDeviceAxToDescribeResult({
+      elements: [{ caption: "Wi-Fi, FiberMansion, Button", id: "x" }],
+    }).children as Node[];
+    expect(node.label).toBe("Wi-Fi");
+    expect(node.value).toBe("FiberMansion");
+  });
+
   it("interpolates EVERY frame: full-width rows, strictly ordered top to bottom", () => {
     for (const n of nodes) {
       // approxFrame is full-width with a symmetric margin, never a real rect.
       expect(n.frame.x).toBeCloseTo(0.04, 6);
       expect(n.frame.width).toBeCloseTo(0.92, 6);
+      expect(n.frame.height).toBeCloseTo(0.05, 6);
     }
     const ys = nodes.map((n) => center(n.frame).y);
     for (let i = 1; i < ys.length; i++) {
       expect(ys[i]).toBeGreaterThan(ys[i - 1]);
     }
+  });
+
+  // Ordering alone doesn't pin the layout: reversing the interpolation still
+  // yields a monotonically-increasing run, because each fill anchors off its
+  // already-filled predecessor. Pin the absolute span so a top-to-bottom spread
+  // can't silently become bottom-to-top.
+  it("spreads the run from the top anchor to the bottom anchor, in that direction", () => {
+    const ys = nodes.map((n) => center(n.frame).y);
+    // 5 rect-less elements spread as 0.06 + 0.88·k/(n+1).
+    expect(ys[0]).toBeCloseTo(0.06 + 0.88 / 6, 3);
+    expect(ys[0]).toBeLessThan(0.3);
+    expect(ys[ys.length - 1]).toBeGreaterThan(0.7);
   });
 
   it("keeps every interpolated frame inside the normalized [0,1] box", () => {
@@ -84,9 +134,11 @@ describe("adaptCoreDeviceAxToDescribeResult (forward-compat: payload with geomet
 
   it("parses roles from caption traits and strips them from the label", () => {
     expect(byLabel("Settings")?.role).toBe("AXButton");
-    expect(byLabel("Wi-Fi")?.role).toBe("AXHeader");
-    // Button trait wins the role; trailing Button/Toggle stripped from the label.
-    expect(byLabel("Wi-Fi, 1")?.role).toBe("AXButton");
+    expect(byLabel("Wi-Fi")?.role).toBe("AXHeading");
+    // Button trait wins the role; trailing Button/Toggle stripped, and the last
+    // remaining content token becomes the value.
+    const toggle = nodes.find((n) => n.label === "Wi-Fi" && n.value === "1");
+    expect(toggle?.role).toBe("AXButton");
     // No trait -> static text, full caption kept as label.
     const stat = nodes.find((n) => n.label?.startsWith("Known networks"));
     expect(stat?.role).toBe("AXStaticText");
@@ -100,10 +152,12 @@ describe("adaptCoreDeviceAxToDescribeResult (forward-compat: payload with geomet
     expect(other.frame.width).toBeCloseTo(361 / 393, 3);
   });
 
-  it("interpolates a rect-less element between its neighbours (reading order)", () => {
+  it("interpolates a rect-less element between its neighbours (list order)", () => {
     const wifiHeader = center(byLabel("Wi-Fi")!.frame).y; // ~168/852
     const other = center(byLabel("Other…")!.frame).y; // ~553/852
-    const toggle = center(byLabel("Wi-Fi, 1")!.frame).y; // no rect, between the two
+    // "Wi-Fi, 1, Button, Toggle" carries no rect: label "Wi-Fi", value "1".
+    const toggleNode = nodes.find((n) => n.label === "Wi-Fi" && n.value === "1")!;
+    const toggle = center(toggleNode.frame).y;
     expect(toggle).toBeGreaterThan(wifiHeader);
     expect(toggle).toBeLessThan(other);
   });

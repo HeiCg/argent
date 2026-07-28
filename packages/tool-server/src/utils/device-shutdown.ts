@@ -16,13 +16,17 @@ const execFileAsync = promisify(execFile);
  * iOS / Android), so they're left untouched.
  */
 export async function shutdownOwnedDevice(id: string): Promise<void> {
-  let platform: string;
+  let device: { platform: string; kind: string };
   try {
-    platform = resolveDevice(id).platform;
+    device = resolveDevice(id);
   } catch {
     return;
   }
-  if (platform === "ios") {
+  const { platform } = device;
+  // `kind: "device"` on iOS is a physical iPhone: it is not ours to power off,
+  // and `simctl shutdown` only knows simulator UDIDs — same reason the Android
+  // arm below is scoped to emulators.
+  if (platform === "ios" && device.kind !== "device") {
     await execFileAsync("xcrun", ["simctl", "shutdown", id]).catch(() => {});
   } else if (platform === "android") {
     // Resolve adb like every other android path (SDK fallback off-PATH — on
@@ -50,7 +54,7 @@ export interface ShutdownResult {
  * so the UI can report why a shutdown failed.
  *
  * iOS simulator → `simctl shutdown`; Android emulator → `adb -s <serial> emu
- * kill`. A physical Android device can't be shut down remotely, and
+ * kill`. A physical phone (iOS or Android) can't be shut down remotely, and
  * Chromium / Vega have no equivalent — those are rejected with a reason.
  */
 export async function shutdownDevice(id: string): Promise<ShutdownResult> {
@@ -61,7 +65,7 @@ export async function shutdownDevice(id: string): Promise<ShutdownResult> {
     return { ok: false, error: `Unknown device "${id}".` };
   }
   try {
-    if (device.platform === "ios") {
+    if (device.platform === "ios" && device.kind !== "device") {
       await execFileAsync("xcrun", ["simctl", "shutdown", id]);
       return { ok: true };
     }
@@ -70,13 +74,16 @@ export async function shutdownDevice(id: string): Promise<ShutdownResult> {
       await execFileAsync(adb, ["-s", id, "emu", "kill"]);
       return { ok: true };
     }
-    return {
-      ok: false,
-      error:
-        device.platform === "android"
-          ? "A physical Android device can't be shut down remotely."
-          : `Shutting down ${device.platform} devices isn't supported.`,
-    };
+    // A physical phone reaches here on either platform. Without the `kind`
+    // guard above, an iPhone would run `simctl shutdown <ECID-udid>` and the UI
+    // would show simctl's raw "Invalid device" instead of the real reason.
+    if (device.kind === "device") {
+      return {
+        ok: false,
+        error: `A physical ${device.platform === "ios" ? "iPhone" : "Android device"} can't be shut down remotely.`,
+      };
+    }
+    return { ok: false, error: `Shutting down ${device.platform} devices isn't supported.` };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

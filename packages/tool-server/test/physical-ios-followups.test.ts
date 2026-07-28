@@ -16,7 +16,7 @@
  *  - run-sequence must not eagerly hold simulator-server for a physical iPhone;
  *  - gesture-swipe routes a physical iPhone to the sim-server and honors `settle`.
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // assertPhysicalIosEnabled reads the feature flag; mock isFlagEnabled so the gate
 // can be exercised deterministically regardless of the host's ~/.argent/flags.json.
@@ -27,7 +27,8 @@ import { isFlagEnabled } from "@argent/configuration-core";
 import { resolveDevice, isPhysicalIosUdid } from "../src/utils/device-info";
 import { parsePhysicalIosDevices } from "../src/utils/ios-devices";
 import { UnsupportedOperationError, assertSupported } from "../src/utils/capability";
-import { assertPhysicalIosEnabled } from "../src/blueprints/simulator-server";
+import type { ToolCapability } from "@argent/registry";
+import { assertPhysicalIosEnabled, subcommandForDevice } from "../src/blueprints/simulator-server";
 import { buttonTool } from "../src/tools/button";
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { createRunSequenceTool } from "../src/tools/run-sequence";
@@ -40,11 +41,35 @@ import { gestureSwipeTool } from "../src/tools/gesture-swipe";
 import { gestureTapTool } from "../src/tools/gesture-tap";
 import { createKeyboardTool } from "../src/tools/keyboard";
 import { gesturePinchTool } from "../src/tools/gesture-pinch";
+import { gestureRotateTool } from "../src/tools/gesture-rotate";
+import { gestureCustomTool } from "../src/tools/gesture-custom";
+import { pasteTool } from "../src/tools/paste";
+import { rotateTool } from "../src/tools/rotate";
+import { createTvRemoteTool } from "../src/tools/tv-remote";
 import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { nativeDescribeScreenTool } from "../src/tools/native-devtools/native-describe-screen";
+import { nativeDevtoolsStatusTool } from "../src/tools/native-devtools/native-devtools-status";
+import { nativeFindViewsTool } from "../src/tools/native-devtools/native-find-views";
+import { nativeFullHierarchyTool } from "../src/tools/native-devtools/native-full-hierarchy";
+import { nativeNetworkLogsTool } from "../src/tools/native-devtools/native-network-logs";
+import { nativeViewAtPointTool } from "../src/tools/native-devtools/native-view-at-point";
+import { nativeUserInteractableViewAtPointTool } from "../src/tools/native-devtools/native-user-interactable-view-at-point";
 import { nativeProfilerStartTool } from "../src/tools/profiler/native-profiler/native-profiler-start";
+import { nativeProfilerStopTool } from "../src/tools/profiler/native-profiler/native-profiler-stop";
+import { nativeProfilerAnalyzeTool } from "../src/tools/profiler/native-profiler/native-profiler-analyze";
+import { profilerStackQueryTool } from "../src/tools/profiler/query/profiler-stack-query";
+import { profilerCombinedReportTool } from "../src/tools/profiler/combined/profiler-combined-report";
 
 const mockFlag = vi.mocked(isFlagEnabled);
+
+// The opt-in gate runs on every `simulatorServerRef` call, so any case that
+// resolves the sim-server needs the flag on. Default it here rather than in the
+// individual cases: an unset mock returns undefined (= disabled), which would
+// otherwise make every physical-iOS case depend on whichever earlier case last
+// set the mock.
+beforeEach(() => {
+  mockFlag.mockReturnValue(true);
+});
 
 // Physical-iOS branches of both handlers throw/reject before ever touching
 // `registry` (see the assertions below), so a stub registry is safe here.
@@ -86,6 +111,8 @@ describe("discovery does not surface simulators as physical devices", () => {
           connectionProperties: { transportType: "sameMachine", tunnelState: "disconnected" },
         },
         // A paired-but-offline real device (physical shape, no transport) — DROPPED.
+        // Isolates the `!transport` filter: its tunnelState is NOT "unavailable",
+        // so only the transport check can drop it.
         {
           hardwareProperties: {
             udid: "00008030-00096526219B802E",
@@ -93,7 +120,19 @@ describe("discovery does not surface simulators as physical devices", () => {
             productType: "iPhone12,8",
           },
           deviceProperties: { name: "Old iPhone" },
-          connectionProperties: { tunnelState: "unavailable" },
+          connectionProperties: { tunnelState: "disconnected" },
+        },
+        // Unplugged mid-session: the transport lingers but the tunnel is gone —
+        // DROPPED. Isolates the `tunnelState === "unavailable"` filter, which the
+        // transport check cannot cover.
+        {
+          hardwareProperties: {
+            udid: "00008101-000A4D2E0EC0001E",
+            platform: "iOS",
+            productType: "iPhone14,2",
+          },
+          deviceProperties: { name: "Unplugged iPhone" },
+          connectionProperties: { transportType: "wired", tunnelState: "unavailable" },
         },
       ],
     },
@@ -114,11 +153,10 @@ describe("discovery does not surface simulators as physical devices", () => {
 });
 
 describe("button on physical iOS routes to the sim-server ios_device controller", () => {
-  // The argent-side name→HID mapping is gone: a physical iPhone drives the
-  // sim-server `ios_device` subcommand over the same transport as a simulator,
-  // and the Consumer-page HID mapping lives in the sim-server controller. Only
-  // the four hardware buttons are supported; appSwitch/actionButton have no
-  // HID equivalent and are rejected (the fire-and-forget transport could not
+  // A physical iPhone drives the sim-server `ios_device` subcommand over the
+  // same transport as a simulator, and the Consumer-page HID mapping lives in
+  // the sim-server controller. Only the four hardware buttons are supported;
+  // appSwitch/actionButton have no HID equivalent and are rejected (rather than
   // otherwise surface the controller's rejection).
   it("resolves the simulator-server for the four hardware buttons", () => {
     for (const button of ["home", "power", "volumeUp", "volumeDown"]) {
@@ -145,11 +183,11 @@ describe("button on physical iOS routes to the sim-server ios_device controller"
   });
 });
 
-describe("boot-device on physical iOS prepares the sim-server (no pmd3 tunnel)", () => {
-  // The old path opened an argent-side pmd3 CoreDevice tunnel here; boot now just
-  // resolves (spawns) the sim-server's `ios_device` controller, which owns the one
-  // USB tunnel. Assert boot resolves exactly that service and reports booted — a
-  // regression back to pmd3 would resolve no SimulatorServer service.
+describe("boot-device on physical iOS prepares the sim-server session", () => {
+  // There is nothing to boot on hardware, so boot resolves (spawns) the
+  // sim-server's `ios_device` controller, which owns the one USB tunnel. Assert
+  // boot resolves exactly that service and reports booted: any other way of
+  // reaching the device would resolve no SimulatorServer service.
   it("resolves the simulator-server for the physical udid and returns booted", async () => {
     const origPlatform = process.platform;
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
@@ -213,8 +251,8 @@ describe("gesture-swipe on physical iOS routes to the sim-server ios_device cont
 
   it("supports settle on physical iOS too (same interpolated Move-sample path as a simulator)", () => {
     // The sim-server `ios_device` controller replays the eased Move samples the
-    // generic swipe path emits, so `settle` is honored — unlike the old
-    // fixed-trajectory CoreDevice HID drag, which had to reject it.
+    // generic swipe path emits, so `settle` is honored on hardware exactly as it
+    // is on a simulator — no separate trajectory path.
     const services = gestureSwipeTool.services!({ ...swipe, settle: true } as never);
     expect(services.simulatorServer).toBeDefined();
     expect(services.coreDevice).toBeUndefined();
@@ -351,5 +389,60 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
     expect(() =>
       assertSupported("native-profiler-start", nativeProfilerStartTool.capability, androidPhone)
     ).not.toThrow();
+  });
+
+  // Every tool whose backend is simulator-only, enumerated rather than sampled:
+  // an unlisted one is how a physical iPhone reaches a `simctl spawn` / xctrace
+  // path and fails deep with a 500 instead of at the gate with a 400.
+  it("every simulator-only tool rejects a physical iPhone, and none of them lost simulator support", () => {
+    const simulatorOnly: ReadonlyArray<readonly [string, ToolCapability | undefined]> = [
+      ["keyboard", keyboardTool.capability],
+      ["paste", pasteTool.capability],
+      ["rotate", rotateTool.capability],
+      ["gesture-pinch", gesturePinchTool.capability],
+      ["gesture-rotate", gestureRotateTool.capability],
+      ["gesture-custom", gestureCustomTool.capability],
+      ["screenshot-diff", screenshotDiffTool.capability],
+      ["tv-remote", createTvRemoteTool({} as never).capability],
+      ["native-describe-screen", nativeDescribeScreenTool.capability],
+      ["native-devtools-status", nativeDevtoolsStatusTool.capability],
+      ["native-find-views", nativeFindViewsTool.capability],
+      ["native-full-hierarchy", nativeFullHierarchyTool.capability],
+      ["native-network-logs", nativeNetworkLogsTool.capability],
+      ["native-view-at-point", nativeViewAtPointTool.capability],
+      ["native-user-interactable-view-at-point", nativeUserInteractableViewAtPointTool.capability],
+      ["native-profiler-start", nativeProfilerStartTool.capability],
+      ["native-profiler-stop", nativeProfilerStopTool.capability],
+      ["native-profiler-analyze", nativeProfilerAnalyzeTool.capability],
+      // Post-capture query tools: a physical iPhone can never have a native
+      // trace to query, since the capture half above rejects it.
+      ["profiler-stack-query", profilerStackQueryTool.capability],
+      ["profiler-combined-report", profilerCombinedReportTool.capability],
+    ];
+    for (const [id, cap] of simulatorOnly) {
+      expect(
+        () => assertSupported(id, cap, physical),
+        `${id} must reject a physical iPhone`
+      ).toThrow(UnsupportedOperationError);
+      expect(
+        () => assertSupported(id, cap, sim),
+        `${id} must still accept a simulator`
+      ).not.toThrow();
+    }
+  });
+});
+
+describe("subcommandForDevice picks the sim-server controller per platform AND kind", () => {
+  // The PR's headline behaviour: a physical iPhone drives `ios_device`. Kind is
+  // load-bearing on both platforms — routing a physical device to the emulator
+  // /simulator controller (or the reverse) spawns a controller that cannot talk
+  // to the target at all.
+  it.each([
+    [SIM_UDID, "ios"],
+    [PHYSICAL_UDID, "ios_device"],
+    ["emulator-5554", "android"],
+    ["HT82A0203045", "android_device"],
+  ])("%s -> %s", (udid, expected) => {
+    expect(subcommandForDevice(resolveDevice(udid))).toBe(expected);
   });
 });

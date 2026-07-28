@@ -23,7 +23,7 @@ Argent drives a growing set of targets through a single toolkit, each with the r
 
 | Platform          | Targets                                                                 | Interaction      |
 | ----------------- | ----------------------------------------------------------------------- | ---------------- |
-| **iOS**           | Simulators                                                              | Touch / gesture  |
+| **iOS**           | Simulators, and physical iPhones over CoreDevice (experimental)         | Touch / gesture  |
 | **Android**       | Emulators (AVDs) and physical devices over adb                          | Touch / gesture  |
 | **TV**            | Apple TV (tvOS), Android TV / Google TV, Amazon Fire TV (Vega)          | D-pad / remote   |
 | **Desktop & web** | Electron and Chromium apps (incl. React Native Web / Expo web) over CDP | Mouse / keyboard |
@@ -53,9 +53,8 @@ Argent drives a growing set of targets through a single toolkit, each with the r
 Argent can drive a **physical iPhone** — no app installed on the device — over Apple's
 CoreDevice "remote control" services (the same path Xcode's device window uses). The device
 interaction runs natively inside the bundled **simulator-server** (radon's `ios_device`
-controller), so there is **no Python, no `pymobiledevice3`, and no root**: the CoreDevice
-tunnel is a userspace TCP stack over the USB connection, so every command runs unprivileged
-with no admin prompt. Supported interactions: `screenshot`, `gesture-tap`, `gesture-swipe`,
+controller). The CoreDevice tunnel is a userspace TCP stack over the USB connection, so every
+command runs unprivileged, with no admin prompt and nothing installed on the host. Supported interactions: `screenshot`, `gesture-tap`, `gesture-swipe`,
 `button`, `launch-app`, and `describe` (the live on-screen accessibility tree — see the note
 below). The device shows up in `list-devices` with `kind: "device"`.
 
@@ -83,12 +82,18 @@ no manual step, no `sudo`.
 
 - `describe` returns the device's **live on-screen accessibility tree** — the frontmost app's
   elements (or the home screen), read app-free via the iOS-26+ accessibility-audit service over
-  CoreDevice. Element labels, values, traits (roles) and reading order are exact. **Frames are
-  not:** Apple exposes no per-element geometry app-free on a physical device, so every frame is
-  **interpolated** from reading order (elements are treated as full-width rows stacked top to
-  bottom). That's good enough to tap a row in a vertical list, but locate anything else — toggles,
-  side-by-side controls, grids — with `screenshot` first. (For pixel-exact in-app frames + taps
-  you'd need an on-device XCUITest runner, which requires code-signing.)
+  CoreDevice. It tells you **what** is on screen, not **where**. Element labels, values and traits
+  (roles) are exact, but two things are not:
+  - **Frames.** Apple exposes no per-element geometry app-free on a physical device, so every frame
+    is a placeholder synthesised from the element's position in the list.
+  - **Order.** The read starts from the device's current VoiceOver cursor and advances it, so
+    consecutive calls return the same elements rotated by one — which also means a given element's
+    synthesised frame changes between calls, and two `describe` results are not comparable.
+
+  Locate anything you intend to tap with `screenshot` first, and use `screenshot` (not `describe`)
+  to tell whether the screen changed. (For pixel-exact in-app frames + taps you'd need an on-device
+  XCUITest runner, which requires code-signing.)
+
 - Not supported yet (return a clear "not supported" error): keyboard/typing, `paste`, multi-touch
   gestures (`gesture-pinch`, `gesture-rotate`, `gesture-custom`), device orientation (`rotate`),
   `open-url`, `reinstall-app`, `restart-app`, and the native inspection / profiling tools

@@ -69,8 +69,10 @@ export const describeNodeSchema: z.ZodType<DescribeNode> = z.lazy(() =>
     .passthrough()
 );
 
-// Where the tree came from. "ax-service" / "native-devtools" come from iOS;
-// "uiautomator" / "android-devtools" come from Android; "cdp-dom" is the
+// Where the tree came from. "ax-service" / "native-devtools" come from an iOS
+// simulator and "coredevice-ax" from a physical iPhone — the last of which
+// reports no geometry, so its frames are synthesised and only its labels/roles
+// carry information; "uiautomator" / "android-devtools" come from Android; "cdp-dom" is the
 // Chromium branch's DOM walk over Chrome DevTools Protocol; "vega-automation"
 // is the Vega on-device automation toolkit; "tv-focus" is the focus-driven view
 // returned for a TV target (Apple TV / Android TV), which reports focused /

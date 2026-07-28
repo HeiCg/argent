@@ -18,10 +18,11 @@ const zodSchema = z.object({
     .describe("Target device id from `list-devices` (iOS UDID or Android serial)."),
 });
 
-// A session can never exist for physical iOS (native-profiler-start rejects it,
-// same apple.device:false reasoning) — reject here too for a clean, consistent
-// error rather than the confusing "no active session" a physical UDID would
-// otherwise always hit.
+// A trace can never exist for physical iOS: the capture half
+// (native-profiler-start) has no hardware path and rejects at the gate. Reject
+// here too, so a physical UDID gets that reason rather than the "No exported
+// trace data found. Call native-profiler-stop first." dead-end it would
+// otherwise always hit — pointing at a tool that rejects it as well.
 const capability = {
   apple: { simulator: true, device: false },
   android: { emulator: true, device: true, unknown: true },

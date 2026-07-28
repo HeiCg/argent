@@ -10,8 +10,8 @@ import { ensureDep } from "../../utils/check-deps";
 // Hardware buttons a physical iPhone can be driven for over CoreDevice (the
 // sim-server `ios_device` controller sends Consumer-page HID usages). appSwitch
 // (a SpringBoard gesture) and the iPhone 15 Pro action button have no HID
-// equivalent, so they are rejected with a clear error on physical iOS — the
-// sim-server transport is fire-and-forget and could not surface the rejection.
+// equivalent, so they are rejected here with a clear error rather than sent and
+// silently dropped on the device.
 const PHYSICAL_IOS_BUTTONS: ReadonlySet<Params["button"]> = new Set([
   "home",
   "power",

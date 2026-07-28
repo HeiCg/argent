@@ -151,16 +151,10 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
       }
 
       // Distinguish tvOS from iOS by simulator runtime — shape alone can't.
-      // tvOS has no simulator-server backend, so capture via xcrun instead. Skip
-      // the probe for a physical iPhone (`kind === "device"`): it captures over
-      // the sim-server `ios_device` subcommand below, and a hardware udid is
-      // never a simulator runtime, so the `xcrun simctl` probe would just waste a
-      // process.
-      if (
-        device.platform === "ios" &&
-        device.kind !== "device" &&
-        (await isTvOsSimulator(params.udid))
-      ) {
+      // tvOS has no simulator-server backend, so capture via xcrun instead.
+      // A physical iPhone answers false without a probe (see isTvOsSimulator)
+      // and captures over the sim-server `ios_device` subcommand below.
+      if (device.platform === "ios" && (await isTvOsSimulator(params.udid))) {
         const pngPath = await tvScreenshot(params.udid, scale, signal);
         const image = await requireArtifacts(ctx).register(pngPath, { mimeType: "image/png" });
         return { image };
