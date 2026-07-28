@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -16,6 +15,7 @@ import {
   __resetRecordingsForTesting,
   getRecordingSession,
   listActiveRecordings,
+  MAX_RECORDINGS,
   parseFlow,
   serializeFlow,
   withFlowFileLock,
@@ -44,23 +44,6 @@ import {
  */
 
 const IOS_DEVICE = "00000000-0000-0000-0000-0000000000ab";
-
-/**
- * The concurrent-recording cap is internal to flow-utils, and a copy of it here
- * would silently stop testing the real backstop the day it changes. Read it out
- * of the source instead.
- */
-function readMaxRecordings(): number {
-  const source = readFileSync(
-    path.resolve(__dirname, "../../src/tools/flows/flow-utils.ts"),
-    "utf8"
-  );
-  const match = /^const MAX_RECORDINGS = (\d+);$/m.exec(source);
-  if (!match) throw new Error("could not read MAX_RECORDINGS out of flow-utils.ts");
-  return Number(match[1]);
-}
-
-const MAX_RECORDINGS = readMaxRecordings();
 
 // ── Harness ──────────────────────────────────────────────────────────
 
@@ -558,6 +541,46 @@ describe("flow-file writes as seen by a concurrent reader", () => {
     expect(await readMarkers(root, "alpha")).toEqual(["tool:a1", "echo:note", "tool:a2"]);
   });
 
+  it("still appends under a flow name long enough to fill the filesystem's limit", async () => {
+    // A flow name has no length cap — FLOW_NAME_PATTERN constrains the
+    // character set only — so `<name>.yaml` can legitimately reach NAME_MAX
+    // (255 on APFS/ext4). A scratch name derived from the flow file's basename
+    // would overflow that and fail an append that used to work, so the temp
+    // name must be a fixed-length one.
+    const root = await makeRoot("long-name");
+    const name = "a".repeat(250);
+    expect(`${name}.yaml`.length).toBe(255);
+
+    await start(root, name);
+    await addStep(root, name, "a1");
+    await addEcho(root, name, "note");
+
+    expect(await readMarkers(root, name)).toEqual(["tool:a1", "echo:note"]);
+    expect(await strayFiles(root, name)).toEqual([]);
+  });
+
+  it("propagates a failed swap and leaves no scratch file behind", async () => {
+    // The only coverage the cleanup branch has otherwise is the success path,
+    // where the rename itself consumes the temp file — so deleting the whole
+    // try/catch passes. Force the rename to fail by planting a NON-EMPTY
+    // DIRECTORY where the flow file goes: `mkdir -p` on the parent still
+    // succeeds and the temp write still succeeds, so this reaches `fs.rename`
+    // and nothing else. (A read-only dir fails earlier, at the temp write.)
+    const root = await makeRoot("swap-fails");
+    const target = flowPath(root, "alpha");
+    await fs.mkdir(path.join(target, "occupied"), { recursive: true });
+
+    await expect(start(root, "alpha")).rejects.toThrow();
+
+    // The failure must not leave a scratch file in the user's committed
+    // .argent/flows/ — nothing else ever sweeps it.
+    const entries = await fs.readdir(path.dirname(target));
+    expect(entries.filter((e) => e.endsWith(".tmp"))).toEqual([]);
+    // And it must not register a session for a file that was never written:
+    // the next append would otherwise die on an unrelated ENOENT.
+    expect(listActiveRecordings()).toEqual([]);
+  });
+
   it("never exposes an empty or unparseable file while appends are in flight", async () => {
     // The property the two inode assertions above encode, observed the way a
     // reader actually experiences it: poll the path as fast as the event loop
@@ -776,6 +799,36 @@ describe("a restart that lands while a step is still running", () => {
     expect(await readMarkers(root, "alpha")).toEqual(["tool:a3"]);
     const finished = await finish(root, "alpha");
     expect(finished.steps).toBe(1);
+  });
+
+  it("does not warn a superseded ECHO that it already ran on the device", async () => {
+    // The "repeating it repeats that action" caveat is true of a tool step,
+    // which executed live before the append was rejected. An echo is a label —
+    // it touched no device, so telling its author to weigh a repeat is the same
+    // class of false advice the fresh-name wording replaced. Only the tool
+    // branch of that ternary is asserted above, so pin the echo branch here.
+    const root = await makeRoot("supersede-echo");
+    await start(root, "alpha");
+
+    // An echo has no live device step to park in, so the only window in which
+    // it can be superseded is the flow-file lock. Hold the lock, then queue the
+    // restart AHEAD of the echo: the echo still resolves its session now (the
+    // restart's body has not run, so the old session is still registered), but
+    // by the time it reaches the front of the queue the restart has replaced it.
+    const gate = openGate();
+    const held = withFlowFileLock(root, "alpha", () => gate.promise);
+    const restarting = start(root, "alpha");
+    const echoing = addEcho(root, "alpha", "a label");
+
+    gate.open();
+    await held;
+    expect((await restarting).restarted).toBe(true);
+
+    const err = await captureFailure(echoing);
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
+    expect((err as Error).message).toContain("Nothing was added to the flow file");
+    expect((err as Error).message).toContain("fresh name");
+    expect((err as Error).message).not.toContain("already ran on the device");
   });
 
   it("truncates and re-registers only once the flow's lock is free", async () => {
