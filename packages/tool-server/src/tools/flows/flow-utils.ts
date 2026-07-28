@@ -2357,7 +2357,7 @@ export type FlowSavedTo = string | ClientFileDirective;
  * is told it succeeded. Re-check identity at write time — inside the flow-file
  * lock, so the check sees the state the write will see — and fail loudly.
  */
-function assertSessionStillLive(session: RecordingSession): void {
+function assertSessionStillLive(session: RecordingSession, step: FlowStep): void {
   const current = recordings.get(getFlowPath(session.projectRoot, session.name));
   if (current === session) return;
   // A key that is occupied by a DIFFERENT session was restarted; an empty key
@@ -2366,9 +2366,21 @@ function assertSessionStillLive(session: RecordingSession): void {
   const why = current
     ? "it was restarted while this step was running, so the step belongs to the discarded take"
     : "it was finished (or dropped by the concurrent-recording cap) while this step was running";
+  // Do NOT send the agent to flow-start-recording here. It truncates
+  // unconditionally, and on every branch there is now something to lose: the
+  // live take that just claimed this key (which restarting would both wipe and
+  // steal), or the finished flow sitting on disk. Recording under a fresh name
+  // is the only recovery that destroys nothing.
+  const recovery =
+    `Nothing was added to the flow file` +
+    (step.kind === "echo"
+      ? ". "
+      : ", but the step itself already ran on the device — repeating it repeats that action. ") +
+    `This key now belongs to another take and flow-start-recording truncates, so re-record ` +
+    `under a fresh name rather than restarting this one.`;
   throw new FailureError(
     `Recording of "${session.name}" in ${session.projectRoot} is no longer active — ${why}. ` +
-      `Nothing was recorded. Call flow-start-recording and re-record the step.`,
+      recovery,
     {
       error_code: FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING,
       failure_stage: "flow_session_superseded",
@@ -2390,7 +2402,7 @@ export async function appendStepToFlow(
   step: FlowStep
 ): Promise<{ flowFile: string; savedTo: FlowSavedTo }> {
   return withFlowFileLock(session.projectRoot, session.name, async () => {
-    assertSessionStillLive(session);
+    assertSessionStillLive(session, step);
     session.lastTouchedSeq = touch();
     if (session.persist === "host") {
       const flowFile = await appendStep(session.filePath, step);
