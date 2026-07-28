@@ -577,7 +577,15 @@ describe("a restart that lands while a step is still running", () => {
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
     expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
     expect((err as Error).message).toContain("restarted while this step was running");
-    expect((err as Error).message).toContain("Nothing was recorded");
+    expect((err as Error).message).toContain("Nothing was added to the flow file");
+    // The recovery advice must not send the agent back to flow-start-recording:
+    // it truncates, so on this branch it would wipe the live take that just took
+    // the key (and take it back again). A fresh name is the only safe recovery.
+    expect((err as Error).message).toContain("fresh name");
+    expect((err as Error).message).not.toMatch(/Call flow-start-recording/);
+    // The step already ran live before the append was rejected, so an agent that
+    // simply retries it would repeat the device action.
+    expect((err as Error).message).toContain("already ran on the device");
 
     // The new take is empty — no step from the discarded one leaked into it.
     expect(await readMarkers(root, "alpha")).toEqual([]);
@@ -987,5 +995,66 @@ describe("recording a flow-execute step while several projects are in play", () 
 
     expect(res.message).not.toContain("kept the raw flow-execute step");
     expect(await readSteps(recordingRoot, "wrapper")).toEqual([{ kind: "run", flow: "helper" }]);
+  });
+
+  it("warns when a same-named fragment exists in BOTH projects", async () => {
+    const recordingRoot = await makeRoot("run-target-both");
+    const executedRoot = await makeRoot("run-target-both-other");
+
+    // The ambiguous case concurrent recording makes routine: a generic fragment
+    // name that exists in two projects. `run: helper` resolves against the
+    // recording, so replay runs a DIFFERENT file than the one that just ran.
+    await writeSavedFlow(recordingRoot, "helper", fragment);
+    await writeSavedFlow(executedRoot, "helper", {
+      executionPrerequisite: "",
+      steps: [{ kind: "echo", message: "the other project's helper" }],
+    });
+
+    await start(recordingRoot, "wrapper");
+    const res = await addRawStep(recordingRoot, "wrapper", "flow-execute", {
+      name: "helper",
+      project_root: executedRoot,
+      udid: IOS_DEVICE,
+    });
+
+    // Still recorded as composition — that is what `run:` means — but the
+    // substitution is stated rather than silent.
+    expect(await readSteps(recordingRoot, "wrapper")).toEqual([{ kind: "run", flow: "helper" }]);
+    expect(res.message).toContain("replays THIS project's helper.yaml");
+    expect(res.message).toContain(executedRoot);
+
+    // Same project on both sides is the unambiguous case and stays quiet.
+    await start(recordingRoot, "quiet");
+    const same = await addRawStep(recordingRoot, "quiet", "flow-execute", {
+      name: "helper",
+      project_root: recordingRoot,
+      udid: IOS_DEVICE,
+    });
+    expect(same.message).toBe('Step added to "quiet" flow');
+  });
+});
+
+// ── Summarizing a hand-edited file that the parser cannot fully constrain ──
+
+describe("finishing a recording whose YAML was hand-edited into an unrenderable step", () => {
+  it("summarizes a cyclic tool-args anchor instead of throwing", async () => {
+    const root = await makeRoot("cyclic-args");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+
+    // Hand-editing mid-recording is a documented workflow, and `args:` is the
+    // one step body the parser does not constrain — a cyclic YAML anchor
+    // reaches the summarizer as a cyclic object, which JSON.stringify throws on.
+    await fs.writeFile(
+      flowPath(root, "alpha"),
+      'executionPrerequisite: ""\nsteps:\n  - tool: keyboard\n    args: &a\n      self: *a\n',
+      "utf8"
+    );
+
+    const finished = await finish(root, "alpha");
+    expect(finished.steps).toBe(1);
+    expect(finished.summary).toEqual(["1. tool: keyboard [cyclic args]"]);
+    // The recording is properly closed, not left dangling by a thrown summary.
+    expect(getRecordingSession(root, "alpha")).toBeUndefined();
   });
 });
