@@ -2322,6 +2322,58 @@ export function parseFlow(content: string): FlowFile {
 
 // ── File helpers ─────────────────────────────────────────────────────
 
+/**
+ * Suffix counter for {@link writeFlowFile}'s scratch file. Paired with the pid,
+ * this keeps two concurrent writers — in this process or in a CLI sharing the
+ * directory — off each other's temp file.
+ */
+let flowWriteSeq = 0;
+
+/**
+ * Replace a flow file's contents so no reader can ever observe it half-written.
+ *
+ * {@link withFlowFileLock} serializes WRITERS, but every reader of a flow YAML
+ * stays outside it — `flow-execute`'s own load, its `run:` fragment load,
+ * `flow-read-prerequisite`, `flow-add-step`'s sibling-fragment check — and the
+ * `argent` CLI reads these files from another process entirely, where an
+ * in-process lock cannot reach. A plain `fs.writeFile` opens with O_TRUNC, so
+ * such a reader could land in the window between the truncate and the write and
+ * parse a truncated file, or an empty one — and `parseFlow("")` yields
+ * `{ steps: [] }` with no error, which replays as a top-level PASS over zero
+ * steps.
+ *
+ * Writing to a sibling temp file and renaming makes the swap atomic: a reader
+ * sees either the whole previous file or the whole new one. The temp name is
+ * dotted and `.tmp`-suffixed so a half-written scratch file can never be
+ * mistaken for a flow (`getFlowPath` only ever produces `<name>.yaml`, and
+ * nothing enumerates the flows directory).
+ */
+async function writeFlowFile(filePath: string, content: string): Promise<void> {
+  const tmpPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${++flowWriteSeq}.tmp`
+  );
+  await fs.writeFile(tmpPath, content, "utf8");
+  try {
+    // Atomic within a filesystem, and the temp file is a sibling of the target,
+    // so it is always the same one.
+    await fs.rename(tmpPath, filePath);
+  } catch (err) {
+    // Leave no scratch file behind on a failed swap (e.g. a read-only dir).
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Create or reset a flow file with `content`, making the parent directory if
+ * needed. Atomic (see {@link writeFlowFile}).
+ */
+export async function writeNewFlowFile(filePath: string, content: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await writeFlowFile(filePath, content);
+}
+
 /** Read and parse the flow file, append a step, write it back. */
 export async function appendStep(filePath: string, step: FlowStep): Promise<string> {
   const content = await fs.readFile(filePath, "utf8");
@@ -2332,7 +2384,7 @@ export async function appendStep(filePath: string, step: FlowStep): Promise<stri
   // produce a file that fails to parse at replay.
   validateFlow(flow);
   const updated = serializeFlow(flow);
-  await fs.writeFile(filePath, updated, "utf8");
+  await writeFlowFile(filePath, updated);
   return updated;
 }
 

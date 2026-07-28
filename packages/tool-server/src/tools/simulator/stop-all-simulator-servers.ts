@@ -1,27 +1,7 @@
 import { z } from "zod";
 import { ServiceState, isLiveServiceState } from "@argent/registry";
 import type { Registry, ToolDefinition } from "@argent/registry";
-import { SIMULATOR_SERVER_NAMESPACE } from "../../blueprints/simulator-server";
-import { NATIVE_DEVTOOLS_NAMESPACE } from "../../blueprints/native-devtools";
-import { ANDROID_DEVTOOLS_NAMESPACE } from "../../blueprints/android-devtools";
-import { CHROMIUM_CDP_NAMESPACE } from "../../blueprints/chromium-cdp";
-import { TV_CONTROL_NAMESPACE } from "../../blueprints/tv-control";
-import { ANDROID_TV_CONTROL_NAMESPACE } from "../../blueprints/android-tv-control";
-
-const PREFIXES = [
-  `${SIMULATOR_SERVER_NAMESPACE}:`,
-  `${NATIVE_DEVTOOLS_NAMESPACE}:`,
-  `${ANDROID_DEVTOOLS_NAMESPACE}:`,
-  `${CHROMIUM_CDP_NAMESPACE}:`,
-  // The Apple TV service owns two spawned daemons (in-sim tvos-ax-service +
-  // host-side tvos-hid-daemon, both --timeout 3600); only its dispose() reaps
-  // them and unlinks the sockets. Without this prefix a session-end stop leaves
-  // them running for up to an hour. (AndroidTvControl is stateless adb shell-outs
-  // with a no-op dispose, but include it for symmetry so the snapshot is fully
-  // drained.)
-  `${TV_CONTROL_NAMESPACE}:`,
-  `${ANDROID_TV_CONTROL_NAMESPACE}:`,
-];
+import { DEVICE_OWNED_NAMESPACES, deviceIdOwningUrn, isDeviceServiceUrn } from "./device-services";
 
 const zodSchema = z.object({
   devices: z
@@ -31,38 +11,6 @@ const zodSchema = z.object({
       "Device ids (iOS UDID / Android serial / Chromium id) to scope the teardown to — pass the devices THIS session actually used. Omit only for a deliberate machine-wide cleanup: the tool-server is shared by every agent on the host, so an unscoped stop also kills devices another agent is mid-session on."
     ),
 });
-
-/**
- * The only discriminator any URN in {@link PREFIXES} appends after the device id
- * (`NativeDevtools:<udid>:tcp` — every other namespace is a bare
- * `<Namespace>:<device.id>`). Enumerated rather than matched as "anything after
- * a colon", because a device id can itself end in `:<something>`: an adb serial
- * over wifi is `192.168.1.5:5555`, so a suffix wildcard would let the bare
- * `192.168.1.5` claim every device at that address and tear down another
- * agent's — while reporting nothing unmatched.
- */
-const URN_SUFFIXES = ["", ":tcp"] as const;
-
-/**
- * Which entry of `deviceIds` owns `urn`, if any. The tail after the namespace
- * is compared whole (never split on ":", see {@link URN_SUFFIXES}).
- *
- * Returns the caller's spelling of the id so the tool can report which requested
- * ids matched nothing.
- */
-function matchingDeviceId(urn: string, deviceIds: string[]): string | undefined {
-  const prefix = PREFIXES.find((p) => urn.startsWith(p));
-  if (!prefix) return undefined;
-  // Case-insensitive: iOS UDIDs are conventionally upper-case but agents pass
-  // through whatever they were given, and a case mismatch must not silently
-  // widen a scoped stop into a no-op. No two distinct devices can differ only
-  // by case in any id space we support (UUID, emulator-N, chromium-cdp-N).
-  const tail = urn.slice(prefix.length).toLowerCase();
-  return deviceIds.find((id) => {
-    const lower = id.toLowerCase();
-    return URN_SUFFIXES.some((suffix) => tail === `${lower}${suffix}`);
-  });
-}
 
 export function createStopAllSimulatorServersTool(
   registry: Registry
@@ -79,14 +27,24 @@ export function createStopAllSimulatorServersTool(
           ? `Stopping simulator servers for ${devices.length} ${devices.length === 1 ? "device" : "devices"}`
           : "Stopping all simulator servers";
       },
-      completedMsg: ({ result }) =>
-        `Stopped ${result.stopped.length} simulator ${result.stopped.length === 1 ? "server" : "servers"}`,
+      completedMsg: ({ result }) => {
+        const n = result.stopped.length;
+        const base = `Stopped ${n} simulator ${n === 1 ? "server" : "servers"}`;
+        // `unmatched` is the whole point of the scoped stop: a mistyped id must
+        // not read as a clean machine. Omitting it here would report exactly
+        // that — "Stopped 0 simulator servers" for a teardown that reaped
+        // nothing because every id was wrong.
+        const unmatched = result.unmatched;
+        return unmatched?.length
+          ? `${base} (${unmatched.length} supplied ${unmatched.length === 1 ? "id" : "ids"} matched no service)`
+          : base;
+      },
       failedMsg: ({ failureSignal }) =>
         `Failed to stop simulator servers: ${failureSignal.error_code}`,
     },
-    description: `Stop running simulator-server processes (iOS + Android), native devtools services, and Chromium CDP sessions, freeing their resources. Call this when your session ends or the user says they are done.
+    description: `Stop running simulator-server processes (iOS + Android), native devtools and accessibility services, TV-control daemons, and Chromium CDP sessions, freeing their resources. Call this when your session ends or the user says they are done.
 PASS \`devices\` with the device ids this session used — the tool-server is a host-wide singleton shared with every other agent and CLI call on the machine, and an unscoped call tears down THEIR devices too (a mid-recording devtools teardown degrades another agent's flow to brittle coordinate taps, silently). Omit \`devices\` only when a machine-wide cleanup is what you actually want.
-Returns { stopped } - the URNs of the services that were actually live and got shut down; ERROR/TERMINATING nodes are disposed too but never appear there, so an empty \`stopped\` only means nothing was still running. { unmatched } is present ONLY when \`devices\` was supplied AND at least one of its ids owns no service at all in these namespaces - absent on an unscoped call and when every id matched - so a mistyped id, or a device NAME passed where an id was expected, does not read as a clean machine. Stopping the same device twice does not report it unmatched: ownership counts regardless of service state. Never throws.`,
+Returns { stopped } - the URNs of the services that were actually live and got shut down; ERROR/TERMINATING nodes are disposed too but never appear there, so an empty \`stopped\` only means nothing was still running. { unmatched } lists supplied ids that own no service here, so a mistyped id - or a device NAME passed where an id was expected - does not read as a clean machine. It is NOT proof the id is wrong: a device driven only through CLI/adb shell-outs (Vega) registers no service and always lands here, and so does a real device this session never started anything on. Present ONLY when \`devices\` was supplied AND at least one id matched nothing - absent on an unscoped call and when every id matched. Stopping the same device twice does not report it unmatched: ownership counts regardless of service state. Never throws.`,
     zodSchema,
     services: () => ({}),
     async execute(_services, params) {
@@ -99,8 +57,12 @@ Returns { stopped } - the URNs of the services that were actually live and got s
       const stopped: string[] = [];
       const matchedIds = new Set<string>();
       for (const [urn, entry] of snapshot.services) {
-        const matchedId = scoped ? matchingDeviceId(urn, devices) : undefined;
-        const matches = scoped ? matchedId !== undefined : PREFIXES.some((p) => urn.startsWith(p));
+        const matchedId = scoped
+          ? deviceIdOwningUrn(urn, DEVICE_OWNED_NAMESPACES, devices)
+          : undefined;
+        const matches = scoped
+          ? matchedId !== undefined
+          : isDeviceServiceUrn(urn, DEVICE_OWNED_NAMESPACES);
         // Ownership is recorded regardless of state. `disposeService` moves a
         // node to IDLE without removing it, so a device this session already
         // stopped would otherwise be reported as unmatched by the next scoped
@@ -119,12 +81,12 @@ Returns { stopped } - the URNs of the services that were actually live and got s
       }
       if (!scoped) return { stopped };
       // A scoped stop that named an id owning nothing is indistinguishable from
-      // a clean machine unless we say so — and that id is usually a typo, or a
-      // device NAME passed where an id belongs, in which case its
-      // simulator-server, devtools and (on tvOS) two --timeout 3600 daemons are
-      // being left running. Compared AND de-duplicated case-insensitively, to
-      // match the lookup: two spellings of one id are one mistake, reported in
-      // the caller's first spelling.
+      // a clean machine unless we say so — and when that id is a typo, or a
+      // device NAME passed where an id belongs, its simulator-server, devtools
+      // and (on tvOS) two --timeout 3600 daemons are being left running.
+      // Compared AND de-duplicated case-insensitively, to match the lookup: two
+      // spellings of one id are one mistake, reported in the caller's first
+      // spelling.
       const seen = new Set<string>();
       const unmatched = devices.filter((id) => {
         const key = id.toLowerCase();
