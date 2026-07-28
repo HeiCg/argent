@@ -23,7 +23,7 @@ export function createStopSimulatorServerTool(
       failedMsg: ({ params, failureSignal }) =>
         `Failed to stop simulator server for ${params.udid}: ${failureSignal.error_code}`,
     },
-    description: `Stop the transport session for a specific device (iOS / Android: simulator-server process; Chromium: CDP WebSocket) and free its resources. Use when you are done interacting with one device but want to keep others running. Returns { stopped, udid }. Fails silently if no session is open for the given id.`,
+    description: `Stop the transport session for a specific device (iOS / Android: simulator-server process; Chromium: CDP WebSocket) and free its resources; on a TV target it also reaps that device's TV-control daemons. Use when you are done interacting with one device but want to keep others running, or to restart a wedged transport. Deliberately leaves this device's native-devtools, accessibility, profiler and debugger services running - to drain those as well, use stop-all-simulator-servers with \`devices\`. Returns { stopped, udid }. Fails silently if no session is open for the given id.`,
     zodSchema,
     services: () => ({}),
     async execute(_services, params) {
@@ -39,9 +39,11 @@ export function createStopSimulatorServerTool(
       const snapshot = registry.getSnapshot();
       let stopped = false;
       // Scanned rather than looked up by exact URN, so this agrees with
-      // `stop-all-simulator-servers` on which services a device id owns: the
-      // match is case-insensitive and covers the `:tcp` transport suffix, both
-      // of which an exact `services.get()` silently missed.
+      // `stop-all-simulator-servers` on which services a device id owns. The
+      // live difference is case: an exact `services.get()` silently no-op'd on
+      // a lower-cased UDID that the scoped stop-all reaped. (The shared matcher
+      // also understands the `:tcp` suffix, which no namespace in this tool's
+      // set currently emits — it costs nothing and keeps one grammar.)
       const urns = [...snapshot.services.keys()].filter(
         (urn) => deviceIdOwningUrn(urn, namespaces, [udid]) !== undefined
       );

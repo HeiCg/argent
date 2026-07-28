@@ -182,8 +182,10 @@ async function captureRunTarget(
     // names ("login", "setup") are exactly the ones that exist in both. Say it,
     // or the substitution stays invisible until the flow replays wrong.
     const ranIn = args.project_root;
-    const ranElsewhere =
-      typeof ranIn === "string" && safeFlowsDir(ranIn) !== null && safeFlowsDir(ranIn) !== flowsDir;
+    // null means "not a usable project root" (unparseable or absent), which is
+    // not evidence of a different project — only a resolvable, differing dir is.
+    const ranDir = typeof ranIn === "string" ? safeFlowsDir(ranIn) : null;
+    const ranElsewhere = ranDir !== null && ranDir !== flowsDir;
     return {
       flow: name,
       warning: ranElsewhere

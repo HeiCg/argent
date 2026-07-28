@@ -5,41 +5,83 @@ import { CHROMIUM_CDP_NAMESPACE } from "../../blueprints/chromium-cdp";
 import { TV_CONTROL_NAMESPACE } from "../../blueprints/tv-control";
 import { ANDROID_TV_CONTROL_NAMESPACE } from "../../blueprints/android-tv-control";
 import { AX_SERVICE_NAMESPACE } from "../../blueprints/ax-service";
+import { SCREEN_RECORDING_SESSION_NAMESPACE } from "../../blueprints/screen-recording-session";
+import { NATIVE_PROFILER_SESSION_NAMESPACE } from "../../blueprints/native-profiler-session";
+import { JS_RUNTIME_DEBUGGER_NAMESPACE } from "../../blueprints/js-runtime-debugger";
+import { NETWORK_INSPECTOR_NAMESPACE } from "../../blueprints/network-inspector";
+import { REACT_PROFILER_SESSION_NAMESPACE } from "../../blueprints/react-profiler-session";
 
 /**
  * Which services one device id owns — the single definition of that mapping,
  * shared by `stop-simulator-server` (one device, transport scope) and
- * `stop-all-simulator-servers` (every device-owned service). Two independent
- * matchers drifted apart once before: one was case-sensitive and blind to the
- * `:tcp` suffix, so the same udid reaped different services depending on which
- * tool the agent reached for.
+ * `stop-all-simulator-servers` (every device-owned service). The two tools had
+ * two separate matchers that drifted apart: one was case-sensitive and blind to
+ * the `:tcp` suffix, so the same udid reaped different services depending on
+ * which tool the agent reached for.
+ *
+ * Note this unifies how a URN is matched, not how a raw id is classified:
+ * `stop-simulator-server` still picks its namespace set from
+ * `resolveDevice().platform`, whose prefix tests are case-SENSITIVE, so an id
+ * spelled in the wrong case can still land on the wrong namespace set there.
  */
 
 /**
- * Every discriminator a device-scoped URN appends after the device id
- * (`NativeDevtools:<udid>:tcp` and `AXService:<udid>:tcp`; every other URN in
- * {@link DEVICE_OWNED_NAMESPACES} is a bare `<Namespace>:<device.id>`).
+ * Every discriminator a device-scoped URN appends AFTER the device id
+ * (`NativeDevtools:<udid>:tcp` and `AXService:<udid>:tcp` are the only two;
+ * every other URN in {@link DEVICE_OWNED_NAMESPACES} ends at the device id).
  * Enumerated rather than matched as "anything after a colon", because a device
  * id can itself end in `:<something>`: an adb serial over wifi is
  * `192.168.1.5:5555`, so a suffix wildcard would let the bare `192.168.1.5`
  * claim every device at that address and tear down another agent's — while
  * reporting nothing unmatched.
  */
-export const URN_SUFFIXES = ["", ":tcp"] as const;
+const URN_SUFFIXES = ["", ":tcp"] as const;
 
 /**
- * Every namespace whose service belongs to exactly one device, and whose
+ * Namespaces whose URN interposes the Metro port between the namespace and the
+ * device id: `<Namespace>:<port>:<deviceId>`. Split off from the plain shape
+ * because the tail is not the device id — matching these as if it were would
+ * report every debugger session as belonging to no device.
+ *
+ * Only the FIRST colon is consumed. The remainder is compared whole, so a
+ * wireless adb serial (`JsRuntimeDebugger:8081:192.168.1.5:5555`) still
+ * resolves to `192.168.1.5:5555` and not to `192.168.1.5`.
+ */
+const PORT_KEYED_NAMESPACES: readonly string[] = [
+  JS_RUNTIME_DEBUGGER_NAMESPACE,
+  // Both of these declare `getDependencies -> JsRuntimeDebugger:<payload>`, so
+  // disposing the debugger already cascades to them. Listed anyway so ownership
+  // is recognized even if only one of them is live.
+  NETWORK_INSPECTOR_NAMESPACE,
+  REACT_PROFILER_SESSION_NAMESPACE,
+];
+
+/**
+ * Every namespace whose service belongs to exactly one device and whose
  * `dispose()` frees something worth freeing. A device owning none of these is
  * not a bad id — Vega is driven entirely by CLI/adb shell-outs and registers no
  * service at all.
  *
- * `AXService` is here because its `dispose()` is the only thing that reaps the
- * in-sim ax daemon (spawned `--timeout 3600`) and unlinks its socket; nothing
- * cascades from `SimulatorServer`, so an iOS session that only ran
- * boot/launch/describe owns this and nothing else. `TvControl` likewise owns two
- * spawned `--timeout 3600` daemons. (`AndroidTvControl` is stateless adb
- * shell-outs with a no-op dispose, but is included for symmetry so the snapshot
- * is fully drained.)
+ * Membership is decided by "does dispose() reap a resource that outlives the
+ * call", because nothing here cascades: of all the blueprints, only
+ * NetworkInspector, ReactProfilerSession and ChromiumJsRuntimeDebugger declare
+ * `getDependencies`, so a namespace left out of this list is simply never torn
+ * down by a session-end stop.
+ *
+ * - `AXService` owns the in-sim ax daemon (spawned `--timeout 3600`) and its
+ *   socket. An iOS session that only ran boot/launch/describe owns this and
+ *   nothing else.
+ * - `TvControl` owns two spawned `--timeout 3600` daemons.
+ * - `ScreenRecordingSession` owns an ffmpeg child, an MJPEG frame stream, and
+ *   the touch-visualizer overlay it enabled on the device.
+ * - `NativeProfilerSession` owns an xctrace child on iOS, and on Android an
+ *   on-device perfetto process plus its trace file.
+ * - `JsRuntimeDebugger` owns a bound loopback HTTP/WebSocket server, the CDP
+ *   socket to Metro, and a log file handle.
+ *
+ * (`AndroidTvControl` is stateless adb shell-outs with a no-op dispose, but is
+ * included for symmetry so the snapshot is fully drained. ChromiumJsRuntimeDebugger
+ * is omitted deliberately: it cascades from `ChromiumCdp`, which is listed.)
  */
 export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
   SIMULATOR_SERVER_NAMESPACE,
@@ -49,6 +91,9 @@ export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
   TV_CONTROL_NAMESPACE,
   ANDROID_TV_CONTROL_NAMESPACE,
   AX_SERVICE_NAMESPACE,
+  SCREEN_RECORDING_SESSION_NAMESPACE,
+  NATIVE_PROFILER_SESSION_NAMESPACE,
+  ...PORT_KEYED_NAMESPACES,
 ];
 
 /**
@@ -59,7 +104,7 @@ export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
  * the documented recovery for a wedged transport ("stop it and retry"), and
  * widening it to devtools/AX would make a routine retry silently drop the
  * native-devtools connection another agent's in-progress recording depends on —
- * degrading that flow to coordinate taps, which is the exact hazard
+ * degrading that flow to coordinate taps, which is the hazard
  * `stop-all-simulator-servers`' `devices` scope exists to prevent. Agents
  * finishing a session call `stop-all-simulator-servers` instead, which drains
  * everything.
@@ -73,9 +118,20 @@ export function transportNamespacesForPlatform(platform: string): readonly strin
 }
 
 /**
- * Which entry of `deviceIds` owns `urn` within `namespaces`, if any. The tail
- * after the namespace is compared whole (never split on ":", see
- * {@link URN_SUFFIXES}).
+ * The device-id portion of `urn` if it belongs to `namespace`, else undefined.
+ * Accounts for the two URN shapes (see {@link PORT_KEYED_NAMESPACES}).
+ */
+function deviceIdPortion(urn: string, namespace: string): string | undefined {
+  if (!urn.startsWith(`${namespace}:`)) return undefined;
+  const tail = urn.slice(namespace.length + 1);
+  if (!PORT_KEYED_NAMESPACES.includes(namespace)) return tail;
+  const afterPort = tail.indexOf(":");
+  return afterPort < 0 ? undefined : tail.slice(afterPort + 1);
+}
+
+/**
+ * Which entry of `deviceIds` owns `urn` within `namespaces`, if any. The device
+ * id is compared whole (never split on ":", see {@link URN_SUFFIXES}).
  *
  * Matching is case-insensitive: iOS UDIDs are conventionally upper-case but
  * agents pass through whatever they were given, and a case mismatch must not
@@ -90,13 +146,19 @@ export function deviceIdOwningUrn(
   namespaces: readonly string[],
   deviceIds: readonly string[]
 ): string | undefined {
-  const namespace = namespaces.find((ns) => urn.startsWith(`${ns}:`));
-  if (namespace === undefined) return undefined;
-  const tail = urn.slice(namespace.length + 1).toLowerCase();
-  return deviceIds.find((id) => {
-    const lower = id.toLowerCase();
-    return URN_SUFFIXES.some((suffix) => tail === `${lower}${suffix}`);
-  });
+  for (const namespace of namespaces) {
+    const portion = deviceIdPortion(urn, namespace);
+    if (portion === undefined) continue;
+    const tail = portion.toLowerCase();
+    const owner = deviceIds.find((id) => {
+      const lower = id.toLowerCase();
+      return URN_SUFFIXES.some((suffix) => tail === `${lower}${suffix}`);
+    });
+    // No namespace can contain ":", so at most one can prefix a given URN —
+    // a miss here is a miss outright, not a reason to keep scanning.
+    return owner;
+  }
+  return undefined;
 }
 
 /** Whether `urn` belongs to any of `namespaces`, regardless of which device. */

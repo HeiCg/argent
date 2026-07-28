@@ -131,11 +131,21 @@ to remove or reorder steps.`,
     // there is no longer a switched-away-from flow to report.
     if (replaced) {
       const discardedSteps = replaced.flow.steps.length;
+      // Only claim the file was reset when this process actually reset it. In
+      // client mode the truncation happens only once the client applies the
+      // directive, and a rejected path or a failed write there surfaces as
+      // `savedTo: null` — so asserting the reset here would tell the agent its
+      // file is empty while it still holds the previous take.
+      const reset =
+        persist === "host"
+          ? `${filePath} reset to an empty flow.`
+          : `${filePath} is reset to an empty flow once your client applies \`savedTo\` ` +
+            `(a null \`savedTo\` means it did not).`;
       return {
         message:
           `Restarted recording "${params.name}" — the previous take ` +
           `(${discardedSteps} step${discardedSteps === 1 ? "" : "s"}) was discarded and ` +
-          `${filePath} reset to an empty flow.`,
+          reset,
         restarted: true,
         discardedSteps,
         flowFile,
