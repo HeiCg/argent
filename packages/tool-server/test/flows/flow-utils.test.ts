@@ -1109,9 +1109,13 @@ describe("recording sessions", () => {
     // The cap is a leak backstop, but which entry it drops matters: evicting a
     // recording an agent is actively using would strand its steps. Fill past
     // the cap, touching the first-registered key just before the overflow — it
-    // must survive and the untouched next-oldest must go. A FIFO eviction, or
-    // an LRU keyed on a millisecond clock (every one of these registers inside
-    // the same millisecond, so they would all tie), fails this.
+    // must survive and the untouched next-oldest must go. A FIFO eviction fails
+    // this deterministically.
+    //
+    // It does NOT reliably catch an LRU keyed on a millisecond clock: that only
+    // ties when the whole fill and the touch land inside one millisecond, which
+    // holds when this file runs alone but not under full-suite load. The
+    // counter's tie-freedom is argued at `touch()` rather than pinned here.
     const cap = 32;
     for (let i = 0; i < cap; i++) start("/tmp/proj-a", `flow-${i}`);
     expect(listActiveRecordings()).toHaveLength(cap);
