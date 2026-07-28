@@ -444,6 +444,80 @@ describe("the flow-file lock", () => {
     expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
     expect(await readMarkers(root, "beta")).toEqual(["tool:b1"]);
   });
+
+  it("still excludes a third acquirer after the first one has released", async () => {
+    const root = await makeRoot("lock-three-deep");
+
+    // Three acquirers on ONE key, which is where the lock map's self-cleanup
+    // has to be careful: the entry may only be dropped by the holder that is
+    // still the tail. Deleting it unconditionally looks harmless — every
+    // two-party test still passes — but once A finishes while B is holding, the
+    // key is gone from the map, so C finds no predecessor to queue behind and
+    // runs *concurrently with B*. That is the lost update this lock exists to
+    // prevent, so pin three-deep contention explicitly.
+    const order: string[] = [];
+    const gateA = openGate();
+    const gateB = openGate();
+
+    const heldA = withFlowFileLock(root, "alpha", async () => {
+      order.push("a-enter");
+      await gateA.promise;
+      order.push("a-exit");
+    });
+    const heldB = withFlowFileLock(root, "alpha", async () => {
+      order.push("b-enter");
+      await gateB.promise;
+      order.push("b-exit");
+    });
+
+    // A is holding, B is queued. Release A so B takes the lock and A's cleanup
+    // runs while B is still inside its critical section.
+    gateA.open();
+    await heldA;
+    await settle();
+    expect(order).toEqual(["a-enter", "a-exit", "b-enter"]);
+
+    // C arrives now — after A's cleanup, while B holds.
+    const heldC = withFlowFileLock(root, "alpha", async () => {
+      order.push("c-enter");
+    });
+    expect(await within(heldC, "c-done", 200)).toBe("timed-out");
+    expect(order).toEqual(["a-enter", "a-exit", "b-enter"]);
+
+    gateB.open();
+    await heldB;
+    await heldC;
+    expect(order).toEqual(["a-enter", "a-exit", "b-enter", "b-exit", "c-enter"]);
+  });
+});
+
+// ── The append path's source of truth ────────────────────────────────
+
+describe("appending to a recording whose file was hand-edited", () => {
+  it("re-reads the file, so an edit made mid-recording survives the next append", async () => {
+    const root = await makeRoot("append-rereads");
+    await start(root, "alpha");
+    await addEcho(root, "alpha", "s1");
+    await addEcho(root, "alpha", "s2");
+    expect(await readMarkers(root, "alpha")).toEqual(["echo:s1", "echo:s2"]);
+
+    // Removing a bad step by editing the .yaml is what both recording tools'
+    // descriptions tell the agent to do. It only survives because the host-mode
+    // append re-reads from disk; serializing the in-memory copy instead would
+    // silently resurrect the deleted step on the very next append.
+    await fs.writeFile(
+      flowPath(root, "alpha"),
+      'executionPrerequisite: ""\nsteps:\n  - echo: s2\n',
+      "utf8"
+    );
+
+    await addEcho(root, "alpha", "s3");
+    expect(await readMarkers(root, "alpha")).toEqual(["echo:s2", "echo:s3"]);
+
+    // …and the finish reports the file, not the take as it was recorded.
+    const finished = await finish(root, "alpha");
+    expect(markers(parseFlow(finished.flowFile).steps)).toEqual(["echo:s2", "echo:s3"]);
+  });
 });
 
 // ── Replaying a flow while recordings are live ───────────────────────
