@@ -120,9 +120,11 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // flow-start-recording, truncates the take it would be recovering).
         const flow = parseFlow(flowFile);
         // Render the summary before clearing too, for the same reason: it walks
-        // step bodies the parser does not fully constrain (`JSON.stringify` on
-        // a tool step's args can throw on a cyclic YAML anchor), and nothing
-        // that can throw may run after the session is destroyed.
+        // step bodies the parser does not fully constrain, and nothing that can
+        // throw may run after the session is destroyed. The one known thrower
+        // there — `JSON.stringify` on a cyclic `args` anchor — is guarded in
+        // {@link renderToolArgs}; keeping the order is what makes the next one
+        // recoverable rather than fatal.
         const summary = summarizeSteps(flow);
         clearRecordingSession(params.project_root, params.name);
         return { filePath, flowFile, savedTo, flow, summary };
@@ -140,6 +142,23 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
     };
   },
 };
+
+/**
+ * A `tool:` step's `args` is the one step body the parser does not constrain, so
+ * a cyclic YAML alias in a hand-edited file reaches here as a cyclic object and
+ * `JSON.stringify` throws on it. Fall back to a marker, the way `parseFlow`
+ * already does for the same input class (see `badEntry` in flow-utils) — the
+ * summary of a recording that is otherwise fine should not fail on one
+ * unrenderable step. Interpolation matches the previous inline spelling, so an
+ * absent `args` still renders "undefined".
+ */
+function renderToolArgs(args: unknown): string {
+  try {
+    return `${JSON.stringify(args)}`;
+  } catch {
+    return "[cyclic args]";
+  }
+}
 
 /** One human-readable line per recorded step, in the flow file's own spellings. */
 function summarizeSteps(flow: FlowFile): string[] {
@@ -194,7 +213,7 @@ function summarizeSteps(flow: FlowFile): string[] {
         return `${n}. snapshot: ${step.name}`;
       case "tool":
       default:
-        return `${n}. tool: ${step.name} ${JSON.stringify(step.args)}`;
+        return `${n}. tool: ${step.name} ${renderToolArgs(step.args)}`;
     }
   });
 }

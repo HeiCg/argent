@@ -7,6 +7,7 @@ import {
   appendStepToFlow,
   parseFlow,
   assertSafeFlowName,
+  getFlowsDir,
   describeSelector,
   type FlowSavedTo,
   type FlowStep,
@@ -128,6 +129,20 @@ async function captureTapSelector(
 const RUN_TARGET_COMMAND = "flow-execute";
 
 /**
+ * The flows dir of a root, or null if it is not a valid one. Used only to
+ * compare the executed flow's project against the recording's, so a malformed
+ * root must not throw here — that would divert a resolvable target into the
+ * keep-the-raw-step branch on the strength of an advisory comparison.
+ */
+function safeFlowsDir(root: string): string | null {
+  try {
+    return getFlowsDir(root);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * For a recorded `flow-execute` call, decide whether to record it as a
  * `run: <name>` directive. Returns the flow name to compose, or a warning
  * explaining why the raw `flow-execute` step was kept.
@@ -157,9 +172,24 @@ async function captureRunTarget(
     // of the flow being recorded, which is not necessarily the project the
     // nested flow-execute ran in. Parsing validates the sibling exists and is a
     // well-formed flow; a failure falls through to keeping the raw step.
-    const fragPath = path.join(path.dirname(session.filePath), `${name}.yaml`);
+    const flowsDir = path.dirname(session.filePath);
+    const fragPath = path.join(flowsDir, `${name}.yaml`);
     parseFlow(await fs.readFile(fragPath, "utf8"));
-    return { flow: name };
+    // Same name, two projects: the sibling that will run at REPLAY is a
+    // different file from the one that just ran LIVE. Recording `run:` is still
+    // correct — composition is defined against the recording's own siblings —
+    // but concurrent agents record across projects now, and generic fragment
+    // names ("login", "setup") are exactly the ones that exist in both. Say it,
+    // or the substitution stays invisible until the flow replays wrong.
+    const ranIn = args.project_root;
+    const ranElsewhere =
+      typeof ranIn === "string" && safeFlowsDir(ranIn) !== null && safeFlowsDir(ranIn) !== flowsDir;
+    return {
+      flow: name,
+      warning: ranElsewhere
+        ? `recorded "run: ${name}", which replays THIS project's ${name}.yaml — the step ran ${name} from ${String(ranIn)}, a different project`
+        : undefined,
+    };
   } catch (err) {
     return {
       warning: `could not resolve "${name}" as a sibling fragment (${err instanceof Error ? err.message : String(err)}); kept the raw flow-execute step`,
@@ -255,6 +285,10 @@ If a step was recorded by mistake, edit the .yaml file directly to remove it.`,
         step = { kind: "launch", app: strippedArgs.bundleId as string };
       } else if (runTarget?.flow) {
         step = { kind: "run", flow: runTarget.flow };
+        // A resolved target can still carry a warning (a same-named sibling in
+        // another project), so this branch surfaces it too — not only the
+        // kept-the-raw-step one below.
+        warning = runTarget.warning;
       } else {
         warning = runTarget?.warning;
         // The step ran live with the full args (incl. the device id), but the
