@@ -43,6 +43,16 @@ export async function typeSimulatorServer(
       await sleep(10);
       api.pressKey("Up", modifierKeyCode);
     }
+  };
+
+  // `keys` counts what the caller asked to be *entered* — one per character of
+  // `text`, plus one for a named `key`. The clear's own presses are deliberately
+  // excluded: they are an implementation detail of emptying the field (two on
+  // this backend, zero adb keyevents' worth on Android, one CDP event on
+  // Chromium), and counting them would make the same call report a different
+  // `keys` per platform. The clear is reported by `cleared` instead.
+  const pressAndCount = async (keyCode: number, modifierKeyCode?: number) => {
+    await pressKeyCode(keyCode, modifierKeyCode);
     keysPressed++;
   };
 
@@ -74,6 +84,28 @@ export async function typeSimulatorServer(
     }
   }
 
+  // Resolve EVERY character before touching the device. Typing used to resolve
+  // per character inside the loop, which was harmless when the worst outcome was
+  // a partially-typed field. With `clear` it is not: clearing and then rejecting
+  // on character 4 destroys the field's original value and leaves a fragment
+  // behind, so the caller ends up worse off than before a call that returned
+  // 400. Same up-front-validation rule the android backend applies with
+  // `assertTypeableAndroidText`.
+  const presses = params.text
+    ? [...params.text].map((char) => ({ char, press: charToKeyPress(char) }))
+    : [];
+  for (const { char, press } of presses) {
+    // A character with no keycode can't be typed on this backend — a caller
+    // input error → 400, keeping the KEYBOARD_CHARACTER_UNSUPPORTED telemetry
+    // code (#420).
+    if (!press)
+      throw new InvalidToolInputError(`No keycode for character "${char}"`, {
+        error_code: FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED,
+        failure_stage: "keyboard_char_simulator",
+        error_kind: "unsupported",
+      });
+  }
+
   // Clear before text: Cmd+A selects the field's whole contents, backspace
   // deletes the selection. Verified on a UIKit `UITextField` (Safari address
   // bar) and a React Native `TextInput` (Bluesky search) — on the latter the JS
@@ -85,45 +117,16 @@ export async function typeSimulatorServer(
     await sleep(delay);
   }
 
-  if (params.text) {
-    for (const char of params.text) {
-      const press = charToKeyPress(char);
-      // A character with no keycode can't be typed on this backend — a caller
-      // input error → 400, keeping the KEYBOARD_CHARACTER_UNSUPPORTED telemetry
-      // code (#420).
-      if (!press)
-        throw new InvalidToolInputError(`No keycode for character "${char}"`, {
-          error_code: FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED,
-          failure_stage: "keyboard_char_simulator",
-          error_kind: "unsupported",
-        });
-      await pressKeyCode(press.keyCode, press.withShift ? SHIFT_KEYCODE : undefined);
-      await sleep(delay);
-    }
+  for (const { press } of presses) {
+    await pressAndCount(press!.keyCode, press!.withShift ? SHIFT_KEYCODE : undefined);
+    await sleep(delay);
   }
 
-  if (params.key) {
-    const lower = params.key.toLowerCase();
-    // Own-property check: a prototype key like "constructor" would otherwise
-    // pass the nullish guard with a garbage value (Object.prototype.constructor)
-    // and go over the wire as a broken key press instead of rejecting.
-    const namedKeyCode = Object.hasOwn(NAMED_KEYS, lower) ? NAMED_KEYS[lower] : undefined;
-    if (namedKeyCode == null) {
-      // Well-typed but unusable input (the schema's `key` is a free string) — a
-      // caller mistake, so InvalidToolInputError → HTTP 400, matching the Android
-      // path and uniform across keyboard backends. The KEYBOARD_KEY_UNSUPPORTED
-      // telemetry signal from #420 is preserved: the 400 mapping keys off the
-      // error class, not the code.
-      throw new InvalidToolInputError(
-        `Unknown key "${params.key}". Supported: ${Object.keys(NAMED_KEYS).join(", ")}`,
-        {
-          error_code: FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED,
-          failure_stage: "keyboard_named_key_simulator",
-          error_kind: "unsupported",
-        }
-      );
-    }
-    await pressKeyCode(namedKeyCode);
+  // The tool rejects a request carrying both `text` and `key` (see ./index.ts),
+  // so this branch and the text loop above are mutually exclusive. Only `clear`
+  // combines with either, and it runs before both.
+  if (namedKeyCode != null) {
+    await pressAndCount(namedKeyCode);
   }
 
   return {
