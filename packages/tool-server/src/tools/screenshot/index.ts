@@ -124,8 +124,7 @@ export function createScreenshotTool(registry: Registry): ToolDefinition<Params,
 Use when you need a baseline image before an interaction or to inspect the current screen state after a delay.
 Fails if the simulator-server / emulator backend / Chromium CDP is not reachable for the given device.`,
     alwaysLoad: true,
-    searchHint:
-      "device simulator emulator chromium screen image capture baseline tvos apple tv vega fire tv",
+    searchHint: "device simulator emulator chromium screen image capture baseline tvos apple tv",
     zodSchema,
     outputHint: "image",
     capability,

@@ -14,8 +14,12 @@ function flatten(n: Node, out: Node[] = []): Node[] {
 }
 const center = (f: Node["frame"]) => ({ x: f.x + f.width / 2, y: f.y + f.height / 2 });
 
-// A realistic axAudit snapshot: some elements carry an audit rect (points on a
-// 393x852 screen), others don't (interpolated by the adapter).
+// FORWARD-COMPATIBILITY fixture only. The sim-server does NOT send geometry
+// today — its payload is captions + reading order, with no `screen` and no
+// per-element `rect` (pinned on the producer side by radon's
+// `ax_tree_payload_carries_no_geometry`). This fixture exists so the adapter's
+// real-rect path keeps working if a geometry source is ever added; the
+// no-geometry suite below is what actually runs in production.
 const AXTREE = {
   screen: { w: 393, h: 852 },
   elements: [
@@ -27,7 +31,53 @@ const AXTREE = {
   ],
 };
 
-describe("adaptCoreDeviceAxToDescribeResult", () => {
+// What `/api/ax-tree` actually returns today: captions + reading order only.
+const AXTREE_NO_GEOMETRY = {
+  elements: [
+    { caption: "Settings, Button", id: "a1" },
+    { caption: "Wi-Fi, Header", id: "a2" },
+    { caption: "Wi-Fi, 1, Button, Toggle", id: "a3" },
+    { caption: "Other…, Button", id: "a4" },
+    { caption: "Known networks will be joined automatically.", id: "a5" },
+  ],
+};
+
+describe("adaptCoreDeviceAxToDescribeResult (production payload: no geometry)", () => {
+  const tree = adaptCoreDeviceAxToDescribeResult(AXTREE_NO_GEOMETRY);
+  const nodes = flatten(tree as Node).slice(1); // drop the synthetic AXGroup root
+
+  it("still parses roles and labels from the captions", () => {
+    expect(nodes.map((n) => n.role)).toEqual([
+      "AXButton",
+      "AXHeader",
+      "AXButton",
+      "AXButton",
+      "AXStaticText",
+    ]);
+    expect(nodes[1].label).toBe("Wi-Fi");
+  });
+
+  it("interpolates EVERY frame: full-width rows, strictly ordered top to bottom", () => {
+    for (const n of nodes) {
+      // approxFrame is full-width with a symmetric margin, never a real rect.
+      expect(n.frame.x).toBeCloseTo(0.04, 6);
+      expect(n.frame.width).toBeCloseTo(0.92, 6);
+    }
+    const ys = nodes.map((n) => center(n.frame).y);
+    for (let i = 1; i < ys.length; i++) {
+      expect(ys[i]).toBeGreaterThan(ys[i - 1]);
+    }
+  });
+
+  it("keeps every interpolated frame inside the normalized [0,1] box", () => {
+    for (const n of nodes) {
+      expect(n.frame.y).toBeGreaterThanOrEqual(0);
+      expect(n.frame.y + n.frame.height).toBeLessThanOrEqual(1.0001);
+    }
+  });
+});
+
+describe("adaptCoreDeviceAxToDescribeResult (forward-compat: payload with geometry)", () => {
   const tree = adaptCoreDeviceAxToDescribeResult(AXTREE);
   const nodes = flatten(tree as Node);
   const byLabel = (l: string) => nodes.find((n) => n.label === l);

@@ -72,12 +72,13 @@ type PreviewEntry = {
  * Android serials are remapped to that shape — `simulator-server/:udid` already
  * accepts Android serials via `resolveDevice(udid)`.
  *
- * Chromium and physical iOS devices are intentionally excluded: the preview UI
- * streams frames through simulator-server's WebSocket, which only exists for
- * simulators / Android. simulator-server outright refuses physical iOS
- * (kind === "device", driven over CoreDevice instead), so surfacing either
- * would let the UI offer a target it can't drive. Those consumers should use
- * the MCP tools (screenshot, describe, gesture-*) directly.
+ * Chromium is excluded because it has no simulator-server WebSocket to stream
+ * frames from at all. Physical iPhones are excluded by choice: simulator-server
+ * does drive them (the `ios_device` subcommand), but they are behind the
+ * opt-in `physical-ios-devices` flag and the preview UI has no flag-aware
+ * path — offering one in the dropdown would produce a target that fails to
+ * connect whenever the flag is off. Both should be driven through the MCP tools
+ * (screenshot, describe, gesture-*) directly.
  */
 export function devicesToPreviewEntries(devices: ListDevicesResult["devices"]): PreviewEntry[] {
   return devices.flatMap<PreviewEntry>((d) => {
@@ -250,8 +251,8 @@ export function createPreviewRouter(registry: Registry): Router {
       // re-running `list-devices`.
       rememberDevices(data.devices);
       // devicesToPreviewEntries maps iOS/Android into the UI's udid/Booted shape
-      // and excludes targets the preview can't stream — chromium (no
-      // simulator-server WebSocket) and physical iOS (kind: "device").
+      // and excludes chromium and physical iOS (kind: "device") — see its doc
+      // comment for why each is left out.
       res.json({ simulators: devicesToPreviewEntries(data.devices) });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : String(err) });

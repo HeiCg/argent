@@ -56,9 +56,6 @@ Fails if native devtools are not connected, the app is not running, or status is
   }),
   async execute(services, params) {
     const device = resolveDevice(params.udid);
-    // Gate host deps per device kind: local sims need xcrun, remote sims route
-    // via sim-remote — a global `requires:["xcrun"]` would wrongly 424 a remote
-    // sim on an xcrun-less host, so the dep check lives here, not on the def.
     await ensureDeps(device.platform === "ios-remote" ? ["sim-remote"] : ["xcrun"]);
 
     const api = services.nativeDevtools as NativeDevtoolsApi;

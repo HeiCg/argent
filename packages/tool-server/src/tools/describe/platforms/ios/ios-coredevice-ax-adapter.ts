@@ -7,10 +7,17 @@ import { parseDescribeResult, type DescribeNode } from "../../contract";
  *
  * The audit gives a rich VoiceOver caption (label + value + traits) and reading
  * order for EVERY on-screen element, but Apple doesn't expose per-element
- * geometry on hardware — only the subset of elements the accessibility audit
- * flags carry an on-screen rect. So real frames are used where present, and the
- * rest are interpolated from their reading-order neighbours (good enough to tap
- * a row in a vertical list; the tool's hint says to confirm with screenshot).
+ * geometry app-free on hardware. **Today the sim-server therefore sends no
+ * geometry at all** — no `screen`, no per-element `rect` — so in practice every
+ * frame below is interpolated: elements are laid out as full-width rows spread
+ * top to bottom in reading order. That's enough to tap a row in a vertical list;
+ * the tool's hint tells the agent to confirm with screenshot for anything else.
+ *
+ * `parseRect` (with `tree.screen` as the normalizing basis) is nonetheless
+ * honoured whenever the payload does carry geometry, so re-adding a geometry
+ * source on the sim-server side (a tracked follow-up) is a producer-only change.
+ * radon's `ax_tree_payload_carries_no_geometry` test pins the current
+ * no-geometry shape, and `ios-coredevice-ax-adapter.test.ts` covers both.
  */
 
 // AX trait tokens that appear (comma-separated) at the tail of a VoiceOver

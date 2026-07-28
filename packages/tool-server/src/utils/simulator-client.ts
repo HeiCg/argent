@@ -201,20 +201,25 @@ export interface CoreDeviceAxElement {
   caption: string;
   /** Per-element identifier (hex) — stable within a single snapshot. */
   id: string;
-  /** On-screen rect "{{x, y}, {w, h}}" in points, when the audit reported one. */
+  /**
+   * On-screen rect "{{x, y}, {w, h}}" in points. Reserved by the wire contract
+   * but never sent today — Apple exposes no per-element geometry app-free on
+   * hardware, so the adapter interpolates every frame. See the adapter docs.
+   */
   rect?: string;
 }
 
 export interface CoreDeviceAxTree {
   elements: CoreDeviceAxElement[];
-  /** Screen size in points, for normalizing rects to 0..1. */
+  /** Screen size in points, for normalizing rects to 0..1. Never sent today — see `rect`. */
   screen?: { w?: number; h?: number };
 }
 
 /**
  * Read a physical iPhone's on-screen accessibility tree (`describe`) via the
  * simulator-server's CoreDevice axAudit endpoint. The response shape matches the
- * describe adapter's input (elements in reading order + best-effort geometry).
+ * describe adapter's input: elements in reading order, and geometry if a future
+ * sim-server ever reports any.
  */
 export async function httpAxTree(
   api: SimulatorServerApi,

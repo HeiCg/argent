@@ -83,17 +83,18 @@ no manual step, no `sudo`.
 
 - `describe` returns the device's **live on-screen accessibility tree** — the frontmost app's
   elements (or the home screen), read app-free via the iOS-26+ accessibility-audit service over
-  CoreDevice. Element labels, values, traits (roles) and reading order are exact. Frames are exact
-  for the elements the accessibility audit reports and **interpolated** from reading-order
-  neighbours for the rest (Apple doesn't expose per-element geometry on a physical device), so
-  they're good enough to tap a row in a vertical list — but confirm with `screenshot` before a
-  precise tap, especially for controls like toggles. (For pixel-exact in-app frames + taps you'd
-  need an on-device XCUITest runner, which requires code-signing.)
-- Not supported yet (return a clear "not supported" error): keyboard/typing, pinch & rotate
-  (multi-touch), `open-url`, `reinstall-app`, `restart-app`, and the native inspection /
-  profiling tools (`native-*`, `native-profiler-*`, `screenshot-diff`). `launch-app` (via
-  `devicectl`) works independently of the CoreDevice session — it can succeed even before the
-  first interaction has warmed it.
+  CoreDevice. Element labels, values, traits (roles) and reading order are exact. **Frames are
+  not:** Apple exposes no per-element geometry app-free on a physical device, so every frame is
+  **interpolated** from reading order (elements are treated as full-width rows stacked top to
+  bottom). That's good enough to tap a row in a vertical list, but locate anything else — toggles,
+  side-by-side controls, grids — with `screenshot` first. (For pixel-exact in-app frames + taps
+  you'd need an on-device XCUITest runner, which requires code-signing.)
+- Not supported yet (return a clear "not supported" error): keyboard/typing, `paste`, multi-touch
+  gestures (`gesture-pinch`, `gesture-rotate`, `gesture-custom`), device orientation (`rotate`),
+  `open-url`, `reinstall-app`, `restart-app`, and the native inspection / profiling tools
+  (`native-*`, `native-profiler-*`, `screenshot-diff`). `launch-app` (via `devicectl`) works
+  independently of the CoreDevice session — it can succeed even before the first interaction has
+  warmed it.
 
 ---
 

@@ -49,16 +49,18 @@ const TVOS_HINT =
 
 // Physical iPhones expose their real on-screen accessibility tree app-free via
 // the iOS-26+ axAudit service (read over CoreDevice). Captions (label + value +
-// traits) and reading order are exact for every element; frames are exact only
-// for the subset the accessibility audit flags, and interpolated for the rest —
-// this hint makes that precision boundary explicit.
+// traits) and reading order are exact for every element, but the payload carries
+// no geometry at all — Apple exposes none app-free on hardware — so EVERY frame
+// is interpolated from reading order. This hint makes that boundary explicit so
+// the agent doesn't trust a frame it shouldn't.
 const PHYSICAL_IOS_AX_HINT =
   "This is the live accessibility tree of the frontmost app (or the home screen), read over " +
-  "CoreDevice. Element labels, values, traits and reading order are exact. Frames are exact for " +
-  "elements the accessibility audit reported and APPROXIMATE (interpolated from neighbours) for the " +
-  "rest — good enough to tap a row in a vertical list, but confirm with screenshot before a precise " +
-  "tap, especially for controls like toggles. Apple does not expose per-element geometry on a " +
-  "physical device, so screenshot remains authoritative for exact positions.";
+  "CoreDevice. Element labels, values, traits and reading order are exact. Frames are NOT — Apple " +
+  "exposes no per-element geometry on a physical device, so every frame here is APPROXIMATE, " +
+  "interpolated from reading order (elements are assumed to be full-width rows stacked top to " +
+  "bottom). That is good enough to tap a row in a vertical list, but anything else — toggles, " +
+  "side-by-side controls, grids, anything off the vertical axis — must be located with screenshot " +
+  "first. screenshot is authoritative for positions.";
 
 // Apple system apps (`com.apple.*`) can never load argent's injected dylib, so
 // the native-devtools fallback can't read their view hierarchy and restarting
@@ -112,8 +114,8 @@ export async function describeIos(
   // and on the home screen — the same VoiceOver-style walk. It needs the RSDCheckin
   // handshake that iOS 26 added (the sim-server performs it); without it the daemon
   // drops the connection on the first byte. Apple exposes no per-element geometry
-  // on hardware, so frames are exact only for elements the accessibility audit
-  // flags and interpolated for the rest (see the adapter + hint). The two
+  // app-free on hardware, so the payload is captions + reading order only and every
+  // frame is interpolated by the adapter (see the adapter + hint). The two
   // simulator backends below can't run against hardware (they shell `simctl spawn`).
   if (isPhysicalIos(device)) {
     // The physical iPhone is driven by the radon simulator-server over CoreDevice;

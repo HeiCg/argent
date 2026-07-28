@@ -13,9 +13,9 @@ export const iosImpl: PlatformImpl<OpenUrlServices, OpenUrlParams, OpenUrlResult
   handler: async (_services, params, device) => {
     if (device.kind === "device") {
       // CoreDevice/devicectl has no deep-link/open-url surface for physical
-      // iOS; only screenshot, gesture-tap, gesture-swipe, button, and launch-app
-      // are supported there today. UnsupportedOperationError maps to a clean
-      // 400 (a plain Error would surface as a generic 500).
+      // iOS; only screenshot, describe, gesture-tap, gesture-swipe, button, and
+      // launch-app are supported there today. UnsupportedOperationError maps to
+      // a clean 400 (a plain Error would surface as a generic 500).
       throw new UnsupportedOperationError(
         "open-url",
         device,

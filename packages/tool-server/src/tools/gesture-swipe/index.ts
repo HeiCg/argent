@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
+import type { ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
@@ -26,7 +26,7 @@ const zodSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Momentum-free swipe: decelerate into the end point (ease-out) so the OS reads ~0 release velocity and applies little to no fling. Use for scroll-to-element loops; default false (a natural flinging swipe). Simulator/emulator only — rejected on a physical iPhone."
+      "Momentum-free swipe: decelerate into the end point (ease-out) so the OS reads ~0 release velocity and applies little to no fling. Use for scroll-to-element loops; default false (a natural flinging swipe)."
     ),
 });
 
@@ -58,13 +58,12 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
   searchHint: "swipe scroll drag pan gesture device simulator emulator touch move",
   zodSchema,
   capability,
-  services: (params): Record<string, ServiceRef> => {
-    const device = resolveDevice(params.udid);
-    // A physical iPhone drives the sim-server `ios_device` subcommand, which
-    // takes the same interpolated Move-sample path as a simulator — so `settle`
-    // works there too, unlike the old fixed-trajectory CoreDevice drag.
-    return { simulatorServer: simulatorServerRef(device) };
-  },
+  // A physical iPhone resolves here too: it drives the sim-server `ios_device`
+  // subcommand, which replays the same interpolated Move samples as a simulator,
+  // so `settle` behaves identically on hardware.
+  services: (params) => ({
+    simulatorServer: simulatorServerRef(resolveDevice(params.udid)),
+  }),
   async execute(services, params) {
     const duration = params.durationMs ?? 300;
     const settle = params.settle ?? false;
