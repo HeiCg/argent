@@ -137,6 +137,61 @@ describe("stop-simulator-server", () => {
     expect(registry.disposeService).toHaveBeenCalledOnce();
     expect(registry.disposeService).toHaveBeenCalledWith("ChromiumCdp:chromium-cdp-9222");
   });
+
+  // Both stop tools now resolve "which services does this device own" through
+  // one shared matcher. Before that, this tool looked its URNs up with an exact,
+  // case-sensitive `services.get()` — so the two disagreed about the same id.
+
+  it("matches a UDID case-insensitively, like the scoped stop-all does", async () => {
+    // Agents pass through whatever spelling they were handed. A case mismatch
+    // silently no-op'd here while stop-all reaped the same device.
+    const services = new Map([
+      ["SimulatorServer:AAAA-BBBB", { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopSimulatorServerTool(registry);
+
+    const result = await tool.execute!({}, { udid: "aaaa-bbbb" });
+
+    expect(result).toEqual({ stopped: true, udid: "aaaa-bbbb" });
+    expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:AAAA-BBBB");
+  });
+
+  it("does not let a bare IP claim every wireless-adb device at that address", async () => {
+    // An adb serial over wifi is itself `ip:port`, so the shared matcher must
+    // compare the whole tail rather than splitting on ":".
+    const services = new Map([
+      ["SimulatorServer:192.168.1.5:5555", { state: ServiceState.RUNNING, dependents: [] }],
+      ["SimulatorServer:192.168.1.5:5557", { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopSimulatorServerTool(registry);
+
+    const result = await tool.execute!({}, { udid: "192.168.1.5" });
+
+    expect(result).toEqual({ stopped: false, udid: "192.168.1.5" });
+    expect(registry.disposeService).not.toHaveBeenCalled();
+  });
+
+  it("leaves this device's devtools and AX services alone", async () => {
+    // Deliberately narrower than stop-all: this tool is also the documented
+    // recovery for a wedged transport, and dropping native-devtools on a retry
+    // would degrade another agent's in-progress recording to coordinate taps.
+    const udid = "AAAA-BBBB";
+    const services = new Map([
+      [`SimulatorServer:${udid}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${udid}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`AXService:${udid}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopSimulatorServerTool(registry);
+
+    const result = await tool.execute!({}, { udid });
+
+    expect(result).toEqual({ stopped: true, udid });
+    expect(registry.disposeService).toHaveBeenCalledOnce();
+    expect(registry.disposeService).toHaveBeenCalledWith(`SimulatorServer:${udid}`);
+  });
 });
 
 describe("stop-all-simulator-servers", () => {
@@ -531,6 +586,55 @@ describe("stop-all-simulator-servers unmatched ids", () => {
     expect(second).not.toHaveProperty("unmatched");
     // The second call had nothing live to tear down.
     expect(registry.disposeService).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops AXService and does not call a describe-only iOS session a typo", async () => {
+    // An iOS session that only ran boot/launch/describe owns `AXService:<udid>`
+    // and nothing else — nothing cascades to it from SimulatorServer. While that
+    // namespace was outside the tool's set, the mandated session-end call both
+    // left the in-sim ax daemon (spawned --timeout 3600) running AND reported
+    // the perfectly correct UDID as unmatched, i.e. as a mistyped id.
+    const services = new Map([
+      [`AXService:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`AXService:${MINE}`] });
+    expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).toHaveBeenCalledWith(`AXService:${MINE}`);
+  });
+
+  it("scopes the tcp-transport AXService URN to its own device", async () => {
+    // ios-remote gives AXService the same `:tcp` suffix NativeDevtools uses.
+    const services = new Map([
+      [`AXService:${MINE}:tcp`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`AXService:${THEIRS}:tcp`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`AXService:${MINE}:tcp`] });
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`AXService:${THEIRS}:tcp`);
+  });
+
+  it("reaps AXService on an unscoped machine-wide sweep too", async () => {
+    const services = new Map([
+      [`AXService:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, {});
+
+    expect(result).toEqual({
+      stopped: [`AXService:${MINE}`, `SimulatorServer:${THEIRS}`],
+    });
   });
 
   it("names a repeated missing id only once", async () => {
