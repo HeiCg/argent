@@ -113,6 +113,7 @@ describe("parseRunArgs", () => {
       recursive: false,
       json: false,
       jsonStream: false,
+      reporter: [],
     });
   });
 
@@ -134,6 +135,7 @@ describe("parseRunArgs", () => {
       recursive: false,
       json: false,
       jsonStream: false,
+      reporter: [],
     });
     expect(parseRunArgs(["--json", "checkout.yaml"]).json).toBe(true);
     expect(parseRunArgs(["--json-stream", "checkout.yaml"]).jsonStream).toBe(true);
@@ -184,6 +186,7 @@ describe("parseRunArgs", () => {
       recursive: false,
       json: false,
       jsonStream: false,
+      reporter: [],
     });
   });
 
@@ -196,6 +199,7 @@ describe("parseRunArgs", () => {
       recursive: false,
       json: false,
       jsonStream: false,
+      reporter: [],
     });
   });
 
@@ -236,6 +240,20 @@ describe("parseRunArgs", () => {
     expect(() => parseRunArgs(["checkout.yaml", "--platfrom=ios"])).toThrow(/unknown flag/);
   });
 
+  it("collects --reporter specs in order, and validates each one at parse time", () => {
+    expect(
+      parseRunArgs(["checkout", "--reporter", "default", "--reporter=junit:out.xml"]).reporter
+    ).toEqual(["default", "junit:out.xml"]);
+    // A bad spec must fail before the run starts: discovering it after a
+    // 40-second flow, with the report file missing, is the worse failure.
+    expect(() => parseRunArgs(["checkout", "--reporter", "junit"])).toThrow(FlagParseException);
+    expect(() => parseRunArgs(["checkout", "--reporter=junit:"])).toThrow(
+      "--reporter junit requires a path"
+    );
+    expect(() => parseRunArgs(["checkout", "--reporter=tap:x"])).toThrow(/unknown format/);
+    expect(() => parseRunArgs(["checkout", "--reporter"])).toThrow("--reporter requires a value");
+  });
+
   it("rejects extra positional arguments", () => {
     expect(() => parseRunArgs(["checkout.yaml", "extra.yaml"])).toThrow(
       "flow run accepts one flow name, YAML file path, or directory path"
@@ -253,6 +271,7 @@ describe("parseRunArgs", () => {
       recursive: false,
       json: false,
       jsonStream: false,
+      reporter: [],
     });
     // The marker relaxes flag parsing, not the one-positional rule.
     expect(() => parseRunArgs(["--", "a", "b"])).toThrow(
@@ -1513,6 +1532,83 @@ describe("argent flow run", () => {
 
     await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:2");
     expect(errs.join("\n")).toContain('"checkout" did not produce a run report');
+  });
+
+  it("writes JUnit XML at the literal --reporter path and keeps the failing verdict", async () => {
+    const dir = await fsp.mkdtemp(path.join(tmpdir(), "flow-reporter-"));
+    try {
+      const dest = path.join(dir, "nested", "junit.xml");
+      toolsClientMock.callTool.mockResolvedValue({
+        data: report({
+          ok: false,
+          passed: 1,
+          failed: 1,
+          durationMs: 8900,
+          steps: [
+            { index: 0, kind: "launch", status: "pass", durationMs: 3100 },
+            {
+              index: 1,
+              kind: "tap",
+              status: "fail",
+              target: '"Checkout"',
+              durationMs: 5002,
+              reason: 'no visible element matched selector text="Checkout"',
+              failure: {
+                code: "selector-not-found",
+                message: 'no visible element matched selector text="Checkout"',
+                selector: { described: 'text="Checkout"' },
+                screen: { state: "available", elementCount: 47, elements: [] },
+                candidates: [],
+                candidateCount: 0,
+              },
+            },
+          ],
+        }),
+      });
+
+      await expect(
+        flow(["run", checkoutPath, "--reporter", `junit:${dest}`], opts)
+      ).rejects.toThrow("process.exit:1");
+
+      const xml = await fsp.readFile(dest, "utf8");
+      expect(xml).toContain('<testsuite name="checkout" tests="2" failures="1"');
+      expect(xml).toContain('<testcase classname="checkout" name="02 tap &quot;Checkout&quot;"');
+      expect(xml).toContain('<failure type="selector-not-found"');
+      // The failure block reaches the terminal too, above the verdict.
+      const out = logs.join("\n");
+      expect(out).toContain("     selector-not-found: no visible element matched selector");
+      expect(out.indexOf("Failures:")).toBeLessThan(out.indexOf("FAIL —"));
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exits 2 without calling the tool when a --reporter spec is unusable", async () => {
+    await expect(flow(["run", "checkout", "--reporter", "junit"], opts)).rejects.toThrow(
+      "process.exit:2"
+    );
+    expect(toolsClientMock.callTool).not.toHaveBeenCalled();
+    expect(errs.join("\n")).toContain("--reporter junit requires a path");
+  });
+
+  it("warns but does not change the verdict when the report file cannot be written", async () => {
+    const dir = await fsp.mkdtemp(path.join(tmpdir(), "flow-reporter-"));
+    try {
+      // A directory where the file should go: the write fails, the run does not.
+      // Failing a build on argent's own I/O would turn the reporter into a
+      // source of CI flake.
+      const dest = path.join(dir, "junit.xml");
+      await fsp.mkdir(dest);
+
+      await expect(flow(["run", checkoutPath, `--reporter=junit:${dest}`], opts)).rejects.toThrow(
+        "process.exit:0"
+      );
+
+      expect(errs.join("\n")).toContain("warning: could not write report");
+      expect(logs.join("\n")).toContain("PASS — 1 passed");
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("exits 2 on an unknown subcommand", async () => {
