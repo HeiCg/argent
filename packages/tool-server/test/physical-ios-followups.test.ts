@@ -267,10 +267,12 @@ describe("tools unsupported on physical iOS reject with UnsupportedOperationErro
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
       status: 200,
+      // The real payload: captions + reading order, no `screen`, no `rect`
+      // (pinned on the producer side by radon's
+      // `ax_tree_payload_carries_no_geometry`).
       json: async () => ({
-        screen: { w: 393, h: 852 },
         elements: [
-          { caption: "General, Button", id: "e1", rect: "{{16, 100}, {361, 44}}" },
+          { caption: "General, Button", id: "e1" },
           { caption: "Accessibility, Button", id: "e2" },
         ],
       }),
@@ -290,9 +292,9 @@ describe("tools unsupported on physical iOS reject with UnsupportedOperationErro
 
 describe("run-sequence does not eagerly hold simulator-server for physical iOS", () => {
   // run-sequence never eagerly declares any service (each step resolves its own
-  // via invokeSubTool) — a physical iOS udid must not eagerly hold
-  // simulator-server, which would throw on a `kind === "device"` target before
-  // step 1 even runs. Simulators go through the same lazy path.
+  // via invokeSubTool). Keeping it lazy means a physical-iOS sequence made only
+  // of unsupported steps never brings up a CoreDevice session just to reject
+  // them. Simulators go through the same lazy path.
   const tool = createRunSequenceTool({} as never);
   const params = (udid: string) => ({ udid, steps: [{ tool: "gesture-tap", args: {} }] });
 
@@ -313,6 +315,7 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
   const physical = resolveDevice(PHYSICAL_UDID);
   const sim = resolveDevice(SIM_UDID);
   const androidEmu = resolveDevice("emulator-5554");
+  const androidPhone = resolveDevice("HT82A0203045");
 
   it("supported tools accept a physical iPhone", () => {
     expect(() => assertSupported("gesture-tap", gestureTapTool.capability, physical)).not.toThrow();
@@ -337,9 +340,16 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
     }
   });
 
-  it("native-profiler-start still accepts a physical Android device", () => {
+  it("native-profiler-start still accepts Android — emulator AND physical phone", () => {
+    // `apple.device: false` must not leak across platforms: Android keeps
+    // `device: true`, so a physical phone (kind "device", like the iPhone above)
+    // is still accepted.
+    expect(androidPhone.kind).toBe("device");
     expect(() =>
       assertSupported("native-profiler-start", nativeProfilerStartTool.capability, androidEmu)
+    ).not.toThrow();
+    expect(() =>
+      assertSupported("native-profiler-start", nativeProfilerStartTool.capability, androidPhone)
     ).not.toThrow();
   });
 });
