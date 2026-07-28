@@ -190,7 +190,21 @@ describe("flow recording with a remote client (probe miss)", () => {
     expect(result.steps).toBe(1);
     expect(result.summary).toEqual(["1. echo: only step"]);
     expect(result.path).toBe(CLIENT_FLOW_PATH);
-    expect(result.savedTo).toMatchObject({ [CLIENT_FILE_MARKER]: true });
+
+    // Assert the directive's CONTENT, not just its shape. `steps`, `summary`
+    // and `path` all derive from the in-memory flow, so they agree with each
+    // other no matter what `savedTo` carries — and in client mode `savedTo` is
+    // the only thing that lands the artifact (`path` names a file that does not
+    // exist on this host). A directive built with an empty body would satisfy
+    // every other assertion here while the client wrote a flow with no steps,
+    // which replays as a top-level PASS over nothing.
+    const savedTo = result.savedTo as { [CLIENT_FILE_MARKER]: true; path: string; content: string };
+    expect(savedTo[CLIENT_FILE_MARKER]).toBe(true);
+    expect(savedTo.path).toBe(CLIENT_FLOW_PATH);
+    expect(parseFlow(savedTo.content).steps).toEqual([{ kind: "echo", message: "only step" }]);
+    // The finished YAML the caller is shown and the one the client writes must
+    // be the same bytes.
+    expect(savedTo.content).toBe(result.flowFile);
 
     await expect(
       flowFinishRecordingTool.execute({}, { name: "remote-flow", project_root: CLIENT_ROOT })
@@ -770,5 +784,101 @@ describe("flow_file containment", () => {
         }
       )
     ).rejects.toThrow("Invalid flow_file");
+  });
+});
+
+/**
+ * The concurrency contract, exercised in CLIENT mode. The two mechanisms cross
+ * here: the session key is a path that does not exist on this host, and the
+ * authoritative flow content is the in-memory copy rather than the file. The
+ * host-mode suite (flow-concurrent-recording.test.ts) cannot reach either.
+ */
+describe("concurrent recordings against a remote client", () => {
+  it("keeps genuinely overlapping remote appends complete and ordered", async () => {
+    // The overlap has to come from flow-add-step's LIVE sub-tool call, which is
+    // the only await in the client-mode path: once past it, push → validate →
+    // serialize runs synchronously, so echoes alone can never interleave and
+    // would prove nothing. Each sub-tool call parks until all of them have
+    // arrived, so every append is in flight simultaneously before any completes.
+    const arrived: (() => void)[] = [];
+    const allArrived = new Promise<void>((resolve) => {
+      arrived.push(resolve);
+    });
+    let seen = 0;
+    const registry = {
+      invokeTool: vi.fn(async () => {
+        if (++seen === 6) arrived[0]();
+        await allArrived;
+        return { tapped: true };
+      }),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    const addStep = createFlowAddStepTool(registry);
+
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT },
+      remoteCtx()
+    );
+
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, i) =>
+        addStep.execute(
+          {},
+          { name: "remote-flow", project_root: CLIENT_ROOT, command: "tap", args: `{"x":0.${i}}` }
+        )
+      )
+    );
+
+    // The last directive to be produced carries the full flow. Every one of the
+    // six steps must be in it exactly once — in client mode the in-memory copy
+    // is the ONLY copy, so a lost update is unrecoverable.
+    const contents = results.map((r) => {
+      const directive = r.savedTo as { [CLIENT_FILE_MARKER]: true; content: string };
+      expect(directive[CLIENT_FILE_MARKER]).toBe(true);
+      return parseFlow(directive.content).steps;
+    });
+    const fullest = contents.reduce((a, b) => (b.length > a.length ? b : a));
+    expect(fullest).toHaveLength(6);
+    const xs = fullest.map((s) => (s.kind === "tool" ? String(s.args.x) : "?"));
+    expect(new Set(xs).size).toBe(6);
+    // Each append saw a strictly larger flow than the one before it.
+    expect(contents.map((c) => c.length).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("fails an append whose remote recording was restarted, and writes nothing to this host", async () => {
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT },
+      remoteCtx()
+    );
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, message: "first take" }
+    );
+
+    // A second agent takes the same key on the same client project.
+    const restarted = await flowStartRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT },
+      remoteCtx()
+    );
+    expect(restarted).toMatchObject({ restarted: true, discardedSteps: 1 });
+    // The reset is the client's to perform, so the message must not assert it
+    // as done here — nothing on this host was touched.
+    expect((restarted as { message: string }).message).toContain("once your client applies");
+
+    // The new take is empty and usable; the discarded take's content is gone.
+    const after = await flowInsertEchoTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, message: "second take" }
+    );
+    const directive = after.savedTo as { content: string };
+    const flow = parseFlow(directive.content);
+    expect(flow.steps).toHaveLength(1);
+    expect(flow.steps[0]).toMatchObject({ kind: "echo", message: "second take" });
+
+    // Still nothing on this host: the client's root was never created here.
+    await expect(fs.stat(CLIENT_ROOT)).rejects.toThrow();
   });
 });

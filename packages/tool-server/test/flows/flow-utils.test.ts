@@ -12,6 +12,7 @@ import {
   clearRecordingSession,
   listActiveRecordings,
   __resetRecordingsForTesting,
+  MAX_RECORDINGS,
   getFlowPath,
   appIdForPlatform,
   chromiumLaunchSpec,
@@ -1079,6 +1080,45 @@ describe("recording sessions", () => {
     expect(message).not.toContain("/tmp/proj-c");
   });
 
+  it("treats a differently-spelled but identical root as THIS project", () => {
+    // The partition compares path.join-normalized flows dirs, not raw strings.
+    // A caller that spells its own root with a trailing slash must still be
+    // shown its own live recordings — a strict === would answer "none in this
+    // project (plus 1 in other projects)", degrading the message in exactly the
+    // wrong-project_root case it exists to diagnose. Every other test here
+    // spells both sides identically, so only this one separates the two.
+    start("/tmp/proj-a", "checkout");
+    const message = (() => {
+      try {
+        requireRecordingSession("/tmp/proj-a/", "chekout");
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error("expected a throw");
+    })();
+    expect(message).toMatch(/Active recordings: "checkout"\./);
+    expect(message).not.toContain("other projects");
+  });
+
+  it("does not tell the agent to just call flow-start-recording", () => {
+    // This message is reached for a key that was never started, but equally for
+    // one that was finished, superseded, or dropped by the concurrency cap —
+    // and in those cases the flow file on disk is fully populated. Naming
+    // flow-start-recording as the fix destroys it, because it truncates
+    // unconditionally and reports no `restarted` when no session was replaced.
+    const message = (() => {
+      try {
+        requireRecordingSession("/tmp/proj-a", "finished-earlier");
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error("expected a throw");
+    })();
+    expect(message).toContain("truncates");
+    expect(message).toMatch(/record under a fresh name|copy it aside/);
+    expect(message).not.toMatch(/Call flow-start-recording first/);
+  });
+
   it('reports "none in this project" when nothing is being recorded', () => {
     expect(() => requireRecordingSession("/tmp/proj-a", "my-flow")).toThrow(
       /Active recordings: none in this project\./
@@ -1157,7 +1197,7 @@ describe("recording sessions", () => {
     // ties when the whole fill and the touch land inside one millisecond, which
     // holds when this file runs alone but not under full-suite load. The
     // counter's tie-freedom is argued at `touch()` rather than pinned here.
-    const cap = 32;
+    const cap = MAX_RECORDINGS;
     for (let i = 0; i < cap; i++) start("/tmp/proj-a", `flow-${i}`);
     expect(listActiveRecordings()).toHaveLength(cap);
 

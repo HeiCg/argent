@@ -127,6 +127,10 @@ describe("stop-simulator-server", () => {
   it("does not target TvControl for a chromium id", async () => {
     const services = new Map([
       ["ChromiumCdp:chromium-cdp-9222", { state: ServiceState.RUNNING, dependents: [] }],
+      // The negative control has to BE in the map. Without it, "disposed once"
+      // is satisfied by the single entry present and the chromium branch could
+      // return TvControl too without failing anything.
+      ["TvControl:chromium-cdp-9222", { state: ServiceState.RUNNING, dependents: [] }],
     ]);
     const registry = createMockRegistry(services);
     const tool = createStopSimulatorServerTool(registry);
@@ -177,7 +181,14 @@ describe("stop-simulator-server", () => {
     // Deliberately narrower than stop-all: this tool is also the documented
     // recovery for a wedged transport, and dropping native-devtools on a retry
     // would degrade another agent's in-progress recording to coordinate taps.
-    const udid = "AAAA-BBBB";
+    //
+    // The udid must be a REAL iOS UUID. `classifyDevice` only recognizes the
+    // 8-4-4-4-12 hex shape, so a short id like "AAAA-BBBB" classifies as
+    // android — and NativeDevtools/AXService, which are iOS-only, would never
+    // be candidates for it under any implementation. This test would then pass
+    // even if the iOS branch were widened to include them, which is the exact
+    // regression it exists to catch.
+    const udid = "00000000-0000-0000-0000-0000000000ab";
     const services = new Map([
       [`SimulatorServer:${udid}`, { state: ServiceState.RUNNING, dependents: [] }],
       [`NativeDevtools:${udid}`, { state: ServiceState.RUNNING, dependents: [] }],
@@ -199,7 +210,12 @@ describe("stop-all-simulator-servers", () => {
     const services = new Map([
       ["SimulatorServer:AAA", { state: ServiceState.RUNNING, dependents: [] }],
       ["SimulatorServer:BBB", { state: ServiceState.RUNNING, dependents: [] }],
-      ["JsRuntimeDebugger:CCC", { state: ServiceState.RUNNING, dependents: [] }],
+      // Deliberately excluded from the namespace set: it declares
+      // `getDependencies -> ChromiumCdp:<id>`, so the registry cascades to it
+      // when that transport is disposed. Listing it too would be redundant, and
+      // disposing it directly here would claim a `stopped` entry for a service
+      // no device in this snapshot owns a transport for.
+      ["ChromiumJsRuntimeDebugger:CCC", { state: ServiceState.RUNNING, dependents: [] }],
     ]);
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
@@ -348,7 +364,7 @@ describe("stop-all-simulator-servers device scoping", () => {
   });
 
   it("scopes the non-simulator namespaces too (ChromiumCdp / TvControl / AndroidTvControl)", async () => {
-    // Every namespace in PREFIXES must honour `devices`, not just
+    // Every namespace in DEVICE_OWNED_NAMESPACES must honour `devices`, not just
     // SimulatorServer/NativeDevtools: a TvControl daemon left running holds two
     // spawned --timeout 3600 processes, and reaping another agent's is exactly
     // the cross-session damage scoping exists to prevent.
@@ -431,7 +447,10 @@ describe("stop-all-simulator-servers device scoping", () => {
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    const result = await tool.execute!({}, { devices: [MINE.toLowerCase()] });
+    // Upper-cased id against a lower-cased URN AND vice versa: passing the
+    // lower-cased spelling here would leave the upper/upper and lower/lower
+    // pairs matching, so only a contrived asymmetric mutation would be caught.
+    const result = await tool.execute!({}, { devices: [MINE] });
 
     expect(result).toEqual({
       stopped: [`SimulatorServer:${MINE}`, `NativeDevtools:${MINE.toLowerCase()}:tcp`],
@@ -620,6 +639,86 @@ describe("stop-all-simulator-servers unmatched ids", () => {
 
     expect(result).toEqual({ stopped: [`AXService:${MINE}:tcp`] });
     expect(registry.disposeService).not.toHaveBeenCalledWith(`AXService:${THEIRS}:tcp`);
+  });
+
+  it("owns and stops a device whose only service is a screen recording", async () => {
+    // ScreenRecordingSession holds an ffmpeg child, an MJPEG frame stream and
+    // the touch-visualizer overlay it enabled on the device, and nothing
+    // cascades to it. While it was outside the namespace set, a session that
+    // ran screen-recording-start and then the mandated teardown left ffmpeg
+    // running and was told its correct serial was a mistyped id.
+    const services = new Map([
+      [`ScreenRecordingSession:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`ScreenRecordingSession:${MINE}`] });
+    expect(result).not.toHaveProperty("unmatched");
+  });
+
+  it("owns and stops a device whose only service is a native profiler session", async () => {
+    // Same shape: an xctrace child on iOS, an on-device perfetto process plus
+    // its trace file on Android.
+    const services = new Map([
+      [`NativeProfilerSession:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`NativeProfilerSession:${MINE}`] });
+    expect(result).not.toHaveProperty("unmatched");
+  });
+
+  it("scopes the port-keyed debugger URNs to the right device", async () => {
+    // JsRuntimeDebugger's URN interposes the Metro port: `<ns>:<port>:<id>`.
+    // Matched as `<ns>:<id>` it belongs to nobody, so a debugger-only session
+    // was reported unmatched while its bound port and Metro CDP socket stayed
+    // open. Both devices sit behind the SAME port, so this also pins that the
+    // port is not what the scoping keys on.
+    const services = new Map([
+      [`JsRuntimeDebugger:8081:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`JsRuntimeDebugger:8081:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`JsRuntimeDebugger:8081:${MINE}`] });
+    expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`JsRuntimeDebugger:8081:${THEIRS}`);
+  });
+
+  it("does not let a port-keyed URN's port be mistaken for a wireless-adb device id", async () => {
+    // The device id after the port can itself be `ip:port`. Only the FIRST
+    // colon is the Metro port, so the remainder must be compared whole.
+    const serial = "192.168.1.5:5555";
+    const services = new Map([
+      [`JsRuntimeDebugger:8081:${serial}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    expect(await tool.execute!({}, { devices: [serial] })).toEqual({
+      stopped: [`JsRuntimeDebugger:8081:${serial}`],
+    });
+
+    // A bare IP must not claim it, and neither must the port.
+    const registry2 = createMockRegistry(
+      new Map([
+        [`JsRuntimeDebugger:8081:${serial}`, { state: ServiceState.RUNNING, dependents: [] }],
+      ])
+    );
+    const tool2 = createStopAllSimulatorServersTool(registry2);
+    expect(await tool2.execute!({}, { devices: ["192.168.1.5", "8081"] })).toEqual({
+      stopped: [],
+      unmatched: ["192.168.1.5", "8081"],
+    });
   });
 
   it("reaps AXService on an unscoped machine-wide sweep too", async () => {

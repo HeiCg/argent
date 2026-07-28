@@ -101,12 +101,26 @@ export function assertSafeFlowName(name: string): void {
  *
  * Two different projects can never collide on one key. The converse is only
  * true up to `path.join`, which folds a trailing slash, `//` and `.` segments
- * but NOT symlinks or case: a caller that spells one root two ways (`/tmp/p`
- * vs `/private/tmp/p` on macOS, or a case-variant on APFS) gets two sessions
- * writing one file, and their appends can lose each other. Callers pass a
- * cwd-derived root, so this needs two callers disagreeing about the spelling of
- * the same directory; resolving symlinks here is not an option because in
- * "client" mode the root does not exist on this host at all.
+ * but NOT symlinks or case. Two spellings that the filesystem considers one
+ * path therefore mint two sessions — and two independent locks — over one file,
+ * which bypasses every guarantee here: neither session is ever "superseded", so
+ * a restart silently truncates the other's live take and both agents are told
+ * they finished successfully with a mixture of each other's steps.
+ *
+ * Two ways in, and the second is the likelier one:
+ * - the ROOT spelled two ways (`/tmp/p` vs `/private/tmp/p` on macOS). Needs
+ *   two callers disagreeing about one directory; roots are cwd-derived, so this
+ *   is rare.
+ * - the NAME cased two ways (`Login` vs `login`) on a case-insensitive volume,
+ *   which APFS is by default. The name is agent-chosen free text, so this needs
+ *   only two agents naming the same flow differently — hence the "pick a name
+ *   unique to your task" warning on `flow-start-recording`.
+ *
+ * Neither is normalized away, because the correct normalization is the
+ * filesystem's and we cannot ask it: case-folding the key would wrongly merge
+ * two genuinely distinct flows on a case-SENSITIVE volume (ext4), and resolving
+ * symlinks is impossible in "client" mode, where the root does not exist on this
+ * host at all.
  */
 export function getFlowPath(projectRoot: string, name: string): string {
   const flowsDir = getFlowsDir(projectRoot);
@@ -273,7 +287,7 @@ export function withFlowFileLock<T>(
  * {@link assertSessionStillLive} makes the next append fail loudly rather than
  * write into a recording the server has forgotten.
  */
-const MAX_RECORDINGS = 32;
+export const MAX_RECORDINGS = 32;
 
 /**
  * Stamp a session as most-recently-used. A counter rather than `Date.now()`:
@@ -368,9 +382,19 @@ export function requireRecordingSession(projectRoot: string, name: string): Reco
     const activeList = here.length
       ? `${here.map((r) => `"${r.name}"`).join(", ")}${others}`
       : `none in this project${others}`;
+    // Do NOT tell the agent to just call flow-start-recording. This message is
+    // reached when the key was never started, but equally when a take was
+    // finished, superseded, or dropped by the MAX_RECORDINGS backstop — and in
+    // those cases the flow file on disk is fully populated while no session
+    // owns it. flow-start-recording truncates unconditionally, so the advice
+    // that recovers the first case destroys the others. Same doctrine as
+    // {@link assertSessionStillLive}, which faces the identical ambiguity.
     throw new FailureError(
       `No active recording for flow "${name}" in ${projectRoot}. ` +
-        `Call flow-start-recording first. Active recordings: ${activeList}.`,
+        `If you have not started it yet, call flow-start-recording — but note it ` +
+        `truncates, so if ${getFlowPath(projectRoot, name)} already holds a take you ` +
+        `want (finished, or interrupted by a restart), copy it aside or record under ` +
+        `a fresh name instead. Active recordings: ${activeList}.`,
       {
         error_code: FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING,
         failure_stage: "flow_require_recording",
@@ -2345,21 +2369,37 @@ let flowWriteSeq = 0;
  * Writing to a sibling temp file and renaming makes the swap atomic: a reader
  * sees either the whole previous file or the whole new one. The temp name is
  * dotted and `.tmp`-suffixed so a half-written scratch file can never be
- * mistaken for a flow (`getFlowPath` only ever produces `<name>.yaml`, and
- * nothing enumerates the flows directory).
+ * mistaken for a flow: `getFlowPath` only ever produces `<name>.yaml`, and the
+ * one thing that enumerates this directory — `argent flow list` — filters on
+ * that extension. Keep both halves of that agreement if either side changes.
+ *
+ * It deliberately does NOT embed the flow name. A flow name has no length cap
+ * (`FLOW_NAME_PATTERN` constrains the character set only), so `<name>.yaml` can
+ * legitimately run to NAME_MAX — and prefixing that with a discriminator would
+ * push the scratch name past the limit, turning an append that used to work
+ * into ENAMETOOLONG. pid + counter is unique on its own: the counter separates
+ * writers inside this process, the pid separates this process from any CLI
+ * sharing the directory.
+ *
+ * The swap costs two things a write-through would have kept, both accepted for
+ * the atomicity: it needs write permission on the DIRECTORY rather than on the
+ * file, and it replaces the inode, so a chmod on the flow file or a hardlink to
+ * it does not survive an append.
  */
 async function writeFlowFile(filePath: string, content: string): Promise<void> {
   const tmpPath = path.join(
     path.dirname(filePath),
-    `.${path.basename(filePath)}.${process.pid}.${++flowWriteSeq}.tmp`
+    `.argent-flow-${process.pid}-${++flowWriteSeq}.tmp`
   );
-  await fs.writeFile(tmpPath, content, "utf8");
   try {
+    await fs.writeFile(tmpPath, content, "utf8");
     // Atomic within a filesystem, and the temp file is a sibling of the target,
     // so it is always the same one.
     await fs.rename(tmpPath, filePath);
   } catch (err) {
-    // Leave no scratch file behind on a failed swap (e.g. a read-only dir).
+    // Leave no scratch file behind, whichever half failed. The write itself can
+    // fail with the file already created (ENOSPC, EIO), so this has to cover it
+    // too — nothing else ever sweeps this directory.
     await fs.rm(tmpPath, { force: true }).catch(() => {});
     throw err;
   }
@@ -2406,8 +2446,15 @@ export type FlowSavedTo = string | ClientFileDirective;
  * been finished, restarted or evicted, leaving it with a session object that is
  * no longer the one registered for its key. Writing anyway is the worst outcome:
  * the step lands in a file that now belongs to a *different* take and the caller
- * is told it succeeded. Re-check identity at write time — inside the flow-file
- * lock, so the check sees the state the write will see — and fail loudly.
+ * is told it succeeded. Re-check identity at write time, inside the flow-file
+ * lock, and fail loudly.
+ *
+ * The lock makes this exact against the other flow tools, which all mutate
+ * `recordings` for a key while holding that key's lock. It is NOT exact against
+ * {@link evictIfOverCapacity}, which runs under some OTHER key's lock and can
+ * therefore drop this session between the check and the write. That race is
+ * benign — the step still lands in the file it was recorded for, and only the
+ * NEXT call on the key reports the recording gone.
  */
 function assertSessionStillLive(session: RecordingSession, step: FlowStep): void {
   const current = recordings.get(getFlowPath(session.projectRoot, session.name));
