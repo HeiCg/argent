@@ -239,8 +239,13 @@ export function summarizeStep(step: FlowStep, n: number): string {
         step.kind === "long-press" && step.duration !== undefined ? ` for ${step.duration}ms` : "";
       return `${n}. ${step.kind}: ${target}${times}${held}`;
     }
-    case "type":
-      return `${n}. type: ${selectorLabel(step.into)} ← "${step.text}"`;
+    case "type": {
+      // `⇐` (replace) vs `←` (append) so a cleared field is visible at a
+      // glance; a clear-only step has nothing on the right-hand side.
+      const arrow = step.clear ? "⇐" : "←";
+      if (step.text === undefined) return `${n}. type: ${selectorLabel(step.into)} ⇐ (cleared)`;
+      return `${n}. type: ${selectorLabel(step.into)} ${arrow} "${step.text}"`;
+    }
     case "await":
     case "assert": {
       const tail =
