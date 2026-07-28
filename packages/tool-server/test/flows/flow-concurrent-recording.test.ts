@@ -197,17 +197,6 @@ async function within<T>(promise: Promise<T>, label: string, ms = 2000): Promise
   }
 }
 
-/**
- * The LRU backstop compares `Date.now()` stamps, and dozens of recordings can be
- * started and touched inside one millisecond — so drive its clock explicitly
- * rather than depending on wall-clock resolution.
- */
-function useMonotonicClock(): { restore: () => void } {
-  let ticks = Date.now();
-  const spy = vi.spyOn(Date, "now").mockImplementation(() => ++ticks);
-  return { restore: () => spy.mockRestore() };
-}
-
 /** Fill the recording table exactly to its cap; returns the names, oldest first. */
 async function fillRecordings(root: string): Promise<string[]> {
   const names = Array.from({ length: MAX_RECORDINGS }, (_, i) => `rec-${i}`);
@@ -892,63 +881,60 @@ describe("a finish on a flow file that no longer parses", () => {
 describe("the concurrent-recording cap", () => {
   it("evicts the least recently touched recording and keeps the rest", async () => {
     const root = await makeRoot("evict");
-    const clock = useMonotonicClock();
-    try {
-      const names = await fillRecordings(root);
-      expect(listActiveRecordings()).toHaveLength(MAX_RECORDINGS);
+    const names = await fillRecordings(root);
+    expect(listActiveRecordings()).toHaveLength(MAX_RECORDINGS);
 
-      // Touch everything except the first, so `rec-0` is unambiguously the
-      // least recently touched recording.
-      for (const name of names.slice(1)) await addEcho(root, name, "touch");
+    // Touch everything EXCEPT one entry in the middle of the table, so the
+    // least-recently-used entry and the first-registered one are different
+    // keys: `rec-7` is the only one never touched since it was started, while
+    // `rec-0` was registered first but has since been used. An insertion-order
+    // eviction would drop `rec-0`, so the assertions below separate the two
+    // policies rather than passing under either.
+    const untouched = names[7];
+    for (const name of names.filter((n) => n !== untouched)) await addEcho(root, name, "touch");
 
-      await start(root, "overflow");
+    await start(root, "overflow");
 
-      const live = listActiveRecordings()
-        .map((r) => r.name)
-        .sort();
-      expect(live).toHaveLength(MAX_RECORDINGS);
-      expect(live).toEqual([...names.slice(1), "overflow"].sort());
-      expect(getRecordingSession(root, "rec-0")).toBeUndefined();
-      // The survivors are still usable — eviction dropped one, not the table.
-      expect(getRecordingSession(root, names[1])).toBeDefined();
-      await addEcho(root, names[1], "still-live");
-      expect(await readMarkers(root, names[1])).toEqual(["echo:touch", "echo:still-live"]);
-    } finally {
-      clock.restore();
-    }
+    const live = listActiveRecordings()
+      .map((r) => r.name)
+      .sort();
+    expect(live).toHaveLength(MAX_RECORDINGS);
+    expect(live).toEqual([...names.filter((n) => n !== untouched), "overflow"].sort());
+    expect(getRecordingSession(root, untouched)).toBeUndefined();
+    // The oldest registration survived, because it was still being used.
+    expect(getRecordingSession(root, names[0])).toBeDefined();
+    // The survivors are still usable — eviction dropped one, not the table.
+    await addEcho(root, names[0], "still-live");
+    expect(await readMarkers(root, names[0])).toEqual(["echo:touch", "echo:still-live"]);
   });
 
   it("rejects an append whose recording was evicted while the step ran", async () => {
     const root = await makeRoot("evict-inflight");
-    const clock = useMonotonicClock();
-    try {
-      const names = await fillRecordings(root);
+    const names = await fillRecordings(root);
 
-      // The step resolves rec-0's session (touching it) and parks.
-      const gate = gateNextSubTool();
-      const appending = addStep(root, "rec-0", "victim");
-      await gate.reached;
+    // The step resolves rec-0's session (touching it) and parks.
+    const gate = gateNextSubTool();
+    const appending = addStep(root, "rec-0", "victim");
+    await gate.reached;
 
-      // Every other recording is touched, then one more overflows the cap —
-      // rec-0 is now the LRU and gets dropped out from under the running step.
-      for (const name of names.slice(1)) await addEcho(root, name, "touch");
-      await start(root, "overflow");
-      expect(getRecordingSession(root, "rec-0")).toBeUndefined();
+    // Every other recording is touched afterwards, so rec-0's use is the oldest
+    // one on the table; the next start overflows the cap and drops it out from
+    // under the running step.
+    for (const name of names.slice(1)) await addEcho(root, name, "touch");
+    await start(root, "overflow");
+    expect(getRecordingSession(root, "rec-0")).toBeUndefined();
 
-      gate.release();
-      const err = await captureFailure(appending);
-      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
-      expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
-      expect((err as Error).message).toContain("concurrent-recording cap");
-      expect(await readMarkers(root, "rec-0")).toEqual([]);
+    gate.release();
+    const err = await captureFailure(appending);
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
+    expect((err as Error).message).toContain("concurrent-recording cap");
+    expect(await readMarkers(root, "rec-0")).toEqual([]);
 
-      // A fresh call on the evicted key fails the ordinary not-live way.
-      const late = await captureFailure(addEcho(root, "rec-0", "late"));
-      expect(getFailureSignal(late)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
-      expect(getFailureSignal(late)?.failure_stage).toBe("flow_require_recording");
-    } finally {
-      clock.restore();
-    }
+    // A fresh call on the evicted key fails the ordinary not-live way.
+    const late = await captureFailure(addEcho(root, "rec-0", "late"));
+    expect(getFailureSignal(late)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect(getFailureSignal(late)?.failure_stage).toBe("flow_require_recording");
   });
 });
 
