@@ -84,6 +84,13 @@ import { parseChromiumCdpPort, resolveDevice } from "../../utils/device-info";
 import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flow-visual";
 import { describeVega } from "../describe/platforms/vega";
 import { pinStatusBar, restoreStatusBar } from "../../utils/status-bar";
+import type { FlowFailureCode, FlowStepFailure } from "./flow-failure";
+import {
+  attachFailureDiagnostics,
+  causeOf,
+  evidenceFromThrow,
+  type LeafOutcome,
+} from "./flow-failure-report";
 
 const zodSchema = z
   .object({
@@ -249,6 +256,22 @@ export interface StepReport {
    * be reconstructed downstream.
    */
   depth?: number;
+  /**
+   * Structured diagnostics for a step that did not pass: the classified cause,
+   * what was on screen, the closest matching elements, and handles to a
+   * screenshot and element dump captured at the moment of failure. Present on
+   * at most ONE step per run (the runner hard-stops at the first non-passing
+   * leaf) and absent from every passing or skipped report, so an unchanged run
+   * stays byte-identical. `failure.message` duplicates {@link reason}
+   * verbatim, so a renderer that ignores this field prints exactly what it
+   * printed before.
+   */
+  failure?: FlowStepFailure;
+  /**
+   * Wall-clock duration of the step. Omitted on skips (which did no work), so
+   * a skipped report stays byte-identical to the pre-timing shape.
+   */
+  durationMs?: number;
 }
 
 export interface FlowRunResult {
@@ -266,6 +289,10 @@ export interface FlowRunResult {
   skipped: number;
   errored: number;
   steps: StepReport[];
+  /** `Date.now()` when step 1 began — the JUnit `timestamp` attribute's source. */
+  startedAt: number;
+  /** Wall-clock duration of the whole run, including teardown. */
+  durationMs: number;
 }
 
 export interface FlowPrerequisiteNotice {
@@ -531,31 +558,38 @@ async function treeSourceGate(
   device: DeviceInfo,
   bundleId: string,
   signal?: AbortSignal
-): Promise<string | null> {
+): Promise<{ reason: string; source: string } | null> {
   if (device.platform === "ios" && !signal?.aborted) {
     const reason = await waitForNativeDevtools(registry, device, bundleId, signal);
     if (reason !== null && !signal?.aborted) {
-      // Every reason names the bundle id, so the prefix must not: doubled, it
-      // reads as two separate failures reported back to back.
-      return `could not connect to native devtools. ${reason}`;
+      return {
+        source: "native-devtools",
+        // Every reason names the bundle id, so the prefix must not: doubled, it
+        // reads as two separate failures reported back to back.
+        reason: `could not connect to native devtools. ${reason}`,
+      };
     }
   }
   if (device.platform === "android" && !signal?.aborted) {
     const ready = await androidDevtoolsReady(registry, device);
     if (!ready && !signal?.aborted) {
-      return (
-        `could not reach the Android devtools helper (full-hierarchy source for testID selectors). ` +
-        `Confirm the device is unlocked and the argent helper can be installed (\`adb install -t\`); a locked device or a blocked install is the usual cause. Re-run once resolved.`
-      );
+      return {
+        source: "android-devtools",
+        reason:
+          `could not reach the Android devtools helper (full-hierarchy source for testID selectors). ` +
+          `Confirm the device is unlocked and the argent helper can be installed (\`adb install -t\`); a locked device or a blocked install is the usual cause. Re-run once resolved.`,
+      };
     }
   }
   if (device.platform === "vega" && !signal?.aborted) {
     const ready = await waitForVegaAutomation(device, signal);
     if (!ready && !signal?.aborted) {
-      return (
-        `the Vega automation toolkit never served a page source for ${bundleId} (the flow tree source). ` +
-        `The toolkit attaches at app launch — re-run to relaunch; if it keeps failing, confirm the app was built with automation support and the VVD is reachable over adb.`
-      );
+      return {
+        source: "vega-automation",
+        reason:
+          `the Vega automation toolkit never served a page source for ${bundleId} (the flow tree source). ` +
+          `The toolkit attaches at app launch — re-run to relaunch; if it keeps failing, confirm the app was built with automation support and the VVD is reachable over adb.`,
+      };
     }
   }
   return null;
@@ -592,6 +626,7 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
     return {
       ok: false,
       reason: `no app id declared for platform "${device.platform}" — add a launch entry for it`,
+      evidence: { code: "launch-failed" },
     };
   }
   let restart: unknown;
@@ -601,7 +636,11 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
     // A cancellation makes the sub-tool itself reject; that rejection is the
     // abort, not an app failure, so it must not be attributed to restart-app.
     if (signal?.aborted) return ABORTED_OUTCOME;
-    return { ok: false, reason: `restart-app failed: ${errMsg(err)}` };
+    return {
+      ok: false,
+      reason: `restart-app failed: ${errMsg(err)}`,
+      evidence: { code: "launch-failed", ...causeOf(err) },
+    };
   }
   // A blocked precheck is RESOLVED rather than thrown, and returns before the
   // terminate and the launch — so the app was never started. Every remedy below
@@ -617,7 +656,19 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
   // The gate returns null (ready) on abort — check the signal before trusting
   // it, or a cancelled gate would read as a launch that verified readiness.
   if (signal?.aborted) return ABORTED_OUTCOME;
-  if (gate) return { ok: false, reason: gate };
+  if (gate) {
+    return {
+      ok: false,
+      reason: gate.reason,
+      // The tree source never came up: an environment problem, not a broken
+      // flow. Classified as indeterminate so CI can tell retry from fix.
+      evidence: {
+        code: "tree-source-not-ready",
+        treeError: gate.reason,
+        hint: `the ${gate.source} tree source never became ready — re-run; do not edit the flow`,
+      },
+    };
+  }
   // Remember the launched app for the rest of the RUN (nested `run:` flows
   // share this state, so a nested launch retargets the whole run — see
   // ActionEnv.launchedNativeApp). iOS tree reads use it to explain a read they
@@ -640,7 +691,8 @@ async function runChromiumLaunch(state: ExecState, app: Launch): Promise<Directi
   state.chromiumLaunched = true;
 
   const spec = chromiumLaunchSpec(app);
-  if (!spec) return { ok: false, reason: noChromiumAppReason(device) };
+  if (!spec)
+    return { ok: false, reason: noChromiumAppReason(device), evidence: { code: "launch-failed" } };
 
   const owned = ownedInstance(state);
   if (owned) {
@@ -653,6 +705,7 @@ async function runChromiumLaunch(state: ExecState, app: Launch): Promise<Directi
       return {
         ok: false,
         reason: `launch declares "${declared}" but the instance booted for this run is "${owned.appPath}" — the flow file changed after the run started`,
+        evidence: { code: "launch-failed" },
       };
     }
     // Seconds old and already fronted; just settle. Reported as a boot all the
@@ -671,6 +724,7 @@ async function runChromiumLaunch(state: ExecState, app: Launch): Promise<Directi
     return {
       ok: false,
       reason: `could not attach to chromium instance "${device.id}": ${errMsg(err)}`,
+      evidence: { code: "launch-failed", ...causeOf(err) },
     };
   }
   // The launch just named what the attached instance runs. Record the
@@ -699,7 +753,8 @@ async function bootChromiumForLaunch(state: ExecState, app: Launch): Promise<Dir
   const { registry, device, signal } = deviceEnv(state);
 
   const spec = chromiumLaunchSpec(app);
-  if (!spec) return { ok: false, reason: noChromiumAppReason(device) };
+  if (!spec)
+    return { ok: false, reason: noChromiumAppReason(device), evidence: { code: "launch-failed" } };
   const appPath = await resolveAppPath(spec.path, state.flowsDir);
   // Captured before the run moves: the success reason marks the step where the
   // run left this instance, so a green report shows the move (and its fate).
@@ -721,7 +776,11 @@ async function bootChromiumForLaunch(state: ExecState, app: Launch): Promise<Dir
   try {
     booted = await bootChromiumForFlow(spec, state.flowsDir, state.viaUpload);
   } catch (err) {
-    return { ok: false, reason: await chromiumBootFailureReason(state, err) };
+    return {
+      ok: false,
+      reason: await chromiumBootFailureReason(state, err),
+      evidence: { code: "launch-failed", ...causeOf(err) },
+    };
   }
   // Recorded before the next await so a cancelled run still reclaims it.
   state.owned.push(booted);
@@ -1290,6 +1349,7 @@ Pass exactly one flow source: name for a saved flow under project_root, or flow_
         ...(ctx?.emitProgress ? { onStepReport: ctx.emitProgress } : {}),
       };
 
+      const runStartedAt = Date.now();
       let aborted: boolean;
       try {
         await execSteps(state, flow.steps, {
@@ -1318,7 +1378,8 @@ Pass exactly one flow source: name for a saved flow under project_root, or flow_
         device?.id ?? "",
         flow.executionPrerequisite,
         state.reports,
-        aborted
+        aborted,
+        { startedAt: runStartedAt, durationMs: Date.now() - runStartedAt }
       );
     },
   };
@@ -1656,7 +1717,8 @@ function summarize(
   deviceId: string,
   executionPrerequisite: string,
   steps: StepReport[],
-  aborted: boolean
+  aborted: boolean,
+  timing: { startedAt: number; durationMs: number }
 ): FlowRunResult {
   let passed = 0;
   let failed = 0;
@@ -1687,6 +1749,8 @@ function summarize(
     skipped,
     errored,
     steps,
+    startedAt: timing.startedAt,
+    durationMs: timing.durationMs,
   };
 }
 
@@ -1698,6 +1762,19 @@ function summarize(
 function pushReport(state: ExecState, report: StepReport): void {
   state.reports.push(report);
   state.onStepReport?.(report);
+}
+
+/**
+ * The step number a renderer will print for the report about to be pushed.
+ * Echo narration is not numbered (the CLI, the MCP renderer and `summarize`
+ * all skip it), so the ordinal counts only real steps — a failure block whose
+ * heading said "3)" while the step list showed the failure at 4 would be worse
+ * than no heading at all.
+ */
+function displayOrdinal(state: ExecState): number {
+  let n = 0;
+  for (const r of state.reports) if (r.kind !== "echo") n++;
+  return n + 1;
 }
 
 function selectorLabel(sel: FlowSelector): string {
@@ -1970,9 +2047,21 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
       continue;
     }
 
+    const startedAt = Date.now();
+    const ordinal = displayOrdinal(state);
     const report = await execLeafStep(state, step, index, scope);
+    // Skips did no work, so they stay byte-identical to the pre-timing shape.
+    if (report.status !== "skip") report.durationMs = Date.now() - startedAt;
+    if (report.status === "fail" || report.status === "error") {
+      // Set BEFORE the capture: the run is unambiguously over, and a capture
+      // that outlived a racing step must not find `stopped` still false.
+      state.stopped = true;
+      await attachFailureDiagnostics(state, report, { startedAt, ordinal });
+    }
+    // pushReport is the single choke point feeding ctx.emitProgress, so the
+    // diagnostics must already be attached: otherwise the live NDJSON stream
+    // ships the failing step without its failure object.
     pushReport(state, report);
-    if (report.status === "fail" || report.status === "error") state.stopped = true;
   }
 }
 
@@ -2063,6 +2152,7 @@ async function execWhenStep(
   } as const;
   const inner = childScope(scope);
 
+  const guardStartedAt = Date.now();
   let met: boolean;
   if (step.condition.kind === "platform") {
     // "ios-remote" is an iOS simulator driven through sim-remote — for a
@@ -2080,12 +2170,20 @@ async function execWhenStep(
       return;
     }
     if (!probe.ok && probe.indeterminate) {
-      pushReport(state, {
+      const ordinal = displayOrdinal(state);
+      const report: LeafOutcome = {
         ...marker,
         status: "error",
         reason: `could not evaluate when guard (${label}): ${probe.reason}`,
-      });
+        durationMs: Date.now() - guardStartedAt,
+        // The guard's own evidence, re-coded: "could not evaluate the guard"
+        // is a distinct failure from the same probe failing as a bare assert,
+        // and CI must be able to tell a broken tree source from a bad flow.
+        evidence: { ...probe.evidence, code: "when-guard-indeterminate" },
+      };
       state.stopped = true;
+      await attachFailureDiagnostics(state, report, { startedAt: guardStartedAt, ordinal });
+      pushReport(state, report);
       reportBlockSkipped(state, step.steps, inner, "when guard errored");
       return;
     }
@@ -2195,9 +2293,11 @@ async function execRunStep(
   // there attribute the same run: step identically; the fragment's expanded
   // steps inherit it through the runStack entry pushed below.
   const display = runDisplayName(target, scope);
+  const startedAt = Date.now();
 
-  const fail = (reason: string): void => {
-    pushReport(state, {
+  const fail = async (reason: string, code: FlowFailureCode): Promise<void> => {
+    const ordinal = displayOrdinal(state);
+    const report: LeafOutcome = {
       index,
       kind: "run",
       status: "error",
@@ -2205,8 +2305,12 @@ async function execRunStep(
       target,
       reason,
       ...depthOf(scope),
-    });
+      durationMs: Date.now() - startedAt,
+      evidence: { code },
+    };
     state.stopped = true;
+    await attachFailureDiagnostics(state, report, { startedAt, ordinal });
+    pushReport(state, report);
   };
 
   // The cycle guard deliberately runs before the depth guard. A loop that
@@ -2226,12 +2330,13 @@ async function execRunStep(
   const canonical = await canonicalFlowPath(scopeFlowDir(scope) + path.sep + target);
   if (scope.runStack.some((entry) => entry.canonical === canonical)) {
     return fail(
-      `cyclic flow reference: ${[...scope.runStack.map((entry) => entry.display), display].join(" → ")}`
+      `cyclic flow reference: ${[...scope.runStack.map((entry) => entry.display), display].join(" → ")}`,
+      "run-cyclic"
     );
   }
 
   if (scope.runStack.length >= MAX_RUN_DEPTH) {
-    return fail("max run depth exceeded");
+    return fail("max run depth exceeded", "run-depth-exceeded");
   }
 
   // Nothing above consulted the directory: canonicalFlowPath resolves the
@@ -2281,7 +2386,8 @@ async function execRunStep(
       `mis-cased fragment reference "${target}": no directory entry is named "${suppliedBase}" ` +
         `(this filesystem matched it case-insensitively to "${spelling.actual}"), so the fragment ` +
         `name keying its step reports is one nothing on disk carries and a case-sensitive ` +
-        `checkout could not find the file at all — ${recovery}`
+        `checkout could not find the file at all — ${recovery}`,
+      "run-fragment-load-failed"
     );
   }
 
@@ -2299,7 +2405,7 @@ async function execRunStep(
   try {
     fragment = parseFlow(await fs.readFile(canonical, "utf8"));
   } catch (err) {
-    return fail(`could not load fragment "${target}": ${errMsg(err)}`);
+    return fail(`could not load fragment "${target}": ${errMsg(err)}`, "run-fragment-load-failed");
   }
 
   // Marker for the composition point, then expand the fragment's steps inline,
@@ -2326,7 +2432,7 @@ async function execLeafStep(
   step: FlowStep,
   index: number,
   scope: StepScope
-): Promise<StepReport> {
+): Promise<LeafOutcome> {
   const base = {
     index,
     kind: step.kind,
@@ -2345,7 +2451,12 @@ async function execLeafStep(
       // A run cancelled mid-launch is a skip (matching the pre-step guard and
       // the directives), never a step failure — the app did nothing wrong.
       if (r.aborted) return { ...base, status: "skip", reason: r.reason };
-      return { ...base, status: r.ok ? "pass" : "error", reason: r.reason };
+      return {
+        ...base,
+        status: r.ok ? "pass" : "error",
+        reason: r.reason,
+        ...(r.evidence ? { evidence: r.evidence } : {}),
+      };
     }
 
     case "tap":
@@ -2376,16 +2487,27 @@ async function execLeafStep(
         // verdict rests on being able to observe the screen; the selector
         // conditions keep their existing `fail` mapping.
         if (!r.ok && r.indeterminate && step.kind === "idle") {
-          return { ...base, status: "error", reason: r.reason };
+          return {
+            ...base,
+            status: "error",
+            reason: r.reason,
+            ...(r.evidence ? { evidence: r.evidence } : {}),
+          };
         }
         return {
           ...base,
           status: r.ok ? "pass" : "fail",
           reason: r.reason,
           ...(r.warning !== undefined ? { warning: r.warning } : {}),
+          ...(r.evidence ? { evidence: r.evidence } : {}),
         };
       } catch (err) {
-        return { ...base, status: "error", reason: errMsg(err) };
+        return {
+          ...base,
+          status: "error",
+          reason: errMsg(err),
+          evidence: evidenceFromThrow(err),
+        };
       }
     }
 
@@ -2414,9 +2536,15 @@ async function execLeafStep(
           reason: r.reason,
           snapshotKey: r.snapshotKey,
           artifacts: r.artifacts,
+          ...(r.evidence ? { evidence: r.evidence } : {}),
         };
       } catch (err) {
-        return { ...base, status: "error", reason: errMsg(err) };
+        return {
+          ...base,
+          status: "error",
+          reason: errMsg(err),
+          evidence: evidenceFromThrow(err),
+        };
       }
     }
 
@@ -2469,6 +2597,7 @@ async function execLeafStep(
             status: "fail",
             tool: step.name,
             reason: `await-ui-element condition not met${note ? `: ${note}` : ""}`,
+            evidence: { code: "tool-ui-wait-unmet" },
           };
         }
         // `flow-execute` and `run-sequence` run other tools and report what
@@ -2533,12 +2662,23 @@ async function execLeafStep(
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
-        return { ...base, status: "error", tool: step.name, reason: errMsg(err) };
+        return {
+          ...base,
+          status: "error",
+          tool: step.name,
+          reason: errMsg(err),
+          evidence: { code: "tool-step-failed", ...causeOf(err) },
+        };
       }
     }
 
     default:
-      return { ...base, status: "error", reason: `unsupported step kind` };
+      return {
+        ...base,
+        status: "error",
+        reason: `unsupported step kind`,
+        evidence: { code: "step-kind-unsupported" },
+      };
   }
 }
 
