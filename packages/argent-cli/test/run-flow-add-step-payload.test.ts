@@ -41,9 +41,9 @@ function startServer(cap: Captured): Promise<{ url: string; close: () => Promise
               // zodObjectToJsonSchema over the zod schema in
               // packages/tool-server/src/tools/flows/flow-add-step.ts. `name`
               // and `project_root` identify which open recording the step
-              // belongs to and are required alongside `command`; a fixture that
-              // still advertised the old single-required shape would let a
-              // regression in how those flags are parsed slip through.
+              // belongs to and are required alongside `command`. All three have
+              // to be marked required here for the parser regression this test
+              // guards to be reachable at all.
               inputSchema: {
                 type: "object",
                 properties: {

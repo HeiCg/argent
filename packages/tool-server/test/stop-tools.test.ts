@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { Registry, ServiceState } from "@argent/registry";
+import type { z } from "zod";
+import { Registry, ServiceState, zodObjectToJsonSchema } from "@argent/registry";
 import { createStopSimulatorServerTool } from "../src/tools/simulator/stop-simulator-server";
 import { createStopAllSimulatorServersTool } from "../src/tools/simulator/stop-all-simulator-servers";
 import { stopMetroTool } from "../src/tools/simulator/stop-metro";
@@ -471,6 +472,26 @@ describe("stop-all-simulator-servers device scoping", () => {
     // as a warning where there is nothing to warn about.
     expect(result).not.toHaveProperty("unmatched");
     expect(registry.disposeService).not.toHaveBeenCalled();
+  });
+
+  it("rejects a misspelled scope key instead of stripping it into a machine-wide sweep", async () => {
+    // `udids` is the natural slip: every sibling tool in this directory spells
+    // the device parameter `udid`. Under a stripping schema it left
+    // `params.devices` undefined, so the call fell through to the unscoped
+    // branch and tore down the other agent's devices while the caller believed
+    // it had scoped — and `unmatched` is unreachable on that path, so nothing
+    // in the response said otherwise.
+    const registry = createMockRegistry(twoAgentServices());
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const parsed = tool.zodSchema!.safeParse({ udids: [MINE] });
+
+    expect(parsed.success).toBe(false);
+    // And the same rejection reaches MCP / `argent run` / raw HTTP callers,
+    // which validate against the advertised JSON schema rather than the zod one.
+    expect(zodObjectToJsonSchema(tool.zodSchema as z.ZodObject<any>)).toMatchObject({
+      additionalProperties: false,
+    });
   });
 
   it("does not match a device id that is a prefix of another device's id", async () => {
