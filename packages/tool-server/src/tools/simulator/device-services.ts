@@ -108,6 +108,13 @@ export const DEVICE_OWNED_NAMESPACES: readonly string[] = [
  * `stop-all-simulator-servers`' `devices` scope exists to prevent. Agents
  * finishing a session call `stop-all-simulator-servers` instead, which drains
  * everything.
+ *
+ * That narrowness is only as strong as the dependency graph, and on CHROMIUM it
+ * does not hold: `ChromiumJsRuntimeDebugger` declares `ChromiumCdp` as a
+ * dependency, so disposing the transport tears the debugger down as a dependent
+ * along with its captured console history. Nothing here can prevent that
+ * without leaving the wedged transport in place, which is the tool's whole
+ * purpose; `stop-simulator-server`'s description says so outright instead.
  */
 export function transportNamespacesForPlatform(platform: string): readonly string[] {
   if (platform === "chromium") return [CHROMIUM_CDP_NAMESPACE];
@@ -135,8 +142,18 @@ function deviceIdPortion(urn: string, namespace: string): string | undefined {
  *
  * Matching is case-insensitive: iOS UDIDs are conventionally upper-case but
  * agents pass through whatever they were given, and a case mismatch must not
- * silently turn a scoped stop into a no-op. No two distinct devices can differ
- * only by case in any id space we support (UUID, emulator-N, chromium-cdp-N).
+ * silently turn a scoped stop into a no-op.
+ *
+ * That is safe only if no two distinct devices can differ by case alone. Of the
+ * id spaces we support, six are structurally case-safe: iOS UDIDs (hex UUID),
+ * `emulator-N`, `chromium-cdp-N`, adb-over-wifi `ip:port`, `remote:<UUID>` for
+ * ios-remote, and Vega's `amazon-<hex>`. The seventh is an assumption rather
+ * than a guarantee: a physical Android serial is `ro.serialno`, which
+ * `device-info.ts` notes is vendor-defined and unconstrained, so a vendor could
+ * in principle ship two devices differing only in case. Accepted — colliding
+ * serials on ONE host would already be indistinguishable to `adb -s`, and the
+ * alternative (case-sensitive matching) reintroduces the silent no-op this
+ * exists to fix on the id space agents actually mistype, iOS UDIDs.
  *
  * Returns the caller's spelling of the id, so a tool can report which of the
  * ids it was given matched nothing.

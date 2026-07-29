@@ -127,8 +127,8 @@ to remove or reorder steps.`,
     );
 
     // Only a same-key restart replaces anything — the documented "re-record it
-    // to fix it" workflow. Starting a *different* flow abandons nothing, so
-    // there is no longer a switched-away-from flow to report.
+    // to fix it" workflow. Recordings are keyed per flow file, so starting a
+    // *different* flow abandons nothing and there is nothing to report about it.
     if (replaced) {
       const discardedSteps = replaced.flow.steps.length;
       // Only claim the file was reset when this process actually reset it. In

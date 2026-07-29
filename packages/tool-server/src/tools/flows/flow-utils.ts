@@ -163,7 +163,13 @@ export interface RecordingSession {
  * being built. Two sessions on one key mean two writers on one output file (a
  * genuine collision); two different keys are independent, so concurrent agents
  * recording different flows — in one project or across projects, against one
- * device or several — never see each other's state.
+ * device or several — never write into each other's take.
+ *
+ * Isolation of the recorded artifact, not of the fact that a recording exists:
+ * the not-found path of {@link requireRecordingSession} deliberately names the
+ * other live flows in the caller's own project (and counts the rest), so that
+ * disclosure is bounded rather than absent. See the comment there for what it
+ * discloses and why.
  *
  * The tool-server is a host-wide singleton shared by every MCP client, subagent
  * and CLI call on the machine, so this map is the only thing standing between
@@ -222,8 +228,12 @@ export function withFlowFileLock<T>(
  * after 30 min, but a long-lived server could accumulate recordings an agent
  * started and never finished. Well past any realistic concurrent-agent count,
  * so evicting should never be something an agent observes — and if it ever is,
- * {@link assertSessionStillLive} makes the next append fail loudly rather than
- * write into a recording the server has forgotten.
+ * the next append fails loudly rather than writing into a recording the server
+ * has forgotten. Which function reports it depends on the ordering: an append
+ * issued after the eviction fails in {@link requireRecordingSession}, since the
+ * key is already gone by the time it resolves; only one whose session was
+ * resolved BEFORE the eviction and landed after reaches
+ * {@link assertSessionStillLive}.
  */
 export const MAX_RECORDINGS = 32;
 
@@ -2270,13 +2280,24 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
   // live take that just claimed this key (which restarting would both wipe and
   // steal), or the finished flow sitting on disk. Recording under a fresh name
   // is the only recovery that destroys nothing.
+  // Branch the same way `why` does. Asserting "this key now belongs to another
+  // take" on the `!current` branch is false by construction — that branch is
+  // selected precisely because the key is empty, and `startRecordingSession`
+  // registers under this key's lock, so a take that had claimed it would have
+  // selected the other branch. Naming a competing agent that does not exist
+  // sends an agent whose own finish (or the eviction named one clause earlier)
+  // ended the recording looking for the wrong cause.
+  const whatIsAtStake = current
+    ? `This key now belongs to another take and flow-start-recording truncates, so re-record ` +
+      `under a fresh name rather than restarting this one.`
+    : `The key is now free, but the finished take is on disk and flow-start-recording truncates ` +
+      `it unconditionally, so re-record under a fresh name rather than restarting this one.`;
   const recovery =
     `Nothing was added to the flow file` +
     (step.kind === "echo"
       ? ". "
       : ", but the step itself already ran on the device — repeating it repeats that action. ") +
-    `This key now belongs to another take and flow-start-recording truncates, so re-record ` +
-    `under a fresh name rather than restarting this one.`;
+    whatIsAtStake;
   throw new FailureError(
     `Recording of "${session.name}" in ${session.projectRoot} is no longer active — ${why}. ` +
       recovery,

@@ -29,9 +29,9 @@ vi.mock("@argent/telemetry", () => telemetryMock);
 // zodObjectToJsonSchema over the zod schema in
 // packages/tool-server/src/tools/flows/flow-add-step.ts. Recordings are keyed
 // by `name` + `project_root`, so both are required alongside `command` and only
-// `args` / `delayMs` are optional; a fixture still describing a single "active"
-// recording with one required field would render help for a tool that no longer
-// exists.
+// `args` / `delayMs` are optional. Keep the fixture in step with that schema: a
+// fixture marking fewer fields required renders help for a tool the server does
+// not expose, and the mismatch passes silently.
 const flowAddStepMeta = {
   name: "flow-add-step",
   // Leading sentence of the real tool description, verbatim.
