@@ -72,7 +72,7 @@ Common schemes: `messages://`, `settings://`, `maps://?q=<query>`, `tel://<numbe
 | Rotation          | `gesture-rotate`    | Two-finger rotation with auto-interpolation                      |
 | Custom gesture    | `gesture-custom`    | Arbitrary touch sequences, optional interpolation                |
 | Hardware key      | `button`            | Home, back, power, volume, appSwitch, actionButton               |
-| Type text         | `keyboard`          | Every platform. Text or one named key per call, never both       |
+| Type text         | `keyboard`          | Every platform. Text or one named key per call, never both. `clear: true` empties the field first (typing appends) |
 | Rotate device     | `rotate`            | Orientation changes                                              |
 | Shake device      | `shake`             | Shake handlers (sim/emu only), Undo-typing prompt, RN dev menu   |
 | Wait for UI       | `await-ui-element`  | Block until an element is visible/hidden/exists/contains text    |
@@ -174,6 +174,18 @@ Values: `home`, `back`, `power`, `volumeUp`, `volumeDown`, `appSwitch`, `actionB
 One call does one action. `text` and `key` are mutually exclusive, and a call that carries both is rejected with nothing typed. To type and then submit, send two `keyboard` steps in one `run-sequence` (§ 8) — `{ "text": "search query" }`, then `{ "key": "enter" }`. Two separate calls do the same work, but cost an extra round-trip.
 
 Special keys: `enter`, `escape`, `backspace`, `tab`, `space`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `f1`–`f12`. Optional: `"delayMs": 100` between keystrokes (default 50ms) — applies to the iOS simulator and Chromium; it is ignored on Android phones/tablets (typed via `adb input text`, no per-key cadence), on Vega, and on TV targets.
+
+**Replacing a field's value.** Typing **appends**. Pass `"clear": true` to empty the focused field first:
+
+```json
+{ "udid": "<UDID>", "clear": true, "text": "new@example.com", "key": "enter" }
+```
+
+- Order within one call is always **clear → text → key**, so the call above replaces the value and submits in a single tool call.
+- `{ "udid": "<UDID>", "clear": true }` alone just empties the field.
+- Supported on iOS, Android and Chromium. Rejected — before anything is typed — on Vega and on TV targets: those transports cannot send the select-all chord, and a silent no-op would be worse than an error.
+- The result reports `"cleared": true` when a clear was requested.
+- On older Android levels (those whose `input` has no `keycombination` subcommand) the clear falls back to deleting backwards from the end of the line, sized to the field's measured contents. It is exact for single-line fields, but **a multi-line field keeps whatever sits below the caret** — assert the result if you are clearing a multi-line input on an old device.
 
 **Typing secrets.** To enter a credential without its plaintext ever entering your context, transcript, or logs, use a secret placeholder in `text` (works in `keyboard`, `paste`, `run-sequence` keyboard steps, and flow `type` steps):
 
@@ -291,7 +303,7 @@ Use the sequencing when:
 
 - Knowing that some action needs multiple steps without necessarily immediate insight of screenshot
 - "scroll to bottom", "scroll to top", "scroll to do X" -> sequence scroll 3-5 times
-- form interactions, "clear and retype field" -> you may use triple-tap to select all, type new value
+- form interactions, "clear and retype field" -> one `keyboard` step with `{ "clear": true, "text": "…" }` (do NOT triple-tap to select all)
 - "submit form" → fill all fields in sequence, tap submit
 - "go back to X" → defined tap sequence for the navigation
 
