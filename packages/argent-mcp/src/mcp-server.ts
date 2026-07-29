@@ -241,7 +241,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
         "Argent — iOS Simulator, Android Emulator, and Chromium app control for interacting, testing, profiling and debugging mobile and Chromium applications. " +
         "Always use discovery tools (describe / debugger-component-tree / screenshot) before tapping — never guess coordinates. " +
         "On session end: call stop-all-simulator-servers with devices: [...] naming the devices this session used, and perform any necessary cleanup. " +
-        "The tool-server is a host-wide singleton shared with other agents, so an unscoped call tears down their devices too — reserve it for a deliberate machine-wide cleanup. " +
+        "One tool-server is shared by every agent using this argent install, so an unscoped call tears down their devices too — reserve it for a deliberate machine-wide cleanup. " +
         "Full guidance is in the argent rule loaded from .claude/rules/argent.md.",
     }
   );

@@ -171,9 +171,16 @@ export interface RecordingSession {
  * disclosure is bounded rather than absent. See the comment there for what it
  * discloses and why.
  *
- * The tool-server is a host-wide singleton shared by every MCP client, subagent
- * and CLI call on the machine, so this map is the only thing standing between
- * two agents and a clobbered flow file.
+ * One tool-server serves every MCP client, subagent and CLI call using one
+ * argent install — `stateFileForBundle` gives each install its own record and
+ * autospawn takes a free port, so the singleton is per install bundle, not per
+ * machine. Within that scope this map is the only thing standing between two
+ * agents and a clobbered flow file. Across it there is nothing: two installs
+ * recording the same (project_root, name) hold two of these maps and cannot see
+ * each other, so each believes its own session is live while the other
+ * truncates and appends. What still holds there is {@link writeFlowFile}'s
+ * temp-file swap, which is a filesystem guarantee rather than an in-process
+ * one — each write stays whole, but a lost update is not prevented.
  */
 const recordings = new Map<string, RecordingSession>();
 
@@ -2231,6 +2238,30 @@ async function writeFlowFile(filePath: string, content: string): Promise<void> {
 export async function writeNewFlowFile(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await writeFlowFile(filePath, content);
+}
+
+/**
+ * How many steps the flow file currently holds, or undefined if it cannot be
+ * read or parsed.
+ *
+ * For counting what a truncate is about to destroy. The file — not the
+ * session's in-memory `flow` — is the take in "host" mode: {@link appendStep}
+ * re-reads it before every append and `flow-finish-recording` reads it back for
+ * its summary, so a hand-edit made mid-recording (a documented workflow) is
+ * part of the take even though the in-memory copy only catches up on the next
+ * append.
+ *
+ * Undefined rather than 0 on a failure, because the two are not the same
+ * answer: a hand-edit can leave YAML that `parseFlow` rejects, and reporting
+ * "0 steps discarded" there would understate the loss in exactly the case that
+ * caused it. The caller reports no count instead.
+ */
+export async function countStepsOnDisk(filePath: string): Promise<number | undefined> {
+  try {
+    return parseFlow(await fs.readFile(filePath, "utf8")).steps.length;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Read and parse the flow file, append a step, write it back. */

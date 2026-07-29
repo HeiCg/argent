@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Registry, ToolContext } from "@argent/registry";
-import { ArtifactStore, CLIENT_FILE_MARKER } from "@argent/registry";
+import {
+  ArtifactStore,
+  CLIENT_FILE_MARKER,
+  FAILURE_CODES,
+  getFailureSignal,
+} from "@argent/registry";
 
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
 import { flowInsertEchoTool } from "../../src/tools/flows/flow-insert-echo";
@@ -465,7 +470,7 @@ describe("concurrent recordings against a remote client", () => {
     expect(contents.map((c) => c.length).sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
-  it("fails an append whose remote recording was restarted, and writes nothing to this host", async () => {
+  it("starts the remote take over on a restart, discarding the previous one and writing nothing to this host", async () => {
     await flowStartRecordingTool.execute(
       {},
       { name: "remote-flow", project_root: CLIENT_ROOT },
@@ -498,6 +503,75 @@ describe("concurrent recordings against a remote client", () => {
     expect(flow.steps[0]).toMatchObject({ kind: "echo", message: "second take" });
 
     // Still nothing on this host: the client's root was never created here.
+    await expect(fs.stat(CLIENT_ROOT)).rejects.toThrow();
+  });
+
+  it("rejects a remote append that was already in flight when the restart landed", async () => {
+    // The case above restarts BETWEEN calls, so the next append re-resolves the
+    // key and legitimately gets the new session — the supersede guard is never
+    // reached. Reaching it needs an append that resolved its session before the
+    // restart and lands after, and in client mode the live sub-tool call is the
+    // only await that can hold one open across it: past that point the client
+    // path (push → validate → serialize) runs to completion synchronously.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let arrive!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      arrive = resolve;
+    });
+    const registry = {
+      invokeTool: vi.fn(async () => {
+        arrive();
+        await held;
+        return { tapped: true };
+      }),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    const addStep = createFlowAddStepTool(registry);
+
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT },
+      remoteCtx()
+    );
+
+    const inFlight = addStep.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, command: "tap", args: '{"x":0.5}' }
+    );
+    await reached; // parked in the live step, session already resolved
+
+    const restarted = await flowStartRecordingTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT },
+      remoteCtx()
+    );
+    expect(restarted).toMatchObject({ restarted: true });
+
+    release();
+    let caught: unknown;
+    try {
+      await inFlight;
+      throw new Error("expected the superseded append to fail");
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as Error).message).toMatch(/no longer active/);
+    expect(getFailureSignal(caught)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+
+    // The step ran on the device but never entered the new take, and the client
+    // is told so — in client mode the in-memory copy is the only copy, so a
+    // superseded step landing in it would be unrecoverable.
+    const after = await flowInsertEchoTool.execute(
+      {},
+      { name: "remote-flow", project_root: CLIENT_ROOT, message: "second take" }
+    );
+    const flow = parseFlow((after.savedTo as { content: string }).content);
+    expect(flow.steps).toHaveLength(1);
+    expect(flow.steps[0]).toMatchObject({ kind: "echo", message: "second take" });
+
     await expect(fs.stat(CLIENT_ROOT)).rejects.toThrow();
   });
 });

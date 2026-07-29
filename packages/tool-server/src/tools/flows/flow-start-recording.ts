@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { FileInputSpec, ToolDefinition } from "@argent/registry";
 import {
+  countStepsOnDisk,
   getFlowPath,
+  getRecordingSession,
   startRecordingSession,
   withFlowFileLock,
   writeNewFlowFile,
@@ -60,7 +62,7 @@ export const flowStartRecordingTool: ToolDefinition<
   description: `Start recording a new flow. Creates a .yaml file in the .argent/flows/ directory.
 Use when you want to capture a reusable sequence of device interactions for later replay.
 Returns { message, flowFile, savedTo }.
-Starting ALWAYS truncates <project_root>/.argent/flows/<name>.yaml to an empty flow — including a name that exists only as a saved file with no recording in progress, so starting under the name of a committed flow overwrites it. { restarted, discardedSteps } is added only when a LIVE recording of the same flow was discarded; its absence does NOT mean nothing was overwritten. Either way, re-record from the top rather than expecting to resume.
+Starting ALWAYS truncates <project_root>/.argent/flows/<name>.yaml to an empty flow — including a name that exists only as a saved file with no recording in progress, so starting under the name of a committed flow overwrites it. { restarted } is added only when a LIVE recording of the same flow was discarded; its absence does NOT mean nothing was overwritten. \`discardedSteps\` counts the flow file as it stood at the reset, so a hand-edit made mid-recording is included — but it is omitted, \`restarted\` alone, when that file could not be read or parsed. Either way, re-record from the top rather than expecting to resume.
 Fails before anything is written on a \`project_root\` that is not absolute or contains a ".." segment, or a \`name\` outside letters/digits/underscore/hyphen. It can also fail on the .argent/flows/ directory not being creatable or the file not being writable - but only when the project root is on the tool-server host; against a remote client the YAML travels back in \`savedTo\` for the client to write and no host filesystem access happens.
 
 Recording state is independent: several flows can be recorded at once (different
@@ -104,10 +106,23 @@ to remove or reorder steps.`,
     // lock, so a step from the take being discarded can neither slip into the
     // file between the reset and the swap, nor be written after both: it finds
     // its session superseded and fails instead.
-    const { savedTo, replaced } = await withFlowFileLock(
+    const { savedTo, replaced, discardedSteps } = await withFlowFileLock(
       params.project_root,
       params.name,
       async () => {
+        // Count the take BEFORE the truncate destroys it, and count it where it
+        // actually lives: on disk in host mode, since a hand-edit made
+        // mid-recording is part of the take and the session's in-memory copy
+        // only catches up on the next append (see {@link countStepsOnDisk}). In
+        // client mode this host has no file and the in-memory copy IS the take.
+        const previous = getRecordingSession(params.project_root, params.name);
+        const discardedSteps =
+          previous === undefined
+            ? undefined
+            : previous.persist === "host"
+              ? await countStepsOnDisk(previous.filePath)
+              : previous.flow.steps.length;
+
         let savedTo: FlowSavedTo;
         if (persist === "host") {
           await writeNewFlowFile(filePath, flowFile);
@@ -122,7 +137,7 @@ to remove or reorder steps.`,
           filePath,
           flow,
         });
-        return { savedTo, replaced };
+        return { savedTo, replaced, discardedSteps };
       }
     );
 
@@ -130,7 +145,6 @@ to remove or reorder steps.`,
     // to fix it" workflow. Recordings are keyed per flow file, so starting a
     // *different* flow abandons nothing and there is nothing to report about it.
     if (replaced) {
-      const discardedSteps = replaced.flow.steps.length;
       // Only claim the file was reset when this process actually reset it. In
       // client mode the truncation happens only once the client applies the
       // directive, and a rejected path or a failed write there surfaces as
@@ -141,13 +155,17 @@ to remove or reorder steps.`,
           ? `${filePath} reset to an empty flow.`
           : `${filePath} is reset to an empty flow once your client applies \`savedTo\` ` +
             `(a null \`savedTo\` means it did not).`;
+      // An unreadable or unparseable file leaves the loss genuinely uncounted,
+      // so say the take was discarded without putting a number on it rather
+      // than reporting one the file disagrees with.
+      const lost =
+        discardedSteps === undefined
+          ? "the previous take"
+          : `the previous take (${discardedSteps} step${discardedSteps === 1 ? "" : "s"})`;
       return {
-        message:
-          `Restarted recording "${params.name}" — the previous take ` +
-          `(${discardedSteps} step${discardedSteps === 1 ? "" : "s"}) was discarded and ` +
-          reset,
+        message: `Restarted recording "${params.name}" — ${lost} was discarded and ` + reset,
         restarted: true,
-        discardedSteps,
+        ...(discardedSteps === undefined ? {} : { discardedSteps }),
         flowFile,
         savedTo,
       };

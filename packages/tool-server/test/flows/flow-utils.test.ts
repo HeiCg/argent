@@ -971,7 +971,10 @@ describe("native launch shorthand", () => {
 
 // Recordings live in a map keyed by the resolved flow file path, so a session
 // has no identity beyond (project_root, name) — two agents recording at once
-// must never observe each other's state.
+// must never write into each other's take. What is isolated is the artifact,
+// not the fact that a recording exists: the not-found message deliberately
+// names the other live flows in the caller's own project and counts the rest,
+// and the two cases below pin that disclosure as bounded rather than absent.
 describe("recording sessions", () => {
   beforeEach(() => {
     __resetRecordingsForTesting();
