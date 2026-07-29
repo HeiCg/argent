@@ -16,7 +16,11 @@ const zodSchema = z.object({
   setting: z
     .enum(SYSTEM_SETTINGS)
     .describe(
-      "Which system setting to change: `appearance` (light/dark theme), `increase-contrast` (accessibility high-contrast), or `text-size` (Dynamic Type / font size)."
+      "Which system setting to change. Display / accessibility (both iOS simulator and Android): " +
+        "`appearance` (light/dark theme), `text-size` (Dynamic Type / font size), " +
+        "`increase-contrast` (high-contrast), `reduce-motion` (disable animations), " +
+        "`invert-colors` (invert display colors). Android-only (radios / device state): " +
+        "`wifi`, `cellular` (mobile data), `airplane-mode`, `location`, `auto-rotate`."
     ),
   value: z
     .string()
@@ -24,8 +28,8 @@ const zodSchema = z.object({
     .describe(
       "The value to set — valid values depend on `setting`: " +
         "`appearance` → light | dark; " +
-        "`increase-contrast` → enabled | disabled; " +
-        "`text-size` → extra-small | small | medium | large | extra-large | extra-extra-large | extra-extra-extra-large | accessibility-medium | accessibility-large | accessibility-extra-large | accessibility-extra-extra-large | accessibility-extra-extra-extra-large (smallest to largest; `large` is the default)."
+        "`text-size` → extra-small | small | medium | large | extra-large | extra-extra-large | extra-extra-extra-large | accessibility-medium | accessibility-large | accessibility-extra-large | accessibility-extra-extra-large | accessibility-extra-extra-extra-large (smallest to largest; `large` is the default); " +
+        "every other setting → on | off (`on` turns the named setting on — e.g. `reduce-motion` on reduces motion, `airplane-mode` on enables airplane mode)."
     ),
 });
 
@@ -74,15 +78,19 @@ const dispatch = dispatchByPlatform<
 
 export const systemSettingsTool: ToolDefinition<Params, SystemSettingsResult> = {
   id: "system-settings",
-  description: `Change a device-wide display or accessibility setting directly, without navigating the system Settings UI. Use during test setup to put the device in a specific state — dark mode, a larger text size, or increased contrast — before or while exercising an app.
+  description: `Change a device-wide system setting directly, without navigating the system Settings UI. Use during test setup to put the device in a specific state — dark mode, a larger text size, airplane mode, location off — before or while exercising an app.
 Settings and their values:
 - \`appearance\`: \`light\` | \`dark\` — the system color theme.
-- \`increase-contrast\`: \`enabled\` | \`disabled\` — the accessibility high-contrast mode.
 - \`text-size\`: one of the 12 Dynamic Type categories from \`extra-small\` to \`accessibility-extra-extra-extra-large\` (\`large\` is the default).
-iOS simulator: sets it via \`simctl ui\` (appearance / increase_contrast / content_size). The simulator must be booted. A setting a given iOS runtime doesn't model returns an unsupported error.
-Android: sets the dark theme via \`cmd uimode night\`, high-contrast text via the \`high_text_contrast_enabled\` accessibility flag, and text size via \`font_scale\` (each iOS category maps to the nearest scale). Works on emulators and real devices; dark mode needs Android 10 (API 29)+.
-This is a device-wide toggle, not per-app — no bundleId. Some apps only re-read a setting on next launch, so relaunch the app afterwards if the change doesn't appear live.
-Returns { setting, value, applied }, where \`applied\` is the concrete platform-level change (e.g. \`content_size=large\`, \`night_mode=yes\`, \`font_scale=1.0\`). Fails if the value is invalid for the setting, the device isn't booted, or the platform command errors.`,
+- \`increase-contrast\`: \`on\` | \`off\` — accessibility high-contrast mode.
+- \`reduce-motion\`: \`on\` | \`off\` — reduce/disable UI animations.
+- \`invert-colors\`: \`on\` | \`off\` — invert the display colors.
+- \`wifi\`, \`cellular\`, \`airplane-mode\`, \`location\`, \`auto-rotate\`: \`on\` | \`off\` — Android only.
+Platforms:
+- iOS simulator supports the first five (display / accessibility): \`appearance\`, \`text-size\`, and \`increase-contrast\` via \`simctl ui\`; \`reduce-motion\` and \`invert-colors\` via the accessibility preferences domain. The simulator must be booted. A setting a given iOS runtime doesn't model returns an unsupported error, and the five Android-only settings are rejected on iOS.
+- Android supports all ten, on emulators and real devices, via \`adb\` (\`cmd uimode night\`, \`font_scale\`, accessibility flags, \`svc wifi/data\`, \`cmd connectivity airplane-mode\`, \`location_mode\`, \`accelerometer_rotation\`). Dark mode needs Android 10 (API 29)+.
+This is a device-wide toggle, not per-app — no bundleId. Some apps only re-read a display/accessibility setting on next launch, so relaunch the app afterwards if the change doesn't appear live.
+Returns { setting, value, applied }, where \`applied\` is the concrete platform-level change (e.g. \`content_size=large\`, \`night_mode=yes\`, \`ReduceMotionEnabled=YES\`, \`wifi=enabled\`). Fails if the value is invalid for the setting, the setting isn't available on the target platform, the device isn't booted, or the platform command errors.`,
   searchHint:
     "dark light mode appearance theme color scheme text size font dynamic type increase contrast accessibility system settings toggle",
   zodSchema,
