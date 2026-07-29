@@ -2244,8 +2244,14 @@ export async function writeNewFlowFile(filePath: string, content: string): Promi
  * How many steps the flow file currently holds, or undefined if it cannot be
  * read or parsed.
  *
- * For counting what a truncate is about to destroy. The file — not the
- * session's in-memory `flow` — is the take in "host" mode: {@link appendStep}
+ * For counting what a truncate is about to destroy, and therefore only ever
+ * called in "host" mode. In "client" mode the file lives on the client's
+ * machine and this host cannot read it at all, so the in-memory copy is both
+ * the take and the only thing countable — the guarantee below does not carry
+ * across that boundary, and `flow-start-recording`'s description says so.
+ *
+ * The file — not the session's in-memory `flow` — is the take in "host" mode:
+ * {@link appendStep}
  * re-reads it before every append and `flow-finish-recording` reads it back for
  * its summary, so a hand-edit made mid-recording (a documented workflow) is
  * part of the take even though the in-memory copy only catches up on the next

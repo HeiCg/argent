@@ -61,7 +61,7 @@ const PORT_KEYED_NAMESPACES: readonly string[] = [
   // entry does not already establish. They are listed for what `stopped`
   // reports: a session that had a network inspector or a React profiler open is
   // told those went away by name, rather than inferring it from the debugger
-  // line. `ChromiumJsRuntimeDebugger` is listed for the same reason.
+  // line.
   NETWORK_INSPECTOR_NAMESPACE,
   REACT_PROFILER_SESSION_NAMESPACE,
 ];
@@ -69,12 +69,21 @@ const PORT_KEYED_NAMESPACES: readonly string[] = [
 /**
  * Every namespace whose service belongs to exactly one device and whose
  * `dispose()` frees something worth freeing. A device owning none of these is
- * not a bad id: Vega is driven by `vega` CLI shell-outs for boot, launch,
- * describe, screenshot and the remote, so a Vega device owns a service only
- * once `debugger-connect` or a network-log tool has run — `DEBUGGER_TOOL_CAPABILITY`
- * declares `vega: { vvd: true }`, and those two namespaces (`JsRuntimeDebugger`,
- * `NetworkInspector`) are the only ones on this list a Vega serial can ever
- * match.
+ * not a bad id: Vega is driven by shell-outs — the `vega` CLI for boot and
+ * launch, adb for describe, screenshot and the remote — so a Vega device owns a
+ * RUNNING service only once `debugger-connect` or a network-log tool has run.
+ * `DEBUGGER_TOOL_CAPABILITY` declares `vega: { vvd: true }`, and those two
+ * (`JsRuntimeDebugger`, `NetworkInspector`) are the only entries here a Vega
+ * serial can hold live.
+ *
+ * It can still MATCH others, because ownership is counted regardless of state
+ * and a failed resolve leaves its node behind in ERROR (`Registry._resolve`
+ * inserts before the factory runs, and nothing is ever removed). A tool's
+ * capability is enforced by the HTTP layer, not by `registry.invokeTool`, so a
+ * call that reaches the registry another way — `flow-add-step` takes `command`
+ * as a bare string — can mint e.g. `SimulatorServer:<vega serial>` in ERROR. A
+ * Vega serial appearing in `stopped` is therefore impossible, but one absent
+ * from `unmatched` is not.
  *
  * Membership is decided by "does dispose() reap a resource that outlives the
  * call", and every namespace that meets that test is listed even when a cascade
@@ -98,6 +107,12 @@ const PORT_KEYED_NAMESPACES: readonly string[] = [
  *   on-device perfetto process plus its trace file.
  * - `JsRuntimeDebugger` owns a bound loopback HTTP/WebSocket server, the CDP
  *   socket to Metro, and a log file handle.
+ * - `ChromiumJsRuntimeDebugger` owns the same, plus its captured console
+ *   history. It is the one member whose dependency (`ChromiumCdp`) is also
+ *   here, so a scoped stop reaches it twice over — it is listed for the naming,
+ *   which is the same reason the two `JsRuntimeDebugger` dependents are.
+ *   Note its URN is `<ns>:<deviceId>`, NOT port-keyed, so it belongs in this
+ *   list and not in {@link PORT_KEYED_NAMESPACES}.
  *
  * (`AndroidTvControl` is stateless adb shell-outs with a no-op dispose, but is
  * included for symmetry so the snapshot is fully drained.)
