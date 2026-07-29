@@ -181,7 +181,7 @@ Fails if a recording is already running on the device, the device is not booted,
  * reports whether this build has them at all; `startCapture` records host-side
  * when it does not.
  */
-export function makeServerRecordingControl(simulator: SimulatorServerApi): ServerRecordingControl {
+function makeServerRecordingControl(simulator: SimulatorServerApi): ServerRecordingControl {
   return {
     start: (opts) => startServerRecording(simulator, opts),
     stop: () => stopServerRecording(simulator),
