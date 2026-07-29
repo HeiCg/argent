@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
+  countStepsOnDisk,
   serializeFlow,
   parseFlow,
   describeSelector,
@@ -1703,5 +1706,66 @@ describe("sibling selector scopes and the universal selector", () => {
         ].join("\n") + "\n"
       )
     ).toThrow(/secret/);
+  });
+});
+
+// ── countStepsOnDisk ─────────────────────────────────────────────────
+
+// The count `flow-start-recording` reports for a take it is about to truncate.
+// Its contract is the distinction between "0 steps" and "no answer": an empty
+// take really did hold nothing, while an unreadable one is a loss of unknown
+// size, and reporting the first for the second understates it in exactly the
+// case that produced it.
+describe("countStepsOnDisk", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "count-steps-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const write = async (content: string) => {
+    const file = path.join(dir, "flow.yaml");
+    await fs.writeFile(file, content, "utf8");
+    return file;
+  };
+
+  it("counts the steps a readable flow file holds", async () => {
+    const file = await write(
+      serializeFlow({
+        executionPrerequisite: "",
+        steps: [
+          { kind: "echo", message: "one" },
+          { kind: "echo", message: "two" },
+          { kind: "echo", message: "three" },
+        ],
+      })
+    );
+    expect(await countStepsOnDisk(file)).toBe(3);
+  });
+
+  it("counts an empty take as 0, which is a real answer", async () => {
+    const file = await write(serializeFlow({ executionPrerequisite: "", steps: [] }));
+    expect(await countStepsOnDisk(file)).toBe(0);
+  });
+
+  it("returns undefined for a file that does not exist", async () => {
+    expect(await countStepsOnDisk(path.join(dir, "absent.yaml"))).toBeUndefined();
+  });
+
+  it("returns undefined rather than 0 for YAML the parser rejects", async () => {
+    // A hand-edit can leave this behind, and `parseFlow("")` returning an empty
+    // flow with no error is the reason 0 cannot double as "unknown".
+    const file = await write("steps: [ this: is: not: a: flow\n");
+    expect(await countStepsOnDisk(file)).toBeUndefined();
+  });
+
+  it("returns undefined for a directory in the file's place", async () => {
+    const asDir = path.join(dir, "flow-dir.yaml");
+    await fs.mkdir(asDir);
+    expect(await countStepsOnDisk(asDir)).toBeUndefined();
   });
 });

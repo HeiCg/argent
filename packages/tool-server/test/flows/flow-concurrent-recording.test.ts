@@ -482,8 +482,8 @@ describe("the flow-file lock", () => {
     // Nothing else can observe it — a retained entry is functionally identical
     // to a released one for every caller — so without this the whole
     // `void held.then(...)` block can be deleted with the suite still green,
-    // and a long-lived host-wide server accumulates one permanent entry per
-    // flow anyone ever recorded.
+    // and a long-lived server accumulates one permanent entry per flow anyone
+    // using that argent install ever recorded.
     const root = await makeRoot("lock-cleanup");
     const before = __flowFileLockCountForTesting();
 

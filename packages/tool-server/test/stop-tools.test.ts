@@ -7,8 +7,16 @@ import { stopMetroTool } from "../src/tools/simulator/stop-metro";
 
 function createMockRegistry(services: Map<string, { state: ServiceState; dependents: string[] }>) {
   return {
+    // The real `getSnapshot` COPIES each node into a fresh map
+    // (Registry.getSnapshot), so a disposal during the sweep cannot rewrite the
+    // state the caller is still iterating. Handing over the live map instead
+    // would make a cascade retroactively hide its own victim, and the result
+    // would depend on the map's insertion order — an artifact of the mock that
+    // production does not have.
     getSnapshot: vi.fn(() => ({
-      services,
+      services: new Map(
+        [...services].map(([urn, n]) => [urn, { ...n, dependents: [...n.dependents] }])
+      ),
       namespaces: [],
       tools: [],
     })),
@@ -17,18 +25,16 @@ function createMockRegistry(services: Map<string, { state: ServiceState; depende
     // the same device still sees its URNs, in IDLE. Mirror that here: a mock
     // that forgets disposed nodes would hide exactly the sequence the
     // stop-one-then-stop-the-rest tests below exist to pin.
-    disposeService: vi.fn(async (urn: string) => {
+    disposeService: vi.fn(async function dispose(urn: string) {
       const node = services.get(urn);
       if (!node || node.state === ServiceState.IDLE) return;
+      // …and it recurses into dependents BEFORE clearing the node
+      // (Registry._teardown), so a service whose dependency is disposed goes
+      // down with it. Mirror that too, or a test cannot tell a namespace this
+      // tool reaps by name from one that merely dies as somebody else's
+      // dependent. Mark first, so a dependency cycle cannot recurse forever.
       node.state = ServiceState.IDLE;
-      // …and it cascades dependency → dependents first (Registry._teardown), so
-      // a service whose dependency is disposed goes down with it. Mirror that
-      // too, or a test cannot tell a namespace this tool reaps by name from one
-      // that merely dies as somebody else's dependent.
-      for (const dependent of node.dependents) {
-        const child = services.get(dependent);
-        if (child) child.state = ServiceState.IDLE;
-      }
+      for (const dependent of node.dependents) await dispose(dependent);
     }),
   } as unknown as Registry;
 }
@@ -241,40 +247,44 @@ describe("stop-all-simulator-servers", () => {
     expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:BBB");
   });
 
-  it("names a cascading debugger in `stopped` instead of letting it die anonymously", async () => {
-    // `stopped` is documented as "the services that were actually live and got
-    // shut down". ChromiumJsRuntimeDebugger declares `getDependencies ->
-    // ChromiumCdp`, so disposing the transport takes it down regardless — while
-    // it was outside the namespace set, that shutdown was invisible, and an
-    // agent reading `stopped` was not told its console history was gone. The
-    // registry inserts a dependent before its dependency (`_resolve` creates
-    // the node, then `_initialize` resolves what it needs), so the map order
-    // here is the real one.
-    const services = new Map([
-      [
-        "ChromiumJsRuntimeDebugger:chromium-cdp-9222",
-        { state: ServiceState.RUNNING, dependents: [] },
-      ],
-      [
-        "ChromiumCdp:chromium-cdp-9222",
-        {
-          state: ServiceState.RUNNING,
-          dependents: ["ChromiumJsRuntimeDebugger:chromium-cdp-9222"],
-        },
-      ],
-    ]);
+  // `stopped` is documented as "the services that were actually live and got
+  // shut down". ChromiumJsRuntimeDebugger declares `getDependencies ->
+  // ChromiumCdp`, so disposing the transport takes it down regardless — while
+  // it was outside the namespace set, that shutdown was invisible, and an agent
+  // reading `stopped` was not told its console history was gone.
+  //
+  // Run under both map orders. The registry usually inserts a dependent before
+  // its dependency (`_resolve` creates the node, then `_initialize` resolves
+  // what it needs), but a session that booted and described before attaching
+  // the debugger inserts `ChromiumCdp` first — and since `getSnapshot` copies,
+  // the answer must not depend on which happened.
+  const CDP = "ChromiumCdp:chromium-cdp-9222";
+  const CHROMIUM_DEBUGGER = "ChromiumJsRuntimeDebugger:chromium-cdp-9222";
+  const live = () => ({ state: ServiceState.RUNNING, dependents: [] as string[] });
+  const cdpWithDependent = () => ({
+    state: ServiceState.RUNNING,
+    dependents: [CHROMIUM_DEBUGGER],
+  });
+
+  it.each([
+    ["debugger-connect first (dependent inserted first)", [CHROMIUM_DEBUGGER, CDP]],
+    ["boot/describe first (dependency inserted first)", [CDP, CHROMIUM_DEBUGGER]],
+  ])("names a cascading debugger in `stopped` — %s", async (_label, order) => {
+    const services = new Map(
+      order.map((urn) => [urn, urn === CDP ? cdpWithDependent() : live()] as const)
+    );
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
     const result = await tool.execute!({}, { devices: ["chromium-cdp-9222"] });
 
-    expect(result).toEqual({
-      stopped: ["ChromiumJsRuntimeDebugger:chromium-cdp-9222", "ChromiumCdp:chromium-cdp-9222"],
-    });
-    expect(services.get("ChromiumJsRuntimeDebugger:chromium-cdp-9222")?.state).toBe(
-      ServiceState.IDLE
+    // Order follows the snapshot; membership must not.
+    expect((result as { stopped: string[] }).stopped.slice().sort()).toEqual(
+      [CDP, CHROMIUM_DEBUGGER].sort()
     );
-    expect(services.get("ChromiumCdp:chromium-cdp-9222")?.state).toBe(ServiceState.IDLE);
+    expect(result).not.toHaveProperty("unmatched");
+    expect(services.get(CHROMIUM_DEBUGGER)?.state).toBe(ServiceState.IDLE);
+    expect(services.get(CDP)?.state).toBe(ServiceState.IDLE);
   });
 
   it("returns empty list when no simulators are running", async () => {
