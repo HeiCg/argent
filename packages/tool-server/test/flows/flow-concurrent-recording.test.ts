@@ -19,6 +19,7 @@ import {
   parseFlow,
   serializeFlow,
   withFlowFileLock,
+  __flowFileLockCountForTesting,
   type FlowFile,
   type FlowStep,
 } from "../../src/tools/flows/flow-utils";
@@ -471,6 +472,35 @@ describe("the flow-file lock", () => {
     await heldB;
     await heldC;
     expect(order).toEqual(["a-enter", "a-exit", "b-enter", "b-exit", "c-enter"]);
+  });
+
+  it("drops the lock entry once released, so the map does not grow per flow ever recorded", async () => {
+    // The other half of the self-cleanup. The test above pins the CONDITION
+    // (only the tail may delete); this pins that the delete happens at all.
+    // Nothing else can observe it — a retained entry is functionally identical
+    // to a released one for every caller — so without this the whole
+    // `void held.then(...)` block can be deleted with the suite still green,
+    // and a long-lived host-wide server accumulates one permanent entry per
+    // flow anyone ever recorded.
+    const root = await makeRoot("lock-cleanup");
+    const before = __flowFileLockCountForTesting();
+
+    for (const name of ["alpha", "beta", "gamma"]) {
+      await start(root, name);
+      await addEcho(root, name, "one");
+      await finish(root, name);
+    }
+    expect(__flowFileLockCountForTesting()).toBe(before);
+
+    // And while a lock is genuinely held, the entry IS there — so the
+    // assertion above is about release, not about the map never being used.
+    const gate = openGate();
+    const held = withFlowFileLock(root, "alpha", () => gate.promise);
+    expect(__flowFileLockCountForTesting()).toBe(before + 1);
+    gate.open();
+    await held;
+    await settle();
+    expect(__flowFileLockCountForTesting()).toBe(before);
   });
 });
 
