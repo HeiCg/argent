@@ -16,7 +16,7 @@
  *  - run-sequence must not eagerly hold simulator-server for a physical iPhone;
  *  - gesture-swipe routes a physical iPhone to the sim-server and honors `settle`.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // assertPhysicalIosEnabled reads the feature flag; mock isFlagEnabled so the gate
 // can be exercised deterministically regardless of the host's ~/.argent/flags.json.
@@ -25,6 +25,7 @@ vi.mock("@argent/configuration-core", () => ({ isFlagEnabled: vi.fn() }));
 import { isFlagEnabled } from "@argent/configuration-core";
 
 import { resolveDevice, isPhysicalIosUdid } from "../src/utils/device-info";
+import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
 import { parsePhysicalIosDevices } from "../src/utils/ios-devices";
 import { UnsupportedOperationError, assertSupported } from "../src/utils/capability";
 import type { ToolCapability } from "@argent/registry";
@@ -389,6 +390,13 @@ describe("await-screen-idle settles on a physical iPhone despite the rotating re
   // different ORDER on every call. Verified on hardware — three consecutive
   // reads of one Safari page gave three orderings of the same six elements.
   const STILL = ["Back, Button", "Page Menu, Button", "Address, x", "refresh, Button"];
+
+  // These cases run the tool's `execute`, which preflights `xcrun` for any iOS
+  // device. Unit tests run on Linux in CI, where it does not exist, so prime the
+  // availability cache instead of shelling out — and clear it afterwards so the
+  // priming does not leak into the rest of the file.
+  beforeEach(() => __primeDepCacheForTests(["xcrun"]));
+  afterEach(() => __resetDepCacheForTests());
 
   // `captionsFor` is called with the read index, so a case can keep producing
   // fresh screens indefinitely rather than running off the end of a fixed list
