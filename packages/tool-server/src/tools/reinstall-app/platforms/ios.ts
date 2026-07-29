@@ -2,8 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolve as resolvePath } from "node:path";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
+import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
-import { UnsupportedOperationError } from "../../../utils/capability";
 import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } from "../types";
 
 const execFileAsync = promisify(execFile);
@@ -11,19 +11,59 @@ const execFileAsync = promisify(execFile);
 export const iosImpl: PlatformImpl<ReinstallAppServices, ReinstallAppParams, ReinstallAppResult> = {
   requires: ["xcrun"],
   handler: async (_services, params, device) => {
-    if (device.kind === "device") {
-      // Installing on a physical iPhone needs a device-signed .app and a
-      // provisioning profile; that is out of scope for the CoreDevice path.
-      // UnsupportedOperationError maps to a clean 400 (a plain Error would
-      // surface as a generic 500).
-      throw new UnsupportedOperationError(
-        "reinstall-app",
-        device,
-        "installing on physical iOS needs a device-signed .app and provisioning profile, which is out of scope for the CoreDevice path"
-      );
-    }
     const { udid, bundleId, appPath } = params;
     const absolute = resolvePath(appPath);
+
+    if (device.kind === "device") {
+      // Physical iPhones install through devicectl rather than simctl. Like
+      // launch-app and open-url — the other tools that shell devicectl instead
+      // of going through a CoreDevice service — this enforces the opt-in
+      // itself, since no simulator-server ref is built on this path to run the
+      // gate.
+      assertPhysicalIosEnabled();
+      try {
+        await execFileAsync("xcrun", [
+          "devicectl",
+          "device",
+          "uninstall",
+          "app",
+          "--device",
+          udid,
+          bundleId,
+        ]);
+      } catch {
+        // App may not be installed — continue to install
+      }
+      try {
+        await execFileAsync("xcrun", [
+          "devicectl",
+          "device",
+          "install",
+          "app",
+          "--device",
+          udid,
+          absolute,
+        ]);
+      } catch (err) {
+        throw new FailureError(
+          // The dominant failure here is a bundle that is not signed for this
+          // device: a simulator .app, or one whose provisioning profile does
+          // not list the device's UDID. devicectl says so, but only several
+          // lines in, so name it up front.
+          `Failed to install ${bundleId} on physical iOS device ${udid}. The bundle must be built for iOS (not the simulator) and signed with a provisioning profile that includes this device.`,
+          {
+            error_code: FAILURE_CODES.IOS_REINSTALL_INSTALL_FAILED,
+            failure_stage: "ios_reinstall_app_devicectl_install",
+            failure_area: "tool_server",
+            error_kind: "subprocess",
+            ...subprocessFailureMetadata(err, "xcrun_devicectl"),
+          },
+          { cause: err instanceof Error ? err : new Error(String(err)) }
+        );
+      }
+      return { reinstalled: true, bundleId };
+    }
+
     try {
       await execFileAsync("xcrun", ["simctl", "uninstall", udid, bundleId]);
     } catch {

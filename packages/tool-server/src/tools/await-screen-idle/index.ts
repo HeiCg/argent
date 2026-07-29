@@ -22,6 +22,13 @@ import { describeChromium } from "../describe/platforms/chromium";
 export const AWAIT_SCREEN_IDLE_TOOL_ID = "await-screen-idle";
 
 const DEFAULT_TIMEOUT_MS = 3000;
+// A physical iPhone's accessibility read is a round trip over the CoreDevice
+// tunnel and takes ~2s, against the few milliseconds a simulator or emulator
+// needs. Settling takes at least two reads, so the 3s default would allow one
+// or two polls and report `settled: false` on a screen that never moved —
+// measured on an iPhone 15 / iOS 27, where a still Safari page needed 4.3s.
+// An explicit `timeoutMs` still wins; this only moves the default.
+const DEFAULT_DEVICE_TIMEOUT_MS = 15000;
 const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_MIN_STABLE_MS = 250;
 
@@ -37,7 +44,7 @@ const zodSchema = z.object({
     .max(120_000)
     .optional()
     .describe(
-      `Max time to wait for the screen to settle before giving up (default ${DEFAULT_TIMEOUT_MS}).`
+      `Max time to wait for the screen to settle before giving up (default ${DEFAULT_TIMEOUT_MS}, or ${DEFAULT_DEVICE_TIMEOUT_MS} on a physical iPhone, whose reads are far slower).`
     ),
   pollIntervalMs: z
     .number()
@@ -68,13 +75,8 @@ interface IdleResult {
   polls: number;
 }
 
-// Physical iPhones are excluded: their accessibility read starts from the
-// device's VoiceOver cursor and advances it, so consecutive `describe` calls
-// return the same elements rotated by one, with resynthesised frames. The
-// signature below therefore changes on every poll even on a frozen screen, and
-// the tool could only ever burn the full timeout and report `settled: false`.
 const capability: ToolCapability = {
-  apple: { simulator: true, device: false },
+  apple: { simulator: true, device: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
 };
@@ -83,17 +85,30 @@ const capability: ToolCapability = {
 // 1% of the screen) for every node below the synthetic root. Rounding tolerates
 // sub-pixel jitter while still catching real motion (a slide/fade animation),
 // so an unchanged signature means the screen has genuinely stopped moving.
-function treeSignature(root: DescribeNode): string {
+//
+// `orderAndFrameFree` drops both the ordering and the frames, for the physical
+// iPhone: its accessibility read starts from the device's VoiceOver cursor and
+// advances it, so consecutive reads return the same elements rotated by one,
+// each with a frame resynthesised from its new list position. Sorting the
+// role/label/value parts and dropping frames cancels exactly those two
+// distortions — verified against a live device, where three consecutive reads
+// of one still screen gave three different orderings and one identical sorted
+// signature. The cost is that motion is only visible through the accessibility
+// content: an animation that moves pixels without changing any element's
+// label/value (a spinner, an indeterminate progress bar) reads as settled.
+function treeSignature(root: DescribeNode, orderAndFrameFree = false): string {
   const round = (n: number) => Math.round(n * 100) / 100;
   const parts: string[] = [];
   const walk = (node: DescribeNode): void => {
     const f = node.frame;
-    parts.push(
-      `${node.role}|${node.label ?? ""}|${node.value ?? ""}|${round(f.x)},${round(f.y)},${round(f.width)},${round(f.height)}`
-    );
+    const frame = orderAndFrameFree
+      ? ""
+      : `|${round(f.x)},${round(f.y)},${round(f.width)},${round(f.height)}`;
+    parts.push(`${node.role}|${node.label ?? ""}|${node.value ?? ""}${frame}`);
     for (const child of node.children) walk(child);
   };
   for (const child of root.children) walk(child);
+  if (orderAndFrameFree) parts.sort();
   return parts.join("\n");
 }
 
@@ -124,7 +139,10 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
 Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (default ${DEFAULT_POLL_INTERVAL_MS}ms) until it
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
 ${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls } — settled=false means the screen never went
-still before the timeout. Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
+still before the timeout. Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.
+On a physical iPhone each read is a ~2s round trip, so the default timeout there is ${DEFAULT_DEVICE_TIMEOUT_MS}ms; its accessibility
+read also carries no usable element geometry, so stillness means the on-screen elements stopped changing and an
+animation that moves only pixels (a spinner) reads as settled.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
     longRunning: true,
@@ -146,16 +164,23 @@ still before the timeout. Use after a launch/navigation to wait for the UI to re
       // Resolved once, outside the poll loop, like `isTvOs` — an unlisted
       // serial's TV probe is never cached, so leaving it inside
       // `describeAndroid` would spawn `adb devices` per poll.
-      const isTvOs = device.platform === "ios" && (await isTvOsSimulator(device.id));
+      // Only a simulator can be a tvOS one, and the probe costs a `simctl list`,
+      // so a physical iPhone skips it (same narrowing as screen-recording-start).
+      const isTvOs =
+        device.platform === "ios" &&
+        device.kind === "simulator" &&
+        (await isTvOsSimulator(device.id));
       const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));
       const minStableMs = params.minStableMs ?? DEFAULT_MIN_STABLE_MS;
+      const rotatingRead = device.platform === "ios" && device.kind === "device";
 
       let stableSignature: string | undefined;
       let stableSince = 0;
 
       const poll = await pollDescribeTree<true>({
         fetchTree: () => fetchTree(device, services, isTvOs, androidIsTv),
-        timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        timeoutMs:
+          params.timeoutMs ?? (rotatingRead ? DEFAULT_DEVICE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS),
         pollIntervalMs: params.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
         signal: ctx?.signal,
         onSample: (data, nowMs) => {
@@ -165,7 +190,7 @@ still before the timeout. Use after a launch/navigation to wait for the UI to re
             stableSince = 0;
             return { done: false };
           }
-          const signature = treeSignature(data.tree);
+          const signature = treeSignature(data.tree, rotatingRead);
           if (signature === stableSignature) {
             if (nowMs - stableSince >= minStableMs) return { done: true, result: true };
           } else {

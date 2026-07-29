@@ -54,8 +54,12 @@ const zodSchema = z.object({
     ),
 });
 
+// Physical iPhones included: recording reads simulator-server's frame stream,
+// and the `ios_device` controller publishes into that same stream (a live HEVC
+// display stream, falling back to a screenshot poll), so the encoder, the
+// trimmer and the touch overlay all work unchanged.
 const capability = {
-  apple: { simulator: true },
+  apple: { simulator: true, device: true },
   android: { emulator: true, device: true, unknown: true },
 } as const;
 
@@ -88,7 +92,13 @@ Fails if a recording is already running on the device, the device is not booted,
 
       // Distinguish tvOS from iOS by runtime — shape alone can't. tvOS has no
       // simulator-server backend, so say so here instead of failing deeper in.
-      if (device.platform === "ios" && (await isTvOsSimulator(params.udid))) {
+      // Only simulators can be tvOS ones, and the probe costs a `simctl list`,
+      // so a physical iPhone skips it.
+      if (
+        device.platform === "ios" &&
+        device.kind === "simulator" &&
+        (await isTvOsSimulator(params.udid))
+      ) {
         throw new FailureError(
           `Screen recording is not supported on tvOS simulators (device ${params.udid}).`,
           {

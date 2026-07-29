@@ -43,8 +43,10 @@ export interface ScreenRecordingStopResult {
   warning?: string;
 }
 
+// Matches screen-recording-start: whatever can start a recording must be able
+// to stop it, or a started recording strands its encoder with no way to close.
 const capability = {
-  apple: { simulator: true },
+  apple: { simulator: true, device: true },
   android: { emulator: true, device: true, unknown: true },
 } as const;
 

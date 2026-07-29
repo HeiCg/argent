@@ -26,6 +26,7 @@ vi.mock("@argent/configuration-core", () => ({ isFlagEnabled: vi.fn() }));
 // `node:child_process`. (A top-level `await import` would also work at runtime
 // but does not typecheck under the test tsconfig's module setting.)
 import { iosImpl as openUrlIos } from "../src/tools/open-url/platforms/ios";
+import { iosImpl as reinstallIos } from "../src/tools/reinstall-app/platforms/ios";
 import { makeIosImpl as makeRestartAppIosImpl } from "../src/tools/restart-app/platforms/ios";
 
 const PHYSICAL_UDID = "00008120-000E6D0C0ABBA01E";
@@ -124,6 +125,91 @@ describe("restart-app on a physical iPhone", () => {
     await expect(
       restartIos.handler({} as never, { udid: PHYSICAL_UDID, bundleId: "com.x" } as never, device)
     ).rejects.toBeInstanceOf(InvalidToolInputError);
+    expect(execCalls).toEqual([]);
+  });
+});
+
+describe("reinstall-app on a physical iPhone", () => {
+  const params = {
+    udid: PHYSICAL_UDID,
+    bundleId: "com.example.app",
+    appPath: "/tmp/build/MyApp.app",
+  };
+
+  it("uninstalls then installs through devicectl", async () => {
+    const result = await reinstallIos.handler({} as never, params as never, device);
+
+    expect(execCalls).toEqual([
+      [
+        "xcrun",
+        "devicectl",
+        "device",
+        "uninstall",
+        "app",
+        "--device",
+        PHYSICAL_UDID,
+        "com.example.app",
+      ],
+      [
+        "xcrun",
+        "devicectl",
+        "device",
+        "install",
+        "app",
+        "--device",
+        PHYSICAL_UDID,
+        "/tmp/build/MyApp.app",
+      ],
+    ]);
+    expect(result).toMatchObject({ reinstalled: true, bundleId: "com.example.app" });
+  });
+
+  it("installs anyway when the app was not previously installed", async () => {
+    // devicectl exits non-zero when uninstalling something absent; that is the
+    // ordinary first-install case, not a failure, so the install must still run.
+    let call = 0;
+    execResult = () => {
+      call += 1;
+      return call === 1
+        ? Promise.reject(new Error("no such app"))
+        : Promise.resolve({ stdout: "", stderr: "" });
+    };
+
+    const result = await reinstallIos.handler({} as never, params as never, device);
+
+    expect(execCalls).toHaveLength(2);
+    expect(execCalls[1]).toContain("install");
+    expect(result).toMatchObject({ reinstalled: true });
+  });
+
+  it("reports an install failure rather than claiming a reinstall", async () => {
+    let call = 0;
+    execResult = () => {
+      call += 1;
+      return call === 1
+        ? Promise.resolve({ stdout: "", stderr: "" })
+        : Promise.reject(new Error("ApplicationVerificationFailed"));
+    };
+
+    await expect(reinstallIos.handler({} as never, params as never, device)).rejects.toThrow(
+      /signed with a provisioning profile that includes this device/
+    );
+  });
+
+  it("resolves a relative appPath before handing it to devicectl", async () => {
+    await reinstallIos.handler(
+      {} as never,
+      { ...params, appPath: "./build/MyApp.app" } as never,
+      device
+    );
+    expect(execCalls[1]!.at(-1)).toBe(`${process.cwd()}/build/MyApp.app`);
+  });
+
+  it("is refused while the physical-iOS flag is off", async () => {
+    mockFlag.mockReturnValue(false);
+    await expect(reinstallIos.handler({} as never, params as never, device)).rejects.toBeInstanceOf(
+      InvalidToolInputError
+    );
     expect(execCalls).toEqual([]);
   });
 });

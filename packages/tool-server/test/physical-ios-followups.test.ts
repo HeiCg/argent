@@ -10,10 +10,9 @@
  *  - launch-app enforces the opt-in flag itself (it shells `devicectl`, not the
  *    sim-server, so it can't ride the factory's gate);
  *  - tools that are unsupported on physical iOS reject with a 400-mapped
- *    UnsupportedOperationError, not a generic 500 (reinstall-app, the
- *    native-devtools and native-profiler families, the multi-touch gestures,
- *    await-screen-idle), while `describe` returns the CoreDevice ax tree and
- *    stays supported on simulators/Android;
+ *    UnsupportedOperationError, not a generic 500 (the native-devtools family,
+ *    the multi-touch gestures), while `describe` returns the CoreDevice ax tree
+ *    and stays supported on simulators/Android;
  *  - run-sequence must not eagerly hold simulator-server for a physical iPhone;
  *  - gesture-swipe routes a physical iPhone to the sim-server and honors `settle`.
  */
@@ -34,7 +33,6 @@ import { buttonTool } from "../src/tools/button";
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { createRunSequenceTool } from "../src/tools/run-sequence";
 import { describeIos } from "../src/tools/describe/platforms/ios";
-import { iosImpl as reinstallIos } from "../src/tools/reinstall-app/platforms/ios";
 import { makeIosImpl as makeLaunchAppIosImpl } from "../src/tools/launch-app/platforms/ios";
 import { gestureSwipeTool } from "../src/tools/gesture-swipe";
 import { gestureTapTool } from "../src/tools/gesture-tap";
@@ -46,6 +44,9 @@ import { pasteTool } from "../src/tools/paste";
 import { rotateTool } from "../src/tools/rotate";
 import { createTvRemoteTool } from "../src/tools/tv-remote";
 import { createAwaitScreenIdleTool } from "../src/tools/await-screen-idle";
+import { reinstallAppTool } from "../src/tools/reinstall-app";
+import { createScreenRecordingStartTool } from "../src/tools/screen-recording/screen-recording-start";
+import { screenRecordingStopTool } from "../src/tools/screen-recording/screen-recording-stop";
 import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { nativeDescribeScreenTool } from "../src/tools/native-devtools/native-describe-screen";
 import { nativeDevtoolsStatusTool } from "../src/tools/native-devtools/native-devtools-status";
@@ -348,16 +349,6 @@ describe("gesture-custom on physical iOS: single contact only, rejected as a who
 describe("tools unsupported on physical iOS reject with UnsupportedOperationError (400)", () => {
   const device = resolveDevice(PHYSICAL_UDID);
 
-  it("reinstall-app", async () => {
-    await expect(
-      reinstallIos.handler(
-        {} as never,
-        { udid: PHYSICAL_UDID, bundleId: "com.x", appPath: "/tmp/x.app" } as never,
-        device
-      )
-    ).rejects.toBeInstanceOf(UnsupportedOperationError);
-  });
-
   // describe is NOT in the unsupported set: on a physical iPhone it returns the
   // real on-screen accessibility tree served by the simulator-server's CoreDevice
   // axAudit endpoint (`/api/ax-tree`), which works in-app and on the home screen.
@@ -386,6 +377,91 @@ describe("tools unsupported on physical iOS reject with UnsupportedOperationErro
       expect(flat).toContain("General");
       expect(flat).toContain("Accessibility");
       expect(result.hint).toContain("screenshot");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+describe("await-screen-idle settles on a physical iPhone despite the rotating read", () => {
+  // Reproduces the device's actual behaviour: the accessibility read starts at
+  // the VoiceOver cursor and advances it, so a completely still screen yields a
+  // different ORDER on every call. Verified on hardware — three consecutive
+  // reads of one Safari page gave three orderings of the same six elements.
+  const STILL = ["Back, Button", "Page Menu, Button", "Address, x", "refresh, Button"];
+
+  // `captionsFor` is called with the read index, so a case can keep producing
+  // fresh screens indefinitely rather than running off the end of a fixed list
+  // and repeating (which would settle for the wrong reason).
+  function rotatingRegistry(captionsFor: (call: number) => string[], readDelayMs = 0) {
+    let call = 0;
+    const registry = { resolveService: async () => ({ apiUrl: "http://sim.test" }) };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      if (readDelayMs) await new Promise((r) => setTimeout(r, readDelayMs));
+      const captions = captionsFor(call);
+      call += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          elements: captions.map((caption, i) => ({ caption, id: `e${i}` })),
+        }),
+      } as Response;
+    });
+    return { registry, fetchSpy, calls: () => call };
+  }
+
+  // One still screen, read four times, rotated by one each time.
+  const rotate = (xs: string[], by: number) => [...xs.slice(by), ...xs.slice(0, by)];
+
+  it("defaults to a device-sized timeout, not the 3s simulator one", async () => {
+    // Each read on hardware is a ~2s round trip. Settling needs two of them, so
+    // under the 3s simulator default the second read lands past the deadline and
+    // a motionless screen reports settled: false. 1.8s per read puts the second
+    // at ~3.6s — inside the device default, outside the simulator one.
+    const { registry, fetchSpy } = rotatingRegistry(
+      (call) => rotate(STILL, call % STILL.length),
+      1800
+    );
+    try {
+      const tool = createAwaitScreenIdleTool(registry as never);
+      const result = await tool.execute({}, { udid: PHYSICAL_UDID } as never);
+      expect(result.settled).toBe(true);
+      expect(result.waitedMs).toBeGreaterThan(3000);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  }, 20000);
+
+  it("settles when only the order changes", async () => {
+    const { registry, fetchSpy } = rotatingRegistry((call) => rotate(STILL, call % STILL.length));
+    try {
+      const tool = createAwaitScreenIdleTool(registry as never);
+      const result = await tool.execute({}, {
+        udid: PHYSICAL_UDID,
+        minStableMs: 50,
+        pollIntervalMs: 50,
+        timeoutMs: 3000,
+      } as never);
+      expect(result.settled).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not settle when the elements themselves keep changing", async () => {
+    // Guards the obvious way to "fix" the above — declaring everything settled.
+    // Each read here is a genuinely different screen, not a rotation of one.
+    const { registry, fetchSpy } = rotatingRegistry((call) => [`Loading ${call}`]);
+    try {
+      const tool = createAwaitScreenIdleTool(registry as never);
+      const result = await tool.execute({}, {
+        udid: PHYSICAL_UDID,
+        minStableMs: 50,
+        pollIntervalMs: 50,
+        timeoutMs: 400,
+      } as never);
+      expect(result.settled).toBe(false);
     } finally {
       fetchSpy.mockRestore();
     }
@@ -431,6 +507,30 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
     expect(() =>
       assertSupported("screenshot-diff", screenshotDiffTool.capability, physical)
     ).not.toThrow();
+    // reinstall-app installs through devicectl; screen recording reads the same
+    // simulator-server frame stream the ios_device controller publishes into.
+    expect(() =>
+      assertSupported("reinstall-app", reinstallAppTool.capability, physical)
+    ).not.toThrow();
+    expect(() =>
+      assertSupported(
+        "screen-recording-start",
+        createScreenRecordingStartTool({} as never).capability,
+        physical
+      )
+    ).not.toThrow();
+    expect(() =>
+      assertSupported("screen-recording-stop", screenRecordingStopTool.capability, physical)
+    ).not.toThrow();
+    // await-screen-idle rides describe, which works on hardware once the read's
+    // element ORDER is ignored (see the rotating-read cases above).
+    expect(() =>
+      assertSupported(
+        "await-screen-idle",
+        createAwaitScreenIdleTool({} as never).capability,
+        physical
+      )
+    ).not.toThrow();
   });
 
   it("simulator-only tools reject a physical iPhone via the capability gate", () => {
@@ -471,11 +571,6 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
       ["gesture-pinch", gesturePinchTool.capability],
       ["gesture-rotate", gestureRotateTool.capability],
       ["tv-remote", createTvRemoteTool({} as never).capability],
-      // Not simulator-only in its backend, but unusable on a physical iPhone for
-      // the same practical reason: idle is decided by two consecutive identical
-      // accessibility trees, and the device's read rotates the element order (and
-      // resynthesises frames) on every call, so the signature never repeats.
-      ["await-screen-idle", createAwaitScreenIdleTool({} as never).capability],
       ["native-describe-screen", nativeDescribeScreenTool.capability],
       ["native-devtools-status", nativeDevtoolsStatusTool.capability],
       ["native-find-views", nativeFindViewsTool.capability],

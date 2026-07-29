@@ -54,9 +54,10 @@ Argent can drive a **physical iPhone** — no app installed on the device — ov
 CoreDevice "remote control" services (the same path Xcode's device window uses). The device
 interaction runs natively inside the bundled **simulator-server** (radon's `ios_device`
 controller). The CoreDevice tunnel is a userspace TCP stack over the USB connection, so every
-command runs unprivileged, with no admin prompt and nothing installed on the host. Supported interactions: `screenshot`, `gesture-tap`, `gesture-swipe`,
-`gesture-custom` (single touch), `keyboard`, `button`, `rotate`, `launch-app`, `restart-app`,
-`open-url`, `screenshot-diff`, and
+command runs unprivileged, with no admin prompt and nothing installed on the host. Supported interactions: `screenshot`, `screen-recording-start` / `screen-recording-stop`,
+`gesture-tap`, `gesture-swipe`, `gesture-custom` (single touch), `keyboard`, `button`, `rotate`,
+`launch-app`, `restart-app`, `reinstall-app`, `open-url`, `screenshot-diff`, `await-screen-idle`,
+`await-ui-element`, and
 `describe` (the live on-screen accessibility tree — see the note below). The device shows up in `list-devices` with `kind: "device"`.
 
 **Requirements**
@@ -103,15 +104,28 @@ no manual step, no `sudo`.
   second candidate, `touchscreenGesture`, enumerates as usage page `0x01` "Generic Desktop" /
   usage `0x02` "Mouse" — the pointer for the mirroring window, not a second finger.
 
-- **`await-screen-idle` is not available.** It decides "idle" from two consecutive identical
-  accessibility trees, and the read below rotates the element order on every call, so the
-  comparison never matches. Poll `screenshot` instead.
+- **`await-screen-idle` ignores the read's element order here**, because that order rotates every
+  call (see above). "Settled" therefore means the on-screen elements stopped changing, not that
+  the pixels stopped moving: an animation with no accessibility change (a spinner) reads as
+  settled. Each read is a ~2s round trip over the tunnel, so the default `timeoutMs` on a physical
+  iPhone is 15s rather than the 3s used elsewhere. The same rotation makes `await-ui-element`
+  reliable only for `condition: "exists"` — `visible`/`hidden` and `text`'s reading-order pick
+  all read the synthesised frames.
 
-- Also not supported (all return a clear "not supported" error): `paste`, `reinstall-app`,
-  `settings-permissions`, screen recording, and the native inspection / profiling tools
-  (`native-*`, `native-profiler-*`). `launch-app`,
-  `restart-app` and `open-url` go through `devicectl` rather than the CoreDevice session, so they
-  work even before the first interaction has warmed it.
+- **`reinstall-app` needs a bundle signed for this device**, since it installs through
+  `devicectl device install app`. A simulator `.app`, or one whose provisioning profile does not
+  list the device UDID, fails with a message saying so.
+
+- Anything that has to run code inside the target app is **not supported** and returns a clear
+  "not supported" error: the native inspection tools (`native-*`) attach by injecting a dylib
+  through `simctl spawn`, which has no physical-device equivalent — a real device would need that
+  dylib linked into a signed build. `native-profiler-*` is blocked by the same signing
+  requirement: `xctrace` only enumerates processes it is entitled to profile, so on a device with
+  no developer-signed app installed there is nothing to attach to. `paste` and
+  `settings-permissions` have no device-side mechanism at all.
+
+- `launch-app`, `restart-app`, `reinstall-app` and `open-url` go through `devicectl` rather than
+  the CoreDevice session, so they work even before the first interaction has warmed it.
 
 ---
 
