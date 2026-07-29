@@ -268,6 +268,83 @@ describe("gesture-swipe on physical iOS routes to the sim-server ios_device cont
   });
 });
 
+describe("gesture-custom on physical iOS: single contact only, rejected as a whole", () => {
+  const touch = vi.fn();
+  const services = () => ({ simulatorServer: { transport: { touch } } });
+
+  beforeEach(() => touch.mockClear());
+
+  it("dispatches a single-touch sequence", async () => {
+    const result = await gestureCustomTool.execute(
+      services() as never,
+      {
+        udid: PHYSICAL_UDID,
+        events: [
+          { type: "Down", x: 0.5, y: 0.7 },
+          { type: "Move", x: 0.5, y: 0.5 },
+          { type: "Up", x: 0.5, y: 0.3 },
+        ],
+      } as never
+    );
+
+    expect(result.events).toBe(3);
+    expect(touch).toHaveBeenCalledTimes(3);
+    expect(touch.mock.calls.map(([c]) => c.type)).toEqual(["Down", "Move", "Up"]);
+    expect(touch.mock.calls.every(([c]) => c.secondX === undefined)).toBe(true);
+  });
+
+  it("rejects a second touch point before dispatching anything, so no contact is left down", async () => {
+    await expect(
+      gestureCustomTool.execute(
+        services() as never,
+        {
+          udid: PHYSICAL_UDID,
+          events: [
+            { type: "Down", x: 0.5, y: 0.5 },
+            { type: "Move", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
+            { type: "Up", x: 0.3, y: 0.5, x2: 0.7, y2: 0.5 },
+          ],
+        } as never
+      )
+    ).rejects.toBeInstanceOf(UnsupportedOperationError);
+    // The `Down` before the offending event must NOT have gone out: a partial
+    // dispatch would strand a finger on the screen with no `Up` to follow.
+    expect(touch).not.toHaveBeenCalled();
+  });
+
+  it("indexes the rejection against the caller's events, not the interpolated expansion", async () => {
+    await expect(
+      gestureCustomTool.execute(
+        services() as never,
+        {
+          udid: PHYSICAL_UDID,
+          events: [
+            { type: "Down", x: 0.5, y: 0.5 },
+            { type: "Up", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
+          ],
+          interpolate: 10,
+        } as never
+      )
+    ).rejects.toThrow(/events\[1\]/);
+  });
+
+  it("still sends a two-finger sequence to a simulator (no regression)", async () => {
+    const result = await gestureCustomTool.execute(
+      services() as never,
+      {
+        udid: SIM_UDID,
+        events: [
+          { type: "Down", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
+          { type: "Up", x: 0.2, y: 0.5, x2: 0.8, y2: 0.5 },
+        ],
+      } as never
+    );
+
+    expect(result.events).toBe(2);
+    expect(touch.mock.calls.map(([c]) => c.secondX)).toEqual([0.6, 0.8]);
+  });
+});
+
 describe("tools unsupported on physical iOS reject with UnsupportedOperationError (400)", () => {
   const device = resolveDevice(PHYSICAL_UDID);
 
@@ -393,7 +470,6 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
       ["paste", pasteTool.capability],
       ["gesture-pinch", gesturePinchTool.capability],
       ["gesture-rotate", gestureRotateTool.capability],
-      ["gesture-custom", gestureCustomTool.capability],
       ["tv-remote", createTvRemoteTool({} as never).capability],
       // Not simulator-only in its backend, but unusable on a physical iPhone for
       // the same practical reason: idle is decided by two consecutive identical

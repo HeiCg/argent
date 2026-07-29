@@ -55,7 +55,8 @@ CoreDevice "remote control" services (the same path Xcode's device window uses).
 interaction runs natively inside the bundled **simulator-server** (radon's `ios_device`
 controller). The CoreDevice tunnel is a userspace TCP stack over the USB connection, so every
 command runs unprivileged, with no admin prompt and nothing installed on the host. Supported interactions: `screenshot`, `gesture-tap`, `gesture-swipe`,
-`keyboard`, `button`, `rotate`, `launch-app`, `restart-app`, `open-url`, `screenshot-diff`, and
+`gesture-custom` (single touch), `keyboard`, `button`, `rotate`, `launch-app`, `restart-app`,
+`open-url`, `screenshot-diff`, and
 `describe` (the live on-screen accessibility tree — see the note below). The device shows up in `list-devices` with `kind: "device"`.
 
 **Requirements**
@@ -94,15 +95,21 @@ no manual step, no `sudo`.
   to tell whether the screen changed. (For pixel-exact in-app frames + taps you'd need an on-device
   XCUITest runner, which requires code-signing.)
 
-- **Multi-touch is not available.** `gesture-pinch`, `gesture-rotate` and `gesture-custom` return a
-  clear "not supported" error. The device registers a single touch surface, `mainTouchscreen`
-  (HID usage page `0x0D` "Digitizer" / usage `0x04` "Touch Screen"), and its report carries one
-  contact. The surface that sounds like a second candidate, `touchscreenGesture`, enumerates as
-  usage page `0x01` "Generic Desktop" / usage `0x02` "Mouse" — the pointer for the mirroring
-  window, not a second finger.
+- **Multi-touch is not available.** `gesture-pinch` and `gesture-rotate` return a clear "not
+  supported" error, and `gesture-custom` rejects any event carrying a second touch point
+  (`x2`/`y2`) — its single-touch sequences (long press, drag-and-drop, custom scroll) work. The
+  device registers a single touch surface, `mainTouchscreen` (HID usage page `0x0D` "Digitizer" /
+  usage `0x04` "Touch Screen"), and its report carries one contact. The surface that sounds like a
+  second candidate, `touchscreenGesture`, enumerates as usage page `0x01` "Generic Desktop" /
+  usage `0x02` "Mouse" — the pointer for the mirroring window, not a second finger.
 
-- Also not supported (all return a clear "not supported" error): `paste`, `reinstall-app`, and the
-  native inspection / profiling tools (`native-*`, `native-profiler-*`). `launch-app`,
+- **`await-screen-idle` is not available.** It decides "idle" from two consecutive identical
+  accessibility trees, and the read below rotates the element order on every call, so the
+  comparison never matches. Poll `screenshot` instead.
+
+- Also not supported (all return a clear "not supported" error): `paste`, `reinstall-app`,
+  `settings-permissions`, screen recording, and the native inspection / profiling tools
+  (`native-*`, `native-profiler-*`). `launch-app`,
   `restart-app` and `open-url` go through `devicectl` rather than the CoreDevice session, so they
   work even before the first interaction has warmed it.
 
