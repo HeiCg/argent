@@ -364,6 +364,15 @@ export function __resetRecordingsForTesting(): void {
   flowFileLocks.clear();
 }
 
+/**
+ * How many flow files currently have a lock entry. Test-only: the map's
+ * self-cleanup is a leak backstop with no other observable effect, so nothing
+ * else can tell a released lock from a retained one.
+ */
+export function __flowFileLockCountForTesting(): number {
+  return flowFileLocks.size;
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
 /**
