@@ -149,8 +149,15 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
  * `JSON.stringify` throws on it. Fall back to a marker, the way `parseFlow`
  * already does for the same input class (see `badEntry` in flow-utils) — the
  * summary of a recording that is otherwise fine should not fail on one
- * unrenderable step. Interpolation matches the previous inline spelling, so an
- * absent `args` still renders "undefined".
+ * unrenderable step.
+ *
+ * The body interpolates rather than returning `JSON.stringify(args)` directly,
+ * and that is load-bearing: `JSON.stringify(undefined)` is the VALUE
+ * `undefined`, not a string, so a `tool:` step with no `args` would return
+ * `undefined` through a `string`-typed signature (TypeScript does not catch it
+ * — `JSON.stringify`'s overload is declared to return `string`). The template
+ * literal renders it as the text "undefined" instead, which is what
+ * {@link summarizeSteps} has always shown for that step.
  */
 function renderToolArgs(args: unknown): string {
   try {

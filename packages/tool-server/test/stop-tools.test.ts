@@ -19,7 +19,16 @@ function createMockRegistry(services: Map<string, { state: ServiceState; depende
     // stop-one-then-stop-the-rest tests below exist to pin.
     disposeService: vi.fn(async (urn: string) => {
       const node = services.get(urn);
-      if (node) node.state = ServiceState.IDLE;
+      if (!node || node.state === ServiceState.IDLE) return;
+      node.state = ServiceState.IDLE;
+      // …and it cascades dependency → dependents first (Registry._teardown), so
+      // a service whose dependency is disposed goes down with it. Mirror that
+      // too, or a test cannot tell a namespace this tool reaps by name from one
+      // that merely dies as somebody else's dependent.
+      for (const dependent of node.dependents) {
+        const child = services.get(dependent);
+        if (child) child.state = ServiceState.IDLE;
+      }
     }),
   } as unknown as Registry;
 }
@@ -143,13 +152,16 @@ describe("stop-simulator-server", () => {
     expect(registry.disposeService).toHaveBeenCalledWith("ChromiumCdp:chromium-cdp-9222");
   });
 
-  // Both stop tools now resolve "which services does this device own" through
-  // one shared matcher. Before that, this tool looked its URNs up with an exact,
-  // case-sensitive `services.get()` — so the two disagreed about the same id.
+  // Both stop tools resolve "which services does this device own" through one
+  // shared matcher. This tool used to look its URNs up with an exact,
+  // case-sensitive `services.get()`, which no-op'd on a mis-cased udid; stop-all
+  // took no device id at all and swept every matching namespace on the host, so
+  // there was no second opinion to compare against. Now that stop-all is scoped,
+  // the same spelling has to reach the same services through both.
 
   it("matches a UDID case-insensitively, like the scoped stop-all does", async () => {
-    // Agents pass through whatever spelling they were handed. A case mismatch
-    // silently no-op'd here while stop-all reaped the same device.
+    // Agents pass through whatever spelling they were handed, and a case
+    // mismatch must not silently turn a scoped stop into a no-op.
     const services = new Map([
       ["SimulatorServer:AAAA-BBBB", { state: ServiceState.RUNNING, dependents: [] }],
     ]);
@@ -211,11 +223,9 @@ describe("stop-all-simulator-servers", () => {
     const services = new Map([
       ["SimulatorServer:AAA", { state: ServiceState.RUNNING, dependents: [] }],
       ["SimulatorServer:BBB", { state: ServiceState.RUNNING, dependents: [] }],
-      // Deliberately excluded from the namespace set: it declares
-      // `getDependencies -> ChromiumCdp:<id>`, so the registry cascades to it
-      // when that transport is disposed. Listing it too would be redundant, and
-      // disposing it directly here would claim a `stopped` entry for a service
-      // no device in this snapshot owns a transport for.
+      // A device-owned namespace like any other: a session that ran
+      // debugger-connect against a Chromium app owns it, and the sweep drains
+      // it whether or not its transport happens to be in the same snapshot.
       ["ChromiumJsRuntimeDebugger:CCC", { state: ServiceState.RUNNING, dependents: [] }],
     ]);
     const registry = createMockRegistry(services);
@@ -224,11 +234,47 @@ describe("stop-all-simulator-servers", () => {
     const result = await tool.execute!({}, {});
 
     expect(result).toEqual({
-      stopped: ["SimulatorServer:AAA", "SimulatorServer:BBB"],
+      stopped: ["SimulatorServer:AAA", "SimulatorServer:BBB", "ChromiumJsRuntimeDebugger:CCC"],
     });
-    expect(registry.disposeService).toHaveBeenCalledTimes(2);
+    expect(registry.disposeService).toHaveBeenCalledTimes(3);
     expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:AAA");
     expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:BBB");
+  });
+
+  it("names a cascading debugger in `stopped` instead of letting it die anonymously", async () => {
+    // `stopped` is documented as "the services that were actually live and got
+    // shut down". ChromiumJsRuntimeDebugger declares `getDependencies ->
+    // ChromiumCdp`, so disposing the transport takes it down regardless — while
+    // it was outside the namespace set, that shutdown was invisible, and an
+    // agent reading `stopped` was not told its console history was gone. The
+    // registry inserts a dependent before its dependency (`_resolve` creates
+    // the node, then `_initialize` resolves what it needs), so the map order
+    // here is the real one.
+    const services = new Map([
+      [
+        "ChromiumJsRuntimeDebugger:chromium-cdp-9222",
+        { state: ServiceState.RUNNING, dependents: [] },
+      ],
+      [
+        "ChromiumCdp:chromium-cdp-9222",
+        {
+          state: ServiceState.RUNNING,
+          dependents: ["ChromiumJsRuntimeDebugger:chromium-cdp-9222"],
+        },
+      ],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: ["chromium-cdp-9222"] });
+
+    expect(result).toEqual({
+      stopped: ["ChromiumJsRuntimeDebugger:chromium-cdp-9222", "ChromiumCdp:chromium-cdp-9222"],
+    });
+    expect(services.get("ChromiumJsRuntimeDebugger:chromium-cdp-9222")?.state).toBe(
+      ServiceState.IDLE
+    );
+    expect(services.get("ChromiumCdp:chromium-cdp-9222")?.state).toBe(ServiceState.IDLE);
   });
 
   it("returns empty list when no simulators are running", async () => {
@@ -295,9 +341,9 @@ describe("stop-all-simulator-servers", () => {
   });
 });
 
-// The tool-server is a host-wide singleton, so an unscoped teardown reaps
-// whatever device another agent is mid-session on. `devices` narrows the sweep
-// to the ids the calling session actually used.
+// One tool-server serves every agent using one argent install, so an unscoped
+// teardown reaps whatever device another agent is mid-session on. `devices`
+// narrows the sweep to the ids the calling session actually used.
 const MINE = "AAAA-1111";
 const THEIRS = "BBBB-2222";
 
@@ -524,11 +570,12 @@ describe("stop-all-simulator-servers device scoping", () => {
 });
 
 describe("stop-all-simulator-servers unmatched ids", () => {
-  // A scoped stop whose ids owned nothing used to return a bare `{ stopped: [] }`
-  // — byte-identical to the answer on a genuinely clean machine. So a mistyped
-  // id, a device *name* passed where an id was expected, or an empty string all
-  // read as success while the services they were meant to reap (on tvOS, two
-  // spawned --timeout 3600 daemons) stayed running. `unmatched` names them.
+  // Without `unmatched`, a scoped stop whose ids owned nothing answers with a
+  // bare `{ stopped: [] }` — byte-identical to the answer on a genuinely clean
+  // machine. A mistyped id, a device *name* passed where an id was expected, or
+  // an empty string would all read as success while the services they were
+  // meant to reap (on tvOS, two spawned --timeout 3600 daemons) stayed running.
+  // `unmatched` names them, so scoping cannot fail silently.
 
   it("names an unknown id in unmatched while still stopping the live device", async () => {
     const services = new Map([
@@ -547,7 +594,7 @@ describe("stop-all-simulator-servers unmatched ids", () => {
     expect(registry.disposeService).toHaveBeenCalledTimes(2);
   });
 
-  it("reports a typo, a device name, and an empty-string id — the shapes that used to look clean", async () => {
+  it("reports a typo, a device name, and an empty-string id — the shapes that would otherwise look clean", async () => {
     const services = new Map([
       [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
     ]);
@@ -648,7 +695,12 @@ describe("stop-all-simulator-servers unmatched ids", () => {
   });
 
   it("scopes the tcp-transport AXService URN to its own device", async () => {
-    // ios-remote gives AXService the same `:tcp` suffix NativeDevtools uses.
+    // `axServiceRef(device, { transport: "tcp" })` appends `:tcp`, exactly as
+    // `nativeDevtoolsRef` does. No call site passes that option today — the
+    // remote host's forced-TCP decision happens inside the factory, after the
+    // ref has fixed the URN — so this is a shape the ref can mint rather than
+    // one production currently produces, and the coverage is defensive: the
+    // matcher must not start splitting a device id on ":" if one ever does.
     const services = new Map([
       [`AXService:${MINE}:tcp`, { state: ServiceState.RUNNING, dependents: [] }],
       [`AXService:${THEIRS}:tcp`, { state: ServiceState.RUNNING, dependents: [] }],
