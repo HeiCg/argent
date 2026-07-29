@@ -78,6 +78,12 @@ const dispatch = dispatchByPlatform<
 
 export const systemSettingsTool: ToolDefinition<Params, SystemSettingsResult> = {
   id: "system-settings",
+  interaction: {
+    startedMsg: ({ params }) => `Setting ${params.setting} to ${params.value}`,
+    completedMsg: ({ params }) => `Set ${params.setting} to ${params.value}`,
+    failedMsg: ({ params, failureSignal }) =>
+      `Failed to set ${params.setting} to ${params.value}: ${failureSignal.error_code}`,
+  },
   description: `Change a device-wide system setting directly, without navigating the system Settings UI. Use during test setup to put the device in a specific state — dark mode, a larger text size, airplane mode, location off — before or while exercising an app.
 Settings and their values:
 - \`appearance\`: \`light\` | \`dark\` — the system color theme.
