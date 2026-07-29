@@ -78,8 +78,8 @@ Decision order:
 - Always open apps with `launch-app` or `open-url` — never tap home screen icons.
 - Always use `run-sequence` when performing multiple sequential device actions where you don't need to observe the screen between steps. More in `argent-device-interact` skill.
 - When the session ends or the user says they are done: call `stop-all-simulator-servers` with `devices: [...]`
-  naming the devices this session actually used. The tool-server is a host-wide singleton shared with every other
-  agent on the machine, so an unscoped call tears down their devices too; reserve that form for a deliberate
+  naming the devices this session actually used. One tool-server is shared by every other agent using this
+  argent install, so an unscoped call tears down their devices too; reserve that form for a deliberate
   machine-wide cleanup.
   If the user started Metro separately, ask whether to call `stop-metro` (specify the port if not 8081).
 - If tools provided by mcp-server are not sufficient and action can be done using `xcrun`, `adb`, or other commands, use the command. Examples: changing device options, performing a device action such as lock, shake, etc.

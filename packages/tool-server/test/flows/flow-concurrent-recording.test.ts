@@ -25,10 +25,12 @@ import {
 } from "../../src/tools/flows/flow-utils";
 
 /**
- * Concurrency contract of the recording tools. The tool-server is a host-wide
- * singleton shared by every MCP client, subagent and CLI call on the machine,
- * so several agents can legitimately be recording at the same moment — in one
- * project or across projects. A recording is identified by its
+ * Concurrency contract of the recording tools. One tool-server serves every MCP
+ * client, subagent and CLI call using one argent install, so several agents can
+ * legitimately be recording at the same moment — in one project or across
+ * projects. (Two INSTALLS run two servers and two recording maps; nothing here
+ * covers that, and nothing can — see the note on `recordings` in flow-utils.)
+ * A recording is identified by its
  * (project_root, name) key, and these tests assert the ISOLATION that follows:
  * one recording's steps never land in another's file, addressing a key that
  * isn't live fails loudly (naming the ones that are), replaying a flow
@@ -557,8 +559,10 @@ describe("flow-file writes as seen by a concurrent reader", () => {
   });
 
   it("leaves no scratch file behind in the flows directory", async () => {
-    // The swap writes a sibling temp file first. Nothing enumerates this
-    // directory today, but a leftover must not accumulate per append either.
+    // The swap writes a sibling temp file first. `argent flow list` enumerates
+    // this directory and filters on `.yaml`, so a stray `.tmp` never surfaces
+    // as a flow — but that agreement only hides a leftover, it does not stop
+    // one accumulating per append.
     const root = await makeRoot("no-scratch");
     await start(root, "alpha");
     expect(await strayFiles(root, "alpha")).toEqual([]);
@@ -784,6 +788,57 @@ describe("restarting a recording on one key", () => {
     // touched: that recording kept its step and its session.
     expect(await readMarkers(rootA, "alpha")).toEqual(["tool:a1"]);
     expect(getRecordingSession(rootA, "alpha")?.flow.steps).toHaveLength(1);
+  });
+
+  it("counts the steps the FILE held, not the ones this session appended", async () => {
+    // Hand-editing the .yaml mid-recording is a documented workflow, and in
+    // host mode the file is the take: every other host-mode operation re-reads
+    // it, and the in-memory copy only catches up on the next append. The
+    // restart is the one destructive operation, so counting from memory would
+    // report a fraction of what it just wiped.
+    const root = await makeRoot("restart-handedit");
+
+    await start(root, "alpha");
+    await addEcho(root, "alpha", "a1");
+
+    await fs.writeFile(
+      flowPath(root, "alpha"),
+      serializeFlow({
+        executionPrerequisite: "",
+        steps: [
+          { kind: "echo", message: "a1" },
+          { kind: "echo", message: "by-hand-2" },
+          { kind: "echo", message: "by-hand-3" },
+          { kind: "echo", message: "by-hand-4" },
+        ],
+      }),
+      "utf8"
+    );
+
+    const restarted = await start(root, "alpha");
+    expect(restarted.restarted).toBe(true);
+    expect(restarted.discardedSteps).toBe(4);
+    expect(restarted.message).toContain("(4 steps)");
+    expect(await readMarkers(root, "alpha")).toEqual([]);
+  });
+
+  it("reports no count at all when the file it discarded could not be parsed", async () => {
+    // A hand-edit can also leave YAML `parseFlow` rejects. There is no honest
+    // number then — and 0 is the least honest of all, since it is the answer a
+    // genuinely empty take gives. `restarted` alone says the take is gone.
+    const root = await makeRoot("restart-unparseable");
+
+    await start(root, "alpha");
+    await addEcho(root, "alpha", "a1");
+    await fs.writeFile(flowPath(root, "alpha"), "steps: [ this: is: not: a: flow\n", "utf8");
+
+    const restarted = await start(root, "alpha");
+    expect(restarted.restarted).toBe(true);
+    expect(restarted).not.toHaveProperty("discardedSteps");
+    expect(restarted.message).not.toMatch(/\d+ steps?\)/);
+    expect(restarted.message).toContain("the previous take was discarded");
+    // The reset still happened — the unreadable take is gone either way.
+    expect(await readMarkers(root, "alpha")).toEqual([]);
   });
 });
 
