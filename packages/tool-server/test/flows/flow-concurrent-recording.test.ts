@@ -786,6 +786,10 @@ describe("a restart that lands while a step is still running", () => {
     // the key (and take it back again). A fresh name is the only safe recovery.
     expect((err as Error).message).toContain("fresh name");
     expect((err as Error).message).not.toMatch(/Call flow-start-recording/);
+    // This is the branch where a foreign take really does hold the key, so the
+    // message says so — the empty-key branches must not (see the finish and
+    // eviction cases).
+    expect((err as Error).message).toContain("belongs to another take");
     // The step already ran live before the append was rejected, so an agent that
     // simply retries it would repeat the device action.
     expect((err as Error).message).toContain("already ran on the device");
@@ -1014,6 +1018,12 @@ describe("a finish that lands while a step is still running", () => {
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
     expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
     expect((err as Error).message).toContain("no longer active");
+    // The key is EMPTY here — this session's own finish cleared it, and a new
+    // take could only have claimed it under the same lock. Blaming a competing
+    // agent sends the reader hunting for one that does not exist; the hazard to
+    // name is the finished take now sitting on disk.
+    expect((err as Error).message).not.toMatch(/belongs to another take/);
+    expect((err as Error).message).toMatch(/finished take is on disk/);
 
     // The finished file is exactly what the finish reported.
     expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
@@ -1149,6 +1159,46 @@ describe("the concurrent-recording cap", () => {
     expect(await readMarkers(root, names[0])).toEqual(["echo:touch", "echo:still-live"]);
   });
 
+  it("re-stamps a recording when its step LANDS, not just when it was resolved", async () => {
+    // A step that takes minutes on a device would otherwise leave its own
+    // session as the least-recently-used one for that whole time: the resolve
+    // stamped it before the step ran, and every quick call elsewhere on the
+    // host stamps later. The next `flow-start-recording` anywhere would then
+    // evict the recording that had just successfully appended, and the agent's
+    // next `flow-add-step` would fail on a take it was actively recording.
+    //
+    // Both callers touch on resolve via `requireRecordingSession`, so only the
+    // stamp inside `appendStepToFlow` separates the two — and every other
+    // eviction test drives recency through resolve, so none of them can.
+    const root = await makeRoot("touch-on-land");
+    const names = await fillRecordings(root);
+
+    // rec-0's step resolves (stamping it) and then parks on the device.
+    const gate = gateNextSubTool();
+    const appending = addStep(root, "rec-0", "slow");
+    await gate.reached;
+
+    // Every other recording is used while that step is still running, so by
+    // resolve-time recency rec-0 is now the oldest entry on the table.
+    for (const name of names.slice(1)) await addEcho(root, name, "touch");
+
+    // The step lands, which must re-stamp rec-0 as most recently used.
+    gate.release();
+    await appending;
+    expect(await readMarkers(root, "rec-0")).toEqual(["tool:slow"]);
+
+    await start(root, "overflow");
+
+    // The recording that just appended survives; the victim is the one whose
+    // last use really is the oldest. Without the stamp on land, rec-0 is the
+    // one dropped here.
+    expect(getRecordingSession(root, "rec-0")).toBeDefined();
+    expect(getRecordingSession(root, names[1])).toBeUndefined();
+    // And it is still usable, not merely present.
+    await addEcho(root, "rec-0", "after");
+    expect(await readMarkers(root, "rec-0")).toEqual(["tool:slow", "echo:after"]);
+  });
+
   it("rejects an append whose recording was evicted while the step ran", async () => {
     const root = await makeRoot("evict-inflight");
     const names = await fillRecordings(root);
@@ -1170,6 +1220,10 @@ describe("the concurrent-recording cap", () => {
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
     expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
     expect((err as Error).message).toContain("concurrent-recording cap");
+    // Same empty-key branch as a self-finish: no other take holds this key, so
+    // the message must not send the agent looking for one — which would also
+    // bury the actionable cause named one clause earlier.
+    expect((err as Error).message).not.toMatch(/belongs to another take/);
     expect(await readMarkers(root, "rec-0")).toEqual([]);
 
     // A fresh call on the evicted key fails the ordinary not-live way.

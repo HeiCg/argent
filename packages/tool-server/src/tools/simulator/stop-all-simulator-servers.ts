@@ -3,14 +3,27 @@ import { ServiceState, isLiveServiceState } from "@argent/registry";
 import type { Registry, ToolDefinition } from "@argent/registry";
 import { DEVICE_OWNED_NAMESPACES, deviceIdOwningUrn, isDeviceServiceUrn } from "./device-services";
 
-const zodSchema = z.object({
-  devices: z
-    .array(z.string())
-    .optional()
-    .describe(
-      "Device ids (iOS UDID / Android serial / Chromium id) to scope the teardown to — pass the devices THIS session actually used. Omit only for a deliberate machine-wide cleanup: the tool-server is shared by every agent on the host, so an unscoped stop also kills devices another agent is mid-session on."
-    ),
-});
+const zodSchema = z
+  .object({
+    devices: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Device ids (iOS UDID / Android serial / Chromium id) to scope the teardown to — pass the devices THIS session actually used. Omit only for a deliberate machine-wide cleanup: the tool-server is shared by every agent on the host, so an unscoped stop also kills devices another agent is mid-session on."
+      ),
+  })
+  // `.strict()` because omitting `devices` is the machine-wide sweep, so a
+  // misspelled key must not be silently stripped down to it. `udids` is the
+  // natural slip — every sibling tool in this directory spells the device
+  // parameter `udid`, and this is the only one that spells it `devices` — and
+  // under a stripping schema that typo tears down every other agent's devices
+  // while the caller believes it scoped, with `unmatched` unreachable on that
+  // path so nothing in the response says otherwise. Strict makes it a
+  // validation error instead, matching `stop-simulator-server`, where the same
+  // typo already fails loudly because `udid` is required. This also puts
+  // `additionalProperties: false` in the schema advertised by `GET /tools`, so
+  // MCP, `argent run` and raw HTTP callers all get the rejection.
+  .strict();
 
 export function createStopAllSimulatorServersTool(
   registry: Registry
