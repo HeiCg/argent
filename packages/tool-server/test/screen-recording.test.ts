@@ -1626,6 +1626,20 @@ describe("server recording wire protocol", () => {
     ).rejects.toMatchObject({ message: expect.stringContaining("a recording is already running") });
   });
 
+  it("fails rather than falling back when the reply is neither success nor rejection", async () => {
+    // Falling back here would record the screen a second time over a recording
+    // that may well have started, leaving the server's copy with nothing to
+    // stop it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ unexpected: true })))
+    );
+
+    await expect(
+      startServerRecording(fakeApi, { watermark: true, trimStatic: true, timeLimitSeconds: 60 })
+    ).rejects.toMatchObject({ message: expect.stringContaining("instead of a status") });
+  });
+
   it("stop maps the recording result onto the session's field names", async () => {
     vi.stubGlobal(
       "fetch",

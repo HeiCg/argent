@@ -191,7 +191,25 @@ export async function startServerRecording(
     },
     signal
   );
-  return body !== null;
+  if (body === null) return false;
+  if (body.status !== "ok") {
+    // Neither the success reply nor a recognized rejection, so whether a
+    // recording is now running is unknown. Fail instead of falling back: a
+    // second capture over one that did start would record the screen twice and
+    // strand the server's copy with nothing left to stop it.
+    throw new FailureError(
+      `screen-recording-start failed: simulator-server answered the recording command with ` +
+        `${JSON.stringify(body).slice(0, 200)} instead of a status.`,
+      {
+        error_code: FAILURE_CODES.SCREEN_RECORDING_PROCESS_ERROR,
+        failure_stage: "screen_recording_server_start",
+        failure_area: "tool_server",
+        error_kind: "unknown",
+        failure_command: "simulator_server",
+      }
+    );
+  }
+  return true;
 }
 
 /** Finalize the recording started by {@link startServerRecording}. */
