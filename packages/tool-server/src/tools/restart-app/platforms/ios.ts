@@ -11,8 +11,8 @@ import {
   precheckNativeDevtools,
   type NativeDevtoolsApi,
 } from "../../../blueprints/native-devtools";
+import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
-import { UnsupportedOperationError } from "../../../utils/capability";
 import type { RestartAppParams, RestartAppResult } from "../types";
 
 const execFileAsync = promisify(execFile);
@@ -29,19 +29,40 @@ export function makeIosImpl(
     handler: async (_services, params, device) => {
       const { udid, bundleId } = params;
       if (device.kind === "device") {
-        // The simulator path restarts *through* native-devtools so the relaunched
-        // process comes back injected; that injection is simulator-only, so there
-        // is nothing for this tool to preserve on hardware and it is not wired up
-        // for physical iOS. (`devicectl device process launch --terminate-existing`
-        // would relaunch a plain, uninjected app — see launch-app.)
-        // UnsupportedOperationError maps to a clean 400 (a plain Error would
-        // surface as a generic 500).
-        throw new UnsupportedOperationError(
-          "restart-app",
-          device,
-          "restarting an app on a physical iPhone is not implemented yet — use launch-app to bring " +
-            "it back to the foreground"
-        );
+        // A physical iPhone restarts through devicectl, which relaunches the app
+        // as it is installed. The simulator path restarts *through*
+        // native-devtools so the process comes back injected; that injection is
+        // simulator-only, so there is nothing to preserve here and a plain
+        // relaunch is the whole operation. Like launch-app — the other tool that
+        // shells devicectl rather than going through a CoreDevice service — this
+        // enforces the opt-in itself, since no simulator-server ref is built on
+        // this path to run the gate.
+        assertPhysicalIosEnabled();
+        try {
+          await execFileAsync("xcrun", [
+            "devicectl",
+            "device",
+            "process",
+            "launch",
+            "--terminate-existing",
+            "--device",
+            udid,
+            bundleId,
+          ]);
+        } catch (err) {
+          throw new FailureError(
+            `Failed to restart ${bundleId} on physical iOS device ${udid} via devicectl — the app must already be installed and signed on the device.`,
+            {
+              error_code: FAILURE_CODES.IOS_RESTART_LAUNCH_FAILED,
+              failure_stage: "ios_restart_app_devicectl_launch",
+              failure_area: "tool_server",
+              error_kind: "subprocess",
+              ...subprocessFailureMetadata(err, "xcrun_devicectl"),
+            },
+            { cause: err instanceof Error ? err : new Error(String(err)) }
+          );
+        }
+        return { restarted: true, bundleId };
       }
       const ndRef = nativeDevtoolsRef(device);
       const nativeDevtools = await registry.resolveService<NativeDevtoolsApi>(

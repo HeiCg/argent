@@ -55,8 +55,8 @@ CoreDevice "remote control" services (the same path Xcode's device window uses).
 interaction runs natively inside the bundled **simulator-server** (radon's `ios_device`
 controller). The CoreDevice tunnel is a userspace TCP stack over the USB connection, so every
 command runs unprivileged, with no admin prompt and nothing installed on the host. Supported interactions: `screenshot`, `gesture-tap`, `gesture-swipe`,
-`button`, `launch-app`, and `describe` (the live on-screen accessibility tree — see the note
-below). The device shows up in `list-devices` with `kind: "device"`.
+`keyboard`, `button`, `rotate`, `launch-app`, `restart-app`, `open-url`, `screenshot-diff`, and
+`describe` (the live on-screen accessibility tree — see the note below). The device shows up in `list-devices` with `kind: "device"`.
 
 **Requirements**
 
@@ -94,12 +94,17 @@ no manual step, no `sudo`.
   to tell whether the screen changed. (For pixel-exact in-app frames + taps you'd need an on-device
   XCUITest runner, which requires code-signing.)
 
-- Not supported yet (return a clear "not supported" error): keyboard/typing, `paste`, multi-touch
-  gestures (`gesture-pinch`, `gesture-rotate`, `gesture-custom`), device orientation (`rotate`),
-  `open-url`, `reinstall-app`, `restart-app`, and the native inspection / profiling tools
-  (`native-*`, `native-profiler-*`, `screenshot-diff`). `launch-app` (via `devicectl`) works
-  independently of the CoreDevice session — it can succeed even before the first interaction has
-  warmed it.
+- **Multi-touch is not available.** `gesture-pinch`, `gesture-rotate` and `gesture-custom` return a
+  clear "not supported" error. The device registers a single touch surface, `mainTouchscreen`
+  (HID usage page `0x0D` "Digitizer" / usage `0x04` "Touch Screen"), and its report carries one
+  contact. The surface that sounds like a second candidate, `touchscreenGesture`, enumerates as
+  usage page `0x01` "Generic Desktop" / usage `0x02` "Mouse" — the pointer for the mirroring
+  window, not a second finger.
+
+- Also not supported (all return a clear "not supported" error): `paste`, `reinstall-app`, and the
+  native inspection / profiling tools (`native-*`, `native-profiler-*`). `launch-app`,
+  `restart-app` and `open-url` go through `devicectl` rather than the CoreDevice session, so they
+  work even before the first interaction has warmed it.
 
 ---
 

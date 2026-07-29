@@ -272,12 +272,6 @@ describe("gesture-swipe on physical iOS routes to the sim-server ios_device cont
 describe("tools unsupported on physical iOS reject with UnsupportedOperationError (400)", () => {
   const device = resolveDevice(PHYSICAL_UDID);
 
-  it("open-url", async () => {
-    await expect(
-      openUrlIos.handler({} as never, { udid: PHYSICAL_UDID, url: "https://x" } as never, device)
-    ).rejects.toBeInstanceOf(UnsupportedOperationError);
-  });
-
   it("reinstall-app", async () => {
     await expect(
       reinstallIos.handler(
@@ -285,12 +279,6 @@ describe("tools unsupported on physical iOS reject with UnsupportedOperationErro
         { udid: PHYSICAL_UDID, bundleId: "com.x", appPath: "/tmp/x.app" } as never,
         device
       )
-    ).rejects.toBeInstanceOf(UnsupportedOperationError);
-  });
-
-  it("restart-app", async () => {
-    await expect(
-      restartIos.handler({} as never, { udid: PHYSICAL_UDID, bundleId: "com.x" } as never, device)
     ).rejects.toBeInstanceOf(UnsupportedOperationError);
   });
 
@@ -358,13 +346,20 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
   it("supported tools accept a physical iPhone", () => {
     expect(() => assertSupported("gesture-tap", gestureTapTool.capability, physical)).not.toThrow();
     expect(() => assertSupported("button", buttonTool.capability, physical)).not.toThrow();
+    // Driven on hardware over CoreDevice: keyboard through the HID keyboard
+    // surface, rotate through the devicecontrol service. screenshot-diff is
+    // host-side pixel work over a screenshot, so it needs nothing device-side
+    // beyond the screenshot a physical iPhone already serves.
+    expect(() => assertSupported("keyboard", keyboardTool.capability, physical)).not.toThrow();
+    expect(() => assertSupported("rotate", rotateTool.capability, physical)).not.toThrow();
+    expect(() =>
+      assertSupported("screenshot-diff", screenshotDiffTool.capability, physical)
+    ).not.toThrow();
   });
 
   it("simulator-only tools reject a physical iPhone via the capability gate", () => {
     for (const [id, cap] of [
-      ["keyboard", keyboardTool.capability],
       ["gesture-pinch", gesturePinchTool.capability],
-      ["screenshot-diff", screenshotDiffTool.capability],
       ["native-describe-screen", nativeDescribeScreenTool.capability],
       // native-profiler-start does LIVE capture via simulator-only simctl (the
       // process enumeration mislabels a real iPhone as a "simulator"), so it
@@ -396,13 +391,10 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
   // path and fails deep with a 500 instead of at the gate with a 400.
   it("every simulator-only tool rejects a physical iPhone, and none of them lost simulator support", () => {
     const simulatorOnly: ReadonlyArray<readonly [string, ToolCapability | undefined]> = [
-      ["keyboard", keyboardTool.capability],
       ["paste", pasteTool.capability],
-      ["rotate", rotateTool.capability],
       ["gesture-pinch", gesturePinchTool.capability],
       ["gesture-rotate", gestureRotateTool.capability],
       ["gesture-custom", gestureCustomTool.capability],
-      ["screenshot-diff", screenshotDiffTool.capability],
       ["tv-remote", createTvRemoteTool({} as never).capability],
       ["native-describe-screen", nativeDescribeScreenTool.capability],
       ["native-devtools-status", nativeDevtoolsStatusTool.capability],
