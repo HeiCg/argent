@@ -13,7 +13,9 @@ import { stopCapture } from "./capture";
 const zodSchema = z.object({
   udid: z
     .string()
-    .describe("Target device id from `list-devices` (iOS Simulator UDID or Android serial)."),
+    .describe(
+      "Target device id from `list-devices` (iOS UDID, simulator or physical iPhone, or Android serial)."
+    ),
 });
 
 /**
