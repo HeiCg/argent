@@ -68,8 +68,13 @@ interface IdleResult {
   polls: number;
 }
 
+// Physical iPhones are excluded: their accessibility read starts from the
+// device's VoiceOver cursor and advances it, so consecutive `describe` calls
+// return the same elements rotated by one, with resynthesised frames. The
+// signature below therefore changes on every poll even on a frozen screen, and
+// the tool could only ever burn the full timeout and report `settled: false`.
 const capability: ToolCapability = {
-  apple: { simulator: true, device: true },
+  apple: { simulator: true, device: false },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
 };

@@ -21,9 +21,12 @@ vi.mock("node:child_process", () => ({
 
 vi.mock("@argent/configuration-core", () => ({ isFlagEnabled: vi.fn() }));
 
-const { iosImpl: openUrlIos } = await import("../src/tools/open-url/platforms/ios");
-const { makeIosImpl: makeRestartAppIosImpl } =
-  await import("../src/tools/restart-app/platforms/ios");
+// Static imports are safe despite the mocks above: vitest hoists `vi.mock` calls
+// above every import in the file, so both modules see the mocked
+// `node:child_process`. (A top-level `await import` would also work at runtime
+// but does not typecheck under the test tsconfig's module setting.)
+import { iosImpl as openUrlIos } from "../src/tools/open-url/platforms/ios";
+import { makeIosImpl as makeRestartAppIosImpl } from "../src/tools/restart-app/platforms/ios";
 
 const PHYSICAL_UDID = "00008120-000E6D0C0ABBA01E";
 const device = resolveDevice(PHYSICAL_UDID);
@@ -100,8 +103,9 @@ describe("restart-app on a physical iPhone", () => {
         "com.example.app",
       ],
     ]);
-    expect(result.restarted).toBe(true);
-    expect(result.bundleId).toBe("com.example.app");
+    // toMatchObject, not property access: the declared result type is a union
+    // with the native-devtools init-failure shape, which has neither field.
+    expect(result).toMatchObject({ restarted: true, bundleId: "com.example.app" });
   });
 
   it("reports a devicectl failure rather than claiming a restart", async () => {

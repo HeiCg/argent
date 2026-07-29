@@ -10,9 +10,10 @@
  *  - launch-app enforces the opt-in flag itself (it shells `devicectl`, not the
  *    sim-server, so it can't ride the factory's gate);
  *  - tools that are unsupported on physical iOS reject with a 400-mapped
- *    UnsupportedOperationError, not a generic 500 (open-url/reinstall/restart,
- *    native-profiler), while `describe` returns the CoreDevice ax tree and stays
- *    supported on simulators/Android;
+ *    UnsupportedOperationError, not a generic 500 (reinstall-app, the
+ *    native-devtools and native-profiler families, the multi-touch gestures,
+ *    await-screen-idle), while `describe` returns the CoreDevice ax tree and
+ *    stays supported on simulators/Android;
  *  - run-sequence must not eagerly hold simulator-server for a physical iPhone;
  *  - gesture-swipe routes a physical iPhone to the sim-server and honors `settle`.
  */
@@ -33,9 +34,7 @@ import { buttonTool } from "../src/tools/button";
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { createRunSequenceTool } from "../src/tools/run-sequence";
 import { describeIos } from "../src/tools/describe/platforms/ios";
-import { iosImpl as openUrlIos } from "../src/tools/open-url/platforms/ios";
 import { iosImpl as reinstallIos } from "../src/tools/reinstall-app/platforms/ios";
-import { makeIosImpl as makeRestartAppIosImpl } from "../src/tools/restart-app/platforms/ios";
 import { makeIosImpl as makeLaunchAppIosImpl } from "../src/tools/launch-app/platforms/ios";
 import { gestureSwipeTool } from "../src/tools/gesture-swipe";
 import { gestureTapTool } from "../src/tools/gesture-tap";
@@ -46,6 +45,7 @@ import { gestureCustomTool } from "../src/tools/gesture-custom";
 import { pasteTool } from "../src/tools/paste";
 import { rotateTool } from "../src/tools/rotate";
 import { createTvRemoteTool } from "../src/tools/tv-remote";
+import { createAwaitScreenIdleTool } from "../src/tools/await-screen-idle";
 import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { nativeDescribeScreenTool } from "../src/tools/native-devtools/native-describe-screen";
 import { nativeDevtoolsStatusTool } from "../src/tools/native-devtools/native-devtools-status";
@@ -71,9 +71,8 @@ beforeEach(() => {
   mockFlag.mockReturnValue(true);
 });
 
-// Physical-iOS branches of both handlers throw/reject before ever touching
-// `registry` (see the assertions below), so a stub registry is safe here.
-const restartIos = makeRestartAppIosImpl({} as never);
+// The physical-iOS branch throws/rejects before ever touching `registry` (see
+// the assertions below), so a stub registry is safe here.
 const launchAppIos = makeLaunchAppIosImpl({} as never);
 const keyboardTool = createKeyboardTool({} as never);
 
@@ -396,6 +395,11 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
       ["gesture-rotate", gestureRotateTool.capability],
       ["gesture-custom", gestureCustomTool.capability],
       ["tv-remote", createTvRemoteTool({} as never).capability],
+      // Not simulator-only in its backend, but unusable on a physical iPhone for
+      // the same practical reason: idle is decided by two consecutive identical
+      // accessibility trees, and the device's read rotates the element order (and
+      // resynthesises frames) on every call, so the signature never repeats.
+      ["await-screen-idle", createAwaitScreenIdleTool({} as never).capability],
       ["native-describe-screen", nativeDescribeScreenTool.capability],
       ["native-devtools-status", nativeDevtoolsStatusTool.capability],
       ["native-find-views", nativeFindViewsTool.capability],
