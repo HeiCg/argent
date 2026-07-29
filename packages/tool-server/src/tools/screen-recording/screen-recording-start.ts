@@ -9,8 +9,15 @@ import { resolveDevice } from "../../utils/device-info";
 import { assertSupported } from "../../utils/capability";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { isFeatureEnabled } from "@argent/configuration-core";
-import { setPointerTrail, setPointerVisible } from "../../utils/simulator-client";
-import { startCapture, type PointerControl } from "./capture";
+import {
+  setPointerTrail,
+  setPointerVisible,
+  startServerRecording,
+  stopServerRecording,
+} from "../../utils/simulator-client";
+import { startCapture } from "./capture";
+import type { PointerControl } from "./pointer-control";
+import type { ServerRecordingControl } from "./server-capture";
 import type { StartRecordingResult } from "./session-guards";
 
 const DEFAULT_TIME_LIMIT_SECONDS = 180;
@@ -77,7 +84,7 @@ By default every tap, swipe, drag, pinch and rotate is drawn into the video as a
 The recording keeps running across other tool calls (every result carries a reminder) until \`screen-recording-stop\` is called or timeLimitSeconds elapses — immediately after starting, set yourself a reminder/wakeup for the expected end of the recording so it is never left running.
 Use when the user wants a video of an interaction, animation, or app behavior — for a single still frame use \`screenshot\` instead.
 Returns { status: "recording", timeLimitSeconds, outputFile } — the video is retrieved later by \`screen-recording-stop\`, not by reading outputFile directly.
-Fails if a recording is already running on the device, the device is not booted, ffmpeg is not installed, or the platform cannot be recorded (tvOS, Chromium, Vega and remote simulators are unsupported).`,
+Fails if a recording is already running on the device, the device is not booted, or the platform cannot be recorded (tvOS, Chromium, Vega and remote simulators are unsupported). On hosts where simulator-server cannot record for itself (its Linux and Windows builds) the video is encoded locally instead and \`ffmpeg\` must be installed.`,
     searchHint: "record video screen capture movie mp4 start filming screencast",
     zodSchema,
     // simulator-server is resolved inside execute, not declared here: a tvOS
@@ -147,6 +154,7 @@ Fails if a recording is already running on the device, the device is not booted,
         watermark: isFeatureEnabled("video-watermark"),
         trimStatic: params.trimStatic ?? true,
         pointer,
+        server: makeServerRecordingControl(simulator),
       });
     },
   };
@@ -168,6 +176,18 @@ Fails if a recording is already running on the device, the device is not booted,
  * non-recording screenshots. Serializing the two guarantees `show:false` is
  * both issued and applied last, so the overlay always ends off.
  */
+/**
+ * Bind simulator-server's recording endpoints to the resolved server. `start`
+ * reports whether this build has them at all; `startCapture` records host-side
+ * when it does not.
+ */
+export function makeServerRecordingControl(simulator: SimulatorServerApi): ServerRecordingControl {
+  return {
+    start: (opts) => startServerRecording(simulator, opts),
+    stop: () => stopServerRecording(simulator),
+  };
+}
+
 export function makePointerControl(simulator: SimulatorServerApi): PointerControl {
   let enabling: Promise<unknown> | null = null;
   return {

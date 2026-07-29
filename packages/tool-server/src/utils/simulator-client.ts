@@ -152,6 +152,146 @@ async function pointerPost(
   }
 }
 
+/** What simulator-server hands back once it has muxed a finished recording. */
+export interface ServerRecordingResult {
+  /** Path to the mp4 on the simulator-server host (its session media dir). */
+  path: string;
+  sizeBytes: number;
+  /** Length of the video, i.e. what static trimming left. */
+  durationMs: number;
+  /** Real elapsed recording time. */
+  wallClockMs: number;
+  /** Wall-clock time trimming removed; null when trimming was off or never applied. */
+  trimmedMs: number | null;
+  warning: string | null;
+}
+
+/**
+ * Start recording the device screen inside simulator-server: it taps the frames
+ * it already encodes for the live stream (touch overlay included), paces them
+ * onto a constant 30fps timeline, trims static stretches and stamps the
+ * watermark, then muxes an h264 mp4 when `stopServerRecording` is called.
+ *
+ * Returns false when this build exposes no recording route (HTTP 404) — the
+ * software-encoder builds shipped for Linux and Windows compile it out — so the
+ * caller can fall back to capturing the frame stream itself.
+ */
+export async function startServerRecording(
+  api: SimulatorServerApi,
+  opts: { watermark: boolean; trimStatic: boolean; timeLimitSeconds: number },
+  signal?: AbortSignal
+): Promise<boolean> {
+  const body = await recordingPost<{ status?: string; error?: string }>(
+    api,
+    "start",
+    {
+      watermark: opts.watermark,
+      trim_static: opts.trimStatic,
+      time_limit_secs: opts.timeLimitSeconds,
+    },
+    signal
+  );
+  return body !== null;
+}
+
+/** Finalize the recording started by {@link startServerRecording}. */
+export async function stopServerRecording(
+  api: SimulatorServerApi,
+  signal?: AbortSignal
+): Promise<ServerRecordingResult> {
+  const body = await recordingPost<{
+    path?: string;
+    size_bytes?: number;
+    duration_ms?: number;
+    wall_clock_ms?: number;
+    trimmed_ms?: number | null;
+    warning?: string | null;
+    error?: string;
+  }>(api, "stop", {}, signal);
+  if (body === null) {
+    // Only reachable if the server was replaced mid-recording by a build
+    // without the route; there is no video to hand back either way.
+    throw new FailureError(
+      `screen-recording-stop failed: simulator-server no longer exposes a recording endpoint, ` +
+        `so the recording in progress cannot be finalized.`,
+      {
+        error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
+        failure_stage: "screen_recording_server_stop",
+        failure_area: "tool_server",
+        error_kind: "not_found",
+        failure_command: "simulator_server",
+      }
+    );
+  }
+  if (typeof body.path !== "string" || typeof body.duration_ms !== "number") {
+    throw new FailureError(
+      `screen-recording-stop failed: simulator-server returned a recording result with no video ` +
+        `path (${JSON.stringify(body).slice(0, 200)}).`,
+      {
+        error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
+        failure_stage: "screen_recording_server_stop",
+        failure_area: "tool_server",
+        error_kind: "not_found",
+      }
+    );
+  }
+  return {
+    path: body.path,
+    sizeBytes: body.size_bytes ?? 0,
+    durationMs: body.duration_ms,
+    wallClockMs: body.wall_clock_ms ?? body.duration_ms,
+    trimmedMs: body.trimmed_ms ?? null,
+    warning: body.warning ?? null,
+  };
+}
+
+/**
+ * POST a recording command, returning null when the route does not exist.
+ *
+ * Deliberately not `simulatorPost`: a build without the recording feature
+ * answers 404 with an empty body, which that helper would surface as
+ * "non-JSON response" — indistinguishable from a server in a bad state, and
+ * the one answer callers must be able to act on. So the status is checked
+ * before the body is read. A recording command that fails for any other reason
+ * comes back as HTTP 200 carrying an `error` field, hence both checks.
+ */
+async function recordingPost<T extends { error?: string }>(
+  api: SimulatorServerApi,
+  stage: "start" | "stop",
+  reqBody: unknown,
+  signal?: AbortSignal
+): Promise<T | null> {
+  const toolLabel = `screen-recording-${stage}`;
+  let res: Response;
+  try {
+    res = await fetch(`${api.apiUrl}/api/recording/${stage}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(reqBody),
+      signal,
+    });
+  } catch (err) {
+    throw toSimulatorNetworkError(toolLabel, err, api.apiUrl);
+  }
+  if (res.status === 404) return null;
+
+  const body = (await res.json().catch(() => null)) as T | null;
+  if (!res.ok || !body || body.error) {
+    throw new FailureError(
+      `${toolLabel} failed: simulator-server rejected the recording command ` +
+        `(HTTP ${res.status}${body?.error ? `: ${body.error}` : ""}).`,
+      {
+        error_code: FAILURE_CODES.SCREEN_RECORDING_PROCESS_ERROR,
+        failure_stage: `screen_recording_server_${stage}`,
+        failure_area: "tool_server",
+        error_kind: "unknown",
+        failure_command: "simulator_server",
+      }
+    );
+  }
+  return body;
+}
+
 /**
  * POST to a simulator-server endpoint, handling network errors and non-JSON
  * responses uniformly.  Callers handle domain-specific response validation.

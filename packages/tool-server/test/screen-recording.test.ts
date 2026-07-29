@@ -35,9 +35,15 @@ import {
   stopCapture,
   framesDue,
   ffmpegArgs,
-  type PointerControl,
 } from "../src/tools/screen-recording/capture";
-import { setPointerTrail, setPointerVisible } from "../src/utils/simulator-client";
+import type { PointerControl } from "../src/tools/screen-recording/pointer-control";
+import type { ServerRecordingControl } from "../src/tools/screen-recording/server-capture";
+import {
+  setPointerTrail,
+  setPointerVisible,
+  startServerRecording,
+  stopServerRecording,
+} from "../src/utils/simulator-client";
 import { makePointerControl } from "../src/tools/screen-recording/screen-recording-start";
 import type { SimulatorServerApi } from "../src/blueprints/simulator-server";
 import { openMjpegStream, readJpegDimensions } from "../src/tools/screen-recording/mjpeg-stream";
@@ -1298,5 +1304,365 @@ describe("readJpegDimensions", () => {
       base.subarray(2), // SOF0 + payload + EOI
     ]);
     expect(readJpegDimensions(withFill)).toEqual({ width: 640, height: 480 });
+  });
+});
+
+describe("server-side recording", () => {
+  /**
+   * A `ServerRecordingControl` over a real file on disk, so stop exercises the
+   * copy out of simulator-server's session directory rather than mocking it away.
+   */
+  async function fakeServer(
+    overrides: {
+      supported?: boolean;
+      durationMs?: number;
+      wallClockMs?: number;
+      trimmedMs?: number | null;
+      warning?: string | null;
+      bytes?: Buffer;
+    } = {}
+  ) {
+    const serverDir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-test-simserver-"));
+    const serverFile = path.join(serverDir, "recording-123.mp4");
+    await fs.writeFile(serverFile, overrides.bytes ?? Buffer.from("fake mp4 payload"));
+    const start = vi.fn(async () => overrides.supported ?? true);
+    const stop = vi.fn(async () => ({
+      path: serverFile,
+      sizeBytes: 16,
+      durationMs: overrides.durationMs ?? 2_000,
+      wallClockMs: overrides.wallClockMs ?? 2_000,
+      trimmedMs: overrides.trimmedMs === undefined ? null : overrides.trimmedMs,
+      warning: overrides.warning ?? null,
+    }));
+    return { start, stop, serverFile, serverDir } satisfies ServerRecordingControl & {
+      serverFile: string;
+      serverDir: string;
+    };
+  }
+
+  async function startOnServer(
+    api: ScreenRecordingSessionApi,
+    server: ServerRecordingControl,
+    params: { timeLimitSeconds?: number; trimStatic?: boolean; pointer?: PointerControl } = {}
+  ) {
+    return startCapture(api, {
+      streamUrl: STREAM_URL,
+      timeLimitSeconds: params.timeLimitSeconds ?? 180,
+      watermark: true,
+      trimStatic: params.trimStatic ?? true,
+      pointer: params.pointer,
+      server,
+    });
+  }
+
+  it("records through simulator-server without spawning ffmpeg", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer();
+
+    const started = await startOnServer(api, server, { timeLimitSeconds: 42 });
+
+    expect(server.start).toHaveBeenCalledWith({
+      watermark: true,
+      trimStatic: true,
+      timeLimitSeconds: 42,
+    });
+    // The whole point: no host encoder, and no frame stream to feed it.
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockOpenStream).not.toHaveBeenCalled();
+    expect(mockResolveFfmpeg).not.toHaveBeenCalled();
+    expect(started).toEqual({
+      status: "recording",
+      timeLimitSeconds: 42,
+      outputFile: expect.stringContaining("argent-screen-recording-"),
+    });
+    expect(api.recordingActive).toBe(true);
+    expect(api.captureProcess).toBeNull();
+  });
+
+  it("falls back to the host pipeline when the build has no recording endpoint", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer({ supported: false });
+    fakeStream();
+    const child = fakeChild();
+
+    const promise = startOnServer(api, server, {});
+    promise.catch(() => {});
+    await vi.advanceTimersByTimeAsync(READY_GRACE_MS);
+    await promise;
+
+    expect(server.start).toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(api.captureProcess).toBe(child as unknown as ChildProcess);
+    expect(api.serverStop).toBeNull();
+  });
+
+  it("stop copies the video out of the server's session dir and reports its durations", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer({ durationMs: 1_500, wallClockMs: 9_000, trimmedMs: 7_500 });
+    const { outputFile } = await startOnServer(api, server, {});
+
+    const stopped = await stopCapture(api);
+
+    expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(stopped.outputFile).toBe(outputFile);
+    expect(stopped.durationMs).toBe(1_500);
+    expect(stopped.wallClockMs).toBe(9_000);
+    expect(stopped.trimmedMs).toBe(7_500);
+    expect(stopped.sizeBytes).toBeGreaterThan(0);
+    // Copied to argent's own temp, and the server's copy released — the session
+    // dir it lived in goes away with that simulator-server.
+    await expect(fs.readFile(outputFile, "utf8")).resolves.toBe("fake mp4 payload");
+    await expect(fs.stat(server.serverFile)).rejects.toThrow();
+    await fs.rm(outputFile, { force: true });
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("omits the trim fields when trimming removed nothing", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer({ durationMs: 2_000, wallClockMs: 2_000, trimmedMs: null });
+    await startOnServer(api, server, { trimStatic: false });
+
+    const stopped = await stopCapture(api);
+
+    expect(stopped.durationMs).toBe(2_000);
+    expect(stopped).not.toHaveProperty("trimmedMs");
+    expect(stopped).not.toHaveProperty("wallClockMs");
+    await fs.rm(stopped.outputFile, { force: true });
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("passes a server warning through to the caller", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer({ warning: "the frame source stalled" });
+    await startOnServer(api, server, {});
+
+    const stopped = await stopCapture(api);
+
+    expect(stopped.warning).toContain("the frame source stalled");
+    await fs.rm(stopped.outputFile, { force: true });
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("marks the recording awaiting retrieval at the time limit without stopping it early", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer();
+    await startOnServer(api, server, { timeLimitSeconds: 5 });
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    // The video is retrieved by stop, whenever that arrives — the cap only
+    // flips the bookkeeping, so the server keeps holding the finished file.
+    expect(server.stop).not.toHaveBeenCalled();
+    expect(api.recordingActive).toBe(false);
+    expect(api.pendingRetrieval).toBe(true);
+    // The per-call reminder flips to "ended, still to retrieve" rather than
+    // disappearing, so the caller is still told to come back for the video.
+    expect(getActiveScreenRecordings()).toMatchObject([
+      { status: "finalized", finalizedReason: "it hit its 5s time limit" },
+    ]);
+
+    // A start now must be refused rather than discarding that video…
+    await expect(startOnServer(api, server, {})).rejects.toMatchObject({
+      message: expect.stringContaining("has not been retrieved yet"),
+    });
+    // …while stop still hands it over, saying it already ended.
+    const stopped = await stopCapture(api);
+    expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(stopped.warning).toContain("5s time limit");
+    await fs.rm(stopped.outputFile, { force: true });
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("restores the touch visualizer when the recording ends", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer();
+    const pointer = fakePointer();
+    await startOnServer(api, server, { pointer });
+
+    expect(pointer.enable).toHaveBeenCalledTimes(1);
+    expect(pointer.disable).not.toHaveBeenCalled();
+
+    const stopped = await stopCapture(api);
+    expect(pointer.disable).toHaveBeenCalledTimes(1);
+    await fs.rm(stopped.outputFile, { force: true });
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("warns when the touch visualizer could not be turned on", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer();
+    await startOnServer(api, server, { pointer: fakePointer(false) });
+
+    const stopped = await stopCapture(api);
+
+    expect(stopped.warning).toContain("touch visualizer could not be enabled");
+    await fs.rm(stopped.outputFile, { force: true });
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("dispose ends a recording running inside simulator-server", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const server = await fakeServer();
+    await startOnServer(instance.api, server, {});
+
+    await instance.dispose();
+
+    // Without this the recording outlives the tool-server, accumulating frames
+    // inside simulator-server with nothing left to stop it.
+    expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(instance.api.serverStop).toBeNull();
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("ends a recording whose start landed after the session was disposed", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const server = await fakeServer();
+    // Park the start request, then dispose while it is in flight: dispose's own
+    // teardown cannot see a recording that does not exist yet.
+    let admit: () => void;
+    const parked = new Promise<void>((resolve) => (admit = resolve));
+    server.start.mockImplementationOnce(async () => {
+      await parked;
+      return true;
+    });
+
+    const promise = startOnServer(instance.api, server, {});
+    promise.catch(() => {});
+    await instance.dispose();
+    admit!();
+
+    await expect(promise).rejects.toMatchObject({
+      message: expect.stringContaining("shutting down"),
+    });
+    expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(instance.api.recordingActive).toBe(false);
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("rejects a second start while one is running on the server", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer();
+    await startOnServer(api, server, {});
+
+    await expect(startOnServer(api, server, {})).rejects.toMatchObject({
+      message: expect.stringContaining("already running"),
+    });
+    expect(server.start).toHaveBeenCalledTimes(1);
+
+    const stopped = await stopCapture(api);
+    await fs.rm(stopped.outputFile, { force: true });
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("keeps the session startable when the server hands back a missing video", async () => {
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer();
+    await fs.rm(server.serverFile, { force: true });
+    await startOnServer(api, server, {});
+
+    await expect(stopCapture(api)).rejects.toThrow();
+
+    expect(api.recordingActive).toBe(false);
+    expect(api.stopPending).toBe(false);
+    expect(api.serverStop).toBeNull();
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+});
+
+describe("server recording wire protocol", () => {
+  const fakeApi = { apiUrl: "http://127.0.0.1:65500" } as SimulatorServerApi;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("start POSTs the recording options and reports success", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ status: "ok" }))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      startServerRecording(fakeApi, { watermark: true, trimStatic: false, timeLimitSeconds: 30 })
+    ).resolves.toBe(true);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("http://127.0.0.1:65500/api/recording/start");
+    expect(JSON.parse(init!.body as string)).toEqual({
+      watermark: true,
+      trim_static: false,
+      time_limit_secs: 30,
+    });
+  });
+
+  it("reports an absent route rather than failing the start", async () => {
+    // A build without the recording feature answers 404 with an EMPTY body —
+    // read as JSON that is a parse error, which must not be mistaken for a
+    // server in a bad state: it is the signal to record host-side instead.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 404 }))
+    );
+
+    await expect(
+      startServerRecording(fakeApi, { watermark: true, trimStatic: true, timeLimitSeconds: 60 })
+    ).resolves.toBe(false);
+  });
+
+  it("fails the start when the server rejects the command", async () => {
+    // Rejections come back as HTTP 200 with an `error` field, so the status
+    // alone would read as success.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "a recording is already running" })))
+    );
+
+    await expect(
+      startServerRecording(fakeApi, { watermark: true, trimStatic: true, timeLimitSeconds: 60 })
+    ).rejects.toMatchObject({ message: expect.stringContaining("a recording is already running") });
+  });
+
+  it("stop maps the recording result onto the session's field names", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              path: "/tmp/simserver-x/media/recording-1.mp4",
+              url: "http://127.0.0.1:65500/media/recording-1.mp4",
+              size_bytes: 4096,
+              duration_ms: 967,
+              wall_clock_ms: 10_026,
+              trimmed_ms: 9_059,
+              warning: null,
+            })
+          )
+      )
+    );
+
+    await expect(stopServerRecording(fakeApi)).resolves.toEqual({
+      path: "/tmp/simserver-x/media/recording-1.mp4",
+      sizeBytes: 4096,
+      durationMs: 967,
+      wallClockMs: 10_026,
+      trimmedMs: 9_059,
+      warning: null,
+    });
+  });
+
+  it("fails a stop that comes back without a video path", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ duration_ms: 100 })))
+    );
+
+    await expect(stopServerRecording(fakeApi)).rejects.toMatchObject({
+      message: expect.stringContaining("no video path"),
+    });
   });
 });
