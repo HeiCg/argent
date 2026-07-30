@@ -269,9 +269,18 @@ export async function httpAxTree(
     signal
   );
 
-  if (!res.ok || body.error) {
+  // `res.json()` yields whatever the server sent, and a bare `null` is a valid
+  // JSON document — reading `.error` off it is itself the bare TypeError the
+  // schema below exists to prevent, and it fires on the error statuses where a
+  // server that cannot answer is likeliest to send something minimal. Narrow to
+  // an object first; a non-object body carries no in-band error and falls
+  // through to the shape check, which names it.
+  const serverError =
+    typeof body === "object" && body !== null ? (body as { error?: string }).error : undefined;
+
+  if (!res.ok || serverError) {
     throw new FailureError(
-      `describe failed: ${body.error ?? `HTTP ${res.status}`}. ` +
+      `describe failed: ${serverError ?? `HTTP ${res.status}`}. ` +
         `Ensure the device is awake and the simulator-server is running.`,
       {
         error_code: FAILURE_CODES.SIMULATOR_HTTP_ERROR_RESPONSE,

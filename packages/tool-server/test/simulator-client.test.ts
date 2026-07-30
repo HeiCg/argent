@@ -131,6 +131,8 @@ describe("httpAxTree", () => {
     ["a null element", { elements: [null] }],
     ["a non-string caption", { elements: [{ caption: 42, id: "a" }] }],
     ["a non-numeric screen width", { elements: [], screen: { w: "abc", h: 852 } }],
+    ["a bare null body", null],
+    ["a bare array body", []],
   ] as const) {
     it(`rejects ${name} with a classified failure, not a TypeError`, async () => {
       // The adapter indexes `elements` and calls string methods on `caption`.
@@ -140,6 +142,17 @@ describe("httpAxTree", () => {
       vi.stubGlobal("fetch", fakeFetch(200, payload));
       await expect(httpAxTree(api)).rejects.toThrow(FailureError);
       await expect(httpAxTree(api)).rejects.toThrow(/does not match the expected shape/);
+    });
+  }
+
+  for (const status of [500, 503] as const) {
+    it(`reports HTTP ${status} rather than crashing when the body is a bare null`, async () => {
+      // The in-band `{ error }` read happens on the failure path too, so a
+      // status-only answer with a null body took the same bare TypeError —
+      // on exactly the responses a server that cannot answer sends.
+      vi.stubGlobal("fetch", fakeFetch(status, null));
+      await expect(httpAxTree(api)).rejects.toThrow(FailureError);
+      await expect(httpAxTree(api)).rejects.toThrow(new RegExp(`HTTP ${status}`));
     });
   }
 
