@@ -449,6 +449,27 @@ describe("gesture-custom on physical iOS: single contact only, rejected as a who
     expect(touch.mock.calls.map(([c]) => c.secondX)).toEqual([0.6, 0.8]);
   });
 
+  it("leaves a physical ANDROID phone's two-finger gestures alone", () => {
+    // The guard narrows on platform AND kind, and a physical Android phone is
+    // also `kind: "device"`. Every other case here uses an iPhone udid or a
+    // simulator UUID, so dropping the platform half would silently take
+    // two-contact gestures away from Android — where adb does drive them.
+    const androidTwoTouch = {
+      udid: "R5CT30ABCDE",
+      events: [
+        { type: "Down", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
+        { type: "Up", x: 0.2, y: 0.5, x2: 0.8, y2: 0.5 },
+      ],
+    };
+    expect(resolveDevice("R5CT30ABCDE")).toMatchObject({ platform: "android", kind: "device" });
+    expect(Object.keys(gestureCustomTool.services!(androidTwoTouch as never))).toEqual([
+      "simulatorServer",
+    ]);
+    return expect(
+      gestureCustomTool.execute(services() as never, androidTwoTouch as never)
+    ).resolves.toMatchObject({ events: 2 });
+  });
+
   it("resolves no service for a request it is going to reject (no wasted spawn)", () => {
     // The registry resolves every declared service before calling execute, so a
     // ref here would bring the CoreDevice session up purely to reject — and on a

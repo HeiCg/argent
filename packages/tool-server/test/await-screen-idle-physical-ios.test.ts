@@ -44,6 +44,18 @@ vi.mock("../src/utils/ios-devices", async (orig) => ({
   isTvOsSimulator: async () => false,
 }));
 
+// A physical Android phone is `kind: "device"` too, so it is the control for
+// every `platform === "ios" && kind === "device"` narrowing in this tool.
+const describeAndroid = vi.fn();
+vi.mock("../src/tools/describe/platforms/android", () => ({
+  describeAndroid: (...a: unknown[]) => describeAndroid(...(a as [])),
+  androidRequires: [],
+}));
+vi.mock("../src/utils/adb", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  isAndroidTv: async () => false,
+}));
+
 import { createAwaitScreenIdleTool } from "../src/tools/await-screen-idle";
 
 const tool = createAwaitScreenIdleTool({} as unknown as Registry);
@@ -90,6 +102,38 @@ describe("await-screen-idle against a still physical-iPhone screen", () => {
     // that can never agree.
     expect(r.waitedMs).toBeLessThan(2_000);
     expect(r.polls).toBeLessThanOrEqual(2);
+  });
+
+  it("leaves a physical ANDROID phone on the ordinary signature", async () => {
+    // `rotatingRead` narrows on platform AND kind, and a physical Android phone
+    // is also `kind: "device"`. Dropping the platform half would give Android
+    // the order- and frame-free signature — which stops catching an animation
+    // that only moves things — and the CoreDevice truncation refusal, on a tree
+    // that has neither problem.
+    const rows = LIMIT + 5;
+    describeAndroid.mockImplementation(async () => ({
+      source: "uiautomator",
+      tree: {
+        role: "AXGroup",
+        frame: { x: 0, y: 0, width: 1, height: 1 },
+        children: Array.from({ length: rows }, (_, i) => ({
+          role: "AXButton",
+          label: `Row ${i}`,
+          frame: { x: 0.04, y: i / rows, width: 0.92, height: 0.05 },
+          children: [],
+        })),
+      },
+    }));
+    const p = tool.execute({}, { udid: "R5CT30ABCDE" } as never) as Promise<{
+      settled: boolean;
+      note?: string;
+    }>;
+    let done = false;
+    void p.then(() => (done = true));
+    for (let i = 0; i < 400 && !done; i++) await vi.advanceTimersByTimeAsync(250);
+    const r = await p;
+    expect(r.note, "the CoreDevice element ceiling is not Android's").toBeUndefined();
+    expect(r.settled).toBe(true);
   });
 
   it("leaves a simulator's tree alone, however large", async () => {

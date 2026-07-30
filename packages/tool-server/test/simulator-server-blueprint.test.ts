@@ -100,6 +100,32 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
     vi.clearAllMocks();
   });
 
+  it("skips the simulator-only prep for a physical iPhone", async () => {
+    // The tvOS probe and the automation toggle both address a sim runtime, so
+    // running them against a hardware UDID can only fail (and `simctl` would be
+    // shelled on the hot path for every session). Nothing else exercises the
+    // iOS branch of the factory with `kind: "device"`, so widening the guard to
+    // run them on hardware goes unnoticed.
+    const fakeProc = makeFakeProc();
+    spawnMock.mockReturnValue(fakeProc);
+    const { simulatorServerBlueprint } = await import("../src/blueprints/simulator-server");
+    const { isTvOsSimulator } = await import("../src/utils/ios-devices");
+
+    const device: DeviceInfo = {
+      id: "00008120-000E6D0C0ABBA01E",
+      platform: "ios",
+      kind: "device",
+    };
+    const factoryPromise = simulatorServerBlueprint.factory({}, device, { device });
+    signalReady(fakeProc, 55511);
+    await factoryPromise;
+
+    expect(vi.mocked(isTvOsSimulator)).not.toHaveBeenCalled();
+    expect(ensureAutomationEnabledMock).not.toHaveBeenCalled();
+    // …and it still reaches the spawn, on the hardware controller.
+    expect(spawnMock.mock.calls[0]![1][0]).toBe("ios_device");
+  });
+
   it("spawns the `ios` subcommand for an iOS device", async () => {
     const fakeProc = makeFakeProc();
     spawnMock.mockReturnValue(fakeProc);

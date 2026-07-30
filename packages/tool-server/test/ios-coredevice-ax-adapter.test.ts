@@ -149,6 +149,47 @@ describe("adaptCoreDeviceAxToDescribeResult (production payload: no geometry)", 
       expect(n.frame.y + n.frame.height).toBeLessThanOrEqual(1.0001);
     }
   });
+
+  it("clamps a synthesised frame whose anchor sits past the bottom of the screen", () => {
+    // Interpolating between real rects can put the anchor anywhere, including
+    // past 1. The no-geometry fixture's fallback anchors are 0.06 and 0.94, so
+    // its frames land mid-screen whether or not approxFrame clamps — only a
+    // low-anchored rect exercises it.
+    const nodes = adaptCoreDeviceAxToDescribeResult({
+      screen: { w: 393, h: 852 },
+      elements: [
+        { caption: "Top, Button", id: "1", rect: "{{16, 838}, {361, 10}}" },
+        { caption: "Interpolated, Button", id: "2" },
+        { caption: "Bottom, Button", id: "3", rect: "{{16, 845}, {361, 6}}" },
+      ],
+    }).children as Node[];
+    for (const n of nodes) {
+      expect(n.frame.y).toBeGreaterThanOrEqual(0);
+      expect(n.frame.y + n.frame.height).toBeLessThanOrEqual(1.0001);
+    }
+  });
+
+  it("interpolates into the gap between two anchors, not across the whole list", () => {
+    // With rect-less elements both between and after a pair of real rects, the
+    // gap fraction and the tail spread are different denominators — a single
+    // "spread over the whole list" rule keeps the order but puts the in-gap
+    // element in the wrong place, which the ordering-only assertions above
+    // cannot see.
+    const nodes = adaptCoreDeviceAxToDescribeResult({
+      screen: { w: 393, h: 852 },
+      elements: [
+        { caption: "Top, Button", id: "1", rect: "{{16, 100}, {361, 40}}" },
+        { caption: "Middle, Button", id: "2" },
+        { caption: "Bottom, Button", id: "3", rect: "{{16, 500}, {361, 40}}" },
+        { caption: "Tail, Button", id: "4" },
+      ],
+    }).children as Node[];
+    const yc = (n: Node) => n.frame.y + n.frame.height / 2;
+    // Halfway between the two anchors (120/852 and 520/852), not somewhere the
+    // whole-list denominator would put it.
+    expect(yc(nodes[1]!)).toBeCloseTo((yc(nodes[0]!) + yc(nodes[2]!)) / 2, 2);
+    expect(yc(nodes[3]!)).toBeGreaterThan(yc(nodes[2]!));
+  });
 });
 
 describe("adaptCoreDeviceAxToDescribeResult (forward-compat: payload with geometry)", () => {
@@ -221,6 +262,33 @@ describe("adaptCoreDeviceAxToDescribeResult (forward-compat: payload with geomet
     for (const v of [short.frame.x, short.frame.y, short.frame.width, short.frame.height]) {
       expect(Number.isFinite(v)).toBe(true);
     }
+  });
+
+  it("splits a value on every value-bearing role, not just buttons", () => {
+    // The set has three members and only AXButton is exercised elsewhere, so
+    // dropping either of the others goes unnoticed — and an Adjustable's value
+    // is the whole point of reading it.
+    const [adjustable, textField] = adaptCoreDeviceAxToDescribeResult({
+      elements: [
+        { caption: "Brightness, 62%, Adjustable", id: "1" },
+        { caption: "Search, kittens, Search Field", id: "2" },
+      ],
+    }).children as Node[];
+    expect(adjustable.role).toBe("AXAdjustable");
+    expect(adjustable.label).toBe("Brightness");
+    expect(adjustable.value).toBe("62%");
+    expect(textField.role).toBe("AXTextField");
+    expect(textField.value).toBe("kittens");
+  });
+
+  it("resolves a caption with two structural traits by the declared precedence", () => {
+    // TRAIT_TOKEN_TO_NATIVE is an ordered list and its comment says the first
+    // structural trait wins, but a caption carrying only one trait cannot tell
+    // any ordering apart from any other.
+    const [node] = adaptCoreDeviceAxToDescribeResult({
+      elements: [{ caption: "Profile photo, Button, Image", id: "1" }],
+    }).children as Node[];
+    expect(node.role).toBe("AXButton");
   });
 
   it("records the enabled / selected state the caption carries", () => {

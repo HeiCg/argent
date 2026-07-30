@@ -240,8 +240,11 @@ const coreDeviceAxTreeSchema = z
           .passthrough()
       )
       .optional(),
+    // `z.number()` already rejects NaN and both infinities, so a screen
+    // dimension that would divide every normalized frame into 0 or NaN is
+    // caught here without a `.finite()` refinement on top.
     screen: z
-      .object({ w: z.number().finite().optional(), h: z.number().finite().optional() })
+      .object({ w: z.number().optional(), h: z.number().optional() })
       .passthrough()
       .optional(),
   })

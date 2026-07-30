@@ -169,6 +169,37 @@ describe("httpAxTree", () => {
     });
   }
 
+  it("posts to the ax-tree endpoint the sim-server serves", async () => {
+    // The single wire path physical-iOS describe has. `fakeFetch` ignores its
+    // arguments, so nothing else in the suite would notice the URL changing to
+    // one the sim-server does not route — describe would fail on every device
+    // with a transport error and no test would say why.
+    const seen: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: unknown, init?: RequestInit) => {
+        seen.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+        return { ok: true, status: 200, json: async () => ({ elements: [] }) } as Response;
+      })
+    );
+    await httpAxTree({ apiUrl: "http://sim.test" } as never, 7);
+    expect(seen).toEqual([{ url: "http://sim.test/api/ax-tree", body: { limit: 7 } }]);
+  });
+
+  for (const [name, payload] of [
+    ["a non-string rect", { elements: [{ caption: "a", id: "1", rect: 42 }] }],
+    ["a non-numeric screen height", { elements: [], screen: { w: 393, h: "tall" } }],
+    ["a non-finite screen dimension", { elements: [], screen: { w: Infinity, h: 852 } }],
+  ] as const) {
+    it(`rejects ${name}`, async () => {
+      // `rect` is the one remaining field the adapter calls a string method on,
+      // and a non-finite screen dimension divides every normalized frame into
+      // 0 — neither is caught by the caption/width cases above.
+      vi.stubGlobal("fetch", fakeFetch(200, payload));
+      await expect(httpAxTree(api)).rejects.toThrow(/does not match the expected shape/);
+    });
+  }
+
   it("passes a well-formed tree through, defaulting the optional fields", async () => {
     vi.stubGlobal(
       "fetch",

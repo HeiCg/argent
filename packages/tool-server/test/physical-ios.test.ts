@@ -33,6 +33,44 @@ describe("physical iOS classification", () => {
     expect(d.kind).toBe("simulator");
   });
 
+  it("matches only the exact 8hex-16hex shape, in either case, whole-string", () => {
+    // Everything routes off this one predicate — classification, `kind`,
+    // `subcommandForDevice`, the capability gate and the opt-in. The existing
+    // negatives (an Android serial, an ip:port, a simulator UUID) fail an
+    // unanchored, loosely-quantised, uppercase-only pattern too, so they hold
+    // none of its three load-bearing properties.
+    //
+    // Case: `IOS_UDID_SHAPE` right above it is deliberately case-insensitive;
+    // devicectl prints hex uppercase but a user retyping a udid may not.
+    expect(isPhysicalIosUdid("00008120-000e6d0c0abba01e")).toBe(true);
+    expect(isPhysicalIosUdid("00008120-000E6d0C0aBBa01E")).toBe(true);
+
+    // Anchors: a string that merely CONTAINS the shape is not one. Without them
+    // a pasted line, or an argument with a udid inside it, classifies as an
+    // iPhone and routes to the CoreDevice backend.
+    for (const near of [
+      `${PHYSICAL_UDID}\n`,
+      `${PHYSICAL_UDID}F`,
+      `x${PHYSICAL_UDID}`,
+      ` ${PHYSICAL_UDID}`,
+    ]) {
+      expect(isPhysicalIosUdid(near), JSON.stringify(near)).toBe(false);
+    }
+
+    // Run lengths: exactly 8 then exactly 16. The pre-A12 40-hex form is
+    // deliberately excluded (that hardware cannot reach the iOS 26 floor the
+    // CoreDevice read needs), and a short hex pair is not a udid at all.
+    for (const wrong of [
+      "cafe-babe",
+      "0000812-000E6D0C0ABBA01E",
+      "000081200-000E6D0C0ABBA01E",
+      "00008120-000E6D0C0ABBA01",
+      "00008120-000E6D0C0ABBA01EF",
+    ]) {
+      expect(isPhysicalIosUdid(wrong), wrong).toBe(false);
+    }
+  });
+
   it("isPhysicalIosUdid distinguishes device from simulator shapes", () => {
     expect(isPhysicalIosUdid(PHYSICAL_UDID)).toBe(true);
     expect(isPhysicalIosUdid(SIM_UDID)).toBe(false);

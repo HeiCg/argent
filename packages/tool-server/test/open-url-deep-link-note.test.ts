@@ -162,6 +162,16 @@ describe("open-url rejects a url with no scheme", () => {
     }
   });
 
+  it("refuses a flag that carries a scheme further along", () => {
+    // The leading anchor is the only part of the pattern that makes a leading
+    // `-` fatal: the values above contain no colon, so an unanchored pattern
+    // rejects them too and holds nothing. These do contain one, and would reach
+    // devicectl's argv as flags.
+    for (const url of ["--console=http://x", "-o https://example.com", "--url=tel:555"]) {
+      expect(parse(url).success, `${url} must be rejected`).toBe(false);
+    }
+  });
+
   it("refuses a bare host, which no backend could have opened anyway", () => {
     expect(parse("example.com").success).toBe(false);
     expect(parse("").success).toBe(false);
