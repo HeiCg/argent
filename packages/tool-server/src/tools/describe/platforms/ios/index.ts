@@ -144,7 +144,14 @@ export async function describeIos(
 
     const target = await resolveNativeTargetApp(nativeApi, params.bundleId);
 
-    const state = await nativeApi.appConnectionState(target.bundleId);
+    // A rejection here (the env re-apply this runs first fails on a sim that
+    // went away mid-call) must not fall through to the outer catch: that path
+    // returns the empty tree with no hint at all, so the read looks merely
+    // empty rather than unexplained. Degrade to the state that says exactly
+    // that, matching the other two consumers of this call.
+    const state = await nativeApi
+      .appConnectionState(target.bundleId)
+      .catch(() => "indeterminate" as const);
     if (state !== "connected") {
       // The diagnosis rides out as a hint for every state, because `hint` is the
       // only channel describe has for prose: `should_restart` reaches the agent
@@ -152,8 +159,9 @@ export async function describeIos(
       // await-ui-element's timeout note — spells it "call restart-app and
       // retry", the loop instruction with no escape. `indeterminate` is where
       // that costs the most: its message is the one carrying "do not keep
-      // restarting the app", and on ios-remote it is the *only* reachable
-      // unconnected state, so without the hint the loop has no exit at all.
+      // restarting the app", and it is the only state a *running* app can reach
+      // on ios-remote, whose app processes live on the orchestrator and so
+      // cannot be inspected — without the hint that path has no exit at all.
       //
       // `should_restart` itself is the agent-facing instruction to relaunch, so
       // it stays limited to the states a relaunch actually fixes. An

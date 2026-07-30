@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { DeviceInfo } from "@argent/registry";
 
-// `restart_required` used to be asserted rather than measured: every unconnected
-// app got it, forever. These cover the measurement that replaced it — what the
-// running process was actually launched with, and whether this service's
-// listener even existed at the time — since that is the whole difference
+// `restart_required` is derived from a measurement, not asserted: these cover
+// what the running process was actually launched with, and whether this
+// service's listener even existed at the time. That is the whole difference
 // between "restart-app fixes this" and "restarting the app is a loop".
 
 const probe = vi.hoisted(() => ({
@@ -211,6 +210,17 @@ describe("appConnectionState measures the running process", () => {
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
   });
 
+  // Pins the grace from above. Every other injected fixture sits 10x clear of
+  // it, so the term could grow to any of them and stay green while swallowing
+  // real `unregistered` verdicts into "restart-app" — the escape hatch is only
+  // reached once a process is old enough to have finished dialing, so a grace
+  // that creeps upward silently withholds it for longer and longer.
+  it("stops calling a process indeterminate one second past the grace", async () => {
+    probe.psOutput = psLine("00:04", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
+  });
+
   it("reports indeterminate when the process table cannot be read", async () => {
     probe.psFails = true;
 
@@ -268,7 +278,11 @@ describe("appConnectionState measures the running process", () => {
     }
   });
 
-  it("reports indeterminate for a registered job with no live process", async () => {
+  // A null pid means the row did not parse, not that launchd reported no
+  // process: measured on iOS 18.6, a UIKitApplication row is removed outright
+  // when the app exits rather than left with a `-`. So this is an unreadable
+  // row, and an unreadable row is no evidence — never a claim about the app.
+  it("reports indeterminate for a row whose pid column does not parse", async () => {
     probe.launchctlList = runningRow("-");
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");

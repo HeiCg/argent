@@ -119,9 +119,11 @@ export type NativeDevtoolsAppState =
  * How long a process must have been alive before its silence counts as evidence,
  * and how much younger than the listener it must be to have plainly started
  * after it. Covers the dylib's dial + handshake after exec and the whole-second
- * resolution of `ps -o etime`. Both comparisons lean the same way — towards
- * `stale_process` — so an uncertain read costs at most one wasted restart-app
- * rather than sending an agent off to restart a healthy tool-server.
+ * resolution of `ps -o etime`. Both comparisons lean away from `unregistered`
+ * — the first towards `stale_process`, the second towards `indeterminate` —
+ * and those two are the states that ask for a restart-app. So an uncertain read
+ * costs at most one wasted relaunch rather than sending an agent off to restart
+ * a healthy tool-server.
  *
  * That lean holds because both ages are read off the same wall clock: `etime`
  * is `now - p_starttime`, so a clock step shifts it and `Date.now()` alike and
@@ -748,7 +750,16 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         // the thing the process gets compared against.
         await reverifyEnv();
 
-        const inspection = await host.inspectRunningApp(udid, bundleId).catch(() => null);
+        // Logged for the same reason the `ps` probe logs: a probe that is
+        // broken rather than merely uninformative degrades every app to
+        // `indeterminate`, and the two are indistinguishable at the tool
+        // surface. Never fatal — the diagnosis is advisory.
+        const inspection = await host.inspectRunningApp(udid, bundleId).catch((err: unknown) => {
+          process.stderr.write(
+            `[native-devtools] app inspection failed for ${bundleId}: ${String(err)}\n`
+          );
+          return null;
+        });
         if (inspection === null) return "indeterminate";
         if (!inspection.running) return "not_running";
         if (inspection.process === null) return "indeterminate";

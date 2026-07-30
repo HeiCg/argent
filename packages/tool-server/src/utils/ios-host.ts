@@ -286,8 +286,12 @@ async function setupNativeDevtoolsEnvRemote(udid: string, endpoint: IosEndpoint)
 /**
  * Parse `launchctl list` output into `UIKitApplication:<bundle-id>` → pid.
  *
- * Rows are `<pid>\t<status>\t<label>`; the pid column reads `-` for a job that
- * is registered but has no live process, which maps to a null pid.
+ * Rows are `<pid>\t<status>\t<label>`. A null pid means the column did not
+ * parse, not that the job has no process: launchd prints `-` there for a
+ * registered job that is not running, but measured on iOS 18.6 a
+ * `UIKitApplication` row is removed outright when the app exits (`-` shows up
+ * only on daemon labels, which the label match discards). So callers get a null
+ * pid from a row they could not read, and treat it as no evidence.
  */
 function parseUIKitApplicationJobs(stdout: string): Map<string, number | null> {
   const jobs = new Map<string, number | null>();
@@ -328,11 +332,13 @@ async function listRunningUIKitApplicationBundleIds(udid: string): Promise<Set<s
  *
  * The no-evidence guarantee covers an unreadable *line*, not an unreadable
  * environment: `ps` suppresses the env of a SIP-protected platform binary while
- * still printing a well-formed argv, which reads as an uninjected process
- * rather than an unknown one. Simulator apps are not platform binaries (both
- * third-party apps and the runtime's own bundles render their full env), and
- * the one family that is — `com.apple.*` — never reaches here: it is rejected
- * as non-injectable before any connection state is measured.
+ * still printing a well-formed argv, which would read as an uninjected process
+ * rather than an unknown one. SIP protection is a property of host binaries —
+ * every pid reaching here comes from a simulator's `launchctl list`, and a
+ * simulator app is not one: measured on iOS 18.6, third-party apps and the
+ * runtime's own `com.apple.*` bundles alike render their full environment.
+ * Those bundles are separately rejected as non-injectable before any connection
+ * state is measured, at every caller.
  */
 async function readProcessLaunchState(pid: number): Promise<RunningAppProcess | null> {
   let stdout: string;
@@ -345,7 +351,13 @@ async function readProcessLaunchState(pid: number): Promise<RunningAppProcess | 
       // default would ENOBUFS on a maximal one instead of reading it.
       maxBuffer: 16 * 1024 * 1024,
     }));
-  } catch {
+  } catch (err) {
+    // Log it, like the sibling probe in vega-process.ts: a broken probe (bad
+    // `ps` flags, a host without it) degrades *every* app to "indeterminate",
+    // which is indistinguishable at the tool surface from a genuinely
+    // uninspectable one. A process that simply exited also lands here, so this
+    // is a note rather than a failure.
+    process.stderr.write(`[ios-host] ps probe failed for pid ${pid}: ${String(err)}\n`);
     return null;
   }
   const trimmed = stdout.trim();

@@ -43,6 +43,7 @@ import {
 } from "./flow-actions";
 import {
   buildAppStateMessage,
+  isInjectableBundleId,
   nativeDevtoolsRef,
   type NativeDevtoolsApi,
 } from "../../blueprints/native-devtools";
@@ -201,8 +202,11 @@ const NATIVE_READY_POLL_MS = 250;
 
 /**
  * Poll until native-devtools is connected for `bundleId`. Returns null once
- * connected (or on abort / the service being unavailable, which the caller
- * re-checks), else the measured reason the connection never came up.
+ * connected, and on abort — where the caller reports the cancellation itself
+ * rather than a connection problem. Otherwise the reason the connection never
+ * came up: the resolution error when the service cannot be reached at all, a
+ * terminal one for an app that can never be injected, and for everything else
+ * the state measured off the running process.
  *
  * The reason is read off the process rather than guessed. A relaunch is the
  * wrong advice for an app that already launched under the terms a relaunch
@@ -216,12 +220,28 @@ async function waitForNativeDevtools(
   bundleId: string,
   signal?: AbortSignal
 ): Promise<string | null> {
+  // Apple system apps are platform binaries with library validation, so the
+  // dylib can never load into one and no relaunch will ever connect it. The
+  // gate has to rule that out itself: `restart-app` launches a system app
+  // quite happily, and the launchd env that carries the bootstrap dylib is
+  // simulator-wide, so the process inherits the injection tokens the
+  // measurement reads and scores as a live app that is merely unregistered —
+  // sending a flow author off to restart a tool-server that was never at fault.
+  if (!isInjectableBundleId(bundleId)) {
+    return (
+      `${bundleId} is an Apple system app: it is a platform binary with library validation, so ` +
+      `argent's native devtools can never be injected into it and flows cannot resolve selectors ` +
+      `against its view hierarchy. Drive it by coordinate instead, or target an injectable app.`
+    );
+  }
   let api: NativeDevtoolsApi;
   try {
     const ref = nativeDevtoolsRef(device);
     api = await registry.resolveService<NativeDevtoolsApi>(ref.urn, ref.options);
   } catch (err) {
-    return `native devtools is unavailable for ${bundleId} (${errMsg(err)})`;
+    // The caller's prefix already names the bundle id; repeating it here reads
+    // as two different failures reported back to back.
+    return `native devtools is unavailable (${errMsg(err)})`;
   }
   const deadline = Date.now() + NATIVE_READY_TIMEOUT_MS;
   for (;;) {
@@ -232,6 +252,11 @@ async function waitForNativeDevtools(
   }
   // Timed out. Measure why — the state may have flipped to connected in the
   // gap since the last poll, in which case there is nothing to report.
+  //
+  // Check the signal first: unlike a poll iteration, the measurement re-applies
+  // the launchd env and probes the device, so it is seconds of uninterruptible
+  // simctl work whose answer a cancelled run would only discard.
+  if (signal?.aborted) return null;
   const state = await api.appConnectionState(bundleId).catch(() => "indeterminate" as const);
   return state === "connected" ? null : buildAppStateMessage(bundleId, state);
 }

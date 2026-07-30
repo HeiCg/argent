@@ -101,6 +101,7 @@ describe("native-devtools-status tool", () => {
       connected: false,
       requiresRestart: true,
       state: "stale_process",
+      message: expect.stringContaining("restart-app") as string,
       nextLaunchWillBeInjected: true,
       injectable: true,
     });
@@ -128,6 +129,7 @@ describe("native-devtools-status tool", () => {
       connected: false,
       requiresRestart: true,
       state: "stale_process",
+      message: expect.stringContaining("restart-app") as string,
       nextLaunchWillBeInjected: true,
       injectable: true,
     });
@@ -170,6 +172,7 @@ describe("native-devtools-status tool", () => {
       connected: false,
       requiresRestart: false,
       state: "not_running",
+      message: expect.stringContaining("launch-app") as string,
       nextLaunchWillBeInjected: true,
       injectable: true,
     });
@@ -563,11 +566,10 @@ describe("native-devtools tools — init_failed precheck", () => {
   });
 });
 
-// `restart_required` used to be asserted for every unconnected app, with no
-// record of how often it had already said so, so "call restart-app" stayed
-// literally true forever and an agent obeying it restarted indefinitely. The
-// status is derived from the running process now, so each state has to reach
-// the agent as the action that actually applies to it.
+// A status asserted for every unconnected app would keep "call restart-app"
+// literally true forever, and an agent obeying it restarts indefinitely. The
+// status is derived from the running process, so each state has to reach the
+// agent as the action that actually applies to it.
 describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   function precheckWith(state: NativeDevtoolsAppState) {
     const { api } = makeNativeApi({ envSetup: true, appRunning: true, state });
@@ -622,11 +624,6 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     await expect(precheckWith("connected")).resolves.toBeNull();
   });
 
-  // The precheck's mapping only matters if it survives the trip out through a
-  // tool. `restart_required` is pinned at the tool boundary above; without the
-  // same pin here, collapsing the mapping back to a single status would leave
-  // every tool-level test green while the agent silently gets restart-app
-  // guidance again.
   it("reads running-ness out of the state instead of a second device probe", async () => {
     // `appConnectionState` already runs `launchctl list`, and it re-verifies the
     // launchd env first — so a separate `isAppRunning` is both an extra simctl
@@ -663,6 +660,10 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.requiresRestart).toBe(true);
   });
 
+  // The precheck's mapping only matters if it survives the trip out through a
+  // tool. Without this pin, collapsing the mapping back to a single status
+  // would leave every precheck-level test green while the agent silently gets
+  // restart-app guidance again.
   it("carries service_stale out through every native-* tool", async () => {
     const tools = [
       nativeDescribeScreenTool,
@@ -698,6 +699,94 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
       expect(result.message).not.toContain("restart-app");
     }
   });
+
+  // The booleans cannot say "one restart, then stop". `requiresRestart: true` is
+  // the whole of what an `indeterminate` app reports, and it is the only state a
+  // running app reaches on ios-remote — so without the prose, the tool whose job
+  // is to answer "is this ready?" hands back the restart loop and nothing else.
+  it("hands back the loop escape for the states the booleans cannot express", async () => {
+    for (const state of ["indeterminate", "stale_process", "not_running"] as const) {
+      const { api } = makeNativeApi({ envSetup: true, appRunning: true, state });
+
+      const result = (await nativeDevtoolsStatusTool.execute(
+        { nativeDevtools: api },
+        { udid: "UDID", bundleId: "com.example.app" }
+      )) as { message?: string };
+
+      expect(result.message, `${state} must carry its remedy`).toBeDefined();
+      expect(result.message).toContain("com.example.app");
+    }
+
+    const { api: indeterminate } = makeNativeApi({
+      envSetup: true,
+      appRunning: true,
+      state: "indeterminate",
+    });
+    const escape = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: indeterminate },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as { message?: string; requiresRestart: boolean };
+    expect(escape.requiresRestart).toBe(true);
+    expect(escape.message).toContain("do not keep restarting the app");
+    expect(escape.message).toContain("argent server stop && argent server start");
+
+    // A connected app has no remedy to carry, so the field must not appear at
+    // all — an empty-string or stale message would read as a live problem.
+    const { api: healthy } = makeNativeApi({ envSetup: true, connected: true });
+    const ok = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: healthy },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as Record<string, unknown>;
+    expect(ok).not.toHaveProperty("message");
+  });
+
+  // `requiresRestart` must never contradict `appRunning`: telling an agent to
+  // restart something the same payload says is not running is the self-
+  // contradiction deriving both from one measurement exists to prevent. Only
+  // `indeterminate` re-probes, so it is the only state that can produce the pair.
+  it("does not ask for a restart of an app the probe says is not running", async () => {
+    const { api } = makeNativeApi({
+      envSetup: true,
+      appRunning: false,
+      state: "indeterminate",
+    });
+
+    const result = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: api },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as { appRunning: boolean; requiresRestart: boolean };
+
+    expect(result.appRunning).toBe(false);
+    expect(result.requiresRestart).toBe(false);
+  });
+
+  // `indeterminate` is also where a failed measurement lands, and a sim that
+  // went away fails the running-ness probe for the same reason — so this is the
+  // one route to that probe where it has already failed once. It must surface
+  // the structured init_failed guidance, not a raw subprocess error.
+  it("falls back to the precheck when the running-ness probe fails too", async () => {
+    const { api } = makeNativeApi({ envSetup: true, state: "indeterminate" });
+    // The sim goes away mid-call: the entry precheck saw a healthy service, and
+    // only the failed probe afterwards reveals it. A fixture that failed from
+    // the start would be blocked by the entry precheck and never reach here.
+    let died = false;
+    api.getInitFailure = () =>
+      died
+        ? { attempts: MAX_NATIVE_DEVTOOLS_INIT_ATTEMPTS, lastError: "sim gone", givenUp: true }
+        : null;
+    api.isAppRunning = vi.fn(async () => {
+      died = true;
+      throw new Error("Invalid device: UDID");
+    });
+
+    const result = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: api },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as { status?: string; message?: string };
+
+    expect(result.status).toBe("init_failed");
+    expect(result.message).toContain("sim gone");
+  });
 });
 
 // The runtime message is only half the guidance an agent sees: the tool
@@ -729,5 +818,34 @@ describe("native-* tool descriptions document both precheck outcomes", () => {
   it("tells native-devtools-status readers not to restart an unregistered app", () => {
     expect(nativeDevtoolsStatusTool.description).toContain("unregistered");
     expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app again");
+  });
+
+  // `indeterminate` gives the agent `requiresRestart: true` and nothing else, so
+  // the description is where "restart once, then stop" has to be stated. It is
+  // also the only unconnected state a running app reaches on a remote simulator.
+  it("bounds the restart advice for a process it could not inspect", () => {
+    expect(nativeDevtoolsStatusTool.description).toContain("If state is indeterminate");
+    expect(nativeDevtoolsStatusTool.description).toContain(
+      "argent server stop && argent server start"
+    );
+  });
+
+  // The description is the contract for a value an agent will branch on. Rename
+  // a state in one place and the prose starts describing names the tool never
+  // emits — which no runtime assertion catches, because both sides still agree
+  // with themselves.
+  it("spells every emitted state exactly as the description names it", () => {
+    const states: NativeDevtoolsAppState[] = [
+      "connected",
+      "not_running",
+      "stale_process",
+      "unregistered",
+      "indeterminate",
+    ];
+    for (const state of states) {
+      expect(nativeDevtoolsStatusTool.description, `description must name ${state}`).toContain(
+        `"${state}"`
+      );
+    }
   });
 });

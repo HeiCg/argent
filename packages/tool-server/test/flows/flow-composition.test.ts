@@ -241,7 +241,88 @@ describe("flow composition (run:)", () => {
 
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:error", "echo:skip"]);
     expect(result.steps[0].reason).toMatch(/could not connect to native devtools/i);
+    // The prefix already names the bundle id, so the inner reason must not
+    // repeat it — doubled, it reads as two separate failures.
+    expect(result.steps[0].reason?.match(/com\.acme\.app/g)).toHaveLength(1);
     expect(result.ok).toBe(false);
+  });
+
+  // An Apple system app is a platform binary with library validation: the dylib
+  // can never load into it. The launchd env that carries the bootstrap dylib is
+  // simulator-wide, though, so the process inherits the very tokens the
+  // measurement reads and scores as injected-but-unregistered — which sends the
+  // author off to restart a tool-server that was never at fault. This gate is
+  // the only `appConnectionState` caller without an injectability check of its
+  // own, so the terminal answer has to be produced here.
+  it("gives a system-app launch the terminal reason, not a restart remedy", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.apple.Preferences" },
+        { kind: "echo", message: "should never run" },
+      ],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(mockRegistry()).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:error", "echo:skip"]);
+    expect(result.steps[0].reason).toContain("com.apple.Preferences");
+    expect(result.steps[0].reason).toMatch(/system app/i);
+    expect(result.steps[0].reason).not.toMatch(/argent server stop/);
+    expect(result.steps[0].reason).not.toMatch(/restart-app/);
+    expect(result.ok).toBe(false);
+  });
+
+  // The gate's own measurement had no coverage at all: replacing the whole
+  // diagnosis with a literal left every flow test green. `unregistered` is the
+  // case that matters — the remedy inverts, and this gate is reached right
+  // after a launch, so a guessed "re-run to relaunch" is the loop one level up.
+  it("reports the measured reason when the connection times out", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [{ kind: "launch", app: "com.acme.app" }],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => ({
+        isConnected: () => false,
+        listConnectedBundleIds: () => [],
+        appConnectionState: async () => "unregistered" as const,
+      })),
+    } as unknown as Registry;
+
+    // Leave setImmediate real: the run reads the flow off disk between sleeps,
+    // and that I/O needs actual event-loop turns to settle. Pumping a real turn
+    // between advances lets the 1.5 s settle and the 8 s connect timeout elapse
+    // in fake time without the test spending ten real seconds on them.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const pending = createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      );
+      let settled = false;
+      void pending.then(() => (settled = true));
+      for (let i = 0; i < 200 && !settled; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+        await vi.advanceTimersByTimeAsync(250);
+      }
+      const result = asRun(await pending);
+
+      expect(result.steps[0].status).toBe("error");
+      expect(result.steps[0].reason).toContain("argent server stop && argent server start");
+      expect(result.steps[0].reason).not.toMatch(/restart-app/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

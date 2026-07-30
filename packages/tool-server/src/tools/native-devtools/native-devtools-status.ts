@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ToolDefinition } from "@argent/registry";
 import {
+  buildAppStateMessage,
   isInjectableBundleId,
   nativeDevtoolsRef,
   precheckNativeDevtools,
@@ -30,6 +31,14 @@ type Result =
        * load the dylib.
        */
       state?: NativeDevtoolsAppState;
+      /**
+       * The remedy for `state`, omitted when connected (or non-injectable,
+       * where the description's terminal guidance applies). The booleans alone
+       * cannot say "stop restarting the app" — `requiresRestart: true` is the
+       * only signal an `indeterminate` app gives, and on ios-remote, where no
+       * process can be inspected, that is the only state a running app reaches.
+       */
+      message?: string;
       nextLaunchWillBeInjected: boolean;
       injectable: boolean;
     };
@@ -50,12 +59,13 @@ export const nativeDevtoolsStatusTool: ToolDefinition<Params, Result> = {
   description: `Check whether native devtools are connected to a specific app and whether the next launch is prepared for injection.
 Use when you need to verify native devtools readiness before calling native-full-hierarchy, native-describe-screen, or native-network-logs.
 
-Returns { envSetup, appRunning, connected, requiresRestart, state, nextLaunchWillBeInjected, injectable }:
+Returns { envSetup, appRunning, connected, requiresRestart, state, message, nextLaunchWillBeInjected, injectable }:
 - envSetup: DYLD_INSERT_LIBRARIES is configured in the simulator's launchd environment
 - appRunning: the target bundle currently has a running UIKit process on the simulator
 - connected: the dylib is active in the current running process for this bundleId
 - requiresRestart: the app is already running and needs a fresh process — its current one is not injected, or could not be inspected to prove otherwise. Always false for a non-injectable app, and false when state is unregistered, where a relaunch cannot help.
 - state: why devtools are or aren't live, measured from the running process. "connected"; "not_running"; "stale_process" (the process was launched before argent's instrumentation was in place, so restart-app fixes it); "unregistered" (the process IS injected and pointed at this simulator's devtools endpoint yet the service never registered it, so restarting the app cannot help); "indeterminate" (the process could not be inspected). Omitted when injectable is false, which is terminal on its own.
+- message: the remedy for that state, in full. Omitted when connected or non-injectable. Prefer it over inferring one from the booleans — it is the only field that can tell you to stop restarting the app.
 - nextLaunchWillBeInjected: if you launch this bundle now, native devtools env setup is already in place (always false for a non-injectable app)
 - injectable: whether native devtools can ever be injected into this app. Apple system apps (bundle ids under com.apple.) are platform binaries with library validation, so the dylib can never load into them.
 
@@ -64,6 +74,7 @@ If injectable is false: this is a TERMINAL state — the app can never be inject
 If appRunning is false and nextLaunchWillBeInjected is true: use launch-app normally.
 If requiresRestart is true: call restart-app, then proceed with the native feature.
 If state is unregistered: do NOT restart the app again — it already launched under the terms a restart would recreate. Restart the tool-server (\`argent server stop && argent server start\`), then retry.
+If state is indeterminate: the process could not be inspected, so restart-app is worth one attempt. If this call still reports it after that restart, do NOT restart the app again — the service is stale rather than the app uninjected, so restart the tool-server (\`argent server stop && argent server start\`) and retry. Remote simulators can never inspect the process, so this is the only unconnected state a running app reaches there.
 Returns { status: "init_failed", message, attempts } instead when the simulator's native-devtools environment failed to initialize.
 Fails if the simulator server is not running for the given UDID.`,
   zodSchema,
@@ -125,15 +136,31 @@ Fails if the simulator server is not running for the given UDID.`,
     const connected = state === "connected";
 
     // Running-ness comes out of the same measurement rather than a second
-    // `launchctl list`: four of the five states are only reachable for a live
-    // process, and `not_running` IS the absence of one. Reading it separately
-    // cost an extra simctl round-trip and — because `appConnectionState`
-    // re-verifies the env first, putting seconds between the two snapshots —
-    // let the two fields contradict each other, e.g. `appRunning: true` beside
-    // `state: "not_running"`. Only `indeterminate` leaves running-ness genuinely
-    // unanswered, so only it pays for its own probe.
-    const appRunning =
-      state === "indeterminate" ? await api.isAppRunning(params.bundleId) : state !== "not_running";
+    // `launchctl list`. Three of the five states describe a live process and
+    // `not_running` IS the absence of one, so four settle running-ness on their
+    // own. A separate probe costs an extra simctl round-trip and — because
+    // `appConnectionState` re-verifies the env first, putting seconds between
+    // the two snapshots — lets the two fields contradict each other, e.g.
+    // `appRunning: true` beside `state: "not_running"`. Only `indeterminate`
+    // leaves it genuinely unanswered, so only it pays for its own probe.
+    let appRunning: boolean;
+    if (state === "indeterminate") {
+      try {
+        appRunning = await api.isAppRunning(params.bundleId);
+      } catch (err) {
+        // `indeterminate` is also where a failed measurement lands, and the
+        // commonest cause — a sim that shut down or went unreachable — is
+        // exactly what makes this probe fail too, so this is the one route to
+        // the probe where it has already failed once. Fall back to the precheck
+        // like the non-injectable branch above, so a dead sim surfaces the
+        // structured init_failed guidance rather than a raw subprocess error.
+        const blocked = await precheckNativeDevtools(api, params.udid);
+        if (blocked) return blocked;
+        throw err;
+      }
+    } else {
+      appRunning = state !== "not_running";
+    }
     const envSetup = api.isEnvSetup();
 
     return {
@@ -148,6 +175,12 @@ Fails if the simulator server is not running for the given UDID.`,
       // can support no finer reading.
       requiresRestart: appRunning && (state === "stale_process" || state === "indeterminate"),
       state,
+      // The booleans cannot express "one restart, then stop" — the shape
+      // `indeterminate` needs, and the only shape ios-remote can ever report
+      // for a running app. Carry the same prose every other consumer of this
+      // measurement carries, so the escape does not depend on the agent having
+      // read this tool's description.
+      ...(state === "connected" ? {} : { message: buildAppStateMessage(params.bundleId, state) }),
       nextLaunchWillBeInjected: envSetup,
       injectable: true,
     };
