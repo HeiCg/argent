@@ -740,9 +740,43 @@ describe("materializeArtifacts durable destination", () => {
       { toolsUrl: "http://remote:3001", fetchImpl: fakeFetch({ evilsym: MP4 }) }
     );
 
-    // Nothing escaped into the real .git dir, and the durable write was refused.
+    // Nothing escaped into the real .git dir…
     expect(await readdir(join(projectRoot, ".git"))).not.toContain("pwned.mp4");
-    expect((result as { video: null }).video).toBeNull();
+    // …and refusing the destination did not cost the caller the artifact: it
+    // degrades to the disposable cache, which is outside the project entirely.
+    // Dropping it to null instead would make a pre-planted symlink — or any
+    // unwritable project — a way to blind every capture.
+    const video = (result as { video: string }).video;
+    expect(video).toEqual(expect.stringContaining(tmpdir()));
+    expect(video.startsWith(projectRoot)).toBe(false);
+    expect(await readFile(video)).toEqual(Buffer.from(MP4));
+  });
+
+  it("degrades to the cache when the durable directory cannot be written, keeping the file", async () => {
+    // The benign shape of the same refusal, and the common one: `.argent` (or
+    // `.argent/screenshots`) is occupied by a regular file, or the project is
+    // read-only. Nothing is wrong with the bytes, so the artifact must still
+    // arrive — the durable copy is an upgrade over the temp one, not a
+    // precondition for having one at all.
+    await mkdir(join(projectRoot, ".argent"), { recursive: true });
+    await writeFile(join(projectRoot, ".argent", "recordings"), Buffer.from("not a dir"));
+
+    const h: ArtifactHandle = {
+      [ARTIFACT_MARKER]: true,
+      id: "blocked",
+      filename: "clip.mp4",
+      mimeType: "video/mp4",
+      size: MP4.length,
+      saveDir: ".argent/recordings",
+    };
+    const { result } = await materializeArtifacts(
+      { video: h },
+      { toolsUrl: "http://remote:3001", fetchImpl: fakeFetch({ blocked: MP4 }) }
+    );
+
+    const video = (result as { video: string }).video;
+    expect(video).toEqual(expect.stringContaining(tmpdir()));
+    expect(await readFile(video)).toEqual(Buffer.from(MP4));
   });
 
   it("never overwrites an existing durable recording — lands the new file alongside", async () => {

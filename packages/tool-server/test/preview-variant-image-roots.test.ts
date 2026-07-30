@@ -1,94 +1,69 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { mkdtemp, mkdir, rm, writeFile, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, realpath } from "node:fs/promises";
 import { previewImageRoots } from "../src/preview";
 
 /**
  * The `/variant-image` route serves a variant's `previewImage` only when the
- * file resolves inside one of these roots — otherwise it 404s and the Argent
- * Lens renders "No preview". The Lens workflow's whole premise is handing a
- * freshly captured screenshot's path straight to `propose_variant`, and
- * `screenshot` saves that PNG durably under `.argent/screenshots/`, so those
- * directories have to be servable.
+ * file resolves inside one of these roots (or inside a `.argent/screenshots`
+ * directory, which the route admits by shape — see
+ * preview-variant-image-durable.test.ts). These are the scratch locations an
+ * agent drops an image into by hand.
  */
 function contains(roots: string[], file: string): boolean {
   return roots.some((root) => file === root || file.startsWith(root + sep));
 }
 
 describe("previewImageRoots", () => {
-  let projectRoot: string;
-  let home: string;
   let originalCwd: string;
-  let originalHome: string | undefined;
+  let outside: string;
 
   beforeEach(async () => {
-    projectRoot = await realpath(await mkdtemp(join(tmpdir(), "argent-proj-")));
-    await writeFile(join(projectRoot, "package.json"), "{}"); // the project marker
-    home = await realpath(await mkdtemp(join(tmpdir(), "argent-home-")));
     originalCwd = process.cwd();
-    originalHome = process.env.HOME;
-    process.env.HOME = home;
+    // Deliberately NOT under tmpdir: the OS temp dir is a root in its own
+    // right, so a cwd fixture placed there would be served whether or not cwd
+    // is a root, and the assertion below would hold against its own removal.
+    outside = await realpath(await mkdtemp(join(originalCwd, "test-variant-image-roots-")));
   });
 
   afterEach(async () => {
     process.chdir(originalCwd);
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    await rm(projectRoot, { recursive: true, force: true });
-    await rm(home, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   });
 
-  it("serves a durable screenshot captured from a subdirectory of the project", async () => {
-    // The failure this pins: cwd is `apps/mobile` but the screenshot is saved at
-    // the PROJECT root's `.argent/screenshots/`, which is not under cwd, tmpdir,
-    // or /tmp. Anchoring only on cwd 404s every Lens thumbnail in a monorepo.
-    const sub = join(projectRoot, "apps", "mobile");
-    await mkdir(sub, { recursive: true });
-    process.chdir(sub);
+  it("serves an image the agent left in the tool-server's working directory", async () => {
+    const work = join(outside, "work");
+    await mkdir(work, { recursive: true });
+    process.chdir(work);
 
-    const shot = join(projectRoot, ".argent", "screenshots", "screenshot-SIM-1.png");
-    expect(contains(previewImageRoots(), shot)).toBe(true);
+    expect(contains(previewImageRoots(), join(work, "shot.png"))).toBe(true);
   });
 
-  it("serves a durable screenshot saved under the global ~/.argent when outside a project", async () => {
-    const outside = await realpath(await mkdtemp(join(tmpdir(), "argent-noproj-")));
+  it("serves an image under the OS temp dir", async () => {
     process.chdir(outside);
-    try {
-      const shot = join(home, ".argent", "screenshots", "screenshot-SIM-1.png");
-      expect(contains(previewImageRoots(), shot)).toBe(true);
-    } finally {
-      process.chdir(originalCwd);
-      await rm(outside, { recursive: true, force: true });
-    }
+
+    expect(contains(previewImageRoots(), join(await realpath(tmpdir()), "shot.png"))).toBe(true);
   });
 
-  it("resolves the screenshots root even before the directory exists", async () => {
-    // The roots are computed once when the router is built — before any
-    // screenshot has been taken — so resolving them must not depend on the
-    // leaf directory already being on disk.
-    process.chdir(projectRoot);
-    const roots = previewImageRoots();
-    expect(roots).toContain(join(projectRoot, ".argent", "screenshots"));
+  it("lists `/tmp` alongside the per-user temp dir", async () => {
+    // On macOS `os.tmpdir()` is a per-user `/var/folders/…` path, so an agent
+    // writing to `/tmp` — a very common choice — lands outside it. (On Linux
+    // the two resolve to the same directory, so this only bites on macOS.)
+    process.chdir(outside);
+
+    expect(previewImageRoots()).toContain(await realpath("/tmp"));
   });
 
-  it("keeps the scratch roots agents already use", async () => {
-    process.chdir(projectRoot);
-    const roots = previewImageRoots();
-    expect(contains(roots, join(await realpath(tmpdir()), "shot.png"))).toBe(true);
-    expect(contains(roots, join(projectRoot, "shot.png"))).toBe(true);
-  });
+  it("does not admit the durable screenshots directory as a root", async () => {
+    // Durable screenshots are admitted by the shape of their own path, not by a
+    // root derived from this process's cwd — the tool-server is a shared daemon
+    // whose cwd belongs to whichever project spawned it, not to the client that
+    // saved the file. A root here would answer the wrong project's question.
+    const project = join(outside, "project");
+    await mkdir(project, { recursive: true });
+    process.chdir(project);
 
-  it("widens only as far as the screenshots directory itself", async () => {
-    // The roots added here name `.argent/screenshots`, never the `.argent` tree
-    // that also holds argent's config — asserted on the root list rather than by
-    // containment, because this suite's HOME and project both live under tmpdir,
-    // which is a root in its own right.
-    process.chdir(projectRoot);
-    const roots = previewImageRoots();
-    for (const base of [projectRoot, home]) {
-      expect(roots).toContain(join(base, ".argent", "screenshots"));
-      expect(roots).not.toContain(join(base, ".argent"));
-    }
+    expect(previewImageRoots()).not.toContain(join(project, ".argent", "screenshots"));
   });
 });

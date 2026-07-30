@@ -13,6 +13,7 @@ import {
   shouldAutoScreenshot,
   getAutoScreenshotDelayMs,
   autoScreenshotContext,
+  renderAutoScreenshot,
 } from "../src/auto-screenshot.js";
 import { toMcpContent } from "../src/content.js";
 import { ARTIFACT_MARKER, artifactsRoot, type ArtifactHandle } from "@argent/tools-client";
@@ -290,6 +291,16 @@ describe("autoScreenshotContext", () => {
     };
   }
 
+  // The same handle, but pointing at a real file on this host — what a
+  // co-located tool-server emits. Lets the render run with no fetch at all, so
+  // `renderAutoScreenshot` can be called exactly as mcp-server.ts calls it.
+  function coLocatedShotHandle(): ArtifactHandle {
+    const hostPath = path.join(cache, "backend-capture.png");
+    fs.writeFileSync(hostPath, PNG);
+    const st = fs.statSync(hostPath);
+    return { ...shotHandle(), hostPath, size: st.size, mtimeMs: st.mtimeMs };
+  }
+
   const fetchImpl = (async () => ({
     ok: true,
     arrayBuffer: async () => PNG.buffer.slice(PNG.byteOffset, PNG.byteOffset + PNG.byteLength),
@@ -312,6 +323,24 @@ describe("autoScreenshotContext", () => {
     expect(ctx.toolsUrl).toBe("http://remote:3001");
     expect(ctx.authToken).toBe("tok");
     expect(ctx.deviceId).toBe("SIM-1");
+  });
+
+  it("renders an auto-screenshot into the temp cache, leaving the project untouched", async () => {
+    // Driven through `renderAutoScreenshot`, the function `mcp-server.ts`
+    // actually calls — not through a context assembled here. A test that builds
+    // its own context proves the helper works and says nothing about whether
+    // the auto-screenshot path still uses it.
+    const blocks = await renderAutoScreenshot(
+      { image: coLocatedShotHandle() },
+      { toolsUrl: "http://remote:3001", udid: "SIM-1" }
+    );
+
+    expect(screenshotsDir()).toEqual([]);
+    const savedText = blocks.find((b) => b.type === "text");
+    expect(
+      savedText?.type === "text" && savedText.text.startsWith(`Saved: ${artifactsRoot()}`)
+    ).toBe(true);
+    expect(blocks.some((b) => b.type === "image")).toBe(true);
   });
 
   it("keeps an auto-screenshot in the temp cache, leaving the project untouched", async () => {

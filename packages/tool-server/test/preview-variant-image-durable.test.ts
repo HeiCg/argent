@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import { join } from "node:path";
-import { mkdtemp, mkdir, rm, writeFile, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, realpath, symlink } from "node:fs/promises";
 import type { Registry } from "@argent/registry";
 
 // /variant-image is a lens-only route behind the argent-lens flag; force it ON
@@ -60,6 +60,7 @@ describe("GET /variant-image — durable screenshots", () => {
     await writeFile(join(projectRoot, "package.json"), "{}"); // the project marker
     home = join(fixtures, "home");
     await mkdir(home, { recursive: true });
+    await mkdir(join(fixtures, "elsewhere-2"), { recursive: true });
     originalHome = process.env.HOME;
     process.env.HOME = home;
   });
@@ -107,6 +108,31 @@ describe("GET /variant-image — durable screenshots", () => {
     expect(Buffer.from(res.body as Buffer)).toEqual(PNG);
   });
 
+  it("serves a screenshot belonging to a project this tool-server was not started in", async () => {
+    // The tool-server is a machine-global daemon keyed by install, not project
+    // (`ensureToolsServer` reuses one that "may be healthy and serving another
+    // project's session"), so its cwd is whichever project spawned it. Deriving
+    // the durable directory from that cwd answers the wrong question: the
+    // client saved into ITS project. On main this could not bite, because the
+    // materialized path was always under tmpdir — an allowed root regardless.
+    const projectA = join(fixtures, "projectA");
+    const projectB = join(fixtures, "projectB");
+    for (const p of [projectA, projectB]) {
+      await mkdir(p, { recursive: true });
+      await writeFile(join(p, "package.json"), "{}");
+    }
+    process.chdir(projectA); // the daemon's cwd
+    const dir = join(projectB, ".argent", "screenshots"); // the client's project
+    await mkdir(dir, { recursive: true });
+    const shot = join(dir, "screenshot-SIM-1.png");
+    await writeFile(shot, PNG);
+
+    const res = await serveFrom(shot);
+
+    expect(res.status).toBe(200);
+    expect(Buffer.from(res.body as Buffer)).toEqual(PNG);
+  });
+
   it("still refuses an image outside every allowed root", async () => {
     // Containment is what stops the route serving arbitrary files; widening it
     // for screenshots must not have opened the rest of the tree.
@@ -118,5 +144,41 @@ describe("GET /variant-image — durable screenshots", () => {
     await writeFile(shot, PNG);
 
     expect((await serveFrom(shot)).status).toBe(404);
+  });
+
+  it("refuses a directory that merely resembles the durable one", async () => {
+    // Admitting by shape means the shape has to be exact. A sibling whose name
+    // starts with the allowed one, a directory ending in `.argent` that isn't
+    // it, and a subdirectory below the screenshots dir are all outside what
+    // `screenshot` writes — and each is a way a prefix-flavoured check leaks.
+    process.chdir(join(fixtures, "elsewhere-2"));
+    const cases = [
+      join(projectRoot, ".argent", "screenshots-evil", "x.png"),
+      join(projectRoot, "not.argent", "screenshots", "x.png"),
+      join(projectRoot, ".argent", "screenshots", "nested", "x.png"),
+      join(projectRoot, ".argent", "recordings", "x.png"),
+      join(projectRoot, ".argent", "flags.json.png"),
+    ];
+    for (const shot of cases) {
+      await mkdir(join(shot, ".."), { recursive: true });
+      await writeFile(shot, PNG);
+      expect({ shot, status: (await serveFrom(shot)).status }).toEqual({ shot, status: 404 });
+    }
+  });
+
+  it("refuses a symlink that borrows the durable directory's name", async () => {
+    // The check runs on the realpath, so planting `.argent/screenshots` as a
+    // link to somewhere else cannot lend that directory's privileges to the
+    // files inside it.
+    process.chdir(join(fixtures, "elsewhere-2"));
+    const secrets = join(fixtures, "secrets");
+    await mkdir(secrets, { recursive: true });
+    await writeFile(join(secrets, "id_rsa.png"), PNG);
+    await mkdir(join(projectRoot, ".argent"), { recursive: true });
+    await symlink(secrets, join(projectRoot, ".argent", "screenshots"));
+
+    const res = await serveFrom(join(projectRoot, ".argent", "screenshots", "id_rsa.png"));
+
+    expect(res.status).toBe(404);
   });
 });

@@ -7,7 +7,7 @@
  */
 
 import { isFlagEnabled, type FlagsPathOptions } from "@argent/configuration-core";
-import type { ContentContext } from "./content.js";
+import { toMcpContent, type ContentBlock, type ContentContext } from "./content.js";
 
 export const AUTO_SCREENSHOT_TOOLS = new Set([
   "gesture-tap",
@@ -138,6 +138,22 @@ export function autoScreenshotContext(opts: {
     deviceId: opts.udid,
     transient: true,
   };
+}
+
+/**
+ * Render the auto-screenshot's tool result into content blocks.
+ *
+ * The rendering is here rather than at the call site so the context above is
+ * the only one this path can be given: a context assembled beside the render
+ * would be a plain object literal in `mcp-server.ts`, where dropping
+ * `transient` costs nothing that any test can see, and the cost of dropping it
+ * is a PNG written into the user's project after every interaction.
+ */
+export function renderAutoScreenshot(
+  result: unknown,
+  opts: { toolsUrl: string; authToken?: string; udid: string }
+): Promise<ContentBlock[]> {
+  return toMcpContent(result, "image", autoScreenshotContext(opts));
 }
 
 export function getAutoScreenshotDelayMs(toolName: string): number {
