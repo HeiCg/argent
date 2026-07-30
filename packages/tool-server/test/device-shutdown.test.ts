@@ -106,9 +106,20 @@ describe("shutdownOwnedDevice (best-effort, swallows errors)", () => {
   it("leaves a physical iPhone alone at session teardown", async () => {
     // Lens tears down the devices it booted. A physical iPhone was never ours
     // to boot, so it is never ours to power off — and `simctl shutdown` could
-    // not do it anyway. Mirrors the physical-Android exclusion.
+    // not do it anyway. Mirrors the physical-Android exclusion below.
     resolveDeviceMock.mockReturnValue({ platform: "ios", kind: "device" });
     await shutdownOwnedDevice("00008120-000E6D0C0ABBA01E");
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves a physical Android phone alone at session teardown", async () => {
+    // The other half of the same rule, and the one that decides whether this
+    // function is scoped by kind at all: platform alone sends a phone serial to
+    // `adb -s <serial> emu kill`, and the failure is swallowed, so nothing here
+    // reports that teardown reached for a device Lens never booted.
+    resolveDeviceMock.mockReturnValue({ platform: "android", kind: "device" });
+    await shutdownOwnedDevice("R5CT30ABCDE");
+    expect(resolveAndroidBinaryMock).not.toHaveBeenCalled();
     expect(execFileMock).not.toHaveBeenCalled();
   });
 });

@@ -23,10 +23,12 @@ export async function shutdownOwnedDevice(id: string): Promise<void> {
     return;
   }
   const { platform } = device;
-  // `kind: "device"` on iOS is a physical iPhone: argent never booted it, so it
-  // is not ours to power off, and `simctl shutdown` only knows simulator UDIDs
-  // — same reason the Android arm below is scoped to emulators.
-  if (platform === "ios" && device.kind !== "device") {
+  // `kind: "device"` is a physical phone on either platform: argent never booted
+  // it, so it is not ours to power off, and neither backend could anyway —
+  // `simctl shutdown` only knows simulator UDIDs, and `adb emu kill` only
+  // emulator consoles. Same split `shutdownDevice` reports on below.
+  if (device.kind === "device") return;
+  if (platform === "ios") {
     await execFileAsync("xcrun", ["simctl", "shutdown", id]).catch(() => {});
   } else if (platform === "android") {
     // Resolve adb like every other android path (SDK fallback off-PATH — on
