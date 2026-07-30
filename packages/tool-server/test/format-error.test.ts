@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatErrorForAgent } from "../src/utils/format-error";
+import { formatErrorForAgent, subprocessOutputTail } from "../src/utils/format-error";
 
 describe("formatErrorForAgent", () => {
   it("returns the message for a plain error", () => {
@@ -29,5 +29,47 @@ describe("formatErrorForAgent", () => {
     const b = new Error("b", { cause: a });
     (a as Error & { cause?: unknown }).cause = b;
     expect(formatErrorForAgent(a)).toBe("a — caused by: b");
+  });
+});
+
+describe("subprocessOutputTail", () => {
+  it("keeps the last few non-empty lines, stderr before stdout", () => {
+    const err = Object.assign(new Error("Command failed"), {
+      stderr: "\n  ERROR: could not install  \n\n  The device is locked.  \n\n",
+      stdout: "",
+    });
+    expect(subprocessOutputTail(err)).toBe("ERROR: could not install | The device is locked.");
+  });
+
+  it("keeps at most the last four lines", () => {
+    const err = Object.assign(new Error("x"), {
+      stderr: Array.from({ length: 40 }, (_, i) => `line${i}`).join("\n"),
+    });
+    expect(subprocessOutputTail(err)).toBe("line36 | line37 | line38 | line39");
+  });
+
+  it("bounds the result, because the message goes into an agent's context", () => {
+    // A crash loop can emit unbounded output on a single line, which the
+    // last-four-lines trim alone does not cap.
+    const err = Object.assign(new Error("x"), { stderr: "y".repeat(50_000) });
+    const tail = subprocessOutputTail(err);
+    expect(tail.length).toBeLessThanOrEqual(401);
+    expect(tail.startsWith("…")).toBe(true);
+  });
+
+  it("answers empty for anything that carries no readable output, without throwing", () => {
+    // The callers append it only when non-empty, so every one of these degrades
+    // to the message they had before rather than to "undefined" or a crash —
+    // and a rejection is not always an Error with string stdio.
+    for (const value of [
+      undefined,
+      null,
+      "a string rejection",
+      new Error("no stdio"),
+      Object.assign(new Error("x"), { stderr: 42 }),
+      Object.assign(new Error("x"), { stderr: Buffer.from("bytes") }),
+    ]) {
+      expect(subprocessOutputTail(value)).toBe("");
+    }
   });
 });
