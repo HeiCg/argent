@@ -292,6 +292,27 @@ describe("android keyboard read-back — fault injection", () => {
     ]);
   });
 
+  it("repairs an insertion in the MIDDLE of the field, not just at the end", async () => {
+    // The cursor sat between "a" and "b" and one of three characters landed there.
+    // The undo is still a backspace count, because backspace deletes at the cursor
+    // and the cursor sits after whatever landed — verified on device (Pixel 6 /
+    // API 34): with the cursor inside "ab", injecting "XY" yields "aXYb" and two
+    // backspaces yield "ab". Nothing else here pins the mid-field case; a planner
+    // that assumed the insertion was always a suffix would delete the wrong chars.
+    const { registry } = registryServing([
+      hierarchy({ text: "ab" }), // before
+      hierarchy({ text: "aXb" }), // after: 1 of 3 chars landed, mid-field
+      hierarchy({ text: "aabcb" }), // after the retype: "a" + "abc" + "b"
+    ]);
+    const res = await type(registry, "abc");
+    expect(res).toEqual({ typed: "abc", keys: 3, verified: true });
+    expect(cmds()).toEqual([
+      "input text 'abc'",
+      "input keyevent 67", // exactly the ONE character that landed
+      "input text 'abc'",
+    ]);
+  });
+
   it("reports verified:false with a note when the repair does not fix it", async () => {
     const corrupt = hierarchy({ text: "XYabcdefgh" });
     const { registry } = registryServing([hierarchy({ text: "XY" }), corrupt, corrupt]);

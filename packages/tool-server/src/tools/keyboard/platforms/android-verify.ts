@@ -159,15 +159,18 @@ export function typedTextLanded(before: string, after: string, text: string): bo
 }
 
 /**
- * How many trailing characters to delete to undo a failed injection, or null
- * when no deletion can be proven safe — in which case the field is left exactly
- * as the injection left it and the caller reports the failure instead of
- * gambling with the user's content.
+ * How many characters to delete to undo a failed injection, or null when no
+ * deletion can be proven safe — in which case the field is left exactly as the
+ * injection left it and the caller reports the failure instead of gambling with
+ * the user's content.
  *
- * `input text` inserts at the cursor and advances it, so whatever landed sits
- * immediately before the cursor and N backspaces remove the last N characters.
- * The question is only how many of those are ours. Two independent proofs, the
- * conservative one first:
+ * `input text` inserts at the cursor and advances it, and backspace deletes at
+ * the cursor, so N backspaces remove exactly the N characters that landed —
+ * wherever in the field the cursor sat, not only at the end. Verified on device
+ * (Pixel 6 / API 34): with the cursor between the two characters of "ab",
+ * injecting "XY" gives "aXYb", and two backspaces give "ab" back. The question
+ * is therefore only how many of the characters present are ours. Two independent
+ * proofs, the conservative one first:
  *
  *  A. The field grew by `added` characters and `before` is recoverable from
  *     `after` by deleting one contiguous run of `added` characters (the common
