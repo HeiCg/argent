@@ -76,6 +76,14 @@ export const FAILURE_CODES = {
   SIMULATOR_SERVER_FACTORY_OPTIONS_MISSING: "SIMULATOR_SERVER_FACTORY_OPTIONS_MISSING",
   SIMULATOR_SERVER_DEVICE_ID_INVALID: "SIMULATOR_SERVER_DEVICE_ID_INVALID",
   SIMULATOR_SERVER_READY_EXITED: "SIMULATOR_SERVER_READY_EXITED",
+  /**
+   * The bundled simulator-server does not know the subcommand this device
+   * needs — the binary ships inside argent, so it predates the controller.
+   * Its own bucket because the fix is an argent upgrade, not a device or
+   * environment problem, and SIMULATOR_SERVER_READY_EXITED would otherwise
+   * pool it with genuine crashes.
+   */
+  SIMULATOR_SERVER_SUBCOMMAND_UNSUPPORTED: "SIMULATOR_SERVER_SUBCOMMAND_UNSUPPORTED",
   SIMULATOR_SERVER_READY_TIMEOUT: "SIMULATOR_SERVER_READY_TIMEOUT",
   SIMULATOR_SERVER_PROCESS_ERROR: "SIMULATOR_SERVER_PROCESS_ERROR",
   SIMULATOR_SERVER_TERMINATED: "SIMULATOR_SERVER_TERMINATED",

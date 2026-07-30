@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { httpScreenshot } from "../src/utils/simulator-client";
+import { FailureError } from "@argent/registry";
+import { httpAxTree, httpScreenshot } from "../src/utils/simulator-client";
 
 function fakeFetch(status: number, json: unknown) {
   return vi.fn(
@@ -102,5 +103,54 @@ describe("httpScreenshot", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("httpAxTree", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("raises the server's error message instead of reporting an empty screen", async () => {
+    // The empty-tree path is indistinguishable from a real read of a blank
+    // screen: `describe` would answer "0 elements — the screen may be off or
+    // locked" for what was actually an HTTP failure, i.e. success reported for
+    // a read that never happened.
+    vi.stubGlobal("fetch", fakeFetch(500, { error: "axAudit session not established" }));
+    await expect(httpAxTree(api)).rejects.toThrow(/axAudit session not established/);
+  });
+
+  it("raises on a 200 that carries { error }, like the screenshot sibling", async () => {
+    vi.stubGlobal("fetch", fakeFetch(200, { error: "device is locked" }));
+    await expect(httpAxTree(api)).rejects.toThrow(/device is locked/);
+  });
+
+  for (const [name, payload] of [
+    ["elements as an object", { elements: {} }],
+    ["elements as a string", { elements: "str" }],
+    ["a null element", { elements: [null] }],
+    ["a non-string caption", { elements: [{ caption: 42, id: "a" }] }],
+    ["a non-numeric screen width", { elements: [], screen: { w: "abc", h: 852 } }],
+  ] as const) {
+    it(`rejects ${name} with a classified failure, not a TypeError`, async () => {
+      // The adapter indexes `elements` and calls string methods on `caption`.
+      // Unvalidated, each of these reaches it and dies as a bare TypeError —
+      // a 500 with no error_code, which reads as an argent bug rather than a
+      // device that answered out of contract.
+      vi.stubGlobal("fetch", fakeFetch(200, payload));
+      await expect(httpAxTree(api)).rejects.toThrow(FailureError);
+      await expect(httpAxTree(api)).rejects.toThrow(/does not match the expected shape/);
+    });
+  }
+
+  it("passes a well-formed tree through, defaulting the optional fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      fakeFetch(200, { elements: [{ caption: "Wi-Fi, Button", id: "0x1" }], screen: { w: 393 } })
+    );
+    await expect(httpAxTree(api)).resolves.toEqual({
+      elements: [{ caption: "Wi-Fi, Button", id: "0x1" }],
+      screen: { w: 393 },
+    });
   });
 });

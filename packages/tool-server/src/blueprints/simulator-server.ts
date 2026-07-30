@@ -269,15 +269,32 @@ function spawnSimulatorServerProcess(
     });
 
     proc.on("exit", (code, signal) => {
-      const detail = stderrTail.trim().split("\n").slice(-4).join(" | ");
+      const detail = stderrTail
+        .trim()
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-4)
+        .join(" | ");
+      // A simulator-server that predates this controller rejects the subcommand
+      // at argument parsing. Surfacing only its "Unrecognized argument" reads as
+      // a crash, and the binary is bundled inside argent — so the user has no
+      // way to guess that upgrading argent is the fix. Say it, and bucket it
+      // apart from real crashes.
+      const unsupportedSubcommand = /unrecognized (?:argument|subcommand|command)/i.test(detail);
       settle(() =>
         reject(
           new FailureError(
             `simulator-server (${subcommand}) exited before becoming ready` +
               `${typeof code === "number" ? ` with code ${code}` : ""}.` +
-              (detail ? ` Last output: ${detail}` : ""),
+              (detail ? ` Last output: ${detail}` : "") +
+              (unsupportedSubcommand
+                ? ` The bundled simulator-server has no '${subcommand}' controller, which means it predates this feature. Upgrade argent to a version that ships it.`
+                : ""),
             {
-              error_code: FAILURE_CODES.SIMULATOR_SERVER_READY_EXITED,
+              error_code: unsupportedSubcommand
+                ? FAILURE_CODES.SIMULATOR_SERVER_SUBCOMMAND_UNSUPPORTED
+                : FAILURE_CODES.SIMULATOR_SERVER_READY_EXITED,
               failure_stage: "simulator_server_spawn_ready",
               failure_area: "tool_server",
               error_kind: "subprocess",

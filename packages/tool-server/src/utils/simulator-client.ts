@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { z } from "zod";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { SimulatorServerApi } from "../blueprints/simulator-server";
 import { toSimulatorNetworkError } from "./format-error";
@@ -216,6 +217,37 @@ export interface CoreDeviceAxTree {
 }
 
 /**
+ * Shape of the axAudit payload, checked before the adapter touches it.
+ *
+ * The adapter indexes into `elements` and calls string methods on `caption`,
+ * so a wire response that disagrees with the contract crashes it with a bare
+ * `TypeError` — a 500 with no `error_code`, which reads as an argent bug rather
+ * than a device talking out of contract. `?? []` guards only null/undefined,
+ * not a wrong type. `describe`'s other adapter validates its raw payload the
+ * same way (`parseNativeDescribeScreenResult`); passthrough so a sim-server
+ * that adds fields keeps working.
+ */
+const coreDeviceAxTreeSchema = z
+  .object({
+    elements: z
+      .array(
+        z
+          .object({
+            caption: z.string().optional(),
+            id: z.string().optional(),
+            rect: z.string().optional(),
+          })
+          .passthrough()
+      )
+      .optional(),
+    screen: z
+      .object({ w: z.number().finite().optional(), h: z.number().finite().optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+/**
  * Read a physical iPhone's on-screen accessibility tree (`describe`) via the
  * simulator-server's CoreDevice axAudit endpoint. The response shape matches the
  * describe adapter's input: elements in reading order, and geometry if a future
@@ -251,7 +283,30 @@ export async function httpAxTree(
     );
   }
 
-  return { elements: body.elements ?? [], screen: body.screen };
+  const parsed = coreDeviceAxTreeSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new FailureError(
+      `describe failed: the simulator-server returned an accessibility tree that does not match ` +
+        `the expected shape (${parsed.error.issues[0]?.path.join(".") || "root"}: ${
+          parsed.error.issues[0]?.message ?? "invalid"
+        }). This usually means the bundled simulator-server is a different version than this argent.`,
+      {
+        error_code: FAILURE_CODES.SIMULATOR_HTTP_ERROR_RESPONSE,
+        failure_stage: "simulator_axtree_http_response",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      }
+    );
+  }
+
+  return {
+    elements: (parsed.data.elements ?? []).map((e) => ({
+      caption: e.caption ?? "",
+      id: e.id ?? "",
+      ...(e.rect !== undefined ? { rect: e.rect } : {}),
+    })),
+    screen: parsed.data.screen,
+  };
 }
 
 export function getScreenshotScale(): number {

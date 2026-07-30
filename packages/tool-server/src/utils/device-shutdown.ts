@@ -23,9 +23,9 @@ export async function shutdownOwnedDevice(id: string): Promise<void> {
     return;
   }
   const { platform } = device;
-  // `kind: "device"` on iOS is a physical iPhone: it is not ours to power off,
-  // and `simctl shutdown` only knows simulator UDIDs — same reason the Android
-  // arm below is scoped to emulators.
+  // `kind: "device"` on iOS is a physical iPhone: argent never booted it, so it
+  // is not ours to power off, and `simctl shutdown` only knows simulator UDIDs
+  // — same reason the Android arm below is scoped to emulators.
   if (platform === "ios" && device.kind !== "device") {
     await execFileAsync("xcrun", ["simctl", "shutdown", id]).catch(() => {});
   } else if (platform === "android") {
@@ -74,9 +74,10 @@ export async function shutdownDevice(id: string): Promise<ShutdownResult> {
       await execFileAsync(adb, ["-s", id, "emu", "kill"]);
       return { ok: true };
     }
-    // A physical phone reaches here on either platform. Without the `kind`
-    // guard above, an iPhone would run `simctl shutdown <ECID-udid>` and the UI
-    // would show simctl's raw "Invalid device" instead of the real reason.
+    // A physical phone on either platform. This function is total over what
+    // `resolveDevice` can return, so it answers for a hardware udid even though
+    // the preview — its only caller — filters those out of the device list it
+    // validates against before ever calling here.
     if (device.kind === "device") {
       return {
         ok: false,
