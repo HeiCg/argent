@@ -131,8 +131,7 @@ describe("otel endpoint invariance", () => {
   });
 
   it("bounds each export so a stalled flush can't hold the event loop open", () => {
-    // The previous PostHog transport set fetchRetryCount:0 for the same reason. The
-    // OTel exporter retries connection failures with backoff, so the export timeout
+    // The exporter retries connection failures with backoff, so the export timeout
     // is the only cap on that loop; it is kept at/below the caller's drain budget
     // (index.ts SHORT_FLUSH_TIMEOUT_MS) so a stalled export can't outlive shutdown().
     getClient();

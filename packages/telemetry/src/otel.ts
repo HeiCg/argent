@@ -10,26 +10,29 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
  * Software Mansion's own collector; the endpoint and the authorization header
  * are passed to the exporter explicitly in code, and an explicit value wins over
  * the corresponding OTEL_EXPORTER_OTLP_* environment variable — the same
- * anti-exfiltration guarantee the previous PostHog transport enforced with its
- * fixed host. otel-endpoint-live.test.ts pins that precedence against the real
- * exporter, because otel-endpoint.test.ts mocks it and so cannot see the SDK
- * change its mind.
+ * anti-exfiltration guarantee a fixed ingestion host gives.
  *
- * The guarantee covers destination and credential, not the whole request:
- * OTEL_EXPORTER_OTLP_HEADERS still merges any header it names that the code
- * does not already set. Those ride along to this collector and nowhere else,
- * and setting them already requires control of the process environment.
+ * otel-endpoint-live.test.ts pins that precedence against the real exporter,
+ * because otel-endpoint.test.ts mocks it and so cannot see the SDK change its
+ * mind.
+ *
+ * The header channel is closed separately, in createExporter — an explicit
+ * value only wins for the keys the code sets, which would leave every other
+ * header the environment names riding along.
  */
 export const OTLP_LOGS_ENDPOINT = "https://otel.swmansion.com/v1/logs"; // TODO(release): confirm the production collector URL.
 
 /**
  * Build-time-injected ingest token (esbuild `define`, mirroring the
- * ARGENT_CLI_VERSION identifier in base-props.ts). It is substituted with a
- * string literal in the shipped bundle; unbundled source (tests / emergency-local
- * builds) leaves it undefined and falls back to "", which leaves the client
- * unconstructed and telemetry inert. A `globalThis.__ARGENT_OTEL_TOKEN_TEST`
- * member read is NOT used here: esbuild only rewrites the bare identifier, not
- * property accesses, so such a read would always be undefined.
+ * ARGENT_CLI_VERSION identifier in base-props.ts). Every bundle substitutes a
+ * string literal here — the release token, or "" when the build environment
+ * supplies none, which leaves the client unconstructed and telemetry inert.
+ * Unbundled source (tests, emergency-local builds) leaves the identifier
+ * undefined.
+ *
+ * It has to be this bare identifier: esbuild `define` rewrites identifiers, not
+ * property accesses, so a `globalThis.__ARGENT_OTEL_TOKEN_TEST`-shaped read
+ * could never receive the substitution.
  */
 declare const ARGENT_OTEL_INGEST_TOKEN: string | undefined;
 
@@ -39,9 +42,9 @@ const SERVICE_NAME = "argent";
 /** Logger instrumentation-scope name. */
 const LOGGER_NAME = "@argent/telemetry";
 
-// Batching parameters: queue up to 20 records and flush every 10s (mirroring the
-// previous PostHog client's flushAt/flushInterval). EXPORT_TIMEOUT_MS bounds each
-// export AND caps the OTLP exporter's built-in retry loop, which treats a
+// Batching parameters: queue up to 20 records and flush every 10s.
+// EXPORT_TIMEOUT_MS bounds each export AND caps the OTLP exporter's built-in
+// retry loop, which treats a
 // connection failure (ECONNREFUSED, timeout, DNS) as retryable and would otherwise
 // keep re-sending with backoff. It is deliberately kept at or below index.ts's
 // SHORT_FLUSH_TIMEOUT_MS drain budget so a stalled export to an unreachable/slow
@@ -69,11 +72,18 @@ interface ResolvedConfig {
   isUsable: boolean;
 }
 
+/**
+ * The build-time token wins over the `globalThis` seam, so the seam reaches only
+ * unbundled source — which is to say tests. Every bundle defines the identifier
+ * as a string literal (the release token, or ""), so nothing a shipped process
+ * can be made to set on `globalThis` swaps the credential argent sends under or
+ * silently switches its telemetry off.
+ */
 function readIngestToken(): string {
+  if (typeof ARGENT_OTEL_INGEST_TOKEN === "string") return ARGENT_OTEL_INGEST_TOKEN;
   const g = globalThis as { __ARGENT_OTEL_TOKEN_TEST?: unknown };
   const override = g.__ARGENT_OTEL_TOKEN_TEST;
   if (typeof override === "string") return override;
-  if (typeof ARGENT_OTEL_INGEST_TOKEN === "string") return ARGENT_OTEL_INGEST_TOKEN;
   return "";
 }
 
@@ -95,9 +105,9 @@ export interface TelemetryClient {
   shutdown(timeoutMs: number): Promise<void>;
 }
 
-// OTel attribute values may not be null/undefined (PostHog accepted null, and
-// e.g. `cloud_agent` is null on the common non-cloud path). Drop those keys —
-// absence is semantically identical to the prior explicit null.
+// OTel attribute values may not be null/undefined, and e.g. `cloud_agent` is
+// null on the common non-cloud path. Drop those keys — for every property here,
+// absence carries the same meaning an explicit null would.
 function toAttributes(record: EmitRecord): LogAttributes {
   const attributes: LogAttributes = {
     "distinct_id": record.distinctId,
@@ -110,12 +120,31 @@ function toAttributes(record: EmitRecord): LogAttributes {
   return attributes;
 }
 
-class OtelClient implements TelemetryClient {
-  private readonly provider: LoggerProvider;
-  private readonly logger: Logger;
+/**
+ * OTLP header environment variables, cleared while the exporter is built.
+ *
+ * The SDK merges these into every request, keeping any key the code does not
+ * set itself. Out in the world that variable holds the developer's OWN
+ * observability credential — `x-honeycomb-team`, a Dynatrace `Api-Token`,
+ * Grafana Cloud basic auth — so a machine that already runs OpenTelemetry would
+ * ship that third-party secret to this collector on every batch, without it
+ * ever passing the sanitizer. Argent's telemetry needs no caller-supplied
+ * header, so drop the whole channel rather than filter it.
+ *
+ * The exporter resolves its header set synchronously inside the constructor, so
+ * clearing the variables across that single call is enough, and no other code
+ * can observe the gap.
+ */
+const OTLP_HEADER_ENV_VARS = [
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+] as const;
 
-  constructor(config: ResolvedConfig) {
-    const exporter = new OTLPLogExporter({
+export function createExporter(config: ResolvedConfig): OTLPLogExporter {
+  const saved = OTLP_HEADER_ENV_VARS.map((name) => [name, process.env[name]] as const);
+  for (const name of OTLP_HEADER_ENV_VARS) delete process.env[name];
+  try {
+    return new OTLPLogExporter({
       url: config.endpoint,
       headers: { authorization: `Bearer ${config.token}` },
       timeoutMillis: EXPORT_TIMEOUT_MS,
@@ -129,6 +158,19 @@ class OtelClient implements TelemetryClient {
       // the request emits 'timeout', and the exporter's handler destroys it.
       httpAgentOptions: { timeout: EXPORT_TIMEOUT_MS },
     });
+  } finally {
+    for (const [name, value] of saved) {
+      if (value !== undefined) process.env[name] = value;
+    }
+  }
+}
+
+class OtelClient implements TelemetryClient {
+  private readonly provider: LoggerProvider;
+  private readonly logger: Logger;
+
+  constructor(config: ResolvedConfig) {
+    const exporter = createExporter(config);
     this.provider = new LoggerProvider({
       resource: resourceFromAttributes({ "service.name": SERVICE_NAME }),
       processors: [
@@ -155,8 +197,8 @@ class OtelClient implements TelemetryClient {
   async shutdown(_timeoutMs: number): Promise<void> {
     // LoggerProvider.shutdown() force-flushes the batch processor and then tears
     // it down. The overall time bound is enforced by the caller's Promise.race
-    // and by the processor's exportTimeoutMillis; the arg is kept for signature
-    // parity with the previous PostHog client.
+    // and by the processor's exportTimeoutMillis, so the argument is part of the
+    // TelemetryClient contract rather than something this implementation reads.
     await this.provider.shutdown();
   }
 }

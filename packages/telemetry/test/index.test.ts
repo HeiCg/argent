@@ -16,7 +16,7 @@ import {
   shutdown,
   track,
 } from "../src/index.js";
-import { resetClient } from "../src/otel.js";
+import { getClient, resetClient } from "../src/otel.js";
 import { _resetIdentityCacheForTest } from "../src/identity.js";
 import { _resetBasePropsCacheForTest } from "../src/base-props.js";
 import { scopeHome, snapshotEnv } from "./helpers.js";
@@ -25,8 +25,7 @@ import { configFilePath } from "../src/paths.js";
 // Mock the OpenTelemetry Logs SDK. Each constructed LoggerProvider exposes the
 // logger's `emit` and the provider's `shutdown` as spies so we can observe what
 // track()/shutdown() drive, plus the batch-processor and exporter config — all
-// without any network I/O. This is the OTel-transport analogue of the previous
-// posthog-node module mock.
+// without any network I/O.
 interface ProviderInstance {
   config: { resource: unknown; processors: unknown[] };
   emit: ReturnType<typeof vi.fn>;
@@ -403,5 +402,64 @@ describe("telemetry public surface", () => {
 
     expect(result.localIdRemoved).toBe(true);
     expect(status().hasAnonIdOnDisk).toBe(false);
+  });
+});
+
+describe("the log record that goes on the wire", () => {
+  const { tmp: _tmp } = scopeHome();
+
+  beforeEach(() => {
+    otelMock.providers.length = 0;
+    otelMock.processors.length = 0;
+    otelMock.exporters.length = 0;
+    resetClient();
+    _resetBasePropsCacheForTest();
+    _resetIdentityCacheForTest();
+    _resetConsentCacheForTest();
+    (globalThis as Record<string, unknown>).__ARGENT_OTEL_TOKEN_TEST = "otel_real";
+    init("tool_server");
+    markEnabled();
+  });
+
+  afterEach(() => {
+    delete (globalThis as Record<string, unknown>).__ARGENT_OTEL_TOKEN_TEST;
+    resetClient();
+    vi.restoreAllMocks();
+  });
+
+  it("routes properties through the sanitizer's allowlist", () => {
+    // `toolserver:start` allows no properties at all, so an absolute path handed
+    // to it must not survive. This is what pins track() to sanitize(): read the
+    // caller's props straight onto the record and the path ships verbatim.
+    track("toolserver:start", { cwd: "/Users/someone/private-project" } as never);
+
+    const attributes = attrsOf(otelMock.providers[0]!, 0);
+    expect(attributes).not.toHaveProperty("cwd");
+    expect(Object.values(attributes)).not.toContain("/Users/someone/private-project");
+  });
+
+  it("omits a null-valued property rather than sending an explicit null", () => {
+    // OTel rejects null attribute values, so toAttributes drops those keys.
+    const client = getClient()!;
+    client.emit({
+      distinctId: "d",
+      event: "toolserver:start",
+      properties: { kept: "yes", nulled: null, missing: undefined },
+    });
+
+    const attributes = attrsOf(otelMock.providers[0]!, 0);
+    expect(attributes.kept).toBe("yes");
+    expect("nulled" in attributes).toBe(false);
+    expect("missing" in attributes).toBe(false);
+  });
+
+  it("identifies the record by service.name resource and event.name attribute", () => {
+    track("toolserver:start", {});
+
+    const provider = otelMock.providers[0]!;
+    expect(
+      (provider.config.resource as { attributes: Record<string, unknown> }).attributes
+    ).toEqual({ "service.name": "argent" });
+    expect(attrsOf(provider, 0)["event.name"]).toBe("toolserver:start");
   });
 });

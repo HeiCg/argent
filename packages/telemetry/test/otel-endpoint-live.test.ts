@@ -1,23 +1,25 @@
 /**
- * The endpoint invariance that `otel.ts` relies on, proven against the REAL
- * OpenTelemetry exporter.
+ * What actually goes on the wire, proven against the REAL OpenTelemetry
+ * exporter rather than a mock of it.
  *
  * `otel-endpoint.test.ts` mocks `@opentelemetry/exporter-logs-otlp-http`, so it
  * can only show that `otel.ts` passes `url` and `headers` to the constructor —
- * it cannot show that the SDK honours them over `OTEL_EXPORTER_OTLP_*`. An SDK
- * upgrade that flipped that precedence would keep every assertion there green
- * while telemetry silently started going wherever an env var pointed.
+ * it cannot show what the SDK then does with `OTEL_EXPORTER_OTLP_*`. An SDK
+ * upgrade that changed that handling would keep every assertion there green
+ * while telemetry started going somewhere else, or carrying something extra.
  *
- * So this drives the actual exporter against two loopback servers: one standing
- * in for the hard-coded collector, one for what a hostile env var would name.
- * Which server receives the export is the answer. No network is involved.
+ * So this drives `createExporter` — the real function, including its env
+ * handling — against loopback servers: one standing in for the hard-coded
+ * collector, one for what a hostile env var would name. No network is involved.
+ * `resolveConfig()` is what pins the endpoint itself to the production URL, and
+ * `otel-endpoint.test.ts` covers that.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import http from "node:http";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SeverityNumber } from "@opentelemetry/api-logs";
+import { createExporter } from "../src/otel.js";
 
 interface Capture {
   server: http.Server;
@@ -69,18 +71,13 @@ afterEach(async () => {
   );
 });
 
-/** Emit one record through the same exporter/provider wiring `otel.ts` builds. */
-async function exportOneRecord(url: string, token: string): Promise<void> {
+/** Emit one record through the same provider wiring `OtelClient` builds. */
+async function exportOneRecord(endpoint: string, token: string): Promise<void> {
   const provider = new LoggerProvider({
     resource: resourceFromAttributes({ "service.name": "argent" }),
     processors: [
       new BatchLogRecordProcessor({
-        exporter: new OTLPLogExporter({
-          url,
-          headers: { authorization: `Bearer ${token}` },
-          timeoutMillis: 1_500,
-          httpAgentOptions: { timeout: 1_500 },
-        }),
+        exporter: createExporter({ endpoint, token, isUsable: true }),
         maxExportBatchSize: 20,
         scheduledDelayMillis: 10_000,
         exportTimeoutMillis: 1_500,
@@ -98,7 +95,7 @@ async function exportOneRecord(url: string, token: string): Promise<void> {
   await provider.shutdown();
 }
 
-describe("endpoint invariance against the real OTLP exporter", () => {
+describe("what reaches the collector, against the real OTLP exporter", () => {
   it("delivers to the url passed in code while every OTLP env var names another host", async () => {
     process.env.OTEL_EXPORTER_OTLP_ENDPOINT = hostile.url.replace("/v1/logs", "");
     process.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = hostile.url;
@@ -122,4 +119,34 @@ describe("endpoint invariance against the real OTLP exporter", () => {
     expect(code.requests).toHaveLength(1);
     expect(code.requests[0]!.headers.authorization).toBe("Bearer real-ingest-token");
   }, 15_000);
+
+  it("forwards no third-party header the environment names", async () => {
+    // A developer who already runs OpenTelemetry keeps their own vendor
+    // credential in exactly this variable. The SDK merges any key the code does
+    // not set, so without createExporter clearing it, that secret would ship to
+    // Software Mansion's collector on every batch.
+    process.env.OTEL_EXPORTER_OTLP_HEADERS = "x-honeycomb-team=hcaik_REAL_CUSTOMER_KEY";
+    process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS = "x-dt-api-token=dt0c01.LEAKED";
+
+    await exportOneRecord(code.url, "real-ingest-token");
+
+    expect(code.requests).toHaveLength(1);
+    const headers = code.requests[0]!.headers;
+    expect(headers["x-honeycomb-team"]).toBeUndefined();
+    expect(headers["x-dt-api-token"]).toBeUndefined();
+    expect(headers.authorization).toBe("Bearer real-ingest-token");
+  }, 15_000);
+
+  it("leaves the OTLP header environment as it found it", () => {
+    // Clearing the variables is a means, not a side effect to inflict on the
+    // rest of the process — anything else in this CLI that reads them later
+    // must still see what the user set.
+    process.env.OTEL_EXPORTER_OTLP_HEADERS = "x-vendor=keep-me";
+    delete process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS;
+
+    createExporter({ endpoint: code.url, token: "real-ingest-token", isUsable: true });
+
+    expect(process.env.OTEL_EXPORTER_OTLP_HEADERS).toBe("x-vendor=keep-me");
+    expect("OTEL_EXPORTER_OTLP_LOGS_HEADERS" in process.env).toBe(false);
+  });
 });
