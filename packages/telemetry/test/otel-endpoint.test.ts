@@ -147,7 +147,14 @@ describe("otel endpoint invariance", () => {
     // export deadline reaches, holding a short-lived command open for the OS
     // connect timeout (~75s on macOS) after shutdown() already resolved. The
     // agent's socket timeout is armed at socket CREATION, so it covers connect.
+    //
+    // keepAlive rides along because supplying httpAgentOptions replaces the
+    // agent the SDK would build, whose default is keepAlive: true — dropping it
+    // costs the long-lived tool-server a TCP+TLS handshake per 10s batch.
     getClient();
-    expect(otelMock.exporters[0]!.opts.httpAgentOptions).toEqual({ timeout: 1_500 });
+    expect(otelMock.exporters[0]!.opts.httpAgentOptions).toEqual({
+      timeout: 1_500,
+      keepAlive: true,
+    });
   });
 });

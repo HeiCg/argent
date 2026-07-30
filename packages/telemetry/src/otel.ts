@@ -3,6 +3,8 @@ import { SeverityNumber } from "@opentelemetry/api-logs";
 import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
+import { diag, DiagLogLevel } from "@opentelemetry/api";
+import { isDebugEnabled, emitDebugError } from "./debug.js";
 
 /**
  * Hard-coded OTLP/HTTP logs endpoint so env-var overrides cannot redirect
@@ -44,9 +46,8 @@ const LOGGER_NAME = "@argent/telemetry";
 
 // Batching parameters: queue up to 20 records and flush every 10s.
 // EXPORT_TIMEOUT_MS bounds each export AND caps the OTLP exporter's built-in
-// retry loop, which treats a
-// connection failure (ECONNREFUSED, timeout, DNS) as retryable and would otherwise
-// keep re-sending with backoff. It is deliberately kept at or below index.ts's
+// retry loop, which treats a connection failure (ECONNREFUSED, timeout, DNS) as
+// retryable and would otherwise keep re-sending with backoff. It is deliberately kept at or below index.ts's
 // SHORT_FLUSH_TIMEOUT_MS drain budget so a stalled export to an unreachable/slow
 // collector can't hold a short-lived command's process open past shutdown()'s
 // bounded drain: the exporter's in-flight socket and retry timer are the only
@@ -156,7 +157,13 @@ export function createExporter(config: ResolvedConfig): OTLPLogExporter {
       // after shutdown() has already resolved. The agent's socket timeout is
       // armed when the socket is CREATED, so it also covers connect: it fires,
       // the request emits 'timeout', and the exporter's handler destroys it.
-      httpAgentOptions: { timeout: EXPORT_TIMEOUT_MS },
+      //
+      // keepAlive is restated because supplying httpAgentOptions at all
+      // replaces the agent the SDK would otherwise build, and its default is
+      // keepAlive: true. Without it the long-lived tool-server pays a fresh
+      // TCP+TLS handshake for every 10s batch — measured as one socket per
+      // request against a loopback collector, versus one socket shared.
+      httpAgentOptions: { timeout: EXPORT_TIMEOUT_MS, keepAlive: true },
     });
   } finally {
     for (const [name, value] of saved) {
@@ -165,11 +172,43 @@ export function createExporter(config: ResolvedConfig): OTLPLogExporter {
   }
 }
 
+/**
+ * Route the SDK's own diagnostics into the debug channel, once per process.
+ *
+ * A failed export never reaches the caller: the batch processor hands each
+ * error to OpenTelemetry's global error handler, so `LoggerProvider.shutdown()`
+ * resolves just as happily for a 404, a rejected ingest token or a dead
+ * collector as for a delivered batch. Without this, ARGENT_TELEMETRY_DEBUG=1
+ * prints the payload argent meant to send and gives no way at all to find out
+ * whether it arrived.
+ *
+ * Installing a global logger is only acceptable because it is confined to the
+ * debug flag — a normal run leaves OpenTelemetry's diagnostics untouched, and
+ * so leaves any host application's own diag logger alone.
+ */
+let diagLoggerInstalled = false;
+
+function installDiagLogger(): void {
+  if (diagLoggerInstalled || !isDebugEnabled()) return;
+  diagLoggerInstalled = true;
+  diag.setLogger(
+    {
+      error: (message, ...args) => emitDebugError(`otel: ${message}`, args),
+      warn: (message, ...args) => emitDebugError(`otel: ${message}`, args),
+      info: () => {},
+      debug: () => {},
+      verbose: () => {},
+    },
+    DiagLogLevel.WARN
+  );
+}
+
 class OtelClient implements TelemetryClient {
   private readonly provider: LoggerProvider;
   private readonly logger: Logger;
 
   constructor(config: ResolvedConfig) {
+    installDiagLogger();
     const exporter = createExporter(config);
     this.provider = new LoggerProvider({
       resource: resourceFromAttributes({ "service.name": SERVICE_NAME }),

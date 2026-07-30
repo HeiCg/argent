@@ -7,6 +7,7 @@ import {
   resetClient,
   OTLP_LOGS_ENDPOINT,
   resolveConfig,
+  type TelemetryClient,
 } from "./otel.js";
 import { sanitize } from "./sanitize.js";
 import { getBaseProps, type Runtime } from "./base-props.js";
@@ -218,11 +219,38 @@ export function track<E extends EventName>(event: E, props: EventPropertyMap[E])
 }
 
 /**
+ * Slack between the export deadline and the race that abandons it.
+ *
+ * The exporter's own EXPORT_TIMEOUT_MS equals this budget, so a race armed at
+ * exactly timeoutMs fires the same instant the export would give up — the batch
+ * is always abandoned rather than allowed to finish failing. Every drain waits
+ * this much longer than the deadline it is bounding, so the inner one wins.
+ */
+const DRAIN_GRACE_MS = 250;
+
+/**
+ * Race a client drain against its budget, so no caller waits on the exporter
+ * indefinitely. Shared by shutdown() and markDisabled() so the two cannot drift
+ * apart on the grace period.
+ */
+async function raceDrain(client: TelemetryClient, timeoutMs: number): Promise<void> {
+  await Promise.race([
+    client.shutdown(timeoutMs),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs + DRAIN_GRACE_MS).unref()),
+  ]);
+}
+
+/**
  * Drain queued telemetry and reset the shared client.
  *
  * The OpenTelemetry batch log-record processor buffers events and exports them on
  * a timer. Call shutdown() at command boundaries so the buffered batch is
  * force-flushed and the exporter is torn down before the process exits.
+ *
+ * Resolving is not the same as the process being free to exit: the SDK's batch
+ * timer and retry backoff are ref'd, so an unreachable collector can hold the
+ * event loop a little past this race. Callers that must exit promptly should
+ * not treat this as a hard deadline.
  */
 export async function shutdown(timeoutMs = SHORT_FLUSH_TIMEOUT_MS): Promise<void> {
   const client = getConstructedClient();
@@ -231,10 +259,7 @@ export async function shutdown(timeoutMs = SHORT_FLUSH_TIMEOUT_MS): Promise<void
     return;
   }
   try {
-    await Promise.race([
-      client.shutdown(timeoutMs),
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs + 250).unref()),
-    ]);
+    await raceDrain(client, timeoutMs);
   } catch (err) {
     emitDebugError("shutdown failed", err);
   } finally {
@@ -259,10 +284,7 @@ export async function markDisabled(): Promise<void> {
     writeConsentFlag(false);
     if (client) {
       try {
-        await Promise.race([
-          client.shutdown(SHORT_FLUSH_TIMEOUT_MS),
-          new Promise<void>((resolve) => setTimeout(resolve, SHORT_FLUSH_TIMEOUT_MS).unref()),
-        ]);
+        await raceDrain(client, SHORT_FLUSH_TIMEOUT_MS);
       } catch {
         /* swallow */
       }

@@ -463,3 +463,59 @@ describe("the log record that goes on the wire", () => {
     expect(attrsOf(provider, 0)["event.name"]).toBe("toolserver:start");
   });
 });
+
+describe("drain budgets", () => {
+  const { tmp: _t } = scopeHome();
+
+  beforeEach(() => {
+    otelMock.providers.length = 0;
+    otelMock.processors.length = 0;
+    otelMock.exporters.length = 0;
+    resetClient();
+    _resetBasePropsCacheForTest();
+    _resetIdentityCacheForTest();
+    _resetConsentCacheForTest();
+    (globalThis as Record<string, unknown>).__ARGENT_OTEL_TOKEN_TEST = "otel_real";
+    init("tool_server");
+    markEnabled();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete (globalThis as Record<string, unknown>).__ARGENT_OTEL_TOKEN_TEST;
+    resetClient();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Both drains race the client against a timer. The timer has to sit strictly
+   * later than the exporter's own export deadline (EXPORT_TIMEOUT_MS, equal to
+   * this budget), or it fires at the same instant and the batch is abandoned
+   * rather than given the chance to finish failing.
+   */
+  async function assertRacedWithGrace(drain: () => Promise<unknown>): Promise<void> {
+    vi.useFakeTimers();
+    track("toolserver:start", {});
+    otelMock.providers[0]!.shutdown.mockImplementation(() => new Promise(() => {}));
+
+    let settled = false;
+    const pending = drain().then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(settled, "resolved at the export deadline, leaving no grace").toBe(false);
+
+    await vi.advanceTimersByTimeAsync(250);
+    await pending;
+    expect(settled).toBe(true);
+  }
+
+  it("bounds shutdown() so a wedged exporter cannot stall a command", async () => {
+    await assertRacedWithGrace(() => shutdown());
+  });
+
+  it("bounds markDisabled()'s drain on the same budget as shutdown()", async () => {
+    await assertRacedWithGrace(() => markDisabled());
+  });
+});
