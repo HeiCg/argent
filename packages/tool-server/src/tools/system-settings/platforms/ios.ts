@@ -67,15 +67,19 @@ function throwIosSettingError(
   err: unknown
 ): never {
   const detail = err instanceof Error ? err.message : String(err);
-  // `simctl ui` / `simctl spawn` require a booted simulator; its "Unable to
-  // lookup in current state: Shutdown" doesn't tell an agent what to do about it.
-  const shutdownHint = /current state:\s*shutdown/i.test(detail)
+  // `simctl ui` and `simctl spawn` both require a booted simulator but word the
+  // refusal differently — `ui` answers "Unable to lookup in current state:
+  // Shutdown", `spawn` "Process spawn via launchd failed because device is not
+  // booted." Neither tells an agent what to do about it, so match both.
+  const shutdownHint = /current state:\s*shutdown|not booted/i.test(detail)
     ? " The simulator must be booted first — use boot-device."
     : "";
-  // Some runtimes don't model a given setting (e.g. increase_contrast on an
-  // older iOS runtime), which simctl reports as `unsupported`.
+  // A `simctl ui` option the runtime doesn't model refuses the argument rather
+  // than naming the option: `content_size` and `increase_contrast` answer
+  // "Invalid argument". Central validation already pinned `value` to the
+  // setting's own enum, so a refusal that reaches here is about the runtime.
   const unsupportedHint =
-    !shutdownHint && /unsupported/i.test(detail)
+    !shutdownHint && /unsupported|invalid argument/i.test(detail)
       ? ` The '${setting}' setting isn't supported by this simulator's iOS runtime; try a newer runtime.`
       : "";
   throw new FailureError(
@@ -118,12 +122,23 @@ export const iosImpl: PlatformImpl<
     const mechanism = iosMechanism(setting, value);
 
     if (mechanism.via === "simctl-ui") {
+      let stderr = "";
       try {
-        await execFileAsync("xcrun", ["simctl", "ui", udid, mechanism.option, mechanism.arg], {
-          timeout: 30_000,
-        });
+        ({ stderr } = await execFileAsync(
+          "xcrun",
+          ["simctl", "ui", udid, mechanism.option, mechanism.arg],
+          { timeout: 30_000 }
+        ));
       } catch (err) {
         throwIosSettingError(setting, value, udid, err);
+      }
+      // Applying an option is silent, but only `appearance` also exits non-zero
+      // when it refuses one: `content_size` and `increase_contrast` print
+      // "Invalid argument" on stderr and still exit 0, which is what a runtime
+      // that doesn't model the option produces. Trusting the exit code alone
+      // would report `applied` for a setting that never changed.
+      if (stderr.trim()) {
+        throwIosSettingError(setting, value, udid, new Error(stderr.trim()));
       }
       return { setting, value, applied: `${mechanism.option}=${mechanism.arg}` };
     }

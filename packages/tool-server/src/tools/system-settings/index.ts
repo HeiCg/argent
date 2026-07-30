@@ -39,6 +39,10 @@ const capability: ToolCapability = {
   // `simctl ui` edits the simulator's UI settings — physical iPhones have no
   // host-side equivalent, so no `device: true` on apple.
   apple: { simulator: true },
+  // No `appleRemote`, unlike the sibling settings-permissions: sim-remote
+  // forwards a fixed set of simctl verbs and `ui` is not among them, so three
+  // of the five iOS settings have no remote path. Claiming the capability would
+  // accept `appearance` on a remote sim and then fail inside the handler.
   // `adb shell cmd uimode` / `settings put` work on emulators and real Android
   // devices alike.
   android: { emulator: true, device: true, unknown: true },

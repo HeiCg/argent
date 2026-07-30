@@ -56,6 +56,18 @@ function execFileFails(message: string): void {
   );
 }
 
+// How `simctl ui` refuses an argument for `content_size` / `increase_contrast`:
+// the message goes to stderr and the exit code stays 0. Verified against
+// `xcrun simctl ui <udid> content_size gigantic` on iOS 18.6 (stderr "Invalid
+// argument", exit 0); `appearance` is the only option that also exits non-zero.
+function execFileSucceedsWithStderr(message: string): void {
+  execFileMock.mockImplementation(
+    (_cmd: string, _args: string[], _opts: unknown, cb: (err: unknown, out?: unknown) => void) => {
+      cb(null, { stdout: "", stderr: message });
+    }
+  );
+}
+
 beforeEach(() => {
   execFileMock.mockReset();
   mockAdbShell.mockReset();
@@ -320,6 +332,42 @@ describe("system-settings iOS branch", () => {
     await expect(
       iosImpl.handler({}, params({ setting: "increase-contrast", value: "on" }), IOS_DEVICE)
     ).rejects.toThrow(/isn't supported by this simulator's iOS runtime/);
+  });
+
+  it("a `simctl ui` option refused on stderr fails, even though simctl exits 0", async () => {
+    // The whole point of reading stderr: `content_size` and `increase_contrast`
+    // report a refused argument and still exit 0, so an exit-code-only check
+    // answers `applied` for a setting the runtime never changed.
+    execFileSucceedsWithStderr("Invalid argument");
+    const rejection = expect(
+      iosImpl.handler({}, params({ setting: "text-size", value: "large" }), IOS_DEVICE)
+    ).rejects;
+    await rejection.toSatisfy(failsWith(FAILURE_CODES.IOS_SYSTEM_SETTING_FAILED));
+    await rejection.toThrow(/isn't supported by this simulator's iOS runtime/);
+  });
+
+  it("keeps applying an option whose stderr is only whitespace", async () => {
+    execFileSucceedsWithStderr("\n");
+    const result = await iosImpl.handler(
+      {},
+      params({ setting: "appearance", value: "light" }),
+      IOS_DEVICE
+    );
+    expect(result.applied).toBe("appearance=light");
+  });
+
+  it("the boot-device hint covers `simctl spawn`'s wording, not just `simctl ui`'s", async () => {
+    // `reduce-motion` / `invert-colors` go through `simctl spawn`, which says
+    // "device is not booted" where `simctl ui` says "current state: Shutdown".
+    execFileFails(
+      "An error was encountered processing the command (domain=com.apple.CoreSimulator.SimError, code=405):\n" +
+        "Process spawn via launchd failed because device is not booted."
+    );
+    const rejection = expect(
+      iosImpl.handler({}, params({ setting: "reduce-motion", value: "on" }), IOS_DEVICE)
+    ).rejects;
+    await rejection.toSatisfy(failsWith(FAILURE_CODES.IOS_SYSTEM_SETTING_FAILED));
+    await rejection.toThrow(/must be booted first — use boot-device/);
   });
 
   it("other simctl failures surface as IOS_SYSTEM_SETTING_FAILED without a spurious hint", async () => {
