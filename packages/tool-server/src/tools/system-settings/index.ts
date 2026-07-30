@@ -94,7 +94,7 @@ Settings and their values:
 - \`text-size\`: one of the 12 Dynamic Type categories from \`extra-small\` to \`accessibility-extra-extra-extra-large\` (\`large\` is the default).
 - \`increase-contrast\`: \`on\` | \`off\` — accessibility high-contrast mode.
 - \`reduce-motion\`: \`on\` | \`off\` — reduce/disable UI animations.
-- \`invert-colors\`: \`on\` | \`off\` — invert the display colors.
+- \`invert-colors\`: \`on\` | \`off\` — invert the display colors. The capture path skips the display-level color transform, so \`screenshot\` comes back in the original colors on both platforms even while the device is inverted — don't read one back to confirm this setting.
 - \`wifi\`, \`cellular\`, \`airplane-mode\`, \`location\`, \`auto-rotate\`: \`on\` | \`off\` — Android only.
 Platforms:
 - iOS simulator supports the first five (display / accessibility): \`appearance\`, \`text-size\`, and \`increase-contrast\` via \`simctl ui\`; \`reduce-motion\` and \`invert-colors\` via the accessibility preferences domain. The simulator must be booted. A setting a given iOS runtime doesn't model returns an unsupported error, and the five Android-only settings are rejected on iOS.
