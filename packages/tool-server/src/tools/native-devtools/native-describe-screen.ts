@@ -55,7 +55,7 @@ with backend migration work, but the public describe contract is still separate.
 
 Useful for evaluating or debugging the lower-level native data that powers the public describe tool.
 
-If status is restart_required: call restart-app then retry.`,
+If status is restart_required: call restart-app then retry. If it still reports restart_required after that, the devtools service is stale — restart the tool-server rather than the app again.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

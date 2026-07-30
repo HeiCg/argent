@@ -72,7 +72,7 @@ so it answers "what is visually here?" rather than "what would receive the touch
 IMPORTANT: x and y are raw iOS window coordinates in points, NOT normalized [0,1]
 simulator tap coordinates.
 
-If status is restart_required: call restart-app then retry.`,
+If status is restart_required: call restart-app then retry. If it still reports restart_required after that, the devtools service is stale — restart the tool-server rather than the app again.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

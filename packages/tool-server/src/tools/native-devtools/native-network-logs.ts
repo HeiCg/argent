@@ -33,7 +33,7 @@ export const nativeNetworkLogsTool: ToolDefinition<Params, Result> = {
   description: `Retrieve network requests captured at the native NSURLProtocol level. 
 Unlike the JS-level network inspector (view-network-logs), this captures ALL network traffic from the app including native modules, Swift/Objective-C networking, and background transfers that bypass JS fetch. 
 Use when you need to inspect native-level HTTP traffic that is invisible to JS fetch interception. 
-Returns { status, count, events } where each event contains URL, method, status code, headers, and timing. Returns { status: "restart_required" } if the dylib is not injected - if this happens, call "restart-app" then retry. 
+Returns { status, count, events } where each event contains URL, method, status code, headers, and timing. Returns { status: "restart_required" } if the dylib is not injected - if this happens, call "restart-app" then retry; if it still reports restart_required, restart the tool-server rather than the app again. 
 Fails if native devtools are not connected or the app is not running.`,
   zodSchema,
   services: (params) => ({

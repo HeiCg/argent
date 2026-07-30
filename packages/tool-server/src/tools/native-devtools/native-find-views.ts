@@ -49,7 +49,7 @@ export const nativeFindViewsTool: ToolDefinition<Params, Result> = {
 Use when you need to locate a specific view by its properties without dumping the entire hierarchy.
 Returns { status: "ok", matches } with matching views including their frames, properties, optional ancestors, and optional children. Much more targeted than native-full-hierarchy.
 At least one of className, identifier, label, tag, or nativeID must be provided.
-Fails if native devtools are not connected, the app is not running, or status is restart_required (call restart-app then retry).`,
+Fails if native devtools are not connected, the app is not running, or status is restart_required — call restart-app then retry, and if it still reports restart_required after that, restart the tool-server rather than the app again.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

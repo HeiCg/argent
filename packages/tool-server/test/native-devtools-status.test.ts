@@ -576,3 +576,27 @@ describe("precheckNativeDevtools restart guidance", () => {
     expect(message).toContain("do not keep restarting the app");
   });
 });
+
+// The runtime message is only half the guidance an agent sees: the tool
+// descriptions are what it reads before ever calling. While those said only
+// "call restart-app then retry", they rebuilt the same loop the message now
+// breaks — so every native-* tool that mentions restart_required has to carry
+// the escalation too.
+describe("native-* tool descriptions name the way out of the restart loop", () => {
+  const tools = [
+    nativeDescribeScreenTool,
+    nativeFindViewsTool,
+    nativeViewAtPointTool,
+    nativeUserInteractableViewAtPointTool,
+    nativeNetworkLogsTool,
+  ];
+
+  it("tells the agent to stop restarting the app when it has not helped", () => {
+    for (const tool of tools) {
+      expect(tool.description, `${tool.id} must mention restart-app`).toContain("restart-app");
+      expect(tool.description, `${tool.id} must escalate to the tool-server`).toMatch(
+        /restart the tool-server/
+      );
+    }
+  });
+});
