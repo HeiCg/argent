@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { stripHangTimestamp, isKeyframe } from "../src/tools/screen-recording/moq-video-stream";
+import {
+  stripHangTimestamp,
+  isKeyframe,
+  trimToRecentGop,
+} from "../src/tools/screen-recording/moq-video-stream";
+import { createAnnexbWriter } from "../src/tools/screen-recording/moq-capture";
 
 // A minimal Annex-B access unit: 4-byte start code + one NAL of the given type.
 function annexb(nalType: number, startCode3 = false): Buffer {
@@ -68,5 +73,104 @@ describe("isKeyframe", () => {
     const pps = annexb(8);
     const sps = annexb(7);
     expect(isKeyframe(Buffer.concat([pps, sps]))).toBe(true);
+  });
+});
+
+describe("trimToRecentGop", () => {
+  const f = (bytes: number, keyframe: boolean) => ({
+    annexb: Buffer.alloc(bytes),
+    keyframe,
+  });
+
+  it("leaves a buffer that fits untouched", () => {
+    const pending = [f(10, true), f(10, false)];
+    expect(trimToRecentGop(pending, 20, 100)).toBe(20);
+    expect(pending).toHaveLength(2);
+  });
+
+  it("drops to the most recent keyframe when over the cap", () => {
+    // Two GOPs buffered; only the second survives, and it still leads with a
+    // keyframe so whatever replays it can be decoded.
+    const pending = [f(40, true), f(10, false), f(30, true), f(10, false)];
+    expect(trimToRecentGop(pending, 90, 50)).toBe(40);
+    expect(pending).toHaveLength(2);
+    expect(pending[0]!.keyframe).toBe(true);
+    expect(pending[0]!.annexb).toHaveLength(30);
+  });
+
+  it("never trims to a non-keyframe, even when that means staying over the cap", () => {
+    // One GOP. Dropping its head would leave a P-frame first, which references
+    // pictures that are no longer there — worse than holding the memory.
+    const pending = [f(60, true), f(20, false), f(20, false)];
+    expect(trimToRecentGop(pending, 100, 50)).toBe(100);
+    expect(pending).toHaveLength(3);
+    expect(pending[0]!.keyframe).toBe(true);
+  });
+
+  it("keeps the newest GOP when several are over the cap", () => {
+    const pending = [f(30, true), f(30, true), f(30, true)];
+    expect(trimToRecentGop(pending, 90, 50)).toBe(30);
+    expect(pending).toHaveLength(1);
+  });
+});
+
+describe("createAnnexbWriter", () => {
+  function harness(opts: { max: number }) {
+    const written: Buffer[] = [];
+    let buffered = 0;
+    const write = createAnnexbWriter({
+      isWritable: () => true,
+      bufferedBytes: () => buffered,
+      write: (b) => written.push(b),
+      maxBufferedBytes: opts.max,
+    });
+    return {
+      written,
+      stall: (bytes: number) => {
+        buffered = bytes;
+      },
+      write,
+    };
+  }
+
+  const P = (n: number) => ({ buf: Buffer.from([n]), keyframe: false });
+  const K = (n: number) => ({ buf: Buffer.from([n]), keyframe: true });
+
+  it("writes while ffmpeg keeps up", () => {
+    const h = harness({ max: 100 });
+    expect(h.write(K(1).buf, true)).toBe(true);
+    expect(h.write(P(2).buf, false)).toBe(true);
+    expect(h.written).toHaveLength(2);
+  });
+
+  it("resumes only at a keyframe after a back-pressure drop", () => {
+    // The defect this pins: resuming at the next P-frame feeds the decoder a
+    // unit whose references were dropped, so everything up to the next keyframe
+    // decodes as garbage. Writing JPEGs, resuming immediately is correct — which
+    // is why borrowing the MJPEG pump's rule wholesale is wrong here.
+    const h = harness({ max: 100 });
+    expect(h.write(K(1).buf, true)).toBe(true);
+
+    h.stall(200);
+    expect(h.write(P(2).buf, false)).toBe(false);
+
+    h.stall(0);
+    expect(h.write(P(3).buf, false)).toBe(false);
+    expect(h.write(P(4).buf, false)).toBe(false);
+    expect(h.write(K(5).buf, true)).toBe(true);
+    expect(h.write(P(6).buf, false)).toBe(true);
+
+    expect(h.written.map((b) => b[0])).toEqual([1, 5, 6]);
+  });
+
+  it("does not write when the pipe is gone", () => {
+    const written: Buffer[] = [];
+    const write = createAnnexbWriter({
+      isWritable: () => false,
+      bufferedBytes: () => 0,
+      write: (b) => written.push(b),
+    });
+    expect(write(Buffer.from([1]), true)).toBe(false);
+    expect(written).toHaveLength(0);
   });
 });

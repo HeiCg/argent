@@ -53,6 +53,41 @@ export interface StartMoqCaptureParams {
   showTouchesRequested: boolean;
 }
 
+/**
+ * Feed Annex-B access units to ffmpeg under back-pressure, returning whether the
+ * unit was written.
+ *
+ * Never queue in Node: if ffmpeg is behind, stop writing until it drains, as the
+ * MJPEG pump does. What cannot be borrowed from that pump is how to resume.
+ * JPEG frames are independent, so it simply writes the next one. An H.264 access
+ * unit is not: every following P-frame is coded against the units before it, so
+ * resuming mid-GOP hands the decoder references it never received and the output
+ * stays broken until the next keyframe. Skip forward to that boundary instead —
+ * a lost second of video in exchange for a stream that decodes.
+ */
+export function createAnnexbWriter(io: {
+  isWritable: () => boolean;
+  bufferedBytes: () => number;
+  write: (annexb: Buffer) => void;
+  maxBufferedBytes?: number;
+}): (annexb: Buffer, keyframe: boolean) => boolean {
+  const max = io.maxBufferedBytes ?? MAX_BUFFERED_BYTES;
+  let resyncing = false;
+  return (annexb: Buffer, keyframe: boolean): boolean => {
+    if (!io.isWritable()) return false;
+    if (io.bufferedBytes() > max) {
+      resyncing = true;
+      return false;
+    }
+    if (resyncing) {
+      if (!keyframe) return false;
+      resyncing = false;
+    }
+    io.write(annexb);
+    return true;
+  };
+}
+
 /** ffprobe path derived from the resolved ffmpeg path (they ship together). */
 function ffprobeFor(ffmpeg: string): string {
   if (ffmpeg === "ffmpeg") return "ffprobe";
@@ -257,15 +292,15 @@ async function startMoqCaptureLocked(
   api.timeLimitSeconds = params.timeLimitSeconds;
   registerActiveScreenRecording(api.deviceId, api.wallClockStartMs, params.timeLimitSeconds);
 
-  // Push frames as they arrive (replaying any buffered before this attaches, so
-  // the leading keyframe is fed). Drop a write if ffmpeg is behind rather than
-  // buffering in Node — matching the MJPEG pump's back-pressure rule.
-  stream.onFrame((annexb) => {
-    const stdin = child.stdin;
-    if (!stdin || !stdin.writable) return;
-    if (stdin.writableLength > MAX_BUFFERED_BYTES) return;
-    stdin.write(annexb);
-    api.framesWritten++;
+  // Push frames as they arrive, replaying any buffered before this attaches so
+  // the leading keyframe is fed.
+  const writeFrame = createAnnexbWriter({
+    isWritable: () => Boolean(child.stdin?.writable),
+    bufferedBytes: () => child.stdin?.writableLength ?? 0,
+    write: (annexb) => child.stdin!.write(annexb),
+  });
+  stream.onFrame((annexb, keyframe) => {
+    if (writeFrame(annexb, keyframe)) api.framesWritten++;
   });
 
   superviseCapture(api, child, params.timeLimitSeconds);

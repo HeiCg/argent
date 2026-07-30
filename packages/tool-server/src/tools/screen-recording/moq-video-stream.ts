@@ -22,6 +22,14 @@ import { moqInfo, type MoqInfo } from "../../utils/sim-remote";
 const NAL_SPS = 7;
 const NAL_IDR = 5;
 
+/**
+ * Cap on frames held for a consumer that has not attached yet. The window is
+ * short in practice — the capture code probes dimensions and starts ffmpeg —
+ * but it is driven by how fast the remote screen draws, not by anything this
+ * module controls, so it needs a bound.
+ */
+const MAX_PENDING_BYTES = 16 * 1024 * 1024;
+
 export interface MoqVideoStream {
   /** Frames seen since connect — diagnostics for "the device never drew". */
   readonly frameCount: number;
@@ -87,6 +95,39 @@ export function isKeyframe(annexb: Buffer): boolean {
 }
 
 /**
+ * Drop whole GOPs off the front of `pending` until it fits `maxBytes`, mutating
+ * it in place and returning the retained byte count.
+ *
+ * Frames pile up here only while no consumer has attached, but how fast they
+ * arrive is the remote screen's business, not this module's, so the pile needs
+ * a bound. Trimming has to land on a keyframe: whatever is replayed first is
+ * what ffmpeg decodes from, and a P-frame references pictures that would no
+ * longer be there. Falling back to the most recent complete GOP costs the
+ * earliest seconds of the recording and keeps the rest decodable.
+ *
+ * A buffer holding a single GOP has nothing droppable and is left alone — that
+ * takes one GOP over the cap, well past what a phone screen produces at CRF 20.
+ */
+export function trimToRecentGop(
+  pending: Array<{ annexb: Buffer; keyframe: boolean }>,
+  bytes: number,
+  maxBytes: number
+): number {
+  if (bytes <= maxBytes) return bytes;
+  let lastKeyframe = -1;
+  for (let i = pending.length - 1; i > 0; i--) {
+    if (pending[i]!.keyframe) {
+      lastKeyframe = i;
+      break;
+    }
+  }
+  if (lastKeyframe <= 0) return bytes;
+  let retained = bytes;
+  for (const dropped of pending.splice(0, lastKeyframe)) retained -= dropped.annexb.length;
+  return retained;
+}
+
+/**
  * Open a MoQ video stream to the `sim-remote` device `udid`, resolving its MoQ
  * endpoint (url / cert fingerprint / lease token) via `sim-remote moq-info`.
  */
@@ -149,9 +190,15 @@ export async function openMoqVideoStreamFromInfo(
   const buffered: Array<{ annexb: Buffer; keyframe: boolean }> = [];
   let seenKeyframe = false;
 
+  let bufferedBytes = 0;
+
   const deliver = (annexb: Buffer, keyframe: boolean): void => {
-    if (consumer) consumer(annexb, keyframe);
-    else buffered.push({ annexb, keyframe });
+    if (consumer) {
+      consumer(annexb, keyframe);
+      return;
+    }
+    buffered.push({ annexb, keyframe });
+    bufferedBytes = trimToRecentGop(buffered, bufferedBytes + annexb.length, MAX_PENDING_BYTES);
   };
 
   // Read loop: pull frames until the track closes or the session errors.
