@@ -5989,9 +5989,21 @@
       // poll (the crawl mutates the graph under us; rebuilding the DOM every
       // tick would drop in-flight hovers and thumbnail loads). Layout is a
       // one-shot synchronous settle computed ONLY when the graph gains
-      // nodes/edges; a string-hash PRNG of the node id seeds new nodes so the
-      // same graph → identical coords, and nodes present through one structural
-      // revision FREEZE — the skeleton never drifts, so nothing ever jitters.
+      // nodes/edges; a string-hash PRNG of the node id (never Math.random, never
+      // a clock) seeds new nodes, and nodes present through one structural
+      // revision FREEZE, so the skeleton is pinned and there is no live
+      // per-frame physics — an unchanged graph is not re-solved at all, so the
+      // view never jitters between polls.
+      //
+      // The determinism is per-SEQUENCE, not per-graph: positions are a function
+      // of the order and grouping in which revisions arrived (freeze grouping and
+      // the seed anchor centroid both depend on it), so a cold render of a
+      // finished graph lands on a DIFFERENT arrangement than the one watched
+      // growing, and two crawls that discover the same screens in a different
+      // order lay out differently. Same sequence → same coordinates; same graph
+      // → not necessarily. The de-overlap pass below also moves frozen cards
+      // when a new node penetrates them, so the skeleton does shift locally to
+      // keep cards from occluding — it just never drifts on its own.
       const mapViewEl = document.getElementById("map-view");
       const mapCanvasEl = document.getElementById("map-canvas");
       const mapWorldEl = document.getElementById("map-world");
@@ -6324,6 +6336,12 @@
         // Minimum centre-to-centre offsets that clear the opaque cards, plus a gap.
         const sepW = THEME.mapNodeW + THEME.mapNodeGap;
         const sepH = THEME.mapNodeH + THEME.mapNodeGap;
+        // Penetration below this (world px) counts as separated — see the
+        // de-overlap loop. Safe because sepW/sepH already include mapNodeGap, so
+        // a sub-pixel shortfall against the TARGET gap still leaves the opaque
+        // card footprints a full gap apart: measured 0 card-footprint
+        // intersections at N = 50/100/200 with this tolerance.
+        const SEPARATE_EPSILON = 0.5;
         const collideK = THEME.mapCollideK;
         // De-overlap needs enough passes for separation to PROPAGATE across the
         // pile: incrementally (one new node per revision) a handful clears the
@@ -6331,8 +6349,9 @@
         // already-completed graph, where every node is movable at once — piles N
         // opaque cards and needs ~O(N) Gauss-Seidel sweeps to fully un-stack. So
         // scale the budget with node count (floored at the token). The loop below
-        // early-breaks the instant nothing moves, so the high ceiling is free for
-        // the common already-separated case and only spent on the cold pile.
+        // early-breaks the instant nothing penetrates by more than
+        // SEPARATE_EPSILON, so the high ceiling is spent only on a cold pile and
+        // an already-separated graph costs one sweep.
         const separatePasses = Math.max(
           Math.max(0, Math.round(THEME.mapSeparatePasses)),
           Math.ceil(ids.length * THEME.mapSeparatePassesPerNode)
@@ -6508,7 +6527,17 @@
               }
               const penX = sepW - Math.abs(dx);
               const penY = sepH - Math.abs(dy);
-              if (penX <= 0 || penY <= 0) continue;
+              // Sub-pixel residue is not an overlap, and the tolerance is what
+              // makes the early break below reachable. Resolving a pair drives it
+              // to EXACT contact, where floating-point error leaves the
+              // penetration marginally positive rather than zero — so an exact
+              // `<= 0` test re-flags every already-resolved pair on the next
+              // solve, `moved` never goes false, and the loop spends its whole
+              // O(N^2) x separatePasses budget on every structural revision.
+              // Measured on a settled layout being re-solved (the common case
+              // while a crawl streams): 1200 of 1200 passes at N=200 without the
+              // tolerance, 1 pass with it.
+              if (penX <= SEPARATE_EPSILON || penY <= SEPARATE_EPSILON) continue;
               moved = true;
               let mx = 0;
               let my = 0;
@@ -6725,9 +6754,18 @@
         }
         const dx = b.x - a.x;
         const dy = b.y - a.y;
-        const dist = Math.hypot(dx, dy) || 1;
-        const ux = dx / dist;
-        const uy = dy / dist;
+        // `|| 1` guards the DIVISION but not the result: for coincident centres
+        // dx and dy are both 0, so the unit vector is (0, 0), `exit()` then takes
+        // the Infinity branch on BOTH axes, and `a.x + 0 * Infinity` is NaN —
+        // which makes the browser discard the entire path and the edge silently
+        // vanish. Substitute a fixed direction instead, so a degenerate pair
+        // still draws something and does so deterministically. (The spring force
+        // has the same shape but floors the magnitude and then USES the floored
+        // value, which is why it cannot produce this.)
+        const dist = Math.hypot(dx, dy);
+        const degenerate = !(dist > 1e-6);
+        const ux = degenerate ? 1 : dx / dist;
+        const uy = degenerate ? 0 : dy / dist;
         // Ray→rectangle exit distance from a centre along the a→b direction.
         const exit = () => {
           const tx = Math.abs(ux) > 1e-4 ? halfW / Math.abs(ux) : Infinity;
@@ -6889,9 +6927,26 @@
       mapDetailEl.addEventListener("click", (e) => {
         if (e.target === mapDetailEl) closeMapDetail();
       });
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && !mapDetailEl.hidden) closeMapDetail();
-      });
+      // Capture phase + stopPropagation: Lens registers its own Escape handler
+      // earlier on `document`, and on the Map tab its guard (which only checks
+      // for a focused TEXTAREA/INPUT) does not apply — so a bubbling Escape here
+      // would also reach Lens and tear down an in-progress comment/inspector.
+      // Closing a node detail must stay confined to the Map tab.
+      document.addEventListener(
+        "keydown",
+        (e) => {
+          if (e.key !== "Escape") return;
+          if (!mapDetailEl.hidden) {
+            closeMapDetail();
+            e.stopPropagation();
+          } else if (activeTab === "map") {
+            // Nothing of ours to close, but Lens is not the visible surface —
+            // don't let it act on a keystroke aimed at the Map tab.
+            e.stopPropagation();
+          }
+        },
+        true
+      );
 
       // ── Lens / Map tabs ─────────────────────────────────────────────────
       // Client-side only: the strip swaps which root is visible; nothing is
@@ -6912,6 +6967,12 @@
           btn.classList.toggle("active", name === tab);
           btn.setAttribute("aria-selected", String(name === tab));
         }
+        // Leaving Lens closes the key gate (shouldForwardKey returns false off
+        // the Lens tab), which drops the KEYUP as well as the keydown. Switching
+        // tabs with a key still held would therefore strand that key down on the
+        // device for the rest of the session — the same hazard `releaseAllInput`
+        // already covers for window blur. Release before the gate closes.
+        releaseAllInput();
         if (isMap) {
           mapUpdateTabActivity(); // clear the activity dot now — this crawl is seen
           pollMap(); // land on a current graph now, not a poll-tick later

@@ -300,10 +300,15 @@ export function formatProgressLine(
       };
     case "action":
       return { text: `    · ${sanitizeDeviceText(e.label)} (${e.explored}/${e.total})`, dim: true };
+    // `reason`/`message` interpolate the bundle id and each --deep-link url.
+    // Those are caller-supplied rather than device-sourced, but this is the same
+    // terminal sink, and over `argent link` the caller and the tool-server need
+    // not be the same trust domain — so strip control bytes uniformly instead of
+    // making the guard depend on which field is being printed.
     case "restart":
-      return { text: `    ↻ restart: ${e.reason}`, dim: true };
+      return { text: `    ↻ restart: ${sanitizeDeviceText(e.reason)}`, dim: true };
     case "phase":
-      return { text: `    ${e.message}`, dim: true };
+      return { text: `    ${sanitizeDeviceText(e.message)}`, dim: true };
     default:
       return null;
   }
@@ -525,15 +530,22 @@ export async function map(argv: string[], options: MapCommandOptions): Promise<v
   // Ctrl-C: abort the in-flight HTTP call — that is the cancellation channel;
   // the server observes the client abort, cancels the crawl between steps, and
   // finalizes the partial graph. A second Ctrl-C exits immediately.
+  //
+  // SIGTERM gets the same treatment (matching `argent lens`): a `kill` or a CI
+  // job timeout would otherwise tear this process down without ever aborting the
+  // call, leaving the server-side crawl tapping the device for the rest of its
+  // budget — up to 30 minutes — with nobody reading the result, and losing the
+  // --json artifact the user asked for.
   const ac = new AbortController();
   let interrupted = false;
-  const onSigint = (): void => {
+  const onSignal = (): void => {
     if (interrupted) process.exit(130);
     interrupted = true;
     process.stderr.write("\n  Cancelling the crawl…\n");
     ac.abort();
   };
-  process.on("SIGINT", onSigint);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
 
   let result: MapAppResult | null = null;
   let callError: unknown = null;
@@ -544,7 +556,8 @@ export async function map(argv: string[], options: MapCommandOptions): Promise<v
   } catch (err) {
     callError = err;
   } finally {
-    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGINT", onSignal);
+    process.removeListener("SIGTERM", onSignal);
   }
 
   if (interrupted) {

@@ -212,6 +212,21 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
     else outEdges.set(from, [{ to, action }]);
   }
 
+  /**
+   * The tree of the screen the crawl is standing on, paired with that screen's
+   * node id. Forward taps resolve their action's SELECTOR against this instead
+   * of tapping the frame recorded when the screen was first enumerated: actions
+   * are enumerated once at discovery but consumed across many later visits, and
+   * `screenKey` deliberately ignores labels while bucketing frames to 5%, so a
+   * list that reordered between visits re-keys IDENTICALLY. Tapping the stale
+   * rectangle then hits whatever now occupies that position — recording an edge
+   * labelled for one row that actually leads to another's screen, and descending
+   * into the wrong subtree. Kept as an {id, tree} pair so a stale or missing
+   * capture degrades to the recorded frame rather than tapping coordinates
+   * derived from some other screen.
+   */
+  let standing: { id: string; tree: DescribeNode } | null = null;
+
   const aborted = (): boolean => signal?.aborted === true;
   const overTime = (): boolean => driver.now() - startedAt >= limits.timeBudgetMs;
   // Stateful across the crawl: learns the app's own resource-id package(s) from
@@ -270,12 +285,27 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
     //           qualified ids belong to a third-party SDK (an embedded player /
     //           maps view) that the resource-id fallback would misread as foreign.
     // Only when it cannot tell (null) do we fall back to that heuristic.
-    if (driver.isTargetForeground) {
-      const foreground = await driver.isTargetForeground();
-      if (foreground === false) return null;
-      if (foreground === true) return tree;
-    }
+    const foreground = await foregroundState();
+    if (foreground === false) return null;
+    if (foreground === true) return tree;
     return looksOutside(tree) ? null : tree;
+  }
+
+  /**
+   * `driver.isTargetForeground()`, normalized: absent, unanswerable, or
+   * REJECTING all collapse to null ("can't tell"). The interface declares every
+   * driver method may reject, and a rejected foreground probe is exactly the
+   * transient the crawl must degrade around — letting it escape would end the
+   * whole run on one flaky app-state read, which the crawl contract forbids.
+   */
+  async function foregroundState(): Promise<boolean | null> {
+    if (!driver.isTargetForeground) return null;
+    try {
+      return await driver.isTargetForeground();
+    } catch (err) {
+      if (aborted()) throw err;
+      return null;
+    }
   }
 
   function markExhausted(node: CrawlNode): void {
@@ -366,8 +396,19 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
     byId.set(stored.id, node);
     crawlNodes.push(node);
     screens += 1;
+    // The caller descends into a freshly created node, and this tree IS that
+    // screen's current look — so record it as where we stand.
+    standing = { id: stored.id, tree };
     if (parentEdge) linkEdge(parentEdge.from, stored.id, parentEdge.action);
-    const shot = await driver.screenshot(stored.id);
+    // Decorative enrichment, and the interface permits a rejection: a screen
+    // without a thumbnail is still a mapped screen, so a throwing driver must
+    // not lose the node that was just recorded.
+    let shot: string | null = null;
+    try {
+      shot = await driver.screenshot(stored.id);
+    } catch (err) {
+      if (aborted()) throw err;
+    }
     if (shot) store.patchNode(stored.id, { screenshotPath: shot });
     emit({ kind: "screen", nodeId: stored.id, title: stored.title, depth, screens });
     return node;
@@ -451,7 +492,9 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
       await driver.awaitSettle();
     }
     const tree = await readTree();
-    return tree !== null && screenKey(tree) === target.key;
+    if (tree === null || screenKey(tree) !== target.key) return false;
+    standing = { id: target.id, tree };
+    return true;
   }
 
   /** iOS back heuristic: the leading top-left button on the current screen. */
@@ -512,9 +555,13 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
       const tree = await readTree();
       if (tree) {
         const key = screenKey(tree);
-        if (key === current.key) return current;
+        if (key === current.key) {
+          standing = { id: current.id, tree };
+          return current;
+        }
         const landed = byKey.get(key);
         if (landed && !landed.exhausted && landed.nextAction < landed.actions.length) {
+          standing = { id: landed.id, tree };
           return landed;
         }
       }
@@ -539,16 +586,29 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
   // walks backwards through a stack its replay can never re-enter. The
   // restart tools tolerate a not-running app.
   emit({ kind: "phase", message: `Restarting ${bundleId} for a clean crawl root` });
-  // Best-effort: a failed restart doesn't reject on its own — the readTree gate
-  // below decides. If the app is readable anyway the crawl proceeds; if not, it
-  // is the genuinely-hard failure (MAP_APP_NOT_VISIBLE) the caller expects.
-  await tryStep(() => driver.restartApp());
+  // Not fatal on its own — the gate below decides — but the outcome matters:
+  // a readable tree does NOT prove WHICH app it belongs to. iOS' describe reads
+  // whichever app is frontmost, so when the launch failed (a mistyped or
+  // uninstalled bundle id) the tree that comes back is some other app's, and
+  // neither fallback catches it: `isTargetForeground` is unanswerable for an app
+  // that never connected, and `looksOutside` is inert on iOS. Without this the
+  // crawler would map a stranger's screens as the target's and report
+  // "completed" — while the error below, whose text says "check that the bundle
+  // id is correct, the app is installed", could never fire for that input.
+  const launched = await tryStep(() => driver.restartApp());
   await driver.awaitSettle();
   const rootTree = await readTree();
-  if (!rootTree) {
+  // A successful launch is its own evidence; otherwise demand a confident
+  // "yes, our target is on screen" before trusting the tree.
+  const targetConfirmed = launched || (await foregroundState()) === true;
+  if (!rootTree || !targetConfirmed) {
     throw new FailureError(
-      `The app's UI never became readable after launching "${bundleId}" — ` +
-        "check that the bundle id is correct, the app is installed, and it stays in the foreground.",
+      rootTree
+        ? `Could not confirm "${bundleId}" is the app on screen — launching it failed and the ` +
+            "device reports a different app in the foreground. Check that the bundle id is " +
+            "correct and the app is installed."
+        : `The app's UI never became readable after launching "${bundleId}" — ` +
+            "check that the bundle id is correct, the app is installed, and it stays in the foreground.",
       {
         error_code: FAILURE_CODES.MAP_APP_NOT_VISIBLE,
         failure_stage: "map_crawl_launch",
@@ -625,7 +685,13 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
         total: current.actions.length,
       });
 
-      const point = centreOf(action.frame);
+      // Re-resolve the recorded selector against the screen we are actually
+      // standing on; fall back to the recorded frame centre when we have no
+      // current capture of this screen (see `standing`).
+      const point =
+        standing?.id === current.id
+          ? replayTapPoint(standing.tree, action)
+          : centreOf(action.frame);
       // A dropped tap is a transient device hiccup, not a crawl-ender: skip this
       // action (it stays counted as attempted) and move on to the next.
       if (!(await tryStep(() => driver.tap(point.x, point.y)))) continue;
@@ -686,6 +752,7 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
         // it, and `current`'s remaining actions stay owed to the frontier.
         if (!known.exhausted && known.nextAction < known.actions.length) {
           current = known;
+          standing = { id: known.id, tree };
           continue;
         }
         // Exhausted but still owing actions and within budget: it was abandoned
@@ -703,6 +770,7 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
           known.exhausted = false;
           store.patchNode(known.id, { exhausted: false });
           current = known;
+          standing = { id: known.id, tree };
           continue;
         }
         // Only when the landed screen is spent is it worth paying navigation to
@@ -793,30 +861,34 @@ async function runCrawl(opts: CrawlAppOptions): Promise<"completed" | "cancelled
     const known = byKey.get(key);
     if (known) {
       // Already mapped — the deep link is another entrance to it.
-      //
-      // Known limitation: a subtree reachable ONLY through an action this screen
-      // already CONSUMED during the launch crawl (so the landed screen itself
-      // owes nothing) is not re-walked from the new depth-0 origin — e.g. a deep
-      // link onto a fully-explored ancestor of a depth-capped screen. Recovering
-      // it would need re-propagating depth through already-traversed edges; the
-      // common recovery cases (landing on the capped screen itself, an ancestor
-      // that still owes actions, or a shorter tap path) are handled, and this
-      // narrow topology is left for a follow-up rather than re-walking every
-      // deep-linked hub's whole explored subtree.
       store.markEntry(known.id);
-      if (known.nextAction < known.actions.length) {
-        // …but it still owes actions: the launch crawl only recorded it (a
-        // depth cap bottomed out there, or a spent budget) and never descended.
-        // The deep link is a fresh depth-0 origin from which that subtree now
-        // fits the budget — re-root the node here and explore it, instead of
-        // dropping exactly the deep screens deep links exist to reach.
+      // The link is a fresh depth-0 origin for this screen, so re-root it and
+      // PUSH that depth down the already-explored graph. This is the same move
+      // the tap-path revisit makes, for the same reason: depth is a traversal
+      // artifact, so reaching a hub more shallowly can bring its whole subtree
+      // back inside maxDepth, reviving descendants that capped out at the old
+      // depth. It runs whether or not the hub itself still owes actions —
+      // a SPENT hub still gates the depth of everything below it, so gating on
+      // its own owed actions would drop exactly the deep screens deep links
+      // exist to reach (a fully-explored ancestor of a depth-capped screen).
+      if (known.depth > 0) {
         known.depth = 0;
         known.path = [];
         known.entryUrl = url;
-        if (known.exhausted) {
-          known.exhausted = false;
-          store.patchNode(known.id, { exhausted: false });
-        }
+        repropagateShorterDepth(known);
+      }
+      if (known.exhausted && known.nextAction < known.actions.length) {
+        known.exhausted = false;
+        store.patchNode(known.id, { exhausted: false });
+      }
+      // Explore when this screen — or any descendant the re-root just revived —
+      // still owes actions. `explore` backtracks across the WHOLE frontier, and
+      // the revived descendants now carry this link as their replay origin, so
+      // it can reach them by re-opening it.
+      const owesWork = crawlNodes.some(
+        (node) => !node.exhausted && node.nextAction < node.actions.length
+      );
+      if (owesWork) {
         const outcome = await explore(known);
         if (outcome === "cancelled") return "cancelled";
       } else {

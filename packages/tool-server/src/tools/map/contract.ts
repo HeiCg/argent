@@ -21,7 +21,9 @@ export interface MapFrame {
 export interface MapSelector {
   /**
    * `identifier` — accessibilityIdentifier / resource-id / DOM id (preferred).
-   * `label` — accessibility label / text (exact).
+   * `label` — the element's visibly-rendered label or value, resolved through
+   *   the shared text matcher: case-insensitive SUBSTRING against label or
+   *   value, with an exact hit ranked first. Not an exact-only match.
    * `frame` — no stable handle existed; re-tap the recorded frame centre.
    */
   by: "identifier" | "label" | "frame";
@@ -88,15 +90,25 @@ export interface MapCrawlStats {
   screens: number;
   edges: number;
   actionsExplored: number;
-  /** Times the crawler had to relaunch the app to get back on the map. */
+  /**
+   * Recovery navigations the crawler paid to get back on the map: a relaunch, a
+   * restart-and-replay, or a deep-link re-open. Counts attempts, including ones
+   * that then failed, and one recovery can add more than one (a relaunch that
+   * lands elsewhere and then replays counts both).
+   */
   restarts: number;
   elapsedMs: number;
 }
 
 /**
- * Full crawl state. `GET /preview/map` returns exactly this shape; the
- * `map-app` tool result is this shape minus `screenshotPath` host paths
- * (replaced by nothing — CLI consumers use counts and the preview URL).
+ * Full crawl state, and exactly the `GET /preview/map` wire shape. The
+ * `map-app` tool result is a much smaller SUMMARY, not a subset of this: it
+ * carries `status`, `stats`, `entryPoints`, `edgesCount`, a `mapUrl`, and nodes
+ * trimmed to `{id, title, entry, outside}`. Everything else here — `key`,
+ * `actionsTotal`/`actionsExplored`, `exhausted`, `screenshotPath`,
+ * `discoveredAt`, the `edges` themselves, and the top-level `udid`/`bundleId`/
+ * `platform`/`startedAt`/`finishedAt`/`error`/`limits` — is available only from
+ * this endpoint (which is what `--json` fetches).
  */
 export interface MapCrawlState {
   status: MapCrawlStatus;
@@ -112,8 +124,8 @@ export interface MapCrawlState {
   /**
    * Entry-point node ids in discovery order (`nodes[i].entry === true` for
    * exactly these). The launch screen is the first; deep-link seeds add more.
-   * Empty until the first screen is recorded. Replaces the former single
-   * `rootId` — an app graph can have several entries.
+   * Empty until the first screen is recorded. A set rather than a single root,
+   * because an app graph can have several ways in.
    */
   entryPoints: string[];
   nodes: MapScreenNode[];

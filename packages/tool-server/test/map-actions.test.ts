@@ -23,39 +23,49 @@ const IOS = { platform: "ios" as const, maxActions: 12 };
 const ANDROID = { platform: "android" as const, maxActions: 12 };
 
 describe("enumerateActions — role/clickable filter", () => {
-  it("iOS: takes tappable roles (button/link/cell/tab), skips static content and the tab bar itself", () => {
+  // The fixtures here use ONLY roles `mapNativeTraitsToDescribeRole` can
+  // actually emit (AXHeading, AXButton, AXTextField, AXLink, AXImage,
+  // AXStaticText, AXTabBar, AXAdjustable, AXGroup) — both iOS describe adapters
+  // derive `role` from it, so an AXCell/AXTable/AXMenuItem fixture would pin
+  // behaviour no real device can reach.
+  it("iOS: takes button and link, skips every other role the adapters can emit", () => {
     const tree = root(
       n("AXButton", [0.1, 0.1, 0.3, 0.08], { label: "Compose" }),
       n("AXLink", [0.1, 0.2, 0.3, 0.08], { label: "Learn more" }),
-      n("AXCell", [0.1, 0.3, 0.8, 0.08], { label: "Row" }),
-      n("AXStaticText", [0.1, 0.4, 0.8, 0.08], { label: "Just text" }),
-      n("AXImage", [0.1, 0.5, 0.3, 0.08], { label: "Hero" }),
-      n("AXGroup", [0.1, 0.6, 0.8, 0.08], { label: "Wrapper" }),
+      n("AXStaticText", [0.1, 0.3, 0.8, 0.08], { label: "Just text" }),
+      n("AXImage", [0.1, 0.4, 0.3, 0.08], { label: "Hero" }),
+      n("AXHeading", [0.1, 0.5, 0.8, 0.08], { label: "Section" }),
+      n("AXAdjustable", [0.1, 0.6, 0.8, 0.08], { label: "Volume" }),
+      n("AXGroup", [0.1, 0.7, 0.8, 0.08], { label: "Wrapper" }),
       // The bar is a container, not a target — its items are the buttons.
       n("AXTabBar", [0, 0.9, 1, 0.1], { label: "Tab bar" })
     );
     const labels = enumerateActions(tree, IOS).map((a) => a.label);
-    expect(labels).toEqual(["Compose", "Learn more", "Row"]);
+    expect(labels).toEqual(["Compose", "Learn more"]);
   });
 
-  it("iOS: 'tab' role match is precise — an AXTable grid is not tappable, real tab items are", () => {
+  it("iOS: a tab bar is skipped but the buttons inside it are taken", () => {
     const tree = root(
-      // "axtable" contains "tab" as a substring but is a static content grid;
-      // only its cells (and any true tab item) are targets.
-      n("AXTable", [0.05, 0.1, 0.9, 0.6], { label: "Feed" }, [
-        n("AXCell", [0.05, 0.1, 0.9, 0.1], { label: "Row 1" }),
-      ]),
-      n("AXTab", [0.1, 0.75, 0.3, 0.06], { label: "Tab item" }),
       n("AXTabBar", [0, 0.9, 1, 0.1], { label: "Bar" }, [
-        n("AXButton", [0, 0.92, 0.5, 0.06], { label: "Tab A" }),
+        n("AXButton", [0, 0.92, 0.4, 0.06], { label: "Tab A" }),
+        n("AXButton", [0.5, 0.92, 0.4, 0.06], { label: "Tab B" }),
       ])
     );
     const labels = enumerateActions(tree, IOS).map((a) => a.label);
-    expect(labels).not.toContain("Feed"); // the AXTable container is skipped
-    expect(labels).toContain("Row 1"); // its cell is a real target
-    expect(labels).toContain("Tab item"); // the "tab" role branch still matches
-    expect(labels).toContain("Tab A"); // tab-bar item survives
-    expect(labels).not.toContain("Bar"); // the tab BAR container is skipped
+    expect(labels).toEqual(["Tab A", "Tab B"]);
+    expect(labels).not.toContain("Bar");
+  });
+
+  it("iOS: a trait-less list row arrives as AXGroup and is NOT enumerated (documented v1 gap)", () => {
+    // A row built from a pressable carries the `button` trait and is covered; a
+    // row that only sets isAccessibilityElement arrives as a bare AXGroup,
+    // indistinguishable from a layout wrapper. Pinned so the trade-off is a
+    // decision rather than an accident.
+    const tree = root(
+      n("AXGroup", [0.05, 0.2, 0.9, 0.1], { label: "Untappable row", identifier: "row-0" }),
+      n("AXButton", [0.05, 0.35, 0.9, 0.1], { label: "Pressable row" })
+    );
+    expect(enumerateActions(tree, IOS).map((a) => a.label)).toEqual(["Pressable row"]);
   });
 
   it("Android: takes clickable=true nodes regardless of class, skips non-clickable ones", () => {
@@ -79,13 +89,20 @@ describe("enumerateActions — skip rules", () => {
     expect(enumerateActions(tree, IOS).map((a) => a.label)).toEqual(["Enabled"]);
   });
 
-  it("skips zero/tiny frames (<0.5% of the screen)", () => {
+  it("filters per axis, so a HIG-minimum square button survives and a full-width hairline does not", () => {
+    // The two cases an AREA threshold gets backwards, and the reason this rule
+    // is per-axis. On an iPhone 16 Pro Max (440x956pt):
+    //   44x44pt (Apple's HIG minimum tap target) = 0.1 x 0.046 -> area 0.0046
+    //   a 6pt full-width divider             = 1.0 x 0.006 -> area 0.0060
+    // A 0.005 AREA floor drops the real button and keeps the divider. Both
+    // assertions below flip if the rule goes back to comparing w*h.
     const tree = root(
-      n("AXButton", [0.1, 0.1, 0.3, 0.08], { label: "Big enough" }),
-      n("AXButton", [0.5, 0.5, 0.05, 0.05], { label: "Tiny" }),
+      n("AXButton", [0.1, 0.1, 0.1, 0.046], { label: "HIG minimum" }),
+      n("AXButton", [0, 0.4, 1, 0.006], { label: "Hairline divider" }),
+      n("AXButton", [0.9, 0.5, 0.006, 1], { label: "Vertical hairline" }),
       n("AXButton", [0.5, 0.6, 0, 0], { label: "Zero" })
     );
-    expect(enumerateActions(tree, IOS).map((a) => a.label)).toEqual(["Big enough"]);
+    expect(enumerateActions(tree, IOS).map((a) => a.label)).toEqual(["HIG minimum"]);
   });
 
   it("skips text inputs on both platforms (keyboards derail the crawl)", () => {
@@ -112,12 +129,48 @@ describe("enumerateActions — skip rules", () => {
     );
     expect(enumerateActions(tree, IOS).map((a) => a.label)).toEqual(["Settings"]);
   });
+
+  it("skips a destructive action whose only tell is its resource-id", () => {
+    // An icon-only control carries no label or value, so the resource-id is the
+    // ONLY evidence that tapping it ends the session. `_` is a word character,
+    // so `\blogout\b` does not match "logout_button" until the id is split on
+    // its separators — both halves of that fix are pinned here.
+    const tree = root(
+      n("android.widget.ImageButton", [0.8, 0.1, 0.15, 0.06], {
+        identifier: "com.app:id/logout_button",
+        clickable: true,
+      }),
+      n("android.widget.ImageButton", [0.8, 0.2, 0.15, 0.06], {
+        identifier: "com.app:id/delete-account",
+        clickable: true,
+      }),
+      n("android.widget.ImageButton", [0.8, 0.3, 0.15, 0.06], {
+        identifier: "com.app:id/settings_button",
+        clickable: true,
+      }),
+      // Not destructive: the boundary after "delete" fails against "d"/"e", so
+      // these stay tappable and the guard is not merely a substring search.
+      n("android.widget.ImageButton", [0.8, 0.4, 0.15, 0.06], {
+        identifier: "com.app:id/deleted_items",
+        clickable: true,
+      }),
+      n("android.widget.ImageButton", [0.8, 0.5, 0.15, 0.06], {
+        identifier: "com.app:id/undelete_item",
+        clickable: true,
+      })
+    );
+    expect(enumerateActions(tree, ANDROID).map((a) => a.label)).toEqual([
+      "com.app:id/settings_button",
+      "com.app:id/deleted_items",
+      "com.app:id/undelete_item",
+    ]);
+  });
 });
 
 describe("enumerateActions — list collapse, cap, ordering", () => {
   it("collapses >3 aligned same-role/same-height siblings to the first 3 (a vertical list)", () => {
     const rows = [0.1, 0.2, 0.3, 0.4, 0.5].map((y, i) =>
-      n("AXCell", [0.1, y, 0.8, 0.09], { label: `Item ${i + 1}` })
+      n("AXButton", [0.1, y, 0.8, 0.09], { label: `Item ${i + 1}` })
     );
     const labels = enumerateActions(root(...rows), IOS).map((a) => a.label);
     expect(labels).toEqual(["Item 1", "Item 2", "Item 3"]);
@@ -137,7 +190,7 @@ describe("enumerateActions — list collapse, cap, ordering", () => {
         "AXGroup",
         [0, 0.1, 1, 0.8],
         {},
-        labels.map((label, i) => n("AXCell", [0.1, 0.1 + i * 0.1, 0.8, 0.09], { label }))
+        labels.map((label, i) => n("AXButton", [0.1, 0.1 + i * 0.1, 0.8, 0.09], { label }))
       );
     const tree = root(list(["A1", "A2"]), list(["B1", "B2"]));
     expect(enumerateActions(tree, IOS)).toHaveLength(4);
@@ -217,6 +270,24 @@ describe("selector derivation", () => {
       by: "frame",
       value: "",
     });
+  });
+
+  it("falls back to value when the label is absent or invisible, not straight to frame", () => {
+    // `matchNode` compares a text selector against label and value separately,
+    // so a node whose only stable text lives in `value` is still re-locatable \u2014
+    // matching `deriveSelector` (utils/ui-tree-match). Without the value arm
+    // both of these would be { by: "frame" } and replay by coordinates.
+    expect(deriveMapSelector(n("AXButton", [0.1, 0.1, 0.3, 0.08], { value: "Wi-Fi" }))).toEqual({
+      by: "label",
+      value: "Wi-Fi",
+    });
+    expect(
+      deriveMapSelector(n("AXButton", [0.1, 0.1, 0.3, 0.08], { label: "\uE163", value: "Mute" }))
+    ).toEqual({ by: "label", value: "Mute" });
+    // Label still wins when both are visible text \u2014 a value is the volatile half.
+    expect(
+      deriveMapSelector(n("AXButton", [0.1, 0.1, 0.3, 0.08], { label: "Volume", value: "50%" }))
+    ).toEqual({ by: "label", value: "Volume" });
   });
 
   it("actions carry the element's frame in MapFrame shape and a human label", () => {

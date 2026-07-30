@@ -470,6 +470,55 @@ describe("crawlApp — deep-link seeding (multiple entry points)", () => {
     expect(app.openUrlCount).toBe(2); // both were attempted
   });
 
+  it("a deep link onto a SPENT hub re-roots it and revives the descendant the depth cap dropped", async () => {
+    // The deep-link twin of the shorter-tap-path re-propagation. With maxDepth 3
+    // the launch crawl walks Home→A→B→C and caps C, so C's "To D" is never
+    // taken. By the time the link is seeded EVERY screen on that chain is spent,
+    // so a re-root gated on the landed screen's own owed actions does nothing
+    // and D is lost — even though from the link B is depth 0 and D two taps
+    // away. Re-rooting B and pushing that depth down the already-explored graph
+    // revives C and finishes the subtree.
+    const app = new FakeApp(
+      {
+        home: screenTree("Home", ["To A"]),
+        a: screenTree("Screen A", ["To B"]),
+        b: screenTree("Screen B", ["To C"]),
+        c: screenTree("Screen C", ["To D"]),
+        d: screenTree("Screen D", []),
+      },
+      {
+        home: { "To A": "a" },
+        a: { "To B": "b" },
+        b: { "To C": "c" },
+        c: { "To D": "d" },
+      },
+      "home"
+    );
+    app.deepLinks = { "myapp://b": "b" };
+    const store = makeStore();
+    const result = await crawl(app, store, { maxDepth: 3 }, { deepLinks: ["myapp://b"] });
+    const snap = store.snapshot();
+
+    expect(result).toBe("completed");
+    // Screen D is reachable ONLY through the re-rooted, already-spent hub.
+    expect(snap.nodes.map((x) => x.title).sort()).toEqual([
+      "Home",
+      "Screen A",
+      "Screen B",
+      "Screen C",
+      "Screen D",
+    ]);
+    const b = snap.nodes.find((x) => x.title === "Screen B")!;
+    const c = snap.nodes.find((x) => x.title === "Screen C")!;
+    const d = snap.nodes.find((x) => x.title === "Screen D")!;
+    // The hub became a second entry, and C→D is the edge the revival recovered.
+    expect(b.entry).toBe(true);
+    expect(snap.entryPoints).toEqual(["s0", b.id]);
+    expect(snap.edges.some((e) => e.from === c.id && e.to === d.id)).toBe(true);
+    // C is no longer parked as exhausted-with-actions-owed.
+    expect(c.actionsExplored).toBe(1);
+  });
+
   it("explores a deep-link subtree by re-opening the link to backtrack (a restart would land on the root)", async () => {
     // The launch screen is a dead end; the real content sits behind a deep link
     // with two dead-end children reached by separate taps. After the first, the
@@ -1310,5 +1359,122 @@ describe("crawlApp — deadline enforcement", () => {
     expect(app.taps).toBe(5);
     // B's remaining action was never reached, so E stays undiscovered (partial).
     expect(snap.nodes.some((x) => x.title === "Screen E")).toBe(false);
+  });
+});
+
+describe("crawlApp — launch gate", () => {
+  it("refuses to crawl a foreign app when the launch failed and the target can't be confirmed", async () => {
+    // The iOS trap: describe reads whichever app is FRONTMOST, so a mistyped or
+    // uninstalled bundle id still yields a perfectly readable tree — some other
+    // app's. `isTargetForeground` is unanswerable for an app that never
+    // connected (null), and the resource-id fallback is inert on iOS, so without
+    // a launch-outcome gate the crawler maps a stranger's screens as the
+    // target's and resolves "completed" — while the MAP_APP_NOT_VISIBLE error,
+    // whose text says "check that the bundle id is correct, the app is
+    // installed", could never fire for exactly that input.
+    const stranger = screenTree("Some other app", ["Tap me"]);
+    const driver: CrawlDriver = {
+      fetchTree: async () => stranger,
+      isTargetForeground: async () => null, // never connected — can't tell
+      tap: async () => {},
+      pressBack: async () => false,
+      restartApp: async () => {
+        throw new Error("app not installed");
+      },
+      launchApp: async () => {},
+      openUrl: async () => false,
+      awaitSettle: async () => {},
+      screenshot: async () => null,
+      now: () => 0,
+    };
+    const store = makeStore();
+    let caught: unknown = null;
+    try {
+      await crawlApp({
+        driver,
+        store,
+        limits: LIMITS,
+        platform: "ios",
+        bundleId: "com.exmaple.typo",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(getFailureSignal(caught)?.error_code).toBe(FAILURE_CODES.MAP_APP_NOT_VISIBLE);
+    // Not one screen of the foreign app was recorded.
+    expect(store.snapshot().nodes).toEqual([]);
+  });
+
+  it("still crawls when the launch succeeded but foreground state is unknowable", async () => {
+    // The non-RN iOS case must keep working: a successful relaunch is its own
+    // evidence that the readable tree belongs to the target, so a null
+    // foreground probe alone must not block the crawl.
+    const app = new FakeApp(
+      { home: screenTree("Home", ["To A"]), a: screenTree("Screen A", []) },
+      { home: { "To A": "a" } },
+      "home"
+    );
+    app.isTargetForeground = async (): Promise<boolean | null> => null;
+    const store = makeStore();
+    expect(await crawl(app, store)).toBe("completed");
+    expect(store.snapshot().nodes.map((x) => x.title)).toEqual(["Home", "Screen A"]);
+  });
+});
+
+describe("crawlApp — forward taps resolve the recorded selector", () => {
+  it("re-resolves a reordered row by selector instead of tapping its stale rectangle", async () => {
+    // Actions are enumerated ONCE at discovery but consumed across many later
+    // visits, and `screenKey` ignores labels while bucketing frames to 5% — so a
+    // feed whose two rows SWAP between visits re-keys identically and stays one
+    // node. Tapping the rectangle recorded at enumeration then hits whatever now
+    // sits there: the edge gets one row's label but the other row's destination,
+    // and the crawl descends into the wrong subtree.
+    //
+    // The rows carry NO identifier, so ordering is invisible to screenKey — that
+    // is what makes the two layouts one screen rather than two.
+    const rowAt = (label: string, y: number): DescribeNode =>
+      n("AXButton", [0.1, y, 0.8, 0.08], { label });
+    const homeWith = (upper: string, lower: string): DescribeNode =>
+      n("AXGroup", [0, 0, 1, 1], {}, [
+        n("AXHeading", [0.1, 0.02, 0.8, 0.05], { label: "Feed", identifier: "hdr-Feed" }),
+        rowAt(upper, 0.2),
+        rowAt(lower, 0.32),
+      ]);
+
+    const homeTree = homeWith("Alpha", "Beta");
+    const app = new FakeApp(
+      {
+        home: homeTree,
+        alpha: screenTree("Alpha detail", []),
+        beta: screenTree("Beta detail", []),
+      },
+      { home: { Alpha: "alpha", Beta: "beta" } },
+      "home"
+    );
+    // Reorder the feed in place on the BACKTRACK restart (restart #1 is the
+    // clean-root launch), so the crawl returns to a Home whose rows have moved
+    // while its fingerprint is unchanged.
+    let restarts = 0;
+    app.onRestart = (): void => {
+      restarts += 1;
+      if (restarts >= 2) homeTree.children = homeWith("Beta", "Alpha").children;
+    };
+
+    const store = makeStore();
+    await crawl(app, store);
+    const snap = store.snapshot();
+
+    // One Feed node (the reorder did not mint a phantom screen), and both
+    // details were reached.
+    expect(snap.nodes.map((x) => x.title).sort()).toEqual(["Alpha detail", "Beta detail", "Feed"]);
+    const home = snap.nodes.find((x) => x.title === "Feed")!;
+    // Each edge's action label matches the screen it actually leads to.
+    for (const label of ["Alpha", "Beta"]) {
+      const edge = snap.edges.find((e) => e.from === home.id && e.action.label === label);
+      expect(edge, `edge labelled ${label}`).toBeDefined();
+      const target = snap.nodes.find((x) => x.id === edge!.to)!;
+      expect(target.title).toBe(`${label} detail`);
+    }
   });
 });

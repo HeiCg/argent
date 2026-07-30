@@ -20,12 +20,26 @@ export interface EnumerateActionsOptions {
   maxActions: number;
 }
 
-// Minimum on-screen area (fraction of the screen) an element needs to be a
-// believable tap target: 0.5% — filters zero-size and decorative slivers.
-const MIN_TAP_AREA = 0.005;
+// Minimum on-screen extent, PER AXIS, for an element to be a believable tap
+// target, as a fraction of the screen: hairlines and zero-size decorations are
+// thin in one dimension, so each side is tested on its own. An area threshold
+// cannot express that — it multiplies the two dimensions together, so it both
+// drops small-but-square real buttons (44x44pt, Apple's HIG minimum, is
+// 0.1 x 0.046 = 0.0046 of an iPhone 16 Pro Max: under a 0.005 area floor) and
+// keeps full-width slivers (1.0 x 0.006 = 0.006: over it). 1% of each axis is
+// ~4x10pt on that device, well under any real target and well over any divider.
+const MIN_TAP_EXTENT = 0.01;
 
 // State-destroying labels the crawler must never tap.
 const DESTRUCTIVE_LABEL = /\b(log ?out|sign ?out|delete)\b/i;
+
+// Identity separators, so a resource-id reads as words for the destructive
+// match. `\b` treats `_` as a word character, so `com.app:id/logout_button`
+// does NOT match `\blogout\b` on its own — the boundary after "logout" fails
+// against the following "_". Splitting on `._:/-` first turns that into
+// "com app id logout button", where it does. Kept narrow: "undelete_item" and
+// "deleted_items" still fail the boundary and stay tappable.
+const IDENTITY_SEPARATORS = /[._:/-]+/g;
 
 // Sibling-collapse tolerance: elements count as "the same list item shape"
 // when their heights AND left edges agree within 1% of the screen.
@@ -47,27 +61,32 @@ const NAV_BAND_MIN_CENTRE_Y = 0.85;
 const NAV_RESERVE_RATIO = 0.5;
 
 /**
- * iOS tappable roles: Button / Link / Cell / Tab / MenuItem-ish, matched as
- * role substrings (the describe adapters emit `AXButton`, `AXLink`, …). The
- * tab BAR itself is excluded — it is the container, its items are the targets.
+ * iOS tappable roles. Both iOS describe adapters derive `role` from the same
+ * trait mapper (`mapNativeTraitsToDescribeRole`), whose entire output set is
+ * `AXHeading`, `AXButton`, `AXTextField`, `AXLink`, `AXImage`, `AXStaticText`,
+ * `AXTabBar`, `AXAdjustable`, `AXGroup` — so only Button and Link name a tap
+ * target. `AXTabBar` is the container of a tab bar rather than a target itself,
+ * and it carries no per-item role, so its items are reached as whatever traits
+ * they individually expose (a tab button arrives as `AXButton`).
+ *
  * This is the interactive subset of the CONTENT_ROLES thinking in
  * describe/format-tree.ts: content worth *rendering* includes static text and
  * images, content worth *tapping* does not.
+ *
+ * Known limitation: a list/collection row that carries no `button` trait
+ * arrives as a bare `AXGroup`, indistinguishable from a layout wrapper, so it
+ * is not enumerated. Rows built from a pressable (React Native, SwiftUI
+ * `Button`) do carry the trait and are covered; a row that only sets
+ * `isAccessibilityElement` is not, and that subtree goes unexplored. Treating
+ * every `AXGroup` as tappable instead would swamp the per-screen action budget
+ * with layout wrappers, so the narrower rule is the deliberate v1 trade-off.
  */
 function isTappableIosRole(role: string): boolean {
   const r = role.toLowerCase();
-  // Drop the containers whose role merely *contains* "tab" before the "tab"
-  // match below: the tab BAR holds the targets rather than being one, and an
-  // AXTable is a static content grid whose AXCells are the real targets.
-  // (`"axtable".includes("tab")` is the substring trap this guards against.)
-  if (r.includes("tabbar") || r.includes("table")) return false;
-  return (
-    r.includes("button") ||
-    r.includes("link") ||
-    r.includes("cell") ||
-    r.includes("menuitem") ||
-    r.includes("tab")
-  );
+  // `"axtabbar".includes("button")` is false, so the container needs no explicit
+  // exclusion — but spell it out: a tab bar is never itself a target.
+  if (r.includes("tabbar")) return false;
+  return r.includes("button") || r.includes("link");
 }
 
 // Text inputs raise the keyboard, which covers the screen and swallows
@@ -86,10 +105,17 @@ function isTextInput(node: DescribeNode): boolean {
 
 function isCandidate(node: DescribeNode, platform: "ios" | "android"): boolean {
   if (node.disabled === true) return false;
-  if (node.frame.width * node.frame.height < MIN_TAP_AREA) return false;
+  if (node.frame.width < MIN_TAP_EXTENT || node.frame.height < MIN_TAP_EXTENT) return false;
   if (isTextInput(node)) return false;
   if (isScrollDecoration(node)) return false;
-  const text = [node.label, node.value].filter(Boolean).join(" ");
+  // `identifier` counts as destructive-label evidence too: an icon-only control
+  // often carries no label or value at all, so a resource-id like
+  // `com.app:id/logout_button` is the ONLY tell that tapping it ends the
+  // session. Checking label/value alone lets exactly those through.
+  const text = [node.label, node.value, node.identifier]
+    .filter(Boolean)
+    .join(" ")
+    .replace(IDENTITY_SEPARATORS, " ");
   if (DESTRUCTIVE_LABEL.test(text)) return false;
   // Android marks interactivity explicitly; iOS only through roles.
   return platform === "android" ? node.clickable === true : isTappableIosRole(node.role);
@@ -145,21 +171,27 @@ function collapseRepeats(
 }
 
 /**
- * The most stable replay handle for a node: identifier if present, else the
- * exact (visibly rendered) label, else the recorded frame. Icon-font labels
- * (Private Use Area glyphs) don't count as text — see `hasVisibleText` — so a
- * glyph-only button replays by frame rather than by an invisible "label".
+ * The most stable replay handle for a node: identifier if present, else its
+ * visibly-rendered label or value, else the recorded frame. Mirrors
+ * `deriveSelector` (utils/ui-tree-match): label first — a value like "50%" is
+ * the volatile part of a control while the label is the stabler anchor — but
+ * value is a real fallback, because `matchNode` compares a text selector
+ * against label and value separately, so a node whose only stable text is its
+ * value (an Android `text` that diverged from `content-desc`, a control whose
+ * name renders as the value) is still re-locatable rather than frame-only.
+ * Icon-font labels (Private Use Area glyphs) don't count as text — see
+ * `hasVisibleText` — so a glyph-only button replays by frame.
  */
 export function deriveMapSelector(node: DescribeNode): MapSelector {
   const identifier = node.identifier?.trim();
   if (identifier) return { by: "identifier", value: identifier };
-  const label = node.label?.trim();
-  if (label && hasVisibleText(label)) return { by: "label", value: label };
+  const text = [node.label, node.value].map((t) => t?.trim()).find((t) => t && hasVisibleText(t));
+  if (text) return { by: "label", value: text };
   return { by: "frame", value: "" };
 }
 
 function toAction(node: DescribeNode): MapAction {
-  const label = node.label?.trim() || node.identifier?.trim() || node.role;
+  const label = node.label?.trim() || node.value?.trim() || node.identifier?.trim() || node.role;
   return {
     label,
     role: node.role,

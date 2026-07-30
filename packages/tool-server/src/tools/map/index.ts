@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type { Registry, ToolCapability, ToolContext, ToolDefinition } from "@argent/registry";
 import { resolveDevice } from "../../utils/device-info";
-import { assertSupported } from "../../utils/capability";
+import { assertSupported, UnsupportedOperationError } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
+import { isTvOsSimulator } from "../../utils/ios-devices";
+import { isAndroidTv } from "../../utils/adb";
 import { iosRequires } from "../describe/platforms/ios";
 import { androidRequires } from "../describe/platforms/android";
 import { mapSessionStore } from "../../utils/map-session";
@@ -43,7 +45,7 @@ const zodSchema = z.object({
     .max(30)
     .optional()
     .describe(
-      `Try at most this many tappable elements per screen (default ${MAP_DEFAULT_LIMITS.maxActionsPerScreen}).`
+      `Try at most this many tappable elements per screen (default ${MAP_DEFAULT_LIMITS.maxActionsPerScreen}, max 30).`
     ),
   maxDepth: z
     .number()
@@ -52,7 +54,7 @@ const zodSchema = z.object({
     .max(10)
     .optional()
     .describe(
-      `Do not navigate deeper than this many taps from the start screen (default ${MAP_DEFAULT_LIMITS.maxDepth}).`
+      `Do not navigate deeper than this many taps from the entry point a screen was reached through (default ${MAP_DEFAULT_LIMITS.maxDepth}, max 10). Each deep-link entry starts its own depth-0 origin.`
     ),
   timeBudgetS: z
     .number()
@@ -64,11 +66,11 @@ const zodSchema = z.object({
       `Overall crawl time budget in seconds (default ${MAP_DEFAULT_LIMITS.timeBudgetMs / 1000}, max 1800). The crawl finishes with a partial map when it runs out.`
     ),
   deepLinks: z
-    .array(z.string())
+    .array(z.string().min(1))
     .max(20)
     .optional()
     .describe(
-      "Extra entry points to seed (deep-link URLs / URL schemes, e.g. myapp://settings). After the launch crawl, each is opened and mapped as an additional entry — reaching screens the launch screen never links to. A link that fails or leaves the app is skipped."
+      "Extra entry points to seed (deep-link URLs / URL schemes, e.g. myapp://settings), at most 20. After the launch crawl, each is opened and mapped as an additional entry — reaching screens the launch screen never links to. A link that fails or leaves the app is skipped."
     ),
   openWindow: z
     .boolean()
@@ -121,6 +123,27 @@ Returns { status, stats, entryPoints, nodes, edgesCount, mapUrl } — a trimmed 
     async execute(_services, params, ctx?: ToolContext) {
       const device = resolveDevice(params.udid);
       assertSupported(MAP_APP_TOOL_ID, capability, device);
+      // `capability` cannot express this: a tvOS simulator is platform "ios" and
+      // an Android TV emulator is platform "android", so both pass the gate. A TV
+      // UI is focus-driven — the crawler taps coordinates — and tvOS `describe`
+      // returns an empty tree, which would surface as the misleading
+      // MAP_APP_NOT_VISIBLE "check that the bundle id is correct". Probe at
+      // runtime, like every sibling that drives the screen (screenshot,
+      // describe, await-ui-element, await-screen-idle, keyboard).
+      if (device.platform === "ios" && (await isTvOsSimulator(params.udid))) {
+        throw new UnsupportedOperationError(
+          MAP_APP_TOOL_ID,
+          device,
+          "tvOS navigation is focus-driven rather than tap-driven, and its accessibility tree is not readable"
+        );
+      }
+      if (device.platform === "android" && (await isAndroidTv(params.udid))) {
+        throw new UnsupportedOperationError(
+          MAP_APP_TOOL_ID,
+          device,
+          "Android TV navigation is focus-driven rather than tap-driven"
+        );
+      }
       if (device.platform === "ios") await ensureDeps(iosRequires);
       else await ensureDeps(androidRequires);
       const platform = device.platform as "ios" | "android";
