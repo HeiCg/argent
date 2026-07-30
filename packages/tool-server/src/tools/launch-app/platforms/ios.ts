@@ -12,6 +12,7 @@ import {
   type NativeDevtoolsApi,
 } from "../../../blueprints/native-devtools";
 import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
+import { subprocessOutputTail } from "../../../utils/format-error";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import type { LaunchAppParams, LaunchAppResult } from "../types";
 
@@ -48,12 +49,16 @@ export function makeIosImpl(
             params.bundleId,
           ]);
         } catch (err) {
-          // The dominant failure here is "app not installed/signed on the device".
-          // Without this wrap, devicectl's verbose multi-line blob surfaces raw as
-          // a 500; emit a structured FailureError with a clean message + telemetry
-          // instead (mirroring the simctl branch below).
+          // Without this wrap devicectl's verbose multi-line blob surfaces raw as
+          // a 500; keep the structured FailureError + telemetry (mirroring the
+          // simctl branch below), but fold devicectl's own lines into the message
+          // — "not installed" and "locked" are different problems and nothing
+          // else carries that distinction to the caller.
+          const detail = subprocessOutputTail(err);
           throw new FailureError(
-            `Failed to launch ${params.bundleId} on physical iOS device ${params.udid} via devicectl — the app must already be installed and signed on the device.`,
+            `Failed to launch ${params.bundleId} on physical iOS device ${params.udid} via devicectl.` +
+              (detail ? ` devicectl: ${detail}.` : "") +
+              ` Most often the app is not installed on the device, or not signed for it.`,
             {
               error_code: FAILURE_CODES.IOS_LAUNCH_DEVICECTL_FAILED,
               failure_stage: "ios_launch_app_devicectl_launch",

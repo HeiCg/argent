@@ -75,12 +75,16 @@ function parseCaption(caption: string): { label: string; value?: string; role: s
   }
   if (traits.length === 0) traits = ["staticText"];
   const role = mapNativeTraitsToDescribeRole(traits);
-  // Drop trailing trait/state tokens; keep the full caption if that leaves
-  // nothing (a caption that is only traits).
+  // Drop trailing trait/state tokens.
   let end = tokens.length;
   while (end > 0 && TRAIT_TOKEN.test(tokens[end - 1])) end--;
-  const content = end > 0 ? tokens.slice(0, end) : tokens;
-  if (content.length === 0) return { label: caption, role };
+  // Nothing but traits ("Dimmed, Button", and the empty caption): there is no
+  // content to split, so keep the caption whole. Returning here rather than
+  // handing the untrimmed tokens to the split below is what stops a trait from
+  // becoming the element's `value` — a `{ value: "Button" }` selector would then
+  // match a button that has no value at all, and the label would read "Dimmed".
+  if (end === 0) return { label: caption, role };
+  const content = tokens.slice(0, end);
   if (content.length === 1 || !VALUE_BEARING_ROLES.has(role)) {
     return { label: content.join(", "), role };
   }

@@ -48,6 +48,7 @@ import { createAwaitScreenIdleTool } from "../src/tools/await-screen-idle";
 import { reinstallAppTool } from "../src/tools/reinstall-app";
 import { createScreenRecordingStartTool } from "../src/tools/screen-recording/screen-recording-start";
 import { screenRecordingStopTool } from "../src/tools/screen-recording/screen-recording-stop";
+import { profilerLoadTool } from "../src/tools/profiler/query/profiler-load";
 import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { nativeDescribeScreenTool } from "../src/tools/native-devtools/native-describe-screen";
 import { nativeDevtoolsStatusTool } from "../src/tools/native-devtools/native-devtools-status";
@@ -637,6 +638,42 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
         `${id} must still accept a simulator`
       ).not.toThrow();
     }
+  });
+});
+
+describe("profiler-load's native mode is closed on a physical iPhone", () => {
+  const physical = resolveDevice(PHYSICAL_UDID);
+  const nativeParams = { mode: "load_native", session_id: "s1", device_id: PHYSICAL_UDID };
+
+  it("declares no native-profiler session for a hardware udid", () => {
+    // `native-profiler-start` is simulator-only, so a native trace can never
+    // exist for a physical iPhone. Building the ref anyway instantiates a
+    // NativeProfilerSession in the registry that every reader of it
+    // (native-profiler-analyze, profiler-stack-query) rejects at the gate.
+    expect(Object.keys(profilerLoadTool.services!(nativeParams as never))).toEqual([]);
+    expect(
+      Object.keys(profilerLoadTool.services!({ ...nativeParams, device_id: SIM_UDID } as never))
+    ).toEqual(["session"]);
+  });
+
+  it("rejects the request itself, rather than dead-ending in the trace parser", async () => {
+    await expect(
+      profilerLoadTool.execute({} as never, nativeParams as never)
+    ).rejects.toBeInstanceOf(UnsupportedOperationError);
+  });
+
+  it("leaves the device-independent modes alone", () => {
+    // `list` and `load_react` read the debug directory, so gating the whole tool
+    // would take the React profiler path down with it on a hardware udid.
+    for (const mode of ["list", "load_react"]) {
+      expect(
+        Object.keys(profilerLoadTool.services!({ ...nativeParams, mode } as never)),
+        mode
+      ).toEqual([]);
+    }
+    expect(() =>
+      assertSupported("profiler-load", profilerLoadTool.capability, physical)
+    ).not.toThrow();
   });
 });
 

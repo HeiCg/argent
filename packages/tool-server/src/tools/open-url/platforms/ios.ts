@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
+import { subprocessOutputTail } from "../../../utils/format-error";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import type { OpenUrlParams, OpenUrlResult, OpenUrlServices } from "../types";
 import { httpDeepLinkNote } from "../deep-link-note";
@@ -27,8 +28,10 @@ export const iosImpl: PlatformImpl<OpenUrlServices, OpenUrlParams, OpenUrlResult
           params.url,
         ]);
       } catch (err) {
+        const detail = subprocessOutputTail(err);
         throw new FailureError(
-          `Failed to open URL on physical iOS device ${params.udid}.`,
+          `Failed to open URL on physical iOS device ${params.udid}.` +
+            (detail ? ` devicectl: ${detail}.` : ""),
           {
             error_code: FAILURE_CODES.IOS_OPEN_URL_FAILED,
             failure_stage: "ios_open_url_devicectl_openurl",

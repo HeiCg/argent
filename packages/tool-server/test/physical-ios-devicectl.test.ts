@@ -194,8 +194,40 @@ describe("reinstall-app on a physical iPhone", () => {
     };
 
     await expect(reinstallIos.handler({} as never, params as never, device)).rejects.toThrow(
-      /signed with a provisioning profile that includes this device/
+      /provisioning profile does not list this device/
     );
+  });
+
+  it("carries devicectl's own diagnosis, instead of asserting a signing failure", async () => {
+    // Every install failure used to be reported as "the bundle must be … signed
+    // with a provisioning profile that includes this device", and the child's
+    // output was dropped — `subprocessFailureMetadata` records only exit code and
+    // signal, and the HTTP layer serialises `err.message`. A locked phone was
+    // therefore reported as a signing problem, sending the caller to re-sign a
+    // bundle that was fine.
+    let call = 0;
+    execResult = () => {
+      call += 1;
+      if (call === 1) return Promise.resolve({ stdout: "", stderr: "" });
+      return Promise.reject(
+        Object.assign(new Error("Command failed: xcrun devicectl"), {
+          code: 1,
+          stdout: "",
+          stderr:
+            "ERROR: The operation couldn't be completed. Unable to install the app.\n" +
+            "  Underlying error: The device is locked. (com.apple.dt.CoreDeviceError error 3002)\n" +
+            "  Recovery suggestion: Unlock the device and try again.\n",
+        })
+      );
+    };
+
+    const err = (await reinstallIos
+      .handler({} as never, params as never, device)
+      .catch((e: unknown) => e)) as Error;
+    expect(err.message).toMatch(/device is locked/i);
+    expect(err.message).toMatch(/Unlock the device/i);
+    // The signing hint stays, but as the likeliest cause rather than the verdict.
+    expect(err.message).toMatch(/Most often/);
   });
 
   it("resolves a relative appPath before handing it to devicectl", async () => {

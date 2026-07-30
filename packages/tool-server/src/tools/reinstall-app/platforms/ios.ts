@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { resolve as resolvePath } from "node:path";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
+import { subprocessOutputTail } from "../../../utils/format-error";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } from "../types";
 
@@ -43,12 +44,17 @@ export const iosImpl: PlatformImpl<ReinstallAppServices, ReinstallAppParams, Rei
           absolute,
         ]);
       } catch (err) {
+        // devicectl's own diagnosis comes first: it distinguishes a locked
+        // device, a missing app and a signing failure, which need different
+        // fixes, and nothing else carries it to the caller (the metadata below
+        // records only exit code / signal). The signing hint follows as the
+        // likeliest cause rather than as the verdict — devicectl buries it
+        // several lines in, and it is wrong for every other failure.
+        const detail = subprocessOutputTail(err);
         throw new FailureError(
-          // The dominant failure here is a bundle that is not signed for this
-          // device: a simulator .app, or one whose provisioning profile does
-          // not list the device's UDID. devicectl says so, but only several
-          // lines in, so name it up front.
-          `Failed to install ${bundleId} on physical iOS device ${udid}. The bundle must be built for iOS (not the simulator) and signed with a provisioning profile that includes this device.`,
+          `Failed to install ${bundleId} on physical iOS device ${udid}.` +
+            (detail ? ` devicectl: ${detail}.` : "") +
+            ` Most often the bundle is not built for iOS (a simulator .app) or its provisioning profile does not list this device.`,
           {
             error_code: FAILURE_CODES.IOS_REINSTALL_INSTALL_FAILED,
             failure_stage: "ios_reinstall_app_devicectl_install",

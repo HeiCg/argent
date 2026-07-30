@@ -12,6 +12,7 @@ import {
   type NativeDevtoolsApi,
 } from "../../../blueprints/native-devtools";
 import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
+import { subprocessOutputTail } from "../../../utils/format-error";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import type { RestartAppParams, RestartAppResult } from "../types";
 
@@ -49,8 +50,14 @@ export function makeIosImpl(
             bundleId,
           ]);
         } catch (err) {
+          // devicectl's own lines first: they separate "not installed" from
+          // "locked" from a signing failure, and the metadata below records only
+          // exit code / signal, so nothing else carries them to the caller.
+          const detail = subprocessOutputTail(err);
           throw new FailureError(
-            `Failed to restart ${bundleId} on physical iOS device ${udid} via devicectl — the app must already be installed and signed on the device.`,
+            `Failed to restart ${bundleId} on physical iOS device ${udid} via devicectl.` +
+              (detail ? ` devicectl: ${detail}.` : "") +
+              ` Most often the app is not installed on the device, or not signed for it.`,
             {
               error_code: FAILURE_CODES.IOS_RESTART_LAUNCH_FAILED,
               failure_stage: "ios_restart_app_devicectl_launch",

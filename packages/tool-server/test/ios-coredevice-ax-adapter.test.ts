@@ -94,6 +94,28 @@ describe("adaptCoreDeviceAxToDescribeResult (production payload: no geometry)", 
     expect(node.value).toBe("FiberMansion");
   });
 
+  it("keeps an all-trait caption whole instead of promoting a trait to `value`", () => {
+    // "Dimmed, Button" is state + role, with no name and no value. Splitting it
+    // like content leaves `{ label: "Dimmed", value: "Button" }`: a
+    // `{ value: "Button" }` selector then matches an element that has no value,
+    // and the element reads as being called "Dimmed". The single-token spelling
+    // of the same caption ("Button") already avoided this, so the fallback used
+    // to answer two ways for one case.
+    for (const caption of ["Dimmed, Button", "Selected, Button", "Not Enabled, Button"]) {
+      const [node] = adaptCoreDeviceAxToDescribeResult({
+        elements: [{ caption, id: "x" }],
+      }).children as Node[];
+      expect(node.label, caption).toBe(caption);
+      expect(node.value, caption).toBeUndefined();
+    }
+
+    // …while a caption that really does carry a value still splits.
+    const [withValue] = adaptCoreDeviceAxToDescribeResult({
+      elements: [{ caption: "Wi-Fi, FiberMansion, Button", id: "x" }],
+    }).children as Node[];
+    expect(withValue.value).toBe("FiberMansion");
+  });
+
   it("interpolates EVERY frame: full-width rows, strictly ordered top to bottom", () => {
     for (const n of nodes) {
       // approxFrame is full-width with a symmetric margin, never a real rect.

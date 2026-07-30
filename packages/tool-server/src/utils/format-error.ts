@@ -109,3 +109,29 @@ export function toSimulatorNetworkError(
     FAILURE_CODES.SIMULATOR_NETWORK_ERROR
   );
 }
+
+/**
+ * The trailing lines a failed child process wrote, for messages that would
+ * otherwise drop them.
+ *
+ * `subprocessFailureMetadata` records only exit code / signal, and the HTTP
+ * layer serialises `err.message`, so a wrapper that does not fold the child's
+ * own output into that message discards it — the caller is then left with
+ * whatever cause the wrapper guessed. `devicectl` in particular explains itself
+ * ("The device is locked", "no such application", a signing failure) several
+ * lines in, and those causes need different fixes.
+ *
+ * Bounded: a failing child can emit unbounded output, and the message goes into
+ * an agent's context.
+ */
+export function subprocessOutputTail(err: unknown, maxChars = 400): string {
+  const e = err as { stderr?: unknown; stdout?: unknown } | null;
+  const raw = [e?.stderr, e?.stdout].map((s) => (typeof s === "string" ? s : "")).join("\n");
+  const tail = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-4)
+    .join(" | ");
+  return tail.length > maxChars ? `…${tail.slice(-maxChars)}` : tail;
+}
