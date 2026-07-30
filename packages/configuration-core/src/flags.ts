@@ -9,7 +9,8 @@
 // commands live in `@argent/cli` and import the primitives below.
 //
 // `setFlag` writes a boolean, `unsetFlag` removes the entry at the chosen scope.
-// `isFlagEnabled` walks project → global, so an entry at the project scope
+// `isFlagEnabled` walks project → global (unless a forwarded set governs the
+// call — see `withForwardedFlags`), so an entry at the project scope
 // shadows the same key at the global scope. To opt a single project out of
 // a globally-enabled flag, hand-edit `<project>/.argent/flags.json` to
 // `{"flags":{"name":false}}` — there is no CLI for an explicit override.
@@ -205,9 +206,9 @@ export function readEffectiveFlags(options: FlagsPathOptions = {}): Record<strin
 // server binds it to that request's async context here.
 //
 // Inside the scope the forwarded set is the ONLY source: a flag it omits reads
-// as false, exactly like a flag stored nowhere. Falling back to disk instead
-// would let the server's own flags.json decide whatever the caller left unset —
-// the bug this mechanism exists to close.
+// as false, exactly like a flag stored nowhere. Disk is not a fallback layer
+// beneath it — that would let the server's own flags.json decide whatever the
+// caller left unset, which is the mismatch this scope exists to prevent.
 const forwardedFlags = new AsyncLocalStorage<Readonly<Record<string, boolean>>>();
 
 /**

@@ -111,11 +111,15 @@ export function createPreviewRouter(registry: Registry): Router {
   // are tokenless like the rest of /preview but STATE-CHANGING — they open the
   // window and can spawn/kill simulators. They're only ever driven by an
   // `argent lens` session, which is itself gated on the `argent-lens` flag. Gate
-  // them behind the same flag (re-read per request, like http.ts does for tools)
-  // so a user who never enabled Lens gains no new unauthenticated localhost
-  // surface: with the flag off they 404 as if absent. Read-only routes (variants
-  // / outcome / lens-stream / describe / simulators) stay ungated — they existed
-  // before this feature and only report state.
+  // them behind the same flag, re-read per request, so an operator who never
+  // enabled Lens gains no new unauthenticated localhost surface: with the flag
+  // off they 404 as if absent. Read-only routes (variants / outcome /
+  // lens-stream / describe / simulators) stay ungated — they only report state.
+  //
+  // "Enabled" here means enabled on THIS machine — the flags a linked client
+  // forwards are deliberately not honoured on /preview (see http.ts), because
+  // these routes are auth-exempt and the window they open is on this screen.
+  // That is the one place where the tool gate and this gate diverge.
   const requireLensFlag = (res: Response): boolean => {
     if (isFlagEnabled("argent-lens")) return true;
     res.status(404).end();

@@ -71,21 +71,55 @@ function buildApp(): HttpAppHandle {
       return { ran: true };
     },
   });
+  const probeGate = async (): Promise<{ inner: string }> => {
+    try {
+      await registry.invokeTool("gated_tool", {});
+      return { inner: "ran" };
+    } catch (err) {
+      if (err instanceof ToolNotFoundError) return { inner: "blocked" };
+      throw err;
+    }
+  };
   registry.registerTool({
     id: "runner_tool",
     zodSchema: z.object({}),
     services: () => ({}),
+    execute: probeGate,
+  });
+  // Same probe, but held until a second caller is inside it — so the two
+  // requests' flag scopes are provably alive simultaneously.
+  registry.registerTool({
+    id: "park_tool",
+    zodSchema: z.object({}),
+    services: () => ({}),
     async execute() {
-      try {
-        await registry.invokeTool("gated_tool", {});
-        return { inner: "ran" };
-      } catch (err) {
-        if (err instanceof ToolNotFoundError) return { inner: "blocked" };
-        throw err;
-      }
+      await arriveAtBarrier();
+      return probeGate();
     },
   });
   return createHttpApp(registry);
+}
+
+// Releases once PARKED_CALLERS callers have arrived; rejects rather than
+// hanging the suite if a caller never shows up.
+const PARKED_CALLERS = 2;
+let arrived = 0;
+let releaseBarrier: (() => void) | null = null;
+let barrier: Promise<void> | null = null;
+
+function arriveAtBarrier(): Promise<void> {
+  barrier ??= new Promise<void>((resolve, reject) => {
+    releaseBarrier = resolve;
+    setTimeout(() => reject(new Error("barrier timed out waiting for a second caller")), 5_000);
+  });
+  if (++arrived >= PARKED_CALLERS) releaseBarrier?.();
+  return barrier;
+}
+
+function resetBarrier(): void {
+  arrived = 0;
+  releaseBarrier = null;
+  barrier = null;
 }
 
 async function listedTools(headers: Record<string, string> = {}): Promise<string[]> {
@@ -112,6 +146,7 @@ beforeEach(() => {
   // spyOn rather than process.chdir(): chdir throws inside a worker thread.
   vi.spyOn(process, "cwd").mockReturnValue(serverProject);
 
+  resetBarrier();
   handle = buildApp();
 });
 
@@ -219,18 +254,102 @@ describe("forwarded feature flags", () => {
     expect(res.status).toBe(400);
   });
 
-  it("ignores a forwarded set on the auth-exempt preview subtree", async () => {
-    // /preview needs no bearer token, so any local process could otherwise flip
-    // `requireLensFlag` off by asserting it. Silently ignored, not 400: the
-    // browser UI never sends the header, so a rejection could only ever come
-    // from something forging it.
-    writeServerFlags({ [GATED_FLAG]: false });
+  it("rejects a value with trailing junk rather than decoding its valid prefix", async () => {
+    // Buffer.from(…, "base64") stops at the padding, so `<valid>GARBAGE` would
+    // otherwise decode to `<valid>` and be applied as if it were clean.
+    writeServerFlags({ [GATED_FLAG]: true });
     const res = await request(handle.app)
-      .post("/preview/boot")
-      .set(forwarded({ [GATED_FLAG]: true }))
-      .send({});
-    expect(res.status).toBe(404);
+      .get("/tools")
+      .set({ [FLAG_FORWARD_HEADER]: `${encodeForwardedFlags({})}GARBAGE!!!` });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects the comma-joined value a duplicated header produces", async () => {
+    // Node folds duplicate non-set-cookie headers into one comma-joined string.
+    // Silently honouring the first half would pick a flag set at random from
+    // whatever two clients (or a client and a proxy) each asserted.
+    const duplicated = `${encodeForwardedFlags({ [GATED_FLAG]: true })}, ${encodeForwardedFlags({})}`;
+    const res = await request(handle.app)
+      .get("/tools")
+      .set({ [FLAG_FORWARD_HEADER]: duplicated });
+    expect(res.status).toBe(400);
+  });
+
+  it("does not acknowledge a set it rejected", async () => {
+    const res = await request(handle.app)
+      .get("/tools")
+      .set({ [FLAG_FORWARD_HEADER]: "not-base64-json" });
+    expect(res.status).toBe(400);
+    // A client that saw the ack would conclude its flags applied to a request
+    // that never ran.
     expect(res.headers[FLAG_FORWARD_ACK_HEADER.toLowerCase()]).toBeUndefined();
+  });
+
+  it("keeps two overlapping requests' forwarded sets apart", async () => {
+    // The property async-context storage buys over a module-level variable.
+    // park_tool blocks until BOTH requests have entered it, so the two scopes
+    // are provably live at the same moment; only then does each consult the
+    // flag. A single shared override would hand both the same answer.
+    writeServerFlags({ [GATED_FLAG]: true });
+    const [a, b] = await Promise.all([
+      request(handle.app).post("/tools/park_tool").set(forwarded({})).send({}),
+      request(handle.app)
+        .post("/tools/park_tool")
+        .set(forwarded({ [GATED_FLAG]: true }))
+        .send({}),
+    ]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(a.body.data).toEqual({ inner: "blocked" });
+    expect(b.body.data).toEqual({ inner: "ran" });
+  });
+
+  // /preview needs no bearer token, so any process that can reach the port could
+  // otherwise flip `requireLensFlag` on by asserting it. Silently ignored rather
+  // than 400: the browser UI never sends the header, so a rejection could only
+  // ever come from something forging it.
+  //
+  // Both spellings, because Express matches mount paths case-insensitively:
+  // /PREVIEW/boot reaches the very same handler, so a case-sensitive exclusion
+  // would be a one-keystroke bypass. A 404 here means `requireLensFlag` saw this
+  // machine's flag (off) rather than the forwarded one; past that guard the
+  // route answers 400 for the missing `udid`.
+  for (const path of ["/preview/boot", "/PREVIEW/boot"]) {
+    it(`ignores a forwarded set on the preview subtree (${path})`, async () => {
+      writeServerFlags({ [GATED_FLAG]: false });
+      const res = await request(handle.app)
+        .post(path)
+        .set(forwarded({ [GATED_FLAG]: true }))
+        .send({});
+      expect(res.status).toBe(404);
+      expect(res.headers[FLAG_FORWARD_ACK_HEADER.toLowerCase()]).toBeUndefined();
+    });
+  }
+
+  it("refuses to read a forwarded set from an unauthenticated caller", async () => {
+    // The middleware sits BEHIND the auth gate. Moving it in front would let an
+    // unauthenticated request steer flag resolution before being rejected — and
+    // would still 401, so only the ack header reveals the ordering.
+    const originalToken = process.env.ARGENT_AUTH_TOKEN;
+    process.env.ARGENT_AUTH_TOKEN = "secret-token";
+    let authed: HttpAppHandle | undefined;
+    try {
+      authed = buildApp(); // snapshots the token at construction
+      const rejected = await request(authed.app).get("/tools").set(forwarded({}));
+      expect(rejected.status).toBe(401);
+      expect(rejected.headers[FLAG_FORWARD_ACK_HEADER.toLowerCase()]).toBeUndefined();
+
+      const accepted = await request(authed.app)
+        .get("/tools")
+        .set("Authorization", "Bearer secret-token")
+        .set(forwarded({}));
+      expect(accepted.status).toBe(200);
+      expect(accepted.headers[FLAG_FORWARD_ACK_HEADER.toLowerCase()]).toBe("true");
+    } finally {
+      authed?.dispose();
+      if (originalToken === undefined) delete process.env.ARGENT_AUTH_TOKEN;
+      else process.env.ARGENT_AUTH_TOKEN = originalToken;
+    }
   });
 
   it("gates GET /artifacts on the caller's flags, not this machine's", async () => {

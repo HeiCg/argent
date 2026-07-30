@@ -29,6 +29,15 @@ export function encodeForwardedFlags(flags: Record<string, boolean>): string {
   return Buffer.from(JSON.stringify(flags), "utf8").toString("base64");
 }
 
+// Canonical base64: the standard alphabet, padded to a multiple of 4.
+//
+// Buffer.from(…, "base64") is far laxer — it stops at the padding and ignores
+// anything after it, so `<valid>GARBAGE` and the comma-joined string Node
+// produces for a duplicated header both decode to the FIRST value and sail
+// through as if they were clean. Shape-check first so those reach the caller as
+// a rejection rather than as a silently truncated flag set.
+const CANONICAL_BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
 /**
  * Decode a {@link FLAG_FORWARD_HEADER} value.
  *
@@ -39,8 +48,9 @@ export function encodeForwardedFlags(flags: Record<string, boolean>): string {
  * key, and throws {@link ForwardedFlagsError}.
  */
 export function decodeForwardedFlags(raw: string): Record<string, boolean> {
-  // Buffer.from(…, "base64") never throws — it skips characters outside the
-  // alphabet — so JSON.parse is what actually rejects a corrupt value.
+  if (raw.length % 4 !== 0 || !CANONICAL_BASE64.test(raw)) {
+    throw new ForwardedFlagsError("value is not canonical base64");
+  }
   const json = Buffer.from(raw, "base64").toString("utf8");
   let parsed: unknown;
   try {
@@ -51,10 +61,16 @@ export function decodeForwardedFlags(raw: string): Record<string, boolean> {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new ForwardedFlagsError("decoded value is not a JSON object of flag booleans");
   }
-  // Null prototype: a forwarded `__proto__` key is then an ordinary own entry
-  // instead of a prototype write, and Object.hasOwn lookups stay exact.
+  // Null prototype so Object.hasOwn lookups stay exact for prototype-named
+  // flags ("toString", "constructor", …).
   const flags = Object.create(null) as Record<string, boolean>;
   for (const [name, value] of Object.entries(parsed)) {
+    // `__proto__` is dropped to hold the disk/wire parity above: on a plain
+    // object the flags.json reader's `out[k] = v` hits the prototype setter and
+    // stores nothing, so a flag by that name resolves false when read locally.
+    // A null-prototype object has no such setter and would store it, making the
+    // same flags.json mean two different things either side of the wire.
+    if (name === "__proto__") continue;
     if (typeof value === "boolean") flags[name] = value;
   }
   return flags;

@@ -1,5 +1,5 @@
 import { ensureToolsServer, type ToolsServerHandle, type ToolsServerPaths } from "./launcher.js";
-import { getResolvedToolsUrl } from "./link-config.js";
+import { getResolvedToolsUrl, isRemoteRouted } from "./link-config.js";
 import { flagForwardHeaders } from "./flag-forwarding.js";
 import { prepareFileInputs, applyClientFileDirectives, type FileInputSpec } from "./file-inputs.js";
 
@@ -58,8 +58,7 @@ function authHeaders(token: string | undefined): Record<string, string> {
  * operator's flags rather than the caller's (see flag-forwarding.ts).
  */
 async function requestHeaders(token: string | undefined): Promise<Record<string, string>> {
-  const { url } = await getResolvedToolsUrl();
-  return { ...authHeaders(token), ...(url !== null ? flagForwardHeaders() : {}) };
+  return { ...authHeaders(token), ...((await isRemoteRouted()) ? flagForwardHeaders() : {}) };
 }
 
 /**

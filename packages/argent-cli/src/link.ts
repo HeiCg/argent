@@ -173,12 +173,14 @@ Resolution order for the tool-server URL:
   3. Auto-spawn a local tool-server (default)
 
 Feature flags:
-  While linked, every request carries this machine's feature flags (\`argent
+  While linked, every tool request carries this machine's feature flags (\`argent
   flags\`) and the remote server gates tools on those instead of its own — the
   server runs on someone else's machine, in someone else's project directory,
   so its \`argent enable\` choices are not yours. A flag you have not set reads
   as off there even if the operator enabled it. Flags are re-read per request,
-  so \`argent enable <flag>\` reaches a linked server without re-linking.
+  so \`argent enable <flag>\` reaches a linked server without re-linking. The
+  remote's own flags still govern its \`argent lens\` preview window, which runs
+  on its screen, not yours.
 
 Flags:
   --host <h>        Remote host or IP to connect to. Prompts interactively if
@@ -336,13 +338,17 @@ async function preflightHealth(url: string, token?: string): Promise<PreflightRe
 
 /**
  * Report what the link does to feature flags. A linked client sends its own
- * flags with every request, so the remote server stops consulting its
- * flags.json for this user entirely — including for flags the user has not set,
- * which is worth stating because it can *remove* a tool the remote had enabled.
+ * flags on every tool request and the remote server gates on those alone, so
+ * flags the user has NOT set matter as much as the ones they have: an empty set
+ * hides every flag-gated tool the operator had enabled.
+ *
+ * That is why an unacknowledged probe is worth warning about in both cases. A
+ * server too old to honour the header falls back to its own flags.json, which
+ * diverges from what the user was just told either way round.
  *
  * `flagsApplied` is undefined when no probe ran (--no-verify, or verification
- * skipped after a failure), in which case there is nothing to report about the
- * server's support for it.
+ * skipped after a failure), in which case the server's support is simply
+ * unknown and there is nothing to report about it.
  */
 function printFlagForwarding(flagsApplied: boolean | undefined): void {
   const flags = readEffectiveFlags();
@@ -355,18 +361,18 @@ function printFlagForwarding(flagsApplied: boolean | undefined): void {
           "tools stay hidden for you (`argent enable <flag>` to turn one on)"
       )
     );
-    return;
+  } else {
+    const summary = names.map((name) => `${name}=${flags[name] ? "on" : "off"}`).join(", ");
+    console.log(pc.dim(`  flags: forwarding your local flags to the remote server — ${summary}`));
   }
-
-  const summary = names.map((name) => `${name}=${flags[name] ? "on" : "off"}`).join(", ");
-  console.log(pc.dim(`  flags: forwarding your local flags to the remote server — ${summary}`));
 
   if (flagsApplied === false) {
     process.stderr.write(
       pc.yellow(
-        `WARNING: the remote tool-server did not acknowledge the forwarded flags — it ` +
-          `predates this and will gate tools on ITS OWN flags.json instead. Update argent ` +
-          `on that machine to have your flags apply.\n`
+        `WARNING: the remote tool-server did not acknowledge the forwarded flags. It is ` +
+          `running a version of argent that predates flag forwarding, so it will gate tools ` +
+          `on ITS OWN flags.json and the line above does not describe what you will get. ` +
+          `Run \`argent update\` on that machine.\n`
       )
     );
   }

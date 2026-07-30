@@ -227,17 +227,28 @@ describe("argent link — X-Argent-Flags-Applied acknowledgement", () => {
     expect(stdout).toMatch(/alpha-flag=on.*beta-flag=off/);
   });
 
-  it("reports 'none set on this machine' and does NOT warn when no flags are set", async () => {
+  it("reports 'none set on this machine' and still warns an unacknowledging server", async () => {
     state.ackFlags = false; // same old server as the warning case
 
     const { stdout, stderr } = await runLink();
 
     expect(stdout).toContain("flags: none set on this machine");
-    // Deliberate asymmetry: with nothing to forward there is nothing for an old
-    // server to ignore, so the unacknowledged probe is not worth warning about.
-    expect(stderr).not.toMatch(/WARNING/);
+    // An empty set is the STRONGEST assertion in this protocol — it turns every
+    // flag-gated tool off. A server that ignores it falls back to its own
+    // flags.json and may serve tools the line above just said would be hidden,
+    // so the unacknowledged probe matters here as much as with flags set.
+    expect(stderr).toMatch(/WARNING/);
     // The header still goes out — an empty set is a set, not an absence.
     expect(forwardedFlags(state.requests[0]!)).toEqual({});
+  });
+
+  it("does not warn about an empty set when the server acknowledges it", async () => {
+    state.ackFlags = true;
+
+    const { stdout, stderr } = await runLink();
+
+    expect(stdout).toContain("flags: none set on this machine");
+    expect(stderr).toBe("");
   });
 
   it("--no-verify reports the flags without a probe, so nothing is unacknowledged", async () => {

@@ -99,12 +99,24 @@ function isToolExposed(
   return true;
 }
 
-// The browser-loaded preview UI subtree, which the auth gate exempts and the
-// forwarded-flag gate therefore refuses to trust. An exact `/preview` or
-// `/preview/`-prefixed match, so a future top-level route like
-// `/preview-status` can't be silently swept in by a bare startsWith.
-function isPreviewPath(reqPath: string): boolean {
+// The paths the auth gate exempts from bearer-token checks: the browser-loaded
+// preview UI, which has no token to send. Matched exactly — `/preview` or a
+// `/preview/` prefix — so neither a future top-level route like
+// `/preview-status` nor a case-varied spelling the real UI never emits can
+// reach an unauthenticated handler.
+function isAuthExemptPreviewPath(reqPath: string): boolean {
   return reqPath === "/preview" || reqPath.startsWith("/preview/");
+}
+
+// Everything Express will actually route INTO the preview router. Mount paths
+// match case-insensitively, so `/PREVIEW/boot` lands on the same handler as
+// `/preview/boot`; the forwarded-flag gate must therefore test case-insensitively
+// or a caller could dodge the exclusion below by shouting the path. Deliberately
+// WIDER than isAuthExemptPreviewPath: skipping a flag override on a request that
+// still needs a token costs nothing, whereas exempting one from auth would not.
+function reachesPreviewRouter(reqPath: string): boolean {
+  const lower = reqPath.toLowerCase();
+  return lower === "/preview" || lower.startsWith("/preview/");
 }
 
 function findDependencyMissing(err: unknown): DependencyMissingError | null {
@@ -446,7 +458,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       next();
       return;
     }
-    if (isPreviewPath(req.path)) {
+    if (isAuthExemptPreviewPath(req.path)) {
       next();
       return;
     }
@@ -468,20 +480,23 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // flags.json describes the operator's preferences and this server's cwd
   // resolves the operator's project — neither belongs to the person driving
   // the tools. When the caller forwards its set, bind it to this request's
-  // async context so every flag read underneath (the exposure gate below, the
-  // registry's dispatch gate, the Lens preview routes) resolves against the
-  // caller's flags instead of the disk. Requests without the header — a local
-  // auto-spawned client — read disk as before.
+  // async context so the flag reads underneath resolve against the caller: the
+  // exposure gate below, the registry's dispatch gate (which flow-execute and
+  // run-sequence go through), and the /artifacts inventory gate. A request
+  // without the header — a locally auto-spawned client — reads disk.
   //
-  // Placed after the auth gate, and skipping the routes that gate exempts: only
-  // an authenticated caller may steer flag resolution. The preview subtree is
-  // exactly those exempt routes, and some of them are themselves flag-gated
-  // (`requireLensFlag`), so honouring the header there would let any local
-  // process turn a gate off by asserting it. The preview UI runs on this
-  // machine anyway, which makes this machine's flags the right source for it.
+  // The preview subtree is excluded. Its routes are the ones the auth gate
+  // exempts, so honouring a forwarded set there would let any process that can
+  // reach the port turn `requireLensFlag` off by asserting it; and the preview
+  // UI is a browser on this machine driving a window on this machine, which
+  // makes this machine's flags the correct source for it either way.
+  //
+  // Everything else sits behind the auth gate, so steering flag resolution
+  // costs a valid bearer token — except on a `server start --no-auth` server,
+  // which by design lets any caller that reaches it do anything.
   app.use((req, res, next) => {
     const raw = firstHeader(req.headers[FLAG_FORWARD_HEADER_LC]);
-    if (raw === undefined || isPreviewPath(req.path)) {
+    if (raw === undefined || reachesPreviewRouter(req.path)) {
       next();
       return;
     }
@@ -490,8 +505,9 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       flags = decodeForwardedFlags(raw);
     } catch (err) {
       // Only argent's own client sends this header, so a bad value is a bug or
-      // a forgery. Reject it loudly — silently falling back to our flags.json
-      // would resurrect exactly the mismatch this header exists to prevent.
+      // a forgery. Reject it loudly: falling back to our flags.json would hand
+      // the caller the operator's preferences without saying so, which is the
+      // mismatch this header exists to prevent.
       res.status(400).json({
         error:
           `Invalid ${FLAG_FORWARD_HEADER} header: ` +
@@ -512,9 +528,15 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // exports) over the remote-aware HTTP boundary so the MCP client can fetch
   // them via TOOLS_URL instead of an unreachable 127.0.0.1 host path/URL.
   //
-  // The inventory route is flag-gated per request, like the tool gate above,
-  // rather than only registered when the flag is on at boot: its consumers are
-  // remote by definition, so the answer has to track the caller's flags.
+  // The inventory route is flag-gated per request, like the tool gate above:
+  // its consumers are remote by definition, so the answer has to track the
+  // caller's flags rather than whatever this machine had set at boot.
+  //
+  // The trade: this flag is no longer an absolute off-switch. An authenticated
+  // caller can assert it on for its own requests, exactly as it can for a
+  // flag-gated tool. That is the same boundary — a bearer token already buys
+  // arbitrary tool invocation — so an operator who needs the endpoint hard-off
+  // must not hand out a token, rather than rely on their own flags.json.
   const artifactListRoute = makeArtifactListRoute(registry);
   app.get("/artifacts", (req: Request, res: Response) => {
     if (!isFlagEnabled(ARTIFACTS_LIST_ENDPOINT_FLAG)) {

@@ -152,9 +152,17 @@ function runToggle(
 
   // Only registry-listed flags can be enabled. `disable` stays lenient so a
   // flag that was removed from the registry can still be cleared from storage.
+  //
+  // The registry consulted is THIS install's. A linked tool-server gates its
+  // tools on the flags this machine forwards, so a flag that exists only in a
+  // newer argent on the server side cannot be turned on from here — hence the
+  // hand-edit escape hatch in the message, which the storage reader accepts
+  // (see the FLAG_REGISTRY notes in @argent/configuration-core).
   if (command === "enable" && getFlagDefinition(parsed.name, registry) === undefined) {
     console.error(
-      `Error: Unknown feature flag "${parsed.name}". Run \`argent flags\` to see available flags.`
+      `Error: Unknown feature flag "${parsed.name}". Run \`argent flags\` to see available flags.\n` +
+        `If a tool-server you linked to runs a newer argent that knows this flag, either run ` +
+        `\`argent update\` here or add it by hand to ${getFlagsPath(parsed.scope)}.`
     );
     process.exit(2);
   }

@@ -143,11 +143,12 @@ describe("GET /artifacts", () => {
     isFlagEnabledMock.mockReset();
   });
 
-  it("is hidden unless the artifact list endpoint flag is enabled", async () => {
+  it("404s with a JSON hint unless the artifact list endpoint flag is enabled", async () => {
     handle = createHttpApp(stubRegistry());
     const res = await supertest(handle.app).get("/artifacts");
 
     expect(res.status).toBe(404);
+    expect(res.body.error).toContain("argent enable artifacts-list-endpoint");
   });
 
   it("returns registered artifact metadata without host paths", async () => {
