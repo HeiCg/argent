@@ -1,6 +1,6 @@
 import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
-import { resolveDevice } from "../../utils/device-info";
+import { isPhysicalIos, resolveDevice } from "../../utils/device-info";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import type { WhenPlatform } from "./flow-utils";
 
@@ -35,9 +35,10 @@ function isBooted(d: RawDevice): boolean {
   switch (d.platform) {
     case "ios":
       // "Booted" is a simulator; a connected physical iPhone reports
-      // "connected", the same way `list-devices` ranks both as ready. Without
-      // the second arm auto-detection skips an attached iPhone and reports "no
-      // booted device found" while listing it in the same error.
+      // "connected", the same way `list-devices` ranks both as ready. The second
+      // arm keeps an attached iPhone in the candidate set so it is named by
+      // `assertFlowCapableDevice`'s reason rather than by "no booted device
+      // found" alongside a list that plainly contains one.
       return d.state === "Booted" || d.state === "connected";
     case "android":
       return d.state === "device";
@@ -65,6 +66,34 @@ function deviceResolutionError(message: string, all: RawDevice[]): FailureError 
 }
 
 /**
+ * Reject a target the flow runner cannot resolve selectors against.
+ *
+ * A physical iPhone is listed and reachable, but `fetchFlowTree` sends every
+ * iOS device to the native view hierarchy, which is served by a dylib injected
+ * with `simctl spawn` — no physical-device equivalent, and `nativeDevtoolsBlueprint`
+ * refuses `kind: "device"` outright. The CoreDevice accessibility tree is not a
+ * substitute: it carries no testIDs, no geometry, and an order that rotates
+ * between reads, so selector matching and `visible`/`hidden` would answer from
+ * placeholders (the same reason `flow-tree.ts` allows no fallback to a trimmed
+ * tree). Say that once, here, instead of letting every selector step fail with a
+ * devtools error and a "restart the argent server" hint that cannot help.
+ */
+function assertFlowCapableDevice(device: DeviceInfo): DeviceInfo {
+  if (isPhysicalIos(device)) {
+    throw new FailureError(
+      `Flows cannot run against the physical iPhone "${device.id}": selectors resolve against the native view hierarchy, which needs argent's devtools dylib injected into the app — there is no physical-device equivalent. Drive it with describe + gesture-tap / gesture-swipe, or run the flow on a simulator.`,
+      {
+        error_code: FAILURE_CODES.FLOW_DEVICE_RESOLUTION,
+        failure_stage: "flow_device_resolution",
+        failure_area: "tool_server",
+        error_kind: "unsupported",
+      }
+    );
+  }
+  return device;
+}
+
+/**
  * Resolve the device a flow runs against. Order: explicit `device` id → the
  * single booted device of `platform` → the single booted device overall →
  * throw, enumerating what is available.
@@ -74,7 +103,7 @@ export async function resolveFlowDevice(
   ctx: ToolContext | undefined,
   opts: { device?: string; platform?: FlowPlatform }
 ): Promise<DeviceInfo> {
-  if (opts.device) return resolveDevice(opts.device);
+  if (opts.device) return assertFlowCapableDevice(resolveDevice(opts.device));
 
   const { devices } = (await invokeSubTool(registry, ctx, "list-devices", {})) as {
     devices: RawDevice[];
@@ -84,7 +113,7 @@ export async function resolveFlowDevice(
 
   if (scoped.length === 1) {
     const id = deviceEntryId(scoped[0]);
-    if (id) return resolveDevice(id);
+    if (id) return assertFlowCapableDevice(resolveDevice(id));
   }
   if (scoped.length === 0) {
     const what = opts.platform
