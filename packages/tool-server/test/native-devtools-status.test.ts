@@ -43,6 +43,7 @@ function makeNativeApi(options: {
   api: NativeDevtoolsApi;
   ensureEnvReady: ReturnType<typeof vi.fn>;
   reverifyEnv: ReturnType<typeof vi.fn>;
+  isAppRunning: ReturnType<typeof vi.fn>;
 } {
   let envSetup = options.envSetup ?? false;
   const ensureEnvReady = vi.fn(async () => {
@@ -51,6 +52,7 @@ function makeNativeApi(options: {
   const reverifyEnv = vi.fn(async () => {
     envSetup = true;
   });
+  const isAppRunning = vi.fn(async () => options.appRunning ?? false);
 
   return {
     api: {
@@ -60,7 +62,7 @@ function makeNativeApi(options: {
       reverifyEnv,
       getInitFailure: () => options.initFailure ?? null,
       isConnected: () => options.connected ?? false,
-      isAppRunning: async () => options.appRunning ?? false,
+      isAppRunning,
       listConnectedBundleIds: () => [],
       appConnectionState: async () => {
         if (options.connected) return "connected";
@@ -80,6 +82,7 @@ function makeNativeApi(options: {
     },
     ensureEnvReady,
     reverifyEnv,
+    isAppRunning,
   };
 }
 
@@ -624,6 +627,42 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   // same pin here, collapsing the mapping back to a single status would leave
   // every tool-level test green while the agent silently gets restart-app
   // guidance again.
+  it("reads running-ness out of the state instead of a second device probe", async () => {
+    // `appConnectionState` already runs `launchctl list`, and it re-verifies the
+    // launchd env first — so a separate `isAppRunning` is both an extra simctl
+    // round-trip and a snapshot taken seconds apart from the one `state` came
+    // from, which is how `appRunning: true` could be reported beside
+    // `state: "not_running"`. Four of the five states settle running-ness on
+    // their own; only `indeterminate` may pay for its own probe.
+    for (const state of ["connected", "not_running", "stale_process", "unregistered"] as const) {
+      const { api, isAppRunning } = makeNativeApi({ envSetup: true, connected: false, state });
+
+      const result = (await nativeDevtoolsStatusTool.execute(
+        { nativeDevtools: api },
+        { udid: "UDID", bundleId: "com.example.app" }
+      )) as { appRunning: boolean; state: string };
+
+      expect(isAppRunning, `${state} must not re-probe the device`).not.toHaveBeenCalled();
+      expect(result.state).toBe(state);
+      expect(result.appRunning).toBe(state !== "not_running");
+    }
+
+    const { api, isAppRunning } = makeNativeApi({
+      envSetup: true,
+      connected: false,
+      appRunning: true,
+      state: "indeterminate",
+    });
+    const result = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: api },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as { appRunning: boolean; requiresRestart: boolean };
+
+    expect(isAppRunning).toHaveBeenCalledTimes(1);
+    expect(result.appRunning).toBe(true);
+    expect(result.requiresRestart).toBe(true);
+  });
+
   it("carries service_stale out through every native-* tool", async () => {
     const tools = [
       nativeDescribeScreenTool,
