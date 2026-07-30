@@ -325,6 +325,14 @@ async function listRunningUIKitApplicationBundleIds(udid: string): Promise<Set<s
  * `DYLD_INSERT_LIBRARIES` and endpoint variables that decide whether Argent's
  * dylib loaded. Returns null when the process is gone or `ps` output doesn't
  * parse; callers treat that as "no evidence", never as "not injected".
+ *
+ * The no-evidence guarantee covers an unreadable *line*, not an unreadable
+ * environment: `ps` suppresses the env of a SIP-protected platform binary while
+ * still printing a well-formed argv, which reads as an uninjected process
+ * rather than an unknown one. Simulator apps are not platform binaries (both
+ * third-party apps and the runtime's own bundles render their full env), and
+ * the one family that is — `com.apple.*` — never reaches here: it is rejected
+ * as non-injectable before any connection state is measured.
  */
 async function readProcessLaunchState(pid: number): Promise<RunningAppProcess | null> {
   let stdout: string;
@@ -332,6 +340,10 @@ async function readProcessLaunchState(pid: number): Promise<RunningAppProcess | 
     ({ stdout } = await execFileAsync(PS_BIN, ["eww", "-p", String(pid), "-o", "etime=,command="], {
       encoding: "utf8",
       timeout: PS_PROBE_TIMEOUT_MS,
+      // Matches the other `ps` probes (vega-process.ts). An environment can run
+      // to `kern.argmax` (1 MiB), which is exactly Node's default cap, so the
+      // default would ENOBUFS on a maximal one instead of reading it.
+      maxBuffer: 16 * 1024 * 1024,
     }));
   } catch {
     return null;

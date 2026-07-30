@@ -7,7 +7,13 @@ import type { DeviceInfo } from "@argent/registry";
 // listener even existed at the time — since that is the whole difference
 // between "restart-app fixes this" and "restarting the app is a loop".
 
-const probe = vi.hoisted(() => ({ launchctlList: "", psOutput: "", psFails: false }));
+const probe = vi.hoisted(() => ({
+  launchctlList: "",
+  psOutput: "",
+  psFails: false,
+  /** `launchctl setenv/getenv` calls seen — i.e. the launchd env being re-applied. */
+  envOps: 0,
+}));
 
 vi.mock("@argent/native-devtools-ios", () => ({
   bootstrapDylibPath: () => "/fake/dylibs/libArgentInjectionBootstrap.dylib",
@@ -37,6 +43,11 @@ vi.mock("node:child_process", async () => {
       }
       if (argv.includes("launchctl list")) {
         callback(null, { stdout: probe.launchctlList, stderr: "" });
+        return;
+      }
+      if (argv.includes("launchctl setenv") || argv.includes("launchctl getenv")) {
+        probe.envOps += 1;
+        callback(null, { stdout: "", stderr: "" });
         return;
       }
       if (argv.includes("simctl list")) {
@@ -204,6 +215,57 @@ describe("appConnectionState measures the running process", () => {
     probe.psFails = true;
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
+  });
+
+  it("reports indeterminate when ps answers but its age column does not parse", async () => {
+    // `ps` exiting 0 with an unreadable etime is not the same as `ps` failing,
+    // and it must not become a *measurement*: substituting any age here (0
+    // being the tempting one) would let an uninspectable process be judged
+    // against the listener and reported as a definite `stale_process`. The env
+    // below carries no bootstrap dylib precisely so a fabricated age would show
+    // up as that stronger claim.
+    probe.psOutput = psLine("not-an-etime", `NATIVE_DEVTOOLS_IOS_CDP_SOCKET=${SOCKET}`);
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
+  });
+
+  // The 3 s grace is the difference between "one wasted restart-app" and
+  // "restart a tool-server that was never broken". The other cases sit 200x
+  // away from it on either side, so they pass whatever the term does — these
+  // two sit ON it. Without them, both dropping the grace and weakening `>=` to
+  // `>` leave the suite green while flipping a relaunchable process to
+  // `unregistered`, the one verdict this file exists to withhold.
+  it("still calls a process that started exactly at the grace boundary stale", async () => {
+    // Launched 597 s after the listener, read at 600 s: 597 + 3 == 600.
+    probe.psOutput = psLine("09:57", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("stale_process");
+  });
+
+  it("still calls a process launched a second before the listener stale", async () => {
+    probe.psOutput = psLine("09:59", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("stale_process");
+  });
+
+  it("re-applies the launchd env on every read, not just the first", async () => {
+    // The factory already latched `envSetup`, so a latching `ensureEnvReady()`
+    // here would be a silent no-op. `reverifyEnv` exists to bypass that latch:
+    // a simulator rebooted out of band has had DYLD_INSERT_LIBRARIES wiped
+    // while the latch still reads `true`, and this is the call that puts it
+    // back — so a process judged without it would be compared against an env no
+    // relaunch would actually get.
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      const api = instance.api as NativeDevtoolsApi;
+      probe.envOps = 0;
+
+      await api.appConnectionState(BUNDLE);
+
+      expect(probe.envOps).toBeGreaterThan(0);
+    } finally {
+      await instance.dispose();
+    }
   });
 
   it("reports indeterminate for a registered job with no live process", async () => {

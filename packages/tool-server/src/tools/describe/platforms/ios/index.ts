@@ -146,16 +146,25 @@ export async function describeIos(
 
     const state = await nativeApi.appConnectionState(target.bundleId);
     if (state !== "connected") {
-      // `should_restart` is the agent-facing instruction to relaunch, so it is
-      // set only for the states a relaunch actually fixes. An `unregistered`
-      // process already launched under the terms a restart would recreate —
-      // flagging it here would rebuild the restart-app → describe loop this
-      // gate exists to avoid — so its diagnosis rides out as a hint instead,
-      // which still marks the empty read as untrustworthy.
+      // The diagnosis rides out as a hint for every state, because `hint` is the
+      // only channel describe has for prose: `should_restart` reaches the agent
+      // as a bare JSON boolean, and the one place it is rendered as English —
+      // await-ui-element's timeout note — spells it "call restart-app and
+      // retry", the loop instruction with no escape. `indeterminate` is where
+      // that costs the most: its message is the one carrying "do not keep
+      // restarting the app", and on ios-remote it is the *only* reachable
+      // unconnected state, so without the hint the loop has no exit at all.
+      //
+      // `should_restart` itself is the agent-facing instruction to relaunch, so
+      // it stays limited to the states a relaunch actually fixes. An
+      // `unregistered` process already launched under the terms a restart would
+      // recreate — flagging it would rebuild the restart-app → describe loop
+      // this gate exists to avoid.
       const diagnosis = buildAppStateMessage(target.bundleId, state);
+      const merged = hint ? `${hint} ${diagnosis}` : diagnosis;
       return state === "unregistered"
-        ? { tree, source: "ax-service", hint: hint ? `${hint} ${diagnosis}` : diagnosis }
-        : { tree, source: "ax-service", should_restart: true, hint };
+        ? { tree, source: "ax-service", hint: merged }
+        : { tree, source: "ax-service", should_restart: true, hint: merged };
     }
 
     const rawResult = (await nativeApi.queryViewHierarchy(

@@ -259,6 +259,72 @@ describe("describe tool", () => {
     expect(result.source).toBe("ax-service");
     expect(result.should_restart).toBe(true);
     expect(elementLineCount(result.description)).toBe(0);
+    // The boolean alone is an undocumented JSON field; the reason the relaunch
+    // is warranted has to travel with it.
+    expect(result.hint).toContain("restart-app");
+  });
+
+  it("carries the loop escape for a process it could not inspect", async () => {
+    // `indeterminate` is the only unconnected state reachable on ios-remote,
+    // whose app processes are out of reach of the local process table. describe
+    // sets should_restart there, and await-ui-element renders that as "call
+    // restart-app and retry" — so if the diagnosis does not ride along, the
+    // agent restarts forever with nothing ever naming the tool-server. This is
+    // the loop the derivation exists to break, reached through the one state
+    // that can never resolve itself.
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
+    const nativeApi = makeNativeDevtoolsApi({
+      connectedBundleIds: [],
+      state: "indeterminate",
+    });
+    const registry = makeMockRegistry({ axService: axApi, nativeDevtools: nativeApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute(
+      {},
+      { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", bundleId: "com.example.app" }
+    );
+    expect(result.source).toBe("ax-service");
+    expect(result.should_restart).toBe(true);
+    expect(result.hint).toContain("do not keep restarting the app");
+    expect(result.hint).toContain("argent server stop && argent server start");
+  });
+
+  it("names the stopped app rather than only flagging a restart", async () => {
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
+    const nativeApi = makeNativeDevtoolsApi({
+      connectedBundleIds: [],
+      state: "not_running",
+    });
+    const registry = makeMockRegistry({ axService: axApi, nativeDevtools: nativeApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute(
+      {},
+      { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", bundleId: "com.example.app" }
+    );
+    expect(result.should_restart).toBe(true);
+    expect(result.hint).toContain("com.example.app");
+    expect(result.hint).toContain("launch-app");
+  });
+
+  it("keeps the AX-degraded hint alongside the connection diagnosis", async () => {
+    // The two hints answer different questions — how to fix the sim boot, and
+    // why the native fallback is silent — so neither may displace the other.
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] }, { degraded: true });
+    const nativeApi = makeNativeDevtoolsApi({
+      connectedBundleIds: [],
+      state: "stale_process",
+    });
+    const registry = makeMockRegistry({ axService: axApi, nativeDevtools: nativeApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute(
+      {},
+      { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", bundleId: "com.example.app" }
+    );
+    expect(result.hint).toContain("boot-device");
+    expect(result.hint).toContain("restart-app");
   });
 
   it("does NOT return should_restart when the app is injected but unregistered", async () => {

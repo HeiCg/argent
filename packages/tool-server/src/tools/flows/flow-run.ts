@@ -41,7 +41,11 @@ import {
   type ActionEnv,
   type DirectiveOutcome,
 } from "./flow-actions";
-import { nativeDevtoolsRef, type NativeDevtoolsApi } from "../../blueprints/native-devtools";
+import {
+  buildAppStateMessage,
+  nativeDevtoolsRef,
+  type NativeDevtoolsApi,
+} from "../../blueprints/native-devtools";
 import { androidDevtoolsRef, type AndroidDevtoolsApi } from "../../blueprints/android-devtools";
 import {
   chromiumCdpRef,
@@ -189,36 +193,47 @@ const POST_LAUNCH_SETTLE_MS = 1500;
  * missing connection as a hard per-read error (it never degrades to the
  * collapsing AX tree — see flow-tree.ts), so without this gate a slow cold
  * start would fail the first directive with a raw tree-source error; gating
- * the launch step reports the problem where it belongs, with a relaunch hint.
+ * the launch step reports the problem where it belongs, with the measured
+ * reason the connection never came up.
  */
 const NATIVE_READY_TIMEOUT_MS = 8000;
 const NATIVE_READY_POLL_MS = 250;
 
 /**
- * Poll until native-devtools is connected for `bundleId`. Returns true once
- * connected, false on timeout / abort / the service being unavailable. The
- * caller decides how to treat false (iOS flows fail; see treeSourceGate).
+ * Poll until native-devtools is connected for `bundleId`. Returns null once
+ * connected (or on abort / the service being unavailable, which the caller
+ * re-checks), else the measured reason the connection never came up.
+ *
+ * The reason is read off the process rather than guessed. A relaunch is the
+ * wrong advice for an app that already launched under the terms a relaunch
+ * would recreate, and this gate is reached right after a launch — so guessing
+ * "re-run to relaunch" here is the same restart loop `appConnectionState`
+ * exists to break, one level up.
  */
 async function waitForNativeDevtools(
   registry: Registry,
   device: DeviceInfo,
   bundleId: string,
   signal?: AbortSignal
-): Promise<boolean> {
+): Promise<string | null> {
   let api: NativeDevtoolsApi;
   try {
     const ref = nativeDevtoolsRef(device);
     api = await registry.resolveService<NativeDevtoolsApi>(ref.urn, ref.options);
-  } catch {
-    return false; // native-devtools service unavailable
+  } catch (err) {
+    return `native devtools is unavailable for ${bundleId} (${errMsg(err)})`;
   }
   const deadline = Date.now() + NATIVE_READY_TIMEOUT_MS;
   for (;;) {
-    if (signal?.aborted) return false;
-    if (api.isConnected(bundleId)) return true;
-    if (Date.now() >= deadline) return false;
-    if (!(await sleepOrAbort(NATIVE_READY_POLL_MS, signal))) return false;
+    if (signal?.aborted) return null;
+    if (api.isConnected(bundleId)) return null;
+    if (Date.now() >= deadline) break;
+    if (!(await sleepOrAbort(NATIVE_READY_POLL_MS, signal))) return null;
   }
+  // Timed out. Measure why — the state may have flipped to connected in the
+  // gap since the last poll, in which case there is nothing to report.
+  const state = await api.appConnectionState(bundleId).catch(() => "indeterminate" as const);
+  return state === "connected" ? null : buildAppStateMessage(bundleId, state);
 }
 
 /**
@@ -282,12 +297,9 @@ async function treeSourceGate(
   signal?: AbortSignal
 ): Promise<string | null> {
   if (device.platform === "ios" && !signal?.aborted) {
-    const connected = await waitForNativeDevtools(registry, device, bundleId, signal);
-    if (!connected && !signal?.aborted) {
-      return (
-        `could not connect to native devtools for ${bundleId}. Re-run to relaunch the app and retry. ` +
-        `If it keeps failing, a stale or duplicate argent server may be holding the devtools connection — restart the argent server and try again.`
-      );
+    const reason = await waitForNativeDevtools(registry, device, bundleId, signal);
+    if (reason !== null && !signal?.aborted) {
+      return `could not connect to native devtools for ${bundleId}. ${reason}`;
     }
   }
   if (device.platform === "android" && !signal?.aborted) {

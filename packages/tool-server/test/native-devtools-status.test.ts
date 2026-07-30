@@ -618,6 +618,47 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   it("passes a connected app straight through", async () => {
     await expect(precheckWith("connected")).resolves.toBeNull();
   });
+
+  // The precheck's mapping only matters if it survives the trip out through a
+  // tool. `restart_required` is pinned at the tool boundary above; without the
+  // same pin here, collapsing the mapping back to a single status would leave
+  // every tool-level test green while the agent silently gets restart-app
+  // guidance again.
+  it("carries service_stale out through every native-* tool", async () => {
+    const tools = [
+      nativeDescribeScreenTool,
+      nativeFindViewsTool,
+      nativeFullHierarchyTool,
+      nativeNetworkLogsTool,
+      nativeViewAtPointTool,
+      nativeUserInteractableViewAtPointTool,
+    ];
+
+    for (const tool of tools) {
+      const { api } = makeNativeApi({
+        envSetup: true,
+        appRunning: true,
+        state: "unregistered",
+      });
+
+      const result = (await tool.execute(
+        { nativeDevtools: api },
+        {
+          udid: "UDID",
+          bundleId: "com.example.app",
+          x: 1,
+          y: 1,
+          className: "UIView",
+          limit: 1,
+          clear: false,
+        }
+      )) as { status: string; message: string };
+
+      expect(result.status, `${tool.id} must report service_stale`).toBe("service_stale");
+      expect(result.message).toContain("argent server stop && argent server start");
+      expect(result.message).not.toContain("restart-app");
+    }
+  });
 });
 
 // The runtime message is only half the guidance an agent sees: the tool

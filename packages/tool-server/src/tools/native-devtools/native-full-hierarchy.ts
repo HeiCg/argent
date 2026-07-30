@@ -68,7 +68,7 @@ Use skipClasses / skipClassPrefixes to prune SwiftUI internal subtrees and reduc
 Use when you need deep layout debugging, finding views with no accessibility labels, or verifying view structure not exposed through the accessibility tree.
 Returns { status: "ok", windows } with the full view hierarchy.
 If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start\`) and retry.
-Fails if native devtools are not connected or the app is not running.`,
+A not-connected or not-running app comes back as one of those statuses; a failure means the connection dropped mid-call.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

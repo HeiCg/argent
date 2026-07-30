@@ -122,6 +122,14 @@ export type NativeDevtoolsAppState =
  * resolution of `ps -o etime`. Both comparisons lean the same way — towards
  * `stale_process` — so an uncertain read costs at most one wasted restart-app
  * rather than sending an agent off to restart a healthy tool-server.
+ *
+ * That lean holds because both ages are read off the same wall clock: `etime`
+ * is `now - p_starttime`, so a clock step shifts it and `Date.now()` alike and
+ * cancels out of the difference. The exception is a step landing between the
+ * app's exec and the listener's bind, which leaves the two stamped on different
+ * timebases — a backward step there can make an old process read young enough
+ * to be called `unregistered`. It needs a clock correction inside that window,
+ * and the next restart-app clears it.
  */
 const NATIVE_DEVTOOLS_CONNECT_GRACE_MS = 3000;
 

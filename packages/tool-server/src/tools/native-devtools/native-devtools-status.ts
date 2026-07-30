@@ -115,7 +115,6 @@ Fails if the simulator server is not running for the given UDID.`,
     const blocked = await precheckNativeDevtools(api, params.udid);
     if (blocked) return blocked;
 
-    const appRunning = await api.isAppRunning(params.bundleId);
     // Diagnoses the connection AND re-applies the launchd env on its way — an
     // out-of-band simulator reboot wipes DYLD_INSERT_LIBRARIES while
     // isEnvSetup() still reports the stale `true`, so the reported envSetup /
@@ -124,17 +123,30 @@ Fails if the simulator server is not running for the given UDID.`,
       .appConnectionState(params.bundleId)
       .catch(() => "indeterminate" as const);
     const connected = state === "connected";
+
+    // Running-ness comes out of the same measurement rather than a second
+    // `launchctl list`: four of the five states are only reachable for a live
+    // process, and `not_running` IS the absence of one. Reading it separately
+    // cost an extra simctl round-trip and — because `appConnectionState`
+    // re-verifies the env first, putting seconds between the two snapshots —
+    // let the two fields contradict each other, e.g. `appRunning: true` beside
+    // `state: "not_running"`. Only `indeterminate` leaves running-ness genuinely
+    // unanswered, so only it pays for its own probe.
+    const appRunning =
+      state === "indeterminate" ? await api.isAppRunning(params.bundleId) : state !== "not_running";
     const envSetup = api.isEnvSetup();
 
     return {
       envSetup,
       appRunning,
       connected,
-      // An `unregistered` process is the one case where a relaunch provably
-      // changes nothing, so it is the one case this must not claim a restart
-      // for. Everything else keeps the conservative running-but-unconnected
-      // reading, which is all an uninspectable host (ios-remote) can support.
-      requiresRestart: appRunning && !connected && state !== "unregistered",
+      // Derived from the one state, so it can never disagree with it. An
+      // `unregistered` process is the case where a relaunch provably changes
+      // nothing; `not_running` needs a launch, not a restart of something that
+      // isn't there. That leaves the two states a fresh process actually fixes
+      // — `indeterminate` among them, since an uninspectable host (ios-remote)
+      // can support no finer reading.
+      requiresRestart: appRunning && (state === "stale_process" || state === "indeterminate"),
       state,
       nextLaunchWillBeInjected: envSetup,
       injectable: true,

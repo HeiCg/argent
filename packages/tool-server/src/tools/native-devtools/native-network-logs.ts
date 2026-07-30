@@ -38,7 +38,7 @@ Unlike the JS-level network inspector (view-network-logs), this captures ALL net
 Use when you need to inspect native-level HTTP traffic that is invisible to JS fetch interception. 
 Returns { status, count, events } where each event contains URL, method, status code, headers, and timing.
 If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start\`) and retry.
-Fails if native devtools are not connected or the app is not running.`,
+A not-connected or not-running app comes back as one of those statuses; a failure means the connection dropped mid-call.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),
