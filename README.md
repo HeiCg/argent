@@ -57,7 +57,7 @@ controller). The CoreDevice tunnel is a userspace TCP stack over the USB connect
 command runs unprivileged, with no admin prompt and nothing installed on the host. Supported interactions: `screenshot`, `screen-recording-start` / `screen-recording-stop`,
 `gesture-tap`, `gesture-swipe`, `gesture-custom` (single touch), `keyboard`, `button`, `rotate`,
 `launch-app`, `restart-app`, `reinstall-app`, `open-url`, `screenshot-diff`, `await-screen-idle`,
-`await-ui-element`, and
+`await-ui-element`, `run-sequence`, and
 `describe` (the live on-screen accessibility tree — see the note below). The device shows up in `list-devices` with `kind: "device"`.
 
 **Requirements**
@@ -110,11 +110,18 @@ no manual step, no `sudo`.
   settled. Each read is a ~2s round trip over the tunnel, so the default `timeoutMs` on a physical
   iPhone is 15s rather than the 3s used elsewhere. The same rotation makes `await-ui-element`
   reliable only for `condition: "exists"` — `visible`/`hidden` and `text`'s reading-order pick
-  all read the synthesised frames.
+  all read the synthesised frames, and its answer carries a `note` saying so. It gets the same
+  15s default, for the same reason.
 
 - **`reinstall-app` needs a bundle signed for this device**, since it installs through
   `devicectl device install app`. A simulator `.app`, or one whose provisioning profile does not
-  list the device UDID, fails with a message saying so.
+  list the device UDID, fails with a message saying so — as does a locked or untrusted phone,
+  which reports what `devicectl` itself said rather than the signing hint.
+
+- **Flows do not run on a physical iPhone.** `flow-execute` resolves selectors against the native
+  view hierarchy, which needs argent's devtools dylib inside the app; it refuses a hardware udid up
+  front rather than failing on the first selector step. Drive the phone with `describe` +
+  `gesture-*` instead.
 
 - Anything that needs argent's **native devtools** inside the target app is **not supported** and
   returns a clear "not supported" error: the native inspection tools (`native-*`) attach by

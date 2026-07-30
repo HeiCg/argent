@@ -138,6 +138,33 @@ describe("physical-iPhone capability gate, swept across the registry", () => {
     expect(names(physicalLine[0]!), "list-devices description").toEqual([]);
   });
 
+  it("keeps the README's supported list to tools hardware actually accepts", () => {
+    // The flag blurb and the list-devices description both point here, so this
+    // paragraph is the one place the set is written out — which makes it the one
+    // place a tool can be advertised on hardware after being gated off it. The
+    // check runs one way only: a tool missing from the prose is an omission, but
+    // a tool named here that the gate rejects is a promise the product breaks.
+    const readme = fs.readFileSync(path.join(__dirname, "..", "..", "..", "README.md"), "utf8");
+    const section = readme.split("## Physical iOS devices (experimental)")[1];
+    expect(section, "the physical-iOS section must still be findable").toBeDefined();
+    const supported = section!
+      .split("Supported interactions:")[1]!
+      .split("The device shows up")[0]!;
+
+    const caps = allCapabilities();
+    const named = [...supported.matchAll(/`([a-z0-9-]+)`/g)]
+      .map((m) => m[1]!)
+      .filter((id) => caps.has(id));
+
+    expect(named.length, "the supported list must still name tools").toBeGreaterThanOrEqual(15);
+    for (const id of named) {
+      expect(
+        caps.get(id)?.apple?.device,
+        `README lists ${id} as working on a physical iPhone, but its capability does not`
+      ).toBe(true);
+    }
+  });
+
   it("leaves no devicectl-backed tool able to skip the opt-in gate", () => {
     // `simulatorServerRef` runs `assertPhysicalIosEnabled` for everything routed
     // through a CoreDevice service, so the flag covers those by construction. A
