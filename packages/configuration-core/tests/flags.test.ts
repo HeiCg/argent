@@ -7,11 +7,14 @@ import {
   getFlagDefinition,
   getFlagsPath,
   isFlagEnabled,
+  readEffectiveFlags,
   readFlags,
   resolveProjectRoot,
   setFlag,
   unsetFlag,
+  withForwardedFlags,
   type FlagDefinition,
+  type FlagsPathOptions,
 } from "../src/flags.js";
 
 // Hermetic registry for getFlagDefinition's injectable-registry path so the
@@ -31,6 +34,12 @@ let originalCwd: string;
 
 function readJsonFile(filePath: string): unknown {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+// Pins both scopes to this test's tmp dirs through the options param instead of
+// the ambient HOME/cwd swap. Called inside a test so it sees the beforeEach dirs.
+function tmpOptions(): FlagsPathOptions {
+  return { homeDir: tmpHome, cwd: tmpProject };
 }
 
 beforeEach(() => {
@@ -241,6 +250,173 @@ describe("isFlagEnabled", () => {
   it("respects explicit cwd / homeDir options instead of process state", () => {
     setFlag("alpha", true, "global", { homeDir: tmpHome });
     expect(isFlagEnabled("alpha", { homeDir: tmpHome, cwd: tmpProject })).toBe(true);
+  });
+});
+
+describe("readEffectiveFlags", () => {
+  it("merges both scopes, with project shadowing global for the same key", () => {
+    const options = tmpOptions();
+    setFlag("global-only", true, "global", options);
+    setFlag("shared", false, "global", options);
+    setFlag("shared", true, "project", options);
+    setFlag("project-only", true, "project", options);
+
+    expect(readEffectiveFlags(options)).toEqual({
+      "global-only": true,
+      "shared": true,
+      "project-only": true,
+    });
+    // The merged value is the one isFlagEnabled resolves, not the other scope's.
+    expect(isFlagEnabled("shared", options)).toBe(true);
+  });
+
+  it("a project false shadows a global true", () => {
+    const options = tmpOptions();
+    setFlag("alpha", true, "global", options);
+    setFlag("alpha", false, "project", options);
+    expect(readEffectiveFlags(options)).toEqual({ alpha: false });
+    expect(isFlagEnabled("alpha", options)).toBe(false);
+  });
+
+  it("returns {} when neither scope stores anything", () => {
+    const options = tmpOptions();
+    expect(readEffectiveFlags(options)).toEqual({});
+    expect(Object.keys(readEffectiveFlags(options))).toEqual([]);
+  });
+
+  it("includes explicitly-false entries instead of dropping them", () => {
+    const options = tmpOptions();
+    setFlag("off-globally", false, "global", options);
+    setFlag("off-in-project", false, "project", options);
+    setFlag("on", true, "global", options);
+
+    const effective = readEffectiveFlags(options);
+    expect(effective).toEqual({ "off-globally": false, "off-in-project": false, "on": true });
+    expect(Object.hasOwn(effective, "off-globally")).toBe(true);
+    expect(effective["off-in-project"]).toBe(false);
+  });
+});
+
+describe("withForwardedFlags", () => {
+  it("resolves isFlagEnabled from the forwarded set, never from disk", () => {
+    const options = tmpOptions();
+    setFlag("alpha", true, "global", options);
+    setFlag("beta", true, "project", options);
+    // Baseline: without a scope, disk decides.
+    expect(isFlagEnabled("alpha", options)).toBe(true);
+    expect(isFlagEnabled("beta", options)).toBe(true);
+
+    // An empty forwarded set means the caller has nothing enabled, so the
+    // server's own flags.json must not fill the gap.
+    const inside = withForwardedFlags({}, () => ({
+      alpha: isFlagEnabled("alpha", options),
+      beta: isFlagEnabled("beta", options),
+    }));
+    expect(inside).toEqual({ alpha: false, beta: false });
+  });
+
+  it("a forwarded true wins when the flag is absent from disk", () => {
+    const options = tmpOptions();
+    expect(isFlagEnabled("alpha", options)).toBe(false);
+    expect(withForwardedFlags({ alpha: true }, () => isFlagEnabled("alpha", options))).toBe(true);
+  });
+
+  it("a forwarded true wins when disk stores false in both scopes", () => {
+    const options = tmpOptions();
+    setFlag("alpha", false, "global", options);
+    setFlag("alpha", false, "project", options);
+    expect(withForwardedFlags({ alpha: true }, () => isFlagEnabled("alpha", options))).toBe(true);
+  });
+
+  it("a forwarded false wins when disk stores true", () => {
+    const options = tmpOptions();
+    setFlag("alpha", true, "global", options);
+    expect(withForwardedFlags({ alpha: false }, () => isFlagEnabled("alpha", options))).toBe(false);
+  });
+
+  it("returns the callback's value unchanged", () => {
+    expect(withForwardedFlags({ alpha: true }, () => "payload")).toBe("payload");
+  });
+
+  for (const name of ["toString", "constructor"]) {
+    it(`a forwarded set that omits "${name}" resolves it to false, not to the prototype member`, () => {
+      const options = tmpOptions();
+      const result = withForwardedFlags({ real: true }, () => isFlagEnabled(name, options));
+      expect(result).toBe(false);
+      expect(typeof result).toBe("boolean");
+    });
+
+    it(`a flag literally named "${name}" resolves from the forwarded set`, () => {
+      const options = tmpOptions();
+      expect(withForwardedFlags({ [name]: true }, () => isFlagEnabled(name, options))).toBe(true);
+      expect(withForwardedFlags({ [name]: false }, () => isFlagEnabled(name, options))).toBe(false);
+    });
+  }
+
+  it("accepts a null-prototype set (the shape decodeForwardedFlags produces)", () => {
+    const options = tmpOptions();
+    const forwarded = Object.assign(Object.create(null) as Record<string, boolean>, {
+      alpha: true,
+    });
+    const inside = withForwardedFlags(forwarded, () => ({
+      alpha: isFlagEnabled("alpha", options),
+      toStringFlag: isFlagEnabled("toString", options),
+    }));
+    expect(inside).toEqual({ alpha: true, toStringFlag: false });
+  });
+
+  it("stays bound across an await, and disk applies again after the scope ends", async () => {
+    const options = tmpOptions();
+    setFlag("alpha", true, "global", options);
+
+    const observed = await withForwardedFlags({ beta: true }, async () => {
+      const beforeAwait = isFlagEnabled("alpha", options);
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+      return {
+        beforeAwait,
+        alphaAfterAwait: isFlagEnabled("alpha", options),
+        betaAfterAwait: isFlagEnabled("beta", options),
+      };
+    });
+
+    expect(observed).toEqual({
+      beforeAwait: false,
+      alphaAfterAwait: false,
+      betaAfterAwait: true,
+    });
+    // Outside the scope the disk is authoritative again.
+    expect(isFlagEnabled("alpha", options)).toBe(true);
+    expect(isFlagEnabled("beta", options)).toBe(false);
+  });
+
+  it("a nested scope replaces the outer set rather than merging with it", () => {
+    const options = tmpOptions();
+    const inner = withForwardedFlags({ outer: true }, () =>
+      withForwardedFlags({ inner: true }, () => ({
+        outer: isFlagEnabled("outer", options),
+        inner: isFlagEnabled("inner", options),
+      }))
+    );
+    expect(inner).toEqual({ outer: false, inner: true });
+
+    // …and the outer set is restored once the nested scope exits.
+    const afterNested = withForwardedFlags({ outer: true }, () => {
+      withForwardedFlags({ inner: true }, () => undefined);
+      return isFlagEnabled("outer", options);
+    });
+    expect(afterNested).toBe(true);
+  });
+
+  it("leaves the scope even when the callback throws", () => {
+    const options = tmpOptions();
+    setFlag("alpha", true, "global", options);
+    expect(() =>
+      withForwardedFlags({ alpha: false }, () => {
+        throw new Error("boom");
+      })
+    ).toThrow("boom");
+    // Disk applies again — a scope leaked past the throw would keep alpha off.
+    expect(isFlagEnabled("alpha", options)).toBe(true);
   });
 });
 

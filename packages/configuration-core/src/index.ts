@@ -9,7 +9,6 @@ export {
   unsetFlag,
   isFlagEnabled,
   withForwardedFlags,
-  getForwardedFlags,
   type FlagScope,
   type FlagDefinition,
   type FlagsPathOptions,

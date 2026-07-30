@@ -28,7 +28,10 @@ vi.mock("../src/utils/update-checker", () => ({
   suppressUpdateNote: vi.fn(),
 }));
 
-vi.mock("@argent/configuration-core", () => ({
+// Only isFlagEnabled is stubbed; the rest of the module (forwarded-flag scope
+// and header codec, which http.ts also uses) stays real.
+vi.mock("@argent/configuration-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/configuration-core")>()),
   isFlagEnabled: isFlagEnabledMock,
 }));
 

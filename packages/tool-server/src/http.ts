@@ -59,6 +59,9 @@ const AUTO_SUPPRESS_MS = 30 * 60 * 1000; // 30 minutes
 const AUTH_TOKEN_ENV = "ARGENT_AUTH_TOKEN";
 const BEARER_PREFIX = "Bearer ";
 const ARTIFACTS_LIST_ENDPOINT_FLAG = "artifacts-list-endpoint";
+// express lowercases incoming header names; the exported constant is the
+// canonical wire spelling clients send.
+const FLAG_FORWARD_HEADER_LC = FLAG_FORWARD_HEADER.toLowerCase();
 
 // Constant-time comparison so a leaked token can't be recovered byte-by-byte
 // via response-timing measurements. Both strings must be the same length to
@@ -94,6 +97,14 @@ function isToolExposed(
   if (def.featureFlag && !isFlagEnabled(def.featureFlag)) return false;
   if (def.hideWhen?.()) return false;
   return true;
+}
+
+// The browser-loaded preview UI subtree, which the auth gate exempts and the
+// forwarded-flag gate therefore refuses to trust. An exact `/preview` or
+// `/preview/`-prefixed match, so a future top-level route like
+// `/preview-status` can't be silently swept in by a bare startsWith.
+function isPreviewPath(reqPath: string): boolean {
+  return reqPath === "/preview" || reqPath.startsWith("/preview/");
 }
 
 function findDependencyMissing(err: unknown): DependencyMissingError | null {
@@ -429,15 +440,13 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // Authorization gate. Runs after Host validation and before any handler.
   // The /preview subtree is exempt because it is the browser-loaded in-process
   // UI (no token available client-side); fully authenticating it needs an
-  // out-of-band UI session and is a deliberate follow-up. The exemption is an
-  // exact `/preview` or `/preview/`-prefixed match so a future top-level route
-  // like `/preview-status` can't be silently un-gated by a bare startsWith.
+  // out-of-band UI session and is a deliberate follow-up.
   app.use((req, res, next) => {
     if (!expectedToken) {
       next();
       return;
     }
-    if (req.path === "/preview" || req.path.startsWith("/preview/")) {
+    if (isPreviewPath(req.path)) {
       next();
       return;
     }
@@ -462,13 +471,17 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // async context so every flag read underneath (the exposure gate below, the
   // registry's dispatch gate, the Lens preview routes) resolves against the
   // caller's flags instead of the disk. Requests without the header — a local
-  // auto-spawned client, the browser-loaded preview UI — read disk as before.
+  // auto-spawned client — read disk as before.
   //
-  // Placed after the auth gate: an unauthenticated caller must not be able to
-  // steer flag resolution, not even for a route that would 401 anyway.
+  // Placed after the auth gate, and skipping the routes that gate exempts: only
+  // an authenticated caller may steer flag resolution. The preview subtree is
+  // exactly those exempt routes, and some of them are themselves flag-gated
+  // (`requireLensFlag`), so honouring the header there would let any local
+  // process turn a gate off by asserting it. The preview UI runs on this
+  // machine anyway, which makes this machine's flags the right source for it.
   app.use((req, res, next) => {
-    const raw = firstHeader(req.headers[FLAG_FORWARD_HEADER.toLowerCase()]);
-    if (raw === undefined) {
+    const raw = firstHeader(req.headers[FLAG_FORWARD_HEADER_LC]);
+    if (raw === undefined || isPreviewPath(req.path)) {
       next();
       return;
     }

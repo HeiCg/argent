@@ -219,11 +219,6 @@ export function withForwardedFlags<T>(flags: Readonly<Record<string, boolean>>, 
   return forwardedFlags.run(flags, fn);
 }
 
-/** The forwarded set governing the current async context, if any. */
-export function getForwardedFlags(): Readonly<Record<string, boolean>> | undefined {
-  return forwardedFlags.getStore();
-}
-
 // Effective value: a forwarded set wins outright; otherwise project overrides
 // global. Returns false when the flag is not set — flags are opt-in.
 export function isFlagEnabled(name: string, options: FlagsPathOptions = {}): boolean {

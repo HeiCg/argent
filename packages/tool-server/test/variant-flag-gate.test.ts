@@ -13,7 +13,12 @@ import request from "supertest";
 import { Registry } from "@argent/registry";
 import { z } from "zod";
 
-vi.mock("@argent/configuration-core", () => ({ isFlagEnabled: vi.fn() }));
+// Only isFlagEnabled is stubbed; the rest of the module (forwarded-flag scope
+// and header codec, which http.ts also uses) stays real.
+vi.mock("@argent/configuration-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/configuration-core")>()),
+  isFlagEnabled: vi.fn(),
+}));
 import { isFlagEnabled } from "@argent/configuration-core";
 import { createHttpApp } from "../src/http";
 import { createProposeVariantTool } from "../src/tools/variants/propose-variant";
