@@ -12,6 +12,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ToolCapability } from "@argent/registry";
+import { FLAG_REGISTRY } from "@argent/configuration-core";
 import { createRegistry } from "../src/utils/setup-registry";
 import { pasteTool } from "../src/tools/paste";
 import { resolveDevice } from "../src/utils/device-info";
@@ -98,5 +99,28 @@ describe("physical-iPhone capability gate, swept across the registry", () => {
         `${id} must accept a physical iPhone`
       ).not.toThrow();
     }
+  });
+
+  it("keeps the feature-flag blurb free of a hand-written tool list", () => {
+    // `argent flags` prints this description, and nothing ties it to the
+    // capability objects above. A tool list spelled out here therefore only
+    // stays true until the next capability edit — flipping one tool's
+    // `apple.device` leaves the blurb understating (or overstating) the feature
+    // with the whole suite green. The enumeration belongs in the README's
+    // physical-iOS section and in each tool's own capability, so the blurb must
+    // name no tool id at all.
+    const flag = FLAG_REGISTRY.find((f) => f.name === "physical-ios-devices");
+    expect(flag, "physical-ios-devices must stay in the flag registry").toBeDefined();
+
+    const names = (text: string) =>
+      [...allCapabilities().keys()].filter((id) => new RegExp(`\\b${id}\\b`).test(text));
+
+    // Anti-vacuity: a matcher that never fires would pass the assertion below
+    // while checking nothing.
+    expect(names("Supports screenshot, tap, swipe, describe, and launch-app.")).toEqual(
+      expect.arrayContaining(["screenshot", "describe", "launch-app"])
+    );
+
+    expect(names(flag!.description)).toEqual([]);
   });
 });

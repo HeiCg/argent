@@ -66,7 +66,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   {
     name: "physical-ios-devices",
     description:
-      "Discover and control physical iOS devices over Apple CoreDevice. Device interaction runs natively in the bundled simulator-server over the USB connection, unprivileged and with no admin prompt. Supports screenshot, tap, swipe, hardware buttons, describe, and launch-app.",
+      "Discover and control physical iOS devices over Apple CoreDevice. Device interaction runs natively in the bundled simulator-server over the USB connection, unprivileged and with no admin prompt. Covers screen capture and recording, single-touch input, hardware buttons, typing, on-screen accessibility reads and app lifecycle; multi-touch and anything needing code inside the target app are rejected at the capability gate. Each tool's own capability declaration decides what hardware accepts — the README's physical-iOS section lists the current set.",
   },
   {
     name: "tool-server-event-log",
