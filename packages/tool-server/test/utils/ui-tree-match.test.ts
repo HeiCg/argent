@@ -58,16 +58,16 @@ describe("ui-tree-match", () => {
 
   // ── Bottom bar over unclipped scroll content ───────────────────────────────
   //
-  // Pixel bounds measured with `uiautomator dump --compressed` on a Pixel 3a
-  // API 34 emulator (1080×2220), from a bottom-tab-bar app over a scrolling
-  // list: the bar is a ViewGroup at [0,1934][1080,2154] with 216×220 px tab
-  // buttons ([216,1934][432,2154] for the second), the list is a RecyclerView
-  // reaching the screen bottom at [0,245][1080,2220], its rows are 154 px tall
-  // spanning [22,…][1080,…], and a row's text leaf is 636×50 px starting at
-  // x=154. Android does NOT clip a view's bounds to what is drawn over it, so
-  // the rows under the bar are reported at their laid-out bounds — the shape
-  // the bug report describes as "feed content stretching under the bottom
-  // navigation bar", with "another, WIDER element" beating the tab button.
+  // A translucent tab bar over a feed, the layout an RN social app draws:
+  // Android does NOT clip a view's bounds to what is painted over it, so the
+  // feed rows beneath the bar are reported at their full laid-out bounds and
+  // share their points with the tab buttons. Every pixel rectangle below was
+  // measured with `uiautomator dump --compressed` on a Pixel 3a API 34 emulator
+  // (1080×2220) — the bar and its 216×220 px tab buttons from a bottom-tab-bar
+  // screen, the screen-bottom-reaching list and its 154 px rows with a 636×50 px
+  // text leaf from a scrolling list screen of the same app — and composed into
+  // the overlapping layout, which no stock Android app produces (native layouts
+  // put the bar beside the content, so nothing overlaps to measure).
   const SCREEN = { width: 1080, height: 2220 };
 
   function px(x1: number, y1: number, x2: number, y2: number): DescribeNode["frame"] {
@@ -132,7 +132,7 @@ describe("ui-tree-match", () => {
     // The same five frames with the bar's branch listed FIRST: the feed is then
     // the one painted over the bar, and its text leaf is what the touch reaches.
     // Nothing but tree order differs, so this pins paint order specifically —
-    // not a preference for the wider, the clickable, or the later-measured node.
+    // not a preference for the wider, the clickable, or the larger node.
     const barUnderFeed = flowTree([tabButton, tabBar, rowText, feedRow, feed]);
     expect(nodeAtPoint(barUnderFeed, tabPoint)?.label).toBe("Reply from @alice");
   });

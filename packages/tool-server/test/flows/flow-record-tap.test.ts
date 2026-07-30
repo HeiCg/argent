@@ -152,11 +152,11 @@ describe("flow-add-step tap selector capture", () => {
   });
 
   it("records the tab button over unclipped feed content, with an overlap caveat", async () => {
-    // The reported shape: a bottom tab bar drawn over a feed whose rows Android
-    // reports at their laid-out bounds, so a row's wide-but-short text leaf
-    // shares the tapped point with the tab button. Bounds are the normalized
-    // form of the Pixel 3a pixels measured in ui-tree-match.test.ts. The button
-    // is recorded, and the step says the point was contested.
+    // A bottom tab bar drawn over a feed whose rows Android reports at their
+    // laid-out bounds, so a row's wide-but-short text leaf shares the tapped
+    // point with the tab button. Bounds are the normalized form of the Pixel 3a
+    // pixels ui-tree-match.test.ts measures and documents. The button is
+    // recorded, and the step says the point was contested.
     setTree([
       n({
         label: "Reply from @alice",
