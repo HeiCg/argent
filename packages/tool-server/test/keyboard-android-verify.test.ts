@@ -225,10 +225,21 @@ describe("plannedUndoDeletions", () => {
     expect(plannedUndoDeletions("XY", "XYabcdefgh", "abcdefghijkl")).toBe(8);
   });
 
-  it("prefers plan A over emptying the field, so pre-existing content survives", () => {
-    // "a" was already in the field and also opens the typed text, so the
-    // subsequence proof would delete it too. Plan A deletes 8, not 9.
-    expect(plannedUndoDeletions("a", "abcdefghi", "abcdefghijkl")).toBe(8);
+  it("refuses to delete when the baseline is equally a prior character and a hint", () => {
+    // Both proofs apply and they disagree: if "a" was really in the field, 8
+    // characters are ours; if "a" was the hint of an empty field, 9 are. Acting
+    // on either reading is a coin flip with the user's content, and taking the
+    // smaller count is the worse half — it leaves the hint text behind as real
+    // content, the retype appends to it, and the doubled result is shaped to
+    // satisfy classifyTypedText's first branch (see the end-to-end test below).
+    expect(plannedUndoDeletions("a", "abcdefghi", "abcdefghijkl")).toBeNull();
+  });
+
+  it("still counts the growth when the field cannot have been empty", () => {
+    // "XY" is not a subsequence of the typed text, so the hint reading is ruled
+    // out and plan A is the only live one. This is what keeps the overlap guard
+    // from disabling the undo wherever the prior content is real.
+    expect(plannedUndoDeletions("XY", "XYabcdefgh", "abcdefghijkl")).toBe(8);
   });
 
   it("empties the field when everything in it came from this injection (plan B)", () => {
@@ -236,6 +247,17 @@ describe("plannedUndoDeletions", () => {
     // text and plan A cannot apply; the field holds only a subsequence of what
     // we typed, which proves it was empty before.
     expect(plannedUndoDeletions("Search settings", "abcdefgh", "abcdefghijkl")).toBe(8);
+  });
+
+  it("refuses the hint overlaps that make the undo double the value", () => {
+    // Each pair is an empty field whose hint shares an edge with the typed text,
+    // and a first burst that dropped characters. Plan A reads the hint as prior
+    // content and under-deletes by exactly its length, so the retype lands on
+    // top of it. These are the real-world shapes: a URL bar, a phone field, a
+    // quantity box.
+    expect(plannedUndoDeletions("https://", "https://exam", "https://example.com")).toBeNull();
+    expect(plannedUndoDeletions("+48", "+48501", "+48501234567")).toBeNull();
+    expect(plannedUndoDeletions("0", "10", "100")).toBeNull();
   });
 
   it("recognises scattered drops as this injection's own output", () => {
@@ -356,12 +378,35 @@ describe("android keyboard read-back — fault injection", () => {
     const res = await type(registry, "abcdefghijkl");
     expect(res.verified).toBe(false);
     expect(res.note).toMatch(/did NOT land/);
-    // The exact counts the agent needs: 10 characters present, 12 expected.
-    expect(res.note).toContain("it holds 10 characters where 12 were expected");
+    // The counts must not imply an expected total. The field held "XY" before,
+    // so 8 of the 12 landed and 4 were lost — but it reads 10, and "10 where 12
+    // were expected" would tell the agent 2 were lost. Report what is known:
+    // what was typed, and what the field holds in total.
+    expect(res.note).toContain("12 characters were typed and the field now holds 10 in total");
+    expect(res.note).not.toMatch(/where 12 (was|were) expected/);
     expect(res.note).toMatch(/smaller chunks did not fix it/);
     // The text is still reported as typed and counted — the call did type it.
     expect(res.typed).toBe("abcdefghijkl");
     expect(res.keys).toBe(12);
+  });
+
+  it("does not retype onto a hint it mistook for prior content", async () => {
+    // The corrupting shape, end to end: an empty URL bar reads back its hint,
+    // which opens the typed text. Reading that hint as prior content undercounts
+    // the undo by its length, so the retype lands on top of the residue and the
+    // field ends up holding "https://https://example.com" — and because that is
+    // exactly `before + text`, the success branch calls it landed. The call must
+    // touch the device once and report the failure instead.
+    const { registry } = registryServing([
+      hierarchy({ text: "https://" }), // empty field showing its hint
+      hierarchy({ text: "https://exam" }), // first burst dropped the tail
+    ]);
+
+    const res = await type(registry, "https://example.com");
+
+    expect(res.verified).toBe(false);
+    expect(cmds()).toEqual(["input text 'https://example.com'"]);
+    expect(cmds().some((c) => c.includes("keyevent"))).toBe(false);
   });
 
   it("empties a field whose whole content came from the failed injection", async () => {
@@ -420,7 +465,10 @@ describe("android keyboard read-back — cannot verify (never a silent success)"
     const res = await type(registry, "abc");
     expect(res.verified).toBeUndefined();
     expect(res.note).toMatch(/not verified against the screen/);
-    expect(res.note).toMatch(/android-devtools helper is not available/);
+    expect(res.note).toMatch(/android-devtools helper could not be reached for this call/);
+    // A resolve failure covers a blocked install AND a spawn that timed out, so
+    // the note must not report the helper as permanently absent.
+    expect(res.note).not.toMatch(/is not available on this device/);
     // The text is still typed — verification is a check on the typing, not a
     // precondition for it.
     expect(cmds()).toEqual(["input text 'abc'"]);
@@ -438,7 +486,11 @@ describe("android keyboard read-back — cannot verify (never a silent success)"
     const { registry } = registryServing([hierarchy({ password: true })]);
     const res = await type(registry, "abc");
     expect(res.verified).toBeUndefined();
-    expect(res.note).toMatch(/password field/);
+    expect(res.note).toMatch(/masks its input/);
+    // The reason given has to be the one that holds: a masked field reads back
+    // as bullets, so there is nothing to compare against. Claiming the dump
+    // hands back the credential describes the opposite of what the helper does.
+    expect(res.note).toMatch(/bullets/);
     expect(cmds()).toEqual(["input text 'abc'"]);
   });
 
@@ -530,6 +582,109 @@ describe("android keyboard read-back — cannot verify (never a silent success)"
     expect(res.note).toMatch(/more elements than one capture returns/);
     expect(res.note).not.toMatch(/Tap the field first/);
     expect(cmds()).toEqual(["input text 'abc'"]);
+  });
+
+  /**
+   * A stub whose reads carry their own `truncated` flag, so the read-BACK can be
+   * made to truncate. `registryServing` never sets it, which is why every case
+   * below needs its own service.
+   */
+  function registryServingReads(reads: Array<{ xml: string; truncated?: boolean }>): Registry {
+    const queue = [...reads];
+    const getHierarchy = vi.fn(async () => {
+      const next = queue.shift();
+      if (!next) throw new Error("test: getHierarchy called more times than scripted");
+      return { xml: next.xml, truncated: next.truncated ?? false };
+    });
+    return { resolveService: vi.fn(async () => ({ getHierarchy })) } as unknown as Registry;
+  }
+
+  it("reports a truncated read-BACK as unknown, not as a focus change", async () => {
+    // Same evidence the baseline read has a dedicated note for. Blaming focus
+    // movement here invents a second field and tells the agent the text may be
+    // split across it.
+    const registry = registryServingReads([
+      { xml: hierarchy() },
+      { xml: hierarchy({ focused: false }), truncated: true },
+    ]);
+
+    const res = await type(registry, "abcdef");
+
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/more elements than one capture returns/);
+    expect(res.note).not.toMatch(/moved to a different field/);
+    expect(res.note).not.toMatch(/split across both fields/);
+  });
+
+  it("reports focus lost outright without claiming a second field", async () => {
+    // Nothing editable holds focus any more (an OTP box that auto-submits).
+    // There is no other field, so "split across both fields" would be fiction.
+    const registry = registryServingReads([
+      { xml: hierarchy() },
+      { xml: hierarchy({ focused: false }) },
+    ]);
+
+    const res = await type(registry, "abcdef");
+
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/no editable field held input focus once the text had been typed/);
+    expect(res.note).not.toMatch(/split across both fields/);
+  });
+
+  it("retypes without deleting when the field received nothing at all", async () => {
+    // The reported shape: a digits-only field rejects every letter, so the read
+    // back is byte-identical to the baseline and holds none of the typed text.
+    // There is nothing of ours to remove, so the retry must retype with zero
+    // backspaces — deleting here would eat the field's own content.
+    const unchanged = hierarchy({ text: "Enter number" });
+    const { registry } = registryServing([unchanged, unchanged, unchanged]);
+
+    const res = await type(registry, "abcdefghijkl");
+
+    expect(res.verified).toBe(false);
+    expect(cmds().some((c) => c.includes("keyevent"))).toBe(false);
+    // One first burst plus the chunked retry (12 chars / 8 per chunk = 2).
+    expect(cmds().filter((c) => c.includes("input text"))).toHaveLength(3);
+  });
+
+  it("paces the retype instead of re-sending it as one burst", async () => {
+    // The cadence IS the repair: the same string in one `input text` is what
+    // dropped characters in the first place. Without a gap between chunks the
+    // retry is a blind repeat of the call that already failed.
+    const stamps: number[] = [];
+    adbShell.mockImplementation(async (_serial: string, cmd: string) => {
+      if (cmd.includes("input text")) stamps.push(Date.now());
+      return "";
+    });
+    const { registry } = registryServing([
+      hierarchy({ text: "XY" }),
+      hierarchy({ text: "XYabcdefgh" }),
+      hierarchy({ text: "XYabcdefghijkl" }),
+    ]);
+
+    await type(registry, "abcdefghijkl");
+
+    // stamps: [first burst, retry chunk 1, retry chunk 2]
+    expect(stamps).toHaveLength(3);
+    expect(stamps[2]! - stamps[1]!).toBeGreaterThanOrEqual(80);
+  });
+
+  it("does not claim nothing was retyped after the repair already retyped", async () => {
+    // The repair backspaces and retypes BEFORE the confirming read, so a blocked
+    // read here follows a destructive edit. Saying "nothing was retyped" invites
+    // the caller to enter the value a third time.
+    const registry = registryServingReads([
+      { xml: hierarchy({ text: "XY" }) }, // baseline: real content, not a hint
+      { xml: hierarchy({ text: "XYabcdefgh" }) }, // partial landing -> repair runs
+      { xml: hierarchy({ rid: "com.example:id/other", bounds: "[126,900][1080,1000]" }) },
+    ]);
+
+    const res = await type(registry, "abcdefghijkl");
+
+    expect(cmds().some((c) => c.includes("keyevent"))).toBe(true);
+    expect(res.note).toMatch(/moved to a different field/);
+    expect(res.note).not.toMatch(/Nothing was retyped/);
+    expect(res.note).toMatch(/modified beyond the original typing/);
   });
 
   it("raises the node cap above the helper default so a dense screen is not truncated", () => {

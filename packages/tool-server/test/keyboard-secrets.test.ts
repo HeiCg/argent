@@ -13,12 +13,12 @@ vi.mock("../src/utils/simulator-client", async (importOriginal) => {
   return { ...actual, sendCommand: vi.fn() };
 });
 
-// Stand in for the Android backend so its result can carry a note that quotes
-// what it read off the screen. The real Android notes are written value-free (see
-// keyboard-android-verify.test.ts, which pins that on the real path); this stub
-// exercises the OTHER half of the guarantee — that `execute`'s secret path
-// scrubs a note on the way out, so the value-free property of one module is not
-// the only thing standing between a resolved secret and the agent's transcript.
+// Stand in for the Android backend so a chosen `note` can be put on the result
+// and followed out through `execute`'s secret path. The real Android notes are
+// written value-free (pinned on the real path in keyboard-android-verify.test.ts);
+// what these pin is that `execute` hands whatever it is given straight through,
+// because substituting over a note damages correct prose without being able to
+// catch the partial secret a dropped-character read-back actually holds.
 const { androidNote } = vi.hoisted(() => ({
   androidNote: { value: undefined as string | undefined },
 }));
@@ -72,6 +72,10 @@ const ENV: NodeJS.ProcessEnv = {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.mocked(sendCommand).mockReset();
+  // Reset here rather than at the end of each test body: a failing assertion
+  // aborts the body, and the leftover note then fails the NEXT test too, so one
+  // real defect reports as two.
+  androidNote.value = undefined;
 });
 
 describe("resolveSecretPlaceholders", () => {
@@ -216,12 +220,15 @@ describe("keyboard tool with secret placeholders", () => {
     expect(dispatchKeyEvent).not.toHaveBeenCalled();
   });
 
-  it("scrubs the resolved value from a backend's advisory note", async () => {
-    // A read-back backend has the field's contents in hand, so anything it puts
-    // in `note` gets the same treatment errors already get: the resolved value is
-    // replaced by its placeholder before the result leaves `execute`.
+  it("hands a backend's advisory note through unaltered", async () => {
+    // The note is deliberately not substituted over. Every note the Android
+    // read-back writes is value-free by construction — counts and structural
+    // facts, pinned on the real path in keyboard-android-verify.test.ts — so a
+    // substitution here could only rewrite prose that never held the value. It
+    // could not close the gap either: a dropped-character read-back holds a
+    // PARTIAL secret, and whole-value replacement never matches one.
     vi.stubEnv("ARGENT_SECRET_APP_PASSWORD", "hunter2");
-    androidNote.value = "the field holds hunter2, not what was typed";
+    androidNote.value = "the field holds 4 characters where 7 were typed";
     const tool = createKeyboardTool(registryWith({}));
 
     const result = await tool.execute(
@@ -229,11 +236,40 @@ describe("keyboard tool with secret placeholders", () => {
       { udid: ANDROID_SERIAL, text: "{{secret:APP_PASSWORD}}" }
     );
 
-    expect(result.note).toBe("the field holds {{secret:APP_PASSWORD}}, not what was typed");
-    expect(JSON.stringify(result)).not.toContain("hunter2");
-    // The verdict itself still reaches the caller — scrubbing must not swallow it.
+    expect(result.note).toBe("the field holds 4 characters where 7 were typed");
+    // The verdict itself still reaches the caller.
     expect(result.verified).toBe(false);
-    androidNote.value = undefined;
+    // And the placeholder, never the value, is what the result echoes.
+    expect(JSON.stringify(result)).not.toContain("hunter2");
+  });
+
+  it("does not let a short secret rewrite the words of a note", async () => {
+    // The regression this guards: substituting the value everywhere it appears
+    // mangles ordinary prose when the value is short, and it fires on notes a
+    // perfectly successful call returns. "or" turns `uiautomator` into
+    // `uiautomat{{secret:W}}`; a numeric PIN swallows the character count the
+    // note exists to report, leaving it reading as though the field holds the
+    // credential.
+    vi.stubEnv("ARGENT_SECRET_W", "or");
+    androidNote.value = "read the field back with a full `uiautomator dump` before relying on it";
+    const tool = createKeyboardTool(registryWith({}));
+
+    const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: "{{secret:W}}" });
+
+    expect(result.note).toBe(
+      "read the field back with a full `uiautomator dump` before relying on it"
+    );
+    expect(result.note).not.toContain("{{secret:W}}");
+  });
+
+  it("does not let a numeric secret swallow a note's character counts", async () => {
+    vi.stubEnv("ARGENT_SECRET_PIN", "12");
+    androidNote.value = "12 characters were typed and the field now holds 4 in total";
+    const tool = createKeyboardTool(registryWith({}));
+
+    const result = await tool.execute({}, { udid: ANDROID_SERIAL, text: "{{secret:PIN}}" });
+
+    expect(result.note).toBe("12 characters were typed and the field now holds 4 in total");
   });
 
   it("leaves a note-less android result without a `note` key", async () => {

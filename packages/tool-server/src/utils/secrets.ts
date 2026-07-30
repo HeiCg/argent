@@ -97,14 +97,13 @@ export function resolveSecretPlaceholders(
  * `{{secret:NAME}}` placeholder. Zero-length values are skipped: replacing an
  * empty string would corrupt the text rather than redact anything.
  *
- * Used on any string a tool sends back after typing a resolved secret —
- * a backend error that echoed its input, or an advisory note describing what a
- * device read back.
+ * Deliberately not exported. It suits an error, which quotes the command line
+ * verbatim and is already unreadable prose, but it is destructive on curated
+ * text: it replaces the value wherever it appears, so a two-character secret
+ * rewrites ordinary words and a numeric one swallows a character count. Anything
+ * a tool composes for the agent to read should be written value-free instead.
  */
-export function redactSecrets(
-  text: string,
-  secrets: Array<{ name: string; value: string }>
-): string {
+function redactSecrets(text: string, secrets: Array<{ name: string; value: string }>): string {
   return secrets.reduce(
     (acc, { name, value }) =>
       value ? acc.split(value).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`) : acc,

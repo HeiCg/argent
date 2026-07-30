@@ -953,10 +953,10 @@ async function runType(
   const typed = await invokeOnDevice(env, "keyboard", { text: step.text });
   // On Android phones/tablets the keyboard tool reads the field back and reports
   // `verified: false` when the text demonstrably did not land (see
-  // keyboard/platforms/android-verify.ts). Failing the step on that is the whole
-  // point of the check: `input text` exits 0 having dropped characters, so a step
-  // that only asked "did the tool return?" greened a `type` that typed something
-  // else. An ABSENT `verified` is not evidence of failure — it means the field
+  // keyboard/platforms/android-verify.ts). The step fails on that, because
+  // `input text` exits 0 having dropped characters: whether the tool returned
+  // says nothing about what reached the field, so only the read-back can gate a
+  // step that types. An ABSENT `verified` is not evidence of failure — it means the field
   // could not be read (another platform, no helper, a password field) — so only
   // an explicit `false` fails, carrying the tool's own note as the reason.
   const verification = typed as { verified?: boolean; note?: string } | undefined;

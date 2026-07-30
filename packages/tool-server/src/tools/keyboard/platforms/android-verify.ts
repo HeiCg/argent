@@ -35,7 +35,7 @@ import type { KeyboardVerification } from "../types";
  * Cost, and why it is not gated on anything: two `getHierarchy` calls over the
  * helper's already-open socket, each a 500 ms settle plus the tree walk. Measured
  * on the same emulator, screen and string, typing 76 characters into the Settings
- * search box costs 1.6-1.8 s unverified and 3.5-4.0 s verified. The FIRST typed
+ * search box costs 1.6-1.8 s unverified and 1.9-3.4 s verified. The FIRST typed
  * string on a device also pays for the helper itself — `adb install -t` of the
  * helper APK plus an `am instrument` spawn, bounded by that blueprint's 30 s ready
  * timeout, measured at 6.1 s including the install and 1.8 s when only the spawn
@@ -54,10 +54,11 @@ import type { KeyboardVerification } from "../types";
  * skipped, rather than charging a locked-down device (exactly the device where
  * `adb install -t` is blocked) two dumps per typed string.
  *
- * The settle is deliberately kept on both reads. Dropping it from the "before"
- * read would save 500 ms, but that read runs right after the agent's own tap on
- * the field, and reading before the framework has published `focused="true"`
- * turns a healthy call into a spurious "no editable field had focus" note.
+ * Neither read passes `waitForIdleMs`, so both take the blueprint's 500 ms
+ * settle. Overriding the "before" read to 0 would save that, but it runs right
+ * after the agent's own tap on the field, and reading before the framework has
+ * published `focused="true"` turns a healthy call into a spurious "no editable
+ * field had focus" note.
  */
 
 /**
@@ -125,23 +126,30 @@ interface FocusedField {
    */
   identity: string;
   /**
-   * A password field's text is NOT masked in the dump — `uiautomator-parser.ts`
-   * and `flows/flow-android-tree.ts` both redact it precisely because
-   * `attrs.text` still holds the secret. That is the reason to skip
-   * verification here rather than a reason it is impossible: reading a
-   * credential back to compare it would put it one refactor away from the
-   * result, and this tool's whole `{{secret:…}}` contract is that the plaintext
-   * never travels back.
+   * Whether the focused field masks its input. Two independent reasons to skip
+   * the read-back rather than one:
+   *
+   *  - It could not work. A password field reports bullets, not characters —
+   *    measured through the helper on API 34, an `EditText` holding
+   *    `SecretPass1` reads back `text="•••••••••••"` — so every comparison would
+   *    fail and every credential would be reported `verified: false`.
+   *  - It must not be relied on to work. That masking is the platform's default,
+   *    not a guarantee this code can enforce, which is why
+   *    `uiautomator-parser.ts` and `flows/flow-android-tree.ts` redact the
+   *    attribute rather than trusting it. Comparing a credential we read back
+   *    would put the plaintext one refactor away from the result, against this
+   *    tool's whole `{{secret:…}}` contract.
    */
   password: boolean;
 }
 
 /**
  * The focused editable view in a uiautomator-schema hierarchy, or null when
- * nothing editable holds input focus. Walked in document order so the first
- * match is the frontmost window's — a multi-window dump (see
- * `describe/platforms/android/index.ts`) can carry a stale `focused="true"` in a
- * background window behind the one actually taking input.
+ * nothing editable holds input focus. Walked in document order and takes the
+ * first match: a capture spanning several windows (the helper walks every
+ * interactive window it is given — see `captureMode` / `windowCount` on
+ * `HierarchyResult`) can carry a stale `focused="true"` in a background window
+ * behind the one actually taking input.
  */
 export function findFocusedTextField(xml: string): FocusedField | null {
   const root = parseUiAutomatorXml(xml);
@@ -200,9 +208,8 @@ function beforeSurvived(before: string, after: string): boolean {
  *    doubled injection breaks the length half.
  *  - *replaced*: the field now holds precisely `text`, its content changed, and
  *    the prior content did NOT survive into it. That is the empty-field case —
- *    the baseline read was the hint (see `FocusedField.text`), which shares no
- *    prefix or suffix with the typed text, so the length arithmetic cannot apply
- *    — and equally a selection that `input text` replaced.
+ *    the baseline read was the hint (see `FocusedField.text`) — and equally a
+ *    selection that `input text` replaced.
  *
  * Ambiguous shapes, reported as `indeterminate` and never repaired:
  *
@@ -211,12 +218,18 @@ function beforeSurvived(before: string, after: string): boolean {
  *    that landed nothing.
  *  - The field now reads exactly `text` AND the prior content survived as edges:
  *    "abc" + a correct replacement by "abcdef" looks the same as "abc" plus a
- *    partial landing of "def" out of "abcdef".
+ *    partial landing of "def" out of "abcdef". A hint reaches this shape too,
+ *    whenever it happens to sit at an edge of the typed text — hint "0" under
+ *    "100" — so a correct type into an empty field can land here. Declining is
+ *    still the only sound answer: nothing in the two readings distinguishes it
+ *    from the partial landing.
  *
- * Known limitation, reported as `not-landed`: a selection that `input text`
- * replaced with a *shorter* string shrinks the field, which reads as a failure.
- * The undo declines that shape (see `plannedUndoDeletions`), so it costs a false
- * alarm in the note, never the field's content.
+ * Known limitation, reported as `not-landed`: a selection replaced with a
+ * *shorter* string shrinks the field, which reads as a failure — unless the
+ * selection covered the whole field, where the result is exactly `text` and the
+ * *replaced* shape above accepts it. `plannedUndoDeletions` still refuses every
+ * shrinking shape, so the cost is a false alarm in the note, never the field's
+ * content.
  */
 export function classifyTypedText(before: string, after: string, text: string): TypedTextVerdict {
   if (after.includes(text) && after.length === before.length + text.length) return "landed";
@@ -243,27 +256,34 @@ export function classifyTypedText(before: string, after: string, text: string): 
  *  A. The field grew by `added` characters and `before` is recoverable from
  *     `after` by deleting one contiguous run of `added` characters (the common
  *     prefix and common suffix together cover `before`). Then `added`
- *     backspaces restore `before` exactly. Preferred, because it never deletes
- *     more than the observed growth and so cannot eat pre-existing content.
+ *     backspaces restore `before` exactly. Bounded by `text.length` — we can
+ *     never have added more characters than we asked to type.
  *  B. Every character in the field is accounted for by this injection: `after`
  *     is a subsequence of `text`. Dropped-keystroke corruption only ever
  *     deletes events, never reorders or invents them, so a field holding only a
  *     subsequence of what we just typed held nothing before it — the baseline
  *     read was a hint. Then `after.length` backspaces empty the field, which is
- *     its true prior state. This is the shape the reported bug takes, and A
- *     cannot cover it: a hint shares no prefix or suffix with the typed text.
+ *     its true prior state. This is the shape the reported bug takes.
  *
- * B is only consulted when A fails, i.e. when `before` did not survive into
- * `after` at all. Both proofs bound the count by `text.length` — we can never
- * have added more characters than we asked to type — which is asserted rather
- * than assumed.
+ * Each proof reads the same field a different way, so where BOTH apply they
+ * disagree about what is ours and neither can be trusted. That overlap is not
+ * exotic: a baseline that is a hint (`FocusedField.text`) can share an edge with
+ * the typed text — hint `https://` under `https://example.com`, hint `0` under
+ * `100` — and then A measures the growth over a "prior value" that was never
+ * in the field. Taking A there deletes `hint.length` too few, the retype appends
+ * onto the residue, and the result is a doubled value (`https://https://…`)
+ * shaped precisely to satisfy `classifyTypedText`'s first branch — reported as
+ * `landed`, with no note, and greened by the flow `type` gate. So the overlap
+ * returns null: the two readings are both live, which is the definition of not
+ * being able to prove what to delete.
  */
 export function plannedUndoDeletions(before: string, after: string, text: string): number | null {
   const added = after.length - before.length;
-  if (added >= 0 && coversByEdges(before, after, added)) {
-    return added <= text.length ? added : null;
-  }
-  if (isSubsequence(after, text)) return after.length;
+  const grewByOneRun = added >= 0 && added <= text.length && coversByEdges(before, after, added);
+  const allOurs = isSubsequence(after, text);
+  if (grewByOneRun && allOurs) return null;
+  if (grewByOneRun) return added;
+  if (allOurs) return after.length;
   return null;
 }
 
@@ -327,10 +347,11 @@ async function deleteTrailing(serial: string, count: number): Promise<void> {
 const UNVERIFIED_PREFIX = "The typed text was not verified against the screen";
 
 const HELPER_UNAVAILABLE_NOTE =
-  `${UNVERIFIED_PREFIX}: the android-devtools helper is not available on this device, and the ` +
-  "only other way to read the field back is a full `uiautomator dump` per call. Android typing " +
-  "can silently drop characters on a field that re-renders per keystroke, so confirm the field's " +
-  "contents with `describe` before relying on them.";
+  `${UNVERIFIED_PREFIX}: the android-devtools helper could not be reached for this call — it may ` +
+  "be blocked on this device (it needs `adb install -t`) or it may have failed to start this " +
+  "time — and the only other way to read the field back is a full `uiautomator dump` per call. " +
+  "Android typing can silently drop characters on a field that re-renders per keystroke, so " +
+  "confirm the field's contents with `describe` before relying on them.";
 
 const NO_FOCUSED_FIELD_NOTE =
   `${UNVERIFIED_PREFIX}: no editable field held input focus, so there was nothing to read back — ` +
@@ -347,23 +368,57 @@ const TRUNCATED_READ_NOTE =
   "text landed — read the field with `describe` to confirm.";
 
 const PASSWORD_FIELD_NOTE =
-  `${UNVERIFIED_PREFIX}: the focused field is a password field, and reading it back would put the ` +
-  "credential in this result — which is exactly what typing a `{{secret:…}}` placeholder exists to " +
-  "avoid — so it is deliberately not read. Android typing can silently drop characters, so a " +
-  "credential that fails to authenticate may simply have been typed incompletely: clear the field " +
-  "and retype rather than assuming the credential is wrong.";
+  `${UNVERIFIED_PREFIX}: the focused field masks its input, so it reads back as bullets rather ` +
+  "than characters and there is nothing to compare — and reading a credential back to compare it " +
+  "is exactly what typing a `{{secret:…}}` placeholder exists to avoid, so it is deliberately not " +
+  "read. Android typing can silently drop characters, so a credential that fails to authenticate " +
+  "may simply have been typed incompletely: clear the field and retype rather than assuming the " +
+  "credential is wrong.";
 
-const READ_FAILED_NOTE =
+const READ_FAILED_BASE =
   `${UNVERIFIED_PREFIX}: reading the focused field back failed. The text was typed, but Android ` +
   "typing can silently drop characters — confirm the field's contents with `describe`.";
 
 // Distinct from a read failure: both reads succeeded and disagreed about WHICH
 // field has focus. Telling the agent to hunt dropped characters would bury the
 // actionable fact, which is that focus moved.
-const FOCUS_MOVED_NOTE =
+const FOCUS_MOVED_BASE =
   `${UNVERIFIED_PREFIX}: input focus moved to a different field while the text was being typed, so ` +
-  "the field it started in could not be checked and nothing was retyped. The text may have been " +
-  "split across both fields. Read the screen with `describe` before continuing.";
+  "the field it started in could not be checked. The text may have been split across both fields. " +
+  "Read the screen with `describe` before continuing.";
+
+// Separate from the above: nothing editable holds focus at all now. There is no
+// second field for the text to have been split across, so claiming focus "moved"
+// would send the agent looking for one.
+const FOCUS_LOST_BASE =
+  `${UNVERIFIED_PREFIX}: no editable field held input focus once the text had been typed, so the ` +
+  "field it started in could not be checked. Read the screen with `describe` before continuing.";
+
+// The read-back equivalent of TRUNCATED_READ_NOTE. A capture that stopped before
+// reaching the field proves nothing about focus, so it must not be reported as a
+// focus change — the same reason the baseline read distinguishes the two.
+const TRUNCATED_AFTER_BASE =
+  `${UNVERIFIED_PREFIX}: the screen has more elements than one capture returns, so the read-back ` +
+  "was truncated before the field could be found again. This says nothing about whether the text " +
+  "landed — read the field with `describe` to confirm.";
+
+/**
+ * Close a blocked read-back with what the call did to the field.
+ *
+ * The repair backspaces and retypes BEFORE the confirming read, so every one of
+ * these outcomes is reachable with the field already modified. Saying "nothing
+ * was retyped" there would be false about a destructive action and would invite
+ * the caller to type the value a third time.
+ */
+function blockedNote(base: string, retyped: boolean): string {
+  return (
+    base +
+    (retyped
+      ? " The characters this call could attribute to itself had already been deleted and retyped " +
+        "in smaller chunks, so the field has been modified beyond the original typing."
+      : " Nothing was retyped.")
+  );
+}
 
 // The observation is consistent with success AND with total failure (see
 // `classifyTypedText`). Retyping here is what would double the text, so the only
@@ -384,11 +439,12 @@ const INDETERMINATE_NOTE =
  * it). Retyping in chunks fixes the first and cannot fix the second, which is why
  * the advice covers both.
  */
-function mismatchNote(expected: number, actual: number, repaired: boolean): string {
+function mismatchNote(typed: number, present: number, repaired: boolean): string {
   return (
-    "The typed text did NOT land in the focused field: it holds " +
-    `${actual} character${actual === 1 ? "" : "s"} where ${expected} ` +
-    `${expected === 1 ? "was" : "were"} expected` +
+    `The typed text did NOT land in the focused field: ${typed} ` +
+    `character${typed === 1 ? "" : "s"} ${typed === 1 ? "was" : "were"} typed and the field now ` +
+    `holds ${present} in total. That total counts whatever the field already showed — an empty ` +
+    "field reads back as its hint — so it is not a count of how many characters were lost" +
     (repaired
       ? ", and retyping it in smaller chunks did not fix it either"
       : ", and the field could not be safely restored to retry, so nothing was retyped") +
@@ -405,10 +461,11 @@ function mismatchNote(expected: number, actual: number, repaired: boolean): stri
 // retyping, so the field can be left holding LESS than when the call started —
 // the one path where that is possible, and it must be reported rather than
 // swallowed into a generic transport error.
-function repairFailedNote(expected: number): string {
+function repairFailedNote(deleted: number): string {
   return (
-    `The typed text did not land, and the retry could not be completed: the ${expected} ` +
-    "characters were removed or partly removed before the retype failed to reach the device. " +
+    `The typed text did not land, and the retry could not be completed: ${deleted} ` +
+    `character${deleted === 1 ? "" : "s"} ${deleted === 1 ? "was" : "were"} removed, or partly ` +
+    "removed, before the retype failed to reach the device. " +
     "The field may now hold less than it did before this call. Read it with `describe` and " +
     "retype from a known state."
   );
@@ -422,9 +479,12 @@ async function resolveDevtools(
     const ref = androidDevtoolsRef(device);
     return await registry.resolveService<AndroidDevtoolsApi>(ref.urn, ref.options);
   } catch (err) {
-    // Every failure here is recoverable by degrading to an unverified type: the
-    // helper needs `adb install -t`, which locked-down devices refuse. Surface it
-    // at debug level, the way the describe adapter does for the same fallback.
+    // Every failure here is recoverable by degrading to an unverified type. The
+    // permanent one is a locked-down device refusing `adb install -t`, but this
+    // also catches a spawn that failed or hit the blueprint's ready timeout, so
+    // the note it produces must not call the helper unavailable for good.
+    // Surfaced at debug level, the way the describe adapter does for the same
+    // fallback.
     console.debug(
       `[keyboard.android] devtools unavailable, typing without read-back verification: ${
         err instanceof Error ? err.message : String(err)
@@ -497,7 +557,7 @@ export async function typeAndroidTextVerified(
     ({ field: before, truncated: beforeTruncated } = await readFocusedField(devtools));
   } catch {
     await injectAndroidText(serial, text);
-    return { note: READ_FAILED_NOTE };
+    return { note: blockedNote(READ_FAILED_BASE, false) };
   }
   if (!before) {
     await injectAndroidText(serial, text);
@@ -510,7 +570,7 @@ export async function typeAndroidTextVerified(
 
   await injectAndroidText(serial, text);
 
-  const after = await readAfter(devtools, before);
+  const after = await readAfter(devtools, before, false);
   if (after.blocked) return after.blocked;
   const verdict = classifyTypedText(before.text, after.field.text, text);
   if (verdict === "landed") return { verified: true };
@@ -528,10 +588,10 @@ export async function typeAndroidTextVerified(
     // The undo runs before the retype, so a failure between them can leave the
     // field emptier than the call found it. Report that state instead of letting
     // an adb error imply nothing happened.
-    return { verified: false, note: repairFailedNote(text.length) };
+    return { verified: false, note: repairFailedNote(deletions) };
   }
 
-  const repaired = await readAfter(devtools, before);
+  const repaired = await readAfter(devtools, before, true);
   if (repaired.blocked) return repaired.blocked;
   if (classifyTypedText(before.text, repaired.field.text, text) === "landed") {
     return { verified: true };
@@ -547,19 +607,27 @@ export async function typeAndroidTextVerified(
  */
 async function readAfter(
   devtools: AndroidDevtoolsApi,
-  before: FocusedField
+  before: FocusedField,
+  retyped: boolean
 ): Promise<
   | { blocked?: undefined; field: FocusedField }
   | { blocked: KeyboardVerification; field?: undefined }
 > {
   let field: FocusedField | null;
+  let truncated: boolean;
   try {
-    ({ field } = await readFocusedField(devtools));
+    ({ field, truncated } = await readFocusedField(devtools));
   } catch {
-    return { blocked: { note: READ_FAILED_NOTE } };
+    return { blocked: { note: blockedNote(READ_FAILED_BASE, retyped) } };
   }
-  if (!field || field.identity !== before.identity) {
-    return { blocked: { note: FOCUS_MOVED_NOTE } };
+  if (!field) {
+    // A truncated capture never reached the field, so "nothing has focus" is not
+    // a conclusion it supports — the same distinction the baseline read draws.
+    const base = truncated ? TRUNCATED_AFTER_BASE : FOCUS_LOST_BASE;
+    return { blocked: { note: blockedNote(base, retyped) } };
+  }
+  if (field.identity !== before.identity) {
+    return { blocked: { note: blockedNote(FOCUS_MOVED_BASE, retyped) } };
   }
   return { field };
 }
