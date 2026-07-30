@@ -73,7 +73,10 @@ describe("otel endpoint invariance", () => {
     ["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "https://attacker.example/v1/logs"],
     ["OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer steal-me"],
     ["OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"],
-  ])("ignores env var %s=%s (endpoint is passed explicitly in code)", (envName, value) => {
+    // Asserts only that the endpoint stays put — these mocks record constructor
+    // args, so they cannot speak for what the real exporter does with the env.
+    // otel-endpoint-live.test.ts drives the actual SDK for that.
+  ])("keeps the code-supplied endpoint with %s=%s set", (envName, value) => {
     const old = process.env[envName];
     process.env[envName] = value;
     try {

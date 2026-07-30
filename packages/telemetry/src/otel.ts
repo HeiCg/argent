@@ -7,10 +7,18 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 /**
  * Hard-coded OTLP/HTTP logs endpoint so env-var overrides cannot redirect
  * ingestion. Argent telemetry is exported as OpenTelemetry log records to
- * Software Mansion's own collector; because the endpoint is passed to the
- * exporter explicitly in code, the standard OTEL_EXPORTER_OTLP_* environment
- * variables are ignored (see otel-endpoint.test.ts) — the same anti-exfiltration
- * guarantee the previous PostHog transport enforced with its fixed host.
+ * Software Mansion's own collector; the endpoint and the authorization header
+ * are passed to the exporter explicitly in code, and an explicit value wins over
+ * the corresponding OTEL_EXPORTER_OTLP_* environment variable — the same
+ * anti-exfiltration guarantee the previous PostHog transport enforced with its
+ * fixed host. otel-endpoint-live.test.ts pins that precedence against the real
+ * exporter, because otel-endpoint.test.ts mocks it and so cannot see the SDK
+ * change its mind.
+ *
+ * The guarantee covers destination and credential, not the whole request:
+ * OTEL_EXPORTER_OTLP_HEADERS still merges any header it names that the code
+ * does not already set. Those ride along to this collector and nowhere else,
+ * and setting them already requires control of the process environment.
  */
 export const OTLP_LOGS_ENDPOINT = "https://otel.swmansion.com/v1/logs"; // TODO(release): confirm the production collector URL.
 
