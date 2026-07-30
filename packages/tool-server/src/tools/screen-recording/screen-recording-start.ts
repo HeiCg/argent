@@ -100,13 +100,10 @@ Fails if a recording is already running on the device, the device is not booted,
 
       // Distinguish tvOS from iOS by runtime — shape alone can't. tvOS has no
       // simulator-server backend, so say so here instead of failing deeper in.
-      // Only simulators can be tvOS ones, and the probe costs a `simctl list`,
-      // so a physical iPhone skips it.
-      if (
-        device.platform === "ios" &&
-        device.kind === "simulator" &&
-        (await isTvOsSimulator(params.udid))
-      ) {
+      // A physical iPhone answers false without a probe (see isTvOsSimulator,
+      // which short-circuits a hardware UDID), so no extra narrowing is needed
+      // here — same as the screenshot and await-screen-idle call sites.
+      if (device.platform === "ios" && (await isTvOsSimulator(params.udid))) {
         throw new FailureError(
           `Screen recording is not supported on tvOS simulators (device ${params.udid}).`,
           {

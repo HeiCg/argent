@@ -3,8 +3,10 @@ import { isFlagEnabled } from "@argent/configuration-core";
 import { InvalidToolInputError } from "../src/utils/capability";
 import { resolveDevice } from "../src/utils/device-info";
 
-// The two physical-iOS operations that shell `devicectl` instead of going
-// through a CoreDevice service. Isolated in their own file so the
+// The physical-iOS operations that shell `devicectl` instead of going through a
+// CoreDevice service — `launch-app` is covered in physical-ios-followups.test.ts,
+// and physical-ios-capability-sweep.test.ts derives the whole set to check none
+// of them can skip the opt-in gate. Isolated in their own file so the
 // `node:child_process` mock can't reach the suites that run the real binary.
 const execCalls: string[][] = [];
 let execResult: () => Promise<{ stdout: string; stderr: string }> = () =>

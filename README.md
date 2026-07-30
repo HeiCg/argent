@@ -116,10 +116,12 @@ no manual step, no `sudo`.
   `devicectl device install app`. A simulator `.app`, or one whose provisioning profile does not
   list the device UDID, fails with a message saying so.
 
-- Anything that has to run code inside the target app is **not supported** and returns a clear
-  "not supported" error: the native inspection tools (`native-*`) attach by injecting a dylib
-  through `simctl spawn`, which has no physical-device equivalent — a real device would need that
-  dylib linked into a signed build. `native-profiler-*` is blocked by the same signing
+- Anything that needs argent's **native devtools** inside the target app is **not supported** and
+  returns a clear "not supported" error: the native inspection tools (`native-*`) attach by
+  injecting a dylib through `simctl spawn`, which has no physical-device equivalent — a real device
+  would need that dylib linked into a signed build. (The `debugger-*` and `react-profiler-*` family
+  is a different mechanism — it talks to the app's JS runtime through Metro, not through the
+  device — so it is not gated here.) `native-profiler-*` is blocked by the same signing
   requirement: `xctrace` only enumerates processes it is entitled to profile, so on a device with
   no developer-signed app installed there is nothing to attach to. `settings-permissions` drives
   `simctl privacy`, which addresses a simulator's TCC database and has no CoreDevice counterpart.

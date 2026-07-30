@@ -171,12 +171,10 @@ animation that moves only pixels (a spinner) reads as settled.`,
       // Resolved once, outside the poll loop, like `isTvOs` — an unlisted
       // serial's TV probe is never cached, so leaving it inside
       // `describeAndroid` would spawn `adb devices` per poll.
-      // Only a simulator can be a tvOS one, and the probe costs a `simctl list`,
-      // so a physical iPhone skips it (same narrowing as screen-recording-start).
-      const isTvOs =
-        device.platform === "ios" &&
-        device.kind === "simulator" &&
-        (await isTvOsSimulator(device.id));
+      // A physical iPhone answers false without a probe (see isTvOsSimulator,
+      // which short-circuits a hardware UDID), so no extra narrowing is needed
+      // here — same as the screenshot and screen-recording-start call sites.
+      const isTvOs = device.platform === "ios" && (await isTvOsSimulator(device.id));
       const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));
       const minStableMs = params.minStableMs ?? DEFAULT_MIN_STABLE_MS;
       const rotatingRead = device.platform === "ios" && device.kind === "device";

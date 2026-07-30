@@ -33,8 +33,9 @@ export function makeIosImpl(
       if (device.kind === "device") {
         // Unlike the CoreDevice-routed tools, launch-app shells devicectl directly
         // (no CoreDevice service), so it must enforce the opt-in flag itself —
-        // otherwise it would be the one physical-iOS operation reachable while the
-        // feature is disabled.
+        // otherwise it would be a physical-iOS operation reachable while the
+        // feature is disabled. Every devicectl-backed tool carries the same call
+        // for the same reason.
         assertPhysicalIosEnabled();
         try {
           await execFileAsync("xcrun", [

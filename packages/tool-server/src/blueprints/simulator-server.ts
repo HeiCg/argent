@@ -144,8 +144,10 @@ const PHYSICAL_IOS_DEVICES_FLAG = "physical-ios-devices";
  * Throw the standard "enable the flag" error unless physical-iOS support is on.
  * Physical iOS is opt-in: `simulatorServerRef` above runs this for every
  * CoreDevice-backed consumer (tap/swipe/button/screenshot/describe/boot-device),
- * and `launch-app` — which drives a real device via `devicectl` rather than the
- * sim-server — calls it directly so it can't bypass the opt-in.
+ * and the app-lifecycle tools — which drive a real device via `devicectl`
+ * rather than the sim-server, so no ref is built to run the gate — call it
+ * directly so they can't bypass the opt-in. Grep this symbol for that set
+ * rather than trusting a list here; each new devicectl-backed tool joins it.
  *
  * `InvalidToolInputError` (not `FailureError`) so this maps to a 400: a flag the
  * caller has not enabled is a configuration error, not an internal fault. The

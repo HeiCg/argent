@@ -11,6 +11,8 @@
  * for tools added after this was written.
  */
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ToolCapability } from "@argent/registry";
 import { FLAG_REGISTRY } from "@argent/configuration-core";
 import { createRegistry } from "../src/utils/setup-registry";
@@ -134,5 +136,39 @@ describe("physical-iPhone capability gate, swept across the registry", () => {
       .filter((line) => line.includes("physical-ios-devices"));
     expect(physicalLine, "the physical-iOS line must still be findable").toHaveLength(1);
     expect(names(physicalLine[0]!), "list-devices description").toEqual([]);
+  });
+
+  it("leaves no devicectl-backed tool able to skip the opt-in gate", () => {
+    // `simulatorServerRef` runs `assertPhysicalIosEnabled` for everything routed
+    // through a CoreDevice service, so the flag covers those by construction. A
+    // tool that shells `devicectl` builds no ref, and is therefore only gated by
+    // its own call — which is easy to leave out, and leaves a physical-iOS
+    // operation reachable with the feature disabled. Derived from the source so
+    // the next devicectl-backed tool is covered without being listed.
+    const toolsDir = path.join(__dirname, "..", "src", "tools");
+    const sources: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith(".ts")) sources.push(full);
+      }
+    };
+    walk(toolsDir);
+
+    const shellsDevicectl = sources.filter((f) => /"devicectl"/.test(fs.readFileSync(f, "utf8")));
+
+    // Anti-vacuity: the four that exist today must be found, so a broken walk or
+    // matcher cannot pass this by finding nothing.
+    expect(shellsDevicectl.map((f) => path.basename(path.dirname(path.dirname(f)))).sort()).toEqual(
+      ["launch-app", "open-url", "reinstall-app", "restart-app"]
+    );
+
+    for (const file of shellsDevicectl) {
+      expect(
+        fs.readFileSync(file, "utf8"),
+        `${path.relative(toolsDir, file)} shells devicectl and must call assertPhysicalIosEnabled itself`
+      ).toContain("assertPhysicalIosEnabled()");
+    }
   });
 });

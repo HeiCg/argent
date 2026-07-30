@@ -16,10 +16,8 @@ export const iosImpl: PlatformImpl<ReinstallAppServices, ReinstallAppParams, Rei
 
     if (device.kind === "device") {
       // Physical iPhones install through devicectl rather than simctl. Like
-      // launch-app and open-url — the other tools that shell devicectl instead
-      // of going through a CoreDevice service — this enforces the opt-in
-      // itself, since no simulator-server ref is built on this path to run the
-      // gate.
+      // every devicectl-backed tool, this enforces the opt-in itself, since no
+      // simulator-server ref is built on this path to run the gate.
       assertPhysicalIosEnabled();
       try {
         await execFileAsync("xcrun", [

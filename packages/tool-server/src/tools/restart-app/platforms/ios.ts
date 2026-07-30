@@ -33,8 +33,7 @@ export function makeIosImpl(
         // as it is installed. The simulator path restarts *through*
         // native-devtools so the process comes back injected; that injection is
         // simulator-only, so there is nothing to preserve here and a plain
-        // relaunch is the whole operation. Like launch-app — the other tool that
-        // shells devicectl rather than going through a CoreDevice service — this
+        // relaunch is the whole operation. Like every devicectl-backed tool, this
         // enforces the opt-in itself, since no simulator-server ref is built on
         // this path to run the gate.
         assertPhysicalIosEnabled();

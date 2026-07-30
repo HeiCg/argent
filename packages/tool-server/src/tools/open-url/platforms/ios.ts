@@ -13,8 +13,7 @@ export const iosImpl: PlatformImpl<OpenUrlServices, OpenUrlParams, OpenUrlResult
   handler: async (_services, params, device) => {
     if (device.kind === "device") {
       // Physical iPhones open URLs through devicectl rather than simctl. Like
-      // launch-app — the other tool that shells devicectl instead of going
-      // through a CoreDevice service — this has to enforce the opt-in itself,
+      // every devicectl-backed tool, this has to enforce the opt-in itself,
       // since no simulator-server ref is built on this path to run the gate.
       assertPhysicalIosEnabled();
       try {
