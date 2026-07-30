@@ -42,12 +42,27 @@ describe("flow device resolution rejects a physical iPhone", () => {
     ).rejects.toThrow(/native view hierarchy/i);
   });
 
-  it("rejects it when auto-detection picks it as the only ready device", async () => {
-    // The failure mode this guards: `isBooted` counts `state: "connected"`, so a
-    // connected iPhone is the single match and the run proceeds to step 1.
+  it("says why when it is the only ready device, rather than 'no booted device'", async () => {
+    // `isBooted` counts `state: "connected"`, so an attached iPhone is what the
+    // runner would otherwise have picked. Dropping it from the candidates must
+    // not turn that into "no booted device found" printed beside a list that
+    // shows one.
     await expect(
       resolveFlowDevice(registryListing([physicalEntry]), undefined, {})
     ).rejects.toThrow(/physical iPhone/i);
+    await expect(
+      resolveFlowDevice(registryListing([physicalEntry]), undefined, {})
+    ).rejects.not.toThrow(/No booted device found/i);
+  });
+
+  it("does not let a plugged-in iPhone make an otherwise unambiguous simulator ambiguous", async () => {
+    // The regression this guards: counting the iPhone as a candidate turns the
+    // ordinary "one simulator running, phone on the desk" setup into
+    // "2 booted devices matched — pass --device or --platform", for a device
+    // that could never have been the answer.
+    await expect(
+      resolveFlowDevice(registryListing([physicalEntry, simEntry]), undefined, {})
+    ).resolves.toMatchObject({ id: SIM_UDID, kind: "simulator" });
   });
 
   it("still resolves an iOS simulator (the rejection is scoped to hardware)", async () => {

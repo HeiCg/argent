@@ -45,9 +45,11 @@ const zodSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Optional app bundle ID. Used as a target hint on iOS when the AX-service returns no elements " +
-        "and the describe tool falls back to native-devtools inspection. " +
-        "If omitted, the fallback auto-detects the frontmost connected app. Ignored on Android / Chromium."
+      "Optional app bundle ID. Used as a target hint on an iOS simulator when the AX-service returns " +
+        "no elements and the describe tool falls back to native-devtools inspection. " +
+        "If omitted, the fallback auto-detects the frontmost connected app. Ignored on a physical " +
+        "iPhone (whose read is the CoreDevice audit of whatever is frontmost, with no per-app " +
+        "scoping) and on Android / Chromium."
     ),
 });
 

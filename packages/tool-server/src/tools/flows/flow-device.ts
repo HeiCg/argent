@@ -23,6 +23,13 @@ interface RawDevice {
   udid?: string;
   serial?: string;
   id?: string;
+  /** iOS: "simulator" | "device"; Android: "emulator" | "device". */
+  kind?: string;
+}
+
+/** A `list-devices` entry for a physical iPhone — ready, listed, undriveable by a flow. */
+function isPhysicalIosEntry(d: RawDevice): boolean {
+  return d.platform === "ios" && d.kind === "device";
 }
 
 function deviceEntryId(d: RawDevice): string | undefined {
@@ -35,10 +42,10 @@ function isBooted(d: RawDevice): boolean {
   switch (d.platform) {
     case "ios":
       // "Booted" is a simulator; a connected physical iPhone reports
-      // "connected", the same way `list-devices` ranks both as ready. The second
-      // arm keeps an attached iPhone in the candidate set so it is named by
-      // `assertFlowCapableDevice`'s reason rather than by "no booted device
-      // found" alongside a list that plainly contains one.
+      // "connected", the same way `list-devices` ranks both as ready. Readiness
+      // is not driveability — `resolveFlowDevice` drops a physical iPhone from
+      // the candidates below — but reporting one as not-ready would put "no
+      // booted device found" next to a list that plainly contains one.
       return d.state === "Booted" || d.state === "connected";
     case "android":
       return d.state === "device";
@@ -110,20 +117,32 @@ export async function resolveFlowDevice(
   };
   const booted = devices.filter(isBooted);
   const scoped = opts.platform ? booted.filter((d) => d.platform === opts.platform) : booted;
+  // Auto-detection ignores a physical iPhone: it can never be the answer (see
+  // `assertFlowCapableDevice`), so counting it would make a plugged-in phone
+  // force `--device` on a machine whose one simulator is otherwise unambiguous.
+  // Naming one explicitly still gets the specific reason, not silence.
+  const candidates = scoped.filter((d) => !isPhysicalIosEntry(d));
 
-  if (scoped.length === 1) {
-    const id = deviceEntryId(scoped[0]);
+  if (candidates.length === 1) {
+    const id = deviceEntryId(candidates[0]);
     if (id) return assertFlowCapableDevice(resolveDevice(id));
   }
-  if (scoped.length === 0) {
+  if (candidates.length === 0) {
+    // Distinguish "nothing is ready" from "the only ready thing is a phone
+    // flows cannot drive" — otherwise the second reads as the first, beside a
+    // list that shows the phone.
+    const dropped = scoped.filter(isPhysicalIosEntry);
+    if (dropped.length > 0) {
+      return assertFlowCapableDevice(resolveDevice(deviceEntryId(dropped[0]) ?? ""));
+    }
     const what = opts.platform
       ? `No booted ${opts.platform} device found.`
       : "No booted device found.";
     throw deviceResolutionError(`${what} Pass a device id or platform explicitly.`, devices);
   }
   throw deviceResolutionError(
-    `${scoped.length} booted devices matched — pass --device or --platform to disambiguate.`,
-    scoped
+    `${candidates.length} booted devices matched — pass --device or --platform to disambiguate.`,
+    candidates
   );
 }
 

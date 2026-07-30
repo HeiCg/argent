@@ -345,6 +345,39 @@ describe("gesture-custom on physical iOS: single contact only, rejected as a who
     expect(result.events).toBe(2);
     expect(touch.mock.calls.map(([c]) => c.secondX)).toEqual([0.6, 0.8]);
   });
+
+  it("resolves no service for a request it is going to reject (no wasted spawn)", () => {
+    // The registry resolves every declared service before calling execute, so a
+    // ref here would bring the CoreDevice session up purely to reject — and on a
+    // device whose session cannot start (locked, unplugged, Developer Mode off)
+    // the caller would get that transport error instead of "this gesture needs
+    // two contacts". Same shape as `button`'s no-HID-equivalent case above.
+    const twoTouch = {
+      udid: PHYSICAL_UDID,
+      events: [
+        { type: "Down", x: 0.5, y: 0.5 },
+        { type: "Up", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
+      ],
+    };
+    expect(Object.keys(gestureCustomTool.services!(twoTouch as never))).toEqual([]);
+
+    // The single-touch half must still resolve one, or the tool stops working.
+    const singleTouch = {
+      udid: PHYSICAL_UDID,
+      events: [
+        { type: "Down", x: 0.5, y: 0.5 },
+        { type: "Up", x: 0.5, y: 0.4 },
+      ],
+    };
+    expect(Object.keys(gestureCustomTool.services!(singleTouch as never))).toEqual([
+      "simulatorServer",
+    ]);
+
+    // …and a simulator keeps its two-finger support.
+    expect(
+      Object.keys(gestureCustomTool.services!({ ...twoTouch, udid: SIM_UDID } as never))
+    ).toEqual(["simulatorServer"]);
+  });
 });
 
 describe("tools unsupported on physical iOS reject with UnsupportedOperationError (400)", () => {

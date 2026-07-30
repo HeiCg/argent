@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ToolCapability, ToolDefinition } from "@argent/registry";
+import type { DeviceInfo, ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice } from "../../utils/device-info";
 import { UnsupportedOperationError } from "../../utils/capability";
@@ -59,6 +59,21 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
 };
 
+/**
+ * Index of the first event carrying a second touch point on a device that has
+ * only one contact, or -1.
+ *
+ * Checked across the whole sequence before the first event goes out: a rejection
+ * partway through would leave the contact down on the device with no Up to
+ * follow. Indexed against the caller's own `events`, not the interpolated
+ * expansion, so the reported position is one they can find. Shared by `services`
+ * and `execute` so both answer the same question about the same request.
+ */
+function secondTouchIndex(device: DeviceInfo, events: Params["events"]): number {
+  if (device.platform !== "ios" || device.kind !== "device") return -1;
+  return events.findIndex((e) => e.x2 !== undefined || e.y2 !== undefined);
+}
+
 export const gestureCustomTool: ToolDefinition<Params, Result> = {
   id: "gesture-custom",
   interaction: {
@@ -90,30 +105,31 @@ Example pinch-to-zoom (with interpolate:10 for smoothness):
   interpolate: 10`,
   zodSchema,
   capability,
-  services: (params) => ({
-    simulatorServer: simulatorServerRef(resolveDevice(params.udid)),
-  }),
-  async execute(services, params) {
-    const api = services.simulatorServer as SimulatorServerApi;
-
+  services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
-    if (device.platform === "ios" && device.kind === "device") {
-      // Checked across the whole sequence before the first event goes out: a
-      // rejection partway through would leave the contact down on the device
-      // with no Up to follow. Indexed against the caller's own `events`, not the
-      // interpolated expansion, so the reported position is one they can find.
-      const secondTouchAt = params.events.findIndex(
-        (e) => e.x2 !== undefined || e.y2 !== undefined
+    // A request execute() is going to reject outright resolves no service — the
+    // same reason `button` returns {} for a button physical iOS cannot send, and
+    // what makes run-sequence's "a physical-iOS sequence made only of unsupported
+    // steps never brings up a CoreDevice session just to reject them" true. It is
+    // not only a wasted spawn: the registry resolves services before execute, so
+    // a device that cannot start its session would answer a two-contact request
+    // with a transport error instead of "this gesture needs two contacts".
+    if (secondTouchIndex(device, params.events) !== -1) return {};
+    return { simulatorServer: simulatorServerRef(device) };
+  },
+  async execute(services, params) {
+    const device = resolveDevice(params.udid);
+    const secondTouchAt = secondTouchIndex(device, params.events);
+    if (secondTouchAt !== -1) {
+      throw new UnsupportedOperationError(
+        "gesture-custom",
+        device,
+        `a second touch point (x2/y2, first at events[${secondTouchAt}]) needs two contacts, and CoreDevice exposes a single-contact touchscreen; ` +
+          `single-touch sequences - long press, drag-and-drop, custom scroll - work`
       );
-      if (secondTouchAt !== -1) {
-        throw new UnsupportedOperationError(
-          "gesture-custom",
-          device,
-          `a second touch point (x2/y2, first at events[${secondTouchAt}]) needs two contacts, and CoreDevice exposes a single-contact touchscreen; ` +
-            `single-touch sequences - long press, drag-and-drop, custom scroll - work`
-        );
-      }
     }
+
+    const api = services.simulatorServer as SimulatorServerApi;
 
     const events =
       params.interpolate && params.interpolate > 0
