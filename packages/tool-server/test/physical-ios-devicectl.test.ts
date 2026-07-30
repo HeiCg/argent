@@ -199,12 +199,11 @@ describe("reinstall-app on a physical iPhone", () => {
   });
 
   it("carries devicectl's own diagnosis, instead of asserting a signing failure", async () => {
-    // Every install failure used to be reported as "the bundle must be … signed
-    // with a provisioning profile that includes this device", and the child's
-    // output was dropped — `subprocessFailureMetadata` records only exit code and
-    // signal, and the HTTP layer serialises `err.message`. A locked phone was
-    // therefore reported as a signing problem, sending the caller to re-sign a
-    // bundle that was fine.
+    // `subprocessFailureMetadata` records only exit code and signal, and the
+    // HTTP layer serialises `err.message`, so devicectl's own explanation
+    // reaches the caller only if the message carries it. Without it a locked
+    // phone reads as a signing problem, sending the caller to re-sign a bundle
+    // that is fine.
     let call = 0;
     execResult = () => {
       call += 1;
