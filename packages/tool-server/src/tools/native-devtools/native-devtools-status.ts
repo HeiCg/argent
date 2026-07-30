@@ -35,6 +35,11 @@ export const nativeDevtoolsStatusTool: ToolDefinition<Params, Result> = {
     failedMsg: ({ params, failureSignal }) =>
       `Failed to check native inspection for ${params.bundleId}: ${failureSignal.error_code}`,
   },
+  // `apple.device: false`: native-devtools injects its dylib with DYLD via
+  // `simctl spawn`, which is simulator-only — a signed app on a physical iPhone
+  // cannot load it, so the blueprint refuses `kind: "device"` outright. Gate here
+  // too so a physical udid is rejected by the capability check with a clear
+  // message instead of reaching the blueprint's throw.
   capability: { apple: { simulator: true, device: false }, appleRemote: { simulator: true } },
   // The "injectable is false" recovery sentence inlines NON_INJECTABLE_RECOVERY
   // verbatim: the description must stay a plain literal so scripts/extract-tools.mjs
