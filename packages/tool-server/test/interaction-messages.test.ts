@@ -130,13 +130,17 @@ describe("tool interaction messages", () => {
         params: { udid: "chromium-1", action: "set", name: "session", value: secret },
         result: { set: true },
       }),
+      // Recordings are keyed by `name` + `project_root`, so both are required
+      // and the message names the flow. The echoed `message` is the sensitive
+      // part — it is caller-authored free text — and stays out.
       definitions.get("flow-add-echo")!.interaction!.completedMsg!({
-        params: { message: secret },
+        params: { name: "checkout", project_root: "/tmp/proj", message: secret },
         result: { message: secret, flowFile: "/tmp/flow.yaml", savedTo: "project" },
       }),
     ];
 
     expect(messages.join("\n")).not.toContain(secret);
     expect(messages).toContain("Opening example.com");
+    expect(messages).toContain("Added note to flow checkout");
   });
 });
