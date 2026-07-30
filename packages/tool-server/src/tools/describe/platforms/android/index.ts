@@ -52,7 +52,26 @@ export async function describeAndroid(
       const ref = androidDevtoolsRef(device);
       const devtools = await registry.resolveService<AndroidDevtoolsApi>(ref.urn, ref.options);
       const [{ xml }, size] = await Promise.all([
-        devtools.getHierarchy(),
+        // clearCache: every reader of this tree is answering "what is on the
+        // screen right now" — the `describe` tool, `await-screen-idle`,
+        // `await-ui-element` and the Lens/preview describe route all read it,
+        // and a selector match turns it into tap coordinates. The helper's
+        // long-lived connection caches AccessibilityNodeInfo per node and its
+        // event-driven invalidation stops once the inspected app restarts under
+        // that connection, so a cached read serves a node's first-seen text
+        // indefinitely: the screen moves on and the tree does not.
+        //
+        // The cost is bounded and worth paying. Both platform paths scale with
+        // the tree, because dropping the cache means the walk re-fetches every
+        // node over binder: API 34+ drops it in one UiAutomation.clearCache()
+        // call, below 34 there is no such API and the helper refreshes each node
+        // during the walk instead. Measured device-side on arm64 emulators —
+        // API 30, 124 nodes: 4 ms → 45 ms (~0.3 ms/node); API 34, 163 nodes:
+        // 3 ms → 27 ms (~0.13 ms/node). End-to-end that is a median `describe`
+        // of 76 ms → 121 ms on API 30. The polled readers hold their own
+        // wall-clock deadline, so a slower read costs them samples inside the
+        // budget rather than overrunning it.
+        devtools.getHierarchy({ clearCache: true }),
         devtools.getScreenSize(),
       ]);
       const tree = parseUiAutomatorDump(xml, size.width, size.height);
