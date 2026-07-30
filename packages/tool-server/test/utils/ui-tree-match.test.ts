@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import type { DescribeNode } from "../../src/tools/describe/contract";
 import {
   nodeAtPoint,
+  nodesStackedAtPoint,
   selectorToFrame,
   deriveSelector,
   evaluateCondition,
@@ -43,15 +44,132 @@ const root = node({
 });
 
 describe("ui-tree-match", () => {
-  it("nodeAtPoint returns the smallest element under a point", () => {
-    // (0.2, 0.15) sits inside both the button and the surrounding group; the
-    // button has the smaller area and wins.
+  it("nodeAtPoint returns the element nested inside a container under a point", () => {
+    // (0.2, 0.15) sits inside both the button and the group whose frame
+    // surrounds it; the button is drawn inside that container, so it is what
+    // the touch reaches.
     const hit = nodeAtPoint(root, { x: 0.2, y: 0.15 });
     expect(hit?.label).toBe("Login");
   });
 
   it("nodeAtPoint returns undefined when nothing is under the point", () => {
     expect(nodeAtPoint(root, { x: 0.95, y: 0.95 })).toBeUndefined();
+  });
+
+  // ── Bottom bar over unclipped scroll content ───────────────────────────────
+  //
+  // Pixel bounds measured with `uiautomator dump --compressed` on a Pixel 3a
+  // API 34 emulator (1080×2220), from a bottom-tab-bar app over a scrolling
+  // list: the bar is a ViewGroup at [0,1934][1080,2154] with 216×220 px tab
+  // buttons ([216,1934][432,2154] for the second), the list is a RecyclerView
+  // reaching the screen bottom at [0,245][1080,2220], its rows are 154 px tall
+  // spanning [22,…][1080,…], and a row's text leaf is 636×50 px starting at
+  // x=154. Android does NOT clip a view's bounds to what is drawn over it, so
+  // the rows under the bar are reported at their laid-out bounds — the shape
+  // the bug report describes as "feed content stretching under the bottom
+  // navigation bar", with "another, WIDER element" beating the tab button.
+  const SCREEN = { width: 1080, height: 2220 };
+
+  function px(x1: number, y1: number, x2: number, y2: number): DescribeNode["frame"] {
+    return {
+      x: x1 / SCREEN.width,
+      y: y1 / SCREEN.height,
+      width: (x2 - x1) / SCREEN.width,
+      height: (y2 - y1) / SCREEN.height,
+    };
+  }
+
+  // The row text leaf: 636 px wide against the tab button's 216, yet 31 800 px²
+  // against its 47 520 — wider, but smaller in area, which is what let it win.
+  const rowText = node({
+    role: "android.widget.TextView",
+    label: "Reply from @alice",
+    frame: px(154, 2021, 790, 2071),
+  });
+  const feedRow = node({
+    role: "android.view.ViewGroup",
+    identifier: "com.example.social:id/feed_row",
+    frame: px(22, 1969, 1080, 2123),
+  });
+  const feed = node({
+    role: "androidx.recyclerview.widget.RecyclerView",
+    identifier: "com.example.social:id/feed",
+    scrollable: true,
+    frame: px(0, 245, 1080, 2220),
+  });
+  const tabButton = node({
+    role: "android.widget.FrameLayout",
+    identifier: "com.example.social:id/tab_feeds",
+    label: "Feeds",
+    clickable: true,
+    frame: px(216, 1934, 432, 2154),
+  });
+  const tabBar = node({
+    role: "android.view.ViewGroup",
+    identifier: "com.example.social:id/tab_bar",
+    frame: px(0, 1934, 1080, 2154),
+  });
+
+  // The flat, post-order shape every flow adapter emits (see
+  // flow-tree-flatten): descendants precede their container, and the tab bar's
+  // branch follows the feed's because it is drawn over it.
+  function flowTree(children: DescribeNode[]): DescribeNode {
+    return node({ role: "Screen", frame: { x: 0, y: 0, width: 1, height: 1 }, children });
+  }
+
+  const feedUnderTabBar = flowTree([rowText, feedRow, feed, tabButton, tabBar]);
+  // The centre of the second tab button, 972 px down the screen — inside the
+  // button, the row, the row's text leaf, the feed, and the bar.
+  const tabPoint = { x: 324 / SCREEN.width, y: 2044 / SCREEN.height };
+
+  it("nodeAtPoint elects the tab button drawn over feed content it overlaps", () => {
+    expect(nodeAtPoint(feedUnderTabBar, tabPoint)?.identifier).toBe(
+      "com.example.social:id/tab_feeds"
+    );
+  });
+
+  it("nodeAtPoint elects the overlapping element the tree draws last", () => {
+    // The same five frames with the bar's branch listed FIRST: the feed is then
+    // the one painted over the bar, and its text leaf is what the touch reaches.
+    // Nothing but tree order differs, so this pins paint order specifically —
+    // not a preference for the wider, the clickable, or the later-measured node.
+    const barUnderFeed = flowTree([tabButton, tabBar, rowText, feedRow, feed]);
+    expect(nodeAtPoint(barUnderFeed, tabPoint)?.label).toBe("Reply from @alice");
+  });
+
+  it("nodesStackedAtPoint names the elements only paint order separates", () => {
+    // The feed row and its text leaf cover the tapped point while nesting
+    // neither way with the tab button — a genuine overlap the recorder must
+    // caveat. The feed and the bar are excluded: the button sits inside both, so
+    // they are containers, not contenders.
+    expect(
+      nodesStackedAtPoint(feedUnderTabBar, tabPoint).map((n) => n.label ?? n.identifier)
+    ).toEqual(["Reply from @alice", "com.example.social:id/feed_row"]);
+  });
+
+  it("nodesStackedAtPoint reports nothing for a plain nested pick", () => {
+    // Everything else under the point is a container the elected button is drawn
+    // inside, so an ordinary tap carries no caveat.
+    expect(nodesStackedAtPoint(root, { x: 0.2, y: 0.15 })).toEqual([]);
+  });
+
+  it("nodeAtPoint keeps the first of two elements sharing one frame", () => {
+    // A testID container and the label leaf flush inside it — the everyday
+    // flattened-tree shape — report the same rectangle, so nothing about the
+    // touch distinguishes them and both give the same tap point. The first
+    // stands, and no caveat is raised over a difference the finger cannot make.
+    const coincident = flowTree([
+      node({ role: "android.widget.TextView", label: "Submit", frame: px(66, 900, 400, 1000) }),
+      node({
+        role: "android.view.ViewGroup",
+        identifier: "com.example.social:id/submit",
+        clickable: true,
+        frame: px(66, 900, 400, 1000),
+      }),
+    ]);
+    const point = { x: 233 / SCREEN.width, y: 950 / SCREEN.height };
+    expect(nodeAtPoint(coincident, point)?.label).toBe("Submit");
+    expect(nodesStackedAtPoint(coincident, point)).toEqual([]);
   });
 
   it("selectorToFrame resolves the first visible match", () => {
@@ -106,7 +224,9 @@ describe("ui-tree-match", () => {
 
   it("selectorToFrame prefers the smallest of several exact matches", () => {
     // Both the inner AXGroup and its leaf text are exactly "Inner Touchable";
-    // the leaf (smaller, more specific) wins — same philosophy as nodeAtPoint.
+    // the leaf (smaller, more specific) wins. Ranking selector matches asks
+    // which element the author meant, so it turns on specificity — unlike
+    // nodeAtPoint, which knows a point and asks what the finger reaches.
     const frame = selectorToFrame(aggregated, { text: "Inner Touchable" });
     expect(frame).toMatchObject({ x: 0.37, y: 0.57 });
   });

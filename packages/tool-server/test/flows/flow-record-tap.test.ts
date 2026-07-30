@@ -151,6 +151,77 @@ describe("flow-add-step tap selector capture", () => {
     expect(await recordedSteps()).toEqual([{ kind: "tap", x: 0.2, y: 0.52 }]);
   });
 
+  it("records the tab button over unclipped feed content, with an overlap caveat", async () => {
+    // The reported shape: a bottom tab bar drawn over a feed whose rows Android
+    // reports at their laid-out bounds, so a row's wide-but-short text leaf
+    // shares the tapped point with the tab button. Bounds are the normalized
+    // form of the Pixel 3a pixels measured in ui-tree-match.test.ts. The button
+    // is recorded, and the step says the point was contested.
+    setTree([
+      n({
+        label: "Reply from @alice",
+        frame: { x: 154 / 1080, y: 2021 / 2220, width: 636 / 1080, height: 50 / 2220 },
+      }),
+      n({
+        identifier: "app:id/feed_row",
+        frame: { x: 22 / 1080, y: 1969 / 2220, width: 1058 / 1080, height: 154 / 2220 },
+      }),
+      n({
+        identifier: "app:id/feed",
+        frame: { x: 0, y: 245 / 2220, width: 1, height: 1975 / 2220 },
+      }),
+      n({
+        identifier: "app:id/tab_feeds",
+        label: "Feeds",
+        frame: { x: 216 / 1080, y: 1934 / 2220, width: 216 / 1080, height: 220 / 2220 },
+      }),
+      n({
+        identifier: "app:id/tab_bar",
+        frame: { x: 0, y: 1934 / 2220, width: 1, height: 220 / 2220 },
+      }),
+    ]);
+
+    const result = await recordTap({ x: 324 / 1080, y: 2044 / 2220 });
+
+    expect(await recordedSteps()).toEqual([
+      { kind: "tap", selector: { identifier: "app:id/tab_feeds" } },
+    ]);
+    expect(result.message).toContain(
+      'recorded the topmost element under the tap, id="app:id/tab_feeds"'
+    );
+    expect(result.message).toContain('text="Reply from @alice"');
+    expect(result.message).toContain('id="app:id/feed_row"');
+    expect(result.message).toContain("confirm the step targets the element you tapped");
+    // The feed and the bar contain the button, so they are its containers rather
+    // than contenders for the touch, and must not be listed.
+    expect(result.message).not.toContain('id="app:id/feed"');
+    expect(result.message).not.toContain('id="app:id/tab_bar"');
+  });
+
+  it("compounds the fallback-source caveat with the overlap caveat", async () => {
+    // Both hold at once — the tree came from the fallback source AND the point
+    // was contested — and dropping either would understate the caveat.
+    setTree(
+      [
+        n({ label: "Reply from @alice", frame: { x: 0.2, y: 0.91, width: 0.6, height: 0.02 } }),
+        n({
+          identifier: "app:id/tab_feeds",
+          label: "Feeds",
+          frame: { x: 0.2, y: 0.87, width: 0.2, height: 0.1 },
+        }),
+      ],
+      "ax-service"
+    );
+
+    const result = await recordTap({ x: 0.3, y: 0.92 });
+
+    expect(result.message).toContain("fallback ax-service tree");
+    expect(result.message).toContain("recorded the topmost element under the tap");
+    expect(await recordedSteps()).toEqual([
+      { kind: "tap", selector: { identifier: "app:id/tab_feeds" } },
+    ]);
+  });
+
   it("records the selector with a caveat when captured from the fallback tree source", async () => {
     setTree(
       [n({ label: "Settings", frame: { x: 0.3, y: 0.5, width: 0.4, height: 0.06 } })],

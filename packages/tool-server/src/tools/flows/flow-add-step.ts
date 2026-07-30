@@ -17,9 +17,10 @@ import { invokeSubTool } from "../../utils/sub-invoke";
 import { resolveDevice } from "../../utils/device-info";
 import { stripDeviceKeys } from "./flow-device";
 import { fetchFlowTree } from "./flow-tree";
-import type { DescribeSource } from "../describe/contract";
+import type { DescribeNode, DescribeSource } from "../describe/contract";
 import {
   nodeAtPoint,
+  nodesStackedAtPoint,
   deriveSelector,
   selectorToFrame,
   frameContains,
@@ -55,6 +56,42 @@ function fallbackSourceWarning(source: DescribeSource, platform: string): string
   const expected = REPLAY_TREE_SOURCES[platform];
   if (!expected || source === expected) return undefined;
   return `selector captured from the fallback ${source} tree (${expected} unavailable) — replay resolves against the full hierarchy, which may not match it`;
+}
+
+// How many overlapping elements a caveat names before it counts the rest: past a
+// few the list stops being readable, and the count still conveys how crowded the
+// point is.
+const MAX_NAMED_OVERLAPS = 3;
+
+// Name an element for a caveat, in the same vocabulary as the selector the
+// caveat is attached to. A node `deriveSelector` rejects (an icon-only pressable
+// under a generic role) is still named by that role — the caveat reports what
+// covers the point, and an element no stable selector could address is exactly
+// one worth naming.
+function describeOverlap(node: DescribeNode): string {
+  return describeSelector(deriveSelector(node) ?? { role: node.role });
+}
+
+/**
+ * Caveat for a tap whose point is covered by elements that only paint order
+ * separates from the one recorded — see `nodesStackedAtPoint`. The element
+ * elected is the best reading of the tree, but "best reading" is not "the
+ * element you touched", and a step recorded against the wrong one replays and
+ * PASSES silently: the runner requires only that the selector resolve.
+ */
+function overlapWarning(stacked: DescribeNode[], recorded: Selector): string | undefined {
+  if (stacked.length === 0) return undefined;
+  const named = stacked.slice(0, MAX_NAMED_OVERLAPS).map(describeOverlap);
+  const rest = stacked.length - named.length;
+  const others = [...named, ...(rest > 0 ? [`${rest} more`] : [])].join(", ");
+  return `recorded the topmost element under the tap, ${describeSelector(recorded)}, but ${others} also cover${stacked.length === 1 ? "s" : ""} that point; confirm the step targets the element you tapped`;
+}
+
+// Warnings compose: a capture can be both from a fallback tree source and over a
+// contested point, and dropping either would understate the caveat.
+function joinWarnings(...parts: (string | undefined)[]): string | undefined {
+  const kept = parts.filter((p): p is string => p !== undefined);
+  return kept.length > 0 ? kept.join("; ") : undefined;
 }
 
 /**
@@ -105,7 +142,13 @@ async function captureTapSelector(
         warning: `selector ${describeSelector(selector)} resolves to a different element on this screen; kept coordinates (brittle)`,
       };
     }
-    return { selector, warning: fallbackSourceWarning(source, device.platform) };
+    return {
+      selector,
+      warning: joinWarnings(
+        fallbackSourceWarning(source, device.platform),
+        overlapWarning(nodesStackedAtPoint(tree, point), selector)
+      ),
+    };
   } catch (err) {
     return {
       warning: `selector capture failed (${err instanceof Error ? err.message : String(err)}); kept coordinates`,

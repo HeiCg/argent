@@ -435,11 +435,11 @@ function afterTester(anchors: DescribeNode[]): (node: DescribeNode) => boolean {
 // top-left corners — a container and the label leaf flush inside it, an
 // everyday shape in a flattened tree — resolve to the smaller, more specific
 // element rather than to whichever the tree happened to list first (matching
-// the "smallest frame wins" doctrine `selectorToFrame` and `nodeAtPoint`
-// already rank by), then into the individual extents, which separate the shapes
-// area alone cannot: two zero-area rules of different lengths, and a wide-short
-// frame against a narrow-tall one. Only frames identical on all four fields are
-// left to tree order, and those are indistinguishable to act on anyway.
+// the "smallest frame wins" tiebreak `selectorToFrame` ranks matches by), then
+// into the individual extents, which separate the shapes area alone cannot: two
+// zero-area rules of different lengths, and a wide-short frame against a
+// narrow-tall one. Only frames identical on all four fields are left to tree
+// order, and those are indistinguishable to act on anyway.
 function comparePick(a: DescribeFrame, b: DescribeFrame): number {
   return frameArea(a) - frameArea(b) || a.width - b.width || a.height - b.height;
 }
@@ -688,25 +688,120 @@ function frameArea(frame: DescribeFrame): number {
   return frame.width * frame.height;
 }
 
+// Every visible node whose frame contains the point, in tree order. The
+// synthetic full-screen root is skipped: it contains every point and names no
+// element.
+function candidatesAtPoint(root: DescribeNode, point: { x: number; y: number }): DescribeNode[] {
+  const found: DescribeNode[] = [];
+  const walk = (node: DescribeNode): void => {
+    if (isVisible(node) && frameContains(node.frame, point.x, point.y)) found.push(node);
+    for (const child of node.children) walk(child);
+  };
+  for (const child of root.children) walk(child);
+  return found;
+}
+
 /**
- * Reverse lookup for recording: the smallest visible node whose frame contains
- * the tapped point. "Smallest" picks the most specific element (a button over
- * its container). Skips the synthetic root. Returns undefined if nothing
+ * Do two frames overlapping a point STACK — cover it while nesting neither way?
+ * The geometric reading of "two separate things are drawn here": neither is the
+ * container the other is laid out inside, so which one the finger reaches is
+ * decided by paint order alone. Frames equal within {@link WITHIN_EPS} are
+ * within each other both ways and so do not stack — they are one rectangle, and
+ * a touch cannot tell them apart.
+ */
+function framesStacked(a: DescribeFrame, b: DescribeFrame): boolean {
+  return !frameWithin(a, b) && !frameWithin(b, a);
+}
+
+/**
+ * Given that both frames contain the tapped point and `candidate` comes LATER in
+ * tree order, is `candidate` the one drawn on top?
+ *
+ * Two rules, and geometry alone decides which applies:
+ *   - NESTING. An element is drawn over the container that lays it out,
+ *     whichever order the tree lists the two in — so a frame contained in the
+ *     other's wins. This is what makes a button beat its container, and (on the
+ *     flattened flow trees, where that container is a sibling leaf rather than
+ *     an ancestor) a label leaf beat the testID container flush around it.
+ *   - STACKING. Frames that nest neither way belong to separate branches drawn
+ *     over one another, so the later one is on top and takes the touch.
+ * Frames equal within the tolerance put the same point under the finger; the
+ * incumbent is kept rather than churning the pick between them.
+ */
+function paintsOver(candidate: DescribeFrame, incumbent: DescribeFrame): boolean {
+  const candidateInside = frameWithin(candidate, incumbent);
+  const incumbentInside = frameWithin(incumbent, candidate);
+  // Exactly one containment: the contained frame is the nested one, and nesting
+  // beats tree order.
+  if (candidateInside !== incumbentInside) return candidateInside;
+  // Both (one rectangle) keeps the incumbent; neither (stacked) hands it to the
+  // later-listed candidate.
+  return !candidateInside;
+}
+
+function electTopmost(candidates: DescribeNode[]): DescribeNode | undefined {
+  let best: DescribeNode | undefined;
+  for (const node of candidates) {
+    if (best === undefined || paintsOver(node.frame, best.frame)) best = node;
+  }
+  return best;
+}
+
+/**
+ * Reverse lookup for recording: the visible element a tap at `point` reaches —
+ * the topmost of those whose frames contain it. Returns undefined when nothing
  * sensible is under the point.
+ *
+ * A hit test, not a smallest-frame search, because frames on these trees are not
+ * clipped by what is drawn over them. Android reports a scroll container's rows
+ * at their laid-out bounds even where a bottom bar covers them, so feed content
+ * genuinely extends under a tab bar and a small text node inside it genuinely
+ * shares a point with the tab button the finger hits — with the smallest frame
+ * winning, recording captures the buried node and the step replays against a
+ * different element.
+ *
+ * "Topmost" is read off geometry and tree order together (see
+ * {@link paintsOver}), and both inputs survive every tree source, which is why
+ * this needs no per-source case:
+ *   - nesting is geometric, so it holds for the flattened flow trees — where a
+ *     container is a sibling leaf, not an ancestor — as well as for a nested
+ *     describe tree;
+ *   - sibling order is back-to-front on the platforms the recorder runs on: iOS
+ *     reads `subviews` and Android the view-child order uiautomator walks, and
+ *     both paint earlier siblings first. It is CSS paint order on Chromium too
+ *     for everything the cascade does not reorder.
+ * What that leaves is a genuine ambiguity no tie-break would settle — a
+ * `z-index`-reordered pair on Chromium, or Vega's undocumented ordering. Those
+ * are reported to the recorder instead of passing for certain; see
+ * {@link nodesStackedAtPoint}.
  */
 export function nodeAtPoint(
   root: DescribeNode,
   point: { x: number; y: number }
 ): DescribeNode | undefined {
-  let best: DescribeNode | undefined;
-  const walk = (node: DescribeNode): void => {
-    if (isVisible(node) && frameContains(node.frame, point.x, point.y)) {
-      if (best === undefined || frameArea(node.frame) < frameArea(best.frame)) best = node;
-    }
-    for (const child of node.children) walk(child);
-  };
-  for (const child of root.children) walk(child);
-  return best;
+  return electTopmost(candidatesAtPoint(root, point));
+}
+
+/**
+ * The visible elements that STACK against the one {@link nodeAtPoint} elects
+ * (see {@link framesStacked}): they cover the tapped point without nesting
+ * either way, so something genuinely overlaps the touch and only paint order
+ * separates them. Empty for the ordinary tap, where everything else under the
+ * point is a container the target is drawn inside.
+ *
+ * Read by the recorder to caveat the step it writes. The elected element is the
+ * best reading of the tree, but on a source whose sibling order is not paint
+ * order the finger may have reached one of these instead, and a step recorded
+ * against the wrong element still replays — and passes — silently.
+ */
+export function nodesStackedAtPoint(
+  root: DescribeNode,
+  point: { x: number; y: number }
+): DescribeNode[] {
+  const candidates = candidatesAtPoint(root, point);
+  const hit = electTopmost(candidates);
+  if (hit === undefined) return [];
+  return candidates.filter((n) => n !== hit && framesStacked(n.frame, hit.frame));
 }
 
 // Does the regex consume the WHOLE non-empty string? The regex analog of an exact
@@ -754,9 +849,17 @@ function exactFieldCount(
  * selector matches the container as well as the leaf that actually carries the
  * text — and the container's centre can sit over a different nested child
  * entirely. Matches are therefore ranked: exact field matches beat substring
- * hits, then the smallest frame wins (the most specific element, mirroring
- * nodeAtPoint's reverse lookup), with reading order as the final tiebreak.
- * Returns undefined when no visible element matches.
+ * hits, then the smallest frame wins (the most specific element), with reading
+ * order as the final tiebreak. Returns undefined when no visible element
+ * matches.
+ *
+ * Specificity, deliberately — not the stacking order {@link nodeAtPoint} elects
+ * by. The two answer different questions. A hit test knows a point and asks
+ * which of the elements covering it the finger reaches, so paint order decides.
+ * This ranks the elements a SELECTOR matches, most of which do not overlap at
+ * all, and asks which one the flow author meant — a question about how tightly
+ * each match fits the selector, which the topmost of two unrelated matches says
+ * nothing about.
  *
  * The universal selector (flow YAML's `any: true`) is the one case that ranking
  * cannot serve: with no field to be exact about, "smallest" degenerates to
