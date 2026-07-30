@@ -38,10 +38,13 @@ export interface GetHierarchyOptions {
   maxDepth?: number;
   maxNodes?: number;
   /**
-   * Drop the helper's accessibility-node cache before capturing — it can serve
-   * stale text (notably after the inspected app restarts under the helper's
-   * connection). Opt in when asserting on changing text; default keeps the
-   * cheaper cached read.
+   * Drop the helper's accessibility-node cache before capturing. The cache can
+   * serve a node's first-seen text indefinitely — its event-driven invalidation
+   * has been observed to stop after the inspected app restarts under the
+   * helper's long-lived connection. Opt in whenever the capture stands for the
+   * current screen: a describe, a wait/assert poll, a selector match that
+   * becomes tap coordinates. The default keeps the cheaper cached read, which
+   * suits only a caller that can already tolerate a stale tree.
    */
   clearCache?: boolean;
 }
