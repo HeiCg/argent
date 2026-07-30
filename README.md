@@ -121,8 +121,12 @@ no manual step, no `sudo`.
   through `simctl spawn`, which has no physical-device equivalent — a real device would need that
   dylib linked into a signed build. `native-profiler-*` is blocked by the same signing
   requirement: `xctrace` only enumerates processes it is entitled to profile, so on a device with
-  no developer-signed app installed there is nothing to attach to. `paste` and
-  `settings-permissions` have no device-side mechanism at all.
+  no developer-signed app installed there is nothing to attach to. `settings-permissions` drives
+  `simctl privacy`, which addresses a simulator's TCC database and has no CoreDevice counterpart.
+  `paste` is off for a different reason: the `ios_device` controller implements clipboard write over
+  the CoreDevice pasteboard service, but behind a cargo feature the shipped simulator-server binary
+  is not built with — so it is a build-flag away rather than out of reach, and the gate is what stops
+  a paste from reporting success while the text goes nowhere.
 
 - `launch-app`, `restart-app`, `reinstall-app` and `open-url` go through `devicectl` rather than
   the CoreDevice session, so they work even before the first interaction has warmed it.
