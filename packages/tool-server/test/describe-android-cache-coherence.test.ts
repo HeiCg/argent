@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Registry } from "@argent/registry";
 import type { AndroidDevtoolsApi, GetHierarchyOptions } from "../src/blueprints/android-devtools";
+import { getHierarchyRequestParams } from "../src/blueprints/android-devtools";
 import { describeAndroid } from "../src/tools/describe/platforms/android";
 import { createAwaitScreenIdleTool } from "../src/tools/await-screen-idle";
 import { createAwaitUiElementTool } from "../src/tools/await-ui-element";
@@ -74,7 +75,10 @@ describe("Android describe reads bypass the helper's node cache", () => {
     await describeAndroid(registry, ANDROID_SERIAL, undefined, false);
 
     expect(optionsSeen()).toHaveLength(1);
-    expect(optionsSeen()[0]?.clearCache).toBe(true);
+    // Assert the EFFECTIVE request, so this holds whether the reader states
+    // `clearCache` itself or inherits the blueprint default — and fails if
+    // either the reader opts out or that default stops being coherent.
+    expect(getHierarchyRequestParams(optionsSeen()[0]).clearCache).toBe(true);
   });
 
   // The defect this pins: the helper's cache serves a node's first-seen text
@@ -98,7 +102,7 @@ describe("Android describe reads bypass the helper's node cache", () => {
 
     const seen = optionsSeen();
     expect(seen.length).toBeGreaterThan(0);
-    expect(seen.every((o) => o?.clearCache === true)).toBe(true);
+    expect(seen.every((o) => getHierarchyRequestParams(o).clearCache === true)).toBe(true);
   });
 
   it("await-ui-element polls uncached trees", async () => {
@@ -122,7 +126,7 @@ describe("Android describe reads bypass the helper's node cache", () => {
 
     const seen = optionsSeen();
     expect(seen.length).toBeGreaterThan(0);
-    expect(seen.every((o) => o?.clearCache === true)).toBe(true);
+    expect(seen.every((o) => getHierarchyRequestParams(o).clearCache === true)).toBe(true);
   });
 
   // The shared selector-matching fetch behind the Lens/preview describe route
@@ -133,6 +137,50 @@ describe("Android describe reads bypass the helper's node cache", () => {
     await fetchTree(registry, resolveDevice(ANDROID_SERIAL));
 
     expect(optionsSeen()).toHaveLength(1);
-    expect(optionsSeen()[0]?.clearCache).toBe(true);
+    // Assert the EFFECTIVE request, so this holds whether the reader states
+    // `clearCache` itself or inherits the blueprint default — and fails if
+    // either the reader opts out or that default stops being coherent.
+    expect(getHierarchyRequestParams(optionsSeen()[0]).clearCache).toBe(true);
+  });
+});
+
+/**
+ * The stale read this suite guards against is silent: a caller that omits
+ * `clearCache` gets a plausible-looking tree, no error and no failing test. So
+ * the coherent capture is the default and a caller must opt out of it — these
+ * pin that default, and fail if it is ever flipped back.
+ */
+describe("getHierarchy request defaults", () => {
+  it("defaults clearCache to true when no options are given", () => {
+    expect(getHierarchyRequestParams().clearCache).toBe(true);
+    expect(getHierarchyRequestParams({}).clearCache).toBe(true);
+  });
+
+  it("keeps clearCache on when an unrelated option is set", () => {
+    // The device-side helper reads `params.optBoolean("clearCache", false)`, so
+    // an options object that omits the key must still put `true` on the wire
+    // rather than letting the request fall through to that device-side default.
+    const params = getHierarchyRequestParams({ maxNodes: 1200 });
+    expect(params.clearCache).toBe(true);
+    expect(params.maxNodes).toBe(1200);
+  });
+
+  it("sends every field the helper understands, so no device-side default applies", () => {
+    expect(Object.keys(getHierarchyRequestParams()).sort()).toEqual([
+      "clearCache",
+      "maxDepth",
+      "maxNodes",
+      "waitForIdleMs",
+    ]);
+    expect(getHierarchyRequestParams()).toEqual({
+      waitForIdleMs: 500,
+      maxDepth: 128,
+      maxNodes: 5000,
+      clearCache: true,
+    });
+  });
+
+  it("still honours an explicit opt-out", () => {
+    expect(getHierarchyRequestParams({ clearCache: false }).clearCache).toBe(false);
   });
 });
