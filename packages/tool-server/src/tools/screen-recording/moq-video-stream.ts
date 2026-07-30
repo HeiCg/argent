@@ -36,8 +36,9 @@ export interface MoqVideoStream {
   /** Set when the MoQ session dropped or the read loop failed mid-recording. */
   readonly error: Error | null;
   /**
-   * Resolve with the first decodable frame (a keyframe carrying SPS), or reject
-   * if none arrives in time. The frame stays buffered, so a consumer attached
+   * Resolve with the first decodable frame — a keyframe, which for the first
+   * frame of a stream is where the SPS/PPS ride — or reject if none arrives in
+   * time, or if the stream drops before one does. The frame stays buffered, so a consumer attached
    * afterwards still receives it — callers use this only to prove the device is
    * drawing and to probe the video dimensions.
    */
@@ -95,18 +96,26 @@ export function isKeyframe(annexb: Buffer): boolean {
 }
 
 /**
- * Drop whole GOPs off the front of `pending` until it fits `maxBytes`, mutating
- * it in place and returning the retained byte count.
+ * Bound `pending` by dropping the middle of it, mutating in place and returning
+ * the retained byte count.
  *
  * Frames pile up here only while no consumer has attached, but how fast they
  * arrive is the remote screen's business, not this module's, so the pile needs
- * a bound. Trimming has to land on a keyframe: whatever is replayed first is
- * what ffmpeg decodes from, and a P-frame references pictures that would no
- * longer be there. Falling back to the most recent complete GOP costs the
- * earliest seconds of the recording and keeps the rest decodable.
+ * a bound. What survives is the head plus the newest GOP, and both halves are
+ * load-bearing:
  *
- * A buffer holding a single GOP has nothing droppable and is left alone — that
- * takes one GOP over the cap, well past what a phone screen produces at CRF 20.
+ * - The head is the first access unit the stream delivered, which is where the
+ *   SPS/PPS the decoder configures itself from live. Dropping it to keep newer
+ *   frames would leave ffmpeg with pictures it has no parameter sets to decode
+ *   — and a producer that sends its headers once, at the start, is exactly the
+ *   shape this module's own doc describes.
+ * - The tail resumes at a keyframe, because a P-frame references pictures that
+ *   the trim just removed.
+ *
+ * The cost is the middle of the recording, which is the right thing to lose
+ * when the alternative is growing without limit. With nothing between the head
+ * and the newest keyframe there is nothing to drop, and the buffer is left over
+ * the cap rather than made undecodable.
  */
 export function trimToRecentGop(
   pending: Array<{ annexb: Buffer; keyframe: boolean }>,
@@ -114,16 +123,16 @@ export function trimToRecentGop(
   maxBytes: number
 ): number {
   if (bytes <= maxBytes) return bytes;
-  let lastKeyframe = -1;
+  let newestKeyframe = -1;
   for (let i = pending.length - 1; i > 0; i--) {
     if (pending[i]!.keyframe) {
-      lastKeyframe = i;
+      newestKeyframe = i;
       break;
     }
   }
-  if (lastKeyframe <= 0) return bytes;
+  if (newestKeyframe <= 1) return bytes;
   let retained = bytes;
-  for (const dropped of pending.splice(0, lastKeyframe)) retained -= dropped.annexb.length;
+  for (const dropped of pending.splice(1, newestKeyframe - 1)) retained -= dropped.annexb.length;
   return retained;
 }
 
@@ -149,22 +158,37 @@ export async function openMoqVideoStreamFromInfo(
   connectTimeoutMs = 15_000
 ): Promise<MoqVideoStream> {
   let session: MoqSimulatorSession;
+  // A race leaves the loser running. `establishMoqSimulator` hands back a live
+  // WebTransport connection its caller owns, so a session that finishes after
+  // the timeout has already fired must be closed here — otherwise it outlives
+  // the failed call for as long as the tool-server runs.
+  let connectTimedOut = false;
+  let connectTimer: NodeJS.Timeout | undefined;
+  const connect = establishMoqSimulator(info).then((established) => {
+    if (connectTimedOut) {
+      try {
+        established.connection.close();
+      } catch {
+        // Best-effort: the transport may already be torn down.
+      }
+    }
+    return established;
+  });
   try {
     session = await Promise.race([
-      establishMoqSimulator(info),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              streamFailure(
-                `Connecting to the MoQ video endpoint timed out after ${connectTimeoutMs} ms.`,
-                "screen_recording_moq_connect",
-                "timeout"
-              )
-            ),
-          connectTimeoutMs
-        )
-      ),
+      connect,
+      new Promise<never>((_, reject) => {
+        connectTimer = setTimeout(() => {
+          connectTimedOut = true;
+          reject(
+            streamFailure(
+              `Connecting to the MoQ video endpoint timed out after ${connectTimeoutMs} ms.`,
+              "screen_recording_moq_connect",
+              "timeout"
+            )
+          );
+        }, connectTimeoutMs);
+      }),
     ]);
   } catch (err) {
     if (err instanceof FailureError) throw err;
@@ -173,6 +197,8 @@ export async function openMoqVideoStreamFromInfo(
       "screen_recording_moq_connect",
       "network"
     );
+  } finally {
+    clearTimeout(connectTimer);
   }
 
   const videoTrack = session.simulator.subscribe("video", 0);
@@ -185,6 +211,30 @@ export async function openMoqVideoStreamFromInfo(
     // Held on the state object (not a bare `let`) so its type survives control-
     // flow narrowing when read from the read-loop closure below.
     firstFrameResolve: null as ((frame: Buffer) => void) | null,
+    firstFrameReject: null as ((err: Error) => void) | null,
+  };
+
+  /**
+   * Record a drop and hand it to a waiter that can no longer be satisfied.
+   * Without the second half, a session that dies right after connect leaves
+   * `waitForFirstFrame` to burn its whole timeout and then blame the device's
+   * screen for what was a transport failure. Mirrors `mjpeg-stream`'s `fail`.
+   */
+  const fail = (err: Error): void => {
+    if (state.closed) return;
+    state.error = err;
+    const reject = state.firstFrameReject;
+    state.firstFrameResolve = null;
+    state.firstFrameReject = null;
+    if (reject) {
+      reject(
+        streamFailure(
+          `The MoQ video stream dropped before the first frame arrived: ${err.message}`,
+          "screen_recording_moq_first_frame",
+          "network"
+        )
+      );
+    }
   };
   let consumer: ((annexb: Buffer, isKeyframe: boolean) => void) | null = null;
   const buffered: Array<{ annexb: Buffer; keyframe: boolean }> = [];
@@ -208,7 +258,12 @@ export async function openMoqVideoStreamFromInfo(
         const raw = await videoTrack.readFrame();
         if (state.closed) return;
         if (!raw) {
-          // Track closed cleanly (server stopped the broadcast).
+          // The server stopped publishing. Clean at the transport layer, but
+          // mid-recording it means the frames just end: without recording it as
+          // a drop, stop would hand back a video that freezes early with no
+          // warning and a duration covering time it never captured. The MJPEG
+          // twin treats its own `aborted` the same way.
+          fail(new Error("simulator-server stopped publishing the video track"));
           return;
         }
         const annexb = stripHangTimestamp(raw);
@@ -228,7 +283,7 @@ export async function openMoqVideoStreamFromInfo(
         deliver(annexb, keyframe);
       }
     } catch (err) {
-      if (!state.closed) state.error = err instanceof Error ? err : new Error(String(err));
+      fail(err instanceof Error ? err : new Error(String(err)));
     }
   })();
 
@@ -241,9 +296,21 @@ export async function openMoqVideoStreamFromInfo(
     },
     waitForFirstFrame(timeoutMs: number): Promise<Buffer> {
       if (state.firstFrame) return Promise.resolve(state.firstFrame);
+      // Already dropped: no frame can arrive, so say why now instead of waiting
+      // out the timeout and then reporting a symptom instead of the cause.
+      if (state.error) {
+        return Promise.reject(
+          streamFailure(
+            `The MoQ video stream dropped before any frame arrived: ${state.error.message}`,
+            "screen_recording_moq_first_frame",
+            "network"
+          )
+        );
+      }
       return new Promise<Buffer>((resolve, reject) => {
         const timer = setTimeout(() => {
           state.firstFrameResolve = null;
+          state.firstFrameReject = null;
           reject(
             streamFailure(
               `No video frame arrived over MoQ within ${timeoutMs} ms. ` +
@@ -257,6 +324,10 @@ export async function openMoqVideoStreamFromInfo(
           clearTimeout(timer);
           resolve(frame);
         };
+        state.firstFrameReject = (err) => {
+          clearTimeout(timer);
+          reject(err);
+        };
       });
     },
     onFrame(cb: (annexb: Buffer, isKeyframe: boolean) => void): void {
@@ -268,8 +339,22 @@ export async function openMoqVideoStreamFromInfo(
       }
     },
     close(): void {
-      state.closed = true;
+      // Settle a pending waiter before the closed flag silences `fail`, so a
+      // teardown mid-connect resolves the caller now instead of leaving it to
+      // time out against a stream that is already gone.
+      const reject = state.firstFrameReject;
       state.firstFrameResolve = null;
+      state.firstFrameReject = null;
+      state.closed = true;
+      if (reject) {
+        reject(
+          streamFailure(
+            "The MoQ video stream was closed before the first frame arrived.",
+            "screen_recording_moq_first_frame",
+            "network"
+          )
+        );
+      }
       try {
         session.connection.close();
       } catch {

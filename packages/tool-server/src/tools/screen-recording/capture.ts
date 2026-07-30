@@ -55,8 +55,8 @@ export const OUTPUT_FPS = 30;
 const FRAME_INTERVAL_MS = 1000 / OUTPUT_FPS;
 /** Cap a catch-up burst so a stalled pipe cannot trigger a write storm. */
 const MAX_CATCHUP_FRAMES = 5;
-/** Skip a tick while ffmpeg is this far behind rather than buffering in Node. */
-const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
+/** Stop writing while ffmpeg is this far behind rather than buffering in Node. */
+export const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
 /**
  * How long a screen may sit unchanged before trimming kicks in. The first
  * second of every still stretch is kept so pauses read naturally; past it the
@@ -65,7 +65,7 @@ const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
  */
 const STATIC_GRACE_MS = 1_000;
 const STREAM_CONNECT_TIMEOUT_MS = 10_000;
-const FIRST_FRAME_TIMEOUT_MS = 10_000;
+export const FIRST_FRAME_TIMEOUT_MS = 10_000;
 /** Hold briefly after spawn so bad args fail the start instead of the stop. */
 const START_FAILFAST_GRACE_MS = 800;
 /** ffmpeg finalizes on stdin EOF (typically <100ms); bound the wait anyway. */
@@ -419,9 +419,9 @@ async function startCaptureLocked(
 
 /**
  * Arm the auto-stop cap and the unexpected-exit handler for a live capture.
- * Shared by the MJPEG pump path and the MoQ push path — the cap and exit
- * handling are source-agnostic (they finalize ffmpeg and update session state,
- * never touch the frame source directly beyond `finalizeCapture`). Both handlers
+ * Shared by the MJPEG pump path and the MoQ push path: both handlers finalize
+ * ffmpeg and update session state, and release the frame source through
+ * `finalizeCapture` / `stopPump` rather than knowing which kind it is. Both
  * carry an ownership guard so a superseded capture can't clobber a newer one.
  */
 export function superviseCapture(
@@ -630,9 +630,17 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
     // durationMs is the length of the video the caller actually gets. With
     // trimming that is shorter than the wall clock — it counts only the frames
     // that survived (each output frame is 1/OUTPUT_FPS of a second).
+    // A pushed source stops producing when the screen stops changing, and cfr
+    // holds the last picture only until the next packet — so the video ends at
+    // the final frame, not at stop. Report that, rather than a wall clock the
+    // file does not cover.
+    const lastFrameMs =
+      startedAtMs === null || api.lastFrameWrittenMs === null
+        ? null
+        : Math.max(0, api.lastFrameWrittenMs - startedAtMs);
     const durationMs = trimStatic
       ? Math.round((api.framesWritten / OUTPUT_FPS) * 1_000)
-      : wallClockMs;
+      : (lastFrameMs ?? wallClockMs);
     // Only surface the trim-only fields when trimming actually collapsed a
     // static stretch. Without this guard a continuously-animating recording
     // still reports a phantom trimmedMs of a frame or two purely from the
@@ -642,6 +650,16 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
       trimStatic && wallClockMs !== null && api.trimmedAnyFrames
         ? Math.max(0, wallClockMs - durationMs!)
         : undefined;
+    // Say so when the video is materially shorter than the time recorded, so a
+    // caller comparing the two does not read it as a lost or truncated capture.
+    if (lastFrameMs !== null && wallClockMs !== null && wallClockMs - lastFrameMs > 1_000) {
+      warning = [
+        warning,
+        `The screen stopped changing ${Math.round((wallClockMs - lastFrameMs) / 1_000)}s before the recording was stopped, and this transport sends nothing while it is still, so the video ends there.`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
     return {
       outputFile,
       sizeBytes: size,
@@ -679,6 +697,7 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
     api.watermarkSkipped = null;
     api.pointerFailed = false;
     api.remoteTouchesUnsupported = false;
+    api.lastFrameWrittenMs = null;
     api.framesWritten = 0;
     api.trimmedAnyFrames = false;
     api.wallClockStartMs = null;

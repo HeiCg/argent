@@ -11,7 +11,13 @@ import {
   assertNotDisposed,
   type StartRecordingResult,
 } from "./session-guards";
-import { OUTPUT_FPS, superviseCapture, waitForEncoderReady } from "./capture";
+import {
+  FIRST_FRAME_TIMEOUT_MS,
+  MAX_BUFFERED_BYTES,
+  OUTPUT_FPS,
+  superviseCapture,
+  waitForEncoderReady,
+} from "./capture";
 import { buildWatermarkGraph, resolveFfmpeg, writeLogoTemp, type Dimensions } from "./watermark";
 import type { MoqVideoStream } from "./moq-video-stream";
 
@@ -24,17 +30,20 @@ import type { MoqVideoStream } from "./moq-video-stream";
  * finalization are identical, and `stopCapture` (host-side, source-agnostic)
  * retrieves the video unchanged.
  *
- * Unlike the MJPEG path there is no Node-side frame pump: the server already
- * timestamps frames in real time, so frames are pushed to ffmpeg as they arrive
- * and `-use_wallclock_as_timestamps` + a constant output rate reconstruct an
- * honest real-time timeline (still stretches are held, not collapsed — see the
- * `trimStatic` note in the start tool). The touch visualizer is not available
- * over MoQ (the control channel carries no pointer command).
+ * Unlike the MJPEG path there is no Node-side frame pump: frames are pushed to
+ * ffmpeg as they arrive, and `-use_wallclock_as_timestamps` plus a constant
+ * output rate hold each picture until the next one lands. That reconstructs a
+ * still stretch BETWEEN two changes at its true length, but not one that runs
+ * to the end of the recording: cfr can only hold a frame up to the next packet,
+ * and on a still screen no packet follows, so the video ends at the last change.
+ * `stop` reports that end as `durationMs` and warns when it is well short of
+ * the wall clock. `trimStatic` does not apply here for the same reason — there
+ * are no duplicate frames to collapse.
+ *
+ * The touch visualizer is not available over MoQ (the control channel carries
+ * no pointer command).
  */
 
-/** Skip a write while ffmpeg is this far behind rather than buffering in Node. */
-const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
-const FIRST_FRAME_TIMEOUT_MS = 10_000;
 const DIMENSION_PROBE_TIMEOUT_MS = 4_000;
 
 export interface StartMoqCaptureParams {
@@ -279,8 +288,9 @@ async function startMoqCaptureLocked(
   api.outputFile = outputFile;
   api.logoFile = logoFile;
   api.watermarkSkipped = watermarkSkipped;
-  // Real-time timeline (see moqFfmpegArgs) — durationMs is the wall clock, so the
-  // stop path must not treat this as a trimmed capture.
+  // Nothing to trim: the encoder never emits the duplicate frames trimming
+  // collapses, so the stop path must not treat this as a trimmed capture.
+  // `lastFrameWrittenMs` is what keeps its duration honest instead.
   api.trimStatic = false;
   api.remoteTouchesUnsupported = params.showTouchesRequested;
   api.framesWritten = 0;
@@ -300,7 +310,12 @@ async function startMoqCaptureLocked(
     write: (annexb) => child.stdin!.write(annexb),
   });
   stream.onFrame((annexb, keyframe) => {
-    if (writeFrame(annexb, keyframe)) api.framesWritten++;
+    if (!writeFrame(annexb, keyframe)) return;
+    api.framesWritten++;
+    // Where the video actually ends: nothing arrives while the screen is still,
+    // and cfr cannot hold the last picture past it. `stop` reports this rather
+    // than the wall clock, which the file would not cover.
+    api.lastFrameWrittenMs = Date.now();
   });
 
   superviseCapture(api, child, params.timeLimitSeconds);

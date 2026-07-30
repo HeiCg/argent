@@ -88,29 +88,37 @@ describe("trimToRecentGop", () => {
     expect(pending).toHaveLength(2);
   });
 
-  it("drops to the most recent keyframe when over the cap", () => {
-    // Two GOPs buffered; only the second survives, and it still leads with a
-    // keyframe so whatever replays it can be decoded.
-    const pending = [f(40, true), f(10, false), f(30, true), f(10, false)];
-    expect(trimToRecentGop(pending, 90, 50)).toBe(40);
-    expect(pending).toHaveLength(2);
+  it("keeps the head and the newest GOP, dropping the middle", () => {
+    // The head carries the parameter sets the decoder configures itself from,
+    // so it survives even though it is the oldest thing in the buffer; the
+    // middle GOP is what goes.
+    const head = f(40, true);
+    const newest = f(30, true);
+    const pending = [head, f(10, false), f(25, true), f(10, false), newest, f(5, false)];
+    expect(trimToRecentGop(pending, 120, 50)).toBe(75);
+    expect(pending).toEqual([head, newest, pending[2]]);
     expect(pending[0]!.keyframe).toBe(true);
-    expect(pending[0]!.annexb).toHaveLength(30);
+    expect(pending[1]).toBe(newest);
   });
 
   it("never trims to a non-keyframe, even when that means staying over the cap", () => {
-    // One GOP. Dropping its head would leave a P-frame first, which references
-    // pictures that are no longer there — worse than holding the memory.
+    // One GOP: dropping anything after the head would leave a P-frame whose
+    // references are gone. Holding the memory is the better failure.
     const pending = [f(60, true), f(20, false), f(20, false)];
     expect(trimToRecentGop(pending, 100, 50)).toBe(100);
     expect(pending).toHaveLength(3);
-    expect(pending[0]!.keyframe).toBe(true);
   });
 
-  it("keeps the newest GOP when several are over the cap", () => {
+  it("keeps the head even when every frame is a keyframe", () => {
     const pending = [f(30, true), f(30, true), f(30, true)];
-    expect(trimToRecentGop(pending, 90, 50)).toBe(30);
-    expect(pending).toHaveLength(1);
+    expect(trimToRecentGop(pending, 90, 50)).toBe(60);
+    expect(pending).toHaveLength(2);
+  });
+
+  it("has nothing to drop when the newest keyframe is already second", () => {
+    const pending = [f(40, true), f(40, true)];
+    expect(trimToRecentGop(pending, 80, 50)).toBe(80);
+    expect(pending).toHaveLength(2);
   });
 });
 
@@ -144,10 +152,9 @@ describe("createAnnexbWriter", () => {
   });
 
   it("resumes only at a keyframe after a back-pressure drop", () => {
-    // The defect this pins: resuming at the next P-frame feeds the decoder a
-    // unit whose references were dropped, so everything up to the next keyframe
-    // decodes as garbage. Writing JPEGs, resuming immediately is correct — which
-    // is why borrowing the MJPEG pump's rule wholesale is wrong here.
+    // Resuming at the next P-frame would feed the decoder a unit whose
+    // references were dropped, so everything up to the next keyframe decodes as
+    // garbage. Writing JPEGs, resuming immediately is correct; here it is not.
     const h = harness({ max: 100 });
     expect(h.write(K(1).buf, true)).toBe(true);
 

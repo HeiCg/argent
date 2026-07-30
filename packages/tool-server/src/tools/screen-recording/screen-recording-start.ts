@@ -44,7 +44,8 @@ const zodSchema = z.object({
         "each still stretch is kept, then unchanged frames are dropped until something moves again, " +
         "so a long recording with brief activity comes back short instead of full of dead air. " +
         "The returned durationMs is the trimmed length; wallClockMs/trimmedMs report what was removed. " +
-        "Set false to keep a faithful real-time recording."
+        "Set false to keep a faithful real-time recording. Ignored on remote (`remote:`) simulators, " +
+        "which never send the duplicate frames trimming collapses."
     ),
   showTouches: z
     .boolean()
@@ -76,7 +77,7 @@ By default every tap, swipe, drag, pinch and rotate is drawn into the video as a
 The recording keeps running across other tool calls (every result carries a reminder) until \`screen-recording-stop\` is called or timeLimitSeconds elapses — immediately after starting, set yourself a reminder/wakeup for the expected end of the recording so it is never left running.
 Use when the user wants a video of an interaction, animation, or app behavior — for a single still frame use \`screenshot\` instead.
 Returns { status: "recording", timeLimitSeconds, outputFile } — the video is retrieved later by \`screen-recording-stop\`, not by reading outputFile directly.
-Remote (\`sim-remote\`) iOS simulators are supported and record over their MoQ video stream, except that the touch visualizer (showTouches) cannot be drawn there.
+Remote (\`remote:\`) iOS simulators record over their MoQ video stream instead: the touch visualizer (showTouches) cannot be drawn there, and trimStatic does not apply because that transport sends nothing while the screen is still — so a screen that settles before you stop ends the video at the last change, which durationMs reports and stop warns about.
 Fails if a recording is already running on the device, the device is not booted, ffmpeg is not installed, or the platform cannot be recorded (tvOS, Chromium and Vega are unsupported).`,
     searchHint: "record video screen capture movie mp4 start filming screencast",
     zodSchema,
@@ -130,8 +131,7 @@ Fails if a recording is already running on the device, the device is not booted,
       if (!streamUrl || !/^https?:\/\//.test(streamUrl)) {
         throw new FailureError(
           `simulator-server is not exposing a frame stream for device ${device.id}, so there is ` +
-            `nothing to record. Remote (\`remote:\`) simulators stream over a transport this tool ` +
-            `cannot read; otherwise the bundled simulator-server build predates streaming support.`,
+            `nothing to record. The bundled simulator-server build predates streaming support.`,
           {
             error_code: FAILURE_CODES.SCREEN_RECORDING_STREAM_UNAVAILABLE,
             failure_stage: "screen_recording_resolve_stream",
@@ -146,7 +146,7 @@ Fails if a recording is already running on the device, the device is not booted,
       // restores it to off when the recording ends. It drives the same
       // simulator-server instance resolved above; the toggles are best-effort
       // (a failure only costs the overlay, surfaced as a warning at stop), and
-      // remote sims never reach here — they are gated out by the stream check.
+      // remote sims never reach here — the ios-remote branch above returns first.
       const showTouches = params.showTouches ?? true;
       const pointer: PointerControl | undefined = showTouches
         ? makePointerControl(simulator)
