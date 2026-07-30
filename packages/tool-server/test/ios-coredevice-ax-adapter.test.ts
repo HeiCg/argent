@@ -196,6 +196,45 @@ describe("adaptCoreDeviceAxToDescribeResult (forward-compat: payload with geomet
     }
   });
 
+  it("clamps a rect that reaches outside the screen, and drops a short one", () => {
+    // The fixture above is entirely inside the screen bounds, so it holds
+    // whether or not `parseRect` clamps — this feeds it the out-of-range and
+    // truncated rects the clamp and the arity guard exist for. A negative
+    // origin or an over-wide rect would otherwise reach the formatter as a
+    // frame outside [0,1], which every consumer treats as a screen fraction.
+    const [outside, short] = adaptCoreDeviceAxToDescribeResult({
+      screen: { w: 393, h: 852 },
+      elements: [
+        { caption: "Offscreen, Button", id: "1", rect: "{{-40, -80}, {900, 2000}}" },
+        { caption: "Truncated, Button", id: "2", rect: "{{16, 553}}" },
+      ],
+    }).children as Node[];
+
+    for (const v of [outside.frame.x, outside.frame.y, outside.frame.width, outside.frame.height]) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
+    // A rect with fewer than four numbers is not geometry: it must fall back to
+    // an interpolated frame rather than destructure to NaN.
+    for (const v of [short.frame.x, short.frame.y, short.frame.width, short.frame.height]) {
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it("splits label from value only on value-bearing roles, so prose keeps its commas", () => {
+    // The restriction exists because static text and headings are sentences:
+    // treating the last comma-separated run as a value truncates the label. Every
+    // static-text fixture above is comma-free, so only this exercises it.
+    const prose =
+      "Known networks will be joined automatically, otherwise you will have to select a network";
+    const [node] = adaptCoreDeviceAxToDescribeResult({
+      elements: [{ caption: prose, id: "x" }],
+    }).children as Node[];
+    expect(node.role).toBe("AXStaticText");
+    expect(node.label).toBe(prose);
+    expect(node.value).toBeUndefined();
+  });
+
   it("does not throw on an empty / screen-less tree", () => {
     expect(() => adaptCoreDeviceAxToDescribeResult({ elements: [] })).not.toThrow();
     expect(() =>

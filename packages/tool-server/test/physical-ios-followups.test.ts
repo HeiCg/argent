@@ -210,6 +210,86 @@ describe("boot-device on physical iOS prepares the sim-server session", () => {
       Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
     }
   });
+
+  it("recycles the session on force, and waits for the new one before reporting booted", async () => {
+    // Two promises the tool's description makes. `force` is the only in-band
+    // recovery from a session whose tunnel died (phone unplugged and replugged,
+    // or rebooted): without the dispose the registry hands back the dead cached
+    // instance and the call reports `booted: true` having done nothing. And a
+    // boot that does not await the resolve reports success before the CoreDevice
+    // session is up — which is the whole point of preparing it here, so a locked
+    // or untrusted phone surfaces now instead of on the first tap.
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mockFlag.mockReturnValue(true);
+    try {
+      const order: string[] = [];
+      let releaseResolve: (() => void) | undefined;
+      const registry = {
+        disposeService: async (urn: string) => {
+          order.push(`dispose:${urn}`);
+        },
+        resolveService: async (urn: string) => {
+          order.push(`resolve:${urn}`);
+          await new Promise<void>((r) => (releaseResolve = r));
+          order.push(`resolved:${urn}`);
+          return {};
+        },
+      };
+      const tool = createBootDeviceTool(registry as never);
+
+      const pending = tool.execute(
+        {} as never,
+        {
+          udid: PHYSICAL_UDID,
+          force: true,
+        } as never
+      );
+      // Give the tool a turn to reach the resolve, then check it has not
+      // answered while the session is still coming up.
+      await new Promise((r) => setImmediate(r));
+      let settled = false;
+      void pending.then(() => (settled = true));
+      await new Promise((r) => setImmediate(r));
+      expect(settled, "boot-device must not report booted before the session resolves").toBe(false);
+
+      releaseResolve!();
+      await expect(pending).resolves.toEqual({
+        platform: "ios",
+        udid: PHYSICAL_UDID,
+        booted: true,
+      });
+      // Dispose first: recycling means the cached instance is gone before the
+      // new one is built, not alongside it.
+      expect(order).toEqual([
+        `dispose:SimulatorServer:${PHYSICAL_UDID}`,
+        `resolve:SimulatorServer:${PHYSICAL_UDID}`,
+        `resolved:SimulatorServer:${PHYSICAL_UDID}`,
+      ]);
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
+
+  it("does not dispose anything without force", async () => {
+    const origPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mockFlag.mockReturnValue(true);
+    try {
+      const disposed: string[] = [];
+      const registry = {
+        disposeService: async (urn: string) => {
+          disposed.push(urn);
+        },
+        resolveService: async () => ({}),
+      };
+      const tool = createBootDeviceTool(registry as never);
+      await tool.execute({} as never, { udid: PHYSICAL_UDID } as never);
+      expect(disposed).toEqual([]);
+    } finally {
+      Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
+    }
+  });
 });
 
 describe("launch-app enforces the physical-iOS flag (no bypass)", () => {
@@ -315,6 +395,28 @@ describe("gesture-custom on physical iOS: single contact only, rejected as a who
     expect(touch).not.toHaveBeenCalled();
   });
 
+  it("refuses an event that carries only one of x2 / y2", async () => {
+    // The guard is `x2 !== undefined || y2 !== undefined`; every other case here
+    // sets both, so the second half is unexercised. A y2-only event would then
+    // go out with `second_y` set on a digitizer that has one contact.
+    for (const half of [{ x2: 0.6 }, { y2: 0.7 }]) {
+      await expect(
+        gestureCustomTool.execute(
+          services() as never,
+          {
+            udid: PHYSICAL_UDID,
+            events: [
+              { type: "Down", x: 0.5, y: 0.5 },
+              { type: "Up", x: 0.5, y: 0.5, ...half },
+            ],
+          } as never
+        ),
+        JSON.stringify(half)
+      ).rejects.toBeInstanceOf(UnsupportedOperationError);
+      expect(touch, JSON.stringify(half)).not.toHaveBeenCalled();
+    }
+  });
+
   it("indexes the rejection against the caller's events, not the interpolated expansion", async () => {
     await expect(
       gestureCustomTool.execute(
@@ -415,6 +517,63 @@ describe("tools unsupported on physical iOS reject with UnsupportedOperationErro
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it("picks the hint by what the read returned, and bounds the read", async () => {
+    // Every hint branch mentions `screenshot`, so asserting that alone leaves
+    // the branch selection untested — an empty screen and a truncated one would
+    // both be reported as an ordinary read.
+    const registry = { resolveService: async () => ({ apiUrl: "http://sim.test" }) };
+    const AX_LIMIT = 120;
+    const call = async (count: number) => {
+      const bodies: unknown[] = [];
+      const signals: (AbortSignal | undefined)[] = [];
+      const fetchSpy = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (_url: unknown, init?: RequestInit) => {
+          bodies.push(JSON.parse(String(init?.body)));
+          signals.push(init?.signal ?? undefined);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              elements: Array.from({ length: count }, (_, i) => ({
+                caption: `Row ${i}, Button`,
+                id: `e${i}`,
+              })),
+            }),
+          } as Response;
+        });
+      try {
+        return { result: await describeIos(registry as never, device, {}), bodies, signals };
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    };
+
+    // Nothing on screen: on hardware that is usually a locked or sleeping phone,
+    // not an app that renders nothing — and the two need different actions.
+    const empty = await call(0);
+    expect(empty.result.hint).toMatch(/screen is off or locked/i);
+
+    // A full read means the ceiling was hit, so "not found" is not proof of
+    // absence and the agent must be told before it concludes otherwise.
+    const full = await call(AX_LIMIT);
+    expect(full.result.hint).toMatch(/Only the first 120 elements/);
+    expect(full.result.hint).toMatch(/not proof of absence/);
+
+    // A partial read is neither.
+    const partial = await call(3);
+    expect(partial.result.hint).not.toMatch(/screen is off or locked/i);
+    expect(partial.result.hint).not.toMatch(/Only the first/);
+
+    // The ceiling is requested explicitly rather than inherited from whichever
+    // sim-server build is installed, and the read is bounded — a sleeping device
+    // can otherwise leave describe hanging with no tool-layer timeout.
+    expect(partial.bodies[0]).toEqual({ limit: AX_LIMIT });
+    expect(partial.signals[0], "the ax-tree read must carry an abort signal").toBeInstanceOf(
+      AbortSignal
+    );
   });
 });
 
