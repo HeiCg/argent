@@ -4,7 +4,7 @@ import {
   nativeDevtoolsRef,
   precheckNativeDevtools,
   type NativeDevtoolsApi,
-  type NativeDevtoolsInitFailedResult,
+  type NativeDevtoolsPrecheckBlock,
 } from "../../blueprints/native-devtools";
 import { resolveDevice } from "../../utils/device-info";
 import { ensureDeps } from "../../utils/check-deps";
@@ -51,10 +51,7 @@ const zodSchema = z.object({
 });
 
 type Params = z.infer<typeof zodSchema>;
-type Result =
-  | NativeDevtoolsInitFailedResult
-  | { status: "restart_required"; message: string }
-  | { status: "ok"; windows: unknown[] };
+type Result = NativeDevtoolsPrecheckBlock | { status: "ok"; windows: unknown[] };
 
 export const nativeFullHierarchyTool: ToolDefinition<Params, Result> = {
   id: "native-full-hierarchy",
@@ -63,7 +60,8 @@ export const nativeFullHierarchyTool: ToolDefinition<Params, Result> = {
 WARNING: Output can be extremely large (100KB–500KB+) for complex apps, especially those built with SwiftUI. Prefer native-find-views for targeted queries.
 Use skipClasses / skipClassPrefixes to prune SwiftUI internal subtrees and reduce output size. Use the fields param to request only the properties you need.
 Use when you need deep layout debugging, finding views with no accessibility labels, or verifying view structure not exposed through the accessibility tree.
-Returns { status: "ok", windows } with the full view hierarchy, or { status: "restart_required" } if the dylib is not injected.
+Returns { status: "ok", windows } with the full view hierarchy.
+If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start\`) and retry.
 Fails if native devtools are not connected or the app is not running.`,
   zodSchema,
   services: (params) => ({

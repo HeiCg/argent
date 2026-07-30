@@ -1,5 +1,9 @@
 import type { DeviceInfo, Registry } from "@argent/registry";
-import { nativeDevtoolsRef, type NativeDevtoolsApi } from "../../blueprints/native-devtools";
+import {
+  buildAppStateMessage,
+  nativeDevtoolsRef,
+  type NativeDevtoolsApi,
+} from "../../blueprints/native-devtools";
 import { resolveNativeTargetApp } from "../../utils/native-target-app";
 import { flattenHoisting, type FlatNode } from "./flow-tree-flatten";
 import {
@@ -271,9 +275,13 @@ export async function queryFullHierarchyTree(
   // already carry the actionable next step, so they propagate unwrapped.
   const target = await resolveNativeTargetApp(nativeApi, undefined);
 
-  if (await nativeApi.requiresAppRestart(target.bundleId)) {
+  const state = await nativeApi.appConnectionState(target.bundleId);
+  if (state !== "connected") {
+    // The diagnosis already names the corrective action, and for `unregistered`
+    // that action is a tool-server restart — telling a flow author to relaunch
+    // there sends them round a loop the app cannot exit.
     throw new Error(
-      `${target.bundleId} was launched before argent's instrumentation loaded — relaunch it (launch-app, or a flow \`launch\` step) so the full view hierarchy is readable`
+      `${buildAppStateMessage(target.bundleId, state)} Flows resolve selectors against the full view hierarchy native devtools serve.`
     );
   }
 

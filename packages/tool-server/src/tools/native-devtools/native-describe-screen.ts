@@ -4,7 +4,7 @@ import {
   nativeDevtoolsRef,
   precheckNativeDevtools,
   type NativeDevtoolsApi,
-  type NativeDevtoolsInitFailedResult,
+  type NativeDevtoolsPrecheckBlock,
 } from "../../blueprints/native-devtools";
 import { resolveDevice } from "../../utils/device-info";
 import { ensureDeps } from "../../utils/check-deps";
@@ -34,10 +34,7 @@ const zodSchema = z.object({
 });
 
 type Params = z.infer<typeof zodSchema>;
-type Result =
-  | NativeDevtoolsInitFailedResult
-  | { status: "restart_required"; message: string }
-  | ({ status: "ok" } & NativeDescribeScreenResult);
+type Result = NativeDevtoolsPrecheckBlock | ({ status: "ok" } & NativeDescribeScreenResult);
 
 export const nativeDescribeScreenTool: ToolDefinition<Params, Result> = {
   id: "native-describe-screen",
@@ -55,7 +52,7 @@ with backend migration work, but the public describe contract is still separate.
 
 Useful for evaluating or debugging the lower-level native data that powers the public describe tool.
 
-If status is restart_required: call restart-app then retry. If it still reports restart_required after that, the devtools service is stale — restart the tool-server rather than the app again.`,
+If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start\`) and retry.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

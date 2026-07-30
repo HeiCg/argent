@@ -4,7 +4,7 @@ import {
   nativeDevtoolsRef,
   precheckNativeDevtools,
   type NativeDevtoolsApi,
-  type NativeDevtoolsInitFailedResult,
+  type NativeDevtoolsPrecheckBlock,
 } from "../../blueprints/native-devtools";
 import { resolveDevice } from "../../utils/device-info";
 import { ensureDeps } from "../../utils/check-deps";
@@ -56,10 +56,7 @@ const zodSchema = z.object({
 });
 
 type Params = z.infer<typeof zodSchema>;
-type Result =
-  | NativeDevtoolsInitFailedResult
-  | { status: "restart_required"; message: string }
-  | { status: "ok"; view: unknown | null };
+type Result = NativeDevtoolsPrecheckBlock | { status: "ok"; view: unknown | null };
 
 export const nativeUserInteractableViewAtPointTool: ToolDefinition<Params, Result> = {
   id: "native-user-interactable-view-at-point",
@@ -72,7 +69,7 @@ UIKit hit-testing semantics.
 IMPORTANT: x and y are raw iOS window coordinates in points, NOT normalized [0,1]
 simulator tap coordinates.
 
-If status is restart_required: call restart-app then retry. If it still reports restart_required after that, the devtools service is stale — restart the tool-server rather than the app again.`,
+If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start\`) and retry.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

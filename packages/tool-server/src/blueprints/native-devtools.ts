@@ -9,7 +9,12 @@ import {
   type ServiceBlueprint,
   type ServiceEvents,
 } from "@argent/registry";
-import { pickIosHost, buildDyldInsertLibraries, type IosEndpoint } from "../utils/ios-host";
+import {
+  pickIosHost,
+  buildDyldInsertLibraries,
+  processCarriesInjection,
+  type IosEndpoint,
+} from "../utils/ios-host";
 
 // Re-exported for the env-merging unit test that imports it from this module.
 export { buildDyldInsertLibraries };
@@ -87,27 +92,78 @@ export const NON_INJECTABLE_RECOVERY =
 export const MAX_NATIVE_DEVTOOLS_INIT_ATTEMPTS = 3;
 
 /**
- * What an agent is told when the running app has no devtools connection.
+ * Why an app has no live devtools connection — and so what, if anything,
+ * restarting it would change.
  *
- * `restart-app` is the right first move and usually the only one needed: the app
- * was simply launched before the env carried `DYLD_INSERT_LIBRARIES`.
+ * `restart-app` relaunches into the simulator's *current* launchd environment,
+ * so it can only ever help a process launched under different terms than a fresh
+ * launch would get: without the bootstrap dylib, pointed at a stale endpoint, or
+ * before this service's listener existed. Those are `stale_process`.
  *
- * The second sentence exists because `requiresAppRestart` returns true for EVERY
- * unconnected app, with no notion of how many times we have already said this.
- * When the connection never registers — the dylib dials the socket and logs
- * `devtools connection established`, but this service never records it — the
- * advice above stays literally true forever, so an agent obeying it restarts the
- * app indefinitely and every native-* tool (and any flow whose `launch` step
- * needs the connection) stays dead with no way out in the message. Restarting
- * the tool-server rebuilds the service and clears that state, so name it here
- * rather than leaving the loop unbounded. `flow-run` already tells agents this
- * on its own connect failure; the shared precheck now matches it.
+ * `unregistered` is the opposite and the reason this is derived rather than
+ * assumed: the process already carries this service's injection and started
+ * after the listener came up, so the launch a restart would perform has demonstrably
+ * already happened and left us unconnected. Advising a restart there is advice to
+ * repeat something that just failed, which is what turned an unregistered
+ * connection into an unbounded restart-app loop that only a tool-server restart
+ * could break.
  */
-export const RESTART_REQUIRED_MESSAGE =
-  "Native devtools are not injected into the running app. Call restart-app then retry. " +
-  "If it is still not connected after that restart, the native-devtools service for this " +
-  "simulator is stale rather than the app being uninjected — do not keep restarting the app; " +
-  "restart the tool-server (`argent server stop && argent server start`) and retry.";
+export type NativeDevtoolsAppState =
+  | "connected"
+  | "not_running"
+  | "stale_process"
+  | "unregistered"
+  | "indeterminate";
+
+/**
+ * How long a process must have been alive before its silence counts as evidence,
+ * and how much younger than the listener it must be to have plainly started
+ * after it. Covers the dylib's dial + handshake after exec and the whole-second
+ * resolution of `ps -o etime`. Both comparisons lean the same way — towards
+ * `stale_process` — so an uncertain read costs at most one wasted restart-app
+ * rather than sending an agent off to restart a healthy tool-server.
+ */
+export const NATIVE_DEVTOOLS_CONNECT_GRACE_MS = 3000;
+
+/**
+ * The agent-facing remedy for each measured state. `connected` is excluded at
+ * the type level: it has no remedy, and every caller reaches this only after
+ * ruling it out, so a future state that slips in unhandled is a compile error
+ * rather than a silent fall-through to the least specific advice.
+ */
+export function buildAppStateMessage(
+  bundleId: string,
+  state: Exclude<NativeDevtoolsAppState, "connected">
+): string {
+  switch (state) {
+    case "not_running":
+      return (
+        `${bundleId} is not running, so there is no injected process to read. ` +
+        `Call launch-app (or restart-app) then retry.`
+      );
+    case "stale_process":
+      return (
+        `Native devtools are not injected into the running ${bundleId} process — it was launched ` +
+        `before argent's instrumentation was in place for this simulator. Call restart-app then retry.`
+      );
+    case "unregistered":
+      return (
+        `${bundleId} is running with argent's native devtools injected and pointed at this ` +
+        `simulator's devtools endpoint, but the service never registered its connection. ` +
+        `Restarting the app cannot change that — it already launched under exactly the terms a ` +
+        `restart would recreate. Restart the tool-server ` +
+        `(\`argent server stop && argent server start\`) and retry.`
+      );
+    case "indeterminate":
+      return (
+        `Native devtools are not connected to ${bundleId}, and its process could not be inspected ` +
+        `to tell whether it is injected. Call restart-app then retry. If it is still not connected ` +
+        `after that restart, the native-devtools service is stale rather than the app being ` +
+        `uninjected — do not keep restarting the app; restart the tool-server ` +
+        `(\`argent server stop && argent server start\`) and retry.`
+      );
+  }
+}
 
 export interface NativeDevtoolsInitFailure {
   attempts: number;
@@ -138,7 +194,8 @@ export function buildInitFailedResult(
 // Overloads for proper return-type inference.
 export type NativeDevtoolsPrecheckBlock =
   | NativeDevtoolsInitFailedResult
-  | { status: "restart_required"; message: string };
+  | { status: "restart_required"; message: string }
+  | { status: "service_stale"; message: string };
 
 export async function precheckNativeDevtools(
   api: NativeDevtoolsApi,
@@ -194,14 +251,16 @@ export async function precheckNativeDevtools(
     });
   }
 
-  if (bundleId !== undefined && (await api.requiresAppRestart(bundleId))) {
-    return {
-      status: "restart_required",
-      message: RESTART_REQUIRED_MESSAGE,
-    };
-  }
+  if (bundleId === undefined) return null;
 
-  return null;
+  const state = await api.appConnectionState(bundleId);
+  if (state === "connected") return null;
+  return {
+    // `unregistered` is the one state a relaunch provably cannot fix, so it is
+    // the one state that must not be reported as restart_required.
+    status: state === "unregistered" ? "service_stale" : "restart_required",
+    message: buildAppStateMessage(bundleId, state),
+  };
 }
 
 type NativeDevtoolsFactoryOptions = Record<string, unknown> & {
@@ -271,12 +330,12 @@ export interface NativeDevtoolsApi {
   isAppRunning(bundleId: string): Promise<boolean>;
   listConnectedBundleIds(): string[];
   /**
-   * Conservative helper for native feature tools.
-   * Returns false only when the current running app process is already connected.
-   * When not connected it re-verifies and re-sets the launchd env, which handles
-   * the simulator-reboot case where DYLD_INSERT_LIBRARIES was silently cleared.
+   * Why this app has no live devtools connection, and so what would fix it —
+   * see {@link NativeDevtoolsAppState}. When not connected it first re-verifies
+   * and re-sets the launchd env, which handles the simulator-reboot case where
+   * DYLD_INSERT_LIBRARIES was silently cleared.
    */
-  requiresAppRestart(bundleId: string): Promise<boolean>;
+  appConnectionState(bundleId: string): Promise<NativeDevtoolsAppState>;
   /**
    * Activates NSURLProtocol network interception for a specific app.
    * Idempotent — safe to call multiple times. Sticky: if the app is killed
@@ -649,6 +708,10 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
     } else {
       await bindNativeDevtoolsUnixSocket(server, socketPath);
     }
+    // An app that predates this moment dialed a listener we no longer hold, so
+    // it needs relaunching however well-injected it looks. Stamped after the
+    // bind so the window where the dylib could dial and be missed is empty.
+    const listeningSince = Date.now();
 
     // Tolerate ensureEnv failure: throwing here would leak `server` — the
     // registry's `_teardown` skips dispose when `node.instance` is never set.
@@ -667,14 +730,37 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
       isAppRunning,
       listConnectedBundleIds: () => [...connections.keys()],
 
-      async requiresAppRestart(bundleId) {
-        if (connections.has(bundleId)) return false;
+      async appConnectionState(bundleId) {
+        if (connections.has(bundleId)) return "connected";
         // Re-verify and re-set env — handles the case where the simulator was
         // rebooted and launchd cleared DYLD_INSERT_LIBRARIES. Must use
         // reverifyEnv (not ensureEnvReady): the latter latches after the first
-        // success and would skip re-applying the wiped env.
+        // success and would skip re-applying the wiped env. It also has to run
+        // before the process is judged: the env a restart would launch into is
+        // the thing the process gets compared against.
         await reverifyEnv();
-        return true;
+
+        const inspection = await host.inspectRunningApp(udid, bundleId).catch(() => null);
+        if (inspection === null) return "indeterminate";
+        if (!inspection.running) return "not_running";
+        if (inspection.process === null) return "indeterminate";
+
+        if (!processCarriesInjection(inspection.process.env, endpoint)) return "stale_process";
+
+        // Injected, but against which listener? A process older than this
+        // service's socket dialed one that no longer exists (a tool-server
+        // restart rebinds the same per-udid path to a new inode), and a relaunch
+        // is exactly what re-dials the live one.
+        const listenerAgeMs = Date.now() - listeningSince;
+        const processAgeMs = inspection.process.ageMs;
+        if (processAgeMs + NATIVE_DEVTOOLS_CONNECT_GRACE_MS >= listenerAgeMs) {
+          return "stale_process";
+        }
+        // Injected against this listener, launched after it came up, and still
+        // silent — but only past the grace period, before which it may simply
+        // not have finished dialing yet.
+        if (processAgeMs < NATIVE_DEVTOOLS_CONNECT_GRACE_MS) return "indeterminate";
+        return "unregistered";
       },
 
       activateNetworkInspection(bundleId) {

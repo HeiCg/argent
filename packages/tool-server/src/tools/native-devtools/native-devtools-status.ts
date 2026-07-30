@@ -5,6 +5,7 @@ import {
   nativeDevtoolsRef,
   precheckNativeDevtools,
   type NativeDevtoolsApi,
+  type NativeDevtoolsAppState,
   type NativeDevtoolsInitFailedResult,
 } from "../../blueprints/native-devtools";
 import { resolveDevice } from "../../utils/device-info";
@@ -23,6 +24,12 @@ type Result =
       appRunning: boolean;
       connected: boolean;
       requiresRestart: boolean;
+      /**
+       * Omitted for a non-injectable app: `injectable: false` is terminal on its
+       * own, and no connection diagnosis is run for a process that can never
+       * load the dylib.
+       */
+      state?: NativeDevtoolsAppState;
       nextLaunchWillBeInjected: boolean;
       injectable: boolean;
     };
@@ -37,11 +44,12 @@ export const nativeDevtoolsStatusTool: ToolDefinition<Params, Result> = {
   description: `Check whether native devtools are connected to a specific app and whether the next launch is prepared for injection.
 Use when you need to verify native devtools readiness before calling native-full-hierarchy, native-describe-screen, or native-network-logs.
 
-Returns { envSetup, appRunning, connected, requiresRestart, nextLaunchWillBeInjected, injectable }:
+Returns { envSetup, appRunning, connected, requiresRestart, state, nextLaunchWillBeInjected, injectable }:
 - envSetup: DYLD_INSERT_LIBRARIES is configured in the simulator's launchd environment
 - appRunning: the target bundle currently has a running UIKit process on the simulator
 - connected: the dylib is active in the current running process for this bundleId
 - requiresRestart: the app is already running but its current process does not have native devtools injected (always false for a non-injectable app)
+- state: why devtools are or aren't live, measured from the running process. "connected"; "not_running"; "stale_process" (the process was launched before argent's instrumentation was in place, so restart-app fixes it); "unregistered" (the process IS injected and pointed at this simulator's devtools endpoint yet the service never registered it, so restarting the app cannot help); "indeterminate" (the process could not be inspected). Omitted when injectable is false, which is terminal on its own.
 - nextLaunchWillBeInjected: if you launch this bundle now, native devtools env setup is already in place (always false for a non-injectable app)
 - injectable: whether native devtools can ever be injected into this app. Apple system apps (bundle ids under com.apple.) are platform binaries with library validation, so the dylib can never load into them.
 
@@ -49,6 +57,7 @@ Call this before using app-scoped native hierarchy tools or native-network-logs.
 If injectable is false: this is a TERMINAL state — the app can never be injected. Do NOT restart/retry. Use the standard \`describe\` tool (its accessibility path reads the screen without injection) or \`screenshot\` (then interact by coordinate). Do not fall back to the native-devtools feature tools (native-describe-screen, native-find-views, native-full-hierarchy, native-network-logs, native-view-at-point, native-user-interactable-view-at-point) — they run the same injection precheck and fail with the same non-injectable error.
 If appRunning is false and nextLaunchWillBeInjected is true: use launch-app normally.
 If requiresRestart is true: call restart-app, then proceed with the native feature.
+If state is unregistered: do NOT restart the app again — it already launched under the terms a restart would recreate. Restart the tool-server (\`argent server stop && argent server start\`), then retry.
 Returns { status: "init_failed", message, attempts } instead when the simulator's native-devtools environment failed to initialize.
 Fails if the simulator server is not running for the given UDID.`,
   zodSchema,
@@ -101,23 +110,26 @@ Fails if the simulator server is not running for the given UDID.`,
     if (blocked) return blocked;
 
     const appRunning = await api.isAppRunning(params.bundleId);
-    const connected = api.isConnected(params.bundleId);
-
-    // When the app isn't connected, the cached env latch can be stale: an
-    // out-of-band simulator reboot wipes DYLD_INSERT_LIBRARIES from launchd
-    // while isEnvSetup() still reports the stale `true`. Re-apply it so the
-    // reported envSetup / nextLaunchWillBeInjected reflect reality — and so a
-    // subsequent launch actually gets injected. Idempotent no-op when correct.
-    if (!connected) {
-      await api.reverifyEnv().catch(() => {});
-    }
+    // Diagnoses the connection AND re-applies the launchd env on its way — an
+    // out-of-band simulator reboot wipes DYLD_INSERT_LIBRARIES while
+    // isEnvSetup() still reports the stale `true`, so the reported envSetup /
+    // nextLaunchWillBeInjected must be read after it. Idempotent when correct.
+    const state = await api
+      .appConnectionState(params.bundleId)
+      .catch(() => "indeterminate" as const);
+    const connected = state === "connected";
     const envSetup = api.isEnvSetup();
 
     return {
       envSetup,
       appRunning,
       connected,
-      requiresRestart: appRunning && !connected,
+      // An `unregistered` process is the one case where a relaunch provably
+      // changes nothing, so it is the one case this must not claim a restart
+      // for. Everything else keeps the conservative running-but-unconnected
+      // reading, which is all an uninspectable host (ios-remote) can support.
+      requiresRestart: appRunning && !connected && state !== "unregistered",
+      state,
       nextLaunchWillBeInjected: envSetup,
       injectable: true,
     };

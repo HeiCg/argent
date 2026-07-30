@@ -1,6 +1,7 @@
 import type { DeviceInfo, Registry, ToolDependency } from "@argent/registry";
 import { axServiceRef, AXServiceApi } from "../../../../blueprints/ax-service";
 import {
+  buildAppStateMessage,
   isInjectableBundleId,
   NON_INJECTABLE_NATIVE_WARNING,
   nativeDevtoolsRef,
@@ -117,9 +118,9 @@ export async function describeIos(
     return { tree, source: "ax-service", hint };
   }
 
-  // A non-injectable system app can never connect, so `requiresAppRestart`
-  // would always be true and `should_restart` would loop forever. Return the
-  // (empty) AX result with the terminal screenshot hint instead of restarting.
+  // A non-injectable system app can never connect, so it would read as a
+  // `stale_process` forever and `should_restart` would loop. Return the (empty)
+  // AX result with the terminal screenshot hint instead of restarting.
   // The gate sits BEFORE the native-devtools fallback: injectability is a
   // static property of the explicit bundle id, so the terminal hint must not
   // depend on service resolution succeeding (a downed ios-remote tunnel or a
@@ -143,8 +144,18 @@ export async function describeIos(
 
     const target = await resolveNativeTargetApp(nativeApi, params.bundleId);
 
-    if (await nativeApi.requiresAppRestart(target.bundleId)) {
-      return { tree, source: "ax-service", should_restart: true, hint };
+    const state = await nativeApi.appConnectionState(target.bundleId);
+    if (state !== "connected") {
+      // `should_restart` is the agent-facing instruction to relaunch, so it is
+      // set only for the states a relaunch actually fixes. An `unregistered`
+      // process already launched under the terms a restart would recreate —
+      // flagging it here would rebuild the restart-app → describe loop this
+      // gate exists to avoid — so its diagnosis rides out as a hint instead,
+      // which still marks the empty read as untrustworthy.
+      const diagnosis = buildAppStateMessage(target.bundleId, state);
+      return state === "unregistered"
+        ? { tree, source: "ax-service", hint: hint ? `${hint} ${diagnosis}` : diagnosis }
+        : { tree, source: "ax-service", should_restart: true, hint };
     }
 
     const rawResult = (await nativeApi.queryViewHierarchy(

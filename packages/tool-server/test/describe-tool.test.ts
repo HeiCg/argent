@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AXServiceApi, AXDescribeResponse } from "../src/blueprints/ax-service";
-import type { NativeDevtoolsApi } from "../src/blueprints/native-devtools";
+import type { NativeDevtoolsApi, NativeDevtoolsAppState } from "../src/blueprints/native-devtools";
 import { NON_INJECTABLE_NATIVE_WARNING } from "../src/blueprints/native-devtools";
 import { createDescribeTool } from "../src/tools/describe";
 import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
@@ -38,6 +38,7 @@ function makeAXServiceApi(
 function makeNativeDevtoolsApi(options: {
   connectedBundleIds?: string[];
   requiresRestart?: boolean;
+  state?: NativeDevtoolsAppState;
   describeScreenResult?: unknown;
 }): NativeDevtoolsApi {
   const connected = new Set(options.connectedBundleIds ?? []);
@@ -50,7 +51,8 @@ function makeNativeDevtoolsApi(options: {
     isConnected: (bundleId) => connected.has(bundleId),
     isAppRunning: async () => true,
     listConnectedBundleIds: () => [...connected],
-    requiresAppRestart: async () => options.requiresRestart ?? false,
+    appConnectionState: async () =>
+      options.state ?? (options.requiresRestart ? "stale_process" : "connected"),
     activateNetworkInspection: () => {},
     getNetworkLog: () => [],
     clearNetworkLog: () => {},
@@ -259,9 +261,34 @@ describe("describe tool", () => {
     expect(elementLineCount(result.description)).toBe(0);
   });
 
+  it("does NOT return should_restart when the app is injected but unregistered", async () => {
+    // `should_restart` is describe's instruction to relaunch. The process here
+    // already launched with this service's injection in place, so a relaunch
+    // reproduces it — setting the flag would be the restart-app → describe loop
+    // again, just reached through a live service instead of a system app. The
+    // diagnosis has to travel as a hint, which still marks the empty read as
+    // untrustworthy for await-ui-element.
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
+    const nativeApi = makeNativeDevtoolsApi({
+      connectedBundleIds: [],
+      state: "unregistered",
+    });
+    const registry = makeMockRegistry({ axService: axApi, nativeDevtools: nativeApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute(
+      {},
+      { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", bundleId: "com.example.app" }
+    );
+    expect(result.source).toBe("ax-service");
+    expect(result.should_restart).toBeUndefined();
+    expect(result.hint).toContain("argent server stop && argent server start");
+    expect(result.hint).not.toMatch(/restart-app/);
+  });
+
   it("does NOT return should_restart for a non-injectable Apple system app (no restart loop)", async () => {
-    // com.apple.* apps can never load the injected dylib, so requiresAppRestart
-    // is always true for them in an unmocked run. Without an injectability gate,
+    // com.apple.* apps can never load the injected dylib, so they read as
+    // stale_process forever in an unmocked run. Without an injectability gate,
     // describe returns should_restart:true → the agent restarts the system app →
     // AX is still empty → describe again → unbounded loop. The fallback must
     // instead return the (empty) AX result with a screenshot hint.

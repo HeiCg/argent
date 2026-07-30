@@ -7,6 +7,7 @@ import {
   precheckNativeDevtools,
   MAX_NATIVE_DEVTOOLS_INIT_ATTEMPTS,
   type NativeDevtoolsApi,
+  type NativeDevtoolsAppState,
   type NativeDevtoolsInitFailure,
 } from "../src/blueprints/native-devtools";
 // Both tools gate `execute()` behind `ensureDeps(["xcrun"])`, but the
@@ -37,6 +38,7 @@ function makeNativeApi(options: {
   connected?: boolean;
   appRunning?: boolean;
   initFailure?: NativeDevtoolsInitFailure | null;
+  state?: NativeDevtoolsAppState;
 }): {
   api: NativeDevtoolsApi;
   ensureEnvReady: ReturnType<typeof vi.fn>;
@@ -60,8 +62,12 @@ function makeNativeApi(options: {
       isConnected: () => options.connected ?? false,
       isAppRunning: async () => options.appRunning ?? false,
       listConnectedBundleIds: () => [],
-      requiresAppRestart: async () => {
-        throw new Error("native-devtools-status should compute restart guidance directly");
+      appConnectionState: async () => {
+        if (options.connected) return "connected";
+        // Mirrors the real API: the unconnected path re-applies the launchd env
+        // before it judges the process, so callers can still pin that repair.
+        await reverifyEnv();
+        return options.state ?? (options.appRunning ? "stale_process" : "not_running");
       },
       activateNetworkInspection: () => {},
       getNetworkLog: () => [],
@@ -91,6 +97,7 @@ describe("native-devtools-status tool", () => {
       appRunning: true,
       connected: false,
       requiresRestart: true,
+      state: "stale_process",
       nextLaunchWillBeInjected: true,
       injectable: true,
     });
@@ -117,6 +124,7 @@ describe("native-devtools-status tool", () => {
       appRunning: true,
       connected: false,
       requiresRestart: true,
+      state: "stale_process",
       nextLaunchWillBeInjected: true,
       injectable: true,
     });
@@ -137,6 +145,7 @@ describe("native-devtools-status tool", () => {
       appRunning: true,
       connected: true,
       requiresRestart: false,
+      state: "connected",
       nextLaunchWillBeInjected: true,
       injectable: true,
     });
@@ -157,6 +166,7 @@ describe("native-devtools-status tool", () => {
       appRunning: false,
       connected: false,
       requiresRestart: false,
+      state: "not_running",
       nextLaunchWillBeInjected: true,
       injectable: true,
     });
@@ -407,7 +417,7 @@ describe("native-* feature tools — the non-injectable throw propagates out of 
   const U = "44444444-4444-4444-4444-444444444444";
   const SYSTEM_APP = "com.apple.Preferences";
   // The non-injectable throw fires in the precheck before appRunning/connected/
-  // requiresAppRestart are ever consulted, so the mock's device state is inert
+  // appConnectionState are ever consulted, so the mock's device state is inert
   // here — default it so nothing reads as if the restart logic were exercised.
   const mkApi = () => makeNativeApi({}).api;
 
@@ -502,7 +512,7 @@ describe("native-devtools tools — init_failed precheck", () => {
         givenUp: false,
       },
     });
-    api.requiresAppRestart = async () => true;
+    api.appConnectionState = async () => "stale_process";
 
     const result = await nativeDescribeScreenTool.execute(
       { nativeDevtools: api },
@@ -550,53 +560,94 @@ describe("native-devtools tools — init_failed precheck", () => {
   });
 });
 
-// `requiresAppRestart` reports true for every unconnected app and keeps no count
-// of how often it has already said so. When a connection never registers, the
-// "call restart-app" advice stays true forever and an agent obeying it restarts
-// the app indefinitely, so the message has to name the way out of that loop.
-describe("precheckNativeDevtools restart guidance", () => {
-  function apiRequiringRestart(): NativeDevtoolsApi {
-    const { api } = makeNativeApi({ envSetup: true, appRunning: true });
-    api.requiresAppRestart = async () => true;
-    return api;
+// `restart_required` used to be asserted for every unconnected app, with no
+// record of how often it had already said so, so "call restart-app" stayed
+// literally true forever and an agent obeying it restarted indefinitely. The
+// status is derived from the running process now, so each state has to reach
+// the agent as the action that actually applies to it.
+describe("precheckNativeDevtools maps a measured state to its remedy", () => {
+  function precheckWith(state: NativeDevtoolsAppState) {
+    const { api } = makeNativeApi({ envSetup: true, appRunning: true, state });
+    return precheckNativeDevtools(api, "UDID", "com.example.app");
   }
 
-  it("still leads with restart-app, which is the usual and sufficient fix", async () => {
-    const result = await precheckNativeDevtools(apiRequiringRestart(), "UDID", "com.example.app");
+  it("leads with restart-app for a process that predates the injection", async () => {
+    const result = await precheckWith("stale_process");
 
     expect(result).toMatchObject({ status: "restart_required" });
-    expect((result as { message: string }).message).toContain("Call restart-app then retry.");
+    const message = (result as { message: string }).message;
+    expect(message).toContain("restart-app");
+    // The escalation belongs to states we could not measure. Naming it here too
+    // would put "maybe restart the tool-server" in front of an agent whose app
+    // demonstrably just needs relaunching.
+    expect(message).not.toContain("argent server stop");
   });
 
-  it("names the tool-server restart so a stale service is not an unbounded app-restart loop", async () => {
-    const result = await precheckNativeDevtools(apiRequiringRestart(), "UDID", "com.example.app");
+  it("points a stopped app at launch-app rather than a restart", async () => {
+    const result = await precheckWith("not_running");
 
+    expect(result).toMatchObject({ status: "restart_required" });
+    expect((result as { message: string }).message).toContain("launch-app");
+  });
+
+  it("refuses to call an injected-but-unregistered process a restart_required", async () => {
+    // The loop this whole derivation exists to break: the process already
+    // launched under exactly the terms restart-app would recreate.
+    const result = await precheckWith("unregistered");
+
+    expect(result).toMatchObject({ status: "service_stale" });
     const message = (result as { message: string }).message;
     expect(message).toContain("argent server stop && argent server start");
+    expect(message).toContain("Restarting the app cannot change that");
+    expect(message).not.toContain("restart-app");
+  });
+
+  it("keeps the loop warning for a process it could not inspect", async () => {
+    // ios-remote and an unreadable process table land here: restart-app is
+    // still the right first move, but nothing measured says it will work, so
+    // the way out of the loop has to travel with it.
+    const result = await precheckWith("indeterminate");
+
+    expect(result).toMatchObject({ status: "restart_required" });
+    const message = (result as { message: string }).message;
+    expect(message).toContain("restart-app");
+    expect(message).toContain("argent server stop && argent server start");
     expect(message).toContain("do not keep restarting the app");
+  });
+
+  it("passes a connected app straight through", async () => {
+    await expect(precheckWith("connected")).resolves.toBeNull();
   });
 });
 
 // The runtime message is only half the guidance an agent sees: the tool
-// descriptions are what it reads before ever calling. While those said only
-// "call restart-app then retry", they rebuilt the same loop the message now
-// breaks — so every native-* tool that mentions restart_required has to carry
-// the escalation too.
-describe("native-* tool descriptions name the way out of the restart loop", () => {
+// descriptions are what it reads before ever calling. A description that names
+// restart_required while staying silent about service_stale rebuilds the loop
+// in the more prominent place, whatever the message says.
+describe("native-* tool descriptions document both precheck outcomes", () => {
   const tools = [
     nativeDescribeScreenTool,
     nativeFindViewsTool,
+    nativeFullHierarchyTool,
+    nativeNetworkLogsTool,
     nativeViewAtPointTool,
     nativeUserInteractableViewAtPointTool,
-    nativeNetworkLogsTool,
   ];
 
-  it("tells the agent to stop restarting the app when it has not helped", () => {
+  it("names service_stale and its tool-server remedy alongside restart_required", () => {
     for (const tool of tools) {
-      expect(tool.description, `${tool.id} must mention restart-app`).toContain("restart-app");
-      expect(tool.description, `${tool.id} must escalate to the tool-server`).toMatch(
-        /restart the tool-server/
+      expect(tool.description, `${tool.id} must mention restart_required`).toContain(
+        "restart_required"
+      );
+      expect(tool.description, `${tool.id} must mention service_stale`).toContain("service_stale");
+      expect(tool.description, `${tool.id} must name the tool-server remedy`).toContain(
+        "argent server stop && argent server start"
       );
     }
+  });
+
+  it("tells native-devtools-status readers not to restart an unregistered app", () => {
+    expect(nativeDevtoolsStatusTool.description).toContain("unregistered");
+    expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app again");
   });
 });
