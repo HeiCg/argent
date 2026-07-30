@@ -298,7 +298,13 @@ function renderComponentCpu(
       const existing = aggregated.get(hs.name);
       if (existing) {
         existing.selfMs += hs.selfMs;
-        existing.totalMs += hs.totalMs;
+        // `totalMs` is inclusive, and one function appears as several profile
+        // nodes — once per call depth for anything recursive, and once per
+        // window here. Adding those puts an outer frame's time and its own
+        // inner frame's time in the same total. `selfMs` is exclusive and does
+        // sum; for the inclusive figure keep the deepest single frame, which is
+        // a real call's subtree.
+        existing.totalMs = Math.max(existing.totalMs, hs.totalMs);
       } else {
         aggregated.set(hs.name, {
           selfMs: hs.selfMs,
@@ -323,7 +329,7 @@ function renderComponentCpu(
     "",
     `**Commits:** ${commitWindows.size}  **Total commit time:** ${totalCommitMs.toFixed(1)}ms`,
     "",
-    "| Function | Self (ms) | Total (ms) | Location |",
+    "| Function | Self (ms) | Largest call (ms) | Location |",
     "|---|---|---|---|",
   ];
 
