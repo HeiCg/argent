@@ -8,6 +8,8 @@ interface Node {
   children: Node[];
   label?: string;
   value?: string;
+  disabled?: boolean;
+  selected?: boolean;
 }
 function flatten(n: Node, out: Node[] = []): Node[] {
   out.push(n);
@@ -219,6 +221,38 @@ describe("adaptCoreDeviceAxToDescribeResult (forward-compat: payload with geomet
     for (const v of [short.frame.x, short.frame.y, short.frame.width, short.frame.height]) {
       expect(Number.isFinite(v)).toBe(true);
     }
+  });
+
+  it("records the enabled / selected state the caption carries", () => {
+    // The caption is the only place the device reports state, and the tokens are
+    // stripped from the label either way — so dropping them makes an enabled
+    // control byte-identical to a disabled one, while the describe hint promises
+    // the traits are exact.
+    const [enabled, dimmed, chosen, notChosen, notEnabled] = adaptCoreDeviceAxToDescribeResult({
+      elements: [
+        { caption: "Continue, Button", id: "0x1" },
+        { caption: "Continue, Dimmed, Button", id: "0x2" },
+        { caption: "Photos, Selected, Tab", id: "0x3" },
+        { caption: "Albums, Not Selected, Tab", id: "0x4" },
+        { caption: "Submit, Not Enabled, Button", id: "0x5" },
+      ],
+    }).children as Node[];
+
+    expect(enabled.disabled).toBeUndefined();
+    expect(dimmed.disabled).toBe(true);
+    expect(notEnabled.disabled).toBe(true);
+    // The two "Continue" buttons must not be indistinguishable.
+    expect({ ...dimmed, frame: null }).not.toEqual({ ...enabled, frame: null });
+
+    // "Not Selected" is an explicit false: the device stating a selection state
+    // is different from an element that has none.
+    expect(chosen.selected).toBe(true);
+    expect(notChosen.selected).toBe(false);
+    expect(enabled.selected).toBeUndefined();
+
+    // The state token is not part of the name.
+    expect(dimmed.label).toBe("Continue");
+    expect(chosen.label).toBe("Photos");
   });
 
   it("splits label from value only on value-bearing roles, so prose keeps its commas", () => {

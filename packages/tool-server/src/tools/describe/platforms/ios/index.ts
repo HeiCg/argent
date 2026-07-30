@@ -68,7 +68,9 @@ const PHYSICAL_IOS_AX_HINT =
   "geometry, every frame is synthesised from list position and therefore changes between calls. " +
   "Use this to learn WHAT is on screen, never WHERE. Locate anything you intend to tap with " +
   "screenshot first — screenshot is authoritative for positions — and do not compare two describe " +
-  "results to decide whether the screen changed (use screenshot for that too).";
+  "results to decide whether the screen changed (use screenshot for that too). No element carries an " +
+  "`identifier`: the audit reports no accessibilityIdentifier, so an identifier selector matches " +
+  "nothing here — select by label/value/role instead.";
 
 // The frontmost app has no focusable elements when the phone is asleep or on the
 // lock screen: the audit walk finds nothing and returns an empty list, which is
@@ -84,7 +86,7 @@ const PHYSICAL_IOS_EMPTY_HINT =
 // ceiling is visible here (and so a truncated read can be reported below)
 // instead of being an invisible property of whichever sim-server build is
 // installed.
-const PHYSICAL_IOS_AX_LIMIT = 120;
+export const PHYSICAL_IOS_AX_LIMIT = 120;
 
 const PHYSICAL_IOS_TRUNCATED_HINT =
   `Only the first ${PHYSICAL_IOS_AX_LIMIT} elements were read; the screen has more. Anything past ` +

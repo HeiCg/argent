@@ -90,7 +90,14 @@ no manual step, no `sudo`.
     is a placeholder synthesised from the element's position in the list.
   - **Order.** The read starts from the device's current VoiceOver cursor and advances it, so
     consecutive calls return the same elements rotated by one — which also means a given element's
-    synthesised frame changes between calls, and two `describe` results are not comparable.
+    synthesised frame changes between calls, and two `describe` results are not comparable. The read
+    also returns at most 120 elements: past that, consecutive calls cover different parts of the
+    screen rather than rotating one set, and `await-screen-idle` says so instead of waiting out its
+    timeout.
+  - **Identifiers.** The audit reports no accessibilityIdentifier, so every element comes back
+    without one and an `identifier` selector matches nothing — select by label, value or role.
+    Enabled/disabled and selected state _are_ reported, and land on the node's `disabled` /
+    `selected` fields.
 
   Locate anything you intend to tap with `screenshot` first, and use `screenshot` (not `describe`)
   to tell whether the screen changed. (For pixel-exact in-app frames + taps you'd need an on-device

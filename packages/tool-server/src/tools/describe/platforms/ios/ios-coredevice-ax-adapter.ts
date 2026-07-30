@@ -53,6 +53,29 @@ const TRAIT_TOKEN =
 // sentence intact.
 const VALUE_BEARING_ROLES = new Set(["AXButton", "AXTextField", "AXAdjustable"]);
 
+// State tokens the caption carries and `DescribeNode` has fields for. They are
+// stripped from the label either way (they are not part of the element's name),
+// so without this they would be dropped entirely and an enabled control would
+// render byte-identical to a disabled one — while the describe hint promises the
+// traits are exact. "Not Selected" is recorded as an explicit `false`: the device
+// stating a selection state is different from an element that has none.
+const STATE_TOKENS: Array<[RegExp, "disabled" | "selected", boolean]> = [
+  [/^(Dimmed|Disabled|Not Enabled)$/i, "disabled", true],
+  [/^Not Selected$/i, "selected", false],
+  [/^Selected$/i, "selected", true],
+];
+
+/** Selection / enabled state the caption declares, as describe-node fields. */
+function parseState(tokens: string[]): { disabled?: boolean; selected?: boolean } {
+  const out: { disabled?: boolean; selected?: boolean } = {};
+  for (const token of tokens) {
+    for (const [re, field, value] of STATE_TOKENS) {
+      if (re.test(token) && out[field] === undefined) out[field] = value;
+    }
+  }
+  return out;
+}
+
 /**
  * Split a VoiceOver caption ("Wi-Fi, FiberMansion, Button") into the describe
  * node's `label`, `value` and `role`.
@@ -64,8 +87,15 @@ const VALUE_BEARING_ROLES = new Set(["AXButton", "AXTextField", "AXAdjustable"])
  * is label first, then value, then traits — so once the trailing traits are
  * dropped, the last remaining run is the value on a value-bearing role.
  */
-function parseCaption(caption: string): { label: string; value?: string; role: string } {
+function parseCaption(caption: string): {
+  label: string;
+  value?: string;
+  role: string;
+  disabled?: boolean;
+  selected?: boolean;
+} {
   const tokens = caption.split(/,\s*/).filter((t) => t.length > 0);
+  const state = parseState(tokens);
   let traits: string[] = [];
   for (const [re, native] of TRAIT_TOKEN_TO_NATIVE) {
     if (tokens.some((t) => re.test(t))) {
@@ -83,12 +113,17 @@ function parseCaption(caption: string): { label: string; value?: string; role: s
   // handing the untrimmed tokens to the split below is what stops a trait from
   // becoming the element's `value` — a `{ value: "Button" }` selector would then
   // match a button that has no value at all, and the label would read "Dimmed".
-  if (end === 0) return { label: caption, role };
+  if (end === 0) return { label: caption, role, ...state };
   const content = tokens.slice(0, end);
   if (content.length === 1 || !VALUE_BEARING_ROLES.has(role)) {
-    return { label: content.join(", "), role };
+    return { label: content.join(", "), role, ...state };
   }
-  return { label: content.slice(0, -1).join(", "), value: content[content.length - 1], role };
+  return {
+    label: content.slice(0, -1).join(", "),
+    value: content[content.length - 1],
+    role,
+    ...state,
+  };
 }
 
 const RECT_RE = /-?\d+(?:\.\d+)?/g;
@@ -152,10 +187,12 @@ export function adaptCoreDeviceAxToDescribeResult(tree: CoreDeviceAxTree): Descr
   const frames = fillFrames(rectFrames);
 
   const children: DescribeNode[] = els.map((e, i) => {
-    const { label, value, role } = parseCaption(e.caption ?? "");
+    const { label, value, role, disabled, selected } = parseCaption(e.caption ?? "");
     const node: DescribeNode = { role, frame: frames[i], children: [] };
     if (label) node.label = label;
     if (value) node.value = value;
+    if (disabled !== undefined) node.disabled = disabled;
+    if (selected !== undefined) node.selected = selected;
     return node;
   });
 

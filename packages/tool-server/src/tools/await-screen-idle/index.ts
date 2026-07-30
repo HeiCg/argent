@@ -15,7 +15,7 @@ import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
-import { describeIos, iosRequires } from "../describe/platforms/ios";
+import { describeIos, iosRequires, PHYSICAL_IOS_AX_LIMIT } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
 
@@ -73,7 +73,23 @@ interface IdleResult {
   waitedMs: number;
   /** Number of tree reads taken. */
   polls: number;
+  /** Why the answer is what it is, when `settled: false` has a knowable cause. */
+  note?: string;
 }
+
+// Sorting the signature cancels the CoreDevice read's rotation only while the
+// whole screen fits inside one read. `describeIos` asks for at most
+// PHYSICAL_IOS_AX_LIMIT elements and the audit walk starts at the device's
+// VoiceOver cursor, advancing one step per read — so past that ceiling each poll
+// covers a *different window* of the screen rather than a rotation of the same
+// set, and no amount of sorting makes two windows equal. Stillness is then not
+// decidable from the content at all, and polling to the deadline only turns that
+// into an unexplained `settled: false` on a screen that never moved.
+const TRUNCATED_READ_NOTE =
+  `the screen has at least ${PHYSICAL_IOS_AX_LIMIT} accessibility elements, which is the most one ` +
+  `CoreDevice read returns; because each read starts one element further along, consecutive reads ` +
+  `cover different parts of the screen and stillness cannot be decided from them. Use screenshot, ` +
+  `or await-ui-element with condition "exists" for something specific.`;
 
 const capability: ToolCapability = {
   apple: { simulator: true, device: true },
@@ -93,9 +109,13 @@ const capability: ToolCapability = {
 // role/label/value parts and dropping frames cancels exactly those two
 // distortions — verified against a live device, where three consecutive reads
 // of one still screen gave three different orderings and one identical sorted
-// signature. The cost is that motion is only visible through the accessibility
-// content: an animation that moves pixels without changing any element's
-// label/value (a spinner, an indeterminate progress bar) reads as settled.
+// signature — as long as the whole screen fits in one read; past
+// PHYSICAL_IOS_AX_LIMIT the reads are windows over different parts of it and
+// nothing can cancel that, which is why the caller checks the count before
+// consulting this at all (see TRUNCATED_READ_NOTE). The cost is that motion is
+// only visible through the accessibility content: an animation that moves pixels
+// without changing any element's label/value (a spinner, an indeterminate
+// progress bar) reads as settled.
 function treeSignature(root: DescribeNode, orderAndFrameFree = false): string {
   const round = (n: number) => Math.round(n * 100) / 100;
   const parts: string[] = [];
@@ -145,11 +165,13 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
 
 Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (default ${DEFAULT_POLL_INTERVAL_MS}ms) until it
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
-${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls } — settled=false means the screen never went
-still before the timeout. Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.
+${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls, note? } — settled=false means the screen never went
+still before the timeout, and \`note\` says why when the cause is known. Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.
 On a physical iPhone each read is a ~2s round trip, so the default timeout there is ${DEFAULT_DEVICE_TIMEOUT_MS}ms; its accessibility
 read also carries no usable element geometry, so stillness means the on-screen elements stopped changing and an
-animation that moves only pixels (a spinner) reads as settled.`,
+animation that moves only pixels (a spinner) reads as settled. A screen with more elements than one CoreDevice read
+returns cannot be judged still at all — that answers immediately with settled=false and a \`note\` saying so, rather
+than polling to the timeout.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
     longRunning: true,
@@ -182,13 +204,16 @@ animation that moves only pixels (a spinner) reads as settled.`,
       let stableSignature: string | undefined;
       let stableSince = 0;
 
-      const poll = await pollDescribeTree<true>({
+      const poll = await pollDescribeTree<true | "truncated">({
         fetchTree: () => fetchTree(device, services, isTvOs, androidIsTv),
         timeoutMs:
           params.timeoutMs ?? (rotatingRead ? DEFAULT_DEVICE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS),
         pollIntervalMs: params.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
         signal: ctx?.signal,
         onSample: (data, nowMs) => {
+          if (rotatingRead && data.tree.children.length >= PHYSICAL_IOS_AX_LIMIT) {
+            return { done: true, result: "truncated" as const };
+          }
           // An empty tree (blank/loading, or a degraded AX read) is not settled.
           if (data.tree.children.length === 0) {
             stableSignature = undefined;
@@ -207,6 +232,14 @@ animation that moves only pixels (a spinner) reads as settled.`,
         },
       });
 
+      if (poll.result === "truncated") {
+        return {
+          settled: false,
+          waitedMs: poll.elapsedMs,
+          polls: poll.polls,
+          note: TRUNCATED_READ_NOTE,
+        };
+      }
       return { settled: poll.result === true, waitedMs: poll.elapsedMs, polls: poll.polls };
     },
   };
