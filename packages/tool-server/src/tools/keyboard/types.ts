@@ -15,20 +15,16 @@ export interface KeyboardParams {
  * do not.
  */
 export interface KeyboardVerification {
-  verified?: boolean;
-  note?: string;
-}
-
-export interface KeyboardResult extends KeyboardVerification {
-  typed: string;
-  keys: number;
   /**
-   * Whether the typed text was read back off the screen and found in the
-   * focused field. `true` means the field really holds it; `false` means it does
-   * not, and `note` says so. Absent means no read-back happened — on Android
-   * because it could not (`note` explains why), and on every other platform
-   * because those transports are not exposed to the silent character loss that
-   * makes the check necessary.
+   * Whether the typed text was read back off the screen and found in the focused
+   * field. `true` means the field really holds it; `false` means it demonstrably
+   * does not, and `note` says so.
+   *
+   * Absent means the text was NOT checked — never that it was checked and found
+   * fine. On an Android phone or tablet that is a check that could not conclude,
+   * with `note` giving the reason; on every other backend it is that no read-back
+   * exists there. Note that Android TV shares this transport's exposure to
+   * dropped key events without being checked (see `platforms/tv.ts`).
    */
   verified?: boolean;
   /**
@@ -36,7 +32,13 @@ export interface KeyboardResult extends KeyboardVerification {
    * or why it could not run. Absent when there is nothing to say — a plain
    * verified type, a named-key press, or a platform that does not verify.
    * Carries structural facts and character counts only, never the field's
-   * contents, so a typed `{{secret:…}}` cannot leak back through it.
+   * contents. The character counts do reveal a typed secret's length, which
+   * `keys` already exposes for every secret type.
    */
   note?: string;
+}
+
+export interface KeyboardResult extends KeyboardVerification {
+  typed: string;
+  keys: number;
 }

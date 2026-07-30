@@ -314,6 +314,7 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     // cannot run and the result says so instead of implying the text landed —
     // `verified` stays absent and a note carries the reason (see
     // keyboard-android-verify.test.ts for the verified paths).
+    expect(Object.keys(res).sort()).toEqual(["keys", "note", "typed"]);
     expect(res).toMatchObject({ typed: "hi there", keys: 8 });
     expect(res.verified).toBeUndefined();
     expect(res.note).toMatch(/not verified against the screen/);
@@ -354,7 +355,12 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
       { udid: SERIAL, key: "enter", text: "abc" } as KeyboardParams,
       phone
     );
+    // Exact field set, not a subset: this bare `Registry` has no android-devtools
+    // blueprint, so the read-back cannot run and the result must carry the reason
+    // and NOT a `verified` verdict. `toMatchObject` would pass on either.
+    expect(Object.keys(res).sort()).toEqual(["keys", "note", "typed"]);
     expect(res).toMatchObject({ typed: "abc", keys: 4 });
+    expect(res.note).toMatch(/not verified against the screen/);
     // Assert the exact ordered sequence, not just presence: the key fires BEFORE
     // the text (source contract — press the named key, then type, matching the
     // simulator-server / vega backends). `toEqual` catches both a dropped keyevent
@@ -419,10 +425,10 @@ describe("keyboard tool — android adb preflight (via dispatchByPlatform)", () 
 
   it("runs the handler over adb once the preflight passes", async () => {
     const tool = createKeyboardTool(new Registry());
-    await expect(tool.execute({}, { udid: SERIAL, text: "hi" })).resolves.toMatchObject({
-      typed: "hi",
-      keys: 2,
-    });
+    const res = await tool.execute({}, { udid: SERIAL, text: "hi" });
+    // Exact field set (see the note above): no `verified` without a read-back.
+    expect(Object.keys(res).sort()).toEqual(["keys", "note", "typed"]);
+    expect(res).toMatchObject({ typed: "hi", keys: 2 });
     expect(ensureDeps).toHaveBeenCalledWith(["adb"]);
     expect(adbShell).toHaveBeenCalledWith(SERIAL, "input text 'hi'", expect.anything());
   });
