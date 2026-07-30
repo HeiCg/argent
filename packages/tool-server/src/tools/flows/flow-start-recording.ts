@@ -15,7 +15,11 @@ import {
 } from "./flow-utils";
 
 const zodSchema = z.object({
-  name: z.string().describe('Name for this flow (e.g. "settings-explore")'),
+  name: z
+    .string()
+    .describe(
+      'Name for this flow (e.g. "settings-explore") — letters, digits, underscore and hyphen only.'
+    ),
   project_root: z
     .string()
     .describe(
@@ -58,23 +62,33 @@ export const flowStartRecordingTool: ToolDefinition<
 > = {
   id: "flow-start-recording",
   interaction: {
-    startedMsg: () => "Starting flow recording",
-    completedMsg: () => "Started flow recording",
-    failedMsg: ({ failureSignal }) => `Failed to start flow recording: ${failureSignal.error_code}`,
+    // Name the flow: recordings are concurrent, so several of these lines can
+    // interleave in one log and "flow recording" would not identify which.
+    startedMsg: ({ params }) => `Starting recording of flow ${params.name}`,
+    completedMsg: ({ params, result }) => {
+      if (!result.restarted) return `Started recording flow ${params.name}`;
+      // A restart destroyed a live take. Reporting that as a plain start would
+      // hide the discard, which is the one outcome here worth reading twice.
+      // `discardedSteps` is absent when the superseded file could not be read
+      // or parsed - 0 is the answer a genuinely empty take gives - so say it
+      // was discarded without claiming a count we do not have.
+      const discarded = result.discardedSteps;
+      return discarded === undefined
+        ? `Restarted recording flow ${params.name}, discarding the previous take`
+        : `Restarted recording flow ${params.name}, discarding ${discarded} ${discarded === 1 ? "step" : "steps"}`;
+    },
+    failedMsg: ({ params, failureSignal }) =>
+      `Failed to start recording of flow ${params.name}: ${failureSignal.error_code}`,
   },
-  description: `Start recording a new flow. Creates a .yaml file in the .argent/flows/ directory.
+  description: `Start recording a new flow. Creates a .yaml file in the .argent/flows/ directory, replacing any existing one.
 Use when you want to capture a reusable sequence of device interactions for later replay.
-Returns { message, flowFile, savedTo }.
-Starting ALWAYS truncates <project_root>/.argent/flows/<name>.yaml to an empty flow — including a name that exists only as a saved file with no recording in progress, so starting under the name of a committed flow overwrites it. { restarted } is added only when a LIVE recording of the same flow was discarded; its absence does NOT mean nothing was overwritten. \`discardedSteps\` counts the flow file as it stood at the reset, so a hand-edit made mid-recording is included — but it is omitted, \`restarted\` alone, when that file could not be read or parsed. That holds when the project root is on the tool-server host; against a REMOTE client the host never sees the file, so there the count is of the steps recorded through this server and a hand-edit on your machine is not in it. Either way, re-record from the top rather than expecting to resume.
-Fails before anything is written on a \`project_root\` that is not absolute or contains a ".." segment, or a \`name\` outside letters/digits/underscore/hyphen. It can also fail on the .argent/flows/ directory not being creatable or the file not being writable - but only when the project root is on the tool-server host; against a remote client the YAML travels back in \`savedTo\` for the client to write and no host filesystem access happens.
+Returns { message, flowFile, savedTo } and optionally { restarted, discardedSteps } if a live recording of the same flow was discarded.
+Fails if the .argent/flows/ directory cannot be created or the flow file cannot be written.
 
-Recording state is independent: several flows can be recorded at once (different
-names, different projects) and one recording's steps never land in another's
-file. Steps still execute LIVE on a device, so give each concurrent recording its
-own device. Every subsequent recording tool takes the same \`name\` +
-\`project_root\` to say which one it is addressing — and the (project_root, name)
-key has no ownership check, so pick a name unique to your task or another agent
-starting the same one takes the key and your next step lands in its recording.
+Several flows can be recorded at once — each keyed by the \`name\` + \`project_root\`
+that every subsequent recording tool repeats — and one recording's steps never
+land in another's file. Steps still run LIVE, so give each concurrent recording
+its own device and pick a name unique to your task.
 
 After starting, use flow-add-step to append tool calls — each step is executed
 LIVE so you can verify it works before it gets recorded. For a self-contained
