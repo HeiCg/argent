@@ -1,0 +1,462 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import type { DeviceInfo, Registry } from "@argent/registry";
+
+// Capture the adb command strings instead of shelling out. Keep `shellQuote` real
+// (android-input relies on it) and stub only the transport plus the `isAndroidTv`
+// probe, so the phone branch is deterministic. Mirrors keyboard-android.test.ts.
+const { adbShell, isAndroidTv } = vi.hoisted(() => ({
+  adbShell: vi.fn(async (_serial: string, _cmd: string, _opts?: unknown): Promise<string> => ""),
+  isAndroidTv: vi.fn(async (_serial: string): Promise<boolean> => false),
+}));
+vi.mock("../src/utils/adb", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/adb")>()),
+  adbShell,
+  isAndroidTv,
+}));
+
+import {
+  findFocusedTextField,
+  plannedUndoDeletions,
+  typedTextLanded,
+} from "../src/tools/keyboard/platforms/android-verify";
+import { makeAndroidImpl } from "../src/tools/keyboard/platforms/android";
+import { injectAndroidKeycodeRepeated } from "../src/utils/android-input";
+import type { KeyboardParams, KeyboardResult } from "../src/tools/keyboard/types";
+
+const SERIAL = "emulator-5554";
+const PHONE = { id: SERIAL, platform: "android", kind: "handset" } as unknown as DeviceInfo;
+const FIELD_RID = "com.example:id/search";
+
+// A uiautomator-schema hierarchy holding one focused view, shaped like the real
+// android-devtools dump (attribute names and order taken from a Pixel 6 / API 34
+// capture of the Settings search box).
+function hierarchy(
+  opts: {
+    text?: string;
+    cls?: string;
+    focused?: boolean;
+    password?: boolean;
+    rid?: string;
+  } = {}
+): string {
+  const {
+    text = "",
+    cls = "android.widget.EditText",
+    focused = true,
+    password = false,
+    rid = FIELD_RID,
+  } = opts;
+  return (
+    `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">` +
+    `<node index="0" text="" resource-id="" class="android.widget.FrameLayout" ` +
+    `package="com.example" content-desc="" focusable="false" focused="false" ` +
+    `password="false" bounds="[0,0][1080,2400]">` +
+    `<node index="0" text="${text}" resource-id="${rid}" class="${cls}" package="com.example" ` +
+    `content-desc="" checkable="false" checked="false" clickable="true" enabled="true" ` +
+    `focusable="true" focused="${focused}" scrollable="false" long-clickable="true" ` +
+    `password="${password}" selected="false" bounds="[126,149][1080,275]" />` +
+    `</node></hierarchy>`
+  );
+}
+
+/**
+ * A registry whose android-devtools service serves a scripted sequence of
+ * hierarchies — one per `getHierarchy` call — so a corrupted read-back can be
+ * injected at a chosen point in the type/verify/repair sequence.
+ */
+function registryServing(xmls: string[]): {
+  registry: Registry;
+  getHierarchy: ReturnType<typeof vi.fn>;
+} {
+  const queue = [...xmls];
+  const getHierarchy = vi.fn(async (_opts?: unknown) => {
+    const xml = queue.shift();
+    if (xml === undefined) throw new Error("test: getHierarchy called more times than scripted");
+    return { xml, captureMode: "active-window", windowCount: 1, nodeCount: 2, elapsedMs: 1 };
+  });
+  return {
+    registry: { resolveService: vi.fn(async () => ({ getHierarchy })) } as unknown as Registry,
+    getHierarchy,
+  };
+}
+
+function type(registry: Registry, text: string): Promise<KeyboardResult> {
+  return makeAndroidImpl(registry).handler({}, { udid: SERIAL, text } as KeyboardParams, PHONE);
+}
+
+const cmds = () => adbShell.mock.calls.map((c) => c[1]);
+
+beforeEach(() => {
+  adbShell.mockClear();
+  adbShell.mockResolvedValue("");
+  isAndroidTv.mockReset();
+  isAndroidTv.mockResolvedValue(false);
+});
+
+describe("findFocusedTextField", () => {
+  it("returns the focused editable field's text, identity and password flag", () => {
+    const field = findFocusedTextField(hierarchy({ text: "hello" }));
+    expect(field).toEqual({
+      text: "hello",
+      identity: `${FIELD_RID}|android.widget.EditText`,
+      password: false,
+    });
+  });
+
+  it("returns null when the focused view is not editable (a focused Button)", () => {
+    // A focused non-editable view receives no characters from `input text`, so
+    // treating it as "the field" would compare against something the injection
+    // never touched and report a bogus mismatch.
+    expect(findFocusedTextField(hierarchy({ cls: "android.widget.Button" }))).toBeNull();
+  });
+
+  it("returns null when nothing holds input focus", () => {
+    expect(findFocusedTextField(hierarchy({ focused: false }))).toBeNull();
+  });
+
+  it("recognises the EditText subclasses whose name lacks `EditText`", () => {
+    // AutoCompleteTextView and SearchView$SearchAutoComplete extend EditText and
+    // take typed characters, but a bare /EditText/ probe misses both — which
+    // would silently disable verification on any search box built from them.
+    for (const cls of [
+      "android.widget.AutoCompleteTextView",
+      "android.widget.SearchView$SearchAutoComplete",
+    ]) {
+      expect(findFocusedTextField(hierarchy({ cls, text: "q" }))?.text, cls).toBe("q");
+    }
+  });
+
+  it("reports a password field so the caller can decline to verify it", () => {
+    expect(findFocusedTextField(hierarchy({ password: true }))?.password).toBe(true);
+  });
+
+  it("returns null for unparseable output rather than throwing", () => {
+    expect(findFocusedTextField("")).toBeNull();
+  });
+});
+
+describe("typedTextLanded", () => {
+  it("accepts an insertion into existing content at any cursor position", () => {
+    expect(typedTextLanded("XY", "XYabc", "abc")).toBe(true); // cursor at end
+    expect(typedTextLanded("XY", "abcXY", "abc")).toBe(true); // cursor at start
+    expect(typedTextLanded("XY", "XabcY", "abc")).toBe(true); // cursor in the middle
+  });
+
+  it("rejects a dropped character (the reported bug)", () => {
+    // The exact corruption QA reported, shortened: characters missing from the
+    // middle. The substring half of the check is what catches it.
+    expect(typedTextLanded("", "abdef", "abcdef")).toBe(false);
+    expect(typedTextLanded("XY", "XYabdef", "abcdef")).toBe(false);
+  });
+
+  it("rejects a right-length field whose content is not the text, contiguously", () => {
+    // The length check alone cannot catch this: an input mask (a phone-number or
+    // card field) swallowed characters and inserted its own separators, so the
+    // field grew by exactly text.length while holding something else. Only the
+    // contiguous-substring half rejects it.
+    expect(typedTextLanded("", "ab-cd-", "abcdef")).toBe(false);
+    expect(typedTextLanded("XY", "XYab-cd-", "abcdef")).toBe(false);
+    // Same length, right characters, wrong order — a substring check is not a
+    // character-set check.
+    expect(typedTextLanded("", "fedcba", "abcdef")).toBe(false);
+  });
+
+  it("rejects a doubled injection", () => {
+    // Present as a contiguous substring, but the field grew by twice the text —
+    // the length half of the check is what catches it.
+    expect(typedTextLanded("", "abcabc", "abc")).toBe(false);
+  });
+
+  it("accepts a replaced field, so an empty field reporting its hint verifies", () => {
+    // An empty EditText reports its HINT as `text` (confirmed on API 34: the
+    // empty Settings search box reads "Search settings"), so the length
+    // arithmetic cannot apply to the most common case of all.
+    expect(typedTextLanded("Search settings", "abc", "abc")).toBe(true);
+  });
+
+  it("rejects an unchanged field that already held exactly the text", () => {
+    // The replaced-field clause must not fire here: typing "abc" into a field
+    // that already reads "abc" and having nothing land is a total injection
+    // failure, and `after === text` alone would call it a success.
+    expect(typedTextLanded("abc", "abc", "abc")).toBe(false);
+  });
+});
+
+describe("plannedUndoDeletions", () => {
+  it("counts the observed growth when the prior content survived (plan A)", () => {
+    // 8 of 12 characters landed after "XY": deleting 8 restores "XY" exactly.
+    expect(plannedUndoDeletions("XY", "XYabcdefgh", "abcdefghijkl")).toBe(8);
+  });
+
+  it("prefers plan A over emptying the field, so pre-existing content survives", () => {
+    // "a" was already in the field and also opens the typed text, so the
+    // subsequence proof would delete it too. Plan A deletes 8, not 9.
+    expect(plannedUndoDeletions("a", "abcdefghi", "abcdefghijkl")).toBe(8);
+  });
+
+  it("empties the field when everything in it came from this injection (plan B)", () => {
+    // Baseline was the hint, so it shares no prefix or suffix with the typed
+    // text and plan A cannot apply; the field holds only a subsequence of what
+    // we typed, which proves it was empty before.
+    expect(plannedUndoDeletions("Search settings", "abcdefgh", "abcdefghijkl")).toBe(8);
+  });
+
+  it("recognises scattered drops as this injection's own output", () => {
+    // Dropped key events delete characters without reordering or inventing any,
+    // so real corruption is always a subsequence of the input.
+    const text = "The quick brown fox jumps over the lazy dog.";
+    const corrupted = "The quicbrown fox jmpover the lazy dog";
+    expect(plannedUndoDeletions("Search", corrupted, text)).toBe(corrupted.length);
+  });
+
+  it("refuses to delete when the field shrank", () => {
+    // Something other than our injection changed the field; a deletion count
+    // derived from it would eat real content.
+    expect(plannedUndoDeletions("abcdef", "abc", "xyz")).toBeNull();
+  });
+
+  it("refuses to delete when the change is not one inserted block", () => {
+    // An input mask or autocorrect rewrote the field. The prior content is not
+    // recoverable by backspacing, so the field is left exactly as it is.
+    expect(plannedUndoDeletions("12345", "1-2-3-45xyz", "xyz")).toBeNull();
+  });
+
+  it("refuses to delete more characters than the call asked to type", () => {
+    // The field grew by more than we typed, so something else wrote into it too.
+    expect(plannedUndoDeletions("", "abcdefghijkl", "abc")).toBeNull();
+  });
+});
+
+describe("injectAndroidKeycodeRepeated", () => {
+  it("presses the keycode `count` times in ONE adb call", async () => {
+    adbShell.mockClear();
+    await injectAndroidKeycodeRepeated(SERIAL, 67, 3);
+    expect(cmds()).toEqual(["input keyevent 67 67 67"]);
+  });
+
+  it("is a no-op for a non-positive count (never a bare `input keyevent`)", async () => {
+    adbShell.mockClear();
+    await injectAndroidKeycodeRepeated(SERIAL, 67, 0);
+    await injectAndroidKeycodeRepeated(SERIAL, 67, -1);
+    expect(adbShell).not.toHaveBeenCalled();
+  });
+});
+
+describe("android keyboard read-back — verified success", () => {
+  it("reports verified:true with no note when the text lands, typing it once", async () => {
+    const { registry } = registryServing([
+      hierarchy({ text: "Search settings" }), // before: empty field showing its hint
+      hierarchy({ text: "abcdefghijkl" }), // after: exactly what we typed
+    ]);
+    const res = await type(registry, "abcdefghijkl");
+    expect(res).toEqual({ typed: "abcdefghijkl", keys: 12, verified: true });
+    // One `input text`: verification must not change the injection on the happy path.
+    expect(cmds()).toEqual(["input text 'abcdefghijkl'"]);
+  });
+
+  it("reads the hierarchy with clearCache:true on every read", async () => {
+    // The helper's long-lived UiAutomation connection serves stale
+    // AccessibilityNodeInfo text. Without clearCache the "after" read can return
+    // the pre-typing value, which would make every verdict here meaningless.
+    const { registry, getHierarchy } = registryServing([
+      hierarchy({ text: "" }),
+      hierarchy({ text: "abc" }),
+    ]);
+    await type(registry, "abc");
+    expect(getHierarchy).toHaveBeenCalledTimes(2);
+    for (const call of getHierarchy.mock.calls) {
+      expect(call[0]).toMatchObject({ clearCache: true });
+    }
+  });
+
+  it("verifies an insertion into a field that already had content", async () => {
+    const { registry } = registryServing([hierarchy({ text: "XY" }), hierarchy({ text: "XYabc" })]);
+    await expect(type(registry, "abc")).resolves.toMatchObject({ verified: true });
+  });
+});
+
+describe("android keyboard read-back — fault injection", () => {
+  it("detects a dropped-character mismatch, repairs in chunks, and verifies", async () => {
+    const { registry } = registryServing([
+      hierarchy({ text: "XY" }), // before
+      hierarchy({ text: "XYabcdefgh" }), // after: 8 of 12 chars landed
+      hierarchy({ text: "XYabcdefghijkl" }), // after the chunked retype: correct
+    ]);
+    const res = await type(registry, "abcdefghijkl");
+    expect(res).toEqual({ typed: "abcdefghijkl", keys: 12, verified: true });
+    expect(cmds()).toEqual([
+      "input text 'abcdefghijkl'", // the burst that dropped characters
+      "input keyevent 67 67 67 67 67 67 67 67", // undo exactly the 8 that landed
+      "input text 'abcdefgh'", // retype, 8 chars per call...
+      "input text 'ijkl'", // ...at a slower cadence
+    ]);
+  });
+
+  it("reports verified:false with a note when the repair does not fix it", async () => {
+    const corrupt = hierarchy({ text: "XYabcdefgh" });
+    const { registry } = registryServing([hierarchy({ text: "XY" }), corrupt, corrupt]);
+    const res = await type(registry, "abcdefghijkl");
+    expect(res.verified).toBe(false);
+    expect(res.note).toMatch(/did NOT land/);
+    // The exact counts the agent needs: 10 characters present, 12 expected.
+    expect(res.note).toContain("it holds 10 characters where 12 were expected");
+    expect(res.note).toMatch(/smaller chunks did not fix it/);
+    // The text is still reported as typed and counted — the call did type it.
+    expect(res.typed).toBe("abcdefghijkl");
+    expect(res.keys).toBe(12);
+  });
+
+  it("empties a field whose whole content came from the failed injection", async () => {
+    // The empty-field shape: baseline is the hint, so the undo has to delete
+    // everything present rather than the length delta (which is negative here).
+    const { registry } = registryServing([
+      hierarchy({ text: "Search settings" }),
+      hierarchy({ text: "abcdefgh" }),
+      hierarchy({ text: "abcdefghijkl" }),
+    ]);
+    await expect(type(registry, "abcdefghijkl")).resolves.toMatchObject({ verified: true });
+    expect(cmds()).toEqual([
+      "input text 'abcdefghijkl'",
+      "input keyevent 67 67 67 67 67 67 67 67",
+      "input text 'abcdefgh'",
+      "input text 'ijkl'",
+    ]);
+  });
+
+  it("does not touch a field it cannot safely restore, and says so", async () => {
+    // An input mask rewrote the field: the prior content is not recoverable by
+    // backspacing, so destroying it to retry is not an option.
+    const { registry } = registryServing([
+      hierarchy({ text: "12345" }),
+      hierarchy({ text: "1-2-3-45abc" }),
+    ]);
+    const res = await type(registry, "abcdefghijkl");
+    expect(res.verified).toBe(false);
+    expect(res.note).toMatch(/could not be safely restored/);
+    // No backspaces, no retype — only the original injection reached the device.
+    expect(cmds()).toEqual(["input text 'abcdefghijkl'"]);
+  });
+
+  it("caps the repair at one retry (two injection attempts total)", async () => {
+    const corrupt = hierarchy({ text: "XYabcdefgh" });
+    const { registry, getHierarchy } = registryServing([
+      hierarchy({ text: "XY" }),
+      corrupt,
+      corrupt,
+    ]);
+    await type(registry, "abcdefghijkl");
+    // 3 reads (before, after, after-repair) and no fourth — a scripted queue of
+    // 3 throws if a further read is attempted.
+    expect(getHierarchy).toHaveBeenCalledTimes(3);
+    expect(cmds().filter((c) => c.startsWith("input keyevent"))).toHaveLength(1);
+  });
+});
+
+describe("android keyboard read-back — cannot verify (never a silent success)", () => {
+  it("types and reports the reason when the devtools helper is unavailable", async () => {
+    const registry = {
+      resolveService: vi.fn(async () => {
+        throw new Error("adb install -t rejected");
+      }),
+    } as unknown as Registry;
+    const res = await type(registry, "abc");
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/not verified against the screen/);
+    expect(res.note).toMatch(/android-devtools helper is not available/);
+    // The text is still typed — verification is a check on the typing, not a
+    // precondition for it.
+    expect(cmds()).toEqual(["input text 'abc'"]);
+  });
+
+  it("types and reports the reason when no editable field holds focus", async () => {
+    const { registry } = registryServing([hierarchy({ focused: false })]);
+    const res = await type(registry, "abc");
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/no editable field held input focus/);
+    expect(cmds()).toEqual(["input text 'abc'"]);
+  });
+
+  it("types and reports the reason for a password field, whose text is masked", async () => {
+    const { registry } = registryServing([hierarchy({ password: true })]);
+    const res = await type(registry, "abc");
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/password field/);
+    expect(cmds()).toEqual(["input text 'abc'"]);
+  });
+
+  it("declines to compare when focus moved to a different field while typing", async () => {
+    // Typing triggered navigation, so the baseline describes a field that is no
+    // longer there: neither the comparison nor a deletion-based repair is valid.
+    const { registry } = registryServing([
+      hierarchy({ text: "", rid: "com.example:id/first" }),
+      hierarchy({ text: "abc", rid: "com.example:id/second" }),
+    ]);
+    const res = await type(registry, "abc");
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/reading the focused field back failed/);
+    expect(cmds()).toEqual(["input text 'abc'"]);
+  });
+
+  it("does not fail the call when the read-back itself errors after typing", async () => {
+    // The keystrokes are already on the device by then, so throwing would tell
+    // the agent the typing failed when it may well have worked.
+    const getHierarchy = vi
+      .fn()
+      .mockResolvedValueOnce({ xml: hierarchy({ text: "" }) })
+      .mockRejectedValueOnce(new Error("AndroidDevtools RPC getHierarchy timed out after 15000ms"));
+    const registry = {
+      resolveService: vi.fn(async () => ({ getHierarchy })),
+    } as unknown as Registry;
+    const res = await type(registry, "abc");
+    expect(res).toEqual({
+      typed: "abc",
+      keys: 3,
+      note: expect.stringMatching(/reading the focused field back failed/) as unknown as string,
+    });
+    expect(cmds()).toEqual(["input text 'abc'"]);
+  });
+
+  it("never puts the field's text in the result, on any verification outcome", async () => {
+    // The read-back holds whatever the field shows — which on a `{{secret:…}}`
+    // type is the resolved plaintext. No outcome may echo it, so the notes carry
+    // structural facts and counts only. Asserted against the whole serialised
+    // result, so a future note that interpolated the field text turns this red.
+    const onScreen = "PLAINTEXT-FROM-THE-SCREEN";
+    const cases: Array<[string, string[]]> = [
+      [
+        "mismatch, repair attempted",
+        [
+          hierarchy({ text: "XY" }),
+          hierarchy({ text: `XY${onScreen}` }),
+          hierarchy({ text: `XY${onScreen}` }),
+        ],
+      ],
+      [
+        "mismatch, repair refused",
+        [hierarchy({ text: "12345" }), hierarchy({ text: `1-2-3-45${onScreen}` })],
+      ],
+      [
+        "focus moved away",
+        [hierarchy({ text: onScreen, rid: "a" }), hierarchy({ text: onScreen, rid: "b" })],
+      ],
+      ["password field", [hierarchy({ text: onScreen, password: true })]],
+    ];
+    for (const [label, xmls] of cases) {
+      adbShell.mockClear();
+      const { registry } = registryServing(xmls);
+      const res = await type(registry, "abcdefghijkl");
+      expect(JSON.stringify(res), label).not.toContain(onScreen);
+    }
+  });
+
+  it("leaves a named-key-only press unverified and un-noted (nothing to read back)", async () => {
+    const { registry } = registryServing([]);
+    const res = await makeAndroidImpl(registry).handler(
+      {},
+      { udid: SERIAL, key: "enter" } as KeyboardParams,
+      PHONE
+    );
+    expect(res).toEqual({ typed: "enter", keys: 1 });
+    expect(cmds()).toEqual(["input keyevent 66"]);
+  });
+});

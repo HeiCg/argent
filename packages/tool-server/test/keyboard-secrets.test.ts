@@ -13,6 +13,29 @@ vi.mock("../src/utils/simulator-client", async (importOriginal) => {
   return { ...actual, sendCommand: vi.fn() };
 });
 
+// Stand in for the Android backend so its result can carry a note that quotes
+// what it read off the screen. The real Android notes are written value-free (see
+// keyboard-android-verify.test.ts, which pins that on the real path); this stub
+// exercises the OTHER half of the guarantee — that `execute`'s secret path
+// scrubs a note on the way out, so the value-free property of one module is not
+// the only thing standing between a resolved secret and the agent's transcript.
+const { androidNote } = vi.hoisted(() => ({
+  androidNote: { value: undefined as string | undefined },
+}));
+vi.mock("../src/tools/keyboard/platforms/android", () => ({
+  makeAndroidImpl: () => ({
+    // No declared deps: the stub shells out to nothing, so `dispatchByPlatform`
+    // must not preflight `adb` on a host that may not have it.
+    requires: [],
+    handler: async (_services: unknown, params: { text?: string }) => ({
+      typed: params.text ?? "",
+      keys: params.text?.length ?? 0,
+      verified: false,
+      ...(androidNote.value === undefined ? {} : { note: androidNote.value }),
+    }),
+  }),
+}));
+
 import { sendCommand } from "../src/utils/simulator-client";
 
 // The chromium branch resolves its CDP api via registry.resolveService, so a
@@ -20,6 +43,9 @@ import { sendCommand } from "../src/utils/simulator-client";
 // (resolveDevice → capability gate → dispatch) without any device.
 const CHROMIUM_UDID = "chromium-cdp-9222";
 const IOS_UDID = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEFFFF0000";
+// `resolveDevice` classifies an `emulator-NNNN` serial as android from its shape
+// alone, so the android branch is reachable with no device present.
+const ANDROID_SERIAL = "emulator-5554";
 
 function registryWith(api: unknown) {
   return { resolveService: vi.fn(async () => api) } as any;
@@ -188,6 +214,40 @@ describe("keyboard tool with secret placeholders", () => {
       tool.execute({}, { udid: CHROMIUM_UDID, text: "{{secret:MISSING}}", delayMs: 0 })
     ).rejects.toThrow(/Unknown secret "MISSING"/);
     expect(dispatchKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("scrubs the resolved value from a backend's advisory note", async () => {
+    // A read-back backend has the field's contents in hand, so anything it puts
+    // in `note` gets the same treatment errors already get: the resolved value is
+    // replaced by its placeholder before the result leaves `execute`.
+    vi.stubEnv("ARGENT_SECRET_APP_PASSWORD", "hunter2");
+    androidNote.value = "the field holds hunter2, not what was typed";
+    const tool = createKeyboardTool(registryWith({}));
+
+    const result = await tool.execute(
+      {},
+      { udid: ANDROID_SERIAL, text: "{{secret:APP_PASSWORD}}" }
+    );
+
+    expect(result.note).toBe("the field holds {{secret:APP_PASSWORD}}, not what was typed");
+    expect(JSON.stringify(result)).not.toContain("hunter2");
+    // The verdict itself still reaches the caller — scrubbing must not swallow it.
+    expect(result.verified).toBe(false);
+    androidNote.value = undefined;
+  });
+
+  it("leaves a note-less android result without a `note` key", async () => {
+    // The scrub must not materialise `note: undefined` on a result that had none,
+    // which would show up as a null in the JSON the agent reads.
+    vi.stubEnv("ARGENT_SECRET_APP_PASSWORD", "hunter2");
+    const tool = createKeyboardTool(registryWith({}));
+
+    const result = await tool.execute(
+      {},
+      { udid: ANDROID_SERIAL, text: "{{secret:APP_PASSWORD}}" }
+    );
+
+    expect("note" in result).toBe(false);
   });
 
   it("scrubs the resolved value from backend errors", async () => {

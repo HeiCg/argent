@@ -1,7 +1,11 @@
 import { z } from "zod";
 import type { Registry, ToolCapability, ToolDefinition } from "@argent/registry";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
-import { redactSecretsFromError, resolveSecretPlaceholders } from "../../utils/secrets";
+import {
+  redactSecrets,
+  redactSecretsFromError,
+  resolveSecretPlaceholders,
+} from "../../utils/secrets";
 import type { KeyboardParams, KeyboardResult } from "./types";
 import { makeIosImpl, makeIosRemoteImpl } from "./platforms/ios";
 import { makeAndroidImpl } from "./platforms/android";
@@ -96,7 +100,8 @@ export function createKeyboardTool(registry: Registry): ToolDefinition<Params, K
     },
     description: `Type text or press special keys on the device (iOS simulator, Android emulator or device, Chromium app, Vega Virtual Device, or Apple TV / Android TV) using keyboard events.
 Use when you need to enter text or trigger a named key such as enter, escape, or arrow keys. On Vega and Apple TV / Android TV, prefer the remote tools for D-pad navigation; use keyboard to type into a focused text field (e.g. a search or login box).
-Returns { typed: string, keys: number }. Fails if an unsupported key name is provided or the device's input backend is not reachable.
+Returns { typed: string, keys: number, verified?: boolean, note? }. On an Android phone or tablet the typed text is read back off the screen, because \`adb input text\` injects it as one key-event burst that a field re-rendering per keystroke silently drops part of. verified=true means the focused field really holds the text. verified=false means it does not, after at most one retry that retyped the text in smaller chunks; note then reports how many characters the field holds versus how many were expected, and what to do about it. verified is absent when the read-back could not run at all — no editable field held focus, the focused field is a password field (its contents are masked), the field could not be read, or the android-devtools helper is unavailable — with note giving the reason; and it is absent on every other platform, whose transports do not lose characters this way. note is absent when there is nothing to caveat.
+Fails if an unsupported key name is provided or the device's input backend is not reachable. A read-back that cannot run never fails the call: the text is typed either way.
 - text: types a string (supports uppercase, digits, common punctuation). To type a credential, use \`{{secret:<NAME>}}\` — resolved server-side from the \`ARGENT_SECRET_<NAME>\` env var (prefix mandatory; \`{{secret:APP_PASSWORD}}\` ↔ \`ARGENT_SECRET_APP_PASSWORD\`), so the plaintext never enters agent context; the result echoes the placeholder, not the value, and the after-typing auto-screenshot is skipped.
 - key: presses a single named key (enter, escape, backspace, tab, arrow-up/down/left/right, f1–f12) — NOT supported on TV targets; move focus with \`tv-remote\` instead.
 On a TV target (runtimeKind 'tv') only \`text\` applies — focus a text field first (with \`tv-remote\`), then type into it (injected HID keyboard on Apple TV, \`adb input text\` on Android TV).
@@ -119,8 +124,18 @@ Provide text, key, or both — when both are given, the text is typed first and 
       if (secrets.length === 0) return dispatch(services, params, options);
       try {
         const result = await dispatch(services, { ...params, text }, options);
-        // Echo the placeholder form, never the resolved value.
-        return { ...result, typed: params.text };
+        return {
+          ...result,
+          // Echo the placeholder form, never the resolved value.
+          typed: params.text,
+          // The Android backend reads the field back off the screen to check
+          // what landed, so on this path it has held the plaintext. Its notes are
+          // written value-free (counts and structural facts only), and this scrub
+          // keeps that a belt-and-braces guarantee rather than a property a
+          // future note has to remember to preserve. `verified` is a bare boolean
+          // and cannot carry text.
+          ...(result.note === undefined ? {} : { note: redactSecrets(result.note, secrets) }),
+        };
       } catch (err) {
         // A backend error can quote its input (e.g. the Android `input text`
         // command line) — scrub the resolved values before it propagates.

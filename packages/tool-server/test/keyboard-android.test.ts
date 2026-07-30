@@ -310,7 +310,13 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
   it("routes a non-TV android target to the adb phone path (not typeTv)", async () => {
     const res = await impl.handler({}, { udid: SERIAL, text: "hi there" } as KeyboardParams, phone);
     // `keys` = 8 codepoints; `typed` echoes the text; text goes over `input text`.
-    expect(res).toEqual({ typed: "hi there", keys: 8 });
+    // This bare `Registry` has no android-devtools blueprint, so the read-back
+    // cannot run and the result says so instead of implying the text landed —
+    // `verified` stays absent and a note carries the reason (see
+    // keyboard-android-verify.test.ts for the verified paths).
+    expect(res).toMatchObject({ typed: "hi there", keys: 8 });
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/not verified against the screen/);
     expect(typeTv).not.toHaveBeenCalled();
     expect(adbShell).toHaveBeenCalledWith(SERIAL, "input text 'hi there'", expect.anything());
   });
@@ -348,7 +354,7 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
       { udid: SERIAL, key: "enter", text: "abc" } as KeyboardParams,
       phone
     );
-    expect(res).toEqual({ typed: "abc", keys: 4 });
+    expect(res).toMatchObject({ typed: "abc", keys: 4 });
     // Assert the exact ordered sequence, not just presence: the key fires BEFORE
     // the text (source contract — press the named key, then type, matching the
     // simulator-server / vega backends). `toEqual` catches both a dropped keyevent
@@ -413,7 +419,7 @@ describe("keyboard tool — android adb preflight (via dispatchByPlatform)", () 
 
   it("runs the handler over adb once the preflight passes", async () => {
     const tool = createKeyboardTool(new Registry());
-    await expect(tool.execute({}, { udid: SERIAL, text: "hi" })).resolves.toEqual({
+    await expect(tool.execute({}, { udid: SERIAL, text: "hi" })).resolves.toMatchObject({
       typed: "hi",
       keys: 2,
     });

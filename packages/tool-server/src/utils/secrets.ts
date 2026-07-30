@@ -93,23 +93,36 @@ export function resolveSecretPlaceholders(
 }
 
 /**
+ * Replace every occurrence of each resolved secret value in `text` with its
+ * `{{secret:NAME}}` placeholder. Zero-length values are skipped: replacing an
+ * empty string would corrupt the text rather than redact anything.
+ *
+ * Used on any string a tool sends back after typing a resolved secret —
+ * a backend error that echoed its input, or an advisory note describing what a
+ * device read back.
+ */
+export function redactSecrets(
+  text: string,
+  secrets: Array<{ name: string; value: string }>
+): string {
+  return secrets.reduce(
+    (acc, { name, value }) =>
+      value ? acc.split(value).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`) : acc,
+    text
+  );
+}
+
+/**
  * Scrub resolved secret values from an error before it propagates — a backend
  * failure can echo its input (e.g. Android typing surfaces the device-side
  * `input text` command line). Mutates message/stack in place so the error's
  * class, and with it the HTTP status and telemetry mapping, is preserved.
- * Zero-length values are skipped: replacing an empty string would corrupt the
- * message rather than redact anything.
  */
 export function redactSecretsFromError(
   err: unknown,
   secrets: Array<{ name: string; value: string }>
 ): unknown {
-  const scrub = (s: string) =>
-    secrets.reduce(
-      (acc, { name, value }) =>
-        value ? acc.split(value).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`) : acc,
-      s
-    );
+  const scrub = (s: string) => redactSecrets(s, secrets);
   if (err instanceof Error) {
     err.message = scrub(err.message);
     if (err.stack) err.stack = scrub(err.stack);
