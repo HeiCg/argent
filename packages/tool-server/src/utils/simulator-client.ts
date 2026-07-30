@@ -172,9 +172,11 @@ export interface ServerRecordingResult {
  * onto a constant 30fps timeline, trims static stretches and stamps the
  * watermark, then muxes an h264 mp4 when `stopServerRecording` is called.
  *
- * Returns false when this build exposes no recording route (HTTP 404) — the
- * software-encoder builds shipped for Linux and Windows compile it out — so the
- * caller can fall back to capturing the frame stream itself.
+ * Returns false when this build exposes no recording route (HTTP 404), so the
+ * caller can fall back to capturing the frame stream itself. The route is
+ * compiled out of the software-encoder builds, and absent from every
+ * simulator-server predating it — including the one argent currently pins — so
+ * the fallback is the common case, not an edge one.
  */
 export async function startServerRecording(
   api: SimulatorServerApi,
@@ -227,8 +229,10 @@ export async function stopServerRecording(
     error?: string;
   }>(api, "stop", {}, signal);
   if (body === null) {
-    // Only reachable if the server was replaced mid-recording by a build
-    // without the route; there is no video to hand back either way.
+    // `serverStop` is only ever stamped by a start that the route answered, so
+    // the same server answering 404 now means it stopped serving that route
+    // mid-recording. Never observed; handled rather than falling back, because
+    // there is no video to hand over either way.
     throw new FailureError(
       `screen-recording-stop failed: simulator-server no longer exposes a recording endpoint, ` +
         `so the recording in progress cannot be finalized.`,
@@ -266,12 +270,20 @@ export async function stopServerRecording(
 /**
  * POST a recording command, returning null when the route does not exist.
  *
- * Deliberately not `simulatorPost`: a build without the recording feature
- * answers 404 with an empty body, which that helper would surface as
- * "non-JSON response" — indistinguishable from a server in a bad state, and
- * the one answer callers must be able to act on. So the status is checked
- * before the body is read. A recording command that fails for any other reason
- * comes back as HTTP 200 carrying an `error` field, hence both checks.
+ * Deliberately not `simulatorPost`: a build without the recording feature has
+ * no route at all, so its answer comes from the router's unmatched-route
+ * fallback — 404 with an empty body, which that helper would surface as
+ * "non-JSON response", indistinguishable from a server in a bad state and the
+ * one answer callers must be able to act on. Every failure a recording handler
+ * reports for itself comes back as HTTP 200 carrying an `error` field, so an
+ * empty-bodied 404 identifies the missing route on its own.
+ *
+ * The body has to be part of that test, not just the status. A 404 that
+ * carries one came from a handler, which means the route does exist and the
+ * command was refused — falling back there would start a second capture over a
+ * recording that is already running and strand the server's copy. Verified
+ * against the shipped macOS simulator-server, which has no recording route:
+ * `POST /api/recording/start` answers 404 with `content-length: 0`.
  */
 async function recordingPost<T extends { error?: string }>(
   api: SimulatorServerApi,
@@ -291,9 +303,35 @@ async function recordingPost<T extends { error?: string }>(
   } catch (err) {
     throw toSimulatorNetworkError(toolLabel, err, api.apiUrl);
   }
-  if (res.status === 404) return null;
 
-  const body = (await res.json().catch(() => null)) as T | null;
+  // Read as text, so a body that never finishes arriving stays a network
+  // failure instead of being flattened into "the server rejected the command".
+  let raw: string;
+  try {
+    raw = await res.text();
+  } catch (err) {
+    throw toSimulatorNetworkError(toolLabel, err, api.apiUrl);
+  }
+  if (res.status === 404 && raw.trim() === "") return null;
+
+  let body: T | null = null;
+  if (raw.trim() !== "") {
+    try {
+      body = JSON.parse(raw) as T;
+    } catch {
+      throw new FailureError(
+        `${toolLabel} failed: simulator-server returned non-JSON response (HTTP ${res.status}). ` +
+          `The server may be in a bad state. Restart the simulator-server and retry.`,
+        {
+          error_code: FAILURE_CODES.SIMULATOR_NON_JSON_RESPONSE,
+          failure_stage: "simulator_server_parse_response",
+          failure_area: "tool_server",
+          error_kind: "network",
+          network_failure: "invalid_response",
+        }
+      );
+    }
+  }
   if (!res.ok || !body || body.error) {
     throw new FailureError(
       `${toolLabel} failed: simulator-server rejected the recording command ` +

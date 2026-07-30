@@ -1,4 +1,5 @@
 import { promises as fs } from "fs";
+import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { ScreenRecordingSessionApi } from "../../blueprints/screen-recording-session";
 import type { ServerRecordingResult } from "../../utils/simulator-client";
 import {
@@ -106,6 +107,12 @@ export async function startServerCapture(
     // await still restores the overlay.
     api.pointerDisable = params.pointer.disable;
     api.pointerFailed = !(await params.pointer.enable());
+
+    // Enabling is the one suspension point left after the session is stamped, so
+    // it needs the same guard the start request got: dispose runs its teardown
+    // and is done, and a session that resumes here would report a live recording
+    // dispose has already stopped, and arm a cap timer no later call can clear.
+    if (api.disposed) assertNotDisposed(api, "screen_recording_start");
   }
 
   // simulator-server enforces the same cap and stops producing frames there; this
@@ -150,6 +157,12 @@ export async function stopServerCapture(
   const stop = api.serverStop!;
   const endedEarly = api.recordingTimedOut;
   const pointerFailed = api.pointerFailed;
+  // Hand ownership over before the await: dispose decides whether to stop the
+  // server's recording by looking at `serverStop`, and leaving it set across
+  // this suspension lets a shutdown issue a second, concurrent stop for the
+  // recording this call is already finalizing. That second stop also kills the
+  // simulator-server whose session directory the copy below reads from.
+  api.serverStop = null;
 
   try {
     if (api.recordingActive) {
@@ -162,7 +175,29 @@ export async function stopServerCapture(
     // materialized by the client afterwards, possibly downloaded over `argent
     // link` much later. Copy first, then drop the server's copy, so a failed
     // removal leaves a duplicate rather than no video at all.
-    await fs.copyFile(result.path, outputFile);
+    try {
+      await fs.copyFile(result.path, outputFile);
+    } catch (err) {
+      // A copy that fails (a full disk, an unwritable destination) leaves the
+      // only finished video inside simulator-server, where nothing here can
+      // hand it over and the session directory takes it when that server
+      // exits. Say where it is, so it can still be fetched while the server is
+      // up — and classify it like the empty-output case two calls down, which
+      // is the same outcome for the caller: no video at `outputFile`.
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new FailureError(
+        `The recording finished but could not be copied out of simulator-server: ${detail}. ` +
+          `Until this simulator-server exits, the video is still at ${result.path}.`,
+        {
+          error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
+          failure_stage: "screen_recording_stop",
+          failure_area: "tool_server",
+          error_kind: "not_found",
+          failure_command: "simulator_server",
+        },
+        { cause: err instanceof Error ? err : new Error(String(err)) }
+      );
+    }
     await fs.rm(result.path, { force: true }).catch(() => {});
 
     const warnings: string[] = [];
