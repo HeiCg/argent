@@ -85,23 +85,25 @@ afterEach(() => {
 });
 
 describe("await-screen-idle against a still physical-iPhone screen", () => {
-  it("settles while the whole screen fits in one read", async () => {
-    const r = await run(LIMIT - 1);
-    expect(r.settled).toBe(true);
-    expect(r.note).toBeUndefined();
+  it("settles while the whole screen fits in one read, up to and including the limit", async () => {
+    // A full read only says "at least this many", so a screen of exactly the
+    // limit cannot be told from a larger one on any single poll — and it settles
+    // correctly, because its window IS the whole set. Refusing on a full read
+    // would break this case.
+    for (const n of [LIMIT - 50, LIMIT - 1, LIMIT]) {
+      const r = await run(n);
+      expect(r.settled, `${n} elements`).toBe(true);
+      expect(r.note, `${n} elements`).toBeUndefined();
+    }
   });
 
-  it("says the read is truncated instead of polling out on an unanswerable screen", async () => {
+  it("explains a wait that ran out after a full read, rather than a bare false", async () => {
     const r = await run(LIMIT + 1);
     expect(r.settled).toBe(false);
     expect(r.note, "a bare settled:false gives the caller nothing to act on").toMatch(
       /cannot be decided/i
     );
     expect(r.note).toMatch(/screenshot/);
-    // And it answers at once rather than burning the 15s device budget on reads
-    // that can never agree.
-    expect(r.waitedMs).toBeLessThan(2_000);
-    expect(r.polls).toBeLessThanOrEqual(2);
   });
 
   it("leaves a physical ANDROID phone on the ordinary signature", async () => {

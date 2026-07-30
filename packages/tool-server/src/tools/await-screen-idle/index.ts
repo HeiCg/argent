@@ -170,8 +170,7 @@ still before the timeout, and \`note\` says why when the cause is known. Use aft
 On a physical iPhone each read is a ~2s round trip, so the default timeout there is ${DEFAULT_DEVICE_TIMEOUT_MS}ms; its accessibility
 read also carries no usable element geometry, so stillness means the on-screen elements stopped changing and an
 animation that moves only pixels (a spinner) reads as settled. A screen with more elements than one CoreDevice read
-returns cannot be judged still at all — that answers immediately with settled=false and a \`note\` saying so, rather
-than polling to the timeout.`,
+returns cannot be judged still at all; a wait that runs out after such a read says so in \`note\`.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
     longRunning: true,
@@ -203,8 +202,11 @@ than polling to the timeout.`,
 
       let stableSignature: string | undefined;
       let stableSince = 0;
+      // Whether any read came back at the CoreDevice ceiling — see
+      // TRUNCATED_READ_NOTE. Only consulted once the wait has failed.
+      let sawFullRead = false;
 
-      const poll = await pollDescribeTree<true | "truncated">({
+      const poll = await pollDescribeTree<true>({
         fetchTree: () => fetchTree(device, services, isTvOs, androidIsTv),
         timeoutMs:
           params.timeoutMs ?? (rotatingRead ? DEFAULT_DEVICE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS),
@@ -212,7 +214,7 @@ than polling to the timeout.`,
         signal: ctx?.signal,
         onSample: (data, nowMs) => {
           if (rotatingRead && data.tree.children.length >= PHYSICAL_IOS_AX_LIMIT) {
-            return { done: true, result: "truncated" as const };
+            sawFullRead = true;
           }
           // An empty tree (blank/loading, or a degraded AX read) is not settled.
           if (data.tree.children.length === 0) {
@@ -232,15 +234,13 @@ than polling to the timeout.`,
         },
       });
 
-      if (poll.result === "truncated") {
-        return {
-          settled: false,
-          waitedMs: poll.elapsedMs,
-          polls: poll.polls,
-          note: TRUNCATED_READ_NOTE,
-        };
-      }
-      return { settled: poll.result === true, waitedMs: poll.elapsedMs, polls: poll.polls };
+      const settled = poll.result === true;
+      return {
+        settled,
+        waitedMs: poll.elapsedMs,
+        polls: poll.polls,
+        ...(!settled && sawFullRead ? { note: TRUNCATED_READ_NOTE } : {}),
+      };
     },
   };
 }
