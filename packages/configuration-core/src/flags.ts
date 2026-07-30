@@ -23,10 +23,15 @@
 // the registry. Every read path (readFlags / isFlagEnabled / `argent flags`)
 // loads whatever booleans are stored regardless of the registry, so removing an
 // entry from FLAG_REGISTRY never errors on a flags.json that still contains it.
+//
+// One reader does not touch storage at all: a tool-server serving a client that
+// reached it through `argent link` resolves flags from the caller's forwarded
+// set instead (see `withForwardedFlags`).
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 export type FlagScope = "global" | "project";
 
@@ -185,11 +190,47 @@ export function unsetFlag(name: string, scope: FlagScope, options: FlagsPathOpti
   return true;
 }
 
-// Effective value: project overrides global. Returns false when the flag is
-// not set in either scope — flags are opt-in.
+// Every stored flag with its effective value: project entries shadow global
+// ones, matching isFlagEnabled. Flags absent from both scopes are absent here
+// too — a caller that wants the opt-in default treats a missing key as false.
+export function readEffectiveFlags(options: FlagsPathOptions = {}): Record<string, boolean> {
+  return { ...readFlags("global", options), ...readFlags("project", options) };
+}
+
+// ── Forwarded flags ─────────────────────────────────────────────────────
+// A tool-server reached through `argent link` runs on a different machine (and
+// in a different project directory) than the person driving it, so its own
+// flags.json holds the operator's preferences rather than the caller's. The
+// client therefore sends its effective flag set with every request and the
+// server binds it to that request's async context here.
+//
+// Inside the scope the forwarded set is the ONLY source: a flag it omits reads
+// as false, exactly like a flag stored nowhere. Falling back to disk instead
+// would let the server's own flags.json decide whatever the caller left unset —
+// the bug this mechanism exists to close.
+const forwardedFlags = new AsyncLocalStorage<Readonly<Record<string, boolean>>>();
+
+/**
+ * Run `fn` with `flags` as the flag source for every {@link isFlagEnabled} call
+ * it makes, including ones in async work it awaits. Nested scopes replace the
+ * outer set rather than merging with it.
+ */
+export function withForwardedFlags<T>(flags: Readonly<Record<string, boolean>>, fn: () => T): T {
+  return forwardedFlags.run(flags, fn);
+}
+
+/** The forwarded set governing the current async context, if any. */
+export function getForwardedFlags(): Readonly<Record<string, boolean>> | undefined {
+  return forwardedFlags.getStore();
+}
+
+// Effective value: a forwarded set wins outright; otherwise project overrides
+// global. Returns false when the flag is not set — flags are opt-in.
 export function isFlagEnabled(name: string, options: FlagsPathOptions = {}): boolean {
   // hasOwn, not `in`: otherwise prototype keys ("toString", "constructor", …)
   // resolve to a truthy Object.prototype member for a flag that was never set.
+  const forwarded = forwardedFlags.getStore();
+  if (forwarded) return Object.hasOwn(forwarded, name) ? forwarded[name]! : false;
   const projectFlags = readFlags("project", options);
   if (Object.hasOwn(projectFlags, name)) return projectFlags[name]!;
   const globalFlags = readFlags("global", options);

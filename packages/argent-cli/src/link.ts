@@ -4,10 +4,12 @@ import {
   readLinkConfig,
   writeLinkConfig,
   clearLinkConfig,
+  flagForwardHeaders,
   formatToolsServerUrl,
   parseLinkTarget,
   type LinkConfig,
 } from "@argent/tools-client";
+import { FLAG_FORWARD_ACK_HEADER, readEffectiveFlags } from "@argent/configuration-core";
 import { parsePort, StartFlagError } from "./server.js";
 
 interface LinkFlags {
@@ -170,6 +172,14 @@ Resolution order for the tool-server URL:
   2. ~/.argent/link.json (this command)
   3. Auto-spawn a local tool-server (default)
 
+Feature flags:
+  While linked, every request carries this machine's feature flags (\`argent
+  flags\`) and the remote server gates tools on those instead of its own — the
+  server runs on someone else's machine, in someone else's project directory,
+  so its \`argent enable\` choices are not yours. A flag you have not set reads
+  as off there even if the operator enabled it. Flags are re-read per request,
+  so \`argent enable <flag>\` reaches a linked server without re-linking.
+
 Flags:
   --host <h>        Remote host or IP to connect to. Prompts interactively if
                     omitted. Wildcards (0.0.0.0, ::) are bind addresses, not
@@ -278,21 +288,35 @@ async function promptPort(existing: LinkConfig | null, initial?: number): Promis
   return validateConnectPort((portInput as string).trim());
 }
 
-async function preflightHealth(
-  url: string,
-  token?: string
-): Promise<{ ok: boolean; error?: string }> {
+interface PreflightResult {
+  ok: boolean;
+  error?: string;
+  /**
+   * Whether the server acknowledged the forwarded flags. Undefined when the
+   * probe never got a response to read the header off.
+   */
+  flagsApplied?: boolean;
+}
+
+async function preflightHealth(url: string, token?: string): Promise<PreflightResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 3_000);
   try {
+    // Forward this machine's flags on the probe too, so the tool list it
+    // validates is the one the link will actually produce — and so the
+    // response tells us whether the server honours them at all.
     const res = await fetch(`${url}/tools`, {
       signal: controller.signal,
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...flagForwardHeaders(),
+      },
     });
     // Drain the (large) /tools body so undici frees the keep-alive socket
     // immediately; an unread body otherwise keeps the socket ref'd until the
     // server's idle keepAliveTimeout (~5s), lingering the command after it's done.
     await res.body?.cancel().catch(() => {});
+    const flagsApplied = res.headers.get(FLAG_FORWARD_ACK_HEADER) !== null;
     if (!res.ok) {
       const hint =
         res.status === 401
@@ -302,11 +326,49 @@ async function preflightHealth(
             : "";
       return { ok: false, error: `${res.status} ${res.statusText}${hint}` };
     }
-    return { ok: true };
+    return { ok: true, flagsApplied };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/**
+ * Report what the link does to feature flags. A linked client sends its own
+ * flags with every request, so the remote server stops consulting its
+ * flags.json for this user entirely — including for flags the user has not set,
+ * which is worth stating because it can *remove* a tool the remote had enabled.
+ *
+ * `flagsApplied` is undefined when no probe ran (--no-verify, or verification
+ * skipped after a failure), in which case there is nothing to report about the
+ * server's support for it.
+ */
+function printFlagForwarding(flagsApplied: boolean | undefined): void {
+  const flags = readEffectiveFlags();
+  const names = Object.keys(flags).sort();
+
+  if (names.length === 0) {
+    console.log(
+      pc.dim(
+        "  flags: none set on this machine — the remote server's own flag-gated " +
+          "tools stay hidden for you (`argent enable <flag>` to turn one on)"
+      )
+    );
+    return;
+  }
+
+  const summary = names.map((name) => `${name}=${flags[name] ? "on" : "off"}`).join(", ");
+  console.log(pc.dim(`  flags: forwarding your local flags to the remote server — ${summary}`));
+
+  if (flagsApplied === false) {
+    process.stderr.write(
+      pc.yellow(
+        `WARNING: the remote tool-server did not acknowledge the forwarded flags — it ` +
+          `predates this and will gate tools on ITS OWN flags.json instead. Update argent ` +
+          `on that machine to have your flags apply.\n`
+      )
+    );
   }
 }
 
@@ -428,6 +490,7 @@ export async function link(argv: string[]): Promise<void> {
   }
 
   // Pre-flight health check (unless --no-verify)
+  let flagsApplied: boolean | undefined;
   if (!flags.noVerify) {
     while (true) {
       const spinnerActive = !flags.yes;
@@ -439,6 +502,7 @@ export async function link(argv: string[]): Promise<void> {
       const result = await preflightHealth(url, token);
       if (result.ok) {
         if (spinner) spinner.stop(pc.green("Tool-server reachable."));
+        flagsApplied = result.flagsApplied;
         break;
       }
 
@@ -496,6 +560,7 @@ export async function link(argv: string[]): Promise<void> {
     console.log(`${pc.green("✓")} Linked: ${pc.cyan(url)}`);
   }
   if (token) console.log(pc.dim("  auth: token stored in ~/.argent/link.json (0600)"));
+  printFlagForwarding(flagsApplied);
   printSecurityCaveat(host, token, url);
   if (process.env.ARGENT_TOOLS_URL) {
     console.log(

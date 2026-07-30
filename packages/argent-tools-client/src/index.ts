@@ -51,6 +51,8 @@ export {
   type ParsedLinkTarget,
 } from "./link-config.js";
 
+export { flagForwardHeaders } from "./flag-forwarding.js";
+
 export {
   materializeArtifacts,
   isArtifactHandle,

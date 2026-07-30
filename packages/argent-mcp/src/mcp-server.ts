@@ -9,6 +9,7 @@ import {
   getResolvedToolsUrl,
   isRemoteRouted,
   getDeviceIdFromArgs,
+  flagForwardHeaders,
   prepareFileInputs,
   applyClientFileDirectives,
   type ToolMeta,
@@ -132,6 +133,17 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
     return AUTH_TOKEN ? { Authorization: `Bearer ${AUTH_TOKEN}` } : {};
   }
 
+  // Feature flags this machine has set, sent to an external tool-server so it
+  // gates tools on the caller's `argent enable/disable` rather than on the
+  // flags.json of whatever machine the server happens to run on. Gated on the
+  // same startup routing decision that picked TOOLS_URL (as the file-input
+  // co-location check is): an auto-spawned local server reads those very files
+  // itself. Re-read per request, so toggling a flag lands without an MCP
+  // restart even though the routing decision is fixed at startup.
+  function flagHeaders(): Record<string, string> {
+    return resolved.url !== null ? flagForwardHeaders() : {};
+  }
+
   // Coarse identity of the AI tool driving this MCP server, forwarded to the
   // tool-server (a separate process that owns tool telemetry) as a request header.
   // The signal is the MCP handshake clientInfo.name; unrecognized tools are
@@ -179,7 +191,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
 
   async function fetchTools(): Promise<ToolMeta[]> {
     const res = await fetchWithReconnect(() => `${TOOLS_URL}/tools`, reconnect, {
-      init: { headers: authHeader() },
+      init: { headers: { ...authHeader(), ...flagHeaders() } },
     });
     const json = (await res.json()) as { tools: ToolMeta[] };
     return json.tools;
@@ -216,7 +228,12 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
     const res = await fetchWithReconnect(() => `${TOOLS_URL}/tools/${name}`, reconnect, {
       init: {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeader(), ...aiClientHeaders() },
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeader(),
+          ...aiClientHeaders(),
+          ...flagHeaders(),
+        },
         body: JSON.stringify(finalArgs ?? {}),
       },
       fetchTimeoutMs: meta?.longRunning ? null : FETCH_TIMEOUT_MS,

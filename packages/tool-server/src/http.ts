@@ -4,7 +4,14 @@ import { createWriteStream } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isFlagEnabled } from "@argent/configuration-core";
+import {
+  isFlagEnabled,
+  withForwardedFlags,
+  decodeForwardedFlags,
+  ForwardedFlagsError,
+  FLAG_FORWARD_HEADER,
+  FLAG_FORWARD_ACK_HEADER,
+} from "@argent/configuration-core";
 import { randomUUID, createHash } from "node:crypto";
 import {
   FAILURE_CODES,
@@ -72,10 +79,11 @@ function extractBearerToken(authHeader: string | undefined): string | null {
 }
 
 // A tool that declares a `featureFlag` is exposed (listed + invocable) only
-// while that flag is enabled. Re-evaluated on every request — reading the tiny
-// `~/.argent/flags.json` (and project override) each time — so toggling
-// `argent enable/disable <flag>` takes effect on the next `tools/list` without
-// restarting the long-lived tool-server. Tools without a `featureFlag` are
+// while that flag is enabled. Re-evaluated on every request — from the flags
+// the caller forwarded, or else by reading the tiny `~/.argent/flags.json`
+// (and project override) each time — so toggling `argent enable/disable <flag>`
+// takes effect on the next `tools/list` without restarting the long-lived
+// tool-server, wherever that server runs. Tools without a `featureFlag` are
 // always exposed (no flag read). A `hideWhen` predicate (also re-checked here per
 // request) hides a tool against live server state even when its flag is on — used
 // so `await_user_selection` vanishes during an `argent lens` CLI session.
@@ -446,6 +454,43 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     next();
   });
 
+  // Feature flags follow the caller, not the host. A client that reached us
+  // through `argent link` runs on another machine, so this server's own
+  // flags.json describes the operator's preferences and this server's cwd
+  // resolves the operator's project — neither belongs to the person driving
+  // the tools. When the caller forwards its set, bind it to this request's
+  // async context so every flag read underneath (the exposure gate below, the
+  // registry's dispatch gate, the Lens preview routes) resolves against the
+  // caller's flags instead of the disk. Requests without the header — a local
+  // auto-spawned client, the browser-loaded preview UI — read disk as before.
+  //
+  // Placed after the auth gate: an unauthenticated caller must not be able to
+  // steer flag resolution, not even for a route that would 401 anyway.
+  app.use((req, res, next) => {
+    const raw = firstHeader(req.headers[FLAG_FORWARD_HEADER.toLowerCase()]);
+    if (raw === undefined) {
+      next();
+      return;
+    }
+    let flags: Record<string, boolean>;
+    try {
+      flags = decodeForwardedFlags(raw);
+    } catch (err) {
+      // Only argent's own client sends this header, so a bad value is a bug or
+      // a forgery. Reject it loudly — silently falling back to our flags.json
+      // would resurrect exactly the mismatch this header exists to prevent.
+      res.status(400).json({
+        error:
+          `Invalid ${FLAG_FORWARD_HEADER} header: ` +
+          `${err instanceof ForwardedFlagsError ? err.message : String(err)}. ` +
+          `Expected base64-encoded JSON of {"<flag>": <boolean>}.`,
+      });
+      return;
+    }
+    res.setHeader(FLAG_FORWARD_ACK_HEADER, "true");
+    withForwardedFlags(flags, next);
+  });
+
   // Hidden (not MCP-exposed) preview UI + stream discovery endpoints.
   // MCP only consumes /tools and /tools/:name, so this subtree is invisible to agents.
   app.use("/preview", createPreviewRouter(registry));
@@ -453,9 +498,22 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // Artifact retrieval: streams files produced by tools (screenshots, profiler
   // exports) over the remote-aware HTTP boundary so the MCP client can fetch
   // them via TOOLS_URL instead of an unreachable 127.0.0.1 host path/URL.
-  if (isFlagEnabled(ARTIFACTS_LIST_ENDPOINT_FLAG)) {
-    app.get("/artifacts", makeArtifactListRoute(registry));
-  }
+  //
+  // The inventory route is flag-gated per request, like the tool gate above,
+  // rather than only registered when the flag is on at boot: its consumers are
+  // remote by definition, so the answer has to track the caller's flags.
+  const artifactListRoute = makeArtifactListRoute(registry);
+  app.get("/artifacts", (req: Request, res: Response) => {
+    if (!isFlagEnabled(ARTIFACTS_LIST_ENDPOINT_FLAG)) {
+      res.status(404).json({
+        error:
+          `GET /artifacts is disabled. Enable it with ` +
+          `\`argent enable ${ARTIFACTS_LIST_ENDPOINT_FLAG}\`.`,
+      });
+      return;
+    }
+    artifactListRoute(req, res);
+  });
   app.get("/artifacts/:id", makeArtifactRoute(registry));
 
   // Per-Chromium-device HTTP surface that mirrors sim-server's API: a
