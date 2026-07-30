@@ -39,6 +39,19 @@ describe("httpScreenshot", () => {
     await expect(httpScreenshot(api)).rejects.toThrow("server response missing url or path");
   });
 
+  it("classifies a bare null body instead of crashing on it, at 200 and on failure", async () => {
+    // A bare `null` parses as JSON, so it gets past the non-JSON guard and then
+    // takes every named field read below as an unclassified TypeError — a 500
+    // with no error_code, blaming argent for an answer the server got wrong.
+    vi.stubGlobal("fetch", fakeFetch(200, null));
+    await expect(httpScreenshot(api)).rejects.toThrow(FailureError);
+    await expect(httpScreenshot(api)).rejects.toThrow("server response missing url or path");
+
+    vi.stubGlobal("fetch", fakeFetch(500, null));
+    await expect(httpScreenshot(api)).rejects.toThrow(FailureError);
+    await expect(httpScreenshot(api)).rejects.toThrow("HTTP 500");
+  });
+
   it("returns url and path on a successful capture", async () => {
     vi.stubGlobal(
       "fetch",

@@ -360,8 +360,16 @@ export async function httpScreenshot(
       error?: string;
     }>("Screenshot", api, "/api/screenshot", body, signal);
 
+    // `res.json()` yields whatever the server sent, and a bare `null` is a valid
+    // JSON document — reading a field off it is an unclassified TypeError rather
+    // than the capture failure it stands for. Narrow once here; a non-object
+    // body then carries no url/path and no in-band error, so it lands on the
+    // "missing url or path" branch at the end, which is what it is.
+    const shot: { url?: string; path?: string; error?: string } =
+      typeof resBody === "object" && resBody !== null ? resBody : {};
+
     if (!res.ok) {
-      const serverMsg = resBody.error ?? `HTTP ${res.status}`;
+      const serverMsg = shot.error ?? `HTTP ${res.status}`;
       throw new FailureError(
         `Screenshot failed: ${serverMsg}. ` +
           `Ensure the simulator is booted and the simulator-server is running.`,
@@ -374,16 +382,16 @@ export async function httpScreenshot(
         }
       );
     }
-    if (resBody.url != null && resBody.path != null) {
-      return { url: resBody.url, path: resBody.path };
+    if (shot.url != null && shot.path != null) {
+      return { url: shot.url, path: shot.path };
     }
 
     // HTTP 200 with no url/path. A "no image to export" means the frame stream
     // hasn't produced its first frame yet; poll until it does (or the deadline
     // passes) rather than failing a freshly-spawned or backgrounded simulator.
     if (
-      resBody.error &&
-      NO_IMAGE_ERROR.test(resBody.error) &&
+      shot.error &&
+      NO_IMAGE_ERROR.test(shot.error) &&
       !signal?.aborted &&
       Date.now() + FIRST_FRAME_POLL_MS < deadline
     ) {
@@ -397,11 +405,11 @@ export async function httpScreenshot(
     // Y"). Surface that message instead of the misleading generic hint so the
     // real cause is visible rather than sending callers to restart a perfectly
     // healthy server.
-    if (resBody.error) {
+    if (shot.error) {
       // HTTP 200 with an in-band `error` field: the server was reachable and
       // answered, so this is a server-reported capture failure, not a transport
       // problem — classify it as such rather than as a network error.
-      throw new FailureError(`Screenshot failed: ${resBody.error}.`, {
+      throw new FailureError(`Screenshot failed: ${shot.error}.`, {
         error_code: FAILURE_CODES.SIMULATOR_SCREENSHOT_FAILED,
         failure_stage: "simulator_screenshot_error_field",
         failure_area: "tool_server",
