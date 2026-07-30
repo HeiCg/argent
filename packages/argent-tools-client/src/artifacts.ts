@@ -146,17 +146,21 @@ function durableBaseDir(): string {
  * when a new tool needs a durable home. Stored normalized so the wire value is
  * compared in the same form regardless of separator style.
  */
-const ALLOWED_SAVE_DIRS: ReadonlySet<string> = new Set([normalize(".argent/recordings")]);
+const ALLOWED_SAVE_DIRS: ReadonlySet<string> = new Set([
+  normalize(".argent/recordings"),
+  normalize(".argent/screenshots"),
+]);
 
 /**
  * Hard ceiling on a single durable download, independent of the `size` the
  * (possibly hostile) tool-server announces. A durable artifact is persisted
  * where it survives temp-cache GC, so a remote/compromised `argent link` server
  * must not be able to drive unbounded client memory use or a persistent disk
- * fill under `.argent/recordings/` by streaming a body larger than it claimed.
- * Well above any real recording (600 s cap at device-native h264), so it only
- * ever trips a pathological stream. 2 GiB also stays within Node's `Buffer`
- * limit, since the download is buffered before it is written.
+ * fill under the durable directories by streaming a body larger than it claimed.
+ * Well above any real durable artifact — a recording (600 s cap at device-native
+ * h264) or a full-resolution screenshot — so it only ever trips a pathological
+ * stream. 2 GiB also stays within Node's `Buffer` limit, since the download is
+ * buffered before it is written.
  */
 const MAX_DURABLE_BYTES = 2 * 1024 * 1024 * 1024;
 
@@ -202,7 +206,7 @@ async function readCapped(res: Response, cap: number): Promise<Buffer | null> {
  * alongside as `name (2).ext`, `name (3).ext`, … The write is *exclusive*
  * (`wx` / `COPYFILE_EXCL`), so a collision is detected atomically — two
  * concurrent materializations can't clobber each other, and a tool-server can't
- * silently replace a recording already in `.argent/recordings/` by reusing its
+ * silently replace a file already saved in a durable directory by reusing its
  * name. Returns the final path, or null if no free name is found within the
  * bound (a pathological directory, not a real collision).
  */
@@ -317,6 +321,21 @@ export interface MaterializeContext {
    * artifact would read as missing. Empty/unset ⇒ unauthenticated server.
    */
   authToken?: string;
+  /**
+   * Treat every artifact in this result as disposable: the `saveDir` hint is
+   * ignored and the bytes go to the temp cache, even for a tool that asks to be
+   * persisted durably.
+   *
+   * Durability is a property of the *request*, not only of the tool: the same
+   * tool serves both an explicit call whose file the caller may open later and
+   * an internally-synthesized one whose image is rendered once and never named
+   * again. The tool-server cannot tell those apart — over HTTP they are the same
+   * `POST /tools/screenshot` — so the caller that synthesized the invocation
+   * marks it here. Without this, the MCP layer's after-every-action
+   * auto-screenshot would write hundreds of PNGs per session into the user's
+   * project directory.
+   */
+  transient?: boolean;
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -423,7 +442,8 @@ export async function materializeArtifacts(
       // client's own cwd instead of the disposable temp cache. Copy when the
       // file is already local (co-located server), download otherwise — so an
       // `argent link` recording ends up on the *client* host, not the server.
-      const saveTarget = durableSaveTarget(value);
+      // A `transient` request declines persistence for everything it produced.
+      const saveTarget = ctx.transient ? null : durableSaveTarget(value);
       if (saveTarget) {
         const filename = basename(saveTarget.path);
         try {

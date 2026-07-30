@@ -51,7 +51,7 @@ Loop over every variant of every element:
 5. **Propose.** Call `propose_variant` with `element`, `match`, `udid` (the device you captured on), and `variant.previewImage` set to that screenshot path. The tool **auto-captures the crop frame**: it describes the device at propose time and matches the element, so each thumbnail crops to its own current layout — **as long as the variant is still on screen when you call `propose_variant`** (propose right after the screenshot, before reverting). You may pass `variant.frame` (the matched node's normalized `{x, y, width, height}` in 0..1 from a `describe` on THIS variant) to override the auto-capture — useful when the element can't stay on screen at propose time. Add `summary` (what changed and why) and `code`/`filePath` when useful.
 6. **Revert.** Roll the variant change back before building the next one — only one variant can be on screen at a time. Keep going; `propose_variant` does not block.
 
-`previewImage` accepts a local screenshot path (served from the OS temp dir / cwd), an `http(s)` URL, or a `data:` URI. A local screenshot of the real running variant is strongly preferred.
+`previewImage` accepts a local screenshot path (served from `.argent/screenshots/` — where `screenshot` saves — plus the OS temp dir, `/tmp`, and cwd), an `http(s)` URL, or a `data:` URI. A local screenshot of the real running variant is strongly preferred.
 
 ### Step 3 — Await the human's decision (once)
 

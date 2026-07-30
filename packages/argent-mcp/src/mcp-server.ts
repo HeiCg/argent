@@ -35,6 +35,7 @@ import {
   getUdidFromArgs,
   shouldAutoScreenshot,
   getAutoScreenshotDelayMs,
+  autoScreenshotContext,
 } from "./auto-screenshot.js";
 import { toMcpTool } from "./tool-mapping.js";
 import { getInstalledVersion } from "./installed-version.js";
@@ -346,11 +347,11 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
 
         try {
           const screenshotResult = await callTool("screenshot", { udid });
-          const screenshotContent = await toMcpContent(screenshotResult.result, "image", {
-            toolsUrl: TOOLS_URL,
-            authToken: AUTH_TOKEN,
-            deviceId: udid,
-          });
+          const screenshotContent = await toMcpContent(
+            screenshotResult.result,
+            "image",
+            autoScreenshotContext({ toolsUrl: TOOLS_URL, authToken: AUTH_TOKEN, udid })
+          );
           const hasImage = screenshotContent.some((b) => b.type === "image");
           if (hasImage) {
             content = [

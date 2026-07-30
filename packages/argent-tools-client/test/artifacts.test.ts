@@ -935,3 +935,203 @@ describe("materializeArtifacts durable destination", () => {
     }
   });
 });
+
+describe("materializeArtifacts durable screenshots", () => {
+  let root: string; // ARGENT_ARTIFACTS_DIR (temp cache)
+  let hostDir: string; // stands in for the tool-server host
+  let projectRoot: string; // the client's project (marker-bearing) working dir
+  let home: string; // redirected HOME for the global-fallback branch
+  let originalCwd: string;
+  let originalHome: string | undefined;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "argent-artifacts-"));
+    hostDir = await mkdtemp(join(tmpdir(), "argent-host-"));
+    projectRoot = await mkdtemp(join(tmpdir(), "argent-proj-"));
+    await writeFile(join(projectRoot, "package.json"), "{}"); // the project marker
+    home = await mkdtemp(join(tmpdir(), "argent-home-"));
+    process.env.ARGENT_ARTIFACTS_DIR = root;
+    originalCwd = process.cwd();
+    originalHome = process.env.HOME;
+    process.chdir(projectRoot);
+    process.env.HOME = home;
+    // On macOS the temp dir is under a /var → /private/var symlink; the
+    // materializer resolves cwd to the real path, so mirror that for assertions.
+    projectRoot = process.cwd();
+  });
+
+  afterEach(async () => {
+    process.chdir(originalCwd);
+    delete process.env.ARGENT_ARTIFACTS_DIR;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    await rm(root, { recursive: true, force: true });
+    await rm(hostDir, { recursive: true, force: true });
+    await rm(projectRoot, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  });
+
+  const SHOT = "screenshot-DEV-1-1785400000000.png";
+
+  function shotHandle(id: string, extra: Partial<ArtifactHandle> = {}): ArtifactHandle {
+    return {
+      [ARTIFACT_MARKER]: true,
+      id,
+      filename: SHOT,
+      mimeType: "image/png",
+      size: PNG.length,
+      saveDir: ".argent/screenshots",
+      ...extra,
+    };
+  }
+
+  /** Every file the durable screenshots directory holds, or [] if it has none. */
+  async function durableFiles(base = projectRoot): Promise<string[]> {
+    return readdir(join(base, ".argent/screenshots")).catch(() => []);
+  }
+
+  it("remote: downloads the PNG into <project>/.argent/screenshots/, not the temp cache", async () => {
+    const { result, images } = await materializeArtifacts(
+      { image: shotHandle("s1") },
+      { toolsUrl: "http://remote:3001", authToken: "tok", fetchImpl: fakeFetch({ s1: PNG }) }
+    );
+
+    const out = (result as { image: string }).image;
+    expect(out).toBe(join(projectRoot, ".argent/screenshots", SHOT));
+    expect(out.startsWith(artifactDir())).toBe(false); // NOT in the temp cache
+    expect(Buffer.from(await readFile(out))).toEqual(Buffer.from(PNG));
+    // A PNG is an image: the bytes still come back for inline rendering, and
+    // from the durable copy rather than a second temp one.
+    expect(images).toHaveLength(1);
+    expect(images[0]!.localPath).toBe(out);
+    expect(images[0]!.mimeType).toBe("image/png");
+  });
+
+  it("co-located: copies the host PNG into <project>/.argent/screenshots/ and leaves the original", async () => {
+    const hostPath = join(hostDir, "821081000-1785417279821.png"); // the backend's temp name
+    await writeFile(hostPath, Buffer.from(PNG));
+    const st = await stat(hostPath);
+    const throwingFetch: typeof fetch = (async () => {
+      throw new Error("fetch must not be called when the file is already local");
+    }) as unknown as typeof fetch;
+
+    const { result, images } = await materializeArtifacts(
+      { image: shotHandle("s2", { hostPath, size: st.size, mtimeMs: st.mtimeMs }) },
+      { toolsUrl: "http://localhost:3001", fetchImpl: throwingFetch }
+    );
+
+    const out = (result as { image: string }).image;
+    // The server's own filename is what the durable copy is named by, not the
+    // opaque backend basename the capture happened to land under.
+    expect(out).toBe(join(projectRoot, ".argent/screenshots", SHOT));
+    expect(out).not.toBe(hostPath);
+    expect(Buffer.from(await readFile(out))).toEqual(Buffer.from(PNG));
+    expect(Buffer.from(await readFile(hostPath))).toEqual(Buffer.from(PNG)); // original intact
+    expect(images[0]!.localPath).toBe(out);
+  });
+
+  it("not in a project: downloads into the global ~/.argent/screenshots/", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "argent-noproj-"));
+    process.chdir(outside);
+    try {
+      const { result } = await materializeArtifacts(
+        { image: shotHandle("s3") },
+        { toolsUrl: "http://remote:3001", fetchImpl: fakeFetch({ s3: PNG }) }
+      );
+      const out = (result as { image: string }).image;
+      expect(out).toBe(join(home, ".argent/screenshots", SHOT));
+      expect(Buffer.from(await readFile(out))).toEqual(Buffer.from(PNG));
+    } finally {
+      process.chdir(projectRoot);
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  // ── the explicit-vs-auto boundary ────────────────────────────────────
+  //
+  // The MCP layer appends a screenshot after most tool calls, through this same
+  // `screenshot` tool. Those must stay in the disposable cache: persisting them
+  // would write hundreds of PNGs per session into the user's project. The
+  // tool-server cannot tell the two apart (identical `POST /tools/screenshot`),
+  // so the caller that synthesized the invocation says so via `transient`.
+
+  it("a transient request keeps the PNG in the temp cache and leaves the durable dir empty", async () => {
+    const { result, images } = await materializeArtifacts(
+      { image: shotHandle("auto") },
+      { toolsUrl: "http://remote:3001", fetchImpl: fakeFetch({ auto: PNG }), transient: true }
+    );
+
+    const out = (result as { image: string }).image;
+    expect(out.startsWith(artifactDir())).toBe(true);
+    expect(Buffer.from(await readFile(out))).toEqual(Buffer.from(PNG));
+    // Nothing was written into the project — not even the directory.
+    expect(await durableFiles()).toEqual([]);
+    // Still rendered inline: suppressing persistence must not suppress the image.
+    expect(images).toHaveLength(1);
+    expect(images[0]!.localPath).toBe(out);
+  });
+
+  it("transient and explicit requests for the same handle diverge", async () => {
+    // The one assertion that pins the decision: same artifact, same tag, two
+    // call sites — only the explicit one reaches the project.
+    const { result: auto } = await materializeArtifacts(
+      { image: shotHandle("x") },
+      { toolsUrl: "http://remote:3001", fetchImpl: fakeFetch({ x: PNG }), transient: true }
+    );
+    expect(await durableFiles()).toEqual([]);
+
+    const { result: explicit } = await materializeArtifacts(
+      { image: shotHandle("x") },
+      { toolsUrl: "http://remote:3001", fetchImpl: fakeFetch({ x: PNG }) }
+    );
+    expect(await durableFiles()).toEqual([SHOT]);
+
+    expect((auto as { image: string }).image).not.toBe((explicit as { image: string }).image);
+    expect((explicit as { image: string }).image).toBe(
+      join(projectRoot, ".argent/screenshots", SHOT)
+    );
+  });
+
+  it("transient also declines a co-located durable copy, not just a download", async () => {
+    // The durable path has two arms; `transient` must cover both or an
+    // auto-screenshot from a local tool-server would still land in the project.
+    const hostPath = join(hostDir, "local-shot.png");
+    await writeFile(hostPath, Buffer.from(PNG));
+    const st = await stat(hostPath);
+
+    const { result } = await materializeArtifacts(
+      { image: shotHandle("loc", { hostPath, size: st.size, mtimeMs: st.mtimeMs }) },
+      { toolsUrl: "http://localhost:3001", transient: true }
+    );
+
+    // Already on this host, so it is used in place — no copy anywhere.
+    expect((result as { image: string }).image).toBe(hostPath);
+    expect(await durableFiles()).toEqual([]);
+  });
+
+  it("transient does not persist a recording either — it is not screenshot-specific", async () => {
+    const { result } = await materializeArtifacts(
+      {
+        video: {
+          [ARTIFACT_MARKER]: true,
+          id: "v",
+          filename: "screen-recording-DEV-1-42.mp4",
+          mimeType: "video/mp4",
+          size: PNG.length,
+          saveDir: ".argent/recordings",
+        } satisfies ArtifactHandle,
+      },
+      { toolsUrl: "http://remote:3001", fetchImpl: fakeFetch({ v: PNG }), transient: true }
+    );
+    expect((result as { video: string }).video.startsWith(artifactDir())).toBe(true);
+    await expect(readdir(join(projectRoot, ".argent/recordings"))).rejects.toThrow();
+  });
+
+  it("rejects a screenshot saveDir that is not the sanctioned one", async () => {
+    // The client's allowlist decides destinations, so adding `.argent/screenshots`
+    // must not have widened it to `.argent/*`.
+    for (const bad of [".argent", ".argent/screenshots/../../etc", ".argent/screenshot"]) {
+      expect(durableSaveTarget(shotHandle("b", { saveDir: bad })), bad).toBeNull();
+    }
+  });
+});

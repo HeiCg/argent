@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Request, Response, Router } from "express";
 import express from "express";
-import { isFlagEnabled } from "@argent/configuration-core";
+import { argentHomeDir, findProjectRoot, isFlagEnabled } from "@argent/configuration-core";
 import type { Registry } from "@argent/registry";
 import { track } from "@argent/telemetry";
 import { simulatorServerRef, type SimulatorServerApi } from "./blueprints/simulator-server";
@@ -21,6 +21,51 @@ import {
 import type { DescribeTreeData } from "./tools/describe/contract";
 import { describeIos } from "./tools/describe/platforms/ios";
 import { describeAndroid } from "./tools/describe/platforms/android";
+
+/**
+ * Filesystem roots a variant's local `previewImage` may resolve inside; anything
+ * else 404s and the Argent Lens shows "No preview". Real paths, because the
+ * requested file is realpath'd before the containment check.
+ *
+ * Beyond scratch locations, this covers where the `screenshot` tool's output
+ * actually lands: it is saved durably under `<project>/.argent/screenshots/`, or
+ * `~/.argent/screenshots/` outside a project — and the Lens workflow's whole
+ * premise is passing a freshly captured screenshot's path straight through. The
+ * two durable directories are derived from the base that exists (project root /
+ * home) with the relative part appended, since the screenshots directory itself
+ * need not have been created yet when the router is built.
+ *
+ * Resolving them from *this* process's cwd and HOME matches the client that
+ * chose them: a local `previewImage` path is only ever readable here when the
+ * tool-server is co-located with the client, which is also the case in which
+ * they share both.
+ */
+export function previewImageRoots(): string[] {
+  const roots = new Set<string>();
+  // `/tmp` in addition to os.tmpdir(): on macOS os.tmpdir() is a per-user
+  // `/var/folders/…` path, so agents that drop screenshots under `/tmp`
+  // (a very common choice) would otherwise 404 and show "No preview".
+  for (const r of [os.tmpdir(), process.cwd(), "/tmp"]) {
+    try {
+      roots.add(fs.realpathSync(r));
+    } catch {
+      /* skip unresolvable root */
+    }
+  }
+  const projectRoot = findProjectRoot(process.cwd());
+  // argentHomeDir() is `<home>/.argent`, so its parent is the home dir and the
+  // `.argent` segment below re-adds it — the same arithmetic the client does to
+  // fall back to `~/.argent/screenshots` when it is not inside a project.
+  for (const base of [projectRoot, path.dirname(argentHomeDir())]) {
+    if (base === null) continue;
+    try {
+      roots.add(path.join(fs.realpathSync(base), ".argent", "screenshots"));
+    } catch {
+      /* skip unresolvable root */
+    }
+  }
+  return [...roots];
+}
 
 // Resolve a file from the preview-UI directory. Candidate roots (first match
 // wins): (1) bundled `preview-ui/` sibling to the compiled bundle, (2) built
@@ -625,20 +670,7 @@ export function createPreviewRouter(registry: Registry): Router {
     ".gif": "image/gif",
   };
   const MAX_PREVIEW_BYTES = 25 * 1024 * 1024;
-  const allowedRoots = (() => {
-    const roots = new Set<string>();
-    // `/tmp` in addition to os.tmpdir(): on macOS os.tmpdir() is a per-user
-    // `/var/folders/…` path, so agents that drop screenshots under `/tmp`
-    // (a very common choice) would otherwise 404 and show "No preview".
-    for (const r of [os.tmpdir(), process.cwd(), "/tmp"]) {
-      try {
-        roots.add(fs.realpathSync(r));
-      } catch {
-        /* skip unresolvable root */
-      }
-    }
-    return [...roots];
-  })();
+  const allowedRoots = previewImageRoots();
   router.get("/variant-image/:elementId/:variantId", (req: Request, res: Response) => {
     const v = variantProposalStore.findVariant(
       req.params.elementId as string,
