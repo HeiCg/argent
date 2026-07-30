@@ -187,9 +187,17 @@ function timeoutNote(
   params: Params,
   lastTree: DescribeNode | null,
   fetchError: string | undefined,
-  lastData: DescribeTreeData | null
+  lastData: DescribeTreeData | null,
+  readTimedOut: boolean
 ): string {
   if (fetchError) return `last tree fetch failed: ${fetchError}`;
+  // A read still in flight at the deadline leaves the verdict below resting on
+  // an earlier sample, which on a slow tree can be the one taken before the
+  // element ever appeared. The selector diagnosis is still the most useful
+  // thing to report, so qualify it rather than replace it.
+  const readCaveat = readTimedOut
+    ? " (the last tree read did not finish within the budget, so this reflects an earlier sample — raise timeoutMs)"
+    : "";
   const matches = lastTree ? findAll(lastTree, params.selector) : [];
   let base: string;
   switch (params.condition) {
@@ -217,7 +225,7 @@ function timeoutNote(
     default:
       base = "no element matched the selector before timeout";
   }
-  return appendDiagnostics(base, lastData);
+  return appendDiagnostics(base + readCaveat, lastData);
 }
 
 // ── Tool ─────────────────────────────────────────────────────────────────
@@ -354,7 +362,13 @@ or before tapping an element that appears asynchronously.`,
       return {
         success: false,
         elapsed: Date.now() - start,
-        note: timeoutNote(params, poll.lastData?.tree ?? null, poll.lastError, poll.lastData),
+        note: timeoutNote(
+          params,
+          poll.lastData?.tree ?? null,
+          poll.lastError,
+          poll.lastData,
+          poll.readTimedOut
+        ),
       };
     },
   };

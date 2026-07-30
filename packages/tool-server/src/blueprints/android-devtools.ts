@@ -40,16 +40,22 @@ export interface GetHierarchyOptions {
   /**
    * Drop the helper's accessibility-node cache before capturing, so the walk
    * reads every node from the app rather than from that cache. Defaults to
-   * `true`, because the cache can serve a node's first-seen text indefinitely —
-   * its event-driven invalidation has been observed to stop after the inspected
-   * app restarts under the helper's long-lived connection — and a capture that
-   * stands for the current screen (a describe, a wait/assert poll, a selector
-   * match that becomes tap coordinates) is then wrong rather than merely slow.
+   * `true`, because the cache is invalidated only by accessibility
+   * content-change events from the app: a node whose app emits none is never
+   * invalidated, and the cached read keeps serving its first-seen text while the
+   * screen moves on. A capture that stands for the current screen (a describe, a
+   * wait/assert poll, a selector match that becomes tap coordinates) is then
+   * wrong rather than merely slow. Measured on a stopwatch under a
+   * freshly-opened connection: 20 cached reads across 30 s all returned 2:09.32
+   * while the running timer had reached 2:40.32.
    *
    * Pass `false` to trade that guarantee for latency. A coherent capture re-reads
-   * each node over binder, measured on arm64 emulators at ~0.3 ms/node on API 30
-   * (124-node screen: 4 ms → 45 ms device-side) and ~0.13 ms/node on API 34
-   * (163 nodes: 3 ms → 27 ms) — so a cached capture is the cheaper read, never
+   * every node over binder, so it scales with the tree: measured on arm64
+   * emulators at 0.28-0.31 ms/node on API 30, linear from 330 to 4080 nodes, and
+   * 0.34-0.82 ms/node on API 34 between 315 and 3065 nodes. Clearing in a single
+   * UiAutomation.clearCache() call at API 34+ does not make it the cheaper
+   * platform — its coherent capture costs more than API 30's per-node refresh()
+   * at every size from 315 nodes up. A cached capture is the cheaper read, never
    * the more accurate one.
    */
   clearCache?: boolean;

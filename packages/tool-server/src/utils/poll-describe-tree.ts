@@ -48,6 +48,15 @@ export interface PollDescribeTreeResult<R> {
   lastData: DescribeTreeData | null;
   /** Most recent fetch error / timeout message, if the last fetch failed. */
   lastError?: string;
+  /**
+   * True when the budget ran out with a tree fetch still in flight, so the wait
+   * ended on the cost of reading the tree rather than on the predicate refusing
+   * every sample. The two are not interchangeable: a tree too slow to read
+   * twice starves the predicate of the samples it needs to ever say yes, and a
+   * caller that reports its own negative verdict then describes a screen it
+   * never got to observe.
+   */
+  readTimedOut: boolean;
 }
 
 export async function pollDescribeTree<R>(
@@ -60,6 +69,7 @@ export async function pollDescribeTree<R>(
   let polls = 0;
   let lastData: DescribeTreeData | null = null;
   let lastError: string | undefined;
+  let readTimedOut = false;
 
   const outcome = (result: R | undefined, aborted: boolean): PollDescribeTreeResult<R> => ({
     result,
@@ -68,6 +78,7 @@ export async function pollDescribeTree<R>(
     elapsedMs: Date.now() - start,
     lastData,
     lastError,
+    readTimedOut,
   });
 
   for (;;) {
@@ -80,6 +91,7 @@ export async function pollDescribeTree<R>(
 
     if (settled.type === "aborted") return outcome(undefined, true);
     if (settled.type === "timeout") {
+      readTimedOut = true;
       // Only synthesize a "did not complete" error when we never got a usable
       // tree; a final fetch that merely straddled the deadline leaves lastData
       // in place so the caller can build a content-based note from it.

@@ -147,6 +147,62 @@ describe("await-ui-element tool", () => {
     expect(result.note).toMatch(/no element matched/i);
   });
 
+  // The selector verdict below is built from the newest tree that arrived, so
+  // when the budget expires with a read still in flight it describes an earlier
+  // sample — on a slow tree, possibly one taken before the element rendered.
+  // The note has to say so, or "no element matched" reads as a settled fact
+  // about the screen.
+  it("flags that the verdict rests on an earlier sample when a read outran the budget", async () => {
+    const slowAx: AXServiceApi = {
+      degraded: false,
+      describe: async () => {
+        await new Promise((r) => setTimeout(r, 200));
+        return axResponse([{ label: "Settings", frame: FRAME, traits: ["button"] }]);
+      },
+      alertCheck: async () => false,
+      ping: async () => true,
+    };
+    const tool = createAwaitUiElementTool(iosRegistry(slowAx));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 300,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.note).toMatch(/no element matched/i);
+    expect(result.note).toMatch(/did not finish within the budget/i);
+    expect(result.note).toMatch(/earlier sample/i);
+  });
+
+  it("leaves the note unqualified when every read completed inside the budget", async () => {
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "Settings", frame: FRAME, traits: ["button"] }]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 60,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.note).toMatch(/no element matched/i);
+    expect(result.note ?? "").not.toMatch(/earlier sample/i);
+  });
+
   it("clamps the poll sleep to the deadline so a large pollIntervalMs can't overshoot timeoutMs", async () => {
     // Element never appears; pollIntervalMs (1000) dwarfs timeoutMs (100). Without
     // clamping, the first sleep alone would run the full 1000ms past the initial
