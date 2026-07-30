@@ -159,9 +159,12 @@ describe("physical-iPhone capability gate, swept across the registry", () => {
     const shellsDevicectl = sources.filter((f) => /"devicectl"/.test(fs.readFileSync(f, "utf8")));
 
     // Anti-vacuity: the four that exist today must be found, so a broken walk or
-    // matcher cannot pass this by finding nothing.
+    // matcher cannot pass this by finding nothing. Deliberately not an exact
+    // set — a fifth devicectl-backed tool should fail on the gate assertion
+    // below, which names what is missing, rather than here on a list it was
+    // never the point to maintain.
     expect(shellsDevicectl.map((f) => path.basename(path.dirname(path.dirname(f)))).sort()).toEqual(
-      ["launch-app", "open-url", "reinstall-app", "restart-app"]
+      expect.arrayContaining(["launch-app", "open-url", "reinstall-app", "restart-app"])
     );
 
     for (const file of shellsDevicectl) {
