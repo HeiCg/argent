@@ -126,12 +126,18 @@ export function toSimulatorNetworkError(
  */
 export function subprocessOutputTail(err: unknown, maxChars = 400): string {
   const e = err as { stderr?: unknown; stdout?: unknown } | null;
-  const raw = [e?.stderr, e?.stdout].map((s) => (typeof s === "string" ? s : "")).join("\n");
-  const tail = raw
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-4)
-    .join(" | ");
+  const lines = (v: unknown) =>
+    (typeof v === "string" ? v : "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+  // stderr alone whenever it said anything. `devicectl` narrates its progress on
+  // stdout ("Acquired tunnel connection to device.", "Transferring app
+  // bundle…"), so a shared last-N window would let that narration displace the
+  // one line that explains the failure. stdout is the fallback for a tool that
+  // reports failure there and leaves stderr empty.
+  const stderr = lines(e?.stderr);
+  const tail = (stderr.length > 0 ? stderr : lines(e?.stdout)).slice(-4).join(" | ");
   return tail.length > maxChars ? `…${tail.slice(-maxChars)}` : tail;
 }

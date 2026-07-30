@@ -117,7 +117,7 @@ const zodSchema = z
       .max(120_000)
       .optional()
       .describe(
-        `Max time to wait for the condition before giving up (default ${DEFAULT_TIMEOUT_MS}).`
+        `Max time to wait for the condition before giving up (default ${DEFAULT_TIMEOUT_MS}, or ${DEFAULT_DEVICE_TIMEOUT_MS} on a physical iPhone, whose reads are far slower).`
       ),
     pollIntervalMs: z
       .number()
@@ -345,7 +345,14 @@ or before tapping an element that appears asynchronously.`,
       });
 
       const rotatingRead = isPhysicalIos(device) && ROTATION_SENSITIVE.has(params.condition);
-      /** Append the physical-iPhone caveat to whatever note the verdict already carries. */
+      /**
+       * Append the physical-iPhone caveat to whatever note the verdict already
+       * carries. On the timeout path that note has folded in the last read's
+       * `describe` hint, which overlaps this on the rotation — kept anyway,
+       * because the two answer different questions (what the read is, versus
+       * what the condition means on it) and the condition half is the part a
+       * `visible` / `text` verdict is read against.
+       */
       const annotate = (r: WaitResult): WaitResult =>
         rotatingRead
           ? { ...r, note: r.note ? `${r.note} (${ROTATING_READ_NOTE})` : ROTATING_READ_NOTE }

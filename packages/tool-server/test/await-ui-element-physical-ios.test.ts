@@ -118,6 +118,45 @@ describe("await-ui-element on a physical iPhone", () => {
     expect(text.note).toMatch(/rotated by one/i);
   });
 
+  it("keeps the condition caveat even when the read's own hint overlaps it", async () => {
+    // The timeout note folds in describe's hint, which also mentions the
+    // rotation. Suppressing the append on that overlap would drop the half that
+    // says what `visible` / `text` MEAN on such a read — the part the verdict is
+    // read against — to avoid repeating one clause.
+    const withHint = async () => ({
+      source: "coredevice-ax" as const,
+      hint: "…each call returns the same elements rotated by one; use screenshot for positions.",
+      tree: {
+        role: "AXGroup",
+        frame: { x: 0, y: 0, width: 1, height: 1 },
+        children: [
+          {
+            role: "AXButton",
+            label: "Done",
+            frame: { x: 0.04, y: 0.3, width: 0.92, height: 0.05 },
+            children: [],
+          },
+        ],
+      },
+    });
+    const original = describeIos.getMockImplementation()!;
+    describeIos.mockImplementation(withHint as never);
+    try {
+      const r = await run({
+        udid: PHYSICAL_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 1_000,
+      });
+      expect(r.note, "describe's own hint must survive").toMatch(/use screenshot for positions/);
+      expect(r.note, "and so must what the condition means here").toMatch(
+        /answer the same as `exists`/
+      );
+    } finally {
+      describeIos.mockImplementation(original);
+    }
+  });
+
   it("leaves `exists` and a simulator unannotated", async () => {
     // `exists` asks only whether the selector matched, which neither the missing
     // geometry nor the rotation changes — annotating it would be noise.

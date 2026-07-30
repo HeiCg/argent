@@ -33,12 +33,42 @@ describe("formatErrorForAgent", () => {
 });
 
 describe("subprocessOutputTail", () => {
-  it("keeps the last few non-empty lines, stderr before stdout", () => {
+  it("keeps the last few non-empty lines of stderr", () => {
     const err = Object.assign(new Error("Command failed"), {
       stderr: "\n  ERROR: could not install  \n\n  The device is locked.  \n\n",
       stdout: "",
     });
     expect(subprocessOutputTail(err)).toBe("ERROR: could not install | The device is locked.");
+  });
+
+  it("never lets stdout progress chatter displace the stderr diagnosis", () => {
+    // `devicectl` narrates on stdout and reports on stderr, and the callers do
+    // not pass `--quiet`. Sharing one last-N window between the two streams
+    // means four lines of narration erase the one line that says what failed.
+    const err = Object.assign(new Error("Command failed"), {
+      stderr:
+        "ERROR: The operation couldn't be completed. Unable to install the app.\n" +
+        "  Underlying error: The device is locked.\n" +
+        "  Recovery suggestion: Unlock the device and try again.\n",
+      stdout: [
+        "12:00:01  Acquired tunnel connection to device.",
+        "12:00:01  Enabling developer disk image services.",
+        "12:00:02  Acquired usage assertion.",
+        "12:00:03  Transferring app bundle...",
+      ].join("\n"),
+    });
+    const tail = subprocessOutputTail(err);
+    expect(tail).toMatch(/device is locked/i);
+    expect(tail).toMatch(/Unlock the device/i);
+    expect(tail).not.toMatch(/Transferring app bundle/);
+  });
+
+  it("falls back to stdout when stderr said nothing", () => {
+    const err = Object.assign(new Error("Command failed"), {
+      stderr: "   \n\n",
+      stdout: "no such application\n",
+    });
+    expect(subprocessOutputTail(err)).toBe("no such application");
   });
 
   it("keeps at most the last four lines", () => {

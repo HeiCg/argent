@@ -1,6 +1,7 @@
 import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import { isPhysicalIos, resolveDevice } from "../../utils/device-info";
+import { UnsupportedOperationError } from "../../utils/capability";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import type { WhenPlatform } from "./flow-utils";
 
@@ -87,14 +88,15 @@ function deviceResolutionError(message: string, all: RawDevice[]): FailureError 
  */
 function assertFlowCapableDevice(device: DeviceInfo): DeviceInfo {
   if (isPhysicalIos(device)) {
-    throw new FailureError(
-      `Flows cannot run against the physical iPhone "${device.id}": selectors resolve against the native view hierarchy, which needs argent's devtools dylib injected into the app — there is no physical-device equivalent. Drive it with describe + gesture-tap / gesture-swipe, or run the flow on a simulator.`,
-      {
-        error_code: FAILURE_CODES.FLOW_DEVICE_RESOLUTION,
-        failure_stage: "flow_device_resolution",
-        failure_area: "tool_server",
-        error_kind: "unsupported",
-      }
+    // `UnsupportedOperationError`, like every other physical-iOS refusal (the
+    // capability gate, gesture-custom's second touch, profiler-load's native
+    // mode): the HTTP layer maps it to a 400. A bare `FailureError` falls
+    // through to 500, which tells a client the server faulted and the call is
+    // worth retrying — and no retry can make this one succeed.
+    throw new UnsupportedOperationError(
+      "flow-execute",
+      device,
+      "selectors resolve against the native view hierarchy, which needs argent's devtools dylib injected into the app, and there is no physical-device equivalent; drive it with describe + gesture-tap / gesture-swipe, or run the flow on a simulator"
     );
   }
   return device;

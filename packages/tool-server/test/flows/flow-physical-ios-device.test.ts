@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Registry } from "@argent/registry";
 import { resolveFlowDevice } from "../../src/tools/flows/flow-device";
+import { UnsupportedOperationError } from "../../src/utils/capability";
 
 /**
  * A physical iPhone is a listed, reachable device that the flow runner cannot
@@ -34,12 +35,19 @@ const simEntry = { platform: "ios", kind: "simulator", udid: SIM_UDID, state: "B
 
 describe("flow device resolution rejects a physical iPhone", () => {
   it("rejects it when named explicitly, naming the reason and an alternative", async () => {
+    // `UnsupportedOperationError` is the class the HTTP layer maps to 400. A
+    // bare FailureError would be served as a 500 — a server fault, which invites
+    // a retry that can never succeed — while every other physical-iOS refusal
+    // in the tool-server answers 400.
     await expect(
       resolveFlowDevice(registryListing([]), undefined, { device: PHYSICAL_UDID })
-    ).rejects.toThrow(/physical iPhone/i);
+    ).rejects.toBeInstanceOf(UnsupportedOperationError);
     await expect(
       resolveFlowDevice(registryListing([]), undefined, { device: PHYSICAL_UDID })
     ).rejects.toThrow(/native view hierarchy/i);
+    await expect(
+      resolveFlowDevice(registryListing([]), undefined, { device: PHYSICAL_UDID })
+    ).rejects.toThrow(/describe \+ gesture-tap/i);
   });
 
   it("says why when it is the only ready device, rather than 'no booted device'", async () => {
@@ -49,7 +57,7 @@ describe("flow device resolution rejects a physical iPhone", () => {
     // shows one.
     await expect(
       resolveFlowDevice(registryListing([physicalEntry]), undefined, {})
-    ).rejects.toThrow(/physical iPhone/i);
+    ).rejects.toBeInstanceOf(UnsupportedOperationError);
     await expect(
       resolveFlowDevice(registryListing([physicalEntry]), undefined, {})
     ).rejects.not.toThrow(/No booted device found/i);
