@@ -56,10 +56,11 @@ export async function describeAndroid(
         // screen right now" — the `describe` tool, `await-screen-idle`,
         // `await-ui-element` and the Lens/preview describe route all read it,
         // and a selector match turns it into tap coordinates. The helper's
-        // long-lived connection caches AccessibilityNodeInfo per node and its
-        // event-driven invalidation stops once the inspected app restarts under
-        // that connection, so a cached read serves a node's first-seen text
-        // indefinitely: the screen moves on and the tree does not.
+        // long-lived connection caches AccessibilityNodeInfo per node, and that
+        // cache's event-driven invalidation is not dependable — it has been
+        // observed to stop altogether after the inspected app restarts under the
+        // connection. A cached read then keeps serving a node's first-seen text:
+        // the screen moves on and the tree does not.
         //
         // The cost is bounded and worth paying. Both platform paths scale with
         // the tree, because dropping the cache means the walk re-fetches every
