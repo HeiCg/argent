@@ -27,7 +27,8 @@ const describeIos = vi.fn(
     },
   })
 );
-vi.mock("../src/tools/describe/platforms/ios", () => ({
+vi.mock("../src/tools/describe/platforms/ios", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
   describeIos: (...args: unknown[]) => describeIos(...(args as [])),
   iosRequires: [],
 }));
@@ -155,6 +156,70 @@ describe("await-ui-element on a physical iPhone", () => {
     } finally {
       describeIos.mockImplementation(original);
     }
+  });
+
+  it("does not call an element hidden when the read could not have seen it", async () => {
+    // A CoreDevice read returns at most 120 elements, so on a longer screen a
+    // no-match means "outside this window", not "gone" — and `hidden` is the one
+    // condition a zero-match read satisfies. Reporting success there tells the
+    // caller to act on an element that is still on screen.
+    const TOTAL = 200;
+    let cursor = 0;
+    const label = (i: number) => (i === 150 ? "Delete Account" : `Row ${i}`);
+    const original = describeIos.getMockImplementation()!;
+    describeIos.mockImplementation(async () => {
+      const window = Array.from({ length: 120 }, (_, k) => label((cursor + k) % TOTAL));
+      cursor = (cursor + 1) % TOTAL;
+      return {
+        source: "coredevice-ax" as const,
+        tree: {
+          role: "AXGroup",
+          frame: { x: 0, y: 0, width: 1, height: 1 },
+          children: window.map((l, i) => ({
+            role: "AXButton",
+            label: l,
+            frame: { x: 0.04, y: i / 120, width: 0.92, height: 0.05 },
+            children: [],
+          })),
+        },
+      };
+    });
+    try {
+      const r = await run({
+        udid: PHYSICAL_UDID,
+        condition: "hidden",
+        selector: { text: "Delete Account" },
+        timeoutMs: 900,
+      });
+      expect(r.success, "the element is on screen, 30 rows past the read window").toBe(false);
+      expect(r.note).toMatch(/not proof of absence/i);
+
+      // The positive conditions are unaffected — a truncated read can delay a
+      // match but never invent one — so `exists` still finds it once the window
+      // reaches it.
+      cursor = 150;
+      const found = await run({
+        udid: PHYSICAL_UDID,
+        condition: "exists",
+        selector: { text: "Delete Account" },
+        timeoutMs: 900,
+      });
+      expect(found.success).toBe(true);
+    } finally {
+      describeIos.mockImplementation(original);
+    }
+  });
+
+  it("still reports a genuinely absent element as hidden", async () => {
+    // The guard must not make `hidden` unanswerable: the default stub returns
+    // two elements, far under the ceiling, so a no-match there is real absence.
+    const r = await run({
+      udid: PHYSICAL_UDID,
+      condition: "hidden",
+      selector: { text: "Nowhere" },
+      timeoutMs: 900,
+    });
+    expect(r.success).toBe(true);
   });
 
   it("leaves `exists` and a simulator unannotated", async () => {

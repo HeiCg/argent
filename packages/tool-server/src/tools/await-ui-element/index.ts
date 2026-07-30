@@ -15,7 +15,7 @@ import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
-import { describeIos, iosRequires } from "../describe/platforms/ios";
+import { describeIos, iosRequires, PHYSICAL_IOS_AX_LIMIT } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
 import { describeVega, vegaRequires } from "../describe/platforms/vega";
@@ -74,6 +74,20 @@ const ROTATING_READ_NOTE =
 
 /** Conditions whose meaning the rotating, geometry-free read changes. */
 const ROTATION_SENSITIVE = new Set(["visible", "hidden", "text"]);
+
+// A CoreDevice read returns at most PHYSICAL_IOS_AX_LIMIT elements, starting one
+// element further along the VoiceOver walk each time. `hidden` is the one
+// condition a *zero-match* read satisfies, so on a full read it would report the
+// element gone when it is merely outside the current window — success for
+// something that did not happen, and the worst answer this tool can give, since
+// the caller acts on the element being gone. `describeIos` says as much on its
+// own truncated reads ("a 'not found' here is not proof of absence"). The
+// positive conditions are unaffected: a truncated read can only delay a match,
+// never invent one.
+const TRUNCATED_HIDDEN_NOTE =
+  `the screen has at least ${PHYSICAL_IOS_AX_LIMIT} accessibility elements, which is the most one ` +
+  `CoreDevice read returns, so an element outside the current window reads as absent; ` +
+  `"not found" is not proof of absence here. Use screenshot to check whether it is gone.`;
 
 const zodSchema = z
   .object({
@@ -344,7 +358,8 @@ or before tapping an element that appears asynchronously.`,
         note: "wait was cancelled before the condition was met",
       });
 
-      const rotatingRead = isPhysicalIos(device) && ROTATION_SENSITIVE.has(params.condition);
+      const rotatingReadDevice = isPhysicalIos(device);
+      const rotatingRead = rotatingReadDevice && ROTATION_SENSITIVE.has(params.condition);
       /**
        * Append the physical-iPhone caveat to whatever note the verdict already
        * carries. On the timeout path that note has folded in the last read's
@@ -368,6 +383,9 @@ or before tapping an element that appears asynchronously.`,
       // "the element was there and disappeared" from "the selector never matched
       // at all" — otherwise a typo'd selector is an instant false-positive.
       let everMatched = false;
+      // Whether any read came back at the CoreDevice ceiling — see
+      // TRUNCATED_HIDDEN_NOTE.
+      let sawFullRead = false;
 
       const poll = await pollDescribeTree<WaitResult>({
         fetchTree: () => fetchTree(device, params, services, isTvOs, androidIsTv),
@@ -377,6 +395,13 @@ or before tapping an element that appears asynchronously.`,
         onSample: (data) => {
           const matches = findAll(data.tree, selector);
           if (matches.length > 0) everMatched = true;
+          if (rotatingReadDevice && data.tree.children.length >= PHYSICAL_IOS_AX_LIMIT) {
+            sawFullRead = true;
+            // A no-match on a truncated read is not absence, so it may not
+            // satisfy `hidden`. Keep polling: the window advances, and a later
+            // read may cover the element.
+            if (params.condition === "hidden" && matches.length === 0) return { done: false };
+          }
           // Compute `blind` after `everMatched` so an empty tree that follows an
           // earlier match counts as a transient blank, not a confirmed read.
           const blind = isBlindRead(data, everMatched);
@@ -396,10 +421,19 @@ or before tapping an element that appears asynchronously.`,
       if (poll.aborted) return cancelled();
       if (poll.result) return poll.result;
 
+      const timedOut = timeoutNote(
+        params,
+        poll.lastData?.tree ?? null,
+        poll.lastError,
+        poll.lastData
+      );
       return annotate({
         success: false,
         elapsed: Date.now() - start,
-        note: timeoutNote(params, poll.lastData?.tree ?? null, poll.lastError, poll.lastData),
+        note:
+          sawFullRead && params.condition === "hidden"
+            ? `${timedOut} (${TRUNCATED_HIDDEN_NOTE})`
+            : timedOut,
       });
     },
   };
