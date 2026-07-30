@@ -15,6 +15,7 @@ import type { ToolCapability } from "@argent/registry";
 import { FLAG_REGISTRY } from "@argent/configuration-core";
 import { createRegistry } from "../src/utils/setup-registry";
 import { pasteTool } from "../src/tools/paste";
+import { listDevicesTool } from "../src/tools/devices/list-devices";
 import { resolveDevice } from "../src/utils/device-info";
 import { assertSupported, UnsupportedOperationError } from "../src/utils/capability";
 
@@ -101,26 +102,37 @@ describe("physical-iPhone capability gate, swept across the registry", () => {
     }
   });
 
-  it("keeps the feature-flag blurb free of a hand-written tool list", () => {
-    // `argent flags` prints this description, and nothing ties it to the
-    // capability objects above. A tool list spelled out here therefore only
-    // stays true until the next capability edit — flipping one tool's
-    // `apple.device` leaves the blurb understating (or overstating) the feature
-    // with the whole suite green. The enumeration belongs in the README's
-    // physical-iOS section and in each tool's own capability, so the blurb must
-    // name no tool id at all.
+  it("keeps the prose that describes the feature free of a hand-written tool list", () => {
+    // Two places tell a user (or an agent) what a physical iPhone can do:
+    // `argent flags`' blurb, and the physical-iOS line of `list-devices`'
+    // description — the one an agent reads while picking a target. Nothing ties
+    // either to the capability objects above, so a tool list spelled out in them
+    // only stays true until the next capability edit: flipping one tool's
+    // `apple.device` leaves them understating (or overstating) the feature with
+    // the whole suite green. The enumeration belongs in the README's
+    // physical-iOS section and in each tool's own capability, so neither piece
+    // of prose may name a tool id at all.
     const flag = FLAG_REGISTRY.find((f) => f.name === "physical-ios-devices");
     expect(flag, "physical-ios-devices must stay in the flag registry").toBeDefined();
 
     const names = (text: string) =>
       [...allCapabilities().keys()].filter((id) => new RegExp(`\\b${id}\\b`).test(text));
 
-    // Anti-vacuity: a matcher that never fires would pass the assertion below
+    // Anti-vacuity: a matcher that never fires would pass the assertions below
     // while checking nothing.
     expect(names("Supports screenshot, tap, swipe, describe, and launch-app.")).toEqual(
       expect.arrayContaining(["screenshot", "describe", "launch-app"])
     );
 
-    expect(names(flag!.description)).toEqual([]);
+    expect(names(flag!.description), "argent flags blurb").toEqual([]);
+
+    // Scoped to the one line that describes physical iOS: the rest of
+    // `list-devices`' description names tools on purpose (the TV paragraph
+    // routes the reader to `tv-remote` and `describe`).
+    const physicalLine = listDevicesTool
+      .description!.split("\n")
+      .filter((line) => line.includes("physical-ios-devices"));
+    expect(physicalLine, "the physical-iOS line must still be findable").toHaveLength(1);
+    expect(names(physicalLine[0]!), "list-devices description").toEqual([]);
   });
 });
