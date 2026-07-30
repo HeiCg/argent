@@ -114,6 +114,15 @@ Returns { status, stats, entryPoints, nodes, edgesCount, mapUrl } — a trimmed 
     searchHint: "map crawl app screens graph navigation explore sitemap overview inventory",
     longRunning: true,
     featureFlag: "argent-map",
+    interaction: {
+      startedMsg: ({ params }) => `Mapping ${params.bundleId}`,
+      completedMsg: ({ params, result }) =>
+        `Mapped ${params.bundleId}: ${result.stats.screens} screen${
+          result.stats.screens === 1 ? "" : "s"
+        }, ${result.edgesCount} transition${result.edgesCount === 1 ? "" : "s"} (${result.status})`,
+      failedMsg: ({ params, failureSignal }) =>
+        `Failed to map ${params.bundleId}: ${failureSignal.error_code}`,
+    },
     zodSchema,
     capability,
     // No eagerly-declared service: every step dispatches existing tools
