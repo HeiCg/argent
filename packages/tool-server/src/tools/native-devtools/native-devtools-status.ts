@@ -54,7 +54,7 @@ Returns { envSetup, appRunning, connected, requiresRestart, state, nextLaunchWil
 - envSetup: DYLD_INSERT_LIBRARIES is configured in the simulator's launchd environment
 - appRunning: the target bundle currently has a running UIKit process on the simulator
 - connected: the dylib is active in the current running process for this bundleId
-- requiresRestart: the app is already running but its current process does not have native devtools injected (always false for a non-injectable app)
+- requiresRestart: the app is already running and needs a fresh process — its current one is not injected, or could not be inspected to prove otherwise. Always false for a non-injectable app, and false when state is unregistered, where a relaunch cannot help.
 - state: why devtools are or aren't live, measured from the running process. "connected"; "not_running"; "stale_process" (the process was launched before argent's instrumentation was in place, so restart-app fixes it); "unregistered" (the process IS injected and pointed at this simulator's devtools endpoint yet the service never registered it, so restarting the app cannot help); "indeterminate" (the process could not be inspected). Omitted when injectable is false, which is terminal on its own.
 - nextLaunchWillBeInjected: if you launch this bundle now, native devtools env setup is already in place (always false for a non-injectable app)
 - injectable: whether native devtools can ever be injected into this app. Apple system apps (bundle ids under com.apple.) are platform binaries with library validation, so the dylib can never load into them.

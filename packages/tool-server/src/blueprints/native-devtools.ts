@@ -123,7 +123,7 @@ export type NativeDevtoolsAppState =
  * `stale_process` — so an uncertain read costs at most one wasted restart-app
  * rather than sending an agent off to restart a healthy tool-server.
  */
-export const NATIVE_DEVTOOLS_CONNECT_GRACE_MS = 3000;
+const NATIVE_DEVTOOLS_CONNECT_GRACE_MS = 3000;
 
 /**
  * The agent-facing remedy for each measured state. `connected` is excluded at

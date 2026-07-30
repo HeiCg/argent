@@ -118,6 +118,13 @@ export function processCarriesInjection(env: string, endpoint: IosEndpoint): boo
   return env.split(/\s+/).includes(expected);
 }
 
+/**
+ * Cap for the single-pid `ps` probe. Its own budget rather than the simctl one:
+ * this reads the local process table with no simulator round-trip, and the
+ * probe is advisory — a slow answer is worth less than a fast "no evidence".
+ */
+const PS_PROBE_TIMEOUT_MS = 5_000;
+
 /** Parse `ps -o etime` (`[[dd-]hh:]mm:ss`) into seconds. */
 export function parsePsElapsedSeconds(etime: string): number | null {
   const match = etime.trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
@@ -324,8 +331,7 @@ async function readProcessLaunchState(pid: number): Promise<RunningAppProcess | 
   try {
     ({ stdout } = await execFileAsync(PS_BIN, ["eww", "-p", String(pid), "-o", "etime=,command="], {
       encoding: "utf8",
-      timeout: SIMCTL_SPAWN_TIMEOUT_MS,
-      killSignal: SIMCTL_KILL_SIGNAL,
+      timeout: PS_PROBE_TIMEOUT_MS,
     }));
   } catch {
     return null;
