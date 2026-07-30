@@ -53,3 +53,6 @@ Install missing plugins before running: `npm install --save-dev eslint-plugin-re
    2b. If no config, create a temporary `.eslintrc.json` with all rules above.
 2. Run: `npx eslint --format json <src_dir>` — replace `<src_dir>` with the project's JS/TS source root (check `package.json` scripts or look for `src/`, `app/`, `lib/`)
 3. Parse output into: `file:line -> rule -> message`.
+4. Group the findings by directory into at most 4 batches and fix them with at most 4 sub-agents — never one per file or one per finding.
+
+Note: of the rules above only `react-native/no-single-element-style-arrays` is autofixable, and `react-hooks/exhaustive-deps` offers editor suggestions rather than a fix `--fix` will apply. Running `eslint --fix` first is harmless but leaves essentially the whole list in place.
