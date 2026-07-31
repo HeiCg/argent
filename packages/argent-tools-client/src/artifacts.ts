@@ -531,6 +531,12 @@ export async function materializeArtifacts(
     localPath: string | null
   ): Promise<DurableOutcome> {
     const filename = basename(saveTarget.path);
+    // Each stage catches for itself, because which verdict a throw deserves is
+    // exactly what the stage it came from decides. One try around the whole
+    // body would answer "destination" for a rejected fetch or a broken response
+    // stream, and the fall-through that answer triggers re-reads the same
+    // artifact with no cap at all — handing any server that can make one
+    // request fail the unbounded read the size check below exists to refuse.
     try {
       await mkdir(saveTarget.dir, { recursive: true });
       // Refuse to write through a symlinked durable directory — the lexical
@@ -540,7 +546,12 @@ export async function materializeArtifacts(
       if (!(await confineToRealBase(saveTarget.dir, saveTarget.base, saveTarget.rel))) {
         return "scratch";
       }
-      if (localPath) {
+    } catch {
+      return "scratch";
+    }
+
+    if (localPath) {
+      try {
         // Already on this host — copy without buffering the whole file
         // (recordings can be large); only re-read if it's an inline image.
         // Exclusive copy so a colliding name never clobbers an existing
@@ -549,31 +560,44 @@ export async function materializeArtifacts(
           copyFile(localPath, p, fsConstants.COPYFILE_EXCL)
         );
         return finalPath ? { path: finalPath } : "scratch";
+      } catch {
+        // The bytes are on this host either way, so the temp cache can still
+        // copy them from the same source.
+        return "scratch";
       }
-      // Remote download. A durable file survives cache GC, so it must have a
-      // known, verified size: refuse anything but a positive integer within
-      // the cap — a `size:0`, absent, NaN, or over-cap value can't bound the
-      // download. (`size` arrives as unvalidated JSON from a possibly hostile
-      // server and `isArtifactHandle` doesn't check it, so a non-numeric size
-      // would make the `readCapped` cap `NaN` and never trip, letting an
-      // unbounded body buffer into client memory — the exact DoS the cap
-      // exists to prevent.) The cap can then be `value.size` directly.
-      if (!Number.isInteger(value.size) || value.size <= 0 || value.size > MAX_DURABLE_BYTES) {
-        return "undeliverable";
-      }
+    }
+
+    // Remote download. A durable file survives cache GC, so it must have a
+    // known, verified size: refuse anything but a positive integer within
+    // the cap — a `size:0`, absent, NaN, or over-cap value can't bound the
+    // download. (`size` arrives as unvalidated JSON from a possibly hostile
+    // server and `isArtifactHandle` doesn't check it, so a non-numeric size
+    // would make the `readCapped` cap `NaN` and never trip, letting an
+    // unbounded body buffer into client memory — the exact DoS the cap
+    // exists to prevent.) The cap can then be `value.size` directly.
+    if (!Number.isInteger(value.size) || value.size <= 0 || value.size > MAX_DURABLE_BYTES) {
+      return "undeliverable";
+    }
+    let data: Buffer | null;
+    try {
       const res = await fetchFn(`${ctx.toolsUrl}/artifacts/${value.id}`, {
         headers: authHeaders,
       });
       if (!res.ok) return "undeliverable";
-      const data = await readCapped(res, value.size);
-      if (!data || data.length !== value.size) return "undeliverable";
+      data = await readCapped(res, value.size);
+    } catch {
+      // A rejected fetch or a response stream that broke mid-body is a fact
+      // about this artifact and this transport, not about the destination.
+      return "undeliverable";
+    }
+    if (!data || data.length !== value.size) return "undeliverable";
+
+    try {
       const finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
         writeFile(p, data, { flag: "wx" })
       );
       return finalPath ? { path: finalPath, data } : "scratch";
     } catch {
-      // Only the filesystem calls above throw; the download arms return their
-      // own verdict. So a throw is always a destination problem.
       return "scratch";
     }
   }
