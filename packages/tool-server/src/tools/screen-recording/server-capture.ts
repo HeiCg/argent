@@ -184,6 +184,18 @@ export async function stopServerCapture(
       // exits. Say where it is, so it can still be fetched while the server is
       // up — and classify it like the empty-output case two calls down, which
       // is the same outcome for the caller: no video at `outputFile`.
+      //
+      // Drop whatever the copy managed to write first. A full disk or a
+      // file-size limit accepts the create and then refuses the rest, and the
+      // truncated mp4 it leaves sits at the path `screen-recording-start`
+      // handed the caller — nothing in this process reads it again, so the
+      // corruption would only ever be found by whoever opens that path. The
+      // outer catch cannot do it: its rule is to remove an output only when it
+      // is genuinely empty, so no path can ever delete a real recording. Here
+      // there is no such doubt — `outputFile` is unique per start and this copy
+      // is the only thing that writes it, which is why the host fallback
+      // removes its own on a failed start too.
+      await fs.rm(outputFile, { force: true }).catch(() => {});
       const detail = err instanceof Error ? err.message : String(err);
       throw new FailureError(
         `The recording finished but could not be copied out of simulator-server: ${detail}. ` +
