@@ -430,6 +430,50 @@ describe("pixel settle backstop", () => {
     expect(vi.mocked(capturePixels)).toHaveBeenCalledTimes(2);
   });
 
+  it("gives the post-pixel read the ordinary phase deadline after a fast pixel phase", async () => {
+    vi.useFakeTimers();
+    const visible = screen([
+      n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+    ]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      // Every read is healthy at ordinary Android-uiautomator-like latency:
+      // 400ms — well under the phase deadline, but well over the 250ms
+      // final-read reserve.
+      return new Promise((resolve) => {
+        setTimeout(() => resolve(visible), 400);
+      });
+    };
+    vi.mocked(capturePixels).mockResolvedValue(solid([255, 255, 255]));
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = settleTree(env, { absoluteDeadline: Date.now() + 7_500 });
+    await vi.advanceTimersByTimeAsync(7_500);
+    const settled = await pending;
+
+    // Pins the finalTreeDeadline two-arm choice: a fast pixel phase (matching
+    // pair on the second capture, finished by ~t=1.2s) leaves the ordinary
+    // phase deadline for the mandatory post-pixel revalidation read, so an
+    // ordinary-latency 400ms read completes and the settle stays fully fresh.
+    // Cutting that read at the 250ms reserve instead would turn this everyday
+    // settle into { converged: false, treeFresh: false } — a tree
+    // `waitForFrameResult` refuses to resolve a selector from.
+    expect(settled).toEqual({
+      tree: visible,
+      converged: true,
+      treeFresh: true,
+      visual: "settled",
+    });
+    // Two converging reads plus exactly the one revalidation read; the pixel
+    // pair matched on its second capture.
+    expect(reads).toBe(3);
+    expect(vi.mocked(capturePixels)).toHaveBeenCalledTimes(2);
+  });
+
   it("captures a snapshot only after the real combined settle observes pixels stop moving", async () => {
     const shotPath = path.join(tmpDir, "snapshot.png");
     const png = Buffer.alloc(24);
