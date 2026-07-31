@@ -11,6 +11,7 @@ import {
   unsetConfigValue,
   listConfig,
   coerceCliValue,
+  getAdditionalIosDeviceSets,
   UnknownConfigKeyError,
   ConfigScopeError,
   ConfigValidationError,
@@ -77,6 +78,33 @@ describe("getConfigValue — scope merge (lens.agent = prioritize-local)", () =>
     setConfigValue("lens.agent", "codex", "project", opts());
     expect(fs.existsSync(configFilePath("project", opts()))).toBe(true);
     expect(configFilePath("project", opts())).toBe(path.join(projectDir, ".argent", "config.json"));
+  });
+});
+
+describe("recordings.directory — schema entry", () => {
+  it("is unset by default (the client then uses its built-in .argent/recordings)", () => {
+    expect(getConfigValueByKey("recordings.directory", opts())).toBeUndefined();
+  });
+
+  it("accepts a path at either scope and trims it", () => {
+    expect(setConfigValue("recordings.directory", "  ~/Movies/argent  ", "global", opts())).toBe(
+      "~/Movies/argent"
+    );
+    expect(setConfigValue("recordings.directory", "clips", "project", opts())).toBe("clips");
+  });
+
+  it("project scope wins over global (prioritize-local)", () => {
+    setConfigValue("recordings.directory", "/global/recordings", "global", opts());
+    setConfigValue("recordings.directory", "/project/recordings", "project", opts());
+    expect(getConfigValueByKey("recordings.directory", opts())).toBe("/project/recordings");
+    unsetConfigValue("recordings.directory", "project", opts());
+    expect(getConfigValueByKey("recordings.directory", opts())).toBe("/global/recordings");
+  });
+
+  it("rejects a non-string value", () => {
+    expect(() => setConfigValue("recordings.directory", 42, "global", opts())).toThrow(
+      ConfigValidationError
+    );
   });
 });
 
@@ -191,6 +219,78 @@ describe("coerceCliValue", () => {
     expect(coerceCliValue('["a","b"]')).toEqual(["a", "b"]);
     expect(coerceCliValue("/tmp/device-set")).toBe("/tmp/device-set");
     expect(coerceCliValue("claude")).toBe("claude");
+  });
+});
+
+describe("ios.additionalDeviceSets — additive union across scopes", () => {
+  it("reads as an empty list when neither scope is set", () => {
+    expect(getAdditionalIosDeviceSets(opts())).toEqual([]);
+    expect(getConfigValueByKey("ios.additionalDeviceSets", opts())).toBeUndefined();
+  });
+
+  it("unions the scopes additively: global baseline first, project extras after, deduped", () => {
+    setConfigValue("ios.additionalDeviceSets", ["/tmp/sets/a", "/tmp/sets/b"], "global", opts());
+    setConfigValue("ios.additionalDeviceSets", ["/tmp/sets/b", "/tmp/sets/c"], "project", opts());
+    expect(getConfigValueByKey("ios.additionalDeviceSets", opts())).toEqual([
+      "/tmp/sets/a",
+      "/tmp/sets/b",
+      "/tmp/sets/c",
+    ]);
+    // Each scope's file holds only its own entries — the union is read-time.
+    expect(readConfigObject("global", opts())).toEqual({
+      ios: { additionalDeviceSets: ["/tmp/sets/a", "/tmp/sets/b"] },
+    });
+    expect(readConfigObject("project", opts())).toEqual({
+      ios: { additionalDeviceSets: ["/tmp/sets/b", "/tmp/sets/c"] },
+    });
+  });
+
+  it("rejects a non-array value; normalizes entries (trims, drops blanks/non-strings)", () => {
+    expect(() =>
+      setConfigValue("ios.additionalDeviceSets", "/tmp/sets/a", "global", opts())
+    ).toThrow(ConfigValidationError);
+    expect(
+      setConfigValue("ios.additionalDeviceSets", ["  /tmp/sets/a ", "", 42], "global", opts())
+    ).toEqual(["/tmp/sets/a"]);
+  });
+
+  it("getAdditionalIosDeviceSets expands ~ and resolves relative entries per scope", () => {
+    setConfigValue("ios.additionalDeviceSets", ["~/DeviceSets/ci", "shared"], "global", opts());
+    setConfigValue("ios.additionalDeviceSets", ["device-sets/e2e", "/abs/set"], "project", opts());
+    expect(getAdditionalIosDeviceSets(opts())).toEqual([
+      path.join(homeDir, "DeviceSets/ci"),
+      // Relative global entries resolve against home…
+      path.join(homeDir, "shared"),
+      // …while relative project entries resolve against the project root.
+      path.join(projectDir, "device-sets/e2e"),
+      path.resolve("/abs/set"),
+    ]);
+  });
+
+  it("drops duplicates that only converge after normalization", () => {
+    setConfigValue("ios.additionalDeviceSets", ["~/DeviceSets/ci"], "global", opts());
+    setConfigValue(
+      "ios.additionalDeviceSets",
+      [path.join(homeDir, "DeviceSets", "ci")],
+      "project",
+      opts()
+    );
+    expect(getAdditionalIosDeviceSets(opts())).toEqual([path.join(homeDir, "DeviceSets/ci")]);
+  });
+
+  it("strips trailing separators so slash-suffixed spellings dedup too", () => {
+    setConfigValue("ios.additionalDeviceSets", ["~/DeviceSets/ci/"], "global", opts());
+    setConfigValue(
+      "ios.additionalDeviceSets",
+      [path.join(homeDir, "DeviceSets", "ci"), "~"],
+      "project",
+      opts()
+    );
+    expect(getAdditionalIosDeviceSets(opts())).toEqual([
+      path.join(homeDir, "DeviceSets/ci"),
+      // Bare `~` resolves to home without a trailing separator either.
+      homeDir,
+    ]);
   });
 });
 

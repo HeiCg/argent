@@ -105,6 +105,37 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     merge: "prioritize-local",
     example: "claude",
   },
+  {
+    key: "ios.additionalDeviceSets",
+    description:
+      "Additional CoreSimulator device-set directories whose simulators argent should see " +
+      "alongside the default set. Absolute paths (or ~/…); relative entries resolve against " +
+      "the project root (project scope) or home (global scope).",
+    scopes: ["project", "global"],
+    parse: asStringArray,
+    // Additive: the scopes extend each other rather than shadow — a repo's
+    // committed device sets are appended to the user's global ones (global
+    // baseline first, project extras after, deduplicated). Note that
+    // `getAdditionalIosDeviceSets` re-implements this union (path resolution
+    // must precede dedup) and guards on the preset staying "union".
+    merge: "union",
+    example: '["~/DeviceSets/ci"]',
+  },
+  {
+    key: "recordings.directory",
+    description:
+      "Directory where finished screen recordings (mp4) are saved on the client host. " +
+      "Absolute, `~`-prefixed, or relative to the project root (home dir when not in a project). " +
+      "Unset ⇒ `.argent/recordings` under the project root.",
+    scopes: ["project", "global"],
+    parse: asString,
+    // A repo can pin where its recordings land; falls back to the user's global
+    // preference. Resolution happens on the client (the machine the mp4 is
+    // persisted to), so with a remote `argent link` tool-server it is the
+    // *client's* config that decides.
+    merge: "prioritize-local",
+    example: "~/Movies/argent",
+  },
 ] as const;
 
 /** Look up a schema entry by key, or `undefined` when the key is unknown. */
