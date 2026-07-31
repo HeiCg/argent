@@ -167,10 +167,16 @@ const COMBINED_PHASE_TIMEOUT_MS = SETTLE_TIMEOUT_MS + PIXEL_CAPTURE_TIMEOUT_MS;
 const COMBINED_HARD_TIMEOUT_MS =
   SETTLE_TIMEOUT_MS + PIXEL_SETTLE_TIMEOUT_MS + FINAL_TREE_REVALIDATE_RESERVE_MS;
 // A tree read already in flight may outlive the tree polling window: Android's
-// full hierarchy commonly takes longer than 3s under load. When no caller
-// supplies a wider hard deadline, still bound that one native read by the
-// longest built-in settle budget.
-const DEFAULT_TREE_READ_TIMEOUT_MS = COMBINED_PHASE_TIMEOUT_MS;
+// full hierarchy commonly takes longer than 3s under load (the sources
+// themselves budget far more — android-devtools grants getHierarchy 15s, and a
+// uiautomator dump allows up to 20s). When no caller supplies a hard deadline,
+// an unowned settle must not abandon that read sooner than the action budget
+// every deadline-owning caller grants it (`Date.now() +
+// DEFAULT_ACTION_TIMEOUT_MS`): anything shorter makes a healthy 5–7.5s read
+// fail only the deadline-less call sites (`scroll-to`'s per-iteration settles)
+// while every other directive would accept the same read. Matching the action
+// budget keeps the timeout cliff at the same 7.5s everywhere.
+const DEFAULT_TREE_READ_TIMEOUT_MS = DEFAULT_ACTION_TIMEOUT_MS;
 
 // `scroll-to`: a bounded number of momentum-free increments. Each travels half
 // the clip window along the scroll axis (half the screen when no `within`
@@ -531,8 +537,9 @@ export async function settleTree(
   // The source operation has a distinct hard boundary. Do not silently shorten
   // a caller-owned action budget to the internal 5s combined window, or a
   // healthy 5–7.5s native hierarchy read becomes an early action failure. With
-  // no caller deadline, allow a tree-only read to finish slightly after its 3s
-  // polling phase while keeping the unowned settle bounded.
+  // no caller deadline, grant the read the same action budget an owning caller
+  // would pass, so the unowned settle stays bounded without a lower cliff of
+  // its own.
   const treeReadDeadline = options.absoluteDeadline ?? startedAt + DEFAULT_TREE_READ_TIMEOUT_MS;
   let seedFp: string | undefined;
   let lastTree: DescribeNode | undefined;

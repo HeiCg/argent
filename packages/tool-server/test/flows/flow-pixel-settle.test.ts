@@ -172,6 +172,30 @@ describe("pixel settle backstop", () => {
     expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
   });
 
+  it("bounds a hung deadline-less tree read at the shared 7.5s action budget", async () => {
+    vi.useFakeTimers();
+    currentTree = () => new Promise(() => {});
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+    const startedAt = Date.now();
+
+    let rejectedAt = -1;
+    const caught = settleTree(env, { mode: "tree-only" }).catch((err: unknown) => {
+      rejectedAt = Date.now();
+      return err;
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const err = await caught;
+    expect(err).toBeInstanceOf(FlowTreeSettleTimeoutError);
+    // The unowned fallback matches DEFAULT_ACTION_TIMEOUT_MS, so the hung-read
+    // cliff sits at the same 7.5s as every deadline-owning caller's budget.
+    expect(rejectedAt - startedAt).toBe(7_500);
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+  });
+
   it("does not start another tree read after polling reaches its phase deadline", async () => {
     vi.useFakeTimers();
     const source = new Error("native devtools is unavailable (service down)");
@@ -1657,6 +1681,40 @@ describe("pixel settle backstop", () => {
 
     expect(calls.filter((id) => id === "gesture-swipe")).toHaveLength(1);
     expect(vi.mocked(capturePixels)).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses a 5.2s successful tree read for a scroll-to whose target is already visible", async () => {
+    // scroll-to is the one directive whose settles carry no caller deadline, so
+    // its reads run on the unowned fallback. A healthy read landing between the
+    // old 5s combined-phase cap and the shared 7.5s action budget must be used,
+    // not converted into a fabricated settle timeout only scroll-to would see.
+    vi.useFakeTimers();
+    const visible = screen([
+      n({ label: "Target", frame: { x: 0.1, y: 0.5, width: 0.8, height: 0.2 } }),
+    ]);
+    currentTree = () =>
+      new Promise((resolve) => {
+        setTimeout(() => resolve(visible), 5_200);
+      });
+    const calls: string[] = [];
+    const env = {
+      registry: mockRegistry(calls),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = runDirective(env, {
+      kind: "scroll-to",
+      target: { text: "Target" },
+      direction: "down",
+    });
+    const resolved = expect(pending).resolves.toMatchObject({ ok: true });
+    await vi.advanceTimersByTimeAsync(6_000);
+    await resolved;
+
+    // The late read alone resolves the fully visible target: no scroll, and no
+    // pixel phase after a tree phase that already outlived its polling window.
+    expect(calls.filter((id) => id === "gesture-swipe")).toHaveLength(0);
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
   });
 
   it("does not repeat the pixel timeout for a persistent animator while scrolling", async () => {
