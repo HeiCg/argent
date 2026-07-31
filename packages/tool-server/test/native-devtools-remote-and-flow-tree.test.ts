@@ -43,8 +43,9 @@ describe("remoteIosHost.inspectRunningApp", () => {
     const inspection = await remoteIosHost.inspectRunningApp(UDID, BUNDLE);
 
     // `running` must come off the real row, not be assumed: assuming true makes
-    // every stopped remote app `indeterminate` (requiresRestart: true) and
-    // assuming false makes every running one `not_running`.
+    // every stopped remote app `indeterminate`, which the precheck and describe
+    // answer with a restart of an app that is not there, and assuming false
+    // makes every running one `not_running`.
     expect(inspection.running).toBe(true);
     // The app processes live on the orchestrator, so the local process table
     // has nothing to say — a fabricated process here would be judged against

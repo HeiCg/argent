@@ -292,12 +292,14 @@ describe("appConnectionState measures the running process", () => {
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
   });
 
-  it("reports indeterminate when ps answers with a single unsplittable column", async () => {
-    // `ps eww -p <pid> -o etime=,command=` with an empty command column answers
-    // one whitespace-free token. Splitting it anyway hands the age parser a
-    // truncated string it happily reads (`10:0` → 600 s) and calls the leftover
-    // the environment — turning unreadable output into the definite
-    // `stale_process` verdict, exactly what the sibling age guard prevents.
+  it("reports indeterminate when the ps line has no column separator", async () => {
+    // Age and environment come out of one line split at its first whitespace,
+    // so a line without any carries no measurement. Splitting it regardless
+    // hands the age parser a truncated token it reads happily (`10:00` sliced
+    // to `10:0` → 600 s) and calls the remainder an environment — a definite
+    // `stale_process` conjured out of a line that said nothing. That the split
+    // point is the thing checked, rather than what either half turns out to
+    // hold, is what keeps the fabrication out.
     probe.psOutput = "10:00\n";
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
