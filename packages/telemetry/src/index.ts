@@ -247,10 +247,14 @@ async function raceDrain(client: TelemetryClient, timeoutMs: number): Promise<vo
  * a timer. Call shutdown() at command boundaries so the buffered batch is
  * force-flushed and the exporter is torn down before the process exits.
  *
- * Resolving is not the same as the process being free to exit: the SDK's batch
- * timer and retry backoff are ref'd, so an unreachable collector can hold the
- * event loop a little past this race. Callers that must exit promptly should
- * not treat this as a hard deadline.
+ * Resolving is not quite the same as the process being free to exit: an export
+ * still in flight holds a ref'd socket, and the exporter's retry backoff a ref'd
+ * timer. The batch timer is not one of them — the SDK unrefs that, which is also
+ * why an event emitted and never drained is simply dropped at exit rather than
+ * delaying it. Both of the ref'd ones are bounded by the exporter's own deadline,
+ * which otel.ts holds at or below this budget and pairs with a socket timeout
+ * that covers connection establishment, so a collector that refuses or blackholes
+ * costs milliseconds past this race rather than the OS connect timeout.
  */
 export async function shutdown(timeoutMs = SHORT_FLUSH_TIMEOUT_MS): Promise<void> {
   const client = getConstructedClient();
