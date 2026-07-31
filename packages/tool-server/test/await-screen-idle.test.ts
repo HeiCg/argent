@@ -132,18 +132,33 @@ describe("await-screen-idle tool", () => {
 
   // The other half of the same guarantee: a screen that really is churning must
   // still come back as a plain negative, or the note stops meaning anything.
+  //
+  // Every read here takes real time — a tenth of the budget, so the reads are
+  // plainly fast enough — because a describe that resolves within a microtask
+  // is not a transport any device has. It also happens to be the only shape
+  // that can catch the failure: the wait ends by sleeping onto the deadline and
+  // asking for one more tree with nothing left to read it in, and a fetch that
+  // settles before the zero-length timer can fire hides that.
   it("omits the note when the screen genuinely keeps changing", async () => {
-    const changing = Array.from({ length: 40 }, (_, i) =>
-      axResponse([{ label: `item-${i}`, frame: FRAME, traits: ["button"] }])
-    );
-    const tool = createAwaitScreenIdleTool(iosRegistry(makeSequencedAXService(changing)));
+    let n = 0;
+    const churning: AXServiceApi = {
+      degraded: false,
+      describe: async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        return axResponse([{ label: `item-${n++}`, frame: FRAME, traits: ["button"] }]);
+      },
+      alertCheck: async () => false,
+      ping: async () => true,
+    };
+    const tool = createAwaitScreenIdleTool(iosRegistry(churning));
 
     const result = await tool.execute(
       {},
-      { udid: IOS_UDID, timeoutMs: 80, pollIntervalMs: 5, minStableMs: 40 }
+      { udid: IOS_UDID, timeoutMs: 200, pollIntervalMs: 5, minStableMs: 150 }
     );
 
     expect(result.settled).toBe(false);
+    expect(result.polls).toBeGreaterThan(1);
     expect(result.note).toBeUndefined();
   });
 

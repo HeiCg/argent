@@ -78,7 +78,7 @@ export async function describeAndroid(
         // it, but settling takes two samples that agree, so a tree too slow to
         // read twice starves them of the second one. Both report that as a note
         // rather than as a negative answer about the screen; see
-        // `readTimedOut` in poll-describe-tree.
+        // `samples` in poll-describe-tree.
         devtools.getHierarchy({ clearCache: true }),
         devtools.getScreenSize(),
       ]);

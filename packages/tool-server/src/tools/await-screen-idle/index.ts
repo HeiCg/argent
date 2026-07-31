@@ -196,13 +196,16 @@ launch/navigation to wait for the UI to render before screenshotting or tapping.
         settled,
         waitedMs: poll.elapsedMs,
         polls: poll.polls,
-        // Settling takes two samples that agree across minStableMs. A tree slow
-        // enough that the budget expires mid-read never yields the second one,
-        // so `settled: false` here would otherwise stand for "the screen kept
+        // Settling takes two samples that agree across minStableMs. A tree too
+        // slow to read twice inside the budget never yields the second one, so
+        // `settled: false` here would otherwise stand for "the screen kept
         // changing" on a screen that may have been perfectly still — the reader
         // simply never got to compare it with itself. Say which of the two
-        // happened, and name the knob that fixes this one.
-        ...(!settled && poll.readTimedOut
+        // happened, and name the knob that fixes this one. The test is how many
+        // samples came back, not whether the final read straddled the deadline:
+        // the loop reads until the budget is gone, so the last one is cut off on
+        // almost every timeout however fast the reads are.
+        ...(!settled && poll.samples < 2
           ? {
               note:
                 `reading the tree did not finish within the ${params.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms budget, ` +
