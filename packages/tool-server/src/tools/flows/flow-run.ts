@@ -197,7 +197,8 @@ const POST_LAUNCH_SETTLE_MS = 1500;
  * the launch step reports the problem where it belongs, with the measured
  * reason the connection never came up.
  */
-const NATIVE_READY_TIMEOUT_MS = 8000;
+/** Exported so the gate's own reason text can be pinned against it, not a literal. */
+export const NATIVE_READY_TIMEOUT_MS = 8000;
 const NATIVE_READY_POLL_MS = 250;
 
 /**
@@ -249,12 +250,12 @@ async function waitForNativeDevtools(
     if (!(await sleepOrAbort(NATIVE_READY_POLL_MS, signal))) return null;
   }
   // Timed out. Measure why — the state may have flipped to connected in the
-  // gap since the last poll, in which case there is nothing to report.
-  //
-  // Check the signal first: unlike a poll iteration, the measurement re-applies
-  // the launchd env and probes the device, so it is seconds of uninterruptible
-  // simctl work whose answer a cancelled run would only discard.
-  if (signal?.aborted) return null;
+  // gap since the last poll, in which case there is nothing to report. The
+  // loop's own abort check covers every exit but this one: `break` is reached
+  // synchronously from that check, so an abort cannot land in between. One
+  // landing during the measurement below — seconds of uninterruptible simctl
+  // work — is caught by the caller, which drops the reason rather than acting
+  // on it.
   const state = await api.appConnectionState(bundleId).catch(() => "indeterminate" as const);
   if (state === "connected") return null;
   const measured = buildAppStateMessage(bundleId, state);

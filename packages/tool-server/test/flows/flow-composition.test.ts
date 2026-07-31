@@ -3,7 +3,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Registry } from "@argent/registry";
-import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
+import {
+  createRunFlowTool,
+  NATIVE_READY_TIMEOUT_MS,
+  type FlowRunResult,
+} from "../../src/tools/flows/flow-run";
 import { serializeFlow, parseFlow } from "../../src/tools/flows/flow-utils";
 import { bindDeviceArgs, stripDeviceKeys } from "../../src/tools/flows/flow-device";
 
@@ -331,6 +335,10 @@ describe("flow composition (run:)", () => {
       // "restarting cannot help" must not be the last word here.
       expect(result.steps[0].reason).toMatch(/cold start/i);
       expect(result.steps[0].reason).toMatch(/re-run the flow/i);
+      // The figure the author sizes that judgement against has to be the wait
+      // this gate actually performed — a literal that drifts from the constant
+      // tells them the step gave up seconds earlier or later than it did.
+      expect(result.steps[0].reason).toContain(`${NATIVE_READY_TIMEOUT_MS} ms`);
     } finally {
       vi.useRealTimers();
     }

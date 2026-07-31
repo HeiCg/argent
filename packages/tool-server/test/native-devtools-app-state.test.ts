@@ -264,6 +264,16 @@ describe("appConnectionState measures the running process", () => {
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
   });
 
+  it("stops calling a process connecting the instant the grace elapses", async () => {
+    // The 4 s fixture above leaves a whole second the grace could grow into
+    // unnoticed. A process exactly at the grace is the first one whose silence
+    // counts as evidence — `processAgeMs < GRACE` is false at equality — so any
+    // upward creep flips this one to `connecting` and reads as green above.
+    probe.psOutput = psLine("00:03", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
+  });
+
   it("reports indeterminate when the process table cannot be read", async () => {
     probe.psFails = true;
 

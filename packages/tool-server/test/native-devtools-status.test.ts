@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import { FailureError, FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
+  buildAppStateMessage,
   isInjectableBundleId,
   NON_INJECTABLE_NATIVE_WARNING,
   NON_INJECTABLE_RECOVERY,
@@ -944,6 +947,40 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.message).toContain("Invalid device");
   });
 
+  // `envSetup` and `nextLaunchWillBeInjected` are the two fields an agent reads
+  // to decide that launching is worth it. `isEnvSetup()` is a latch that never
+  // clears, so on its own it keeps answering yes for a simulator whose launchd
+  // env was wiped — and the agent relaunches into an uninjected process, reads
+  // "not connected", and relaunches again. The re-apply the measurement
+  // performs is what actually tests the env; a failure it recorded is the one
+  // thing that contradicts the latch.
+  it("stops promising an injected launch once the env re-apply has failed", async () => {
+    const { api } = makeNativeApi({ envSetup: true, appRunning: true, state: "stale_process" });
+    api.getInitFailure = () => ({ attempts: 1, lastError: "Invalid device", givenUp: false });
+
+    const result = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: api },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as { envSetup: boolean; nextLaunchWillBeInjected: boolean };
+
+    expect(result.envSetup).toBe(false);
+    expect(result.nextLaunchWillBeInjected).toBe(false);
+  });
+
+  // Same reading on the branch that runs no env work of its own: a system app
+  // on a sim whose env is broken must not report the env as in place either.
+  it("stops reporting a working env for a non-injectable app once it has failed", async () => {
+    const { api } = makeNativeApi({ envSetup: true, appRunning: true });
+    api.getInitFailure = () => ({ attempts: 1, lastError: "Invalid device", givenUp: false });
+
+    const result = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: api },
+      { udid: "UDID", bundleId: "com.apple.Preferences" }
+    )) as { envSetup: boolean };
+
+    expect(result.envSetup).toBe(false);
+  });
+
   // The failure is read in the catch, after the probe — not sampled before it.
   // A sim that dies mid-call is healthy at every earlier read: the entry
   // precheck saw a working service and `getInitFailure` was still null on the
@@ -1048,24 +1085,65 @@ describe("native-* tool descriptions document every precheck outcome", () => {
   // a state in one place and the prose starts describing names the tool never
   // emits — which no runtime assertion catches, because both sides still agree
   // with themselves.
+  // Exhaustive by construction: this record fails to compile if a state is
+  // added to the union without being listed, so a new state cannot ship
+  // undocumented the way `connecting` nearly did — a hand-written array
+  // silently omits, which is the same drift one level up.
+  const ALL_STATES: Record<NativeDevtoolsAppState, true> = {
+    connected: true,
+    not_running: true,
+    stale_process: true,
+    unregistered: true,
+    connecting: true,
+    indeterminate: true,
+  };
+
   it("spells every emitted state exactly as the description names it", () => {
-    // Exhaustive by construction: the record below fails to compile if a state
-    // is added to the union without being listed, so a new state cannot ship
-    // undocumented the way `connecting` nearly did — a hand-written array
-    // silently omits, which is the same drift one level up.
-    const ALL_STATES: Record<NativeDevtoolsAppState, true> = {
-      connected: true,
-      not_running: true,
-      stale_process: true,
-      unregistered: true,
-      connecting: true,
-      indeterminate: true,
-    };
     const states = Object.keys(ALL_STATES) as NativeDevtoolsAppState[];
     for (const state of states) {
       expect(nativeDevtoolsStatusTool.description, `description must name ${state}`).toContain(
         `"${state}"`
       );
     }
+  });
+
+  // `argent server start` defaults to the foreground and never returns, so an
+  // agent that runs it as written is gone. Every place that prescribes the
+  // restart has to carry `--detach` — and it has to be checked per occurrence:
+  // a surface holding two of them satisfies a whole-blob `toContain` with one
+  // still bare, which is how the SKILL.md copy and the second description arm
+  // could each be stripped on their own with the suite green.
+  it("never prescribes a tool-server restart the agent cannot return from", () => {
+    const BARE_START = /argent server start(?! --detach)/;
+    // A surface with no text at all would vacuously satisfy the check below.
+    const described = (name: string, text: string | undefined): [string, string] => {
+      expect(text, `${name} has no text to check`).toBeTypeOf("string");
+      return [name, text!];
+    };
+    const surfaces: [string, string][] = [
+      described("native-devtools-status description", nativeDevtoolsStatusTool.description),
+      ...tools.map((t) => described(`${t.id} description`, t.description)),
+      ...(Object.keys(ALL_STATES) as NativeDevtoolsAppState[])
+        .filter((s): s is Exclude<NativeDevtoolsAppState, "connected"> => s !== "connected")
+        .map((s): [string, string] => [`${s} message`, buildAppStateMessage("com.example.app", s)]),
+      [
+        "argent-device-interact SKILL.md",
+        readFileSync(
+          path.resolve(__dirname, "../../skills/skills/argent-device-interact/SKILL.md"),
+          "utf8"
+        ),
+      ],
+    ];
+
+    for (const [name, text] of surfaces) {
+      expect(text, `${name} prescribes a foreground tool-server start`).not.toMatch(BARE_START);
+    }
+    // The regex only fires on text that mentions the command at all, so prove
+    // the surfaces that must mention it do — otherwise deleting the guidance
+    // outright passes as "no bare start".
+    expect(buildAppStateMessage("com.example.app", "unregistered")).toContain(
+      "argent server start"
+    );
+    expect(nativeDevtoolsStatusTool.description).toContain("argent server start");
   });
 });

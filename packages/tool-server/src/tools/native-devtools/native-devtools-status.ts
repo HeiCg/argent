@@ -97,9 +97,10 @@ Fails if the simulator server is not running for the given UDID.`,
     // never make a system app injectable. Report a terminal state so agents
     // stop looping restart-app → retry: no restart is required and the next
     // launch will not be injected either. appRunning/connected are still
-    // measured and envSetup is read from the cached latch — unlike the
-    // injectable path below, there is no point running the precheck's env
-    // init or reverifying the env for an app that can never inject.
+    // measured and envSetup is derived exactly as it is below — unlike the
+    // injectable path, though, there is no point running the precheck's env
+    // init or reverifying the env for an app that can never inject, so the
+    // reading is whatever the last attempt left rather than a fresh one.
     if (!isInjectableBundleId(params.bundleId)) {
       let appRunning: boolean;
       try {
@@ -123,7 +124,7 @@ Fails if the simulator server is not running for the given UDID.`,
         throw err;
       }
       return {
-        envSetup: api.isEnvSetup(),
+        envSetup: api.isEnvSetup() && api.getInitFailure() === null,
         appRunning,
         connected: api.isConnected(params.bundleId),
         requiresRestart: false,
@@ -135,10 +136,11 @@ Fails if the simulator server is not running for the given UDID.`,
     const blocked = await precheckNativeDevtools(api, params.udid);
     if (blocked) return blocked;
 
-    // Diagnoses the connection AND re-applies the launchd env on its way — an
-    // out-of-band simulator reboot wipes DYLD_INSERT_LIBRARIES while
-    // isEnvSetup() still reports the stale `true`, so the reported envSetup /
-    // nextLaunchWillBeInjected must be read after it. Idempotent when correct.
+    // Diagnoses the connection AND re-applies the launchd env on its way, so an
+    // out-of-band simulator reboot that wiped DYLD_INSERT_LIBRARIES is repaired
+    // here and the repair's outcome is recorded. The reported envSetup /
+    // nextLaunchWillBeInjected are read after it to reflect that outcome rather
+    // than a latch stamped before the call. Idempotent when correct.
     const measured = await api
       .appConnectionState(params.bundleId)
       .catch(() => "indeterminate" as const);
@@ -186,7 +188,15 @@ Fails if the simulator server is not running for the given UDID.`,
     } else {
       appRunning = state !== "not_running";
     }
-    const envSetup = api.isEnvSetup();
+    // `isEnvSetup()` alone cannot answer this: it latches true on the first
+    // successful apply and is never cleared, so a simulator whose env has since
+    // been wiped keeps reporting a readiness it does not have. The re-apply
+    // above is what tests it, and it records a failure that any later success
+    // clears — so a recorded failure standing beside the latch is precisely the
+    // case where the launchd env is NOT in place, and telling an agent its next
+    // launch will be injected there sends it to relaunch into an uninjected
+    // process for as long as the sim stays broken.
+    const envSetup = api.isEnvSetup() && api.getInitFailure() === null;
 
     return {
       envSetup,
@@ -198,8 +208,11 @@ Fails if the simulator server is not running for the given UDID.`,
       // it would be waiting on; `not_running` needs a launch, not a restart of
       // something that isn't there. That leaves the two states a fresh process
       // actually fixes — `indeterminate` among them, since an uninspectable
-      // host (ios-remote) can support no finer reading.
-      requiresRestart: appRunning && (state === "stale_process" || state === "indeterminate"),
+      // host (ios-remote) can support no finer reading. Both of those already
+      // carry a live process: the settling above rewrites an `indeterminate`
+      // whose probe found nothing to `not_running`, so an `appRunning` conjunct
+      // here could only restate what the state has said.
+      requiresRestart: state === "stale_process" || state === "indeterminate",
       state,
       // The booleans cannot express "one restart, then stop" — the shape
       // `indeterminate` needs, and the only shape ios-remote can ever report
