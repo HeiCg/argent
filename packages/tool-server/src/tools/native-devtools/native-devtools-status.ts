@@ -64,8 +64,8 @@ Returns { envSetup, appRunning, connected, requiresRestart, state, message, next
 - envSetup: DYLD_INSERT_LIBRARIES is configured in the simulator's launchd environment
 - appRunning: the target bundle currently has a running UIKit process on the simulator
 - connected: the dylib is active in the current running process for this bundleId
-- requiresRestart: the app is already running and needs a fresh process — its current one is not injected, or could not be inspected to prove otherwise. Always false for a non-injectable app, and false when state is unregistered, where a relaunch cannot help.
-- state: why devtools are or aren't live, measured from the running process. "connected"; "not_running"; "stale_process" (the process was launched before argent's instrumentation was in place, so restart-app fixes it); "unregistered" (the process IS injected and pointed at this simulator's devtools endpoint yet the service never registered it, so restarting the app cannot help); "connecting" (the process IS injected but launched moments ago and is still connecting, so waiting is what helps); "indeterminate" (the process could not be inspected). Omitted when injectable is false, which is terminal on its own.
+- requiresRestart: the app is already running and a fresh process would reach this simulator's devtools endpoint where the current one does not — it carries no argent injection, was pointed at an earlier tool-server's listener, or could not be inspected to tell. Always false for a non-injectable app, and false when state is unregistered or connecting, where a relaunch cannot help.
+- state: why devtools are or aren't live, measured from the running process. "connected"; "not_running"; "stale_process" (the process cannot reach this simulator's devtools endpoint — launched either before argent's instrumentation was in place or against an earlier tool-server's listener — so restart-app fixes it); "unregistered" (the process IS injected and pointed at this simulator's devtools endpoint yet the service never registered it, so restarting the app cannot help); "connecting" (the process IS injected but launched moments ago and is still connecting, so waiting is what helps); "indeterminate" (the process could not be inspected). Omitted when injectable is false, which is terminal on its own.
 - message: the remedy for that state, in full. Omitted when connected or non-injectable. Prefer it over inferring one from the booleans — it is the only field that can tell you to stop restarting the app.
 - nextLaunchWillBeInjected: if you launch this bundle now, native devtools env setup is already in place (always false for a non-injectable app)
 - injectable: whether native devtools can ever be injected into this app. Apple system apps (bundle ids under com.apple.) are platform binaries with library validation, so the dylib can never load into them.
@@ -106,11 +106,18 @@ Fails if the simulator server is not running for the given UDID.`,
         appRunning = await api.isAppRunning(params.bundleId);
       } catch (err) {
         // The app-running probe (a simctl spawn) failed — typically a sim that
-        // is shut down or unreachable, exactly where env init fails too. Fall
-        // back to the precheck so a broken sim still surfaces the structured
-        // init_failed guidance (re-booting IS corrective for a dead sim)
-        // instead of a raw subprocess error; with a healthy env, surface the
-        // probe failure itself.
+        // is shut down or unreachable, exactly where env init fails too. Reach
+        // for the structured init_failed guidance (re-booting IS corrective for
+        // a dead sim) rather than a raw subprocess error, from either source
+        // that has one: a failure some earlier env attempt recorded, or the
+        // precheck's own attempt on a service that has not yet succeeded once.
+        // The two are disjoint — `ensureEnvReady` latches, so once it has
+        // succeeded the precheck stops probing, and only the recorded failure
+        // speaks. A sim that dies after that latch records nothing here, since
+        // this branch deliberately runs no env work for an app that can never
+        // inject; there the probe's own error is all there is to report.
+        const failure = api.getInitFailure();
+        if (failure) return buildInitFailedResult(params.udid, failure);
         const blocked = await precheckNativeDevtools(api, params.udid);
         if (blocked) return blocked;
         throw err;
@@ -158,17 +165,17 @@ Fails if the simulator server is not running for the given UDID.`,
         // commonest cause — a sim that shut down or went unreachable — is
         // exactly what makes this probe fail too, so this is the one route to
         // the probe where it has already failed once. Read the recorded failure
-        // rather than the precheck: the precheck only reports one once the
-        // service has GIVEN UP (three attempts), while `appConnectionState`'s
-        // `reverifyEnv` has just recorded the first, and `initFailure` is
-        // cleared on any success — so a non-null one means the live env attempt
-        // failed, which with a failed running-ness probe beside it is a dead
-        // sim. Without this the agent gets the raw subprocess error instead of
-        // the structured "re-boot the simulator" guidance.
+        // directly: `appConnectionState`'s `reverifyEnv` has just recorded it
+        // and `initFailure` is cleared on any success, so a non-null one means
+        // the live env attempt failed, which with a failed running-ness probe
+        // beside it is a dead sim. Re-running the precheck here cannot see it —
+        // getting this far means the precheck above already drove
+        // `ensureEnvReady` to success, and that latches, so every later call is
+        // a no-op that reports nothing. Without this read the agent gets the raw
+        // subprocess error instead of the structured "re-boot the simulator"
+        // guidance; with a healthy env, that raw error IS the honest answer.
         const failure = api.getInitFailure();
         if (failure) return buildInitFailedResult(params.udid, failure);
-        const blocked = await precheckNativeDevtools(api, params.udid);
-        if (blocked) return blocked;
         throw err;
       }
       // The probe answers the very thing `indeterminate` left open. If the app

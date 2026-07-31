@@ -265,6 +265,29 @@ describe("native-devtools-status tool", () => {
     ).resolves.toMatchObject({ status: "init_failed" });
   });
 
+  // The twin of the injectable path's escalation, on the branch that runs no env
+  // work of its own. Once `ensureEnvReady` has succeeded it latches, so the
+  // precheck below stops probing and reports nothing; a failure an injectable
+  // app's `reverifyEnv` recorded since then is the only witness left that the
+  // sim is gone, and the same sim state must not read as a dead sim on one
+  // bundle id and a raw `simctl spawn` throw on another.
+  it("surfaces a recorded env failure for a non-injectable app on a latched env", async () => {
+    const { api } = makeNativeApi({
+      envSetup: true,
+      initFailure: { attempts: 1, lastError: "Invalid device", givenUp: false },
+    });
+    api.isAppRunning = async () => {
+      throw new Error("simctl spawn failed: Invalid device");
+    };
+
+    await expect(
+      nativeDevtoolsStatusTool.execute(
+        { nativeDevtools: api },
+        { udid: "11111111-1111-1111-1111-111111111111", bundleId: "com.apple.Preferences" }
+      )
+    ).resolves.toMatchObject({ status: "init_failed", attempts: 1 });
+  });
+
   it("rethrows the probe failure for a non-injectable app when the env is healthy", async () => {
     // With a healthy env there is no init_failed to fall back to — a transient
     // isAppRunning failure must surface, not be swallowed into a made-up state.
@@ -590,10 +613,11 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
 
   it("does not tell a stale_process it is uninjected — one route into it is injected", async () => {
     // `stale_process` is reached both by a process carrying no argent injection
-    // and by an injected one older than this service's listener (the state after
-    // a tool-server restart, which is what the `unregistered` remedy prescribes).
-    // A message asserting "not injected" is false on the second, and that is the
-    // route an agent following this PR's own advice lands on.
+    // and by an injected one older than this service's listener. A message
+    // asserting "not injected" is false on the second — and the second is where
+    // the `unregistered` remedy lands an agent: restarting the tool-server
+    // rebinds the same socket path under a fresh `listeningSince`, leaving the
+    // untouched process injected against it yet older than it.
     const result = await precheckWith("stale_process");
 
     const message = (result as { message: string }).message;
@@ -660,11 +684,11 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     }
   });
 
-  // The one invariant this whole derivation exists for, at the tool that reports
-  // it. Both the pre-PR expression (`appRunning && !connected`) and any widening
-  // that re-admits `unregistered` leave the boolean saying "restart the app"
-  // beside a message saying a restart cannot help — and the description tells
-  // agents to branch on the boolean.
+  // The one invariant the whole derivation exists for, at the tool that reports
+  // it. Any expression that admits `unregistered` or `connecting` — including
+  // the obvious `appRunning && !connected` — leaves the boolean saying "restart
+  // the app" beside a message saying a restart cannot help, and the description
+  // tells agents to branch on the boolean.
   it("never asks for a restart of an app a restart provably cannot fix", async () => {
     for (const state of ["unregistered", "connecting"] as const) {
       const { api } = makeNativeApi({ envSetup: true, appRunning: true, state });
@@ -897,12 +921,12 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(withMessage.message).not.toContain("could not be inspected");
   });
 
-  // The dead-sim fallback has to fire on the FIRST failure, not the third.
-  // `precheckNativeDevtools` only reports one once the service has given up
-  // (three attempts), while `reverifyEnv` inside `appConnectionState` has just
-  // recorded the first — so reading the recorded failure directly is what turns
-  // a shut-down simulator into structured guidance instead of a raw
-  // `Command failed: xcrun simctl spawn …`.
+  // The dead-sim escalation has to fire on the FIRST failure, not the third.
+  // Re-running `precheckNativeDevtools` here would report nothing: reaching this
+  // point means it already drove `ensureEnvReady` to success at the top of the
+  // call, and that latches, so every later call short-circuits. Reading the
+  // failure `reverifyEnv` just recorded is what turns a shut-down simulator into
+  // structured guidance instead of a raw `Command failed: xcrun simctl spawn …`.
   it("surfaces init_failed on a dead sim before the service has given up", async () => {
     const { api } = makeNativeApi({ envSetup: true, state: "indeterminate" });
     api.getInitFailure = () => ({ attempts: 1, lastError: "Invalid device", givenUp: false });
@@ -920,15 +944,13 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.message).toContain("Invalid device");
   });
 
-  // `indeterminate` is also where a failed measurement lands, and a sim that
-  // went away fails the running-ness probe for the same reason — so this is the
-  // one route to that probe where it has already failed once. It must surface
-  // the structured init_failed guidance, not a raw subprocess error.
-  it("falls back to the precheck when the running-ness probe fails too", async () => {
+  // The failure is read in the catch, after the probe — not sampled before it.
+  // A sim that dies mid-call is healthy at every earlier read: the entry
+  // precheck saw a working service and `getInitFailure` was still null on the
+  // way in. Hoisting the read (or reusing the value the entry precheck already
+  // saw) reports the stale null and lets the raw subprocess error out.
+  it("reads the recorded failure after the probe, not before it", async () => {
     const { api } = makeNativeApi({ envSetup: true, state: "indeterminate" });
-    // The sim goes away mid-call: the entry precheck saw a healthy service, and
-    // only the failed probe afterwards reveals it. A fixture that failed from
-    // the start would be blocked by the entry precheck and never reach here.
     let died = false;
     api.getInitFailure = () =>
       died
@@ -947,13 +969,32 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.status).toBe("init_failed");
     expect(result.message).toContain("sim gone");
   });
+
+  // The other half of that branch. With no recorded failure the env is healthy,
+  // so the probe's own error is the honest answer and must reach the caller —
+  // degrading it to some "everything is fine" shape would report a reading the
+  // tool never took.
+  it("lets the probe's error out when the env recorded no failure", async () => {
+    const { api } = makeNativeApi({ envSetup: true, state: "indeterminate" });
+    api.getInitFailure = () => null;
+    api.isAppRunning = vi.fn(async () => {
+      throw new Error("Invalid device: UDID");
+    });
+
+    await expect(
+      nativeDevtoolsStatusTool.execute(
+        { nativeDevtools: api },
+        { udid: "UDID", bundleId: "com.example.app" }
+      )
+    ).rejects.toThrow("Invalid device: UDID");
+  });
 });
 
 // The runtime message is only half the guidance an agent sees: the tool
 // descriptions are what it reads before ever calling. A description that names
 // restart_required while staying silent about service_stale rebuilds the loop
 // in the more prominent place, whatever the message says.
-describe("native-* tool descriptions document both precheck outcomes", () => {
+describe("native-* tool descriptions document every precheck outcome", () => {
   const tools = [
     nativeDescribeScreenTool,
     nativeFindViewsTool,
@@ -972,10 +1013,20 @@ describe("native-* tool descriptions document both precheck outcomes", () => {
       expect(tool.description, `${tool.id} must mention connect_pending`).toContain(
         "connect_pending"
       );
+      // The fourth member of NativeDevtoolsPrecheckBlock. Every one of these
+      // tools returns it verbatim, and it is the only status whose remedy is
+      // neither a restart nor a wait — an agent with no arm for it retries a
+      // simulator that needs re-booting.
+      expect(tool.description, `${tool.id} must mention init_failed`).toContain("init_failed");
       expect(tool.description, `${tool.id} must name the tool-server remedy`).toContain(
         "argent server stop && argent server start --detach"
       );
     }
+  });
+
+  it("tells native-devtools-status readers to wait out a connecting app", () => {
+    expect(nativeDevtoolsStatusTool.description).toContain("If state is connecting:");
+    expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app");
   });
 
   it("tells native-devtools-status readers not to restart an unregistered app", () => {
@@ -998,13 +1049,19 @@ describe("native-* tool descriptions document both precheck outcomes", () => {
   // emits — which no runtime assertion catches, because both sides still agree
   // with themselves.
   it("spells every emitted state exactly as the description names it", () => {
-    const states: NativeDevtoolsAppState[] = [
-      "connected",
-      "not_running",
-      "stale_process",
-      "unregistered",
-      "indeterminate",
-    ];
+    // Exhaustive by construction: the record below fails to compile if a state
+    // is added to the union without being listed, so a new state cannot ship
+    // undocumented the way `connecting` nearly did — a hand-written array
+    // silently omits, which is the same drift one level up.
+    const ALL_STATES: Record<NativeDevtoolsAppState, true> = {
+      connected: true,
+      not_running: true,
+      stale_process: true,
+      unregistered: true,
+      connecting: true,
+      indeterminate: true,
+    };
+    const states = Object.keys(ALL_STATES) as NativeDevtoolsAppState[];
     for (const state of states) {
       expect(nativeDevtoolsStatusTool.description, `description must name ${state}`).toContain(
         `"${state}"`

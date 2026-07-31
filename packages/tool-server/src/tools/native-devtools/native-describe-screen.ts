@@ -58,7 +58,7 @@ with backend migration work, but the public describe contract is still separate.
 
 Useful for evaluating or debugging the lower-level native data that powers the public describe tool.
 
-If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If status is connect_pending: the app is injected and still connecting — do not restart it, wait a second or two and retry.`,
+If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If status is connect_pending: the app is injected and still connecting — do not restart it, wait a second or two and retry. If status is init_failed: the simulator's native-devtools environment could not be initialised — follow the message (re-boot the simulator) rather than retrying this tool.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

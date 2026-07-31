@@ -75,7 +75,7 @@ so it answers "what is visually here?" rather than "what would receive the touch
 IMPORTANT: x and y are raw iOS window coordinates in points, NOT normalized [0,1]
 simulator tap coordinates.
 
-If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If status is connect_pending: the app is injected and still connecting — do not restart it, wait a second or two and retry.`,
+If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If status is connect_pending: the app is injected and still connecting — do not restart it, wait a second or two and retry. If status is init_failed: the simulator's native-devtools environment could not be initialised — follow the message (re-boot the simulator) rather than retrying this tool.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

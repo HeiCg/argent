@@ -408,11 +408,15 @@ describe("describe tool", () => {
   });
 
   it("does NOT return should_restart for a non-injectable Apple system app (no restart loop)", async () => {
-    // com.apple.* apps can never load the injected dylib, so they read as
-    // stale_process forever in an unmocked run. Without an injectability gate,
-    // describe returns should_restart:true → the agent restarts the system app →
-    // AX is still empty → describe again → unbounded loop. The fallback must
-    // instead return the (empty) AX result with a screenshot hint.
+    // A com.apple.* app can never load the injected dylib, so it never
+    // connects. The simulator's launchd env is applied process-wide, so its
+    // process does carry the injection tokens and the measurement judges it on
+    // age: older than this tool-server's listener — the usual case, a system app
+    // is typically already running when the server starts — reads
+    // `stale_process`, whose remedy is restart-app. Without an injectability
+    // gate describe returns should_restart:true → the agent restarts the system
+    // app → AX is still empty → describe again → unbounded loop. The fallback
+    // must instead return the (empty) AX result with a screenshot hint.
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({
       connectedBundleIds: [],

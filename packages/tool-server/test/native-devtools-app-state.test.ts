@@ -289,13 +289,17 @@ describe("appConnectionState measures the running process", () => {
   // `>` leave the suite green while flipping a relaunchable process to
   // `unregistered`, the one verdict this file exists to withhold.
   it("still calls a process that started exactly at the grace boundary stale", async () => {
-    // Launched 597 s after the listener, read at 600 s: 597 + 3 == 600.
+    // A 597 s-old process read against a 600 s-old listener: it was exec'd 3 s
+    // AFTER the bind, i.e. the full grace and not a millisecond more. The
+    // comparison sits exactly on its edge — 597 + 3 == 600.
     probe.psOutput = psLine("09:57", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("stale_process");
   });
 
-  it("still calls a process launched a second before the listener stale", async () => {
+  it("still calls a process launched a second after the listener stale", async () => {
+    // 599 s old against the same 600 s listener: exec'd 1 s after the bind, so
+    // 2 s inside the grace rather than on its edge.
     probe.psOutput = psLine("09:59", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("stale_process");
@@ -322,11 +326,11 @@ describe("appConnectionState measures the running process", () => {
   });
 
   // The entry `connections.has` snapshot is taken before `reverifyEnv` and a
-  // `launchctl list` — several simctl round-trips before the verdict. A dial
-  // landing inside that window used to be reported as an app the service never
-  // registered, i.e. the agent was sent to restart a tool-server that had just
-  // succeeded. Every unconnected verdict rests on that snapshot, so the re-read
-  // has to sit above all of them.
+  // `launchctl list` — several simctl round-trips before the verdict. Judging on
+  // that snapshot reports a dial landing inside the window as an app the service
+  // never registered, i.e. sends the agent to restart a tool-server that had
+  // just succeeded. Every unconnected verdict rests on the snapshot, so the
+  // re-read has to sit above all of them.
   it("re-reads the live connection map after the probe, not the entry snapshot", async () => {
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
     try {

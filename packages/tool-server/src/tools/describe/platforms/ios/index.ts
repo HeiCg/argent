@@ -120,9 +120,13 @@ export async function describeIos(
 
   // A non-injectable system app can never connect, and the launchd env carrying
   // the bootstrap dylib is simulator-wide — so its process inherits the very
-  // tokens the measurement reads and scores `unregistered`, whose remedy is to
-  // restart a tool-server that was never at fault. Return the (empty) AX result
-  // with the terminal screenshot hint instead.
+  // tokens the measurement reads and scores as injected. Which unconnected state
+  // that lands on is just its age against this service's listener:
+  // `stale_process` (already running when the service bound) with a restart-app
+  // remedy, or `unregistered` (launched after) with a tool-server one. Both are
+  // wrong for an app no restart of anything can help, and the first rebuilds the
+  // restart-app → describe loop. Return the (empty) AX result with the terminal
+  // screenshot hint instead.
   // The gate sits BEFORE the native-devtools fallback: injectability is a
   // static property of the explicit bundle id, so the terminal hint must not
   // depend on service resolution succeeding (a downed ios-remote tunnel or a
