@@ -239,9 +239,7 @@ async function waitForNativeDevtools(
     const ref = nativeDevtoolsRef(device);
     api = await registry.resolveService<NativeDevtoolsApi>(ref.urn, ref.options);
   } catch (err) {
-    // The caller's prefix already names the bundle id; repeating it here reads
-    // as two different failures reported back to back.
-    return `native devtools is unavailable (${errMsg(err)})`;
+    return `the native-devtools service is unavailable for ${bundleId} (${errMsg(err)})`;
   }
   const deadline = Date.now() + NATIVE_READY_TIMEOUT_MS;
   for (;;) {
@@ -258,7 +256,17 @@ async function waitForNativeDevtools(
   // simctl work whose answer a cancelled run would only discard.
   if (signal?.aborted) return null;
   const state = await api.appConnectionState(bundleId).catch(() => "indeterminate" as const);
-  return state === "connected" ? null : buildAppStateMessage(bundleId, state);
+  if (state === "connected") return null;
+  const measured = buildAppStateMessage(bundleId, state);
+  // `unregistered` means the connection never arrived in the window this gate
+  // waited. Everywhere else that window is the app's whole lifetime, so the
+  // verdict is unambiguous; here it is NATIVE_READY_TIMEOUT_MS after a launch
+  // this step performed, which a cold start (an RN build fetching its bundle)
+  // can outlast. The measured remedy would have the author restart a healthy
+  // tool-server for an app that had simply not finished starting.
+  return state === "unregistered"
+    ? `${measured} A cold start slower than the ${NATIVE_READY_TIMEOUT_MS} ms this step waited reads the same way — if that is likely, re-run the flow to relaunch and wait again before restarting anything.`
+    : measured;
 }
 
 /**
@@ -324,7 +332,9 @@ async function treeSourceGate(
   if (device.platform === "ios" && !signal?.aborted) {
     const reason = await waitForNativeDevtools(registry, device, bundleId, signal);
     if (reason !== null && !signal?.aborted) {
-      return `could not connect to native devtools for ${bundleId}. ${reason}`;
+      // Every reason names the bundle id itself, so the prefix must not: doubled,
+      // it reads as two separate failures reported back to back.
+      return `could not connect to native devtools. ${reason}`;
     }
   }
   if (device.platform === "android" && !signal?.aborted) {

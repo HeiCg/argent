@@ -588,6 +588,20 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(message).not.toContain("argent server stop");
   });
 
+  it("does not tell a stale_process it is uninjected — one route into it is injected", async () => {
+    // `stale_process` is reached both by a process carrying no argent injection
+    // and by an injected one older than this service's listener (the state after
+    // a tool-server restart, which is what the `unregistered` remedy prescribes).
+    // A message asserting "not injected" is false on the second, and that is the
+    // route an agent following this PR's own advice lands on.
+    const result = await precheckWith("stale_process");
+
+    const message = (result as { message: string }).message;
+    expect(message).not.toContain("not injected");
+    expect(message).toContain("cannot reach");
+    expect(message).toContain("restart-app");
+  });
+
   it("points a stopped app at launch-app rather than a restart", async () => {
     const result = await precheckWith("not_running");
 
@@ -602,9 +616,24 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
 
     expect(result).toMatchObject({ status: "service_stale" });
     const message = (result as { message: string }).message;
-    expect(message).toContain("argent server stop && argent server start");
+    expect(message).toContain("argent server stop && argent server start --detach");
     expect(message).toContain("Restarting the app cannot change that");
     expect(message).not.toContain("restart-app");
+  });
+
+  it("refuses to call a still-connecting process a restart_required", async () => {
+    // The other self-perpetuating advice: exec is what starts the dial, so a
+    // relaunch discards the handshake in flight AND resets the age this verdict
+    // is read from — an agent obeying restart-app re-enters this window every
+    // time. It is also not `indeterminate`: the process WAS inspected, and it
+    // is injected against this endpoint.
+    const result = await precheckWith("connecting");
+
+    expect(result).toMatchObject({ status: "connect_pending" });
+    const message = (result as { message: string }).message;
+    expect(message).toContain("Wait a second or two");
+    expect(message).not.toContain("restart-app");
+    expect(message).not.toContain("could not be inspected");
   });
 
   it("keeps the loop warning for a process it could not inspect", async () => {
@@ -616,8 +645,19 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result).toMatchObject({ status: "restart_required" });
     const message = (result as { message: string }).message;
     expect(message).toContain("restart-app");
-    expect(message).toContain("argent server stop && argent server start");
+    expect(message).toContain("argent server stop && argent server start --detach");
     expect(message).toContain("do not keep restarting the app");
+  });
+
+  // `argent server start` defaults to foreground (parseStartFlags: detach:false)
+  // and ends in a promise that never resolves, so the bare pair hangs whoever
+  // runs it. Every surface prescribing the tool-server restart must pass
+  // --detach or the remedy is a command the agent cannot return from.
+  it("prescribes a tool-server restart that actually returns", async () => {
+    for (const state of ["unregistered", "indeterminate"] as const) {
+      const message = (await precheckWith(state)) as { message: string };
+      expect(message.message, state).toContain("argent server start --detach");
+    }
   });
 
   it("passes a connected app straight through", async () => {
@@ -629,9 +669,15 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     // launchd env first — so a separate `isAppRunning` is both an extra simctl
     // round-trip and a snapshot taken seconds apart from the one `state` came
     // from, which is how `appRunning: true` could be reported beside
-    // `state: "not_running"`. Four of the five states settle running-ness on
+    // `state: "not_running"`. Five of the six states settle running-ness on
     // their own; only `indeterminate` may pay for its own probe.
-    for (const state of ["connected", "not_running", "stale_process", "unregistered"] as const) {
+    for (const state of [
+      "connected",
+      "not_running",
+      "stale_process",
+      "unregistered",
+      "connecting",
+    ] as const) {
       const { api, isAppRunning } = makeNativeApi({ envSetup: true, connected: false, state });
 
       const result = (await nativeDevtoolsStatusTool.execute(
@@ -695,7 +741,7 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
       )) as { status: string; message: string };
 
       expect(result.status, `${tool.id} must report service_stale`).toBe("service_stale");
-      expect(result.message).toContain("argent server stop && argent server start");
+      expect(result.message).toContain("argent server stop && argent server start --detach");
       expect(result.message).not.toContain("restart-app");
     }
   });
@@ -728,7 +774,7 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     )) as { message?: string; requiresRestart: boolean };
     expect(escape.requiresRestart).toBe(true);
     expect(escape.message).toContain("do not keep restarting the app");
-    expect(escape.message).toContain("argent server stop && argent server start");
+    expect(escape.message).toContain("argent server stop && argent server start --detach");
 
     // A connected app has no remedy to carry, so the field must not appear at
     // all — an empty-string or stale message would read as a live problem.
@@ -758,6 +804,37 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
 
     expect(result.appRunning).toBe(false);
     expect(result.requiresRestart).toBe(false);
+    // `message` is the field the description tells agents to prefer, so it has
+    // to agree too: the `indeterminate` text opens "Call restart-app then
+    // retry", which contradicts `appRunning: false` outright. The probe answered
+    // the question `indeterminate` left open, so the state resolves to it.
+    const withMessage = result as unknown as { state: string; message: string };
+    expect(withMessage.state).toBe("not_running");
+    expect(withMessage.message).toContain("launch-app");
+    expect(withMessage.message).not.toContain("could not be inspected");
+  });
+
+  // The dead-sim fallback has to fire on the FIRST failure, not the third.
+  // `precheckNativeDevtools` only reports one once the service has given up
+  // (three attempts), while `reverifyEnv` inside `appConnectionState` has just
+  // recorded the first — so reading the recorded failure directly is what turns
+  // a shut-down simulator into structured guidance instead of a raw
+  // `Command failed: xcrun simctl spawn …`.
+  it("surfaces init_failed on a dead sim before the service has given up", async () => {
+    const { api } = makeNativeApi({ envSetup: true, state: "indeterminate" });
+    api.getInitFailure = () => ({ attempts: 1, lastError: "Invalid device", givenUp: false });
+    api.isAppRunning = vi.fn(async () => {
+      throw new Error("Invalid device: UDID");
+    });
+
+    const result = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: api },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as { status?: string; message?: string; attempts?: number };
+
+    expect(result.status).toBe("init_failed");
+    expect(result.attempts).toBe(1);
+    expect(result.message).toContain("Invalid device");
   });
 
   // `indeterminate` is also where a failed measurement lands, and a sim that
@@ -809,8 +886,11 @@ describe("native-* tool descriptions document both precheck outcomes", () => {
         "restart_required"
       );
       expect(tool.description, `${tool.id} must mention service_stale`).toContain("service_stale");
+      expect(tool.description, `${tool.id} must mention connect_pending`).toContain(
+        "connect_pending"
+      );
       expect(tool.description, `${tool.id} must name the tool-server remedy`).toContain(
-        "argent server stop && argent server start"
+        "argent server stop && argent server start --detach"
       );
     }
   });
@@ -826,7 +906,7 @@ describe("native-* tool descriptions document both precheck outcomes", () => {
   it("bounds the restart advice for a process it could not inspect", () => {
     expect(nativeDevtoolsStatusTool.description).toContain("If state is indeterminate");
     expect(nativeDevtoolsStatusTool.description).toContain(
-      "argent server stop && argent server start"
+      "argent server stop && argent server start --detach"
     );
   });
 

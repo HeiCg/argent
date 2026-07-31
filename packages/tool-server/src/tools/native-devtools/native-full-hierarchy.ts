@@ -67,8 +67,8 @@ WARNING: Output can be extremely large (100KB–500KB+) for complex apps, especi
 Use skipClasses / skipClassPrefixes to prune SwiftUI internal subtrees and reduce output size. Use the fields param to request only the properties you need.
 Use when you need deep layout debugging, finding views with no accessibility labels, or verifying view structure not exposed through the accessibility tree.
 Returns { status: "ok", windows } with the full view hierarchy.
-If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start\`) and retry.
-A not-connected or not-running app comes back as one of those statuses; a failure means the connection dropped mid-call.`,
+If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If status is connect_pending: the app is injected and still connecting — do not restart it, wait a second or two and retry.
+A not-connected or not-running app comes back as one of those statuses rather than a failure. Failures are separate: an Apple system app is rejected outright (terminal — never retry it), and the hierarchy query itself can error or time out.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),

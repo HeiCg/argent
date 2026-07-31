@@ -288,7 +288,7 @@ describe("describe tool", () => {
     expect(result.source).toBe("ax-service");
     expect(result.should_restart).toBe(true);
     expect(result.hint).toContain("do not keep restarting the app");
-    expect(result.hint).toContain("argent server stop && argent server start");
+    expect(result.hint).toContain("argent server stop && argent server start --detach");
   });
 
   it("names the stopped app rather than only flagging a restart", async () => {
@@ -316,7 +316,7 @@ describe("describe tool", () => {
     // in separate places, so covering one leaves the other free to drop it.
     const remedies: Record<string, string> = {
       stale_process: "restart-app",
-      unregistered: "argent server stop && argent server start",
+      unregistered: "argent server stop && argent server start --detach",
     };
     for (const [state, remedy] of Object.entries(remedies)) {
       const axApi = makeAXServiceApi({ alertVisible: false, elements: [] }, { degraded: true });
@@ -358,6 +358,30 @@ describe("describe tool", () => {
     expect(result.hint).toContain("do not keep restarting the app");
   });
 
+  it("does NOT return should_restart while the app is still connecting", async () => {
+    // await-ui-element renders `should_restart` as "call restart-app and retry".
+    // Exec is what starts the devtools dial, so obeying that mid-handshake
+    // discards the connection being waited on and resets the process age the
+    // verdict is read from — the same describe → restart-app loop, reached from
+    // the one state that would have resolved itself.
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
+    const nativeApi = makeNativeDevtoolsApi({
+      connectedBundleIds: [],
+      state: "connecting",
+    });
+    const registry = makeMockRegistry({ axService: axApi, nativeDevtools: nativeApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute(
+      {},
+      { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", bundleId: "com.example.app" }
+    );
+    expect(result.source).toBe("ax-service");
+    expect(result.should_restart).toBeUndefined();
+    expect(result.hint).toContain("Wait a second or two");
+    expect(result.hint).not.toMatch(/restart-app/);
+  });
+
   it("does NOT return should_restart when the app is injected but unregistered", async () => {
     // `should_restart` is describe's instruction to relaunch. The process here
     // already launched with this service's injection in place, so a relaunch
@@ -379,7 +403,7 @@ describe("describe tool", () => {
     );
     expect(result.source).toBe("ax-service");
     expect(result.should_restart).toBeUndefined();
-    expect(result.hint).toContain("argent server stop && argent server start");
+    expect(result.hint).toContain("argent server stop && argent server start --detach");
     expect(result.hint).not.toMatch(/restart-app/);
   });
 

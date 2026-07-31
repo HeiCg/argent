@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import * as net from "node:net";
 import type { DeviceInfo } from "@argent/registry";
 
 // `restart_required` is derived from a measurement, not asserted: these cover
@@ -12,6 +13,8 @@ const probe = vi.hoisted(() => ({
   psFails: false,
   /** `launchctl setenv/getenv` calls seen — i.e. the launchd env being re-applied. */
   envOps: 0,
+  /** Socket path to dial (as the injected dylib does) while `ps` is in flight. */
+  dialDuringPs: null as string | null,
 }));
 
 vi.mock("@argent/native-devtools-ios", () => ({
@@ -35,6 +38,16 @@ vi.mock("node:child_process", async () => {
       if (/\bps$/.test(cmd)) {
         if (probe.psFails) {
           callback(new Error("ps: no such process"), { stdout: "", stderr: "" });
+          return;
+        }
+        if (probe.dialDuringPs) {
+          const path = probe.dialDuringPs;
+          probe.dialDuringPs = null;
+          const sock = net.createConnection(path, () => {
+            sock.write(JSON.stringify({ type: "Control", payload: { bundleId: BUNDLE } }) + "\n");
+            // Let the server's readline consume the handshake before answering.
+            setTimeout(() => callback(null, { stdout: probe.psOutput, stderr: "" }), 50);
+          });
           return;
         }
         callback(null, { stdout: probe.psOutput, stderr: "" });
@@ -162,6 +175,7 @@ describe("appConnectionState measures the running process", () => {
     probe.launchctlList = runningRow();
     probe.psOutput = psLine("10:00", INJECTED_ENV);
     probe.psFails = false;
+    probe.dialDuringPs = null;
   });
 
   afterEach(() => {
@@ -204,10 +218,28 @@ describe("appConnectionState measures the running process", () => {
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
   });
 
-  it("reports indeterminate while a just-launched process is still dialing", async () => {
+  // Not `indeterminate`: the process was inspected, and it is injected against
+  // this endpoint. Collapsing the two loses the only remedy that works here —
+  // waiting — and substitutes one that resets the very age this verdict reads.
+  it("reports connecting while a just-launched process is still dialing", async () => {
     probe.psOutput = psLine("00:01", INJECTED_ENV);
 
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("connecting");
+  });
+
+  // `connecting` and `indeterminate` are both "no verdict yet", so nothing else
+  // in this file separates them — without this pair, returning `indeterminate`
+  // from the grace branch passes, and with it the agent is told to relaunch a
+  // process whose relaunch is what put it here.
+  it("keeps connecting distinct from a process it genuinely could not read", async () => {
+    probe.psFails = true;
+
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
+
+    probe.psFails = false;
+    probe.psOutput = psLine("00:01", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("connecting");
   });
 
   // Pins the grace from above. Every other injected fixture sits 10x clear of
@@ -215,7 +247,7 @@ describe("appConnectionState measures the running process", () => {
   // real `unregistered` verdicts into "restart-app" — the escape hatch is only
   // reached once a process is old enough to have finished dialing, so a grace
   // that creeps upward silently withholds it for longer and longer.
-  it("stops calling a process indeterminate one second past the grace", async () => {
+  it("stops calling a process connecting one second past the grace", async () => {
     probe.psOutput = psLine("00:04", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
@@ -273,6 +305,34 @@ describe("appConnectionState measures the running process", () => {
       await api.appConnectionState(BUNDLE);
 
       expect(probe.envOps).toBeGreaterThan(0);
+    } finally {
+      await instance.dispose();
+    }
+  });
+
+  // The entry `connections.has` snapshot is taken before `reverifyEnv` and a
+  // `launchctl list` — several simctl round-trips before the verdict. A dial
+  // landing inside that window used to be reported as an app the service never
+  // registered, i.e. the agent was sent to restart a tool-server that had just
+  // succeeded. Every unconnected verdict rests on that snapshot, so the re-read
+  // has to sit above all of them.
+  it("re-reads the live connection map after the probe, not the entry snapshot", async () => {
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      const api = instance.api as NativeDevtoolsApi;
+      // Injected against this endpoint, 30 s old, listener far older: without
+      // the re-read this is the textbook `unregistered`.
+      probe.psOutput = psLine(
+        "00:30",
+        `NATIVE_DEVTOOLS_IOS_CDP_SOCKET=${api.socketPath} ` +
+          "DYLD_INSERT_LIBRARIES=/fake/dylibs/libArgentInjectionBootstrap.dylib"
+      );
+      // The dylib completes its handshake while the ps probe is in flight.
+      probe.dialDuringPs = api.socketPath;
+      vi.setSystemTime(Date.now() + 600_000);
+
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("connected");
+      expect(api.isConnected(BUNDLE)).toBe(true);
     } finally {
       await instance.dispose();
     }

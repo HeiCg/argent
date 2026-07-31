@@ -241,8 +241,10 @@ describe("flow composition (run:)", () => {
 
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:error", "echo:skip"]);
     expect(result.steps[0].reason).toMatch(/could not connect to native devtools/i);
-    // The prefix already names the bundle id, so the inner reason must not
-    // repeat it — doubled, it reads as two separate failures.
+    // Every reason names the bundle id itself, so the prefix must not — doubled,
+    // it reads as two separate failures reported back to back. Asserted on this
+    // shape and, below, on the measured and system-app ones, because the rule
+    // is only worth anything if it holds for all of them.
     expect(result.steps[0].reason?.match(/com\.acme\.app/g)).toHaveLength(1);
     expect(result.ok).toBe(false);
   });
@@ -271,7 +273,7 @@ describe("flow composition (run:)", () => {
     );
 
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:error", "echo:skip"]);
-    expect(result.steps[0].reason).toContain("com.apple.Preferences");
+    expect(result.steps[0].reason?.match(/com\.apple\.Preferences/g)).toHaveLength(1);
     expect(result.steps[0].reason).toMatch(/system app/i);
     expect(result.steps[0].reason).not.toMatch(/argent server stop/);
     expect(result.steps[0].reason).not.toMatch(/restart-app/);
@@ -318,8 +320,17 @@ describe("flow composition (run:)", () => {
       const result = asRun(await pending);
 
       expect(result.steps[0].status).toBe("error");
-      expect(result.steps[0].reason).toContain("argent server stop && argent server start");
+      expect(result.steps[0].reason).toContain(
+        "argent server stop && argent server start --detach"
+      );
       expect(result.steps[0].reason).not.toMatch(/restart-app/);
+      expect(result.steps[0].reason?.match(/com\.acme\.app/g)).toHaveLength(1);
+      // This gate is the one caller whose wait was bounded — it launched the app
+      // itself and waited only NATIVE_READY_TIMEOUT_MS. A cold start slower than
+      // that reads identically to a genuinely unregistered app, so the measured
+      // "restarting cannot help" must not be the last word here.
+      expect(result.steps[0].reason).toMatch(/cold start/i);
+      expect(result.steps[0].reason).toMatch(/re-run the flow/i);
     } finally {
       vi.useRealTimers();
     }

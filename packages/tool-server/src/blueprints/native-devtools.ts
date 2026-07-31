@@ -48,9 +48,12 @@ export function isInjectableBundleId(bundleId: string): boolean {
 /**
  * The invariant half of the non-injectable recovery guidance: which tools NOT
  * to fall back to. Shared VERBATIM by every surface that reports this terminal
- * state (this precheck's throw, the `describe` iOS fallback hint, and the
- * `native-devtools-status` description) so none of them can drift into
- * recommending a dead-end. Every native-* *feature* tool — notably the two
+ * state to an agent that could otherwise reach for one (this precheck's throw,
+ * the `describe` iOS fallback hint, and the `native-devtools-status`
+ * description) so none of them can drift into recommending a dead-end. The flow
+ * launch gate reports the same terminal state but deliberately does NOT carry
+ * this text: its reader is authoring a flow, not choosing an inspection tool,
+ * so it names the flow-level remedy (drive by coordinate) instead. Every native-* *feature* tool — notably the two
  * view-at-point tools, which run this same 3-arg precheck — re-throws this
  * identical error, so pointing an agent at any of them just loops it back here.
  * (`native-devtools-status` is the lone exception: it runs the 2-arg precheck
@@ -98,7 +101,10 @@ export const MAX_NATIVE_DEVTOOLS_INIT_ATTEMPTS = 3;
  * `restart-app` relaunches into the simulator's *current* launchd environment,
  * so it can only ever help a process launched under different terms than a fresh
  * launch would get: without the bootstrap dylib, pointed at a stale endpoint, or
- * before this service's listener existed. Those are `stale_process`.
+ * before this service's listener existed. Those are `stale_process` — note that
+ * the last of them is injected, and injected against this very endpoint, so the
+ * state's message speaks of what the process can still reach rather than of what
+ * was inserted into it.
  *
  * `unregistered` is the opposite and the reason this is derived rather than
  * assumed: the process already carries this service's injection and started
@@ -107,12 +113,25 @@ export const MAX_NATIVE_DEVTOOLS_INIT_ATTEMPTS = 3;
  * repeat something that just failed, which is what turned an unregistered
  * connection into an unbounded restart-app loop that only a tool-server restart
  * could break.
+ *
+ * `connecting` is that same process caught mid-handshake — injected against this
+ * endpoint, but only seconds old, so its silence is not yet evidence of
+ * anything. It is separated from `indeterminate` because a relaunch is not
+ * merely useless here but self-perpetuating: exec is what starts the dial, so
+ * every restart resets the age this verdict is read from and lands back inside
+ * the same window. Its remedy is to wait, and it is the one unconnected state
+ * that resolves itself.
+ *
+ * `indeterminate` is the absence of a reading, not a reading: the process could
+ * not be inspected at all (ios-remote, an unreadable `ps`), so nothing above can
+ * be ruled in or out.
  */
 export type NativeDevtoolsAppState =
   | "connected"
   | "not_running"
   | "stale_process"
   | "unregistered"
+  | "connecting"
   | "indeterminate";
 
 /**
@@ -120,10 +139,9 @@ export type NativeDevtoolsAppState =
  * and how much younger than the listener it must be to have plainly started
  * after it. Covers the dylib's dial + handshake after exec and the whole-second
  * resolution of `ps -o etime`. Both comparisons lean away from `unregistered`
- * — the first towards `stale_process`, the second towards `indeterminate` —
- * and those two are the states that ask for a restart-app. So an uncertain read
- * costs at most one wasted relaunch rather than sending an agent off to restart
- * a healthy tool-server.
+ * — the first towards `stale_process`, the second towards `connecting`. So an
+ * uncertain read costs a wasted relaunch or a wasted second, rather than sending
+ * an agent off to restart a healthy tool-server.
  *
  * That lean holds because both ages are read off the same wall clock: `etime`
  * is `now - p_starttime`, so a clock step shifts it and `Date.now()` alike and
@@ -153,8 +171,9 @@ export function buildAppStateMessage(
       );
     case "stale_process":
       return (
-        `Native devtools are not injected into the running ${bundleId} process — it was launched ` +
-        `before argent's instrumentation was in place for this simulator. Call restart-app then retry.`
+        `The running ${bundleId} process cannot reach this simulator's native-devtools endpoint — ` +
+        `it was launched either before argent's instrumentation was in place or against an earlier ` +
+        `tool-server's listener. A fresh process picks up the current one: call restart-app then retry.`
       );
     case "unregistered":
       return (
@@ -162,7 +181,15 @@ export function buildAppStateMessage(
         `simulator's devtools endpoint, but the service never registered its connection. ` +
         `Restarting the app cannot change that — it already launched under exactly the terms a ` +
         `restart would recreate. Restart the tool-server ` +
-        `(\`argent server stop && argent server start\`) and retry.`
+        `(\`argent server stop && argent server start --detach\`) and retry.`
+      );
+    case "connecting":
+      return (
+        `${bundleId} is running with argent's native devtools injected and pointed at this ` +
+        `simulator's devtools endpoint, and it launched moments ago — its connection has not ` +
+        `finished being established. Wait a second or two and retry the same call. Do NOT restart ` +
+        `the app: launching it is what starts the connection, so a relaunch discards the one in ` +
+        `progress and returns you to this same state.`
       );
     case "indeterminate":
       return (
@@ -170,7 +197,7 @@ export function buildAppStateMessage(
         `to tell whether it is injected. Call restart-app then retry. If it is still not connected ` +
         `after that restart, the native-devtools service is stale rather than the app being ` +
         `uninjected — do not keep restarting the app; restart the tool-server ` +
-        `(\`argent server stop && argent server start\`) and retry.`
+        `(\`argent server stop && argent server start --detach\`) and retry.`
       );
   }
 }
@@ -205,7 +232,8 @@ export function buildInitFailedResult(
 export type NativeDevtoolsPrecheckBlock =
   | NativeDevtoolsInitFailedResult
   | { status: "restart_required"; message: string }
-  | { status: "service_stale"; message: string };
+  | { status: "service_stale"; message: string }
+  | { status: "connect_pending"; message: string };
 
 export async function precheckNativeDevtools(
   api: NativeDevtoolsApi,
@@ -266,9 +294,16 @@ export async function precheckNativeDevtools(
   const state = await api.appConnectionState(bundleId);
   if (state === "connected") return null;
   return {
-    // `unregistered` is the one state a relaunch provably cannot fix, so it is
-    // the one state that must not be reported as restart_required.
-    status: state === "unregistered" ? "service_stale" : "restart_required",
+    // Two states must not be reported as restart_required: `unregistered`, which
+    // a relaunch provably cannot fix, and `connecting`, where a relaunch aborts
+    // the handshake it would be waiting on and resets the age the verdict is
+    // read from — so obeying it returns here forever.
+    status:
+      state === "unregistered"
+        ? "service_stale"
+        : state === "connecting"
+          ? "connect_pending"
+          : "restart_required",
     message: buildAppStateMessage(bundleId, state),
   };
 }
@@ -760,6 +795,14 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
           );
           return null;
         });
+        // Everything below describes a process that is NOT connected, and the
+        // snapshot that claim rests on was taken before `reverifyEnv` and a
+        // `launchctl list` — several simctl round-trips ago. A dial landing
+        // inside that window would be reported as an app the service never
+        // registered, i.e. sent to restart a tool-server that had just
+        // succeeded. Re-read the live map instead of the entry snapshot.
+        if (connections.has(bundleId)) return "connected";
+
         if (inspection === null) return "indeterminate";
         if (!inspection.running) return "not_running";
         if (inspection.process === null) return "indeterminate";
@@ -775,10 +818,10 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         if (processAgeMs + NATIVE_DEVTOOLS_CONNECT_GRACE_MS >= listenerAgeMs) {
           return "stale_process";
         }
-        // Injected against this listener, launched after it came up, and still
-        // silent — but only past the grace period, before which it may simply
-        // not have finished dialing yet.
-        if (processAgeMs < NATIVE_DEVTOOLS_CONNECT_GRACE_MS) return "indeterminate";
+        // Injected against this listener and launched after it came up. Inside
+        // the grace the dial is still plausibly in flight, so the silence says
+        // nothing yet; past it, the connection had its chance and never arrived.
+        if (processAgeMs < NATIVE_DEVTOOLS_CONNECT_GRACE_MS) return "connecting";
         return "unregistered";
       },
 

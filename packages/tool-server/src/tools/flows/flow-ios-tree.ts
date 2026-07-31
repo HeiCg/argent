@@ -290,7 +290,13 @@ export async function queryFullHierarchyTree(
   // already carry the actionable next step, so they propagate unwrapped.
   const target = await resolveNativeTargetApp(nativeApi, undefined);
 
-  const state = await nativeApi.appConnectionState(target.bundleId);
+  // Degrade a rejection to the state that says exactly that, as the other
+  // consumers do: this call re-applies the launchd env before it measures
+  // anything, so a sim that goes away mid-run rejects here, and a raw simctl
+  // subprocess error carries none of the guidance the diagnosis does.
+  const state = await nativeApi
+    .appConnectionState(target.bundleId)
+    .catch(() => "indeterminate" as const);
   if (state !== "connected") {
     // The diagnosis already names the corrective action, and for `unregistered`
     // that action is a tool-server restart — telling a flow author to relaunch
