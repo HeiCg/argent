@@ -110,11 +110,13 @@ beforeEach(() => {
 });
 
 describe("findFocusedTextField", () => {
-  it("returns the focused editable field's text, identity and password flag", () => {
+  it("returns the focused editable field's text, identity attributes and password flag", () => {
     const field = findFocusedTextField(hierarchy({ text: "hello" }));
     expect(field).toEqual({
       text: "hello",
-      identity: `${FIELD_RID}|android.widget.EditText|126,149`,
+      resourceId: FIELD_RID,
+      className: "android.widget.EditText",
+      origin: "126,149",
       password: false,
     });
   });
@@ -505,7 +507,7 @@ describe("android keyboard read-back — cannot verify (never a silent success)"
     ]);
     const res = await type(registry, "abc");
     expect(res.verified).toBeUndefined();
-    expect(res.note).toMatch(/input focus moved to a different field/);
+    expect(res.note).toMatch(/no longer the one the text was typed into/);
     expect(cmds()).toEqual(["input text 'abc'"]);
   });
 
@@ -521,7 +523,7 @@ describe("android keyboard read-back — cannot verify (never a silent success)"
     ]);
     const res = await type(registry, "abcdefghijkl");
     expect(res.verified).toBeUndefined();
-    expect(res.note).toMatch(/input focus moved to a different field/);
+    expect(res.note).toMatch(/no longer the one the text was typed into/);
     // Nothing retyped, no backspaces — only the original injection.
     expect(cmds()).toEqual(["input text 'abcdefghijkl'"]);
   });
@@ -535,6 +537,45 @@ describe("android keyboard read-back — cannot verify (never a silent success)"
       hierarchy({ text: "abcdefghijkl", rid: "", bounds: "[126,149][933,275]" }),
     ]);
     await expect(type(registry, "abcdefghijkl")).resolves.toMatchObject({ verified: true });
+  });
+
+  it("does not mistake the SAME field for another when typing MOVES it", async () => {
+    // A bottom-anchored chat composer grows upward as its text wraps to a second
+    // line, so its bounds origin rises between the two reads while it is plainly
+    // the same field. Position alone calls that a focus change and refuses to
+    // verify; the `resource-id` is what survives it, and most composers have one.
+    const { registry } = registryServing([
+      hierarchy({ text: "Message", rid: FIELD_RID, bounds: "[126,2100][1080,2226]" }),
+      hierarchy({ text: "abcdefghijkl", rid: FIELD_RID, bounds: "[126,1974][1080,2226]" }),
+    ]);
+    await expect(type(registry, "abcdefghijkl")).resolves.toMatchObject({ verified: true });
+  });
+
+  it("still calls it a focus change when the id itself differs, moved or not", async () => {
+    // The id is only decisive when it MATCHES. Two ids that differ are two fields
+    // however their bounds compare — an OTP form whose boxes share an origin
+    // because only one is laid out at a time would otherwise read as one field.
+    const { registry } = registryServing([
+      hierarchy({ text: "", rid: "com.example:id/otp1", bounds: "[126,149][300,275]" }),
+      hierarchy({ text: "abc", rid: "com.example:id/otp2", bounds: "[126,149][300,275]" }),
+    ]);
+    const res = await type(registry, "abc");
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/no longer the one the text was typed into/);
+    expect(cmds()).toEqual(["input text 'abc'"]);
+  });
+
+  it("treats a field that gained or lost its id as a different field", async () => {
+    // One side tagged and the other not is not a match to fall back to position
+    // for: a real view's id does not appear or vanish, so the two reads are
+    // looking at different views however their bounds line up.
+    const { registry } = registryServing([
+      hierarchy({ text: "", rid: "", bounds: "[126,149][1080,275]" }),
+      hierarchy({ text: "abc", rid: FIELD_RID, bounds: "[126,149][1080,275]" }),
+    ]);
+    const res = await type(registry, "abc");
+    expect(res.verified).toBeUndefined();
+    expect(res.note).toMatch(/no longer the one the text was typed into/);
   });
 
   it("reports the ambiguous no-change reading WITHOUT retyping (never doubles the text)", async () => {
@@ -682,7 +723,7 @@ describe("android keyboard read-back — cannot verify (never a silent success)"
     const res = await type(registry, "abcdefghijkl");
 
     expect(cmds().some((c) => c.includes("keyevent"))).toBe(true);
-    expect(res.note).toMatch(/moved to a different field/);
+    expect(res.note).toMatch(/no longer the one the text was typed into/);
     expect(res.note).not.toMatch(/Nothing was retyped/);
     expect(res.note).toMatch(/modified beyond the original typing/);
   });

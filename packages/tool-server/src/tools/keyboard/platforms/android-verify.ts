@@ -108,23 +108,14 @@ interface FocusedField {
    */
   text: string;
   /**
-   * Identity of the field, so focus moving to a DIFFERENT one between the two
-   * reads is detectable — an auto-advancing form (an OTP code split across
-   * boxes, a field that jumps on maxLength) does exactly that, and comparing
-   * one field's baseline against another's text would then have the repair
-   * retype into a field the caller never targeted.
-   *
-   * `resource-id` alone is not enough: it carries the React Native `testID`
-   * (see `flows/flow-android-tree.ts`), so every untagged `TextInput` and
-   * Compose `TextField` dumps `resource-id=""` and every one of them would look
-   * like the same field. The bounds ORIGIN disambiguates them — distinct fields
-   * sit at distinct positions — while surviving the growth that makes the full
-   * bounds useless: typing into the Settings search box moved its right edge
-   * from 1080 to 933 with the origin unchanged (measured, API 34). A field that
-   * genuinely moves between the reads reads as a focus change, which only
-   * declines the repair.
+   * The field's `resource-id`, and the empty string when it has none. See
+   * `isSameField` for how the three identity attributes are weighed.
    */
-  identity: string;
+  resourceId: string;
+  /** The field's `class`. See `isSameField`. */
+  className: string;
+  /** `"x,y"` of the field's bounds, or `""` when they do not parse. See `isSameField`. */
+  origin: string;
   /**
    * Whether the focused field masks its input. Two independent reasons to skip
    * the read-back rather than one:
@@ -166,13 +157,46 @@ export function findFocusedTextField(xml: string): FocusedField | null {
     const rect = parseUiAutomatorBounds(attrs.bounds ?? "");
     return {
       text: attrs.text ?? "",
-      identity: [attrs["resource-id"] ?? "", className, rect ? `${rect.x},${rect.y}` : ""].join(
-        "|"
-      ),
+      resourceId: attrs["resource-id"] ?? "",
+      className,
+      origin: rect ? `${rect.x},${rect.y}` : "",
       password: attrIsTrue(attrs, "password"),
     };
   }
   return null;
+}
+
+/**
+ * Whether the after-read is looking at the field the text was typed into.
+ *
+ * The point is to catch focus moving to a DIFFERENT field between the two reads
+ * — an auto-advancing form (an OTP code split across boxes, a field that jumps
+ * on maxLength) does exactly that, and comparing one field's baseline against
+ * another's text would have the repair retype into a field the caller never
+ * targeted.
+ *
+ * The two discriminators are not equally good, so they are weighed rather than
+ * concatenated. A non-empty `resource-id` settles it on its own: it is the
+ * Android view id, carrying the React Native `testID` (see
+ * `flows/flow-android-tree.ts`), a screen does not put two focusable fields
+ * behind one, and it does not change when the field moves. Position is only the
+ * fallback for a field that has none — every untagged `TextInput` and Compose
+ * `TextField` dumps `resource-id=""`, and treating those as one field is what
+ * would let the repair type into the next box of an OTP form.
+ *
+ * Position is a fallback and not the primary because typing MOVES fields. The
+ * bounds ORIGIN survives the growth that makes the full bounds useless — typing
+ * into the Settings search box moved its right edge from 1080 to 933 with the
+ * origin unchanged (measured, API 34) — but not every kind: a bottom-anchored
+ * chat composer grows UPWARD as its text wraps to a second line, so its origin
+ * rises while it is plainly the same field. An untagged field that does that
+ * reads as a focus change, which declines the repair and reports the field as
+ * unmatched rather than as verified — which is why the note names both causes.
+ */
+export function isSameField(a: FocusedField, b: FocusedField): boolean {
+  if (a.className !== b.className) return false;
+  if (a.resourceId !== "" || b.resourceId !== "") return a.resourceId === b.resourceId;
+  return a.origin === b.origin;
 }
 
 /**
@@ -379,13 +403,17 @@ const READ_FAILED_BASE =
   `${UNVERIFIED_PREFIX}: reading the focused field back failed. The text was typed, but Android ` +
   "typing can silently drop characters — confirm the field's contents with `describe`.";
 
-// Distinct from a read failure: both reads succeeded and disagreed about WHICH
-// field has focus. Telling the agent to hunt dropped characters would bury the
-// actionable fact, which is that focus moved.
+// Distinct from a read failure: both reads succeeded and the field in focus
+// afterwards is not the one the text was typed into. Telling the agent to hunt
+// dropped characters would bury the actionable fact. Both causes are named
+// because the read cannot tell them apart for a field with no `resource-id` —
+// see `isSameField`.
 const FOCUS_MOVED_BASE =
-  `${UNVERIFIED_PREFIX}: input focus moved to a different field while the text was being typed, so ` +
-  "the field it started in could not be checked. The text may have been split across both fields. " +
-  "Read the screen with `describe` before continuing.";
+  `${UNVERIFIED_PREFIX}: the focused field is no longer the one the text was typed into, so that ` +
+  "field could not be checked — either input focus moved to another field while the text was " +
+  "being typed, in which case the text may have been split across both, or the field carries no " +
+  "id and moved on screen (a chat composer growing to a second line does this) and could not be " +
+  "matched again. Read the screen with `describe` before continuing.";
 
 // Separate from the above: nothing editable holds focus at all now. There is no
 // second field for the text to have been split across, so claiming focus "moved"
@@ -603,7 +631,7 @@ export async function typeAndroidTextVerified(
  * Re-read the field the call started in, or the reason it cannot be compared:
  * the read failed, nothing editable has focus any more, or focus is on a
  * DIFFERENT field than the baseline (which makes both the comparison and a
- * deletion-based repair meaningless — see `FocusedField.identity`).
+ * deletion-based repair meaningless — see `isSameField`).
  */
 async function readAfter(
   devtools: AndroidDevtoolsApi,
@@ -626,7 +654,7 @@ async function readAfter(
     const base = truncated ? TRUNCATED_AFTER_BASE : FOCUS_LOST_BASE;
     return { blocked: { note: blockedNote(base, retyped) } };
   }
-  if (field.identity !== before.identity) {
+  if (!isSameField(before, field)) {
     return { blocked: { note: blockedNote(FOCUS_MOVED_BASE, retyped) } };
   }
   return { field };
