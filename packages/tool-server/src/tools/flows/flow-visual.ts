@@ -113,29 +113,18 @@ async function cleanupDiffDir(dir: string, keep?: string): Promise<void> {
  */
 type SnapshotSettleOutcome = Exclude<PixelSettleOutcome, "aborted"> | "aborted" | "skipped";
 
-/** A snapshot's settle verdict: the visual outcome plus tree freshness. */
-interface SnapshotSettle {
-  outcome: SnapshotSettleOutcome;
-  /**
-   * Whether the settle ended on a current tree. `cropOn` gets this verdict
-   * paired with its resolved frame; the full-screen pixels-only outage
-   * fallback, which reads no tree, can never provide freshness.
-   */
-  treeFresh: boolean;
-}
-
 /** Map one combined settle into the degradation vocabulary snapshots expose. */
-function snapshotSettleFromResult(settled: SettleResult): SnapshotSettle {
+function snapshotSettleFromResult(settled: SettleResult): SnapshotSettleOutcome {
   if (settled.visual === "settled") {
-    return { outcome: "settled", treeFresh: settled.treeFresh };
+    return "settled";
   }
   if (settled.visual === "skipped" && settled.converged) {
-    return { outcome: "skipped", treeFresh: settled.treeFresh };
+    return "skipped";
   }
   if (settled.visual === "unavailable" && settled.converged) {
-    return { outcome: "unavailable", treeFresh: settled.treeFresh };
+    return "unavailable";
   }
-  return { outcome: "timed-out", treeFresh: settled.treeFresh };
+  return "timed-out";
 }
 
 /**
@@ -147,12 +136,11 @@ function snapshotSettleFromResult(settled: SettleResult): SnapshotSettle {
  * pair (`timed-out`), the earlier stale claim no longer describes the screen
  * the upcoming capture will see, so the retry's degradation wins; only
  * pixel-dark retries (outages, hard tree timeouts) cannot un-prove the
- * established stillness
- * (see {@link SnapshotSettle.treeFresh}). Outcomes short of `settled` map
- * directly with no retry, and a sustained tree-source outage degrades to a
- * bounded pixel-only settle.
+ * established stillness. Outcomes short of `settled` map directly with no
+ * retry, and a sustained tree-source outage degrades to a bounded pixel-only
+ * settle.
  */
-async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettle> {
+async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettleOutcome> {
   const deadline = Date.now() + DEFAULT_ACTION_TIMEOUT_MS;
   // Set once a settle proves the pixels stopped without the confirming tree
   // read; later retries only chase freshness, and no pixel-DARK reading (an
@@ -163,15 +151,15 @@ async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettle> {
   try {
     for (;;) {
       const settled = await settleTree(env, { absoluteDeadline: deadline });
-      if (!settled) return { outcome: "aborted", treeFresh: false };
+      if (!settled) return "aborted";
       if (settled.visual === "settled" && settled.treeFresh) {
-        return { outcome: "settled", treeFresh: true };
+        return "settled";
       }
       // Combined mode converges with `skipped` only when the platform has no
       // capture backend (see SettleResult.visual): tree stability is the whole
       // settle there, and no retry could produce anything more.
       if (settled.visual === "skipped" && settled.converged) {
-        return { outcome: "skipped", treeFresh: settled.treeFresh };
+        return "skipped";
       }
       if (settled.visual === "settled") {
         staleSettled = true;
@@ -181,7 +169,7 @@ async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettle> {
         // stale-settled pair matched, and the capture happens after this
         // returns — honest degradation overrides the earlier stale claim,
         // the same way settleTree discards a pre-restart `settled` pair.
-        return { outcome: "timed-out", treeFresh: settled.treeFresh };
+        return "timed-out";
       } else if (!staleSettled) {
         // Pixel-dark shortfalls (`skipped` without convergence, `unavailable`)
         // map directly, with no retry — the settle already spent its bounded
@@ -189,18 +177,18 @@ async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettle> {
         // earlier pixel timeout, so only the converged form stays distinct
         // from `timed-out`.
         if (settled.visual === "unavailable" && settled.converged) {
-          return { outcome: "unavailable", treeFresh: settled.treeFresh };
+          return "unavailable";
         }
-        return { outcome: "timed-out", treeFresh: settled.treeFresh };
+        return "timed-out";
       }
-      if (Date.now() >= deadline) return { outcome: "settled", treeFresh: false };
+      if (Date.now() >= deadline) return "settled";
       const sleepMs = Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()));
       if (!(await sleepOrAbort(sleepMs, env.signal))) {
-        return { outcome: "aborted", treeFresh: false };
+        return "aborted";
       }
       // The sleep can land exactly on the deadline, and a zero-budget settle
       // would misreport a healthy tree source as an outage.
-      if (Date.now() >= deadline) return { outcome: "settled", treeFresh: false };
+      if (Date.now() >= deadline) return "settled";
     }
   } catch (err) {
     if (err instanceof FlowTreeSettleTimeoutError) {
@@ -208,18 +196,13 @@ async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettle> {
       // any pixel stillness an earlier retry established; otherwise surface
       // honest degradation instead of switching to the outage-only pixels
       // fallback and potentially writing an apparently settled baseline.
-      return staleSettled
-        ? { outcome: "settled", treeFresh: false }
-        : { outcome: "timed-out", treeFresh: false };
+      return staleSettled ? "settled" : "timed-out";
     }
     if (err instanceof FlowTreeSourceUnavailableError) {
       // A dark retry cannot un-prove the stillness an earlier settle
       // established — accept it rather than re-derive it from extra captures.
-      if (staleSettled) return { outcome: "settled", treeFresh: false };
-      return {
-        outcome: await settlePixels(env, { absoluteDeadline: deadline }),
-        treeFresh: false,
-      };
+      if (staleSettled) return "settled";
+      return settlePixels(env, { absoluteDeadline: deadline });
     }
     throw err;
   }
@@ -292,14 +275,14 @@ export async function runSnapshot(
     cropOn?: FlowSelector;
   }
 ): Promise<VisualOutcome> {
-  let settle: SnapshotSettle;
+  let settle: SnapshotSettleOutcome;
   let cropFrame: DescribeFrame | undefined;
 
   if (opts.cropOn === undefined) {
     // Full-screen snapshots settle directly because they consume no selector
     // coordinates and can fall back to pixels alone on a proven tree outage.
     settle = await settleSnapshot(env);
-    if (settle.outcome === "aborted" || env.signal?.aborted) {
+    if (settle === "aborted" || env.signal?.aborted) {
       return { status: "skip", reason: "run aborted during snapshot settle" };
     }
   } else {
@@ -319,7 +302,7 @@ export async function runSnapshot(
     cropFrame = resolved.frame;
     settle = snapshotSettleFromResult(resolved.settle);
   }
-  const degradation = degradedReason(settle.outcome);
+  const degradation = degradedReason(settle);
 
   const store = requireArtifacts(env.ctx);
 
