@@ -514,7 +514,8 @@ returns a notice with the prerequisite instead of running.`,
       // a backgrounded window doesn't throttle rendering for the whole run —
       // wheel-event acks (scroll steps) stall on a throttled compositor.
       // Best-effort: bringToFront can focus a page but cannot unhide a
-      // minimized window (gesture-scroll fails fast on that case itself).
+      // minimized window (gesture-tap/-drag/-scroll each fail fast on that
+      // case themselves, via assertChromiumWindowVisible).
       if (device.platform === "chromium") await frontChromiumPage(registry, device);
 
       const state: ExecState = {
