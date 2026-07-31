@@ -512,11 +512,20 @@ async function pixelCaptureSupportBefore(
  * still followed by that final tree read because even a failed capture may
  * have taken long enough for the model tree to move.
  *
- * Throws when EVERY read in the window failed: that is a tree-source outage
- * (e.g. native devtools disconnected mid-run — `fetchFlowTree` refuses to
- * degrade to a trimmed tree), not a mid-animation blip, and swallowing it would
- * convert the outage into a misleading "element not found" downstream. The
- * throw lands in the step's structured report via `execLeafStep`'s catch.
+ * Throws in exactly two shapes, both raised only when the window closes with
+ * zero successful reads — with any successful tree in hand, deadline
+ * exhaustion returns best-effort results instead, the contract consumers are
+ * written against (`resolveTargetPoint` catches only
+ * {@link FlowTreeSettleTimeoutError}, `settleSnapshot` only the two typed
+ * errors). {@link FlowTreeSourceUnavailableError}: some read completed with a
+ * failure — a proven tree-source outage (e.g. native devtools disconnected
+ * mid-run — `fetchFlowTree` refuses to degrade to a trimmed tree), not a
+ * mid-animation blip, and swallowing it would convert the outage into a
+ * misleading "element not found" downstream.
+ * {@link FlowTreeSettleTimeoutError}: no read completed at all — explicitly
+ * not proof of an outage, since an in-flight native hierarchy read may still
+ * succeed after we stop waiting. Either throw lands in the step's structured
+ * report via `execLeafStep`'s catch.
  */
 export async function settleTree(
   env: ActionEnv,
