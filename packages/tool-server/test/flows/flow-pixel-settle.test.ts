@@ -635,12 +635,13 @@ describe("pixel settle backstop", () => {
     expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
   });
 
-  it("bounds a pending iOS runtime-kind probe by the action deadline without dispatching", async () => {
+  it("dispatches best-effort when a pending iOS runtime-kind probe outlives the action deadline", async () => {
     vi.useFakeTimers();
     mockGetSimulatorRuntimeKind.mockImplementation(() => new Promise(() => {}));
     const calls: string[] = [];
+    const registry = mockRegistry(calls);
     const env = {
-      registry: mockRegistry(calls),
+      registry,
       device: { platform: "ios", id: DEVICE },
     } as unknown as ActionEnv;
 
@@ -648,15 +649,129 @@ describe("pixel settle backstop", () => {
       kind: "tap",
       selector: { text: "Go", loose: true },
     });
-    const rejected = expect(pending).rejects.toThrow(
-      "timed out determining pixel capture support while settling"
-    );
+    const resolved = expect(pending).resolves.toMatchObject({ ok: true });
     await vi.advanceTimersByTimeAsync(7_500);
-    await rejected;
+    await resolved;
 
-    expect(calls).not.toContain("gesture-tap");
+    // The hung probe consumes the settle's whole remaining budget
+    // unrevalidated, so the one round that fits comes back non-fresh — but
+    // best-effort, never an error. At deadline exhaustion the selector
+    // resolves from the last valid settled tree and the gesture dispatches: a
+    // stuck capability lookup must not fail a step whose tree source stayed
+    // healthy, and no capture ever gated it.
+    expect(registry.invokeTool).toHaveBeenCalledWith(
+      "gesture-tap",
+      expect.objectContaining({ x: 0.5, y: 0.5 })
+    );
     expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
   });
+
+  it("marks the tree unsafe when the awaited iOS runtime-kind probe consumes the deadline", async () => {
+    vi.useFakeTimers();
+    mockGetSimulatorRuntimeKind.mockImplementation(() => new Promise(() => {}));
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = settleTree(env, { absoluteDeadline: Date.now() + 1_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const settled = await pending;
+
+    // Unlike a budget consumed by the read itself, real time passed while the
+    // probe hung: the screen may have moved with no revalidating read, so the
+    // converged tree comes back explicitly not-fresh — acting callers must
+    // reject it, but it remains a best-effort result rather than an error.
+    expect(settled).toMatchObject({ converged: false, treeFresh: false, visual: "skipped" });
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+  });
+
+  it("returns the just-converged tree when a slow read consumes the deadline on a probe-free platform", async () => {
+    vi.useFakeTimers();
+    const visible = screen([
+      n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+    ]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      if (reads === 1) return visible;
+      // The matching second read is healthy but slow: created before
+      // settleWithin's timeout for the same instant, its resolution wins the
+      // race, delivering the converged tree with the deadline already spent.
+      return new Promise((resolve) => {
+        setTimeout(() => resolve(visible), 750);
+      });
+    };
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "android", id: "emulator-5554" },
+    } as unknown as ActionEnv;
+
+    const pending = settleTree(env, { absoluteDeadline: Date.now() + 1_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const settled = await pending;
+
+    // Android resolves pixel support synchronously — there is no probe whose
+    // timeout the settle could be reporting. Zero remaining budget just means
+    // the pixel phase never starts: the tree that converged an instant ago is
+    // still current and comes back usable for selector coordinates.
+    expect(settled).toEqual({
+      tree: visible,
+      converged: false,
+      treeFresh: true,
+      visual: "skipped",
+    });
+    expect(reads).toBe(2);
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+  });
+
+  it.each(["tap", "long-press"] as const)(
+    "dispatches a raw-coordinate %s when a slow matching read consumes the whole action deadline",
+    async (kind) => {
+      vi.useFakeTimers();
+      const visible = screen([
+        n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+      ]);
+      let reads = 0;
+      currentTree = () => {
+        reads++;
+        if (reads === 1) return visible;
+        // Resolves exactly at the 7.5s action deadline: every read succeeds,
+        // the second merely runs long — the emulator scenario where a healthy
+        // 7.2s hierarchy read ends with a synchronous parse past the deadline.
+        return new Promise((resolve) => {
+          setTimeout(() => resolve(visible), 7_250);
+        });
+      };
+      const calls: string[] = [];
+      const registry = mockRegistry(calls);
+      const env = {
+        registry,
+        device: { platform: "android", id: "emulator-5554" },
+      } as unknown as ActionEnv;
+
+      const pending = runDirective(
+        env,
+        kind === "tap" ? { kind, x: 0.3, y: 0.7 } : { kind, x: 0.3, y: 0.7, duration: 500 }
+      );
+      const resolved = expect(pending).resolves.toMatchObject({ ok: true });
+      await vi.advanceTimersByTimeAsync(7_500);
+      await resolved;
+
+      // Literal coordinates consult no selector, and the settle is best-effort
+      // stabilization, not a precondition: the freshly delivered tree lets the
+      // gesture dispatch instead of the step erroring on a lookup that never
+      // ran.
+      expect(calls).toContain(kind === "tap" ? "gesture-tap" : "gesture-custom");
+      if (kind === "tap") {
+        expect(registry.invokeTool).toHaveBeenCalledWith(
+          "gesture-tap",
+          expect.objectContaining({ x: 0.3, y: 0.7 })
+        );
+      }
+      expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+    }
+  );
 
   it("writes an undegraded Vega snapshot baseline through the real combined settle", async () => {
     const shotPath = path.join(tmpDir, "snapshot.png");

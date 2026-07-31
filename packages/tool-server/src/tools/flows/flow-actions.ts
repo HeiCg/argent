@@ -353,8 +353,8 @@ export interface SettleResult {
   /**
    * True only when `tree` is safe to use for selector coordinates. A
    * best-effort combined result can outlive the last successful read when a
-   * capture or final tree read consumes the deadline; acting callers must
-   * reject it.
+   * capture, an awaited capability probe, or a final tree read consumes the
+   * deadline; acting callers must reject it.
    */
   treeFresh: boolean;
   /**
@@ -384,7 +384,7 @@ export interface SettleOptions {
 }
 
 type PixelCaptureResult = Awaited<ReturnType<typeof capturePixels>> | "deadline" | "aborted";
-type PixelCaptureSupportResult = PixelCaptureSupport | "deadline" | "aborted";
+type PixelCaptureSupportResult = PixelCaptureSupport | "deadline" | "not-attempted" | "aborted";
 type TreeReadResult =
   | { type: "tree"; tree: DescribeNode }
   | { type: "error"; error: Error }
@@ -450,14 +450,22 @@ async function capturePixelsBefore(
   return result.value;
 }
 
-/** Bound the native runtime-kind capability probe by the caller's hard budget. */
+/**
+ * Bound the native runtime-kind capability probe by the caller's hard budget.
+ *
+ * The two zero-progress shapes stay distinct. `not-attempted` means the budget
+ * was already spent before the probe could start: no time passes here, so
+ * whatever the caller's tree looked like an instant ago it still looks like
+ * now. `deadline` means the probe was genuinely awaited and outlived the wait
+ * — only there did unrevalidated time elapse while the screen may have moved.
+ */
 async function pixelCaptureSupportBefore(
   env: ActionEnv,
   deadline: number
 ): Promise<PixelCaptureSupportResult> {
   if (env.signal?.aborted) return "aborted";
   const remaining = deadline - Date.now();
-  if (remaining <= 0) return "deadline";
+  if (remaining <= 0) return "not-attempted";
   const result = await settleWithin(getPixelCaptureSupport(env.device), remaining, env.signal);
   if (result.type === "aborted" || env.signal?.aborted) return "aborted";
   if (result.type === "timeout") return "deadline";
@@ -597,8 +605,25 @@ export async function settleTree(
     }
     const pixelSupport = await pixelCaptureSupportBefore(env, hardDeadline);
     if (pixelSupport === "aborted" || env.signal?.aborted) return undefined;
+    if (pixelSupport === "not-attempted") {
+      // What spent the budget was the healthy tree read just above, not a sick
+      // probe: an in-flight read is deliberately allowed to run to the caller's
+      // action deadline (see `treeReadDeadline`), and one that finishes with a
+      // synchronous parse delivers its converged tree with the deadline already
+      // behind it. No time has passed since that read and no pixel attempt
+      // started, so the tree is current and safe for selector coordinates —
+      // hand it back best-effort instead of failing a settle whose tree phase
+      // just succeeded. On Android/Chromium/Vega there is not even a probe to
+      // consult ({@link getPixelCaptureSupport} resolves synchronously there).
+      return { tree: stableTree, converged: false, treeFresh: true, visual };
+    }
     if (pixelSupport === "deadline") {
-      throw new Error("timed out determining pixel capture support while settling");
+      // Here the probe itself was awaited and consumed the remaining budget:
+      // unrevalidated time passed while the screen may have moved — morally a
+      // hung capture eating the deadline — so the tree must be marked unsafe
+      // for acting callers. Still a best-effort result, never an error: the
+      // tree source stayed healthy throughout.
+      return { tree: stableTree, converged: false, treeFresh: false, visual };
     }
     if (pixelSupport === "absent") {
       return { tree: stableTree, converged: !pixelsTimedOut, treeFresh: true, visual };
