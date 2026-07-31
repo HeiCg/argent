@@ -292,6 +292,17 @@ describe("appConnectionState measures the running process", () => {
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
   });
 
+  it("reports indeterminate when ps answers with a single unsplittable column", async () => {
+    // `ps eww -p <pid> -o etime=,command=` with an empty command column answers
+    // one whitespace-free token. Splitting it anyway hands the age parser a
+    // truncated string it happily reads (`10:0` → 600 s) and calls the leftover
+    // the environment — turning unreadable output into the definite
+    // `stale_process` verdict, exactly what the sibling age guard prevents.
+    probe.psOutput = "10:00\n";
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
+  });
+
   // The 3 s grace is the difference between "one wasted restart-app" and
   // "restart a tool-server that was never broken". The other cases sit 200x
   // away from it on either side, so they pass whatever the term does — these

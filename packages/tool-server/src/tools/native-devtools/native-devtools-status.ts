@@ -109,18 +109,15 @@ Fails if the simulator server is not running for the given UDID.`,
         // The app-running probe (a simctl spawn) failed — typically a sim that
         // is shut down or unreachable, exactly where env init fails too. Reach
         // for the structured init_failed guidance (re-booting IS corrective for
-        // a dead sim) rather than a raw subprocess error, from either source
-        // that has one: a failure some earlier env attempt recorded, or the
-        // precheck's own attempt on a service that has not yet succeeded once.
-        // The two are disjoint — `ensureEnvReady` latches, so once it has
-        // succeeded the precheck stops probing, and only the recorded failure
-        // speaks. A sim that dies after that latch records nothing here, since
-        // this branch deliberately runs no env work for an app that can never
+        // a dead sim) rather than a raw subprocess error. The recorded failure
+        // is the whole of that reach: the blueprint attempts the env once at
+        // construction, so by now either it succeeded — latching `envSetup`,
+        // which makes a precheck here a no-op — or it recorded the failure this
+        // reads. A sim that dies after that latch records nothing, since this
+        // branch deliberately runs no env work for an app that can never
         // inject; there the probe's own error is all there is to report.
         const failure = api.getInitFailure();
         if (failure) return buildInitFailedResult(params.udid, failure);
-        const blocked = await precheckNativeDevtools(api, params.udid);
-        if (blocked) return blocked;
         throw err;
       }
       return {

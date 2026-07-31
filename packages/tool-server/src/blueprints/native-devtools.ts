@@ -795,9 +795,13 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         // Re-verify and re-set env — handles the case where the simulator was
         // rebooted and launchd cleared DYLD_INSERT_LIBRARIES. Must use
         // reverifyEnv (not ensureEnvReady): the latter latches after the first
-        // success and would skip re-applying the wiped env. It also has to run
-        // before the process is judged: the env a restart would launch into is
-        // the thing the process gets compared against.
+        // success and would skip re-applying the wiped env. This is repair, not
+        // measurement — the verdict below compares the process against this
+        // tool-server's own endpoint, held in memory, never against what this
+        // writes. It sits in the one call every consumer makes before deciding
+        // whether to relaunch, so the env is back in place before anyone acts
+        // on the verdict, and its outcome is recorded for the consumers that
+        // read it to tell a broken simulator from an unconnected app.
         await reverifyEnv();
 
         // Logged for the same reason the `ps` probe logs: a probe that is

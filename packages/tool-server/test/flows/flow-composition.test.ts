@@ -250,6 +250,11 @@ describe("flow composition (run:)", () => {
     // shape and, below, on the measured and system-app ones, because the rule
     // is only worth anything if it holds for all of them.
     expect(result.steps[0].reason?.match(/com\.acme\.app/g)).toHaveLength(1);
+    // The cause travels with the reason. Resolution fails for reasons the flow
+    // author can act on and cannot otherwise see — a socket already bound, a
+    // device of the wrong platform — and the step's reason is the only place
+    // any of them surfaces; without it they all read as one opaque failure.
+    expect(result.steps[0].reason).toContain("native-devtools unavailable");
     expect(result.ok).toBe(false);
   });
 

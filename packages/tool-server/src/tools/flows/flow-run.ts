@@ -196,8 +196,10 @@ const POST_LAUNCH_SETTLE_MS = 1500;
  * start would fail the first directive with a raw tree-source error; gating
  * the launch step reports the problem where it belongs, with the measured
  * reason the connection never came up.
+ *
+ * Exported so the gate's own reason text can be pinned against this value
+ * rather than a literal that drifts from it.
  */
-/** Exported so the gate's own reason text can be pinned against it, not a literal. */
 export const NATIVE_READY_TIMEOUT_MS = 8000;
 const NATIVE_READY_POLL_MS = 250;
 

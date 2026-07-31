@@ -154,7 +154,7 @@ export async function describeIos(
     // went away mid-call) must not fall through to the outer catch: that path
     // returns the empty tree with no hint at all, so the read looks merely
     // empty rather than unexplained. Degrade to the state that says exactly
-    // that, matching the other two consumers of this call.
+    // that, matching every other consumer of this call.
     const state = await nativeApi
       .appConnectionState(target.bundleId)
       .catch(() => "indeterminate" as const);

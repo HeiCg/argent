@@ -1085,6 +1085,12 @@ describe("native-* tool descriptions document every precheck outcome", () => {
   // a state in one place and the prose starts describing names the tool never
   // emits — which no runtime assertion catches, because both sides still agree
   // with themselves.
+  const deviceInteractSkill = (): string =>
+    readFileSync(
+      path.resolve(__dirname, "../../skills/skills/argent-device-interact/SKILL.md"),
+      "utf8"
+    );
+
   // Exhaustive by construction: this record fails to compile if a state is
   // added to the union without being listed, so a new state cannot ship
   // undocumented the way `connecting` nearly did — a hand-written array
@@ -1126,13 +1132,7 @@ describe("native-* tool descriptions document every precheck outcome", () => {
       ...(Object.keys(ALL_STATES) as NativeDevtoolsAppState[])
         .filter((s): s is Exclude<NativeDevtoolsAppState, "connected"> => s !== "connected")
         .map((s): [string, string] => [`${s} message`, buildAppStateMessage("com.example.app", s)]),
-      [
-        "argent-device-interact SKILL.md",
-        readFileSync(
-          path.resolve(__dirname, "../../skills/skills/argent-device-interact/SKILL.md"),
-          "utf8"
-        ),
-      ],
+      ["argent-device-interact SKILL.md", deviceInteractSkill()],
     ];
 
     for (const [name, text] of surfaces) {
@@ -1145,5 +1145,21 @@ describe("native-* tool descriptions document every precheck outcome", () => {
       "argent server start"
     );
     expect(nativeDevtoolsStatusTool.description).toContain("argent server start");
+  });
+
+  // The skill doc is what an agent reads before it calls anything, and nothing
+  // else in either package reads its body — so the statuses it routes are
+  // pinned here or nowhere. Without this, reverting the doc to "call restart-app
+  // first if needed" restores exactly the unconditional-restart advice the
+  // measured statuses exist to replace, with every other test still green.
+  it("routes every precheck status in the device-interact skill", () => {
+    const skill = deviceInteractSkill();
+
+    for (const status of ["restart_required", "service_stale", "connect_pending", "init_failed"]) {
+      expect(skill, `SKILL.md must route ${status}`).toContain(`status: "${status}"`);
+    }
+    // The routing is only worth stating because the loop it replaces is the
+    // failure mode: a status that repeats is never answered by retrying.
+    expect(skill).toContain("Never keep retrying");
   });
 });
