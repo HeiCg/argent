@@ -828,6 +828,28 @@ describe("runSnapshot cropOn", () => {
     await expect(pngSize(cropBaselinePath())).resolves.toEqual({ w: 50, h: 50 });
   });
 
+  it("writes an undegraded cropOn baseline when the frame settle had no pixel phase", async () => {
+    // A platform with no capture backend (Vega, the Apple TV simulator)
+    // converges with visual "skipped" — the pixel phase is architecturally
+    // absent, not degraded, so the write must read like any healthy one.
+    h.cropSettle = {
+      tree: {} as never,
+      converged: true,
+      treeFresh: true,
+      visual: "skipped",
+    };
+
+    const r = await runSnapshot(env, opts({ updateBaselines: true, cropOn }));
+
+    expect(r.status).toBe("pass");
+    expect(r.reason).toBe(`baseline written (${cropKey}.png)`);
+    expect(r.artifacts?.baseline).toMatchObject({
+      __argentArtifact: true,
+      hostPath: cropBaselinePath(),
+    });
+    await expect(pngSize(cropBaselinePath())).resolves.toEqual({ w: 50, h: 50 });
+  });
+
   it("compares the cropped image and sweeps the crop scratch dir on a pass", async () => {
     await fs.mkdir(path.dirname(cropBaselinePath()), { recursive: true });
     await writeRealPng(cropBaselinePath(), 50, 50);
