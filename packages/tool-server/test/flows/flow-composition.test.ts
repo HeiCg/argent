@@ -262,9 +262,10 @@ describe("flow composition (run:)", () => {
   // can never load into it. The launchd env that carries the bootstrap dylib is
   // simulator-wide, though, so the process inherits the very tokens the
   // measurement reads and scores as injected-but-unregistered — which sends the
-  // author off to restart a tool-server that was never at fault. This gate is
-  // the only `appConnectionState` caller without an injectability check of its
-  // own, so the terminal answer has to be produced here.
+  // author off to restart a tool-server that was never at fault. The gate is
+  // handed the bundle id the flow named, so it rules that out itself and
+  // answers with the terminal reason rather than passing along a measurement
+  // whose every remedy is a retry.
   it("gives a system-app launch the terminal reason, not a restart remedy", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
