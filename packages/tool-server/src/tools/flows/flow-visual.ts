@@ -142,16 +142,23 @@ function snapshotSettleFromResult(settled: SettleResult): SnapshotSettle {
  * Prefer a fully converged tree + pixel settle: a visually-settled but
  * stale result (the post-pixel revalidation read ran long) is re-settled for
  * freshness on the shared action deadline and accepted only at exhaustion —
- * safe while the comparison consumes pixels only, since `settled` always
- * describes the captured screen (see {@link SnapshotSettle.treeFresh}).
- * Outcomes short of `settled` map directly with no retry, and a sustained
- * tree-source outage degrades to a bounded pixel-only settle.
+ * but only while nothing contradicts it. A freshness retry is a full settle:
+ * when its pixel phase launches captures without ever producing a matching
+ * pair (`timed-out`), the earlier stale claim no longer describes the screen
+ * the upcoming capture will see, so the retry's degradation wins; only
+ * pixel-dark retries (outages, hard tree timeouts) cannot un-prove the
+ * established stillness
+ * (see {@link SnapshotSettle.treeFresh}). Outcomes short of `settled` map
+ * directly with no retry, and a sustained tree-source outage degrades to a
+ * bounded pixel-only settle.
  */
 async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettle> {
   const deadline = Date.now() + DEFAULT_ACTION_TIMEOUT_MS;
   // Set once a settle proves the pixels stopped without the confirming tree
-  // read; later retries only chase freshness, and no worse reading may take
-  // back that established stability.
+  // read; later retries only chase freshness, and no pixel-DARK reading (an
+  // outage, a hard tree timeout) may take back that established stability. A
+  // retry whose pixel phase runs without re-proving stillness does — see the
+  // `timed-out` arm below.
   let staleSettled = false;
   try {
     for (;;) {
@@ -168,11 +175,19 @@ async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettle> {
       }
       if (settled.visual === "settled") {
         staleSettled = true;
+      } else if (settled.visual === "timed-out") {
+        // A completed settle whose pixel phase ran and could not produce a
+        // matching pair: stillness could not be re-proven strictly AFTER any
+        // stale-settled pair matched, and the capture happens after this
+        // returns — honest degradation overrides the earlier stale claim,
+        // the same way settleTree discards a pre-restart `settled` pair.
+        return { outcome: "timed-out", treeFresh: settled.treeFresh };
       } else if (!staleSettled) {
-        // Never visually settled: map the outcome directly, with no retry —
-        // the settle already spent its bounded budget failing to converge. A
-        // non-converged `unavailable` hides an earlier pixel timeout, so only
-        // the converged form stays distinct from `timed-out`.
+        // Pixel-dark shortfalls (`skipped` without convergence, `unavailable`)
+        // map directly, with no retry — the settle already spent its bounded
+        // budget failing to converge. A non-converged `unavailable` hides an
+        // earlier pixel timeout, so only the converged form stays distinct
+        // from `timed-out`.
         if (settled.visual === "unavailable" && settled.converged) {
           return { outcome: "unavailable", treeFresh: settled.treeFresh };
         }

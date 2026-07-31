@@ -489,6 +489,44 @@ describe("runSnapshot settle", () => {
     await expect(fs.access(baselinePath())).resolves.toBeUndefined();
   });
 
+  it("degrades a stale settle when a freshness retry observes the screen moving", async () => {
+    vi.useFakeTimers();
+    // The first settle proves stillness without the confirming tree read; the
+    // freshness retry is a full settle whose pixel phase runs and never finds
+    // a matching pair — the screen moved strictly AFTER the stale pair
+    // matched, and the capture happens after the settle returns. The retry's
+    // motion overrides the stale claim: the adopted baseline may show
+    // mid-animation pixels, so the write must carry the timeout note instead
+    // of reading like a clean one.
+    vi.mocked(settleTree)
+      .mockResolvedValueOnce({
+        tree: {} as never,
+        converged: false,
+        treeFresh: false,
+        visual: "settled",
+      })
+      .mockResolvedValue({
+        tree: {} as never,
+        converged: false,
+        treeFresh: true,
+        visual: "timed-out",
+      });
+
+    const pending = runSnapshot(env, opts({ updateBaselines: true }));
+    await vi.advanceTimersByTimeAsync(8_000);
+    const r = await pending;
+
+    expect(r.status).toBe("pass");
+    expect(r.reason).toBe(
+      "baseline written (home__ios-390x844.png); " +
+        "capture is best-effort/degraded because visual settling timed out"
+    );
+    // The motion round returned immediately — no retrying past observed
+    // motion toward the deadline's undegraded stale-settled exit.
+    expect(vi.mocked(settleTree)).toHaveBeenCalledTimes(2);
+    await expect(fs.access(baselinePath())).resolves.toBeUndefined();
+  });
+
   it("writes an undegraded baseline when a converged combined settle had no pixel phase", async () => {
     // A platform with no capture backend (Vega) converges with visual
     // "skipped": the absence is architectural, so the reason must read exactly
