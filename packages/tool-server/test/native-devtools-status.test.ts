@@ -660,6 +660,89 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     }
   });
 
+  // The one invariant this whole derivation exists for, at the tool that reports
+  // it. Both the pre-PR expression (`appRunning && !connected`) and any widening
+  // that re-admits `unregistered` leave the boolean saying "restart the app"
+  // beside a message saying a restart cannot help — and the description tells
+  // agents to branch on the boolean.
+  it("never asks for a restart of an app a restart provably cannot fix", async () => {
+    for (const state of ["unregistered", "connecting"] as const) {
+      const { api } = makeNativeApi({ envSetup: true, appRunning: true, state });
+
+      const result = (await nativeDevtoolsStatusTool.execute(
+        { nativeDevtools: api },
+        { udid: "UDID", bundleId: "com.example.app" }
+      )) as { requiresRestart: boolean; state: string };
+
+      expect(result.requiresRestart, `${state} must not require a restart`).toBe(false);
+      expect(result.state).toBe(state);
+    }
+  });
+
+  // A sim that dies mid-call makes the measurement reject. Without the guard the
+  // raw subprocess error escapes execute() instead of the structured answer.
+  it("degrades a rejected measurement instead of letting it escape the tool", async () => {
+    const { api } = makeNativeApi({ envSetup: true, appRunning: true });
+    api.appConnectionState = async () => {
+      throw new Error("Invalid device: UDID");
+    };
+
+    const result = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: api },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as { state?: string; message?: string };
+
+    expect(result.state).toBe("indeterminate");
+    expect(result.message).toContain("do not keep restarting the app");
+  });
+
+  // `connected` has to come off the same measurement as `state`, not a second
+  // `isConnected()` read: a connection landing between the two would pair
+  // `connected: true` with a state saying the service never registered it.
+  it("reads connected from the one measurement, not a second probe", async () => {
+    const { api } = makeNativeApi({ envSetup: true, appRunning: true, state: "unregistered" });
+    api.isConnected = () => true; // the map moved on after the measurement began
+
+    const result = (await nativeDevtoolsStatusTool.execute(
+      { nativeDevtools: api },
+      { udid: "UDID", bundleId: "com.example.app" }
+    )) as { connected: boolean; state: string };
+
+    expect(result.connected).toBe(false);
+    expect(result.state).toBe("unregistered");
+  });
+
+  // The precheck is the path all six native-* feature tools take. A rejection
+  // here (the env re-apply, on a sim that went away) must not reach the agent as
+  // a raw subprocess error — and must never be swallowed as "connected", which
+  // would let all six proceed to query a connection that does not exist.
+  it("degrades a rejected measurement rather than letting it escape or pass", async () => {
+    const { api } = makeNativeApi({ envSetup: true, appRunning: true });
+    api.appConnectionState = async () => {
+      throw new Error("Invalid device: UDID");
+    };
+
+    const result = await precheckNativeDevtools(api, "UDID", "com.example.app");
+
+    expect(result).not.toBeNull();
+    expect(result).toMatchObject({ status: "restart_required" });
+    expect((result as { message: string }).message).toContain("do not keep restarting the app");
+  });
+
+  // When that same rejection came with a recorded env failure, the sim itself is
+  // gone — which is init_failed's case, not a connection diagnosis.
+  it("reports a dead sim as init_failed rather than an unmeasured connection", async () => {
+    const { api } = makeNativeApi({ envSetup: true, appRunning: true });
+    api.getInitFailure = () => ({ attempts: 2, lastError: "Invalid device", givenUp: false });
+    api.appConnectionState = async () => {
+      throw new Error("Invalid device: UDID");
+    };
+
+    const result = await precheckNativeDevtools(api, "UDID", "com.example.app");
+
+    expect(result).toMatchObject({ status: "init_failed", attempts: 2 });
+  });
+
   it("passes a connected app straight through", async () => {
     await expect(precheckWith("connected")).resolves.toBeNull();
   });

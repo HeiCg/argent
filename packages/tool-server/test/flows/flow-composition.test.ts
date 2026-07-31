@@ -335,6 +335,100 @@ describe("flow composition (run:)", () => {
       vi.useRealTimers();
     }
   });
+
+  // The connection can land between the final poll and the measurement. Without
+  // the `connected` short-circuit, buildAppStateMessage falls off its switch and
+  // the healthy run dies with a literal "undefined" as its reason.
+  it("passes when the connection lands between the last poll and the measurement", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [{ kind: "launch", app: "com.acme.app" }],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => ({
+        isConnected: () => false, // never connects during the poll…
+        listConnectedBundleIds: () => [],
+        appConnectionState: async () => "connected" as const, // …but has by the measurement
+      })),
+    } as unknown as Registry;
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const pending = createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      );
+      let settled = false;
+      void pending.then(() => (settled = true));
+      for (let i = 0; i < 200 && !settled; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+        await vi.advanceTimersByTimeAsync(250);
+      }
+      const result = asRun(await pending);
+
+      expect(result.steps[0].status).toBe("pass");
+      expect(result.ok).toBe(true);
+      // Without the short-circuit the step errors with a literal "undefined" —
+      // buildAppStateMessage has no `connected` arm to fall to.
+      expect(result.steps[0].reason ?? "").not.toMatch(/undefined/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A rejected measurement must not propagate: `runLaunch` has no try/catch of
+  // its own, so it would escape `execute()` and the run would return no step
+  // reports at all instead of a structured failure.
+  it("keeps a rejected measurement inside the step report", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.acme.app" },
+        { kind: "echo", message: "after" },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => ({
+        isConnected: () => false,
+        listConnectedBundleIds: () => [],
+        appConnectionState: async () => {
+          throw new Error("Invalid device: UDID");
+        },
+      })),
+    } as unknown as Registry;
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const pending = createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      );
+      let settled = false;
+      void pending.then(() => (settled = true));
+      for (let i = 0; i < 200 && !settled; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+        await vi.advanceTimersByTimeAsync(250);
+      }
+      const result = asRun(await pending);
+
+      expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual([
+        "launch:error",
+        "echo:skip",
+      ]);
+      expect(result.steps[0].reason).toContain("could not be inspected");
+      expect(result.steps[0].reason).not.toMatch(/Invalid device/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("device binding (portability)", () => {

@@ -53,7 +53,9 @@ export function isInjectableBundleId(bundleId: string): boolean {
  * description) so none of them can drift into recommending a dead-end. The flow
  * launch gate reports the same terminal state but deliberately does NOT carry
  * this text: its reader is authoring a flow, not choosing an inspection tool,
- * so it names the flow-level remedy (drive by coordinate) instead. Every native-* *feature* tool — notably the two
+ * so it names the flow-level remedy (drive by coordinate) instead.
+ *
+ * Every native-* *feature* tool — notably the two
  * view-at-point tools, which run this same 3-arg precheck — re-throws this
  * identical error, so pointing an agent at any of them just loops it back here.
  * (`native-devtools-status` is the lone exception: it runs the 2-arg precheck
@@ -291,7 +293,20 @@ export async function precheckNativeDevtools(
 
   if (bundleId === undefined) return null;
 
-  const state = await api.appConnectionState(bundleId);
+  // Degrade a rejection rather than letting it out raw, as every other consumer
+  // of this call does. It re-applies the launchd env before it can answer
+  // anything, so a sim that goes away between `ensureEnvReady` above and here
+  // rejects — and this is the path all six native-* feature tools take, so a
+  // raw `Invalid device: <udid>` would reach the agent in place of the
+  // structured guidance the same failure produces from `native-devtools-status`
+  // and `describe`. A failure recorded by that env re-apply says the sim itself
+  // is gone, which is init_failed's case; anything else leaves the connection
+  // simply unmeasured.
+  const state = await api.appConnectionState(bundleId).catch(() => {
+    const failure = api.getInitFailure();
+    return failure ? buildInitFailedResult(udid, failure) : ("indeterminate" as const);
+  });
+  if (typeof state !== "string") return state;
   if (state === "connected") return null;
   return {
     // Two states must not be reported as restart_required: `unregistered`, which

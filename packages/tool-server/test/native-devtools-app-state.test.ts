@@ -15,6 +15,10 @@ const probe = vi.hoisted(() => ({
   envOps: 0,
   /** Socket path to dial (as the injected dylib does) while `ps` is in flight. */
   dialDuringPs: null as string | null,
+  /** The exact `ps` invocation, so the argv the derivation depends on is pinned. */
+  psInvocation: null as { args: string[]; opts: Record<string, unknown> } | null,
+  /** Set when `inspectRunningApp`'s own `launchctl list` should reject. */
+  launchctlFails: false,
 }));
 
 vi.mock("@argent/native-devtools-ios", () => ({
@@ -36,6 +40,7 @@ vi.mock("node:child_process", async () => {
       const callback = (typeof opts === "function" ? opts : cb!) as ExecCb;
       const argv = args.join(" ");
       if (/\bps$/.test(cmd)) {
+        probe.psInvocation = { args: [...args], opts: (opts ?? {}) as Record<string, unknown> };
         if (probe.psFails) {
           callback(new Error("ps: no such process"), { stdout: "", stderr: "" });
           return;
@@ -54,6 +59,10 @@ vi.mock("node:child_process", async () => {
         return;
       }
       if (argv.includes("launchctl list")) {
+        if (probe.launchctlFails) {
+          callback(new Error("Invalid device: UDID"), { stdout: "", stderr: "" });
+          return;
+        }
         callback(null, { stdout: probe.launchctlList, stderr: "" });
         return;
       }
@@ -176,6 +185,8 @@ describe("appConnectionState measures the running process", () => {
     probe.psOutput = psLine("10:00", INJECTED_ENV);
     probe.psFails = false;
     probe.dialDuringPs = null;
+    probe.psInvocation = null;
+    probe.launchctlFails = false;
   });
 
   afterEach(() => {
@@ -336,6 +347,58 @@ describe("appConnectionState measures the running process", () => {
     } finally {
       await instance.dispose();
     }
+  });
+
+  // The whole `unregistered` derivation rests on `ps` rendering the launch
+  // environment, which only the `e` flag does — and on `etime` being the FIRST
+  // column, since the age is parsed positionally off the leading token. Neither
+  // is observable in any state assertion: drop the `e` and every app reads
+  // `stale_process` (the restart loop, restored by one character); swap the
+  // columns and every app reads `indeterminate`.
+  it("asks ps for the environment, with the age first", async () => {
+    await stateFor({ listenerAgeMs: 600_000 });
+
+    expect(probe.psInvocation?.args).toEqual(["eww", "-p", String(PID), "-o", "etime=,command="]);
+  });
+
+  // Advisory probe: its own short budget rather than the simctl one, and the
+  // raised buffer its siblings use — an environment can run to kern.argmax
+  // (1 MiB), exactly Node's default cap, so the default would ENOBUFS on a
+  // maximal one and degrade a readable process to "no evidence".
+  it("bounds the ps probe and raises its buffer past a maximal environment", async () => {
+    await stateFor({ listenerAgeMs: 600_000 });
+
+    expect(probe.psInvocation?.opts.maxBuffer).toBe(16 * 1024 * 1024);
+    expect(probe.psInvocation?.opts.timeout).toBe(5_000);
+  });
+
+  // A connected app must short-circuit before any device probe: the whole
+  // measurement exists for apps that are NOT connected, and running it on one
+  // that is costs several simctl round-trips per call.
+  it("answers connected off the live map without probing the device", async () => {
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      const api = instance.api as NativeDevtoolsApi;
+      const sock = net.createConnection(api.socketPath, () => {
+        sock.write(JSON.stringify({ type: "Control", payload: { bundleId: BUNDLE } }) + "\n");
+      });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      probe.psInvocation = null;
+
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("connected");
+      expect(probe.psInvocation).toBeNull();
+      sock.destroy();
+    } finally {
+      await instance.dispose();
+    }
+  });
+
+  // A failing inspection must stay advisory. `precheckNativeDevtools` — the path
+  // all six native-* feature tools take — depends on this call not rejecting.
+  it("keeps a failed inspection non-fatal", async () => {
+    probe.launchctlFails = true;
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
   });
 
   // A null pid means the row did not parse, not that launchd reported no
