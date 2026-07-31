@@ -14,6 +14,7 @@ import {
 import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
 import { subprocessOutputTail } from "../../../utils/format-error";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
+import { simctlArgsForUdid } from "../../../utils/ios-device-sets";
 import type { LaunchAppParams, LaunchAppResult } from "../types";
 
 const execFileAsync = promisify(execFile);
@@ -79,7 +80,10 @@ export function makeIosImpl(
       const blocked = await precheckNativeDevtools(nativeDevtools, params.udid);
       if (blocked) return blocked;
       try {
-        await execFileAsync("xcrun", ["simctl", "launch", params.udid, params.bundleId]);
+        await execFileAsync(
+          "xcrun",
+          await simctlArgsForUdid(params.udid, ["launch", params.udid, params.bundleId])
+        );
       } catch (err) {
         throw new FailureError(
           `Failed to launch iOS app ${params.bundleId} on ${params.udid}.`,

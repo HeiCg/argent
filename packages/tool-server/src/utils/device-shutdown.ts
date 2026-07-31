@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveDevice } from "./device-info";
 import { resolveAndroidBinary } from "./android-binary";
+import { simctlArgsForUdid } from "./ios-device-sets";
 
 const execFileAsync = promisify(execFile);
 
@@ -29,7 +30,7 @@ export async function shutdownOwnedDevice(id: string): Promise<void> {
   // emulator consoles. Same split `shutdownDevice` reports on below.
   if (device.kind === "device") return;
   if (platform === "ios") {
-    await execFileAsync("xcrun", ["simctl", "shutdown", id]).catch(() => {});
+    await execFileAsync("xcrun", await simctlArgsForUdid(id, ["shutdown", id])).catch(() => {});
   } else if (platform === "android") {
     // Resolve adb like every other android path (SDK fallback off-PATH — on
     // Windows adb usually isn't on PATH at all); bare "adb" as a last resort.
@@ -68,7 +69,7 @@ export async function shutdownDevice(id: string): Promise<ShutdownResult> {
   }
   try {
     if (device.platform === "ios" && device.kind !== "device") {
-      await execFileAsync("xcrun", ["simctl", "shutdown", id]);
+      await execFileAsync("xcrun", await simctlArgsForUdid(id, ["shutdown", id]));
       return { ok: true };
     }
     if (device.platform === "android" && device.kind === "emulator") {

@@ -4,6 +4,7 @@ import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/
 import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
 import { subprocessOutputTail } from "../../../utils/format-error";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
+import { simctlArgsForUdid } from "../../../utils/ios-device-sets";
 import type { OpenUrlParams, OpenUrlResult, OpenUrlServices } from "../types";
 import { httpDeepLinkNote } from "../deep-link-note";
 
@@ -45,7 +46,10 @@ export const iosImpl: PlatformImpl<OpenUrlServices, OpenUrlParams, OpenUrlResult
       return { opened: true, url: params.url, note: httpDeepLinkNote(params.url) };
     }
     try {
-      await execFileAsync("xcrun", ["simctl", "openurl", params.udid, params.url]);
+      await execFileAsync(
+        "xcrun",
+        await simctlArgsForUdid(params.udid, ["openurl", params.udid, params.url])
+      );
     } catch (err) {
       throw new FailureError(
         `Failed to open URL on iOS simulator ${params.udid}.`,

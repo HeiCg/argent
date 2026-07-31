@@ -5,6 +5,7 @@ import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/
 import { assertPhysicalIosEnabled } from "../../../blueprints/simulator-server";
 import { subprocessOutputTail } from "../../../utils/format-error";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
+import { deviceSetForUdid, simctlPrefix } from "../../../utils/ios-device-sets";
 import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } from "../types";
 
 const execFileAsync = promisify(execFile);
@@ -68,13 +69,15 @@ export const iosImpl: PlatformImpl<ReinstallAppServices, ReinstallAppParams, Rei
       return { reinstalled: true, bundleId };
     }
 
+    // Simulator path: address the device set that owns this UDID.
+    const prefix = simctlPrefix(await deviceSetForUdid(udid));
     try {
-      await execFileAsync("xcrun", ["simctl", "uninstall", udid, bundleId]);
+      await execFileAsync("xcrun", [...prefix, "uninstall", udid, bundleId]);
     } catch {
       // App may not be installed — continue to install
     }
     try {
-      await execFileAsync("xcrun", ["simctl", "install", udid, absolute]);
+      await execFileAsync("xcrun", [...prefix, "install", udid, absolute]);
     } catch (err) {
       throw new FailureError(
         `Failed to install iOS app bundle on ${udid}.`,
