@@ -606,9 +606,7 @@ export async function settleTree(
       }
       if (Date.now() >= treeDeadline) {
         if (lastTree === undefined) throw noSuccessfulTreeRead(lastError);
-        return lastTree === undefined
-          ? undefined
-          : { tree: lastTree, converged: false, treeFresh, visual };
+        return { tree: lastTree, converged: false, treeFresh, visual };
       }
       const sleepMs = Math.min(SETTLE_POLL_MS, Math.max(0, treeDeadline - Date.now()));
       if (!(await sleepOrAbort(sleepMs, env.signal))) return undefined;
