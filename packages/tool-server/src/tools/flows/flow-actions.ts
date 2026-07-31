@@ -164,7 +164,7 @@ const FINAL_TREE_REVALIDATE_RESERVE_MS = SETTLE_POLL_MS;
 // stale final tree. A separate hard ceiling below lets a capture already in
 // progress use the full first-frame-aware pixel budget.
 const COMBINED_PHASE_TIMEOUT_MS = SETTLE_TIMEOUT_MS + PIXEL_CAPTURE_TIMEOUT_MS;
-const COMBINED_HARD_TIMEOUT_MS =
+export const COMBINED_HARD_TIMEOUT_MS =
   SETTLE_TIMEOUT_MS + PIXEL_SETTLE_TIMEOUT_MS + FINAL_TREE_REVALIDATE_RESERVE_MS;
 // A tree read already in flight may outlive the tree polling window: Android's
 // full hierarchy commonly takes longer than 3s under load (the sources

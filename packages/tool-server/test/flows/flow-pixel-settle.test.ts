@@ -32,10 +32,15 @@ vi.mock("../../src/utils/ios-devices", async (importOriginal) => ({
   getSimulatorRuntimeKind: vi.fn(async () => "mobile"),
 }));
 
-import { capturePixels } from "../../src/tools/flows/flow-pixels";
+import { capturePixels, PIXEL_SETTLE_TIMEOUT_MS } from "../../src/tools/flows/flow-pixels";
 import { getSimulatorRuntimeKind } from "../../src/utils/ios-devices";
 import { FIRST_FRAME_WAIT_MS } from "../../src/utils/simulator-client";
-import { runDirective, settleTree, waitForFrameResult } from "../../src/tools/flows/flow-actions";
+import {
+  COMBINED_HARD_TIMEOUT_MS,
+  runDirective,
+  settleTree,
+  waitForFrameResult,
+} from "../../src/tools/flows/flow-actions";
 import {
   FlowTreeSettleTimeoutError,
   FlowTreeSourceUnavailableError,
@@ -428,6 +433,68 @@ describe("pixel settle backstop", () => {
       visual: "settled",
     });
     expect(vi.mocked(capturePixels)).toHaveBeenCalledTimes(2);
+  });
+
+  it("settles a first-frame-boundary capture under the deadline-less combined hard budget", async () => {
+    vi.useFakeTimers();
+    // The one COMBINED settle that runs with NO caller deadline is scroll-to's
+    // round-0 settle, so COMBINED_HARD_TIMEOUT_MS is the only bound here.
+    // This is exactly the regime FIRST_PIXEL_CAPTURE_TIMEOUT_MS exists for: a
+    // cold simulator-server stream spending nearly FIRST_FRAME_WAIT_MS on its
+    // first frame, followed by a matching warm capture. Collapsing the hard
+    // budget to the 3s tree window alone (dropping the pixel term) would cut
+    // that first capture at ~2.75s: the phase would end "timed-out" after one
+    // launched-and-expired capture and the settle would degrade to
+    // converged: false instead of proving visual stillness.
+    const visible = screen([
+      n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+    ]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      return visible;
+    };
+    vi.mocked(capturePixels)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve(solid([255, 255, 255])), FIRST_FRAME_WAIT_MS + 250);
+          })
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve(solid([255, 255, 255])), 100);
+          })
+      );
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = settleTree(env);
+    await vi.advanceTimersByTimeAsync(7_500);
+    const settled = await pending;
+
+    expect(settled).toEqual({
+      tree: visible,
+      converged: true,
+      treeFresh: true,
+      visual: "settled",
+    });
+    // The converging pair plus exactly the one post-pixel revalidation read;
+    // both captures completed — the slow first one was never cut short.
+    expect(reads).toBe(3);
+    expect(vi.mocked(capturePixels)).toHaveBeenCalledTimes(2);
+  });
+
+  it("sizes the deadline-less combined hard budget for the first-frame-aware pixel window", () => {
+    // hardDeadline falls back to COMBINED_HARD_TIMEOUT_MS only when the caller
+    // supplies no absoluteDeadline (scroll-to's round-0 combined settle). Pin
+    // the pixel term so the budget can only lose its slow-first-frame headroom
+    // deliberately: the 3s tree window, the full first-frame-aware pixel
+    // window, and the 250ms final-read reserve.
+    expect(COMBINED_HARD_TIMEOUT_MS).toBe(3_000 + PIXEL_SETTLE_TIMEOUT_MS + 250);
   });
 
   it("gives the post-pixel read the ordinary phase deadline after a fast pixel phase", async () => {
