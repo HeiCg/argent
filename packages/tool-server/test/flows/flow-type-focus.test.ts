@@ -84,6 +84,19 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
+/**
+ * Slack for the two clocks these timing assertions straddle. The waits are
+ * `setTimeout`, scheduled on libuv's monotonic clock and rounded to whole
+ * milliseconds; the stamps above are `Date.now()`, off the wall clock. The two
+ * drift, so a 500ms sleep is routinely observed as a 499ms gap — which failed
+ * this suite on CI (2026-07-31) against a lower bound that assumed a timer
+ * never fires early.
+ *
+ * Small on purpose: what these assertions pin is that the settle happened at
+ * all, and skipping it leaves a gap near zero.
+ */
+const CLOCK_SKEW_MS = 10;
+
 describe("type directive focus wait", () => {
   it("waits for the tapped field to report focus before typing (android)", async () => {
     // Script the hierarchy by call count: reads 1-2 are the pre-tap settle
@@ -118,9 +131,9 @@ describe("type directive focus wait", () => {
     // Text first, then the submitting Enter as a separate call.
     expect(keys.map((c) => c.args.text ?? c.args.key)).toEqual(["a@b.com", "enter"]);
     // The gap covers the fixed settle (500ms) plus at least one poll interval
-    // (300ms) before read 4 confirmed focus. setTimeout never fires early, so
-    // the lower bound is safe to assert; no upper bound (CI jitter).
-    expect(keys[0]!.t - tap!.t).toBeGreaterThanOrEqual(800);
+    // (300ms) before read 4 confirmed focus. No upper bound (CI jitter), and
+    // the lower one allows for CLOCK_SKEW_MS.
+    expect(keys[0]!.t - tap!.t).toBeGreaterThanOrEqual(800 - CLOCK_SKEW_MS);
   });
 
   it("skips the focus poll on a source that can't report focus", async () => {
@@ -167,7 +180,7 @@ describe("type directive focus wait", () => {
     // submit: false — no trailing Enter.
     expect(keys.map((c) => c.args.text)).toEqual(["a@b.com"]);
     // The fixed settle still applies even without a focus-reporting source.
-    expect(keys[0]!.t - tap!.t).toBeGreaterThanOrEqual(500);
+    expect(keys[0]!.t - tap!.t).toBeGreaterThanOrEqual(500 - CLOCK_SKEW_MS);
   });
 });
 
