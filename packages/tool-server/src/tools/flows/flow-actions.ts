@@ -383,7 +383,11 @@ export interface SettleOptions {
   absoluteDeadline?: number;
 }
 
-type PixelCaptureResult = Awaited<ReturnType<typeof capturePixels>> | "deadline" | "aborted";
+type PixelCaptureResult =
+  | Awaited<ReturnType<typeof capturePixels>>
+  | "deadline"
+  | "not-attempted"
+  | "aborted";
 type PixelCaptureSupportResult = PixelCaptureSupport | "deadline" | "not-attempted" | "aborted";
 type TreeReadResult =
   | { type: "tree"; tree: DescribeNode }
@@ -431,6 +435,13 @@ async function fetchTreeBefore(env: ActionEnv, deadline: number): Promise<TreeRe
  * underlying {@link capturePixels} promise remains responsible for decoding
  * and deleting its temporary file when it eventually completes; settleWithin
  * also consumes a late rejection.
+ *
+ * The two zero-progress shapes stay distinct, mirroring
+ * {@link pixelCaptureSupportBefore}: `not-attempted` means the pixel budget
+ * was already spent before a capture could launch — no backend was consulted
+ * and no time passed. `deadline` means a real capture was awaited and outlived
+ * the wait — only there did unrevalidated time elapse while the screen may
+ * have moved.
  */
 async function capturePixelsBefore(
   env: ActionEnv,
@@ -440,7 +451,7 @@ async function capturePixelsBefore(
   if (env.signal?.aborted) return "aborted";
   const deadline = Math.min(overallDeadline, Date.now() + timeoutMs);
   const remaining = deadline - Date.now();
-  if (remaining <= 0) return "deadline";
+  if (remaining <= 0) return "not-attempted";
   const result = await settleWithin(capturePixels(env), remaining, env.signal);
   if (result.type === "aborted" || env.signal?.aborted) return "aborted";
   if (result.type === "timeout") return "deadline";
@@ -644,6 +655,19 @@ export async function settleTree(
         ? undefined
         : await capturePixelsBefore(env, pixelDeadline, pixelCaptureTimeoutMs(env.device, true));
     if (firstPixels === "aborted") return undefined;
+    if (firstPixels === "not-attempted") {
+      // The pixel phase never started: the tree pair converged so close to the
+      // caller's deadline that `pixelDeadline` was already behind us before a
+      // capture could launch. No backend was consulted and zero time passed
+      // since the converged pair, so — exactly like the probe's not-attempted
+      // path above — the tree is still current for selector coordinates and no
+      // revalidation read is owed. Crucially this is not a pixel timeout:
+      // `visual` keeps its sticky value ("skipped" by default, or a prior
+      // round's verdict) because a phase that never ran must stay distinct
+      // from captures that were observed and never matched — the distinction
+      // snapshot degradation reporting keys on.
+      return { tree: stableTree, converged: false, treeFresh: true, visual };
+    }
     if (firstPixels === "deadline") {
       pixelsConverged = false;
       pixelsTimedOut = true;
@@ -668,7 +692,12 @@ export async function settleTree(
           pixelCaptureTimeoutMs(env.device, false)
         );
         if (nextPixels === "aborted") return undefined;
-        if (nextPixels === "deadline") {
+        if (nextPixels === "deadline" || nextPixels === "not-attempted") {
+          // Mid-phase the two zero-progress shapes converge: a capture already
+          // ran here without producing a matching pair, so exhausting the
+          // budget — inside a capture, or in the instant between the sleep
+          // guard above and the next launch — is a pixel timeout, not a phase
+          // that never happened.
           pixelsConverged = false;
           pixelsTimedOut = true;
           visual = "timed-out";

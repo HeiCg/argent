@@ -725,6 +725,48 @@ describe("pixel settle backstop", () => {
     expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
   });
 
+  it("skips the pixel phase when the tree converges inside the final-read reserve", async () => {
+    vi.useFakeTimers();
+    const visible = screen([
+      n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+    ]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      return new Promise((resolve) => {
+        setTimeout(() => resolve(visible), 400);
+      });
+    };
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    // Two healthy 400ms reads converge at t=1050 — within the 250ms
+    // final-read reserve of the 1150ms deadline. The capability probe still
+    // resolves in time (asserted below), but the pixel deadline is already
+    // behind us, so the first capture is never launched.
+    const pending = settleTree(env, { absoluteDeadline: Date.now() + 1_150 });
+    await vi.advanceTimersByTimeAsync(1_150);
+    const settled = await pending;
+
+    // A phase that never ran is "skipped", never "timed-out": no capture
+    // backend was consulted, zero time passed since the converged pair, and
+    // no revalidation read is owed — the tree stays fresh and usable.
+    expect(settled).toEqual({
+      tree: visible,
+      converged: false,
+      treeFresh: true,
+      visual: "skipped",
+    });
+    // The probe ran and resolved, so this drives the capture branch, not the
+    // probe's own not-attempted path — and only the two converging reads were
+    // issued, with no third read spent on an unowed revalidation.
+    expect(mockGetSimulatorRuntimeKind).toHaveBeenCalledTimes(1);
+    expect(reads).toBe(2);
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+  });
+
   it.each(["tap", "long-press"] as const)(
     "dispatches a raw-coordinate %s when a slow matching read consumes the whole action deadline",
     async (kind) => {
