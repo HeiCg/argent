@@ -105,7 +105,8 @@ interface DiffArtifactPaths {
 }
 
 const MAX_RGB_DISTANCE_SQUARED = 255 * 255 * 3;
-const DEFAULT_THRESHOLD = 0.1;
+// Mirrored by flow-pixels' PIXEL_THRESHOLD — the parity is pinned in test.
+export const DEFAULT_THRESHOLD = 0.1;
 const DEFAULT_IGNORE_TOP_NORMALIZED_Y = 0.06;
 const DEFAULT_REGION_MERGE_DISTANCE = 8;
 const DEFAULT_CONTEXT_DIFF_SCALE = 0.3;

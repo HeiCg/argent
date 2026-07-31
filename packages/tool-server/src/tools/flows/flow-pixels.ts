@@ -22,9 +22,10 @@ export interface PixelFrame {
 // ignores the scale and returns full-res — the comparison is scale-agnostic.)
 const CAPTURE_SCALE = 0.25;
 
-// Per-pixel RGB tolerance (mirrors screenshot-diff's DEFAULT_THRESHOLD) so
-// encoder / resample noise between two captures never reads as motion.
-const PIXEL_THRESHOLD = 0.1;
+// Per-pixel RGB tolerance (mirrors screenshot-diff's DEFAULT_THRESHOLD — the
+// parity is pinned in test) so encoder / resample noise between two captures
+// never reads as motion.
+export const PIXEL_THRESHOLD = 0.1;
 const MAX_RGB_DISTANCE_SQUARED = 255 * 255 * 3;
 const PIXEL_THRESHOLD_SQUARED = PIXEL_THRESHOLD * PIXEL_THRESHOLD * MAX_RGB_DISTANCE_SQUARED;
 

@@ -12,10 +12,12 @@ import {
   PIXEL_CAPTURE_TIMEOUT_MS,
   PIXEL_SETTLE_POLL_MS,
   PIXEL_SETTLE_TIMEOUT_MS,
+  PIXEL_THRESHOLD,
   pixelsDiffer,
   settlePixels,
   type PixelFrame,
 } from "../../src/tools/flows/flow-pixels";
+import { DEFAULT_THRESHOLD } from "../../src/tools/screenshot-diff/screenshot-diff";
 import { getSimulatorRuntimeKind } from "../../src/utils/ios-devices";
 import { FIRST_FRAME_WAIT_MS } from "../../src/utils/simulator-client";
 
@@ -79,6 +81,31 @@ describe("pixelsDiffer", () => {
     expect(pixelsDiffer(solid(30, 30, [100, 100, 100]), solid(30, 30, [105, 105, 105]))).toBe(
       false
     );
+  });
+
+  it("registers a mid-band full-frame change as motion (a dim / fade / crossfade)", () => {
+    // +120 on every channel is an RGB distance of ~208 — far above the ~44
+    // tolerance, yet inside the band a loosened threshold (e.g. 0.5 → ~221)
+    // would swallow. A modal dim or nav-push crossfade must never read as
+    // still mid-transition.
+    expect(pixelsDiffer(solid(30, 30, [0, 0, 0]), solid(30, 30, [120, 120, 120]))).toBe(true);
+  });
+
+  it("stays still just below the per-pixel tolerance", () => {
+    // +25 on every channel is a distance of ~43.3, just under the tolerance of
+    // 0.1 × ~441 ≈ 44.2 — with the mid-band case above this brackets the
+    // threshold from both sides, so tightening it trips here and loosening it
+    // trips there.
+    expect(pixelsDiffer(solid(30, 30, [100, 100, 100]), solid(30, 30, [125, 125, 125]))).toBe(
+      false
+    );
+  });
+
+  it("mirrors screenshot-diff's DEFAULT_THRESHOLD (the documented invariant)", () => {
+    // flow-pixels documents its per-pixel tolerance as mirroring
+    // screenshot-diff's — pin the mirror so the two can only drift apart
+    // deliberately.
+    expect(PIXEL_THRESHOLD).toBe(DEFAULT_THRESHOLD);
   });
 
   it("ignores a handful of changed pixels below the motion fraction", () => {
