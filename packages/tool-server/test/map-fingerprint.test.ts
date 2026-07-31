@@ -166,6 +166,33 @@ describe("screenTitle — best-effort human title", () => {
     expect(screenTitle(withTitle)).toBe("Apple Account");
   });
 
+  it("never names a screen after the status-bar clock", () => {
+    // Frames measured on an iOS 18.6 simulator: the clock is 0.117 wide, so it
+    // clears TITLE_MIN_WIDTH, and it sits above the nav bar, so it anchors the
+    // band on any screen whose title carries no header-ish role (an iOS large
+    // title is a bare AXGroup). SpringBoard's status bar is in the tree whenever
+    // a system alert is up — a screen the crawler deliberately maps, since the
+    // alert leaves the app foregrounded.
+    const twentyFourHour = root(
+      n("AXStaticText", [0.124, 0.022, 0.117, 0.024], { label: "16:44" }),
+      n("AXGroup", [0.3, 0.06, 0.4, 0.03], { label: "Enable Dictation" })
+    );
+    expect(screenTitle(twentyFourHour)).toBe("Enable Dictation");
+
+    const twelveHour = root(
+      n("AXStaticText", [0.124, 0.022, 0.117, 0.024], { label: "4:44 PM" }),
+      n("AXGroup", [0.3, 0.06, 0.4, 0.03], { label: "Enable Dictation" })
+    );
+    expect(screenTitle(twelveHour)).toBe("Enable Dictation");
+  });
+
+  it("keeps a screen name that merely starts with digits", () => {
+    // The rule is the whole label reading as a time of day, so a screen the app
+    // genuinely names with a number keeps its name.
+    const tree = root(n("AXGroup", [0.3, 0.022, 0.4, 0.024], { label: "12 Recipes" }));
+    expect(screenTitle(tree)).toBe("12 Recipes");
+  });
+
   it("skips icon-font (invisible) labels", () => {
     // A glyph-only label renders as nothing outside the app's private font —
     // it must not become the screen's name.

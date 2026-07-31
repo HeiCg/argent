@@ -105,6 +105,17 @@ const TITLE_SHORT_LENGTH = 45;
 // Navigation chrome that shares the title bar but never names the screen —
 // a sheet whose band holds only "Cancel" is better off as "Screen N".
 const CHROME_LABEL = /^(back|cancel|close|done|dismiss)$/i;
+// The status-bar clock, which is a time of day rather than a screen name. It is
+// the one status-bar item shaped like a title row — measured at 0.117 wide on an
+// iOS 18 simulator, where the carrier and battery readouts are under 0.07 and so
+// fail TITLE_MIN_WIDTH — and it sits ABOVE the nav bar, so without this guard it
+// anchors the band ({@link TITLE_BAND}) on every screen whose own title carries
+// no header-ish role (an iOS large title is a bare AXGroup). SpringBoard's status
+// bar joins the tree exactly on the screens the crawler goes out of its way to
+// keep: a system alert leaves the app foregrounded, and the AX describe then
+// spans both windows. Being a clock, it also reads differently on each visit, so
+// a screen titled from it is titled differently every crawl.
+const STATUS_BAR_CLOCK_LABEL = /^\d{1,2}:\d{2}(\s?[ap]\.?m\.?)?$/i;
 
 /**
  * Best-effort human title for a screen. Geometric, not role-based: among
@@ -124,6 +135,7 @@ export function screenTitle(root: DescribeNode): string | null {
       hasVisibleText(label) &&
       !isScrollDecoration(node) &&
       !CHROME_LABEL.test(label) &&
+      !STATUS_BAR_CLOCK_LABEL.test(label) &&
       node.frame.y <= TITLE_MAX_Y &&
       node.frame.height >= TITLE_MIN_HEIGHT &&
       node.frame.height <= TITLE_MAX_HEIGHT &&
