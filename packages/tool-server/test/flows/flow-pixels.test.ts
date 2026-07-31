@@ -281,6 +281,28 @@ describe("settlePixels", () => {
     expect(captureScreenshot).toHaveBeenCalledTimes(2);
   });
 
+  it("settles a transition that comes to rest looking different from the first frame", async () => {
+    // Canonical modal-dismiss / nav-push shape: the screen moves (A → B → C)
+    // and then holds at C. Each capture must match against its predecessor —
+    // comparing against the first frame instead would never find A again and
+    // would burn the whole window into "timed-out". The caller deadline keeps
+    // that failure mode fast and deterministic.
+    const captureScreenshot = vi.fn(
+      captureFactory([
+        [0, 0, 0],
+        [255, 255, 255],
+        [40, 120, 200],
+      ])
+    );
+
+    await expect(
+      settlePixels(chromiumEnv(captureScreenshot), { absoluteDeadline: Date.now() + 2_000 })
+    ).resolves.toBe("settled");
+    // Exactly four captures — A, B, C, then the matching C — so the match was
+    // found on the predecessor comparison, not by wandering back to frame one.
+    expect(captureScreenshot).toHaveBeenCalledTimes(4);
+  });
+
   it("shares a default window sized for first-frame and steady-state capture latency", () => {
     expect(FIRST_PIXEL_CAPTURE_TIMEOUT_MS).toBeGreaterThan(FIRST_FRAME_WAIT_MS);
     expect(PIXEL_CAPTURE_TIMEOUT_MS).toBe(2_000);
