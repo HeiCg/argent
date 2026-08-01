@@ -89,11 +89,15 @@ export async function captureScreenshot(
   const rotation = opts.rotation && opts.rotation !== "Portrait" ? opts.rotation : null;
   const scale = opts.scale != null && opts.scale > 0 && opts.scale < 1 ? opts.scale : null;
 
+  const dropped: ("rotation" | "scale")[] = [];
+
   if (rotation || scale) {
     const sharp = tryLoadSharp();
     if (!sharp) {
       const features = [rotation && "rotation", scale && "scale"].filter(Boolean).join(" + ");
       warnSharpMissingOnce(features);
+      if (rotation) dropped.push("rotation");
+      if (scale) dropped.push("scale");
     } else {
       let pipeline = sharp(bytes);
       if (rotation) pipeline = pipeline.rotate(ROTATION_DEGREES[rotation]);
@@ -107,6 +111,10 @@ export async function captureScreenshot(
             kernel: DOWNSCALER_TO_KERNEL[opts.downscaler ?? "lanczos3"],
             fit: "fill",
           });
+        } else {
+          // Header unreadable: rotation below still applies, but the resize
+          // cannot be sized, so the scale the caller asked for is lost.
+          dropped.push("scale");
         }
       }
       bytes = Buffer.from(await pipeline.png({ compressionLevel: 6 }).toBuffer());
@@ -117,10 +125,18 @@ export async function captureScreenshot(
   const safeDeviceId = ctx.deviceId.replace(/[^A-Za-z0-9_-]/g, "_");
   const filePath = path.join(mediaDir(), `argent-screenshot-${safeDeviceId}-${stem}.png`);
   fs.writeFileSync(filePath, bytes);
-  return { url: `file://${filePath}`, path: filePath };
+  return {
+    url: `file://${filePath}`,
+    path: filePath,
+    ...(dropped.length > 0 ? { droppedFeatures: dropped } : {}),
+  };
 }
 
-/** Width / height from the PNG IHDR chunk; null if `buf` is not a valid PNG. */
+/**
+ * Read width / height from a PNG IHDR chunk without spinning up a decoder.
+ * Returns null on a malformed or non-PNG buffer. The caller skips the resize in
+ * that case and reports `scale` as dropped — there is no metadata fallback.
+ */
 function readPngSize(buf: Buffer): { width: number; height: number } | null {
   const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
   if (buf.length < 24) return null;
