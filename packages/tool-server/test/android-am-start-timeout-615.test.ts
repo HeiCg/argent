@@ -139,8 +139,11 @@ describe("launch-app on a slow cold start", () => {
       { id: UDID, platform: "android", kind: "emulator" } as never
     );
 
-    expect(result).toMatchObject({ launched: true, bundleId: B });
-    expect(result.note).toMatch(/wait window/i);
+    expect(result).toMatchObject({
+      launched: true,
+      bundleId: B,
+      note: expect.stringMatching(/wait window/i),
+    });
     expect(probeCalls()).toHaveLength(1);
     expect(probeCalls()[0]).toBe(B);
   });
@@ -235,8 +238,11 @@ describe("restart-app shares the behaviour", () => {
       { id: UDID, platform: "android", kind: "emulator" } as never
     );
 
-    expect(result).toMatchObject({ restarted: true, bundleId: B });
-    expect(result.note).toMatch(/wait window/i);
+    expect(result).toMatchObject({
+      restarted: true,
+      bundleId: B,
+      note: expect.stringMatching(/wait window/i),
+    });
     const stopAt = shellCalls.findIndex((c) => c.includes("force-stop"));
     const startAt = shellCalls.findIndex((c) => c.includes("am start -W"));
     expect(stopAt).toBeGreaterThanOrEqual(0);
