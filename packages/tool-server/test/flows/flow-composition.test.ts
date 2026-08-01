@@ -321,4 +321,76 @@ describe("flow validation", () => {
     // …while a non-map, non-string body still gets the shape error.
     expect(() => parseFlow("steps:\n  - launch: 42\n")).toThrow(/launch needs an app id/i);
   });
+  it("launches a non-injectable system app and keeps running coordinate steps", async () => {
+    // An Apple system app is a platform binary with library validation, so the
+    // instrumentation can never load. Waiting for it only delayed advice that
+    // could never work, and took the rest of the flow down with it — even when
+    // nothing in the flow needed the view hierarchy.
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.apple.Preferences" },
+        { kind: "echo", message: "coordinate work still runs" },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      // Would throw if the gate consulted it — it must not for this bundle.
+      resolveService: vi.fn(async () => {
+        throw new Error("native-devtools unavailable");
+      }),
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:pass", "echo:pass"]);
+    expect(result.steps[0].warning).toMatch(/system app/i);
+    // The advice that can never work must be gone.
+    expect(result.steps[0].warning).not.toMatch(/restart the argent server/i);
+    expect(result.ok).toBe(true);
+  });
+
+  it("fails a selector step against a non-injectable app terminally, not by timing out", async () => {
+    // Without this the step reaches auto-targeting and reports "Launch or
+    // restart the app first" — worse advice than the gate gave — and, if any
+    // other app is still connected, could resolve against ITS tree instead.
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.apple.Preferences" },
+        { kind: "await", condition: "visible", selector: { text: "General" } },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => {
+        throw new Error("native-devtools unavailable");
+      }),
+    } as unknown as Registry;
+
+    const started = Date.now();
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:pass", "await:fail"]);
+    expect(result.steps[1].reason).toMatch(/can never be injected/i);
+    expect(result.steps[1].reason).toMatch(/terminal/i);
+    // Immediate, not after the selector timeout.
+    expect(Date.now() - started).toBeLessThan(8000);
+  });
 });

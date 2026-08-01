@@ -52,12 +52,22 @@ export interface ActionEnv {
   ctx?: ToolContext;
   device: DeviceInfo;
   signal?: AbortSignal;
+  /**
+   * Bundle id of an app the run launched that can never carry the
+   * view-hierarchy instrumentation. Set means every tree read is doomed, so
+   * they fail immediately with a terminal reason instead of polling a source
+   * that will never appear — and, more importantly, instead of auto-targeting
+   * whichever other app happens to still be connected.
+   */
+  nonInjectableApp?: string;
 }
 
 /** Outcome of a selector directive: ok, or a machine-readable reason it failed. */
 export interface DirectiveOutcome {
   ok: boolean;
   reason?: string;
+  /** Caveat carried by a step that still succeeded. */
+  warning?: string;
   /** The run was cancelled mid-step — reported as a skip, not a step failure. */
   aborted?: boolean;
   /**
@@ -314,7 +324,24 @@ function flowSelectorToFrame(tree: DescribeNode, sel: FlowSelector): DescribeFra
  * convert the outage into a misleading "element not found" downstream. The
  * throw lands in the step's structured report via `execLeafStep`'s catch.
  */
+/**
+ * Why no selector can resolve against an app that cannot be instrumented.
+ * Deliberately not the native-devtools recovery text, which tells the caller to
+ * use `describe`/`screenshot` — the answer for a flow is coordinate steps.
+ */
+export function nonInjectableTreeReason(bundleId: string): string {
+  return (
+    `\`${bundleId}\` is an Apple system app, so argent's view-hierarchy instrumentation can never ` +
+    `be injected into it and selector-based steps cannot resolve. This is terminal — relaunching or ` +
+    `restarting the argent server will not change it. Target this screen by coordinate ` +
+    `(\`tap: { x, y }\`) instead.`
+  );
+}
+
 export async function settleTree(env: ActionEnv): Promise<DescribeNode | undefined> {
+  if (env.nonInjectableApp) {
+    throw new Error(nonInjectableTreeReason(env.nonInjectableApp));
+  }
   const deadline = Date.now() + SETTLE_TIMEOUT_MS;
   let prevFp: string | undefined;
   let prevTree: DescribeNode | undefined;
@@ -992,6 +1019,12 @@ async function waitForCondition(
   },
   timeoutMs: number
 ): Promise<DirectiveOutcome> {
+  // Not routed through settleTree, so it needs its own guard — and a `hidden`
+  // wait is the one condition that would otherwise resolve TRUE off an
+  // unreadable screen.
+  if (env.nonInjectableApp) {
+    return { ok: false, reason: nonInjectableTreeReason(env.nonInjectableApp) };
+  }
   const deadline = Date.now() + timeoutMs;
 
   let lastMatches: ReturnType<typeof findAll> = [];

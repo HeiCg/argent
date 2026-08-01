@@ -41,7 +41,11 @@ import {
   type ActionEnv,
   type DirectiveOutcome,
 } from "./flow-actions";
-import { nativeDevtoolsRef, type NativeDevtoolsApi } from "../../blueprints/native-devtools";
+import {
+  nativeDevtoolsRef,
+  isInjectableBundleId,
+  type NativeDevtoolsApi,
+} from "../../blueprints/native-devtools";
 import { androidDevtoolsRef, type AndroidDevtoolsApi } from "../../blueprints/android-devtools";
 import {
   chromiumCdpRef,
@@ -111,6 +115,12 @@ export interface StepReport {
    * percentage, baseline written/updated).
    */
   reason?: string;
+  /**
+   * A caveat about a step that still passed — currently, launching an app that
+   * can never carry the view-hierarchy instrumentation. Renderers show it as a
+   * `⚠` in place of the pass glyph and count it in the summary.
+   */
+  warning?: string;
   /** Underlying tool id for `tool` steps. */
   tool?: string;
   /** Tool result for `tool` steps. */
@@ -282,6 +292,10 @@ async function treeSourceGate(
   signal?: AbortSignal
 ): Promise<string | null> {
   if (device.platform === "ios" && !signal?.aborted) {
+    // An app that can never be injected will never connect, so waiting the full
+    // timeout only delays advice that cannot work. The flow can still run every
+    // step that does not read the view hierarchy.
+    if (!isInjectableBundleId(bundleId)) return null;
     const connected = await waitForNativeDevtools(registry, device, bundleId, signal);
     if (!connected && !signal?.aborted) {
       return (
@@ -396,11 +410,25 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
     return { ok: false, reason: `restart-app failed: ${errMsg(err)}` };
   }
   if (!(await sleepOrAbort(POST_LAUNCH_SETTLE_MS, signal))) return ABORTED_OUTCOME;
+  // Recorded on every launch, so a later injectable launch clears it.
+  state.nonInjectableApp =
+    device.platform === "ios" && !isInjectableBundleId(bundleId) ? bundleId : undefined;
+
   const gate = await treeSourceGate(registry, device, bundleId, signal);
   // The gate returns null (ready) on abort — check the signal before trusting
   // it, or a cancelled gate would read as a launch that verified readiness.
   if (signal?.aborted) return ABORTED_OUTCOME;
   if (gate) return { ok: false, reason: gate };
+  if (state.nonInjectableApp) {
+    return {
+      ok: true,
+      warning:
+        `${bundleId} is an Apple system app: it is a platform binary with library validation, so ` +
+        `argent's view-hierarchy instrumentation can never be injected into it. The app launched — ` +
+        `coordinate steps (\`tap: { x, y }\`), \`wait\` and \`snapshot\` work; selector-based steps ` +
+        `cannot resolve for this app.`,
+    };
+  }
   return { ok: true };
 }
 
@@ -1052,7 +1080,12 @@ async function execLeafStep(
       // A run cancelled mid-launch is a skip (matching the pre-step guard and
       // the directives), never a step failure — the app did nothing wrong.
       if (r.aborted) return { ...base, status: "skip", reason: r.reason };
-      return { ...base, status: r.ok ? "pass" : "error", reason: r.reason };
+      return {
+        ...base,
+        status: r.ok ? "pass" : "error",
+        reason: r.reason,
+        ...(r.warning ? { warning: r.warning } : {}),
+      };
     }
 
     case "tap":

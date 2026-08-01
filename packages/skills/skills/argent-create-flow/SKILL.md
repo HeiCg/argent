@@ -161,20 +161,20 @@ Record an `await-ui-element` step to **gate** the next step on a screen transiti
    - `tool: gesture-pinch` → `pinch: { on: "<target>", scale: … }`, deriving `scale` as `endDistance / startDistance`. Set `on:` to the element under the pinch center when the pinch was aimed at one (the map or image being zoomed); omit it for a screen-center pinch. Don't carry the recorded distances/angle over — the directive re-derives the geometry (finger placement, system-edge avoidance, chaining of large scales) at run time, so the conversion swaps device-specific coordinates for a portable selector with auto-wait. Keep the raw `tool: gesture-pinch` step when the pinch is anchored at a specific point _inside_ a large element (zooming toward a particular map location, not the map's center) or deliberately pans via `endCenterX`/`endCenterY` — `on:` takes only a selector and re-centers the pinch on the element's frame center, so converting would silently move the zoom anchor.
    - `tool: gesture-rotate` → `rotate: { on: "<target>", by: … }`, deriving `by` as `endAngle − startAngle` (the tool's `endAngle` > `startAngle` turns clockwise, matching the directive's positive `by`). Set `on:` to the element under the rotation center when the rotation was aimed at one (the map or image being rotated); omit it for a screen-center rotation. Don't carry the recorded `centerX`/`centerY`, radii (`radius` or `radiusX`/`radiusY`), `startAngle`, or `durationMs` over — the directive re-derives the geometry (finger placement, physical-circle radius, system-edge avoidance) and runs at a fixed pace (~90° per 300 ms), so the conversion swaps device-specific coordinates for a portable selector with auto-wait. Keep the raw `tool: gesture-rotate` step when the rotation is anchored at a specific point _inside_ a large element rather than its center (the directive re-centers on the element's frame center, so converting would silently move the pivot), when the gesture's speed itself matters (the directive's pace is fixed), or when the sweep exceeds the directive's ±3000° bound.
 
-Every other recorded tool (a velocity-dependent `gesture-swipe`, a fixed-distance `gesture-scroll` not aimed at an element, `button`, `screenshot`, …) has no directive form — leave it as a `tool:` step. The recorder already handles the rest: coordinate `gesture-tap`s are captured as portable `tap:` selector steps, a `restart-app` is captured as a `launch:` step, a `flow-execute` of a sibling fragment is captured as a `run: <name>` composition directive, and device ids are stripped. Captured selectors are emitted in the strict map form (`tap: { text: General }`), never as a loose bare string — the recorder verified the exact element the tap hit, and a bare string would re-parse as loose and route through the identifier-first fallback it was never checked against. After editing, re-run with `flow-execute` to confirm the cleaned flow still passes.
+Every other recorded tool (a velocity-dependent `gesture-swipe`, a fixed-distance `gesture-scroll` not aimed at an element, `button`, `screenshot`, …) has no directive form — leave it as a `tool:` step. The recorder already handles the rest: coordinate `gesture-tap`s are captured as portable `tap:` selector steps, a `restart-app` is captured as a `launch:` step, a `flow-execute` of a sibling fragment is captured as a `run: <name>` composition directive, and device ids are stripped. Captured selectors are emitted in the strict map form (`tap: { text: Settings }`), never as a loose bare string — the recorder verified the exact element the tap hit, and a bare string would re-parse as loose and route through the identifier-first fallback it was never checked against. After editing, re-run with `flow-execute` to confirm the cleaned flow still passes.
 
 ### Example session
 
 ```
 flow-start-recording  { name: "open-about", project_root: "/Users/dev/MyApp" }
-flow-add-echo  { message: "Start Settings from scratch" }
-flow-add-step  { command: "restart-app", args: "{\"udid\": \"ABC\", \"bundleId\": \"com.apple.Preferences\"}" }   # ⇒ captured as `- launch: com.apple.Preferences` — this is now an e2e flow
-flow-add-echo  { message: "On the Settings root list, tapping the 'General' row" }
-flow-add-step  { command: "gesture-tap", args: "{\"udid\": \"ABC\", \"x\": 0.5, \"y\": 0.35}" }   # ⇒ captured as `- tap: { text: General }` (portable selector, no udid)
-flow-add-step  { command: "await-ui-element", args: "{\"udid\": \"ABC\", \"condition\": \"visible\", \"selector\": {\"text\": \"About\"}}" }   # gate the transition
-flow-add-echo  { message: "On Settings > General, tapping 'About'" }
+flow-add-echo  { message: "Start the app from scratch" }
+flow-add-step  { command: "restart-app", args: "{\"udid\": \"ABC\", \"bundleId\": \"com.example.myapp\"}" }   # ⇒ captured as `- launch: com.example.myapp` — this is now an e2e flow
+flow-add-echo  { message: "On the app's root list, tapping the 'Settings' row" }
+flow-add-step  { command: "gesture-tap", args: "{\"udid\": \"ABC\", \"x\": 0.5, \"y\": 0.35}" }   # ⇒ captured as `- tap: { text: Settings }` (portable selector, no udid)
+flow-add-step  { command: "await-ui-element", args: "{\"udid\": \"ABC\", \"condition\": \"visible\", \"selector\": {\"text\": \"Account\"}}" }   # gate the transition
+flow-add-echo  { message: "On Settings, tapping 'Account'" }
 flow-add-step  { command: "gesture-tap", args: "{\"udid\": \"ABC\", \"x\": 0.5, \"y\": 0.17}" }
-flow-add-step  { command: "await-ui-element", args: "{\"udid\": \"ABC\", \"condition\": \"visible\", \"selector\": {\"text\": \"Model Name\"}}" }
+flow-add-step  { command: "await-ui-element", args: "{\"udid\": \"ABC\", \"condition\": \"visible\", \"selector\": {\"text\": \"Email\"}}" }
 flow-finish-recording  {}
 ```
 
@@ -198,14 +198,14 @@ The polished result of the example session above:
 
 ```yaml
 steps:
-  - echo: Start Settings from scratch
-  - launch: com.apple.Preferences
-  - echo: On the Settings root list, tapping the 'General' row
-  - tap: { text: General }
-  - await: { visible: About }
-  - echo: On Settings > General, tapping 'About'
-  - tap: { text: About }
-  - await: { visible: Model Name }
+  - echo: Start the app from scratch
+  - launch: com.example.myapp
+  - echo: On the app's root list, tapping the 'Settings' row
+  - tap: { text: Settings }
+  - await: { visible: Account }
+  - echo: On Settings, tapping 'Account'
+  - tap: { text: Account }
+  - await: { visible: Email }
 ```
 
 Note there is **no device id** anywhere in the file — the recorder strips them and the runner injects the bound device.
