@@ -101,14 +101,16 @@ describe("reinstall-app rejects a bad artifact before uninstalling anything", ()
   });
 
   it("ios: a .app directory with no Info.plist", async () => {
-    await expect(iosImpl.handler({} as never, params(EMPTY_APP), DEVICE)).rejects.toThrow(/Info\.plist/);
+    await expect(iosImpl.handler({} as never, params(EMPTY_APP), DEVICE)).rejects.toThrow(
+      /Info\.plist/
+    );
     expect(execFileCalls).toHaveLength(0);
   });
 
   it("ios-remote: same structural checks, no device round trip", async () => {
-    await expect(iosRemoteImpl.handler({} as never, params(NOT_AN_ARTIFACT), DEVICE)).rejects.toThrow(
-      /iOS app bundle is a directory/
-    );
+    await expect(
+      iosRemoteImpl.handler({} as never, params(NOT_AN_ARTIFACT), DEVICE)
+    ).rejects.toThrow(/iOS app bundle is a directory/);
     expect(simctlUninstall).not.toHaveBeenCalled();
     expect(simctlInstall).not.toHaveBeenCalled();
   });
