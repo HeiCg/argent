@@ -155,6 +155,17 @@ export function parseRunArgs(argv: string[]): {
     };
     const noValue = (name: string): void => {
       if (inline !== undefined) throw new FlagParseException(`${name} does not take a value`);
+      // `argent run` consumes a `true`/`false` word after a boolean flag, so a
+      // user who learned that syntax there will try it here. This parser has no
+      // per-flag values to give, and staying silent would leave the switch on
+      // while `false` was quietly taken as the flow name (the first bare token)
+      // — worse than the #586 case it echoes. Say so instead.
+      const next = argv[i + 1]?.trim().toLowerCase();
+      if (next === "true" || next === "false") {
+        throw new FlagParseException(
+          `${name} does not take a value — it is a switch; omit it to leave the option off`
+        );
+      }
     };
     if (flag === "--update-baselines") {
       noValue("--update-baselines");
@@ -215,9 +226,16 @@ export function renderSummary(report: FlowReport, opts: { withDevice?: boolean }
   const warnings = report.steps.filter((s) => s.warning).length;
   const warningsNote = warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : "";
   // The live renderer prints its header before the runner has resolved a
-  // device, so its summary carries the device instead.
-  const where = opts.withDevice ? ` on ${report.device}` : "";
-  return `${report.ok ? "PASS" : "FAIL"}${where} — ${report.passed} passed, ${report.failed} failed, ${report.errored} errored, ${report.skipped} skipped${warningsNote}`;
+  // device, so its summary carries the device instead. Empty when the flow
+  // needed none.
+  const where = opts.withDevice && report.device ? ` on ${report.device}` : "";
+  // Four zeros on a passing run read as though nothing happened. Say why:
+  // narration is not counted, so a flow of only narration counts nothing.
+  // Only on a pass — on a failure the counts are not what needs explaining.
+  const nothingCounted =
+    report.ok && report.passed + report.failed + report.errored + report.skipped === 0;
+  const note = nothingCounted ? " (no test steps)" : "";
+  return `${report.ok ? "PASS" : "FAIL"}${where} — ${report.passed} passed, ${report.failed} failed, ${report.errored} errored, ${report.skipped} skipped${warningsNote}${note}`;
 }
 
 /**
@@ -370,7 +388,7 @@ export function exitAfterFlush(
 
 export function renderReport(report: FlowReport): string {
   const lines: string[] = [];
-  lines.push(`Flow "${report.flow}" on ${report.device}`);
+  lines.push(`Flow "${report.flow}"${report.device ? ` on ${report.device}` : ""}`);
   // A fragment runs against the device's current state — remind the operator
   // what it assumes was already set up.
   if (report.executionPrerequisite) {
