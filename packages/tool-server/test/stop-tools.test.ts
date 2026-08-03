@@ -543,8 +543,14 @@ describe("stop-all-simulator-servers device scoping", () => {
     const parsed = tool.zodSchema!.safeParse({ udids: [MINE] });
 
     expect(parsed.success).toBe(false);
-    // And the same rejection reaches MCP / `argent run` / raw HTTP callers,
-    // which validate against the advertised JSON schema rather than the zod one.
+    // The zod parse above is the only gate: MCP, `argent run` and raw HTTP all
+    // forward the caller's args verbatim (`argent run` accepts unknown flags on
+    // purpose, see flag-parser.ts) and the tool-server parses them with this
+    // schema. What the assertion below pins is the ADVERTISED shape, derived
+    // from `.strict()` by `zodObjectToJsonSchema` — the schema an agent reads
+    // out of `GET /tools` to learn the key is `devices`. An advertised schema
+    // still admitting extra keys would document the `udids` typo as legal and
+    // leave the rejection looking like a server bug.
     expect(zodObjectToJsonSchema(tool.zodSchema as z.ZodObject<any>)).toMatchObject({
       additionalProperties: false,
     });
@@ -804,6 +810,63 @@ describe("stop-all-simulator-servers unmatched ids", () => {
     });
   });
 
+  it("scopes the port-keyed NetworkInspector and ReactProfilerSession URNs to the right device", async () => {
+    // NetworkInspector and ReactProfilerSession share JsRuntimeDebugger's
+    // port-keyed URN shape (`<ns>:<port>:<deviceId>`) but are declared apart
+    // from it in PORT_KEYED_NAMESPACES. Without that membership neither
+    // namespace is in DEVICE_OWNED_NAMESPACES at all, so a standalone node
+    // (no JsRuntimeDebugger present to cascade through) would match nothing
+    // and never be named in `stopped`. Both devices sit behind the SAME port,
+    // so this also pins that the port is not what the scoping keys on.
+    const services = new Map([
+      [`NetworkInspector:8081:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NetworkInspector:8081:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`ReactProfilerSession:8081:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`ReactProfilerSession:8081:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({
+      stopped: [`NetworkInspector:8081:${MINE}`, `ReactProfilerSession:8081:${MINE}`],
+    });
+    expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`NetworkInspector:8081:${THEIRS}`);
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`ReactProfilerSession:8081:${THEIRS}`);
+  });
+
+  it("does not let a NetworkInspector/ReactProfilerSession port be mistaken for a wireless-adb device id", async () => {
+    // Mirrors the JsRuntimeDebugger case above: the device id after the port
+    // can itself be `ip:port`, so only the FIRST colon may be consumed as the
+    // Metro port.
+    const serial = "192.168.1.5:5555";
+    const services = new Map([
+      [`NetworkInspector:8081:${serial}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`ReactProfilerSession:8081:${serial}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    expect(await tool.execute!({}, { devices: [serial] })).toEqual({
+      stopped: [`NetworkInspector:8081:${serial}`, `ReactProfilerSession:8081:${serial}`],
+    });
+
+    // A bare IP must not claim it, and neither must the port.
+    const registry2 = createMockRegistry(
+      new Map([
+        [`NetworkInspector:8081:${serial}`, { state: ServiceState.RUNNING, dependents: [] }],
+        [`ReactProfilerSession:8081:${serial}`, { state: ServiceState.RUNNING, dependents: [] }],
+      ])
+    );
+    const tool2 = createStopAllSimulatorServersTool(registry2);
+    expect(await tool2.execute!({}, { devices: ["192.168.1.5", "8081"] })).toEqual({
+      stopped: [],
+      unmatched: ["192.168.1.5", "8081"],
+    });
+  });
+
   it("reaps AXService on an unscoped machine-wide sweep too", async () => {
     const services = new Map([
       [`AXService:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
@@ -888,6 +951,74 @@ describe("stop-all-simulator-servers unmatched ids", () => {
       stopped: [`SimulatorServer:${MINE}`],
       unmatched: ["Mine-Typo"],
     });
+  });
+});
+
+describe("stop-all-simulator-servers interaction messages", () => {
+  // Both formatters previously had no coverage at all — flattening either to
+  // an unconditional string left the whole suite green. Pin the exact wording
+  // for every branch a caller can hit.
+  function tool() {
+    return createStopAllSimulatorServersTool(createMockRegistry(new Map()));
+  }
+
+  it("startedMsg reports a machine-wide sweep when devices is omitted", () => {
+    const startedMsg = tool().interaction!.startedMsg!;
+    expect(startedMsg({ params: {} })).toBe("Stopping all simulator servers");
+  });
+
+  it("startedMsg is singular for exactly one device", () => {
+    const startedMsg = tool().interaction!.startedMsg!;
+    expect(startedMsg({ params: { devices: [MINE] } })).toBe(
+      "Stopping simulator servers for 1 device"
+    );
+  });
+
+  it("startedMsg is plural for two or more devices", () => {
+    const startedMsg = tool().interaction!.startedMsg!;
+    expect(startedMsg({ params: { devices: [MINE, THEIRS] } })).toBe(
+      "Stopping simulator servers for 2 devices"
+    );
+  });
+
+  it("completedMsg has no unmatched clause when nothing was unmatched, singular and zero counts", () => {
+    const completedMsg = tool().interaction!.completedMsg!;
+    expect(completedMsg({ params: {}, result: { stopped: [`SimulatorServer:${MINE}`] } })).toBe(
+      "Stopped 1 simulator server"
+    );
+    expect(completedMsg({ params: {}, result: { stopped: [] } })).toBe(
+      "Stopped 0 simulator servers"
+    );
+  });
+
+  it("completedMsg pluralizes 'servers' for more than one stopped", () => {
+    const completedMsg = tool().interaction!.completedMsg!;
+    expect(
+      completedMsg({
+        params: {},
+        result: { stopped: [`SimulatorServer:${MINE}`, `SimulatorServer:${THEIRS}`] },
+      })
+    ).toBe("Stopped 2 simulator servers");
+  });
+
+  it("completedMsg appends the singular unmatched clause for exactly one bad id", () => {
+    const completedMsg = tool().interaction!.completedMsg!;
+    expect(
+      completedMsg({
+        params: { devices: [MINE, "GHOST-9999"] },
+        result: { stopped: [`SimulatorServer:${MINE}`], unmatched: ["GHOST-9999"] },
+      })
+    ).toBe("Stopped 1 simulator server (1 supplied id matched no service)");
+  });
+
+  it("completedMsg appends the plural unmatched clause for two or more bad ids", () => {
+    const completedMsg = tool().interaction!.completedMsg!;
+    expect(
+      completedMsg({
+        params: { devices: ["GHOST-1", "GHOST-2"] },
+        result: { stopped: [], unmatched: ["GHOST-1", "GHOST-2"] },
+      })
+    ).toBe("Stopped 0 simulator servers (2 supplied ids matched no service)");
   });
 });
 

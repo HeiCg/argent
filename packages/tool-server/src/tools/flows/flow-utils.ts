@@ -2448,7 +2448,10 @@ export async function writeNewFlowFile(filePath: string, content: string): Promi
  * called in "host" mode. In "client" mode the file lives on the client's
  * machine and this host cannot read it at all, so the in-memory copy is both
  * the take and the only thing countable — the guarantee below does not carry
- * across that boundary, and `flow-start-recording`'s description says so.
+ * across that boundary. The tool descriptions do not spell that out — they are
+ * kept to what the tool does; the agent-facing statement of it lives in
+ * `packages/skills/skills/argent-create-flow/SKILL.md`, in the
+ * "Starting always truncates the `.yaml`" bullet.
  *
  * The file — not the session's in-memory `flow` — is the take in "host" mode:
  * {@link appendStep}

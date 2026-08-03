@@ -42,7 +42,8 @@ export interface ScreenRecordingSessionApi {
   /** True while a stop is running; a concurrent start/stop must not interleave. */
   stopPending: boolean;
   /**
-   * Set the moment dispose() begins (process shutdown). A start suspended at a
+   * Set the moment dispose() begins — process shutdown, or a scoped/unscoped
+   * `stop-all-simulator-servers` naming this device. A start suspended at a
    * pre-spawn await (resolving ffmpeg, connecting to the frame stream) checks
    * this immediately before spawning and aborts — otherwise it would spawn an
    * encoder AFTER dispose already ran, orphaning a process that `pendingChild`
@@ -102,10 +103,13 @@ export interface ScreenRecordingSessionApi {
   lastExitInfo: { code: number | null; signal: string | null } | null;
 }
 
-// Dispose only fires on process shutdown, where an in-flight recording is
-// being abandoned. Closing ffmpeg's stdin is what finalizes the container, so
-// give that one short grace before SIGKILL — shutdown must not be held up by a
-// slow finalize, but a playable file is worth a moment.
+// Dispose fires on process shutdown, and — since `ScreenRecordingSession` joined
+// `DEVICE_OWNED_NAMESPACES` — on `stop-all-simulator-servers`, the call every
+// agent makes at session end. Either way an in-flight recording is being
+// abandoned, so the video is a best-effort salvage rather than something a
+// caller is waiting on: closing ffmpeg's stdin is what finalizes the container,
+// so give that one short grace before SIGKILL. A caller that wants the file
+// calls `screen-recording-stop`, which has its own (longer) finalize contract.
 const DISPOSE_FINALIZE_GRACE_MS = 1_500;
 const DISPOSE_REAP_MS = 1_000;
 

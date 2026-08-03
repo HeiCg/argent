@@ -108,11 +108,12 @@ const PORT_KEYED_NAMESPACES: readonly string[] = [
  * - `JsRuntimeDebugger` owns a bound loopback HTTP/WebSocket server, the CDP
  *   socket to Metro, and a log file handle.
  * - `ChromiumJsRuntimeDebugger` owns the same, plus its captured console
- *   history. It is the one member whose dependency (`ChromiumCdp`) is also
- *   here, so a scoped stop reaches it twice over — it is listed for the naming,
- *   which is the same reason the two `JsRuntimeDebugger` dependents are.
- *   Note its URN is `<ns>:<deviceId>`, NOT port-keyed, so it belongs in this
- *   list and not in {@link PORT_KEYED_NAMESPACES}.
+ *   history. Its dependency (`ChromiumCdp`) is listed here too, so a scoped
+ *   stop reaches it twice over — as it does the two `JsRuntimeDebugger`
+ *   dependents, whose own dependency is equally listed. All three are here for
+ *   the naming, not for the reaping. What is particular to this one is its URN
+ *   SHAPE: `<ns>:<deviceId>`, not port-keyed like the other two dependents, so
+ *   it belongs in this list and not in {@link PORT_KEYED_NAMESPACES}.
  *
  * (`AndroidTvControl` is stateless adb shell-outs with a no-op dispose, but is
  * included for symmetry so the snapshot is fully drained.)

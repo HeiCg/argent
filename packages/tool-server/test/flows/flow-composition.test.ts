@@ -2375,8 +2375,10 @@ describe("device binding (portability)", () => {
     expect(out).toEqual({ foo: 1 });
   });
 
-  it("stripDeviceKeys removes udid / device_id / device", () => {
-    expect(stripDeviceKeys({ udid: "A", device_id: "B", device: "C", x: 1 })).toEqual({ x: 1 });
+  it("stripDeviceKeys removes udid / device_id / device / devices, leaving other args untouched", () => {
+    expect(
+      stripDeviceKeys({ udid: "A", device_id: "B", device: "C", devices: ["D", "E"], x: 1 })
+    ).toEqual({ x: 1 });
   });
 
   it("rebinds a nested flow-execute onto the run device (issue #607)", () => {
@@ -2399,6 +2401,37 @@ describe("device binding (portability)", () => {
     // retarget an unrelated recorded step. It is also inert once `device` is
     // bound, because device resolution returns before it is ever read.
     expect(stripDeviceKeys({ platform: "android", x: 1 })).toEqual({ platform: "android", x: 1 });
+  });
+
+  it("injects devices: [resolvedId] for a tool that declares it in its schema", () => {
+    // stop-all-simulator-servers' `devices` is a scope, not a single-device
+    // target, but it names the recording host's device ids the same way `udid`
+    // does — so it gets the same schema-aware rebind, as a one-element list.
+    const out = bindDeviceArgs(reg({ devices: {} }), "stop-all-simulator-servers", "RESOLVED", {});
+    expect(out).toEqual({ devices: ["RESOLVED"] });
+  });
+
+  it("does not invent a devices key for a tool that doesn't declare it", () => {
+    const out = bindDeviceArgs(reg({ foo: {} }), "x", "RESOLVED", { foo: 1 });
+    expect(out).toEqual({ foo: 1 });
+    expect(out).not.toHaveProperty("devices");
+  });
+
+  it("replaces a stale recorded devices list rather than merging or appending to it", () => {
+    // The runner is authoritative on device — a flow recorded on one host must
+    // not carry that host's ids forward when replayed on another.
+    const out = bindDeviceArgs(reg({ devices: {} }), "stop-all-simulator-servers", "RESOLVED", {
+      devices: ["OLD-HOST-ID", "OTHER"],
+    });
+    expect(out).toEqual({ devices: ["RESOLVED"] });
+  });
+
+  it("binds a scalar and a list device key together when a tool declares both", () => {
+    const out = bindDeviceArgs(reg({ udid: {}, devices: {} }), "hypothetical-tool", "RESOLVED", {
+      udid: "STALE",
+      devices: ["OLD"],
+    });
+    expect(out).toEqual({ udid: "RESOLVED", devices: ["RESOLVED"] });
   });
 });
 
