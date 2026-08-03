@@ -497,6 +497,28 @@ describe("settlePixels", () => {
     expect(settledAt - secondStartedAt).toBe(PIXEL_CAPTURE_TIMEOUT_MS);
   });
 
+  it("reports timed-out on an already-spent caller deadline without consulting any backend", async () => {
+    // The snapshot outage fallback can arrive here with nothing left: the
+    // first tree settle consumed the whole action window before proving the
+    // source down. The zero-budget entry deliberately collapses into
+    // "timed-out" — the settle window expired before stillness was proven.
+    // It must never read as "aborted" (runSnapshot would skip the step
+    // blaming a cancellation that never happened) or "unavailable" (nothing
+    // probed the backend), and no capture or service resolution may launch.
+    const captureScreenshot = vi.fn(captureFactory([[10, 20, 30]]));
+    const resolveService = vi.fn(async () => ({ captureScreenshot }));
+    const env = {
+      device: { platform: "chromium", id: "chromium-cdp-9222" },
+      registry: { resolveService },
+    } as unknown as ActionEnv;
+
+    await expect(settlePixels(env, { absoluteDeadline: Date.now() - 1 })).resolves.toBe(
+      "timed-out"
+    );
+    expect(resolveService).not.toHaveBeenCalled();
+    expect(captureScreenshot).not.toHaveBeenCalled();
+  });
+
   it("reports aborted without capturing when already cancelled", async () => {
     const controller = new AbortController();
     controller.abort();

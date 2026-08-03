@@ -152,7 +152,20 @@ export async function capturePixels(env: ActionEnv): Promise<PixelFrame | undefi
 
 type BoundedCapture = PixelFrame | "timed-out" | "aborted" | undefined;
 
-/** Wait for one capture within both its own and the overall settle deadline. */
+/**
+ * Wait for one capture within both its own and the overall settle deadline.
+ *
+ * A budget already spent before the capture could launch deliberately
+ * collapses into `timed-out`, UNLIKE the flow-actions twin, whose
+ * `not-attempted` stays distinct from `deadline`: its combined settle guards
+ * a freshness contract, where zero elapsed time proves the caller's tree
+ * still describes the screen. No such contract exists here — this settle's
+ * outcome only feeds snapshot degradation reporting (`degradedReason` in
+ * flow-visual), where "the settle window expired before stillness was
+ * proven" is the honest note whether the window died before the first
+ * capture or mid-poll. `aborted` is reserved for real cancellation: the
+ * snapshot runner maps it to a skipped step blaming the run's abort.
+ */
 async function capturePixelsBefore(
   env: ActionEnv,
   overallDeadline: number,

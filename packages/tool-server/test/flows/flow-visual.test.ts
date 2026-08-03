@@ -8,6 +8,7 @@ import { runSnapshot } from "../../src/tools/flows/flow-visual";
 import { ArtifactStore } from "../../src/artifacts";
 import type { DiffPngFilesOptions } from "../../src/tools/screenshot-diff/screenshot-diff";
 import {
+  DEFAULT_ACTION_TIMEOUT_MS,
   settleTree,
   invokeOnDevice,
   waitForFrameResult,
@@ -359,6 +360,41 @@ describe("runSnapshot settle", () => {
     expect(vi.mocked(settlePixels).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(invokeOnDevice).mock.invocationCallOrder[0]!
     );
+    expect(vi.mocked(invokeOnDevice)).toHaveBeenCalledWith(env, "screenshot", expect.anything());
+  });
+
+  it("degrades — not skips — when the outage fallback starts with the window already spent", async () => {
+    // The first tree settle can consume the entire action window before it
+    // proves the source down (a failing read completing at the very end), so
+    // the pixels-only fallback enters with zero budget. Drive the REAL
+    // settlePixels through that shape: its zero-budget outcome is
+    // load-bearing — "timed-out" degrades the comparison honestly, while
+    // "aborted" would turn this uncancelled run into a skip blaming a
+    // cancellation that never happened.
+    vi.useFakeTimers();
+    const actual = await vi.importActual<typeof import("../../src/tools/flows/flow-pixels")>(
+      "../../src/tools/flows/flow-pixels"
+    );
+    vi.mocked(settlePixels).mockImplementationOnce(actual.settlePixels);
+    vi.mocked(settleTree).mockImplementationOnce(async () => {
+      vi.advanceTimersByTime(DEFAULT_ACTION_TIMEOUT_MS + 1);
+      throw treeOutage();
+    });
+    vi.mocked(invokeOnDevice).mockClear();
+    await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
+    await writeFakePng(baselinePath());
+
+    const r = await runSnapshot(env, opts());
+
+    expect(r.status).toBe("pass");
+    expect(r.reason).toContain("best-effort/degraded");
+    // "timed out", not "unavailable": the settle launched nothing, so it may
+    // not blame the capture backend (env has no registry — a capture attempt
+    // would soft-fail into "unavailable" and trip this).
+    expect(r.reason).toContain("timed out");
+    // The snapshot still captured and compared — one screenshot dispatch, no
+    // settle-side captures.
+    expect(vi.mocked(invokeOnDevice)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(invokeOnDevice)).toHaveBeenCalledWith(env, "screenshot", expect.anything());
   });
 
