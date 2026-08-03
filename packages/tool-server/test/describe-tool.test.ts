@@ -360,10 +360,10 @@ describe("describe tool", () => {
 
   // `bundleId` is optional, and without it `resolveNativeTargetApp` draws its
   // candidates from the connected list — so every state the diagnosis exists to
-  // explain throws out of the resolution, before anything is measured, and the
-  // catch used to return the empty tree bare. That reads as "nothing on screen"
-  // rather than "could not be read", and it is the DEFAULT form of the call, so
-  // the two forms disagreed about the same device.
+  // explain throws out of the resolution, before anything is measured. An empty
+  // tree returned bare there reads as "nothing on screen" rather than "could not
+  // be read", and this is the DEFAULT form of the call, so the two forms would
+  // answer differently for one device state.
   it("explains an unreadable empty screen even with no bundleId to measure", async () => {
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({ connectedBundleIds: [], state: "unregistered" });
@@ -379,19 +379,54 @@ describe("describe tool", () => {
     expect(result.should_restart).toBeUndefined();
   });
 
-  // A device with no native-devtools service at all is the other kind of
-  // arrival: nothing was there to corroborate the accessibility read and
-  // nothing was expected to, so it stands as taken. Marking THAT blind would
-  // make every genuinely-empty screen un-assertable as hidden.
-  it("leaves the read unqualified when there is no native-devtools service", async () => {
+  // The blueprint is registered unconditionally, so on an iOS target a failed
+  // service resolution never means "this device has no such service" — it means
+  // the service did not come up (a socket bind losing to a concurrent same-udid
+  // server is the documented common case). That is a failed attempt at
+  // corroboration, so the empty read is as unexplained as any other.
+  it("explains the read when the native-devtools service fails to come up", async () => {
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const registry = makeMockRegistry({ axService: axApi });
     const tool = createDescribeTool(registry);
 
     const result = await tool.execute({}, { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" });
 
-    expect(result.hint).toBeUndefined();
+    expect(result.hint).toMatch(/not evidence that nothing is on screen/);
     expect(result.should_restart).toBeUndefined();
+  });
+
+  // The remedy has to fit the caller. Two of the three sites that emit this hint
+  // are reached only after an explicit bundleId resolved and measured connected,
+  // where "pass bundleId" names the step the caller already took.
+  it("does not tell a caller that passed bundleId to pass bundleId", async () => {
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
+    const nativeApi = makeNativeDevtoolsApi({ connectedBundleIds: ["com.example.app"] });
+    nativeApi.queryViewHierarchy = async () => {
+      throw new Error("inspector timeout after 5000ms");
+    };
+    const registry = makeMockRegistry({ axService: axApi, nativeDevtools: nativeApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute(
+      {},
+      { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", bundleId: "com.example.app" }
+    );
+
+    expect(result.hint).toMatch(/not evidence that nothing is on screen/);
+    expect(result.hint).not.toMatch(/Pass `bundleId`/);
+  });
+
+  // The ax-service's own hint is the simulator's state and carries the only
+  // corrective action for it; the read-level note must not displace it.
+  it("keeps the ax-degraded boot guidance ahead of the unreadable-hierarchy note", async () => {
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] }, { degraded: true });
+    const registry = makeMockRegistry({ axService: axApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute({}, { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" });
+
+    expect(result.hint).toContain("boot-device");
+    expect(result.hint).toMatch(/not evidence that nothing is on screen/);
   });
 
   it("does NOT return should_restart while the app is still connecting", async () => {

@@ -53,9 +53,12 @@ export interface ActionEnv {
   device: DeviceInfo;
   signal?: AbortSignal;
   /**
-   * The app the run's `launch` step started, once one has. Undefined for a
-   * fragment, which brings the device to its entry state out of band and so has
-   * no app of its own to name.
+   * The app the most recent `launch` step started, once one has — including a
+   * launch inside a nested `run:`, which replaces it and is not restored
+   * afterwards, because that step's `restart-app` is what fronted the device.
+   * Undefined until the first launch runs, so a fragment that never launches
+   * (it is brought to its entry state out of band) has none; a fragment MAY
+   * still carry a launch step in a later position, and then it has one.
    *
    * The tree source uses it to explain a read it could not take: on iOS,
    * auto-targeting resolves only out of the connected list, so an app that is

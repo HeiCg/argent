@@ -5,11 +5,27 @@ import * as path from "node:path";
 import type { Registry } from "@argent/registry";
 import {
   createRunFlowTool,
+  flowLaunchGateReason,
+  LAUNCH_TO_VERDICT_MS,
   NATIVE_READY_TIMEOUT_MS,
   type FlowRunResult,
 } from "../../src/tools/flows/flow-run";
 import { serializeFlow, parseFlow } from "../../src/tools/flows/flow-utils";
 import { bindDeviceArgs, stripDeviceKeys } from "../../src/tools/flows/flow-device";
+
+// Four tests here drive the launch gate's real 1.5 s settle + 8 s connect wait
+// in fake time, pumping a real event-loop turn between advances so the run's
+// disk I/O (it re-reads the flow off disk between steps) can settle. Every pump
+// is a real macrotask, so the cost is the number of pumps, not the fake
+// duration — and under full-suite parallel load ~40 of them per test outran
+// vitest's 5 s default, failing tests that are not actually slow.
+//
+// Widening the advance is NOT the fix: the pumps are what let that I/O run, so
+// coarser steps starve it and the run takes longer in real time, not less
+// (measured: 1 s steps took the file from 46 s to 52 s and failed more). Give
+// the pumping a budget instead, and prefer unit-testing pure message mapping
+// over driving the whole runner once per case.
+vi.setConfig({ testTimeout: 30_000 });
 
 const DEVICE = "00000000-0000-0000-0000-0000000000ab";
 let tmpDir: string;
@@ -262,10 +278,9 @@ describe("flow composition (run:)", () => {
   // binary with library validation), so its hierarchy may never become
   // readable. That is not a reason to fail the LAUNCH: the step's job is to
   // start the app, it succeeded, and a flow that only ever taps by coordinate
-  // needs nothing else — which is exactly the shape `argent-create-flow` teaches
-  // its readers to record. Failing here stopped that flow at step one, while
-  // telling its author to "drive it by coordinate instead". The impossibility
-  // belongs where a selector actually needs the hierarchy.
+  // needs nothing else. A launch that fails there denies a coordinate-driven
+  // flow its first step while telling its author to drive by coordinate. The
+  // impossibility belongs where a selector actually needs the hierarchy.
   it("lets a system-app launch through so a coordinate-driven flow still runs", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -366,10 +381,71 @@ describe("flow composition (run:)", () => {
     const reason = result.steps[1].reason ?? "";
     expect(reason).toMatch(/Apple system app/);
     expect(reason).toMatch(/com\.apple\.Preferences/);
-    // The auto-target text is what reached the author before the id was
-    // threaded, and its remedy is the loop.
+    // The auto-target text is what auto-resolution alone can produce here, and
+    // its remedy is the loop.
     expect(reason).not.toMatch(/auto-targeting/);
     expect(reason).not.toMatch(/Launch or restart the app first/);
+  });
+
+  // `assert`/`await` read the tree through `waitForCondition`; `tap`, `type`,
+  // `scroll-to` and `long-press` reach it through `settleTree`, a different
+  // call site with its own argument list. Pinning only the first left the id
+  // droppable at the second — the one every action directive uses — with the
+  // suite green, so the author of a tap would still get the auto-target text.
+  it("threads the launched id to the settleTree read an action directive uses", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.apple.Preferences" },
+        { kind: "tap", selector: { text: "General" } },
+      ],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(mockRegistry()).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    const reason = result.steps[1].reason ?? "";
+    expect(reason).toMatch(/Apple system app/);
+    expect(reason).not.toMatch(/Launch or restart the app first/);
+  });
+
+  // The measured half of the message says what is wrong with the app; without
+  // this half nothing says what the read was FOR, and a flow author is told to
+  // restart a tool-server with no mention that a selector needed a hierarchy.
+  it("says why the tree was being read, not just what is wrong with the app", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.acme.app" },
+        { kind: "assert", selector: { text: "General" }, condition: "visible" },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => ({
+        isConnected: () => true,
+        listConnectedBundleIds: () => [],
+        appConnectionState: async () => "unregistered" as const,
+      })),
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    const reason = result.steps[1].reason ?? "";
+    expect(reason).toMatch(/argent server stop && argent server start --detach/);
+    expect(reason).toMatch(/Flows resolve selectors against the full view hierarchy/);
   });
 
   // The gate's own measurement had no coverage at all: replacing the whole
@@ -437,54 +513,55 @@ describe("flow composition (run:)", () => {
   // the missing step there and the step's own action here. Emitted verbatim,
   // every state but `unregistered` handed the flow author back the relaunch the
   // launch step had just performed, which re-runs into the identical state.
-  // `not_running` is the sharpest: a relaunch is not merely redundant, it is
-  // what produced the state being reported.
-  it.each([
-    ["not_running", /exited after launch/i, /^(?!.*Call launch-app).*$/s],
-    ["stale_process", /re-run the flow/i, null],
-    ["indeterminate", /at most once more/i, null],
-    ["connecting", /same handshake/i, null],
-  ] as const)(
-    "rewrites the %s remedy for a caller that has just launched the app",
-    async (state, expected, absent) => {
-      await writeFlow("main", {
-        executionPrerequisite: "",
-        steps: [{ kind: "launch", app: "com.acme.app" }],
-      });
-      const registry = {
-        invokeTool: vi.fn(async (id: string) =>
-          id === "list-devices" ? { devices: [] } : { ok: true }
-        ),
-        getTool: vi.fn(() => undefined),
-        resolveService: vi.fn(async () => ({
-          isConnected: () => false,
-          listConnectedBundleIds: () => [],
-          appConnectionState: async () => state,
-        })),
-      } as unknown as Registry;
-
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-      try {
-        const pending = createRunFlowTool(registry).execute(
-          {},
-          { name: "main", project_root: tmpDir, device: DEVICE }
-        );
-        let settled = false;
-        void pending.then(() => (settled = true));
-        for (let i = 0; i < 200 && !settled; i++) {
-          await new Promise((resolve) => setImmediate(resolve));
-          await vi.advanceTimersByTimeAsync(250);
-        }
-        const result = asRun(await pending);
-
-        expect(result.steps[0].status).toBe("error");
-        expect(result.steps[0].reason).toMatch(expected);
-        if (absent) expect(result.steps[0].reason).toMatch(absent);
-      } finally {
-        vi.useRealTimers();
+  //
+  // The mapping is exercised directly rather than by driving the runner once per
+  // state: it is a pure function of (bundleId, state), and each runner pass costs
+  // ~9 s of pumped fake time. The end-to-end test above proves the gate reaches
+  // this function at all; these prove what it says once there.
+  describe("flowLaunchGateReason", () => {
+    it.each([
+      // `not_running` is the sharpest: a relaunch is not merely redundant, it is
+      // what produced the state being reported, so the remedy must not be one.
+      ["not_running", /exited after launch/i],
+      ["stale_process", /re-run the flow to launch again/i],
+      ["indeterminate", /at most once more/i],
+      ["connecting", /started after the step's own launch/i],
+      ["unregistered", /cold start/i],
+    ] as const)(
+      "gives %s a remedy that is not the action the step just took",
+      (state, expected) => {
+        expect(flowLaunchGateReason("com.acme.app", state)).toMatch(expected);
       }
-    }
-  );
+    );
+
+    // The one state whose tool-surface remedy IS the launch step's own action.
+    it("does not tell a crash-on-launch app to launch itself", () => {
+      const reason = flowLaunchGateReason("com.acme.app", "not_running");
+
+      expect(reason).not.toMatch(/Call launch-app/);
+      expect(reason).not.toMatch(/restart-app/);
+    });
+
+    // The figures an author sizes these judgements against must be the wait the
+    // step actually performed — the settle plus the connect window, not the
+    // connect window alone, which understates a launched process's age.
+    it("quotes the whole time the step spent, not just the connect wait", () => {
+      const reason = flowLaunchGateReason("com.acme.app", "not_running");
+
+      expect(reason).toContain(`${LAUNCH_TO_VERDICT_MS} ms`);
+      expect(LAUNCH_TO_VERDICT_MS).toBeGreaterThan(NATIVE_READY_TIMEOUT_MS);
+    });
+
+    // `stale_process` has two producers, and one of them carries THIS endpoint —
+    // it predates the listener, not the launchd environment. Blaming the
+    // environment would contradict the measured text this wraps, which names
+    // both producers.
+    it("does not blame the launchd environment for a stale process", () => {
+      const reason = flowLaunchGateReason("com.acme.app", "stale_process");
+
+      expect(reason).toMatch(/predates whatever the relaunch would have given it/);
+    });
+  });
 
   // The connection can land between the final poll and the measurement. Without
   // the `connected` short-circuit, buildAppStateMessage falls off its switch and

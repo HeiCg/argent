@@ -148,23 +148,24 @@ export async function describeIos(
   try {
     const ndRef = nativeDevtoolsRef(device);
     nativeApi = await registry.resolveService<NativeDevtoolsApi>(ndRef.urn, ndRef.options);
-  } catch {
-    // No native-devtools service on this device at all. That is an absence of a
-    // second opinion rather than a failed attempt at one: nothing was there to
-    // corroborate the accessibility read and nothing was expected to, so it
-    // stands as taken. The arrivals below are the other kind — the service was
-    // reachable and still produced no hierarchy — and they must say so.
-    return { tree, source: "ax-service", hint };
+  } catch (err) {
+    // The blueprint is registered unconditionally, so on an iOS target this
+    // rejects only when the service failed to come up — a socket bind losing to
+    // a concurrent same-udid server, a host that could not be picked. That is a
+    // failed attempt at corroboration, not an absence of one, so the empty read
+    // is as unexplained here as it is below: without saying so, a `hidden` wait
+    // releases against a screen nothing ever read.
+    return { tree, source: "ax-service", hint: unexplainedHint(hint, errMsg(err), params) };
   }
 
   try {
     const target = await resolveNativeTargetApp(nativeApi, params.bundleId);
 
     // A rejection here (the env re-apply this runs first fails on a sim that
-    // went away mid-call) must not fall through to the outer catch: that path
-    // returns the empty tree with no hint at all, so the read looks merely
-    // empty rather than unexplained. Degrade to the state that says exactly
-    // that, matching every other consumer of this call.
+    // went away mid-call) is degraded rather than thrown, matching every other
+    // consumer of this call: the outer catch would report only that the read
+    // could not be taken, where this says which state it could not be taken in
+    // — the difference between "unexplained" and a named remedy.
     const state = await nativeApi
       .appConnectionState(target.bundleId)
       .catch(() => "indeterminate" as const);
@@ -198,7 +199,7 @@ export async function describeIos(
     )) as { screenFrame?: unknown; elements?: unknown[]; error?: string };
 
     if (rawResult.error) {
-      return { tree, source: "ax-service", hint: unexplainedHint(hint, rawResult.error) };
+      return { tree, source: "ax-service", hint: unexplainedHint(hint, rawResult.error, params) };
     }
 
     const parsed = parseNativeDescribeScreenResult(rawResult);
@@ -217,14 +218,14 @@ export async function describeIos(
     // optional, and without it `resolveNativeTargetApp` draws its candidates
     // from the connected list — so every state the diagnosis above exists to
     // explain throws here, before anything is measured. With `bundleId` the
-    // resolution short-circuits and that diagnosis is reached; the two forms
-    // disagreed about the same device.
+    // resolution short-circuits and that diagnosis is reached, so without this
+    // the two forms answer differently for one device state.
     //
     // No bundle id was resolved on that path, so there is nothing to measure and
     // no remedy to invent — the resolver's own message already carries one.
     // Recording that the read is uncorroborated is the whole of what the guard
     // needs.
-    return { tree, source: "ax-service", hint: unexplainedHint(hint, errMsg(err)) };
+    return { tree, source: "ax-service", hint: unexplainedHint(hint, errMsg(err), params) };
   }
 }
 
@@ -232,11 +233,28 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Mark an empty accessibility read as unexplained rather than empty. */
-function unexplainedHint(hint: string | undefined, detail: string): string {
+/**
+ * Mark an empty accessibility read as unexplained rather than empty.
+ *
+ * Any hint already set is kept ahead of it, not replaced: that hint is the
+ * ax-service's own state — `DEGRADED_HINT`'s "boot-device with force=true" is
+ * the corrective action for the sim itself, and dropping it would trade a
+ * repairable simulator for a note about one read.
+ *
+ * The `bundleId` suggestion is offered only to a caller that did not pass one.
+ * Two of the three call sites are reached only after an explicit id resolved
+ * and measured connected, where it would name the step the caller has taken.
+ */
+function unexplainedHint(
+  hint: string | undefined,
+  detail: string,
+  params: DescribeIosParams
+): string {
+  const measure = params.bundleId
+    ? ""
+    : " Pass \`bundleId\` to have the connection state measured, or take a \`screenshot\`.";
   const why =
     `The native view hierarchy could not be read (${detail}), so this empty accessibility tree is ` +
-    `not evidence that nothing is on screen. Pass \`bundleId\` to have the connection state ` +
-    `measured, or take a \`screenshot\`.`;
+    `not evidence that nothing is on screen.${measure}`;
   return hint ? `${hint} ${why}` : why;
 }

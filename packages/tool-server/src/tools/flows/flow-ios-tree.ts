@@ -1,14 +1,11 @@
-import { FAILURE_CODES, getFailureSignal, type DeviceInfo, type Registry } from "@argent/registry";
+import type { DeviceInfo, Registry } from "@argent/registry";
 import {
   buildAppStateMessage,
   isInjectableBundleId,
   nativeDevtoolsRef,
   type NativeDevtoolsApi,
 } from "../../blueprints/native-devtools";
-import {
-  resolveNativeTargetApp,
-  type ResolvedNativeTargetApp,
-} from "../../utils/native-target-app";
+import { resolveNativeTargetApp } from "../../utils/native-target-app";
 import { flattenHoisting, type FlatNode } from "./flow-tree-flatten";
 import {
   type DescribeFrame,
@@ -301,16 +298,20 @@ async function unreadableHierarchyReason(
     );
   }
   const state = await nativeApi.appConnectionState(bundleId).catch(() => "indeterminate" as const);
-  if (state === "connected") {
-    // Measured connected while auto-targeting found nothing: the connection
-    // arrived in between. Nothing to diagnose — say what failed and let the
-    // caller's retry loop take the next read.
-    return `native devtools reported no connected app when this tree was read, though ${bundleId} is connected now — retry.`;
-  }
+  // `connected` is unreachable: this is only called with an empty connected
+  // list, and the map behind that list is the same one `appConnectionState`
+  // reads first, with only microtasks in between — a connection arrives on a
+  // socket `data` macrotask, which cannot land inside that window. It is folded
+  // into the diagnosis rather than given a branch nothing can execute; the
+  // message reads correctly either way, since a connection that did appear
+  // makes the remedy a retry.
+  const diagnosis = state === "connected" ? "" : `${buildAppStateMessage(bundleId, state)} `;
   // The diagnosis already names the corrective action, and for `unregistered`
   // that action is a tool-server restart — telling a flow author to relaunch
-  // there sends them round a loop the app cannot exit.
-  return `${buildAppStateMessage(bundleId, state)} Flows resolve selectors against the full view hierarchy native devtools serve.`;
+  // there sends them round a loop the app cannot exit. The trailing sentence
+  // says what the message is FOR: every caller here was resolving a selector,
+  // and none of the measured remedies mentions why a tree read needed it.
+  return `${diagnosis}Flows resolve selectors against the full view hierarchy native devtools serve.`;
 }
 
 /**
@@ -340,28 +341,25 @@ export async function queryFullHierarchyTree(
       { cause: err }
     );
   }
-  // resolveNativeTargetApp's own errors (ambiguous frontmost, a lone connected
-  // app that isn't foreground-like) already carry the actionable next step, so
-  // they propagate unwrapped. `NO_CONNECTED_APPS` is the exception, and the
-  // only one that can be improved on: auto-targeting draws its candidates from
-  // `listConnectedBundleIds`, which is the same map `appConnectionState` reads
-  // to answer `connected` — so *every* state that explains a missing connection
-  // lands here, and its stock "Launch or restart the app first" is the restart
-  // loop this measurement exists to break. A flow that launched an app knows
-  // which one, and that id does not come from the connections map, so it
-  // survives the disconnection the auto-target could not describe.
-  let target: ResolvedNativeTargetApp;
-  try {
-    target = await resolveNativeTargetApp(nativeApi, undefined);
-  } catch (err) {
-    if (
-      launchedBundleId === undefined ||
-      getFailureSignal(err)?.error_code !== FAILURE_CODES.NATIVE_TARGET_NO_CONNECTED_APPS
-    ) {
-      throw err;
-    }
-    throw new Error(await unreadableHierarchyReason(nativeApi, launchedBundleId), { cause: err });
+  // Auto-targeting draws its candidates from `listConnectedBundleIds` — the
+  // same map `appConnectionState` reads to answer `connected` — so an empty
+  // list is exactly the set of states that explain a missing connection, and
+  // the error it raises there ("Launch or restart the app first") is the
+  // restart loop this measurement exists to break. A flow that launched an app
+  // knows which one, and that id does not come from the connections map, so it
+  // survives the disconnection auto-targeting could not describe.
+  //
+  // The empty list is tested directly rather than by catching and classifying
+  // the throw: the failure code travels on a module-local symbol, so a
+  // duplicate `@argent/registry` instance would read it as absent and silently
+  // fall back to the very message this replaces. Auto-targeting's OTHER errors
+  // — ambiguous frontmost, a lone connected app that isn't foreground-like —
+  // arise only with a non-empty list, already name their own next step, and so
+  // propagate unwrapped from the call below.
+  if (launchedBundleId !== undefined && nativeApi.listConnectedBundleIds().length === 0) {
+    throw new Error(await unreadableHierarchyReason(nativeApi, launchedBundleId));
   }
+  const target = await resolveNativeTargetApp(nativeApi, undefined);
 
   const rawResult = (await nativeApi.queryViewHierarchy(
     target.bundleId,

@@ -483,7 +483,34 @@ describe("await-ui-element tool", () => {
 
     it("`hidden` can succeed for a role selector that would otherwise pin the root", async () => {
       const { api } = makeSequencedAXService([axResponse([])]);
-      const tool = createAwaitUiElementTool(iosRegistry(api));
+      // The hierarchy must be READ and empty, not merely unread: an empty AX
+      // tree the native source could not corroborate is a blind read, and
+      // `hidden` is withheld from those. Here the native source answers with
+      // zero elements, which is evidence the screen is empty.
+      const nativeApi = {
+        listConnectedBundleIds: () => ["com.example.app"],
+        appConnectionState: async () => "connected" as const,
+        getAppState: async () => ({
+          bundleId: "com.example.app",
+          applicationState: "active",
+          foregroundActiveSceneCount: 1,
+          foregroundInactiveSceneCount: 0,
+          backgroundSceneCount: 0,
+          unattachedSceneCount: 0,
+          isFrontmostCandidate: true,
+        }),
+        queryViewHierarchy: async () => ({
+          screenFrame: { x: 0, y: 0, width: 440, height: 956 },
+          elements: [],
+        }),
+      };
+      const tool = createAwaitUiElementTool({
+        resolveService: vi.fn(async (urn: string) => {
+          if (urn.startsWith("AXService:")) return api;
+          if (urn.startsWith("NativeDevtools:")) return nativeApi;
+          throw new Error(`unexpected service: ${urn}`);
+        }),
+      } as any);
 
       const result = await tool.execute(
         {},
