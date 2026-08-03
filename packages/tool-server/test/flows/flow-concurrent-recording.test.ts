@@ -24,6 +24,16 @@ import {
   type FlowStep,
 } from "../../src/tools/flows/flow-utils";
 
+// Wrap (not replace) `rename` so every call still does the real filesystem
+// rename — every other test's atomicity assertions depend on that — while
+// letting the atomic-swap test below inspect exactly which paths each write
+// renamed between. Everything else in `node:fs/promises` passes through
+// untouched.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
+
 /**
  * Concurrency contract of the recording tools. One tool-server serves every MCP
  * client, subagent and CLI call using one argent install, so several agents can
@@ -96,9 +106,13 @@ function createMockRegistry(): Registry {
   return {
     invokeTool: vi.fn(async (id: string) => {
       if (id === "list-devices") return { devices: [] };
-      // Yield a macrotask: flow-add-step runs the step LIVE before it appends,
-      // so this is what lets several calls issued without an await in between
-      // reach the append phase concurrently (see the lost-update test).
+      // Yield a macrotask, so calls issued without an await in between all
+      // finish their LIVE phase before any of them appends. This is NOT what
+      // creates the overlap the file tests: `appendStep`'s own
+      // `await fs.readFile` already suspends every caller inside the
+      // read-modify-write, so the append phases interleave with or without this
+      // line. It stands in for a real sub-tool's I/O, and lines the calls up at
+      // the same starting gun.
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (subToolGate) await subToolGate();
       return { ok: true };
@@ -573,6 +587,41 @@ describe("flow-file writes as seen by a concurrent reader", () => {
 
     expect(await strayFiles(root, "alpha")).toEqual([]);
     expect(await readMarkers(root, "alpha")).toEqual(["tool:a1", "echo:note", "tool:a2"]);
+  });
+
+  it("renames the scratch file from beside the target, never from a shared temp dir", async () => {
+    // "leaves no scratch file behind" (above) only proves the .tmp is gone by
+    // the time the call returns — a scratch file built under `os.tmpdir()`
+    // instead of the flow's own directory satisfies that identically, since it
+    // was never IN the flows directory to begin with. What actually keeps the
+    // swap atomic is `fs.rename` staying on ONE filesystem, which only holds
+    // because the scratch path is a sibling of the target — so pin THAT
+    // property directly, on the arguments the real rename call is made with,
+    // rather than on a side effect two different implementations both produce.
+    //
+    // This does not depend on the test root's filesystem: `flowsDir` here is
+    // always a subdirectory of whatever `os.tmpdir()` returns (`makeRoot`
+    // mkdtemps under it), never equal to it, so relocating the scratch file to
+    // `os.tmpdir()` itself is caught by the directory comparison below on any
+    // host, without ever needing two real filesystems to reproduce EXDEV.
+    const root = await makeRoot("scratch-sibling");
+    const flowsDir = path.dirname(flowPath(root, "alpha"));
+    vi.mocked(fs.rename).mockClear();
+
+    await start(root, "alpha"); // writeNewFlowFile → writeFlowFile → 1 rename
+    await addStep(root, "alpha", "a1"); // appendStep → writeFlowFile → 1 rename
+    await addEcho(root, "alpha", "a2"); // appendStep → writeFlowFile → 1 rename
+
+    const renameCalls = vi.mocked(fs.rename).mock.calls;
+    expect(renameCalls).toHaveLength(3);
+    for (const [from, to] of renameCalls) {
+      // The rename target is always the flow file itself…
+      expect(path.dirname(String(to))).toBe(flowsDir);
+      // …and the scratch source must sit right next to it. If it didn't, this
+      // same rename would cross filesystems in production (project root vs.
+      // OS temp dir) and fail with EXDEV instead of swapping atomically.
+      expect(path.dirname(String(from))).toBe(flowsDir);
+    }
   });
 
   it("still appends under a flow name long enough to fill the filesystem's limit", async () => {

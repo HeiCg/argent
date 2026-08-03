@@ -41,9 +41,15 @@ function startServer(cap: Captured): Promise<{ url: string; close: () => Promise
               // zodObjectToJsonSchema over the zod schema in
               // packages/tool-server/src/tools/flows/flow-add-step.ts. `name`
               // and `project_root` identify which open recording the step
-              // belongs to and are required alongside `command`. All three have
-              // to be marked required here for the parser regression this test
-              // guards to be reachable at all.
+              // belongs to and are required alongside `command`.
+              //
+              // Only `properties` is load-bearing here: `parseFlags` reads it
+              // to decide whether `args` belongs to the tool, and reads
+              // `required` nowhere (its one consumer is `formatSchemaUsage`,
+              // the help renderer, which this file never invokes — that is
+              // covered by run-help.test.ts). The array is kept faithful so the
+              // fixture stays readable as the real schema, not because dropping
+              // an entry would fail here.
               inputSchema: {
                 type: "object",
                 properties: {

@@ -94,9 +94,12 @@ export interface NativeProfilerSessionApi {
   androidOnDeviceTracePath: string | null;
 }
 
-// Dispose only fires on process shutdown, where an in-flight recording is being
-// abandoned: skip the SIGINT finalise grace (that's the native-profiler-stop
-// contract) and SIGKILL straight away so shutdown isn't held up.
+// Dispose fires on process shutdown, and — since `NativeProfilerSession` joined
+// `DEVICE_OWNED_NAMESPACES` — on `stop-all-simulator-servers`, the call every
+// agent makes at session end. Either way an in-flight capture is being
+// abandoned with nobody waiting on the trace, so skip the SIGINT finalise grace
+// (that's the native-profiler-stop contract, and a caller that wants the trace
+// calls that) and SIGKILL straight away rather than holding the caller up.
 const DISPOSE_REAP_MS = 1_000;
 const ANDROID_DISPOSE_ADB_TIMEOUT_MS = 5_000;
 

@@ -130,9 +130,18 @@ const RUN_TARGET_COMMAND = "flow-execute";
 
 /**
  * The flows dir of a root, or null if it is not a valid one. Used only to
- * compare the executed flow's project against the recording's, so a malformed
- * root must not throw here — that would divert a resolvable target into the
- * keep-the-raw-step branch on the strength of an advisory comparison.
+ * compare the executed flow's project against the recording's — a comparison
+ * that decides a warning, never whether the step is recorded — so a throw here
+ * must not escape into {@link captureRunTarget}'s catch, which would divert an
+ * already-resolved target into the keep-the-raw-step branch.
+ *
+ * Nothing reaching it today can be malformed. `captureRunTarget` runs only
+ * after the nested `flow-execute` has already RETURNED, so its `project_root`
+ * cleared both `Registry.invokeTool`'s zod parse (`project_root: z.string()`)
+ * and flow-execute's own `getFlowsDir` → `assertValidProjectRoot`, which is
+ * unconditional and ahead of every early return there. The guard stays because
+ * what a throw here would cost is decided by the enclosing catch rather than by
+ * this function, and that coupling is the fragile part, not the input.
  */
 function safeFlowsDir(root: string): string | null {
   try {
@@ -183,7 +192,10 @@ async function captureRunTarget(
     // or the substitution stays invisible until the flow replays wrong.
     const ranIn = args.project_root;
     // null means "not a usable project root" (unparseable or absent), which is
-    // not evidence of a different project — only a resolvable, differing dir is.
+    // not evidence of a different project — only a resolvable, differing dir
+    // is. Neither null branch is reachable from a returned `flow-execute` (see
+    // {@link safeFlowsDir}); they keep the warning silent rather than wrong if
+    // one ever becomes so.
     const ranDir = typeof ranIn === "string" ? safeFlowsDir(ranIn) : null;
     const ranElsewhere = ranDir !== null && ranDir !== flowsDir;
     return {

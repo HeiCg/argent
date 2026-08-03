@@ -15,7 +15,30 @@ import type { WhenPlatform } from "./flow-utils";
 // flow-utils, which this aliases via WhenPlatform.
 export type FlowPlatform = WhenPlatform;
 
+/** Args keys holding ONE device id. */
 const DEVICE_BIND_KEYS = ["udid", "device_id"] as const;
+
+/**
+ * Args keys holding a LIST of device ids. Same treatment as
+ * {@link DEVICE_BIND_KEYS} — stripped at record time, re-injected at replay —
+ * but rebound to `[deviceId]`, since the runner resolves exactly one device per
+ * run and a flow that named several would be naming the recording host's.
+ *
+ * `stop-all-simulator-servers`' `devices` is the only such key. It is a scope
+ * rather than a target, but the failure is the same one: kept verbatim, a
+ * recorded teardown names the machine it was recorded on, so on any other host
+ * it reaps nothing and passes — a stale baked-in id overriding the run target,
+ * which is exactly what this binding exists to prevent. The scoped form is what
+ * the tool description, the MCP instructions and the skills all now tell agents
+ * to call, so it is the form that gets recorded.
+ *
+ * Binding is unconditional once the tool declares the key, so a recording of
+ * the UNSCOPED sweep replays as a stop of the run device. That direction is
+ * deliberate: the replayed artifact must not tear down devices another agent is
+ * mid-session on, which is the hazard the `devices` scope was added for, and a
+ * flow has exactly one resolved device to be talking about.
+ */
+const DEVICE_BIND_LIST_KEYS = ["devices"] as const;
 
 interface RawDevice {
   platform: FlowPlatform;
@@ -98,6 +121,7 @@ export async function resolveFlowDevice(
 export function stripDeviceKeys(args: Record<string, unknown>): Record<string, unknown> {
   const out = { ...args };
   for (const k of DEVICE_BIND_KEYS) delete out[k];
+  for (const k of DEVICE_BIND_LIST_KEYS) delete out[k];
   return out;
 }
 
@@ -107,7 +131,8 @@ export function stripDeviceKeys(args: Record<string, unknown>): Record<string, u
  * resolved one — so a flow recorded on one device stays portable to another and
  * a stale baked-in udid can't override the run target. The id is injected only
  * for the device-id keys the tool's input schema declares (so `.strict()`
- * schemas stay valid).
+ * schemas stay valid), as a bare id or as a one-element list depending on which
+ * set the key is in.
  */
 export function bindDeviceArgs(
   registry: Registry,
@@ -121,6 +146,7 @@ export function bindDeviceArgs(
   const out = stripDeviceKeys(args);
   if (props) {
     for (const k of DEVICE_BIND_KEYS) if (k in props) out[k] = deviceId;
+    for (const k of DEVICE_BIND_LIST_KEYS) if (k in props) out[k] = [deviceId];
   }
   return out;
 }
