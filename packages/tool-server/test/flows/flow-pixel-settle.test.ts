@@ -1297,7 +1297,7 @@ describe("pixel settle backstop", () => {
     expect(vi.mocked(capturePixels)).toHaveBeenCalledTimes(2);
   });
 
-  it("errors a selector gesture when the tree source goes dark mid-action", async () => {
+  it("best-efforts a selector gesture from the last settled tree when reads hang mid-action", async () => {
     vi.useFakeTimers();
     const visible = screen([
       n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
@@ -1309,8 +1309,9 @@ describe("pixel settle backstop", () => {
     };
     vi.mocked(capturePixels).mockResolvedValue(undefined);
     const calls: string[] = [];
+    const registry = mockRegistry(calls);
     const env = {
-      registry: mockRegistry(calls),
+      registry,
       device: { platform: "ios", id: DEVICE },
     } as unknown as ActionEnv;
 
@@ -1318,13 +1319,186 @@ describe("pixel settle backstop", () => {
       kind: "tap",
       selector: { text: "Go", loose: true },
     });
-    const rejected = expect(pending).rejects.toThrow(
-      /timed out reading the UI tree while settling/
-    );
+    const resolved = expect(pending).resolves.toMatchObject({ ok: true });
     await vi.advanceTimersByTimeAsync(8_000);
+    await resolved;
 
-    await rejected;
-    expect(calls).not.toContain("gesture-tap");
+    // Reads going quiet mid-action are a settle timeout, which the taxonomy
+    // explicitly refuses to read as an outage — an in-flight hierarchy read
+    // may still succeed after we stop waiting. Holding the first round's
+    // settled tree, the retry round's FlowTreeSettleTimeoutError resolves the
+    // selector best-effort from that tree, exactly like the wait's own
+    // deadline exhaustion; only a COMPLETED failing read (a proven source
+    // outage) still errors the step.
+    expect(registry.invokeTool).toHaveBeenCalledWith(
+      "gesture-tap",
+      expect.objectContaining({ x: 0.5, y: 0.5 })
+    );
+  });
+
+  it("bounds pixel polling by the ordinary phase window when an animator never settles", async () => {
+    vi.useFakeTimers();
+    // Perpetual tree-invisible motion (video, a shimmer, a colour pulse): the
+    // tree fingerprint is identical on every read while no two captures ever
+    // match.
+    let white = false;
+    vi.mocked(capturePixels).mockImplementation(async () => {
+      white = !white;
+      return solid(white ? [255, 255, 255] : [0, 0, 0]);
+    });
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+    const startedAt = Date.now();
+
+    let settledAt = -1;
+    const pending = settleTree(env, { absoluteDeadline: Date.now() + 7_500 }).then((result) => {
+      settledAt = Date.now();
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(7_500);
+    const settled = await pending;
+
+    // The polling loop exits around the 5s ordinary phase window — at most
+    // one round past it, for a capture launched just inside — instead of
+    // spinning captures to the 7.25s hard pixel ceiling. What remains of the
+    // 7.5s action budget is exactly the retry room the phase window exists
+    // for; the healthy instant final read keeps the tree fresh, so the
+    // caller can act immediately rather than settling all over again.
+    expect(settled).toMatchObject({ converged: false, treeFresh: true, visual: "timed-out" });
+    expect(settledAt - startedAt).toBeGreaterThanOrEqual(5_000);
+    expect(settledAt - startedAt).toBeLessThanOrEqual(5_500);
+  });
+
+  it("taps within the ordinary phase window when a perpetual animator never stops", async () => {
+    vi.useFakeTimers();
+    let white = false;
+    vi.mocked(capturePixels).mockImplementation(async () => {
+      white = !white;
+      return solid(white ? [255, 255, 255] : [0, 0, 0]);
+    });
+    const calls: string[] = [];
+    let dispatchedAt = -1;
+    const registry = mockRegistry(calls, undefined, (id) => {
+      if (id === "gesture-tap") dispatchedAt = Date.now();
+    });
+    const env = {
+      registry,
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+    const startedAt = Date.now();
+
+    const pending = runDirective(env, { kind: "tap", selector: { text: "Go", loose: true } });
+    const resolved = expect(pending).resolves.toMatchObject({ ok: true });
+    await vi.advanceTimersByTimeAsync(7_500);
+    await resolved;
+
+    // One settle round exits its pixel phase at the ordinary window and its
+    // final read keeps the tree fresh, so the element — on screen the whole
+    // time — resolves at ~5s with ~2.5s of action budget unspent, not as a
+    // last-gasp stale resolve at the 7.5s deadline. An element whose
+    // lifetime outlives the phase window but not the hard pixel ceiling is
+    // the difference between this step passing and failing.
+    expect(dispatchedAt - startedAt).toBeGreaterThanOrEqual(5_000);
+    expect(dispatchedAt - startedAt).toBeLessThanOrEqual(5_500);
+    expect(registry.invokeTool).toHaveBeenCalledWith(
+      "gesture-tap",
+      expect.objectContaining({ x: 0.5, y: 0.5 })
+    );
+  });
+
+  it("completes an ordinary-latency final read after a phase-bounded pixel timeout", async () => {
+    vi.useFakeTimers();
+    const visible = screen([
+      n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+    ]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      if (reads <= 2) return visible;
+      // The post-pixel revalidation read lands on a hierarchy that just grew
+      // (an emulator mounting nodes mid-step): healthy, merely slow — far
+      // over the 250ms reserve, well inside the remaining action budget.
+      return new Promise((resolve) => {
+        setTimeout(() => resolve(visible), 1_500);
+      });
+    };
+    let white = false;
+    vi.mocked(capturePixels).mockImplementation(async () => {
+      white = !white;
+      return solid(white ? [255, 255, 255] : [0, 0, 0]);
+    });
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+    const startedAt = Date.now();
+
+    let settledAt = -1;
+    const pending = settleTree(env, { absoluteDeadline: Date.now() + 7_500 }).then((result) => {
+      settledAt = Date.now();
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(7_500);
+    const settled = await pending;
+
+    // The pixel loop exits at the phase window (~5s); the final read then
+    // runs on the ordinary source read budget — the same budget tree-phase
+    // reads get — instead of the 250ms reserve, so the 1.5s read completes
+    // and the settle hands back a FRESH tree with retry budget standing. The
+    // reserve slice remains only the floor for a capture that genuinely ran
+    // to the hard ceiling. Cutting this read at the reserve would report a
+    // healthy screen stale on every settle and force a doomed late retry.
+    expect(settled).toMatchObject({ converged: false, treeFresh: true, visual: "timed-out" });
+    expect(reads).toBe(3);
+    expect(settledAt - startedAt).toBeGreaterThanOrEqual(6_500);
+    expect(settledAt - startedAt).toBeLessThanOrEqual(7_000);
+  });
+
+  it("best-efforts a selector tap when a late retry settle times out with no read at all", async () => {
+    vi.useFakeTimers();
+    const visible = screen([
+      n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+    ]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      if (reads <= 2) return visible;
+      // The phase-bounded settle's revalidation read blips…
+      if (reads === 3) return Promise.reject(new Error("transient describe blip"));
+      // …and by the retry round the deadline is nearly gone: the hierarchy
+      // read outlives the remaining action budget entirely.
+      return new Promise<DescribeNode>(() => {});
+    };
+    let white = false;
+    vi.mocked(capturePixels).mockImplementation(async () => {
+      white = !white;
+      return solid(white ? [255, 255, 255] : [0, 0, 0]);
+    });
+    const calls: string[] = [];
+    const registry = mockRegistry(calls);
+    const env = {
+      registry,
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = runDirective(env, { kind: "tap", selector: { text: "Go", loose: true } });
+    const resolved = expect(pending).resolves.toMatchObject({ ok: true });
+    await vi.advanceTimersByTimeAsync(9_000);
+    await resolved;
+
+    // The retry settle's no-read window types as FlowTreeSettleTimeoutError.
+    // Holding a settled tree from the first round, the wait treats it exactly
+    // like its own deadline exhaustion — a terminal best-effort resolve from
+    // the last valid tree — never a step error.
+    expect(registry.invokeTool).toHaveBeenCalledWith(
+      "gesture-tap",
+      expect.objectContaining({ x: 0.5, y: 0.5 })
+    );
+    // The phase-bounded first round left enough budget for the retry round to
+    // exist at all: its read (the fourth) was actually launched.
+    expect(reads).toBeGreaterThanOrEqual(4);
   });
 
   it("bounds a hung capture by the caller's absolute deadline", async () => {
