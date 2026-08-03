@@ -37,6 +37,7 @@ import { getSimulatorRuntimeKind } from "../../src/utils/ios-devices";
 import { FIRST_FRAME_WAIT_MS } from "../../src/utils/simulator-client";
 import {
   COMBINED_HARD_TIMEOUT_MS,
+  DEFAULT_ACTION_TIMEOUT_MS,
   runDirective,
   settleTree,
   waitForFrameResult,
@@ -1722,11 +1723,15 @@ describe("pixel settle backstop", () => {
       };
       vi.mocked(capturePixels).mockResolvedValue(solid([255, 255, 255]));
       const calls: string[] = [];
-      const registry = mockRegistry(calls);
+      let dispatchedAt = -1;
+      const registry = mockRegistry(calls, undefined, (id) => {
+        if (id.startsWith("gesture-")) dispatchedAt = Date.now();
+      });
       const env = {
         registry,
         device: { platform: "ios", id: DEVICE },
       } as unknown as ActionEnv;
+      const start = Date.now();
 
       const pending = runDirective(
         env,
@@ -1739,6 +1744,68 @@ describe("pixel settle backstop", () => {
       // enough, and the missing revalidation read must not fail the step.
       expect(result.ok).toBe(true);
       expect(calls).toContain(kind === "tap" ? "gesture-tap" : "gesture-custom");
+      // …and that proof is accepted the moment the first settle returns —
+      // tree pair at 250ms, matching captures at 400ms, hung revalidation
+      // read cut off at the 5s combined phase window — not by burning the
+      // rest of the action budget until the terminal best-effort dispatch.
+      expect(dispatchedAt - start).toBe(5_000);
+      expect(dispatchedAt - start).toBeLessThan(DEFAULT_ACTION_TIMEOUT_MS);
+      if (kind === "tap") {
+        expect(registry.invokeTool).toHaveBeenCalledWith(
+          "gesture-tap",
+          expect.objectContaining({ x: 0.3, y: 0.7 })
+        );
+      }
+    }
+  );
+
+  it.each(["tap", "long-press"] as const)(
+    "accepts settled pixels for a raw-coordinate %s before the tree source starts failing",
+    async (kind) => {
+      vi.useFakeTimers();
+      const visible = screen([
+        n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+      ]);
+      let reads = 0;
+      currentTree = () => {
+        reads++;
+        // Reads 1–2 converge the tree pair; the post-pixel revalidation read
+        // (3) hangs; then the source stops hanging and starts FAILING — the
+        // devtools connection dropped after the pixels already settled.
+        if (reads <= 2) return visible;
+        if (reads === 3) return new Promise<DescribeNode>(() => {});
+        throw new Error("native devtools disconnected");
+      };
+      vi.mocked(capturePixels).mockResolvedValue(solid([255, 255, 255]));
+      const calls: string[] = [];
+      let dispatchedAt = -1;
+      const registry = mockRegistry(calls, undefined, (id) => {
+        if (id.startsWith("gesture-")) dispatchedAt = Date.now();
+      });
+      const env = {
+        registry,
+        device: { platform: "ios", id: DEVICE },
+      } as unknown as ActionEnv;
+      const start = Date.now();
+
+      const pending = runDirective(
+        env,
+        kind === "tap" ? { kind, x: 0.3, y: 0.7 } : { kind, x: 0.3, y: 0.7, duration: 500 }
+      );
+      await vi.advanceTimersByTimeAsync(8_000);
+      const result = await pending;
+
+      // The first settle already proved the screen stopped ({treeFresh:
+      // false, visual: "settled"}), and literal coordinates never consult
+      // the tree, so that round must be accepted as-is. Re-settling instead
+      // would hand the retry to the now-broken source, whose completed
+      // failure escalates to FlowTreeSourceUnavailableError — erroring a
+      // step that had its answer, with no gesture ever dispatched.
+      expect(result.ok).toBe(true);
+      expect(calls).toContain(kind === "tap" ? "gesture-tap" : "gesture-custom");
+      expect(dispatchedAt - start).toBe(5_000);
+      // Dispatch rode the first settle: the failing reads were never taken.
+      expect(reads).toBe(3);
       if (kind === "tap") {
         expect(registry.invokeTool).toHaveBeenCalledWith(
           "gesture-tap",
