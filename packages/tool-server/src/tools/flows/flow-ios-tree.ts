@@ -270,9 +270,9 @@ const FULL_HIERARCHY_FIELDS = [
  * Why the app a flow launched serves no view hierarchy, for the case where
  * nothing at all is connected.
  *
- * An app that can never load the dylib is terminal and must be said so: no
- * relaunch and no tool-server restart changes it, and the measured states would
- * all offer one of those (the launchd env carrying the bootstrap dylib is
+ * An app the dylib cannot be relied on to load into is terminal for a selector
+ * and must be said so: no relaunch and no tool-server restart changes whether it
+ * loads, and the measured states would all offer one of those (the launchd env carrying the bootstrap dylib is
  * simulator-wide, so the process inherits the injection tokens the measurement
  * reads and can score as merely `unregistered`). Selector resolution is the
  * point at which that impossibility actually bites — the launch gate lets these

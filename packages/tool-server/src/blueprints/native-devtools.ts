@@ -51,12 +51,11 @@ export function isInjectableBundleId(bundleId: string): boolean {
  * state to an agent that could otherwise reach for one (this precheck's throw,
  * the `describe` iOS fallback hint, and the `native-devtools-status`
  * description) so none of them can drift into recommending a dead-end. The flow
- * launch gate reports the same terminal state but deliberately does NOT carry
+ * flow path reports the same terminal state but deliberately does NOT carry
  * this text: its reader is authoring a flow, not choosing an inspection tool,
- * so it names the flow-level remedy (drive by coordinate) instead. On the flow
- * path that surface is the tree source, not the launch gate — a launch of such
- * an app is allowed through, and only a selector that needs the hierarchy is
- * refused.
+ * so it names the flow-level remedy (drive by coordinate) instead. That surface
+ * is the tree source — a launch of such an app is allowed through, and only a
+ * selector that needs the hierarchy is refused.
  *
  * Every native-* *feature* tool — notably the two
  * view-at-point tools, which run this same 3-arg precheck — re-throws this

@@ -264,12 +264,19 @@ async function waitForNativeDevtools(
   // it there — a selector-driven flow still fails, just at the step that cannot
   // be served rather than at the one that worked.
   //
-  // The wait itself is not skipped for these apps. The launchd env carrying the
-  // bootstrap dylib is simulator-wide, so a system app's process inherits the
-  // injection tokens and does connect on some runtimes; where it does, the poll
-  // above returns ready. Only the verdict on a wait that ran out is withheld —
-  // and before the measurement, which no arm below would consult for such an app
-  // and which costs several simctl round-trips the caller cannot interrupt.
+  // The wait itself is not skipped, and that is deliberate rather than
+  // incidental. Whether the dylib can load into a simulator system app is not
+  // settled: issue #453 recorded `connected: false` for com.apple.Preferences
+  // on iOS 26.5, and an E2E review recorded `connected: true`, with both dylibs
+  // mapped, on 18.5. `isInjectableBundleId` answers "no" for both. Polling costs
+  // this step its timeout where the pessimistic reading holds, and is the only
+  // thing that makes selectors work at all where the optimistic one does — so
+  // the wait runs and only the VERDICT is withheld. Skipping it would bake the
+  // contested claim into behaviour; waiting merely spends time on it.
+  //
+  // The withholding happens before the measurement, which no arm below would
+  // consult for such an app and which costs several simctl round-trips the
+  // caller cannot interrupt.
   if (!isInjectableBundleId(bundleId)) return null;
   // Measure why — the state may have flipped to connected in the gap since the
   // last poll, in which case there is nothing to report. The loop's own abort

@@ -455,6 +455,12 @@ describe("describe tool", () => {
 
     expect(result.hint).toContain("boot-device");
     expect(result.hint).toMatch(/not evidence that nothing is on screen/);
+    // "ahead of" is the point: the sim-level guidance is the corrective action,
+    // and a reader who stops at the first sentence must reach it, not the note
+    // about one read. Presence alone passes with the two swapped.
+    expect(result.hint!.indexOf("boot-device")).toBeLessThan(
+      result.hint!.indexOf("not evidence that nothing is on screen")
+    );
   });
 
   it("does NOT return should_restart while the app is still connecting", async () => {

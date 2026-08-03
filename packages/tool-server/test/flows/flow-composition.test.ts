@@ -594,26 +594,32 @@ describe("flow composition (run:)", () => {
       ["indeterminate", /at most once more/i],
       ["connecting", /started after the step's own launch/i],
       ["unregistered", /cold start/i],
-    ] as const)(
-      "gives %s a remedy that is not the action the step just took",
-      (state, expected) => {
-        expect(flowLaunchGateReason("com.acme.app", state)).toMatch(expected);
-      }
-    );
+    ] as const)("gives %s a remedy the step has not already spent", (state, expected) => {
+      expect(flowLaunchGateReason("com.acme.app", state)).toMatch(expected);
+    });
 
     // The one state whose tool-surface remedy IS the launch step's own action.
-    it("does not tell a crash-on-launch app to launch itself", () => {
+    // `launch-app` may still appear — the arm suggests starting it by hand to
+    // watch it die — but never as the prescribed retry the measured text gives.
+    it("does not tell a crash-on-launch app to simply launch itself again", () => {
       const reason = flowLaunchGateReason("com.acme.app", "not_running");
 
       expect(reason).not.toMatch(/Call launch-app/);
       expect(reason).not.toMatch(/restart-app/);
+      // What it must say instead: the process is gone because it exited, and
+      // re-running reproduces exactly that.
+      expect(reason).toMatch(/exited after launch/);
+      expect(reason).toMatch(/Re-running the flow repeats the same launch/);
     });
 
-    // Keeps the `not.toContain` guards below non-degenerate: they would pass
-    // vacuously if the two constants were ever made equal, since neither figure
-    // could then be told from the other.
-    it("has a launch-to-verdict spend distinguishable from the connect wait", () => {
+    // The `not.toContain` guards below compare rendered substrings, so they are
+    // only meaningful while one figure is not a suffix of the other — with
+    // 8000/9500 they are distinct, but e.g. 500/1500 would make
+    // `"1500 ms".includes("500 ms")` true and fail them for the wrong reason.
+    // Pin the property those guards actually need, not merely the ordering.
+    it("renders a launch-to-verdict spend no figure can be confused with", () => {
       expect(LAUNCH_TO_VERDICT_MS).toBeGreaterThan(NATIVE_READY_TIMEOUT_MS);
+      expect(`${LAUNCH_TO_VERDICT_MS} ms`).not.toContain(`${NATIVE_READY_TIMEOUT_MS} ms`);
     });
 
     // `stale_process` has two producers, and one of them carries THIS endpoint —
@@ -634,11 +640,13 @@ describe("flow composition (run:)", () => {
       const rerun = reason.indexOf("re-run the flow");
       expect(rerun).toBeGreaterThanOrEqual(0);
       expect(blame === -1 || blame > rerun).toBe(true);
-      // The conditional itself — "It lands here twice, so …" states as fact on
-      // the first landing what only a second one supports.
-      if (blame !== -1) {
-        expect(reason).toMatch(/If it lands here twice, the simulator's launchd environment/);
-      }
+      // Unconditional on purpose: guarding this with `if (blame !== -1)` let the
+      // whole repeat-landing clause be deleted with the suite green, which
+      // leaves a reader who lands here twice with "re-run the flow" and no
+      // escape — the shape this PR exists to remove. The wording is pinned too,
+      // because "It lands here twice, so …" states on a FIRST landing what only
+      // a second one supports.
+      expect(reason).toMatch(/If it lands here twice, the simulator's launchd environment/);
     });
 
     // The figure every arm quotes is the whole spend, not the connect wait —
