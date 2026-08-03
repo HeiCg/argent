@@ -443,11 +443,13 @@ async function fetchTreeBefore(env: ActionEnv, deadline: number): Promise<TreeRe
 }
 
 /**
- * Bound a screenshot read by the settle deadline. The capture itself may not
- * be cancellable (notably Chromium/CDP), so only our wait is raced. The
- * underlying {@link capturePixels} promise remains responsible for decoding
- * and deleting its temporary file when it eventually completes; settleWithin
- * also consumes a late rejection.
+ * Bound a screenshot read by the settle deadline. The capture itself is never
+ * cancelled — Chromium/CDP takes no signal, and the simulator-server arm
+ * deliberately threads none (see `captureFile`: aborting the fetch would
+ * orphan the temp PNG the server writes before replying) — so only our wait
+ * is raced. The underlying {@link capturePixels} promise remains responsible
+ * for decoding and deleting its temporary file when it eventually completes;
+ * settleWithin also consumes a late rejection.
  *
  * The two zero-progress shapes stay distinct, mirroring
  * {@link pixelCaptureSupportBefore}: `not-attempted` means the pixel budget

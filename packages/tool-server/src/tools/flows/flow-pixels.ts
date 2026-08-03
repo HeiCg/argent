@@ -117,7 +117,16 @@ async function captureFile(env: ActionEnv): Promise<string | undefined> {
   }
   const ref = simulatorServerRef(env.device);
   const api = (await env.registry.resolveService(ref.urn, ref.options)) as SimulatorServerApi;
-  const { path } = await httpScreenshot(api, undefined, env.signal, CAPTURE_SCALE);
+  // Deliberately NOT threading env.signal into this capture: the
+  // simulator-server writes its temp PNG to disk before replying, and the
+  // reply is the only place the path is learned — severing the fetch on abort
+  // would orphan that file. Cancellation stays responsive regardless, because
+  // callers abandon this promise via settleWithin; the capture just runs to
+  // completion on its own bounds (the FIRST_FRAME_WAIT_MS poll window plus
+  // the server's reply), learns the path, and the `finally` in capturePixels
+  // removes the file — the same ownership the Chromium arm above has, whose
+  // captureScreenshot takes no signal either.
+  const { path } = await httpScreenshot(api, undefined, undefined, CAPTURE_SCALE);
   return path;
 }
 

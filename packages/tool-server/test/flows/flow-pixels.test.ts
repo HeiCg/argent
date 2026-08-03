@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PNG } from "pngjs";
@@ -179,6 +181,60 @@ describe("capturePixels", () => {
       await expect(fs.access(file)).rejects.toThrow();
     }
   );
+
+  it("still removes the simulator-server temp file when the flow aborts mid-capture", async () => {
+    // The simulator-server writes its PNG to the host filesystem BEFORE it
+    // replies — the {url, path} in the response names a file that already
+    // exists. If env.signal were threaded into the capture fetch, an abort
+    // landing in that window would reject the fetch before the path is
+    // learned and orphan the file. captureFile therefore deliberately runs
+    // the capture to completion; this pins that: abort while the scripted
+    // server is holding its (already-written) reply, and the capture must
+    // still learn the path, decode the frame, and delete the file.
+    const file = path.join(tmpDir, "aborted-capture.png");
+    const png = new PNG({ width: 2, height: 1 });
+    png.data.set([10, 20, 30, 255, 40, 50, 60, 255]);
+    const bytes = PNG.sync.write(png);
+    const controller = new AbortController();
+    const server = http.createServer((req, res) => {
+      res.on("error", () => {});
+      void fs.writeFile(file, bytes).then(() => {
+        // The file is on disk; the client is now waiting on the reply. Abort
+        // the flow signal in exactly that window, then reply shortly after —
+        // the same ordering the real server produces under a client cancel.
+        controller.abort();
+        setTimeout(() => {
+          try {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ url: `file://${file}`, path: file }));
+          } catch {
+            // Pre-fix the aborted client has hung up; ignore the dead socket.
+          }
+        }, 150);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const env = {
+      device: { platform: "ios", kind: "simulator", id: "00000000-0000-0000-0000-0000000000ad" },
+      signal: controller.signal,
+      registry: {
+        resolveService: vi.fn(async () => ({ apiUrl: `http://127.0.0.1:${port}` })),
+      },
+    } as unknown as ActionEnv;
+
+    try {
+      const pixels = await capturePixels(env);
+
+      expect(controller.signal.aborted).toBe(true);
+      expect(pixels).toMatchObject({ width: 2, height: 1 });
+      expect([...pixels!.data]).toEqual([10, 20, 30, 255, 40, 50, 60, 255]);
+      await expect(fs.access(file)).rejects.toThrow();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 
   it("classifies tvOS before service resolution and leaves Android TV capture-capable", async () => {
     mockGetSimulatorRuntimeKind.mockResolvedValue("tv");
