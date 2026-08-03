@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { PNG } from "pngjs";
 import type { Registry, ToolContext } from "@argent/registry";
 import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/contract";
 import type { ActionEnv } from "../../src/tools/flows/flow-actions";
@@ -1219,6 +1221,163 @@ describe("pixel settle backstop", () => {
     // One unavailable capture belongs to the settle that yielded the frame;
     // resolving metadata must not trigger a second settle/capture.
     expect(vi.mocked(capturePixels)).toHaveBeenCalledTimes(1);
+  });
+
+  // The two tests below pin the OTHER half of that pairing: what `runSnapshot`
+  // must report when the settle handed back with the frame did NOT converge.
+  // `snapshotSettleFromResult` only lets `skipped`/`unavailable` keep their own
+  // (undegraded / "was unavailable") vocabulary while `converged` holds —
+  // everything else is an honest "timed out". Both drive the real
+  // settleTree → waitForFrameResult → runSnapshot chain rather than a
+  // hand-built SettleResult, because the shapes are ordinary screens: any
+  // churning hierarchy (spinner, ticking clock, list still settling) produces
+  // them.
+  const CROP_ON = { text: "Header", loose: true };
+  // Fixed on-screen region for the crop target, so the selector keeps
+  // resolving while a sibling churns the fingerprint: on a 100×200 capture the
+  // rect is x 25–75, y 50–100 → a 50×50 crop.
+  const CROP_FRAME = { x: 0.25, y: 0.25, width: 0.5, height: 0.25 };
+  const cropKey = (name: string): string =>
+    `${name}__ios-100x200-crop-${createHash("sha256")
+      .update(JSON.stringify(["Header", null, null, null, true]))
+      .digest("hex")
+      .slice(0, 8)}`;
+  /** A real 100×200 PNG — the cropOn path decodes and re-encodes actual pixels. */
+  async function writeCropCapture(file: string): Promise<void> {
+    const png = new PNG({ width: 100, height: 200 });
+    png.data.fill(128);
+    await fs.writeFile(file, PNG.sync.write(png));
+  }
+  function snapshotRegistry(shotPath: string, id: string): Registry {
+    return {
+      invokeTool: vi.fn(async (toolId: string) => {
+        if (toolId === "screenshot") {
+          return {
+            image: { __argentArtifact: true, id, hostPath: shotPath, mimeType: "image/png" },
+          };
+        }
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+  }
+  /** The crop target plus a sibling whose label is `tick <n>`. */
+  function churningScreen(tick: number): DescribeNode {
+    return screen([
+      n({ label: "Header", frame: CROP_FRAME }),
+      n({ label: `tick ${tick}`, frame: { x: 0, y: 0.9, width: 0.2, height: 0.05 } }),
+    ]);
+  }
+
+  it("degrades a cropOn baseline whose paired settle skipped pixels without converging", async () => {
+    // A tree that never holds still: the sibling label ticks on every read, so
+    // the tree phase never finds two matching fingerprints and returns
+    // best-effort at its window — `{ converged: false, treeFresh: true,
+    // visual: "skipped" }`, since no pixel phase ever started to overwrite the
+    // initial verdict. The fresh tree still resolves the (stationary) crop
+    // target, so this non-converged settle is what gets paired with the frame.
+    // `skipped` reads as "no pixel phase to run" ONLY when the settle
+    // converged (a platform with no capture backend); here it means the tree
+    // never settled, so the write must carry the timed-out degradation note.
+    vi.useFakeTimers();
+    const shotPath = path.join(tmpDir, "churn-snapshot.png");
+    await writeCropCapture(shotPath);
+    let reads = 0;
+    currentTree = () => churningScreen(++reads);
+    const env = {
+      registry: snapshotRegistry(shotPath, "churn-current-snapshot"),
+      ctx: { artifacts: new ArtifactStore() },
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = runSnapshot(env, {
+      flowsDir: tmpDir,
+      flowName: "checkout",
+      name: "churn",
+      maxMismatch: 0.5,
+      updateBaselines: true,
+      cropOn: CROP_ON,
+    });
+    await vi.advanceTimersByTimeAsync(3_500);
+    const result = await pending;
+
+    // Verbatim: dropping the `converged` conjunct from the `skipped` arm maps
+    // this to the undegraded `skipped` outcome, which strips the suffix
+    // entirely and makes the bare reason indistinguishable from a healthy one.
+    expect(result.status).toBe("pass");
+    expect(result.reason).toBe(
+      `baseline written (${cropKey("churn")}.png); ` +
+        "capture is best-effort/degraded because visual settling timed out"
+    );
+    expect(result.snapshotKey).toBe(cropKey("churn"));
+    // The tree phase never converged, so the pixel phase was never reached —
+    // "skipped" here is the initial verdict, not a probed absence.
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+    // 12 polls at the 250ms cadence fill the 3s tree window, then the settle
+    // hands back best-effort while the action budget still has room.
+    expect(reads).toBe(12);
+    // Best-effort is still adopted under --update-baselines: the CROPPED region.
+    const baseline = path.join(tmpDir, "__baselines__", "checkout", `${cropKey("churn")}.png`);
+    const written = PNG.sync.read(await fs.readFile(baseline));
+    expect({ w: written.width, h: written.height }).toEqual({ w: 50, h: 50 });
+  });
+
+  it("degrades a cropOn baseline whose paired settle went pixel-dark and then never re-converged", async () => {
+    // Same pairing, the other unconverged verdict. Reads 1–2 match, so the
+    // tree phase converges and the pixel phase runs; the capture backend
+    // answers `undefined`, latching `visual: "unavailable"`. The post-pixel
+    // revalidation read then shows the tree moved, restarting the settle — and
+    // the restarted tree phase churns to its window, so the sticky
+    // `unavailable` comes back with `converged: false`. A converged
+    // `unavailable` is a probed-and-absent capture channel and says so; this
+    // one additionally never settled the tree, so "timed out" is the honest
+    // report.
+    vi.useFakeTimers();
+    const shotPath = path.join(tmpDir, "dark-churn-snapshot.png");
+    await writeCropCapture(shotPath);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      // Reads 1–2 are identical (the converging pair); from read 3 — the
+      // post-pixel revalidation — on, the sibling ticks every read.
+      return churningScreen(reads <= 2 ? 0 : reads);
+    };
+    vi.mocked(capturePixels).mockResolvedValue(undefined);
+    const env = {
+      registry: snapshotRegistry(shotPath, "dark-churn-current-snapshot"),
+      ctx: { artifacts: new ArtifactStore() },
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = runSnapshot(env, {
+      flowsDir: tmpDir,
+      flowName: "checkout",
+      name: "dark-churn",
+      maxMismatch: 0.5,
+      updateBaselines: true,
+      cropOn: CROP_ON,
+    });
+    await vi.advanceTimersByTimeAsync(3_500);
+    const result = await pending;
+
+    // Verbatim: dropping the `converged` conjunct from the `unavailable` arm
+    // swaps this for "…because visual settling was unavailable", reporting a
+    // missing capture backend on a screen that simply never stopped moving.
+    expect(result.status).toBe("pass");
+    expect(result.reason).toBe(
+      `baseline written (${cropKey("dark-churn")}.png); ` +
+        "capture is best-effort/degraded because visual settling timed out"
+    );
+    expect(result.snapshotKey).toBe(cropKey("dark-churn"));
+    // One dark capture is what latched `unavailable`, and the restarted tree
+    // phase never converges, so no second capture is ever reached.
+    expect(vi.mocked(capturePixels)).toHaveBeenCalledTimes(1);
+    // The converging pair, the revalidation read that observed the move, then
+    // 12 polls filling the restarted phase's 3s window.
+    expect(reads).toBe(15);
+    const baseline = path.join(tmpDir, "__baselines__", "checkout", `${cropKey("dark-churn")}.png`);
+    const written = PNG.sync.read(await fs.readFile(baseline));
+    expect({ w: written.width, h: written.height }).toEqual({ w: 50, h: 50 });
   });
 
   it("dispatches no tap when the run is cancelled during an in-flight capture", async () => {
