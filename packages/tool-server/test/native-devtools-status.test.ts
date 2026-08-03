@@ -1162,6 +1162,38 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     expect(nativeDevtoolsStatusTool.description).toContain("argent server start");
   });
 
+  // Whether the dylib loads into an Apple system app is not settled — #453
+  // recorded `connected: false` on iOS 26.5, an E2E review `connected: true`
+  // with both dylibs mapped on 18.5 — and every surface below is read by the
+  // same agent. Hedging one and leaving its twin absolute is what misleads: the
+  // flow surfaces say "depends on the runtime" while a tool description said
+  // "can never". The DECISION (terminal, do not retry) is unchanged; only the
+  // certainty claimed for it has to agree across surfaces.
+  it("does not claim injection is impossible on any agent-facing surface", () => {
+    // `described` fails loudly on an absent description rather than letting the
+    // regex below pass over `undefined` — a surface with no text would satisfy
+    // a negative match vacuously.
+    const described = (name: string, text: string | undefined): [string, string] => {
+      expect(text, `${name} has no text, so this check would be vacuous`).toBeTypeOf("string");
+      return [name, text!];
+    };
+    const surfaces: [string, string][] = [
+      described("native-devtools-status description", nativeDevtoolsStatusTool.description),
+      ...tools.map((t) => described(`${t.id} description`, t.description)),
+      described("non-injectable recovery", NON_INJECTABLE_RECOVERY),
+      described("argent-device-interact SKILL.md", deviceInteractSkill()),
+    ];
+
+    for (const [name, text] of surfaces) {
+      expect(text, `${name} asserts injection is impossible`).not.toMatch(
+        /can never (be injected|load|inject)/
+      );
+    }
+    // Softening the claim must not soften the behaviour, or the restart loop
+    // #453 reported comes straight back.
+    expect(nativeDevtoolsStatusTool.description).toMatch(/Do NOT restart\/retry/);
+  });
+
   // `not_running` is derived from the absence of a `UIKitApplication:<id>` row,
   // and a bundle id that was never installed has no row either — so the state
   // cannot tell "installed and stopped" from "not installed". Prescribing only

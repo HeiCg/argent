@@ -269,11 +269,11 @@ export async function precheckNativeDevtools(
   udid: string,
   bundleId?: string
 ): Promise<NativeDevtoolsPrecheckBlock | null> {
-  // Terminal case first: an app that can never be injected (Apple system app).
+  // Terminal case first: an app injection cannot be relied on for (Apple system app).
   // Injectability is a static property of the bundle id, knowable without any
   // env state, so this fires before the env plumbing below — a given-up sim or
   // a transient ensureEnvReady failure must not mask the terminal signal behind
-  // init_failed's "re-boot the simulator" guidance (a reboot can never make a
+  // init_failed's "re-boot the simulator" guidance (a reboot cannot make a
   // system app injectable), and no env-setup work is spent on an app that can
   // never load the dylib. Throwing (rather than returning a restart-required
   // block) makes the native-* feature tools surface a hard error instead of

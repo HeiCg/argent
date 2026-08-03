@@ -41,7 +41,7 @@ const TVOS_HINT =
   "(up/down/left/right/select/back/menu/home) to move focus, and `keyboard` to type. " +
   "See the argent-tv-interact skill.";
 
-// Apple system apps (`com.apple.*`) can never load argent's injected dylib, so
+// Apple system apps (`com.apple.*`) cannot be relied on to load argent's dylib, so
 // the native-devtools fallback can't read their view hierarchy and restarting
 // them would never help — returning `should_restart` here puts the agent in an
 // unbounded restart-app → describe loop. This hint is reached only once
@@ -50,7 +50,7 @@ const TVOS_HINT =
 // `native-*` dead-end warning verbatim with the precheck throw and
 // `native-devtools-status`.
 const NON_INJECTABLE_HINT =
-  "This is an Apple system app (com.apple.*), which cannot load argent's native-devtools " +
+  "This is an Apple system app (com.apple.*), which cannot be relied on to load argent's native-devtools " +
   "instrumentation — the native view hierarchy is unavailable and restarting the app will NOT " +
   "help. Take a `screenshot` to see the screen and interact by coordinate. " +
   NON_INJECTABLE_NATIVE_WARNING;
@@ -118,7 +118,7 @@ export async function describeIos(
     return { tree, source: "ax-service", hint };
   }
 
-  // A non-injectable system app can never connect, and the launchd env carrying
+  // A non-injectable system app may never connect, and the launchd env carrying
   // the bootstrap dylib is simulator-wide — so its process inherits the very
   // tokens the measurement reads and scores as injected. Which unconnected state
   // that lands on is just its age against this service's listener:
@@ -131,7 +131,7 @@ export async function describeIos(
   // static property of the explicit bundle id, so the terminal hint must not
   // depend on service resolution succeeding (a downed ios-remote tunnel or a
   // dispose race would otherwise swallow it into the generic catch below), and
-  // no native-devtools service is spawned for an app that can never inject.
+  // no native-devtools service is spawned for an app that may never inject.
   // Auto-resolution (no bundleId) needs no gate — it only ever yields a
   // connected, hence injected, app. If the ax-service was degraded (sim not
   // booted through argent, so `hint` is DEGRADED_HINT), keep that re-boot
