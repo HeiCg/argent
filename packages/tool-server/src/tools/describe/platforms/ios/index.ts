@@ -241,23 +241,22 @@ function errMsg(err: unknown): string {
  * the corrective action for the sim itself, and dropping it would trade a
  * repairable simulator for a note about one read.
  *
- * `screenshot` is offered unconditionally — it is the one action available on
- * every path here, and dropping it would leave a hint with no next step at all.
- * Only the `bundleId` half is conditional: all three call sites are reachable
- * with an explicit id (the resolution short-circuits on one, and the other two
- * measure or query it), and suggesting it to a caller who supplied it names the
- * step they already took.
+ * `screenshot` is named on every path — it is the one action available whatever
+ * went wrong, and without it the hint leaves the reader no next step. Only the
+ * `bundleId` half is conditional: all three call sites are reachable with an
+ * explicit id, so suggesting it to a caller who supplied one names the step
+ * they already took.
  */
 function unexplainedHint(
   hint: string | undefined,
   detail: string,
   params: DescribeIosParams
 ): string {
-  const measure = params.bundleId
-    ? ""
-    : " Pass `bundleId` to have the connection state measured, or";
+  const next = params.bundleId
+    ? "Take a `screenshot` to see what is there."
+    : "Pass `bundleId` to have the connection state measured, or take a `screenshot` to see what is there.";
   const why =
     `The native view hierarchy could not be read (${detail}), so this empty accessibility tree is ` +
-    `not evidence that nothing is on screen.${measure} Take a \`screenshot\` to see what is there.`;
+    `not evidence that nothing is on screen. ${next}`;
   return hint ? `${hint} ${why}` : why;
 }

@@ -395,9 +395,9 @@ describe("describe tool", () => {
     expect(result.should_restart).toBeUndefined();
   });
 
-  // The remedy has to fit the caller. Two of the three sites that emit this hint
-  // are reached only after an explicit bundleId resolved and measured connected,
-  // where "pass bundleId" names the step the caller already took.
+  // The remedy has to fit the caller. All three sites that emit this hint are
+  // reachable with an explicit bundleId, so "pass bundleId" would name the step
+  // the caller already took.
   it("does not tell a caller that passed bundleId to pass bundleId", async () => {
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({ connectedBundleIds: ["com.example.app"] });
@@ -414,6 +414,34 @@ describe("describe tool", () => {
 
     expect(result.hint).toMatch(/not evidence that nothing is on screen/);
     expect(result.hint).not.toMatch(/Pass `bundleId`/);
+    // Dropping the bundleId half must not drop the reader's only remaining
+    // action with it: `screenshot` is what is left when the hierarchy cannot be
+    // read, and the device-interact skill tells the agent to follow this hint.
+    expect(result.hint).toMatch(/screenshot/);
+  });
+
+  // Both forms of the sentence are read by an agent, so both have to parse as
+  // English — the conditional clause and the action it leads into are one
+  // sentence, and joining them wrongly produced "measured, or Take a
+  // `screenshot`".
+  it.each([
+    ["with bundleId", "com.example.app", /on screen\. Take a `screenshot` to see what is there\.$/],
+    [
+      "without bundleId",
+      undefined,
+      /on screen\. Pass `bundleId` to have the connection state measured, or take a `screenshot` to see what is there\.$/,
+    ],
+  ] as const)("reads as one grammatical sentence %s", async (_label, bundleId, expected) => {
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
+    const registry = makeMockRegistry({ axService: axApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute(
+      {},
+      { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", ...(bundleId ? { bundleId } : {}) }
+    );
+
+    expect(result.hint).toMatch(expected);
   });
 
   // The ax-service's own hint is the simulator's state and carries the only

@@ -294,7 +294,8 @@ async function unreadableHierarchyReason(
       `${bundleId} is an Apple system app: it is a platform binary with library validation, so ` +
       `argent's native devtools cannot be relied on to inject into it, and without them a flow has ` +
       `no view hierarchy to resolve selectors against. Replace the selector steps with coordinate ` +
-      `ones (\`tool: gesture-tap\` with x/y, read off a \`screenshot\`), or target an app argent installs.`
+      `ones — \`tap: { x: 0.5, y: 0.35 }\` takes a point directly and reads no tree — or target an app ` +
+      `argent installs.`
     );
   }
   const state = await nativeApi.appConnectionState(bundleId).catch(() => "indeterminate" as const);

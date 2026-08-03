@@ -559,7 +559,7 @@ describe("flow composition (run:)", () => {
       expect(result.steps[0].reason).not.toMatch(/restart-app/);
       expect(result.steps[0].reason?.match(/com\.acme\.app/g)).toHaveLength(1);
       // This gate is the one caller whose wait was bounded — it launched the app
-      // itself and waited only NATIVE_READY_TIMEOUT_MS. A cold start slower than
+      // itself and then waited LAUNCH_TO_VERDICT_MS. A cold start slower than
       // that reads identically to a genuinely unregistered app, so the measured
       // "restarting cannot help" must not be the last word here.
       expect(result.steps[0].reason).toMatch(/cold start/i);
@@ -609,13 +609,10 @@ describe("flow composition (run:)", () => {
       expect(reason).not.toMatch(/restart-app/);
     });
 
-    // The figures an author sizes these judgements against must be the wait the
-    // step actually performed — the settle plus the connect window, not the
-    // connect window alone, which understates a launched process's age.
-    it("quotes the whole time the step spent, not just the connect wait", () => {
-      const reason = flowLaunchGateReason("com.acme.app", "not_running");
-
-      expect(reason).toContain(`${LAUNCH_TO_VERDICT_MS} ms`);
+    // Keeps the `not.toContain` guards below non-degenerate: they would pass
+    // vacuously if the two constants were ever made equal, since neither figure
+    // could then be told from the other.
+    it("has a launch-to-verdict spend distinguishable from the connect wait", () => {
       expect(LAUNCH_TO_VERDICT_MS).toBeGreaterThan(NATIVE_READY_TIMEOUT_MS);
     });
 
@@ -629,13 +626,19 @@ describe("flow composition (run:)", () => {
       expect(reason).toMatch(/predates whatever the relaunch would have given it/);
       // One producer of this state carries THIS endpoint and is merely older
       // than the listener, so the environment is not at fault on a first
-      // landing. The message may name it only for a repeat, which rules that
-      // producer out — so the blame must never precede the re-run advice.
+      // landing. The message may name it only for a REPEAT, which rules that
+      // producer out. Two things make that true and both are asserted: the
+      // blame is conditional (not a statement about what was just measured),
+      // and it comes after the re-run that establishes the repeat.
       const blame = reason.indexOf("launchd environment");
       const rerun = reason.indexOf("re-run the flow");
       expect(rerun).toBeGreaterThanOrEqual(0);
       expect(blame === -1 || blame > rerun).toBe(true);
-      expect(reason).toMatch(/lands here twice/);
+      // The conditional itself — "It lands here twice, so …" states as fact on
+      // the first landing what only a second one supports.
+      if (blame !== -1) {
+        expect(reason).toMatch(/If it lands here twice, the simulator's launchd environment/);
+      }
     });
 
     // The figure every arm quotes is the whole spend, not the connect wait —

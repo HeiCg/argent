@@ -150,6 +150,29 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
     );
   });
 
+  // A previous round deleted this branch believing it dead. It is not:
+  // `appConnectionState` re-reads the live connections map AFTER its env
+  // re-apply and process probe — several simctl round-trips past the empty list
+  // that routed the call here — precisely so a dial landing in that window is
+  // not reported as an app the service never registered. Without coverage the
+  // deletion can simply recur, and folding the case away leaves it throwing a
+  // sentence that names no app and no remedy.
+  it("says the connection arrived mid-read when the measurement finds it connected", async () => {
+    const registry = registryWith([], { appConnectionState: async () => "connected" });
+
+    await expect(queryFullHierarchyTree(registry, DEVICE, BUNDLE)).rejects.toThrow(
+      /connection arrived mid-read/
+    );
+    // It must still name the app and an action; the measured states' remedies
+    // do not apply, because nothing is wrong with the app.
+    await expect(queryFullHierarchyTree(registry, DEVICE, BUNDLE)).rejects.toThrow(
+      new RegExp(`${BUNDLE}[\\s\\S]*Retry`)
+    );
+    await expect(queryFullHierarchyTree(registry, DEVICE, BUNDLE)).rejects.not.toThrow(
+      /argent server stop|restart-app/
+    );
+  });
+
   it("gives a system app the terminal reason instead of a measured remedy", async () => {
     // The launch gate lets a non-injectable app through so a coordinate-driven
     // flow still runs; selector resolution is where the missing hierarchy
