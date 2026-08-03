@@ -54,14 +54,15 @@ describe("physical-iPhone capability gate, swept across the registry", () => {
     // Anti-vacuity: a derivation bug that yields an empty or tiny set would
     // otherwise pass this test while checking nothing. These four span the
     // distinct simulator-only backends — `simctl privacy`, `simctl spawn` +
-    // DYLD injection, xctrace, and the single-contact digitizer limit — so
-    // losing any whole family trips the membership check, not just the count.
+    // DYLD injection, xctrace, and the gesture iOS will not read out of two
+    // synthetic contacts — so losing any whole family trips the membership
+    // check, not just the count.
     const ids = simulatorOnly.map(([id]) => id);
     for (const id of [
       "settings-permissions",
       "native-describe-screen",
       "native-profiler-start",
-      "gesture-pinch",
+      "gesture-rotate",
     ]) {
       expect(ids, `${id} must be reached by the sweep`).toContain(id);
     }

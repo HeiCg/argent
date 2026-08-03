@@ -66,7 +66,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   {
     name: "physical-ios-devices",
     description:
-      "Discover and control physical iOS devices over Apple CoreDevice. Device interaction runs natively in the bundled simulator-server over the USB connection, unprivileged and with no admin prompt. Covers screen capture and recording, single-touch input, hardware buttons, typing, on-screen accessibility reads and app lifecycle; multi-touch, and every tool whose backend is simulator-only - the ones that inject argent's devtools into the app, and the ones that drive simctl - are rejected at the capability gate. Each tool's own capability declaration decides what hardware accepts — the README's physical-iOS section lists the current set.",
+      "Discover and control physical iOS devices over Apple CoreDevice. Device interaction runs natively in the bundled simulator-server over the USB connection, unprivileged and with no admin prompt. Covers screen capture and recording, touch input up to two simultaneous contacts (a two-finger pinch drives zoom; a two-finger rotation is the one gesture iOS does not read out of them), hardware buttons, typing, on-screen accessibility reads and app lifecycle; every tool whose backend is simulator-only - the ones that inject argent's devtools into the app, and the ones that drive simctl - is rejected at the capability gate. Each tool's own capability declaration decides what hardware accepts — the README's physical-iOS section lists the current set.",
   },
   {
     name: "tool-server-event-log",

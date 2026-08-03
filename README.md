@@ -55,7 +55,7 @@ CoreDevice "remote control" services (the same path Xcode's device window uses).
 interaction runs natively inside the bundled **simulator-server** (radon's `ios_device`
 controller). The CoreDevice tunnel is a userspace TCP stack over the USB connection, so every
 command runs unprivileged, with no admin prompt and nothing installed on the host. Supported interactions: `screenshot`, `screen-recording-start` / `screen-recording-stop`,
-`gesture-tap`, `gesture-swipe`, `gesture-custom` (single touch), `keyboard`, `button`, `rotate`,
+`gesture-tap`, `gesture-swipe`, `gesture-custom`, `gesture-pinch`, `keyboard`, `button`, `rotate`,
 `launch-app`, `restart-app`, `reinstall-app`, `open-url`, `screenshot-diff`, `await-screen-idle`,
 `await-ui-element`, `run-sequence`, and
 `describe` (the live on-screen accessibility tree — see the note below). The device shows up in `list-devices` with `kind: "device"`.

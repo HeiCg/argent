@@ -63,13 +63,11 @@ interface Result {
   timestampMs: number;
 }
 
-// `apple.device: false`: this gesture needs two simultaneous contacts, and the
-// CoreDevice digitizer a physical iPhone is driven through exposes a
-// single-contact touchscreen (see gesture-custom, which stays enabled and
-// rejects only its own two-contact half per request). There is no single-touch
-// approximation of this gesture worth offering, so the whole tool is gated.
+// Physical iPhones included: the CoreDevice touchscreen tracks two contacts,
+// addressed by the contact-id byte of its report, and a two-finger pinch driven
+// through it zooms a real app in and out.
 const capability: ToolCapability = {
-  apple: { simulator: true, device: false },
+  apple: { simulator: true, device: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
 };
