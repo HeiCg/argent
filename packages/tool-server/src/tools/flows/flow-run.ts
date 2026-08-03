@@ -269,10 +269,17 @@ async function waitForNativeDevtools(
   // settled: issue #453 recorded `connected: false` for com.apple.Preferences
   // on iOS 26.5, and an E2E review recorded `connected: true`, with both dylibs
   // mapped, on 18.5. `isInjectableBundleId` answers "no" for both. Polling costs
-  // this step its timeout where the pessimistic reading holds, and is the only
-  // thing that makes selectors work at all where the optimistic one does — so
-  // the wait runs and only the VERDICT is withheld. Skipping it would bake the
+  // this step its timeout where the pessimistic reading holds, and widens the
+  // connect latency a flow tolerates where the optimistic one does — so the
+  // wait runs and only the VERDICT is withheld. Skipping it would bake the
   // contested claim into behaviour; waiting merely spends time on it.
+  //
+  // The poll is not what makes selectors work. `settleTree` retries a failed
+  // tree read for SETTLE_TIMEOUT_MS, on top of POST_LAUNCH_SETTLE_MS, so a
+  // connection arriving inside roughly the first 4.5 s is absorbed with no gate
+  // at all — which is why a fragment, having no launch step and so no gate,
+  // resolves selectors against a system app on a runtime where it connects.
+  // What the poll adds is the band from there out to LAUNCH_TO_VERDICT_MS.
   //
   // The withholding happens before the measurement, which no arm below would
   // consult for such an app and which costs several simctl round-trips the

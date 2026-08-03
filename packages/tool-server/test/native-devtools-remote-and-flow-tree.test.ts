@@ -188,8 +188,8 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
     ).rejects.not.toThrow(/argent server stop|restart-app/);
     // The remedy has to name a step form that exists AND reads no tree.
     // `tap: { x, y }` is the flow-native one; `tool: gesture-tap` is the raw
-    // escape hatch this message used to send authors to, and the same
-    // recommendation is made in argent-create-flow — the two must not drift.
+    // escape hatch, and argent-create-flow makes the same recommendation — the
+    // two must not drift.
     await expect(queryFullHierarchyTree(registry, DEVICE, "com.apple.Preferences")).rejects.toThrow(
       /tap: \{ x: [\d.]+, y: [\d.]+ \}/
     );

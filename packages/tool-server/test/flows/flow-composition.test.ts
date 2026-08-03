@@ -354,6 +354,49 @@ describe("flow composition (run:)", () => {
     }
   });
 
+  // The verdict is withheld BEFORE the state is measured. That measurement is
+  // several simctl round-trips the caller cannot interrupt, and no arm below
+  // would consult it for an app whose verdict is withheld either way — so
+  // running it would be pure latency on every system-app launch step.
+  it("does not measure a state it will not report", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [{ kind: "launch", app: "com.apple.Preferences" }],
+    });
+    const appConnectionState = vi.fn(async () => "unregistered" as const);
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => ({
+        isConnected: () => false,
+        listConnectedBundleIds: () => [],
+        appConnectionState,
+      })),
+    } as unknown as Registry;
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const pending = createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      );
+      let settled = false;
+      void pending.then(() => (settled = true));
+      for (let i = 0; i < 200 && !settled; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+        await vi.advanceTimersByTimeAsync(250);
+      }
+      const result = asRun(await pending);
+
+      expect(result.steps[0].status).toBe("pass");
+      expect(appConnectionState).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // The gate consults the service before it withholds its verdict, so a service
   // that cannot resolve at all was the one remaining way a system-app launch
   // could still fail — on a failure that, by the pass-through's own reasoning,
@@ -594,7 +637,7 @@ describe("flow composition (run:)", () => {
       ["indeterminate", /at most once more/i],
       ["connecting", /started after the step's own launch/i],
       ["unregistered", /cold start/i],
-    ] as const)("gives %s a remedy the step has not already spent", (state, expected) => {
+    ] as const)("tells %s something the step has not already done or tried", (state, expected) => {
       expect(flowLaunchGateReason("com.acme.app", state)).toMatch(expected);
     });
 
@@ -617,7 +660,7 @@ describe("flow composition (run:)", () => {
     // 8000/9500 they are distinct, but e.g. 500/1500 would make
     // `"1500 ms".includes("500 ms")` true and fail them for the wrong reason.
     // Pin the property those guards actually need, not merely the ordering.
-    it("renders a launch-to-verdict spend no figure can be confused with", () => {
+    it("renders a launch-to-verdict spend the connect wait cannot be read into", () => {
       expect(LAUNCH_TO_VERDICT_MS).toBeGreaterThan(NATIVE_READY_TIMEOUT_MS);
       expect(`${LAUNCH_TO_VERDICT_MS} ms`).not.toContain(`${NATIVE_READY_TIMEOUT_MS} ms`);
     });
@@ -643,7 +686,7 @@ describe("flow composition (run:)", () => {
       // Unconditional on purpose: guarding this with `if (blame !== -1)` let the
       // whole repeat-landing clause be deleted with the suite green, which
       // leaves a reader who lands here twice with "re-run the flow" and no
-      // escape — the shape this PR exists to remove. The wording is pinned too,
+      // escape, which is the restart loop in miniature. The wording is pinned too,
       // because "It lands here twice, so …" states on a FIRST landing what only
       // a second one supports.
       expect(reason).toMatch(/If it lands here twice, the simulator's launchd environment/);

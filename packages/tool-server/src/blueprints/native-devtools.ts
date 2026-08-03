@@ -27,9 +27,14 @@ export const NATIVE_DEVTOOLS_NAMESPACE = "NativeDevtools";
  * Whether the Argent native devtools dylib can ever be injected into an app.
  *
  * Apple system / built-in apps (bundle ids under `com.apple.`) are platform
- * binaries shipped with library validation enabled. The simulator refuses to
- * honour `DYLD_INSERT_LIBRARIES` for them, so our dylib can never load — no
- * amount of relaunching changes that. Third-party apps the user installs carry
+ * binaries shipped with library validation enabled, and the simulator is not
+ * reliably willing to honour `DYLD_INSERT_LIBRARIES` for them — so our dylib
+ * cannot be counted on to load, and no amount of relaunching changes which way
+ * it goes. How absolute that is has not held up uniformly: issue #453 recorded
+ * `connected: false` for `com.apple.Preferences` on iOS 26.5, and an E2E review
+ * recorded `connected: true`, with both dylibs mapped, on 18.5. The predicate
+ * answers "not injectable" for both, because an app that MIGHT connect cannot
+ * be the basis of a retry loop either. Third-party apps the user installs carry
  * no such restriction and inject normally. Treating the `com.apple.` prefix as
  * non-injectable gives the native-* tools a terminal signal instead of an
  * unbounded restart-app → retry loop.
@@ -50,7 +55,7 @@ export function isInjectableBundleId(bundleId: string): boolean {
  * to fall back to. Shared VERBATIM by every surface that reports this terminal
  * state to an agent that could otherwise reach for one (this precheck's throw,
  * the `describe` iOS fallback hint, and the `native-devtools-status`
- * description) so none of them can drift into recommending a dead-end. The flow
+ * description) so none of them can drift into recommending a dead-end. The
  * flow path reports the same terminal state but deliberately does NOT carry
  * this text: its reader is authoring a flow, not choosing an inspection tool,
  * so it names the flow-level remedy (drive by coordinate) instead. That surface
@@ -275,10 +280,10 @@ export async function precheckNativeDevtools(
   // instructing an unbounded restart→retry loop that can never succeed. The
   // 2-arg overload (bundleId undefined) must NOT throw: native-devtools-status
   // reports the state instead, and launch-app / restart-app run it too —
-  // launching or restarting a system app is legitimate, it just never injects.
+  // launching or restarting a system app is legitimate, it just may not inject.
   if (bundleId !== undefined && !isInjectableBundleId(bundleId)) {
     throw new FailureError(
-      `${bundleId} is an Apple system app: it is a platform binary with library validation, so Argent native devtools can never be injected into it. ` +
+      `${bundleId} is an Apple system app: it is a platform binary with library validation, so Argent native devtools cannot be relied on to inject into it — treat it as unavailable rather than retrying. ` +
         NON_INJECTABLE_RECOVERY,
       {
         error_code: FAILURE_CODES.NATIVE_DEVTOOLS_NOT_INJECTABLE,
