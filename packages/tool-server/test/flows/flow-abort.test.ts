@@ -176,6 +176,38 @@ describe("run cancellation mid-directive", () => {
     expect(calls).not.toContain("gesture-tap");
   });
 
+  it("dispatches no tap when a raw-coordinate tap is cancelled during its settle", async () => {
+    const controller = new AbortController();
+    // Raw x/y never consult the tree, but they still wait for the combined
+    // settle. The tree is stable, so read 2 completes the settle's fingerprint
+    // pair; the abort lands inside that read. The coordinate branch's own
+    // abort check is the only guard on this path — runTap does not re-check
+    // the signal before dispatch — so losing it would tap the device after
+    // the client gave up.
+    let reads = 0;
+    currentFetch = () => {
+      reads++;
+      if (reads >= 2) controller.abort();
+      return {
+        tree: screen([n({ label: "Other", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.1 } })]),
+        source: "native-devtools",
+      };
+    };
+    const calls: string[] = [];
+
+    await writeFlow("cancelled-raw-tap-settle", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tap", x: 0.5, y: 0.4 }],
+    });
+
+    const result = await run("cancelled-raw-tap-settle", mockRegistry(calls), controller.signal);
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["tap:skip"]);
+    expect(result.steps[0].reason).toBe("run aborted");
+    expect(result.ok).toBe(false);
+    expect(calls).not.toContain("gesture-tap");
+  });
+
   it("dispatches no scroll increment when the run is cancelled during a mid-scroll settle read", async () => {
     const controller = new AbortController();
     // The target never appears and the tree is stable — after read 2 settles,
