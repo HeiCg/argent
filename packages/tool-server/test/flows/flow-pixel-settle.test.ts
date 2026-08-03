@@ -2595,4 +2595,96 @@ describe("pixel settle backstop", () => {
       fs.access(path.join(tmpDir, "__baselines__", "checkout", "pulse__ios-390x844.png"))
     ).resolves.toBeUndefined();
   });
+
+  it("keeps the baseline write undegraded when the stale-settled round's freshness retries go pixel-dark", async () => {
+    // The other half of the latch the test above pins. There the freshness
+    // retry's pixel phase RAN and never re-proved stillness, so its honest
+    // timeout overrides the stale round-1 claim. Here the retries are
+    // pixel-DARK — the capture backend vanishes (`capturePixels` resolves
+    // undefined) while the tree stays healthy, so each retry comes back
+    // `{ visual: "unavailable", converged: true }`. A dark reading cannot
+    // un-prove the stillness round 1 already established, so settleSnapshot's
+    // `!staleSettled` guard must skip the direct `unavailable` mapping and
+    // keep chasing freshness to the action deadline: the baseline write stays
+    // a bare "baseline written", no degradation note. Dropping the guard
+    // would let the FIRST dark retry stamp "visual settling was unavailable"
+    // onto a screen whose quiet was already proven.
+    vi.useFakeTimers();
+    const shotPath = path.join(tmpDir, "calm-snapshot.png");
+    const png = Buffer.alloc(24);
+    png.writeUInt32BE(390, 16);
+    png.writeUInt32BE(844, 20);
+    await fs.writeFile(shotPath, png);
+    const stable = screen([n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } })]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      // Round 1: reads 1–2 converge the tree phase; the post-pixel
+      // revalidation read (3) hangs past the phase window, so the settle
+      // comes back stale-but-settled ({ visual: "settled", treeFresh: false }).
+      // Every read after that succeeds instantly, so each freshness retry's
+      // tree phase converges and its revalidation read is fresh — the retry
+      // shortfall is purely the dark pixel phase, never the tree.
+      return reads === 3 ? new Promise<DescribeNode>(() => {}) : stable;
+    };
+    let captures = 0;
+    vi.mocked(capturePixels).mockImplementation(() => {
+      captures++;
+      // Round 1: a matching pair — the screen provably still while the
+      // revalidation read hung. From the retry on, the backend is gone:
+      // `undefined` types each retry's pixel phase as the pixel-dark
+      // `unavailable`, never `timed-out`, so only the unpinned guard — not
+      // the timed-out override arm above — decides the outcome.
+      return Promise.resolve(captures <= 2 ? solid([255, 255, 255]) : undefined);
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "screenshot") {
+          return {
+            image: {
+              __argentArtifact: true,
+              id: "calm-current-snapshot",
+              hostPath: shotPath,
+              mimeType: "image/png",
+            },
+          };
+        }
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+    const env = {
+      registry,
+      ctx: { artifacts: new ArtifactStore() },
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = runSnapshot(env, {
+      flowsDir: tmpDir,
+      flowName: "checkout",
+      name: "calm",
+      maxMismatch: 0.5,
+      updateBaselines: true,
+    });
+    await vi.advanceTimersByTimeAsync(7_600);
+    const result = await pending;
+
+    // The reason must be the bare write — asserted verbatim so no degradation
+    // suffix (or any other annotation) can sneak in unnoticed.
+    expect(result.status).toBe("pass");
+    expect(result.reason).toBe("baseline written (calm__ios-390x844.png)");
+    // Pins the latch actually holding across retries, not just the final
+    // verdict: round 1 spends reads 1–2, hung read 3 and captures 1–2, ending
+    // at the 5s phase window; then FOUR pixel-dark retry rounds (two
+    // converging reads + one dark capture + one fresh revalidation read each,
+    // separated by the 300ms retry sleep) at 5.3s, 5.85s, 6.4s and 6.95s,
+    // with the deadline landing on the sleep after the fourth. A guard that
+    // let the first dark retry through would stop at 6 reads / 3 captures —
+    // and degrade the reason.
+    expect(captures).toBe(6);
+    expect(reads).toBe(15);
+    await expect(
+      fs.access(path.join(tmpDir, "__baselines__", "checkout", "calm__ios-390x844.png"))
+    ).resolves.toBeUndefined();
+  });
 });
