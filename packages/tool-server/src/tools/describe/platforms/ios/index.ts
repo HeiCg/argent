@@ -144,10 +144,20 @@ export async function describeIos(
   }
 
   // AX returned zero elements (or failed entirely) — attempt native-devtools fallback
+  let nativeApi: NativeDevtoolsApi;
   try {
     const ndRef = nativeDevtoolsRef(device);
-    const nativeApi = await registry.resolveService<NativeDevtoolsApi>(ndRef.urn, ndRef.options);
+    nativeApi = await registry.resolveService<NativeDevtoolsApi>(ndRef.urn, ndRef.options);
+  } catch {
+    // No native-devtools service on this device at all. That is an absence of a
+    // second opinion rather than a failed attempt at one: nothing was there to
+    // corroborate the accessibility read and nothing was expected to, so it
+    // stands as taken. The arrivals below are the other kind — the service was
+    // reachable and still produced no hierarchy — and they must say so.
+    return { tree, source: "ax-service", hint };
+  }
 
+  try {
     const target = await resolveNativeTargetApp(nativeApi, params.bundleId);
 
     // A rejection here (the env re-apply this runs first fails on a sim that
@@ -188,14 +198,45 @@ export async function describeIos(
     )) as { screenFrame?: unknown; elements?: unknown[]; error?: string };
 
     if (rawResult.error) {
-      return { tree, source: "ax-service", hint };
+      return { tree, source: "ax-service", hint: unexplainedHint(hint, rawResult.error) };
     }
 
     const parsed = parseNativeDescribeScreenResult(rawResult);
     const nativeTree = adaptNativeDescribeToDescribeResult(parsed);
     return { tree: nativeTree, source: "native-devtools", hint };
-  } catch {
-    // Native devtools unavailable or no connected app — return the empty AX result
-    return { tree, source: "ax-service", hint };
+  } catch (err) {
+    // The service answered, but no hierarchy came back: no connected app to
+    // auto-target, an ambiguous frontmost, or the query itself threw. Returning
+    // the bare tree here says the screen is empty when what happened is that it
+    // could not be read — and `await-ui-element`'s blind-read guard keys off
+    // `hint` / `should_restart`, so with neither set an empty tree is taken at
+    // face value and a `hidden` wait resolves immediately against an element
+    // that may still be on screen.
+    //
+    // This is reachable on the DEFAULT form of the call. `bundleId` is
+    // optional, and without it `resolveNativeTargetApp` draws its candidates
+    // from the connected list — so every state the diagnosis above exists to
+    // explain throws here, before anything is measured. With `bundleId` the
+    // resolution short-circuits and that diagnosis is reached; the two forms
+    // disagreed about the same device.
+    //
+    // No bundle id was resolved on that path, so there is nothing to measure and
+    // no remedy to invent — the resolver's own message already carries one.
+    // Recording that the read is uncorroborated is the whole of what the guard
+    // needs.
+    return { tree, source: "ax-service", hint: unexplainedHint(hint, errMsg(err)) };
   }
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Mark an empty accessibility read as unexplained rather than empty. */
+function unexplainedHint(hint: string | undefined, detail: string): string {
+  const why =
+    `The native view hierarchy could not be read (${detail}), so this empty accessibility tree is ` +
+    `not evidence that nothing is on screen. Pass \`bundleId\` to have the connection state ` +
+    `measured, or take a \`screenshot\`.`;
+  return hint ? `${hint} ${why}` : why;
 }

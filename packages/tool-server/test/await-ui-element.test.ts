@@ -441,6 +441,46 @@ describe("await-ui-element tool", () => {
       expect(result.success).toBe(false);
     });
 
+    // The sharp end of describe's no-bundleId path. `isBlindRead` keys off
+    // `hint` / `should_restart`, so an empty tree carrying neither is taken as a
+    // trustworthy screen — and `hidden` is the one condition that resolves TRUE
+    // on an empty tree. With a live native-devtools service that has no
+    // connected app (a running app the service never registered), the read is
+    // unexplained, not empty, and this gate must not release off it.
+    it("`hidden` refuses to resolve off an empty tree the hierarchy could not corroborate", async () => {
+      const { api } = makeSequencedAXService([axResponse([])]);
+      const nativeApi = {
+        listConnectedBundleIds: () => [],
+        appConnectionState: async () => "unregistered" as const,
+      };
+      const registry = {
+        resolveService: vi.fn(async (urn: string) => {
+          if (urn.startsWith("AXService:")) return api;
+          if (urn.startsWith("NativeDevtools:")) return nativeApi;
+          throw new Error(`unexpected service: ${urn}`);
+        }),
+      } as any;
+      const tool = createAwaitUiElementTool(registry);
+
+      const result = await tool.execute(
+        {},
+        {
+          udid: IOS_UDID,
+          condition: "hidden",
+          selector: { text: "30 November" },
+          timeoutMs: 300,
+          pollIntervalMs: 50,
+        }
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.note).toMatch(/empty or unreadable/i);
+      // The instant-success note is the exact shape this guard exists to
+      // prevent — releasing a gated wait in milliseconds against an element
+      // that was never confirmed gone.
+      expect(result.note).not.toMatch(/condition met immediately/);
+    });
+
     it("`hidden` can succeed for a role selector that would otherwise pin the root", async () => {
       const { api } = makeSequencedAXService([axResponse([])]);
       const tool = createAwaitUiElementTool(iosRegistry(api));

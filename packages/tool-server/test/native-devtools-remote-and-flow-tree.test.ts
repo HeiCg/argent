@@ -65,11 +65,20 @@ describe("remoteIosHost.inspectRunningApp", () => {
 });
 
 describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
-  function registryWith(overrides: Partial<NativeDevtoolsApi>): Registry {
+  // The two accessors are derived from ONE connected set here, exactly as the
+  // real factory derives both from its `connections` map
+  // (`listConnectedBundleIds: () => [...connections.keys()]`, and
+  // `appConnectionState` returning `connected` iff `connections.has(id)`).
+  // Stubbing them independently lets a test assert a pairing the service cannot
+  // produce — a listed-but-unconnected app — and a diagnosis reached only that
+  // way is reached only by tests. Every unconnected state means an EMPTY
+  // connected set, so auto-targeting can never name the app whose state is the
+  // thing worth explaining; the id the flow launched is what makes it nameable.
+  function registryWith(connected: string[], overrides: Partial<NativeDevtoolsApi> = {}): Registry {
     const api = {
-      listConnectedBundleIds: () => [BUNDLE],
-      getAppState: async () => ({
-        bundleId: BUNDLE,
+      listConnectedBundleIds: () => connected,
+      getAppState: async (bundleId: string) => ({
+        bundleId,
         applicationState: "active",
         foregroundActiveSceneCount: 1,
         foregroundInactiveSceneCount: 0,
@@ -77,7 +86,8 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
         unattachedSceneCount: 0,
         isFrontmostCandidate: true,
       }),
-      appConnectionState: async () => "connected",
+      appConnectionState: async (bundleId: string) =>
+        connected.includes(bundleId) ? "connected" : "unregistered",
       ...overrides,
     } as unknown as NativeDevtoolsApi;
     return { resolveService: async () => api } as unknown as Registry;
@@ -86,12 +96,39 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
   it("raises the state's own remedy rather than a blanket relaunch", async () => {
     // `unregistered` is the case that matters: telling a flow author to relaunch
     // here sends them round a loop the app cannot exit.
-    const registry = registryWith({ appConnectionState: async () => "unregistered" });
+    const registry = registryWith([]);
 
-    await expect(queryFullHierarchyTree(registry, DEVICE)).rejects.toThrow(
+    await expect(queryFullHierarchyTree(registry, DEVICE, BUNDLE)).rejects.toThrow(
       /argent server stop && argent server start --detach/
     );
-    await expect(queryFullHierarchyTree(registry, DEVICE)).rejects.not.toThrow(/relaunch it/);
+    await expect(queryFullHierarchyTree(registry, DEVICE, BUNDLE)).rejects.not.toThrow(
+      /relaunch it/
+    );
+  });
+
+  it("keeps the auto-target error when the run never launched an app", async () => {
+    // A fragment brings the device to its entry state out of band, so there is
+    // no launched id to measure and the auto-target error — which names its own
+    // next steps — is still the best answer available.
+    const registry = registryWith([]);
+
+    await expect(queryFullHierarchyTree(registry, DEVICE)).rejects.toThrow(
+      /No native-devtools-connected apps are available for auto-targeting/
+    );
+  });
+
+  it("does not measure when auto-targeting resolved an app", async () => {
+    // The measurement is for the app the flow launched, not a second-guess of a
+    // resolution that succeeded: a connected app is connected by construction.
+    const appConnectionState = vi.fn(async () => "connected" as const);
+    const registry = registryWith([BUNDLE], {
+      appConnectionState,
+      queryViewHierarchy: async () => ({ windows: [] }),
+    } as unknown as Partial<NativeDevtoolsApi>);
+
+    await queryFullHierarchyTree(registry, DEVICE, BUNDLE);
+
+    expect(appConnectionState).not.toHaveBeenCalled();
   });
 
   it("degrades a rejected measurement instead of leaking the subprocess error", async () => {
@@ -99,15 +136,32 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
     // so a sim that goes away mid-run rejects here. The other consumers degrade
     // to `indeterminate`; a raw `Command failed: xcrun simctl spawn …` carries
     // none of the guidance the diagnosis does.
-    const registry = registryWith({
+    const registry = registryWith([], {
       appConnectionState: async () => {
         throw new Error("Command failed: xcrun simctl spawn UDID launchctl setenv");
       },
     });
 
-    await expect(queryFullHierarchyTree(registry, DEVICE)).rejects.toThrow(
+    await expect(queryFullHierarchyTree(registry, DEVICE, BUNDLE)).rejects.toThrow(
       /could not be inspected/
     );
-    await expect(queryFullHierarchyTree(registry, DEVICE)).rejects.not.toThrow(/Command failed/);
+    await expect(queryFullHierarchyTree(registry, DEVICE, BUNDLE)).rejects.not.toThrow(
+      /Command failed/
+    );
+  });
+
+  it("gives a system app the terminal reason instead of a measured remedy", async () => {
+    // The launch gate lets a non-injectable app through so a coordinate-driven
+    // flow still runs; selector resolution is where the missing hierarchy
+    // actually bites, so this is where it has to be said — and said terminally,
+    // since every measured state's remedy is a retry of something.
+    const registry = registryWith([]);
+
+    await expect(queryFullHierarchyTree(registry, DEVICE, "com.apple.Preferences")).rejects.toThrow(
+      /Apple system app/
+    );
+    await expect(
+      queryFullHierarchyTree(registry, DEVICE, "com.apple.Preferences")
+    ).rejects.not.toThrow(/argent server stop|restart-app/);
   });
 });

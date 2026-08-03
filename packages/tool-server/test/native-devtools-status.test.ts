@@ -1061,6 +1061,21 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     }
   });
 
+  // All six throw the identical terminal NATIVE_DEVTOOLS_NOT_INJECTABLE error
+  // for a com.apple.* bundle id, but only three said so — and this is the one
+  // outcome an agent can act on BEFORE spending a call, by picking a different
+  // approach off `tools/list`. Three tools describing the same precheck as
+  // having a terminal arm and three not is the shape that makes an agent
+  // believe the silent ones might work.
+  it("names the terminal system-app rejection on every tool that performs it", () => {
+    for (const tool of tools) {
+      expect(tool.description, `${tool.id} must name the system-app rejection`).toMatch(
+        /Apple system app is rejected outright/
+      );
+      expect(tool.description, `${tool.id} must mark it terminal`).toMatch(/never retry it/);
+    }
+  });
+
   it("tells native-devtools-status readers to wait out a connecting app", () => {
     expect(nativeDevtoolsStatusTool.description).toContain("If state is connecting:");
     expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app");
@@ -1145,6 +1160,22 @@ describe("native-* tool descriptions document every precheck outcome", () => {
       "argent server start"
     );
     expect(nativeDevtoolsStatusTool.description).toContain("argent server start");
+  });
+
+  // `not_running` is derived from the absence of a `UIKitApplication:<id>` row,
+  // and a bundle id that was never installed has no row either — so the state
+  // cannot tell "installed and stopped" from "not installed". Prescribing only
+  // launch-app makes it a loop of its own for the second case: `simctl launch`
+  // refuses, and the state's single remedy has already been spent. Naming the
+  // second reading is what gives that agent somewhere to go.
+  it("admits that not_running cannot see whether the app is installed", () => {
+    const message = buildAppStateMessage("com.nonexistent.TotallyFake", "not_running");
+
+    expect(message).toContain("launch-app");
+    expect(message).toMatch(/not installed/);
+    // The claim has to be scoped to this state's evidence, not asserted as a
+    // measurement it never took.
+    expect(message).toMatch(/cannot tell the two apart/);
   });
 
   // The skill doc is what an agent reads before it calls anything, and nothing

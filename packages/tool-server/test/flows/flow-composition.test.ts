@@ -258,20 +258,20 @@ describe("flow composition (run:)", () => {
     expect(result.ok).toBe(false);
   });
 
-  // An Apple system app is a platform binary with library validation: the dylib
-  // can never load into it. The launchd env that carries the bootstrap dylib is
-  // simulator-wide, though, so the process inherits the very tokens the
-  // measurement reads and scores as injected-but-unregistered — which sends the
-  // author off to restart a tool-server that was never at fault. The gate is
-  // handed the bundle id the flow named, so it rules that out itself and
-  // answers with the terminal reason rather than passing along a measurement
-  // whose every remedy is a retry.
-  it("gives a system-app launch the terminal reason, not a restart remedy", async () => {
+  // An Apple system app may not be able to load the dylib at all (a platform
+  // binary with library validation), so its hierarchy may never become
+  // readable. That is not a reason to fail the LAUNCH: the step's job is to
+  // start the app, it succeeded, and a flow that only ever taps by coordinate
+  // needs nothing else — which is exactly the shape `argent-create-flow` teaches
+  // its readers to record. Failing here stopped that flow at step one, while
+  // telling its author to "drive it by coordinate instead". The impossibility
+  // belongs where a selector actually needs the hierarchy.
+  it("lets a system-app launch through so a coordinate-driven flow still runs", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
       steps: [
         { kind: "launch", app: "com.apple.Preferences" },
-        { kind: "echo", message: "should never run" },
+        { kind: "tool", name: "gesture-tap", args: { x: 0.5, y: 0.35 } },
       ],
     });
 
@@ -282,12 +282,41 @@ describe("flow composition (run:)", () => {
       )
     );
 
-    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:error", "echo:skip"]);
-    expect(result.steps[0].reason?.match(/com\.apple\.Preferences/g)).toHaveLength(1);
-    expect(result.steps[0].reason).toMatch(/system app/i);
-    expect(result.steps[0].reason).not.toMatch(/argent server stop/);
-    expect(result.steps[0].reason).not.toMatch(/restart-app/);
-    expect(result.ok).toBe(false);
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:pass", "tool:pass"]);
+    expect(result.ok).toBe(true);
+  });
+
+  // The other half of letting the launch through: a SELECTOR step against the
+  // same app has to say why it cannot resolve, and say it terminally. This is
+  // also the only end-to-end proof that the launched bundle id reaches the tree
+  // source — auto-targeting resolves out of the connected list, so with nothing
+  // connected it cannot name the app, and the flow author would get the stock
+  // "Launch or restart the app first" auto-target text, which is the restart
+  // loop this measurement exists to break.
+  it("gives a selector step against a system app the terminal reason, not the auto-target text", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.apple.Preferences" },
+        { kind: "assert", selector: { text: "General" }, condition: "visible" },
+      ],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(mockRegistry()).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps[0].status).toBe("pass");
+    const reason = result.steps[1].reason ?? "";
+    expect(reason).toMatch(/Apple system app/);
+    expect(reason).toMatch(/com\.apple\.Preferences/);
+    // The auto-target text is what reached the author before the id was
+    // threaded, and its remedy is the loop.
+    expect(reason).not.toMatch(/auto-targeting/);
+    expect(reason).not.toMatch(/Launch or restart the app first/);
   });
 
   // The gate's own measurement had no coverage at all: replacing the whole
@@ -349,6 +378,60 @@ describe("flow composition (run:)", () => {
       vi.useRealTimers();
     }
   });
+
+  // `buildAppStateMessage` is written for the native-* tool surface, whose
+  // reader has not launched anything — so "call launch-app (or restart-app)" is
+  // the missing step there and the step's own action here. Emitted verbatim,
+  // every state but `unregistered` handed the flow author back the relaunch the
+  // launch step had just performed, which re-runs into the identical state.
+  // `not_running` is the sharpest: a relaunch is not merely redundant, it is
+  // what produced the state being reported.
+  it.each([
+    ["not_running", /exited after launch/i, /^(?!.*Call launch-app).*$/s],
+    ["stale_process", /re-run the flow/i, null],
+    ["indeterminate", /at most once more/i, null],
+    ["connecting", /same handshake/i, null],
+  ] as const)(
+    "rewrites the %s remedy for a caller that has just launched the app",
+    async (state, expected, absent) => {
+      await writeFlow("main", {
+        executionPrerequisite: "",
+        steps: [{ kind: "launch", app: "com.acme.app" }],
+      });
+      const registry = {
+        invokeTool: vi.fn(async (id: string) =>
+          id === "list-devices" ? { devices: [] } : { ok: true }
+        ),
+        getTool: vi.fn(() => undefined),
+        resolveService: vi.fn(async () => ({
+          isConnected: () => false,
+          listConnectedBundleIds: () => [],
+          appConnectionState: async () => state,
+        })),
+      } as unknown as Registry;
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        const pending = createRunFlowTool(registry).execute(
+          {},
+          { name: "main", project_root: tmpDir, device: DEVICE }
+        );
+        let settled = false;
+        void pending.then(() => (settled = true));
+        for (let i = 0; i < 200 && !settled; i++) {
+          await new Promise((resolve) => setImmediate(resolve));
+          await vi.advanceTimersByTimeAsync(250);
+        }
+        const result = asRun(await pending);
+
+        expect(result.steps[0].status).toBe("error");
+        expect(result.steps[0].reason).toMatch(expected);
+        if (absent) expect(result.steps[0].reason).toMatch(absent);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
 
   // The connection can land between the final poll and the measurement. Without
   // the `connected` short-circuit, buildAppStateMessage falls off its switch and

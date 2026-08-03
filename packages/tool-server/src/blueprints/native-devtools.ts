@@ -167,9 +167,20 @@ export function buildAppStateMessage(
 ): string {
   switch (state) {
     case "not_running":
+      // The evidence is the absence of a `UIKitApplication:<id>` row, and a
+      // bundle id that was never installed has no row either — so this state
+      // cannot tell "installed and stopped" from "not installed", and the
+      // launch it prescribes is unrunnable in the second case (`simctl launch`
+      // fails outright). Naming the second reading is what keeps that from
+      // becoming its own retry loop: the agent has somewhere to go when the
+      // remedy fails, instead of a state whose only advice has already been
+      // refused. Measuring it instead would take a `simctl get_app_container`
+      // round-trip that ios-remote cannot serve at all.
       return (
-        `${bundleId} is not running, so there is no injected process to read. ` +
-        `Call launch-app (or restart-app) then retry.`
+        `${bundleId} has no running process on this simulator, so there is no injected process to ` +
+        `read. Call launch-app (or restart-app) then retry. If that launch fails rather than ` +
+        `starting the app, the bundle id is not installed on this device — this state cannot tell ` +
+        `the two apart; install it and no relaunch will be needed.`
       );
     case "stale_process":
       return (

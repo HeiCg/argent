@@ -358,6 +358,42 @@ describe("describe tool", () => {
     expect(result.hint).toContain("do not keep restarting the app");
   });
 
+  // `bundleId` is optional, and without it `resolveNativeTargetApp` draws its
+  // candidates from the connected list — so every state the diagnosis exists to
+  // explain throws out of the resolution, before anything is measured, and the
+  // catch used to return the empty tree bare. That reads as "nothing on screen"
+  // rather than "could not be read", and it is the DEFAULT form of the call, so
+  // the two forms disagreed about the same device.
+  it("explains an unreadable empty screen even with no bundleId to measure", async () => {
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
+    const nativeApi = makeNativeDevtoolsApi({ connectedBundleIds: [], state: "unregistered" });
+    const registry = makeMockRegistry({ axService: axApi, nativeDevtools: nativeApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute({}, { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" });
+
+    expect(result.hint).toBeDefined();
+    expect(result.hint).toMatch(/not evidence that nothing is on screen/);
+    // No app was resolved, so no state was measured and no relaunch may be
+    // prescribed — the empty read is marked untrustworthy, nothing more.
+    expect(result.should_restart).toBeUndefined();
+  });
+
+  // A device with no native-devtools service at all is the other kind of
+  // arrival: nothing was there to corroborate the accessibility read and
+  // nothing was expected to, so it stands as taken. Marking THAT blind would
+  // make every genuinely-empty screen un-assertable as hidden.
+  it("leaves the read unqualified when there is no native-devtools service", async () => {
+    const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
+    const registry = makeMockRegistry({ axService: axApi });
+    const tool = createDescribeTool(registry);
+
+    const result = await tool.execute({}, { udid: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA" });
+
+    expect(result.hint).toBeUndefined();
+    expect(result.should_restart).toBeUndefined();
+  });
+
   it("does NOT return should_restart while the app is still connecting", async () => {
     // await-ui-element renders `should_restart` as "call restart-app and retry".
     // Exec is what starts the devtools dial, so obeying that mid-handshake
