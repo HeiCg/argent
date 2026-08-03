@@ -646,6 +646,12 @@ export async function settleTree(
     if (mode === "tree-only" || pixelsUnavailable) {
       return { tree: stableTree, converged: !pixelsTimedOut, treeFresh: true, visual };
     }
+    // The instant the pair converged, taken before the awaited support probe.
+    // On iOS a cold probe is a real `xcrun simctl` round trip, so the
+    // `not-attempted` capture arm below cannot assume this instant is "now" —
+    // it compares against this timestamp to tell a spent-before-convergence
+    // pixel window from one the probe itself consumed.
+    const pairConvergedAt = Date.now();
     const pixelSupport = await pixelCaptureSupportBefore(env, hardDeadline);
     if (pixelSupport === "aborted" || env.signal?.aborted) return undefined;
     if (pixelSupport === "not-attempted") {
@@ -698,17 +704,30 @@ export async function settleTree(
         : await capturePixelsBefore(env, pixelDeadline, pixelCaptureTimeoutMs(env.device, true));
     if (firstPixels === "aborted") return undefined;
     if (firstPixels === "not-attempted") {
-      // The pixel phase never started: the tree pair converged so close to the
-      // caller's deadline that `pixelDeadline` was already behind us before a
-      // capture could launch. No backend was consulted and zero time passed
-      // since the converged pair, so — exactly like the probe's not-attempted
-      // path above — the tree is still current for selector coordinates and no
-      // revalidation read is owed. Crucially this is not a pixel timeout:
-      // `visual` keeps its sticky value ("skipped" by default, or a prior
-      // round's verdict) because a phase that never ran must stay distinct
-      // from captures that were observed and never matched — the distinction
-      // snapshot degradation reporting keys on.
-      return { tree: stableTree, converged: false, treeFresh: true, visual };
+      // The pixel phase never started: `pixelDeadline` was already behind us
+      // before a capture could launch. What that means for freshness turns on
+      // when the window closed. A pair that converged with the window already
+      // spent (`pairConvergedAt >= pixelDeadline`) reached this point through
+      // a probe that answered in negligible time — at most the sub-reserve
+      // sliver left before the hard deadline — so the tree is still current
+      // for selector coordinates and no revalidation read is owed. But a pair
+      // that converged while pixel budget remained got here because the
+      // awaited probe consumed that budget (a cold iOS runtime-kind lookup is
+      // a real `xcrun simctl` round trip): unrevalidated time passed while
+      // the screen may have moved — morally the probe-`deadline` return
+      // above, merely resolving inside the final-read reserve instead of past
+      // it — so the tree must come back unsafe for acting callers. Either way
+      // this is not a pixel timeout: `visual` keeps its sticky value
+      // ("skipped" by default, or a prior round's verdict) because a phase
+      // that never ran must stay distinct from captures that were observed
+      // and never matched — the distinction snapshot degradation reporting
+      // keys on.
+      return {
+        tree: stableTree,
+        converged: false,
+        treeFresh: pairConvergedAt >= pixelDeadline,
+        visual,
+      };
     }
     if (firstPixels === "deadline") {
       pixelsConverged = false;

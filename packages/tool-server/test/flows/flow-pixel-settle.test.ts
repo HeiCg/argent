@@ -946,6 +946,62 @@ describe("pixel settle backstop", () => {
     expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
   });
 
+  it("marks the tree unsafe when a slow resolving iOS probe eats the pixel window", async () => {
+    vi.useFakeTimers();
+    const visible = screen([
+      n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+    ]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      return visible;
+    };
+    // A cold `getSimulatorRuntimeKind` is a real `xcrun simctl` round trip: it
+    // RESOLVES "mobile" at t=7300 — inside the 250ms final-read reserve of the
+    // 7500ms deadline, so the probe never times out, yet the pixel window
+    // (7250ms) is already behind us before a capture could launch.
+    mockGetSimulatorRuntimeKind.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve("mobile"), 7_050);
+        })
+    );
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+    const startedAt = Date.now();
+
+    let settledAt = -1;
+    const pending = settleTree(env, { absoluteDeadline: startedAt + 7_500 }).then((result) => {
+      settledAt = Date.now();
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(7_500);
+    const settled = await pending;
+
+    // The pair converged at t=250 and the only thing between it and this
+    // return is the awaited probe: 7050ms of unrevalidated time passed while
+    // the screen may have moved, exactly the staleness the probe-timeout twin
+    // above reports as not-fresh. Resolving just before the deadline instead
+    // of just after it cannot flip the verdict — the tree comes back unsafe
+    // for acting callers, best-effort, with the never-started pixel phase
+    // still "skipped" rather than "timed-out".
+    expect(settled).toEqual({
+      tree: visible,
+      converged: false,
+      treeFresh: false,
+      visual: "skipped",
+    });
+    // Returned at the probe's resolution (t=7300), not the deadline (t=7500):
+    // this is the resolved-probe arm, not the probe-timeout arm — and no
+    // capture was ever launched.
+    expect(settledAt - startedAt).toBe(7_300);
+    expect(mockGetSimulatorRuntimeKind).toHaveBeenCalledTimes(1);
+    expect(reads).toBe(2);
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+  });
+
   it.each(["tap", "long-press"] as const)(
     "dispatches a raw-coordinate %s when a slow matching read consumes the whole action deadline",
     async (kind) => {
