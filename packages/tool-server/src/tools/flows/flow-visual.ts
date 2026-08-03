@@ -186,8 +186,11 @@ async function settleSnapshot(env: ActionEnv): Promise<SnapshotSettleOutcome> {
       if (!(await sleepOrAbort(sleepMs, env.signal))) {
         return "aborted";
       }
-      // The sleep can land exactly on the deadline, and a zero-budget settle
-      // would misreport a healthy tree source as an outage.
+      // The sleep can land exactly on the deadline. A zero-budget settle is a
+      // doomed round — no read can start, so it can only throw
+      // FlowTreeSettleTimeoutError — and this tail is reached only
+      // stale-settled, where the catch below answers "settled" anyway; return
+      // that directly instead of paying for the wasted call.
       if (Date.now() >= deadline) return "settled";
     }
   } catch (err) {

@@ -1293,8 +1293,10 @@ async function resolveTargetPoint(
   if (typeof target.x === "number" && typeof target.y === "number") {
     const deadline = Date.now() + DEFAULT_ACTION_TIMEOUT_MS;
     for (;;) {
-      // A sleep can land exactly on the deadline, and a zero-budget settle
-      // would misreport a healthy tree source as an outage.
+      // A sleep can land exactly on the deadline. A zero-budget settle is a
+      // doomed round — no read can start, so it can only throw
+      // FlowTreeSettleTimeoutError, which the catch below turns into this same
+      // break to best-effort dispatch; skip the wasted call.
       if (Date.now() >= deadline) break;
       let settled: SettleResult | undefined;
       try {
