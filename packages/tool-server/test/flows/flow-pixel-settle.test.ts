@@ -860,6 +860,50 @@ describe("pixel settle backstop", () => {
     expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
   });
 
+  it("marks the carried tree unsafe when a later tree read outlives the read budget", async () => {
+    vi.useFakeTimers();
+    const visible = screen([
+      n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } }),
+    ]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      if (reads === 1) return visible;
+      // The second read hangs past the whole 7.5s read budget — an Android
+      // hierarchy source whose own budgets (getHierarchy 15s, a uiautomator
+      // dump 20s) happily let a read outlive our cliff.
+      return new Promise<DescribeNode>(() => {});
+    };
+    const env = {
+      registry: mockRegistry([]),
+      device: { platform: "android", id: "emulator-5554" },
+    } as unknown as ActionEnv;
+    const startedAt = Date.now();
+
+    let settledAt = -1;
+    const pending = settleTree(env).then((result) => {
+      settledAt = Date.now();
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(7_500);
+    const settled = await pending;
+
+    // The returned tree is the t=0 read — up to the full read budget old, and
+    // no second read ever confirmed it. Unlike the delivered slow read above,
+    // real unrevalidated time passed while the hung read was awaited, so the
+    // carried tree comes back explicitly not-fresh: best-effort for
+    // diagnostics, rejected by acting callers (scroll-to's stale-round skip).
+    expect(settled).toEqual({
+      tree: visible,
+      converged: false,
+      treeFresh: false,
+      visual: "skipped",
+    });
+    expect(settledAt - startedAt).toBe(7_500);
+    expect(reads).toBe(2);
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+  });
+
   it("skips the pixel phase when the tree converges inside the final-read reserve", async () => {
     vi.useFakeTimers();
     const visible = screen([

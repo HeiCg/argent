@@ -364,9 +364,10 @@ export interface SettleResult {
   converged: boolean;
   /**
    * True only when `tree` is safe to use for selector coordinates. A
-   * best-effort combined result can outlive the last successful read when a
-   * capture, an awaited capability probe, or a final tree read consumes the
-   * deadline; acting callers must reject it.
+   * best-effort result can outlive the last successful read when a capture,
+   * an awaited capability probe, or a final tree read consumes a combined
+   * settle's deadline — or, in either mode, when a mid-phase tree read
+   * outlives the source read budget; acting callers must reject it.
    */
   treeFresh: boolean;
   /**
@@ -604,7 +605,18 @@ export async function settleTree(
         if (lastTree === undefined) {
           throw noSuccessfulTreeRead(lastError);
         }
-        return { tree: lastTree, converged: false, treeFresh, visual };
+        // A read was genuinely awaited here and outlived the source read
+        // budget: unrevalidated time — up to that whole budget — passed since
+        // the carried tree was read, morally the same hung wait as a capture
+        // or capability probe consuming the deadline, so the tree must come
+        // back unsafe for acting callers (`scroll-to` skips the round and
+        // re-settles instead of dispatching off a screen no second read ever
+        // confirmed). The zero-time shape cannot smuggle a fresh tree through
+        // this return: every phase window is capped by the read budget, so a
+        // non-first poll only launches with budget open, and a phase's first
+        // read starting past it can hold no successful read — it throws
+        // above.
+        return { tree: lastTree, converged: false, treeFresh: false, visual };
       }
       if (reading.type === "error") {
         lastError = reading.error;
@@ -1115,9 +1127,10 @@ async function scrollToVisible(
     const settled = await settleTree(env, { mode: i === 0 ? "combined" : "tree-only" });
     if (!settled) return { aborted: true }; // settleTree only returns undefined on abort
     if (!settled.treeFresh) {
-      // Only round 0's combined settle can be stale (tree-only results are
-      // always fresh). Skip it and re-settle: not scrolling keeps the content
-      // in place, not fingerprinting keeps the end-of-scroll check honest.
+      // A stale settle — round 0's combined pixel wait, or any round's tree
+      // read outliving the read budget — is skipped and re-settled: not
+      // scrolling keeps the content in place, not fingerprinting keeps the
+      // end-of-scroll check honest.
       continue;
     }
     const tree = settled.tree;
