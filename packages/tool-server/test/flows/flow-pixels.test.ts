@@ -142,8 +142,12 @@ describe("pixelsDiffer", () => {
   it("mirrors screenshot-diff's DEFAULT_THRESHOLD (the documented invariant)", () => {
     // flow-pixels documents its per-pixel tolerance as mirroring
     // screenshot-diff's — pin the mirror so the two can only drift apart
-    // deliberately.
+    // deliberately, and the shared value itself so they cannot drift TOGETHER
+    // either. The behavioral pair above brackets the tolerance only loosely
+    // from above, so without this a coordinated loosening of both constants
+    // would widen the per-pixel gate — the whole motion oracle — silently.
     expect(PIXEL_THRESHOLD).toBe(DEFAULT_THRESHOLD);
+    expect(PIXEL_THRESHOLD).toBe(0.1);
   });
 
   it("ignores a handful of changed pixels below the motion fraction", () => {
