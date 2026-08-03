@@ -2432,4 +2432,100 @@ describe("pixel settle backstop", () => {
       fs.access(path.join(tmpDir, "__baselines__", "checkout", "home__ios-390x844.png"))
     ).resolves.toBeUndefined();
   });
+
+  it("degrades the baseline write when the stale-settled round's freshness retry burns its pixel budget", async () => {
+    // The integration join the settle taxonomy leans on: the REAL settleTree's
+    // pixel-loop timeout verdict (here its sleep-clamp arm — the poll sleep
+    // clamps to zero remaining pixel budget) must reach the REAL
+    // settleSnapshot's `visual === "timed-out"` branch, which overrides the
+    // earlier stale-but-settled round and lands the degradation note on the
+    // baseline write. Relabelling that arm's verdict would silently turn this
+    // into an undegraded bare "baseline written".
+    vi.useFakeTimers();
+    const shotPath = path.join(tmpDir, "pulse-snapshot.png");
+    const png = Buffer.alloc(24);
+    png.writeUInt32BE(390, 16);
+    png.writeUInt32BE(844, 20);
+    await fs.writeFile(shotPath, png);
+    const stable = screen([n({ label: "Go", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } })]);
+    let reads = 0;
+    currentTree = () => {
+      reads++;
+      // Round 1: reads 1–2 converge the tree phase; the post-pixel
+      // revalidation read (3) hangs past its window, so the settle comes back
+      // stale-but-settled ({ visual: "settled", treeFresh: false }). Every
+      // read after that — the freshness retry's converging pair and its
+      // revalidation — succeeds instantly.
+      return reads === 3 ? new Promise<DescribeNode>(() => {}) : stable;
+    };
+    const startedAt = Date.now();
+    let captures = 0;
+    vi.mocked(capturePixels).mockImplementation(() => {
+      captures++;
+      // Round 1: a matching pair — the screen looked still while the
+      // revalidation read hung.
+      if (captures <= 2) return Promise.resolve(solid([255, 255, 255]));
+      // Freshness retry: a perpetual animator. No capture ever matches
+      // another again, and the retry's first capture only delivers its frame
+      // at the exact instant the pixel budget (hardDeadline minus the
+      // final-read reserve, t0+7250) runs out — the next poll's sleep clamps
+      // to zero and the loop exits through the sleep-clamp timed-out arm
+      // before any warm capture runs.
+      const delay = Math.max(0, startedAt + 7_250 - Date.now());
+      return new Promise((resolve) => {
+        setTimeout(() => resolve(solid(captures % 2 === 1 ? [0, 0, 0] : [64, 64, 64])), delay);
+      });
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "screenshot") {
+          return {
+            image: {
+              __argentArtifact: true,
+              id: "pulse-current-snapshot",
+              hostPath: shotPath,
+              mimeType: "image/png",
+            },
+          };
+        }
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+    const env = {
+      registry,
+      ctx: { artifacts: new ArtifactStore() },
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+
+    const pending = runSnapshot(env, {
+      flowsDir: tmpDir,
+      flowName: "checkout",
+      name: "pulse",
+      maxMismatch: 0.5,
+      updateBaselines: true,
+    });
+    await vi.advanceTimersByTimeAsync(7_500);
+    const result = await pending;
+
+    // The retry's pixel phase launched a capture and never proved stillness
+    // strictly after the stale pair matched, so its honest timeout wins over
+    // the round-1 stale claim: the baseline still gets written, but the
+    // reason must carry the degradation note verbatim.
+    expect(result.status).toBe("pass");
+    expect(result.reason).toBe(
+      "baseline written (pulse__ios-390x844.png); " +
+        "capture is best-effort/degraded because visual settling timed out"
+    );
+    // Pins the driven path: round 1's matching pair plus exactly the one
+    // budget-consuming retry capture — the timed-out verdict came from the
+    // sleep-clamp arm, before any warm capture could run.
+    expect(captures).toBe(3);
+    // Two converging reads + hung revalidation, then the retry's converging
+    // pair + its successful revalidation — one retry round, nothing more.
+    expect(reads).toBe(6);
+    await expect(
+      fs.access(path.join(tmpDir, "__baselines__", "checkout", "pulse__ios-390x844.png"))
+    ).resolves.toBeUndefined();
+  });
 });
