@@ -2500,6 +2500,78 @@ describe("pixel settle backstop", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("degrades the baseline write when no hierarchy read ever completes", async () => {
+    // The other half of settleSnapshot's FlowTreeSettleTimeoutError catch. The
+    // test above pins the `staleSettled` arm — pixels proved still, only the
+    // confirming read hung, so the write stays undegraded. Here NOTHING ever
+    // established stillness: every hierarchy read hangs forever, the first
+    // settle's sole read consumes the whole shared 7.5s action budget, and
+    // settleTree throws FlowTreeSettleTimeoutError with `staleSettled` still
+    // false. The catch must answer "timed-out": the baseline is still adopted
+    // (the note is informational — status stays "pass"), but the reason must
+    // carry the degradation suffix. Answering "settled" instead would hand an
+    // --update-baselines run a bare "baseline written" for a screen no read
+    // or capture ever proved still — indistinguishable from a healthy one.
+    vi.useFakeTimers();
+    const shotPath = path.join(tmpDir, "hung-tree-snapshot.png");
+    const png = Buffer.alloc(24);
+    png.writeUInt32BE(390, 16);
+    png.writeUInt32BE(844, 20);
+    await fs.writeFile(shotPath, png);
+    currentTree = () => new Promise<DescribeNode>(() => {});
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "screenshot") {
+          return {
+            image: {
+              __argentArtifact: true,
+              id: "hung-tree-current-snapshot",
+              hostPath: shotPath,
+              mimeType: "image/png",
+            },
+          };
+        }
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+    const env = {
+      registry,
+      ctx: { artifacts: new ArtifactStore() },
+      device: { platform: "ios", id: DEVICE },
+    } as unknown as ActionEnv;
+    const startedAt = Date.now();
+
+    let settledAt = -1;
+    const pending = runSnapshot(env, {
+      flowsDir: tmpDir,
+      flowName: "checkout",
+      name: "hung-tree",
+      maxMismatch: 0.5,
+      updateBaselines: true,
+    }).then((result) => {
+      settledAt = Date.now();
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(7_500);
+    const result = await pending;
+
+    expect(result.status).toBe("pass");
+    expect(result.reason).toBe(
+      "baseline written (hung-tree__ios-390x844.png); " +
+        "capture is best-effort/degraded because visual settling timed out"
+    );
+    // The hung read was bounded at exactly DEFAULT_ACTION_TIMEOUT_MS — the
+    // caller-owned deadline settleSnapshot hands settleTree — and the tree
+    // phase threw before the pixel phase could start, so no capture ran:
+    // "timed-out" is the honest verdict, not a stillness anyone observed.
+    expect(settledAt - startedAt).toBe(DEFAULT_ACTION_TIMEOUT_MS);
+    expect(vi.mocked(capturePixels)).not.toHaveBeenCalled();
+    await expect(
+      fs.access(path.join(tmpDir, "__baselines__", "checkout", "hung-tree__ios-390x844.png"))
+    ).resolves.toBeUndefined();
+  });
+
   it("degrades the baseline write when the stale-settled round's freshness retry burns its pixel budget", async () => {
     // The integration join the settle taxonomy leans on: the REAL settleTree's
     // pixel-loop timeout verdict (here its sleep-clamp arm — the poll sleep
