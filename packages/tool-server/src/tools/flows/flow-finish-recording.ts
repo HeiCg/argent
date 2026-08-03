@@ -69,18 +69,11 @@ export const flowFinishRecordingTool: ToolDefinition<
     // Name the flow: other recordings stay live across this call, so an
     // unqualified "Finishing flow recording" would not identify which one.
     startedMsg: ({ params }) => `Finishing recording of flow ${params.name}`,
-    // Derived from the resolved path rather than `params.name` so the line
-    // reports the file that was actually written. Holds in client mode too:
-    // `path` is still the resolved spelling, it just names a file on the
-    // client's disk rather than this host's, and only its basename is read.
-    completedMsg: ({ result }) => {
-      const flowName =
-        result.path
-          .split(/[\\/]/)
-          .pop()
-          ?.replace(/\.ya?ml$/, "") ?? "flow";
-      return `Saved recorded flow ${flowName}`;
-    },
+    // `params.name` rather than the basename of `result.path`: the two are the
+    // same string on every branch — `assertSafeFlowName` admits no dots or
+    // separators, so `getFlowPath` produces `<name>.yaml` and nothing else —
+    // and this spelling matches the two formatters either side of it.
+    completedMsg: ({ params }) => `Saved recorded flow ${params.name}`,
     failedMsg: ({ params, failureSignal }) =>
       `Failed to finish recording of flow ${params.name}: ${failureSignal.error_code}`,
   },
@@ -152,12 +145,15 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
  * unrenderable step.
  *
  * The body interpolates rather than returning `JSON.stringify(args)` directly,
- * and that is load-bearing: `JSON.stringify(undefined)` is the VALUE
- * `undefined`, not a string, so a `tool:` step with no `args` would return
- * `undefined` through a `string`-typed signature (TypeScript does not catch it
- * — `JSON.stringify`'s overload is declared to return `string`). The template
- * literal renders it as the text "undefined" instead, which is what
- * {@link summarizeSteps} has always shown for that step.
+ * because `JSON.stringify(undefined)` is the VALUE `undefined`, not a string,
+ * and would leave through a `string`-typed signature uncaught (TypeScript does
+ * not flag it — `JSON.stringify`'s overload is declared to return `string`).
+ * No reachable input is undefined today: every caller comes through
+ * {@link summarizeSteps}, which is only ever handed `parseFlow` output, and
+ * `fromYamlStep` normalises a missing/`null` `args:` to `{}` on the way
+ * through. It is the `default:` arm of that switch this guards — a step kind
+ * added without its own `case` lands there and is rendered as a `tool:` step,
+ * with no `args` field to read.
  */
 function renderToolArgs(args: unknown): string {
   try {

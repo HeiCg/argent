@@ -110,6 +110,56 @@ describe("tool interaction messages", () => {
     );
   });
 
+  it("distinguishes a fresh recording start from a destructive restart", () => {
+    // A restart truncates and replaces a live take; if its message ever
+    // collapsed to the same wording as a fresh start (or reported a step
+    // count that was never actually obtained), an agent re-recording a flow
+    // would have no way to notice it just destroyed prior work.
+    const definitions = definitionsById(createRegistry());
+    const completedMsg = definitions.get("flow-start-recording")!.interaction!.completedMsg!;
+    const params = { name: "checkout", project_root: "/tmp/proj" };
+
+    expect(
+      completedMsg({
+        params,
+        result: { message: "", flowFile: "", savedTo: "project" },
+      })
+    ).toBe("Started recording flow checkout");
+
+    expect(
+      completedMsg({
+        params,
+        result: { message: "", flowFile: "", savedTo: "project", restarted: true },
+      })
+    ).toBe("Restarted recording flow checkout, discarding the previous take");
+
+    expect(
+      completedMsg({
+        params,
+        result: {
+          message: "",
+          flowFile: "",
+          savedTo: "project",
+          restarted: true,
+          discardedSteps: 1,
+        },
+      })
+    ).toBe("Restarted recording flow checkout, discarding 1 step");
+
+    expect(
+      completedMsg({
+        params,
+        result: {
+          message: "",
+          flowFile: "",
+          savedTo: "project",
+          restarted: true,
+          discardedSteps: 4,
+        },
+      })
+    ).toBe("Restarted recording flow checkout, discarding 4 steps");
+  });
+
   it("does not expose sensitive inputs", () => {
     const definitions = definitionsById(createRegistry());
     const secret = "INTERACTION_MESSAGE_SECRET";

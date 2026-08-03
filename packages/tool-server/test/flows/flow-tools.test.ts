@@ -1287,6 +1287,36 @@ describe("flow-add-step", () => {
     expect(flow.steps).toEqual([]);
   });
 
+  it("strips the devices list when recording a scoped teardown (device ids stay off disk)", async () => {
+    // stop-all-simulator-servers' `devices` names the recording host's device
+    // ids the same way a udid does; a recorded scoped teardown must not bake
+    // that host's ids into the flow, or replay on another host stops nothing.
+    const registry = createMockRegistry({
+      "stop-all-simulator-servers": { result: { stopped: 1 } },
+    });
+    const tool = createFlowAddStepTool(registry);
+
+    await flowStartRecordingTool.execute({}, { name: "teardown-test", project_root: tmpDir });
+    const result = await tool.execute(
+      {},
+      {
+        name: "teardown-test",
+        project_root: tmpDir,
+        command: "stop-all-simulator-servers",
+        args: JSON.stringify({ devices: ["00000000-HOST-DEVICE-ID"] }),
+      }
+    );
+
+    // Ran live with the real devices to stop…
+    expect(registry.invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", {
+      devices: ["00000000-HOST-DEVICE-ID"],
+    });
+    // …but the recorded step carries no device id, keeping the flow portable.
+    expect(parseFlow(result.flowFile).steps).toEqual([
+      { kind: "tool", name: "stop-all-simulator-servers", args: {} },
+    ]);
+  });
+
   it("propagates error when tool is not registered in the registry", async () => {
     const registry = createMockRegistry({}); // no tools registered
     const tool = createFlowAddStepTool(registry);
