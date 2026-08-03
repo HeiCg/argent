@@ -29,9 +29,15 @@ export const PIXEL_THRESHOLD = 0.1;
 const MAX_RGB_DISTANCE_SQUARED = 255 * 255 * 3;
 const PIXEL_THRESHOLD_SQUARED = PIXEL_THRESHOLD * PIXEL_THRESHOLD * MAX_RGB_DISTANCE_SQUARED;
 
-// Captures match when fewer than this fraction of pixels changed — above the
-// noise of a blinking cursor or small spinner, far below any screen-filling
-// transition.
+// Captures match when fewer than this fraction of pixels changed — and only
+// pixels that individually clear the per-pixel gate above (~25 levels/channel
+// between consecutive captures) count. That sits above the noise of a blinking
+// cursor or small spinner and catches localized motion and moving edges at any
+// speed, plus screen-filling changes whose per-interval rate clears the gate.
+// A spatially uniform change below that rate — a slow fade, dim, or tint, e.g.
+// a 600 ms fade to 0.25 opacity — shifts every pixel by the same sub-gate
+// amount and contributes zero counted pixels by construction: a documented
+// blindness, so the degradation note never fires for that class.
 const MOTION_FRACTION = 0.002;
 
 // `httpScreenshot` may spend its full first-frame wait before it even returns a
