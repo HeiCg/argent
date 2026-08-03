@@ -208,7 +208,7 @@ steps:
   - await: { visible: Model Name }
 ```
 
-> **Apple system apps (`com.apple.*`).** The example above targets Settings, which is convenient for a walkthrough. Argent's native devtools cannot be relied on to inject into an Apple system app — whether they do depends on the simulator runtime — and without them a flow has no view hierarchy, so `tap: { text: … }` / `await: { visible: … }` steps fail with a terminal reason. The `launch:` step itself still passes. For a flow you intend to keep, target an app you install; to drive a system app, replace the selector steps with coordinate `tool: gesture-tap` steps read off a `screenshot`.
+> **Apple system apps (`com.apple.*`).** The example above targets Settings, which is convenient for a walkthrough. Argent's native devtools cannot be relied on to inject into an Apple system app — whether they do depends on the simulator runtime — and without them a flow has no view hierarchy, so `tap: { text: … }` / `await: { visible: … }` steps fail with a terminal reason. The `launch:` step itself still passes. For a flow you intend to keep, target an app you install; to drive a system app, replace the selector steps with coordinate ones — `tap: { x: 0.5, y: 0.35 }` takes a point directly and reads no tree.
 
 Note there is **no device id** anywhere in the file — the recorder strips them and the runner injects the bound device.
 

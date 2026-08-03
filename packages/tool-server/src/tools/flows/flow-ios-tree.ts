@@ -298,20 +298,25 @@ async function unreadableHierarchyReason(
     );
   }
   const state = await nativeApi.appConnectionState(bundleId).catch(() => "indeterminate" as const);
-  // `connected` is unreachable: this is only called with an empty connected
-  // list, and the map behind that list is the same one `appConnectionState`
-  // reads first, with only microtasks in between — a connection arrives on a
-  // socket `data` macrotask, which cannot land inside that window. It is folded
-  // into the diagnosis rather than given a branch nothing can execute; the
-  // message reads correctly either way, since a connection that did appear
-  // makes the remedy a retry.
-  const diagnosis = state === "connected" ? "" : `${buildAppStateMessage(bundleId, state)} `;
+  if (state === "connected") {
+    // Reachable: `appConnectionState` re-reads the live connections map after
+    // its env re-apply and process probe — several simctl round-trips after the
+    // empty list that sent us here — precisely so a dial landing in that window
+    // is not reported as an app the service never registered. So the connection
+    // arrived mid-read, and the only thing wrong with this attempt is that it
+    // was taken too early.
+    return (
+      `native devtools reported no connected app while this tree was being read, but ${bundleId} is ` +
+      `connected now — the connection arrived mid-read. Retry: flows resolve selectors against the ` +
+      `full view hierarchy native devtools serve.`
+    );
+  }
   // The diagnosis already names the corrective action, and for `unregistered`
   // that action is a tool-server restart — telling a flow author to relaunch
   // there sends them round a loop the app cannot exit. The trailing sentence
   // says what the message is FOR: every caller here was resolving a selector,
   // and none of the measured remedies mentions why a tree read needed it.
-  return `${diagnosis}Flows resolve selectors against the full view hierarchy native devtools serve.`;
+  return `${buildAppStateMessage(bundleId, state)} Flows resolve selectors against the full view hierarchy native devtools serve.`;
 }
 
 /**
@@ -352,7 +357,7 @@ export async function queryFullHierarchyTree(
   // The empty list is tested directly rather than by catching and classifying
   // the throw: the failure code travels on a module-local symbol, so a
   // duplicate `@argent/registry` instance would read it as absent and silently
-  // fall back to the very message this replaces. Auto-targeting's OTHER errors
+  // fall back to the stock auto-target message. Auto-targeting's OTHER errors
   // — ambiguous frontmost, a lone connected app that isn't foreground-like —
   // arise only with a non-empty list, already name their own next step, and so
   // propagate unwrapped from the call below.

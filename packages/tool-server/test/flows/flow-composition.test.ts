@@ -564,10 +564,12 @@ describe("flow composition (run:)", () => {
       // "restarting cannot help" must not be the last word here.
       expect(result.steps[0].reason).toMatch(/cold start/i);
       expect(result.steps[0].reason).toMatch(/re-run the flow/i);
-      // The figure the author sizes that judgement against has to be the wait
-      // this gate actually performed — a literal that drifts from the constant
-      // tells them the step gave up seconds earlier or later than it did.
-      expect(result.steps[0].reason).toContain(`${NATIVE_READY_TIMEOUT_MS} ms`);
+      // The figure the author sizes that judgement against has to be the whole
+      // wait the step performed: the post-launch settle counts, because the
+      // connection is read off the live map and the poll checks it once before
+      // its first sleep. Quoting the poll alone understates it by the settle.
+      expect(result.steps[0].reason).toContain(`${LAUNCH_TO_VERDICT_MS} ms`);
+      expect(result.steps[0].reason).not.toContain(`${NATIVE_READY_TIMEOUT_MS} ms`);
     } finally {
       vi.useRealTimers();
     }
@@ -625,7 +627,29 @@ describe("flow composition (run:)", () => {
       const reason = flowLaunchGateReason("com.acme.app", "stale_process");
 
       expect(reason).toMatch(/predates whatever the relaunch would have given it/);
+      // One producer of this state carries THIS endpoint and is merely older
+      // than the listener, so the environment is not at fault on a first
+      // landing. The message may name it only for a repeat, which rules that
+      // producer out — so the blame must never precede the re-run advice.
+      const blame = reason.indexOf("launchd environment");
+      const rerun = reason.indexOf("re-run the flow");
+      expect(rerun).toBeGreaterThanOrEqual(0);
+      expect(blame === -1 || blame > rerun).toBe(true);
+      expect(reason).toMatch(/lands here twice/);
     });
+
+    // The figure every arm quotes is the whole spend, not the connect wait —
+    // the bug the previous round fixed in `not_running` and left in the two
+    // arms nothing asserted it on.
+    it.each(["not_running", "connecting", "unregistered"] as const)(
+      "quotes the whole launch-to-verdict spend in the %s remedy",
+      (state) => {
+        const reason = flowLaunchGateReason("com.acme.app", state);
+
+        expect(reason).toContain(`${LAUNCH_TO_VERDICT_MS} ms`);
+        expect(reason).not.toContain(`${NATIVE_READY_TIMEOUT_MS} ms`);
+      }
+    );
   });
 
   // The connection can land between the final poll and the measurement. Without

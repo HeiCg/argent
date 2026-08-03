@@ -243,8 +243,8 @@ async function waitForNativeDevtools(
   } catch (err) {
     // Same withholding as the timeout below, for the same reason: an app that
     // may never load the dylib was never going to be served by this service, so
-    // its failure is not what stops the launch. Without this, the one way a
-    // system-app launch could still fail was a service failure irrelevant to it.
+    // its failure is not what stops the launch — otherwise a service failure
+    // irrelevant to such an app is the one way its launch can still fail.
     if (!isInjectableBundleId(bundleId)) return null;
     return `the native-devtools service is unavailable for ${bundleId} (${errMsg(err)})`;
   }
@@ -258,7 +258,7 @@ async function waitForNativeDevtools(
   // Timed out with no connection. An app that may never load the dylib has no
   // hierarchy to wait for, so that is its expected outcome rather than a launch
   // failure: the step started the app, which is its job, and a flow that drives
-  // it by coordinate needs nothing more. Failing here denied that flow its first
+  // it by coordinate needs nothing more. Failing here denies that flow its first
   // step while telling its author to drive by coordinate. The impossibility
   // bites only where a selector needs the hierarchy, and `fetchFlowTree` reports
   // it there — a selector-driven flow still fails, just at the step that cannot
@@ -313,12 +313,18 @@ export function flowLaunchGateReason(
         `start it by hand (launch-app, then describe or screenshot) to see the crash or early exit first.`
       );
     case "stale_process":
-      // Deliberately does not pick between the state's two producers. One is a
-      // process carrying no argent injection at all; the other carries THIS
-      // endpoint and is merely older than the listener, so blaming the launchd
-      // environment would be false for it — and the measured text this wraps
-      // already names both. What is true after a launch either way is that the
-      // process predates something the next launch would pick up.
+      // The first sentence must not pick between the state's two producers:
+      // one is a process carrying no argent injection at all, the other carries
+      // THIS endpoint and is merely older than the listener, so blaming the
+      // launchd environment there would be false — and the measured text this
+      // wraps already names both. What holds after a launch either way is that
+      // the process predates something the next launch would pick up.
+      //
+      // The environment IS the right thing to name on a SECOND landing, and
+      // only there. A re-run relaunches the app now, so its process is younger
+      // than a listener that has been up any appreciable time — which rules the
+      // second producer out (it needs `processAge + grace >= listenerAge`).
+      // What is left is a relaunch that picked up no instrumentation at all.
       return (
         `${measured} This step already relaunched it, so the process it measured predates whatever the ` +
         `relaunch would have given it — re-run the flow to launch again. If it lands here twice, the ` +
@@ -328,12 +334,16 @@ export function flowLaunchGateReason(
     case "unregistered":
       // `unregistered` means the connection never arrived in the window this
       // gate waited. Everywhere else that window is the app's whole lifetime, so
-      // the verdict is unambiguous; here it is NATIVE_READY_TIMEOUT_MS after a
-      // launch this step performed, which a cold start (an RN build fetching its
+      // the verdict is unambiguous; here it is the launch this step performed
+      // plus what it then waited, which a cold start (an RN build fetching its
       // bundle) can outlast. The measured remedy would have the author restart a
       // healthy tool-server for an app that had simply not finished starting.
+      //
+      // The figure is the whole spend, not the poll alone: the connection is
+      // read off the live map, and the poll checks it once before its first
+      // sleep, so a dial landing during the post-launch settle is caught too.
       return (
-        `${measured} A cold start slower than the ${NATIVE_READY_TIMEOUT_MS} ms this step waited reads the ` +
+        `${measured} A cold start slower than the ${LAUNCH_TO_VERDICT_MS} ms this step waited reads the ` +
         `same way — if that is likely, re-run the flow to relaunch and wait again before restarting anything.`
       );
     case "connecting":
