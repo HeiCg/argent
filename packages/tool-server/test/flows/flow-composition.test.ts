@@ -286,6 +286,59 @@ describe("flow composition (run:)", () => {
     expect(result.ok).toBe(true);
   });
 
+  // The case above resolves connected, so the gate never reaches its verdict.
+  // This is the one that matters: a system app that never connects at all. The
+  // launch must STILL pass — the step started the app, and a coordinate flow
+  // needs nothing more — where every measured state would have failed it, and
+  // failed it with a remedy (relaunch, or restart the tool-server) that cannot
+  // apply to an app whose dylib may never load.
+  it("passes a system-app launch that never connects at all", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.apple.Preferences" },
+        { kind: "tool", name: "gesture-tap", args: { x: 0.5, y: 0.35 } },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => ({
+        isConnected: () => false,
+        listConnectedBundleIds: () => [],
+        // The launchd env carrying the bootstrap dylib is simulator-wide, so a
+        // system app's process inherits the injection tokens and scores as a
+        // live app the service merely never registered.
+        appConnectionState: async () => "unregistered" as const,
+      })),
+    } as unknown as Registry;
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const pending = createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      );
+      let settled = false;
+      void pending.then(() => (settled = true));
+      for (let i = 0; i < 200 && !settled; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+        await vi.advanceTimersByTimeAsync(250);
+      }
+      const result = asRun(await pending);
+
+      expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual([
+        "launch:pass",
+        "tool:pass",
+      ]);
+      expect(result.ok).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // The other half of letting the launch through: a SELECTOR step against the
   // same app has to say why it cannot resolve, and say it terminally. This is
   // also the only end-to-end proof that the launched bundle id reaches the tree
