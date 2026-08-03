@@ -544,6 +544,14 @@ describe("describe tool", () => {
     // and the native-devtools-status description.
     expect(result.hint).toMatch(/`screenshot`/);
     expect(result.hint).toContain(NON_INJECTABLE_NATIVE_WARNING);
+    // This hint is one of the agent-facing surfaces that must agree with the
+    // rest on HOW certain the injectability claim is (see the cross-surface
+    // check in native-devtools-status.test.ts). Whether the dylib loads into an
+    // Apple system app is not settled — #453 saw it fail on iOS 26.5, an E2E
+    // review saw it succeed on 18.5 — so no surface may claim impossibility,
+    // while all of them keep the terminal do-not-retry instruction.
+    expect(result.hint).not.toMatch(/can never (be injected|load|inject)/);
+    expect(result.hint).toMatch(/will NOT\s+help|cannot be relied on/);
   });
 
   it("keeps the degraded re-boot hint for a com.apple.* app when the ax-service is degraded", async () => {
