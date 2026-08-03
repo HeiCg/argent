@@ -354,6 +354,71 @@ describe("flow composition (run:)", () => {
     }
   });
 
+  // The gate consults the service before it withholds its verdict, so a service
+  // that cannot resolve at all was the one remaining way a system-app launch
+  // could still fail — on a failure that, by the pass-through's own reasoning,
+  // is irrelevant to an app the service was never going to serve.
+  it("passes a system-app launch even when native-devtools cannot resolve", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.apple.Preferences" },
+        { kind: "tool", name: "gesture-tap", args: { x: 0.5, y: 0.35 } },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => {
+        throw new Error("listen EADDRINUSE: address already in use /tmp/argent-nd-00000000.sock");
+      }),
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:pass", "tool:pass"]);
+    expect(result.ok).toBe(true);
+  });
+
+  // The control for the test above: an injectable app in the identical state
+  // must still fail, or the pass-through would be excusing every service
+  // failure rather than the one it reasons about.
+  it("still fails an injectable launch when native-devtools cannot resolve", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.acme.app" },
+        { kind: "tool", name: "gesture-tap", args: { x: 0.5, y: 0.35 } },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => {
+        throw new Error("listen EADDRINUSE: address already in use /tmp/argent-nd-00000000.sock");
+      }),
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps[0].status).toBe("error");
+    expect(result.steps[0].reason).toMatch(/native-devtools service is unavailable/);
+  });
+
   // The other half of letting the launch through: a SELECTOR step against the
   // same app has to say why it cannot resolve, and say it terminally. This is
   // also the only end-to-end proof that the launched bundle id reaches the tree
