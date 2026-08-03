@@ -64,6 +64,14 @@ function withChangedPixels(base: PixelFrame, count: number, color: number): Pixe
   return base;
 }
 
+/** Rewrite every pixel's alpha in place, returning the frame. */
+function withAlpha(base: PixelFrame, alpha: number): PixelFrame {
+  for (let i = 0; i < base.width * base.height; i++) {
+    base.data[i * 4 + 3] = alpha;
+  }
+  return base;
+}
+
 describe("pixelsDiffer", () => {
   it("reports no motion for two identical frames", () => {
     expect(pixelsDiffer(solid(30, 30, [10, 20, 30]), solid(30, 30, [10, 20, 30]))).toBe(false);
@@ -71,6 +79,34 @@ describe("pixelsDiffer", () => {
 
   it("reports motion when the whole frame changes", () => {
     expect(pixelsDiffer(solid(30, 30, [0, 0, 0]), solid(30, 30, [255, 255, 255]))).toBe(true);
+  });
+
+  it.each<[string, [number, number, number]]>([
+    ["red", [255, 0, 0]],
+    ["green", [0, 255, 0]],
+    ["blue", [0, 0, 255]],
+  ])("registers a full-frame change confined to the %s channel as motion", (_channel, color) => {
+    // Motion that lives in a single channel must clear the per-pixel gate on
+    // that channel's term alone — the other two contribute zero, so dropping
+    // any one term from the distance goes blind to exactly one of these.
+    expect(pixelsDiffer(solid(30, 30, [0, 0, 0]), solid(30, 30, color))).toBe(true);
+  });
+
+  it("registers a mid-amplitude blue-only change as motion (a navy scrim fading in over black)", () => {
+    // Black → navy #000080 moves only blue, and only by 128 — comfortably
+    // above the ~44 per-pixel tolerance without saturating the channel. The
+    // plausible real instance of single-channel motion the distance must see.
+    expect(pixelsDiffer(solid(30, 30, [0, 0, 0]), solid(30, 30, [0, 0, 128]))).toBe(true);
+  });
+
+  it("ignores a change confined to the alpha channel (a screen capture is opaque)", () => {
+    // Identical RGB, alpha 255 → 0 on every pixel: the docstring promises
+    // alpha is ignored, so this must read as still. This also pins the byte
+    // offsets — a comparator that read o+3 (alpha) where it meant o+2 (blue)
+    // would count every pixel here as changed.
+    expect(
+      pixelsDiffer(solid(30, 30, [10, 20, 30]), withAlpha(solid(30, 30, [10, 20, 30]), 0))
+    ).toBe(false);
   });
 
   it("treats a dimension change as motion (a resizing/rotating surface)", () => {
