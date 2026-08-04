@@ -129,25 +129,40 @@ describe("pixelsDiffer", () => {
     expect(pixelsDiffer(solid(30, 30, [0, 0, 0]), solid(30, 30, [120, 120, 120]))).toBe(true);
   });
 
-  it("stays still just below the per-pixel tolerance", () => {
-    // +25 on every channel is a distance of ~43.3, just under the tolerance of
-    // 0.1 × ~441 ≈ 44.2 — with the mid-band case above this brackets the
-    // threshold from both sides, so tightening it trips here and loosening it
-    // trips there.
-    expect(pixelsDiffer(solid(30, 30, [100, 100, 100]), solid(30, 30, [125, 125, 125]))).toBe(
+  it("brackets the per-pixel tolerance from both sides", () => {
+    // The tolerance is 0.03 × ~441.7 ≈ 13.25. A uniform +7 per channel is a
+    // distance of ~12.1 (just under) and +8 is ~13.9 (just over), so this pair
+    // pins the constant tightly: loosening it trips the second expectation and
+    // tightening it trips the first.
+    expect(pixelsDiffer(solid(30, 30, [100, 100, 100]), solid(30, 30, [107, 107, 107]))).toBe(
       false
     );
+    expect(pixelsDiffer(solid(30, 30, [100, 100, 100]), solid(30, 30, [108, 108, 108]))).toBe(true);
   });
 
-  it("mirrors screenshot-diff's DEFAULT_THRESHOLD (the documented invariant)", () => {
-    // flow-pixels documents its per-pixel tolerance as mirroring
-    // screenshot-diff's — pin the mirror so the two can only drift apart
-    // deliberately, and the shared value itself so they cannot drift TOGETHER
-    // either. The behavioral pair above brackets the tolerance only loosely
-    // from above, so without this a coordinated loosening of both constants
-    // would widen the per-pixel gate — the whole motion oracle — silently.
-    expect(PIXEL_THRESHOLD).toBe(DEFAULT_THRESHOLD);
-    expect(PIXEL_THRESHOLD).toBe(0.1);
+  it("registers two consecutive samples of a slow uniform cross-fade as motion", () => {
+    // The regression this tolerance exists at its current value for. A
+    // spatially uniform fade moves every pixel by the same amount, so it
+    // clears the per-pixel gate on all pixels or on none — MOTION_FRACTION is
+    // never the deciding term. These are two samples ~PIXEL_SETTLE_POLL_MS
+    // apart of a 2s indigo-over-white dismissal (9% of the fade), a per-channel
+    // delta of (16, 23, 12) — distance ~30.5. Above the current ~13.25 gate,
+    // but BELOW the ~44.2 a baseline-sized tolerance imposes, where the settle
+    // counted zero pixels and reported `settled` mid-animation while the
+    // overlay was still painted and still hit-testing.
+    expect(pixelsDiffer(solid(30, 30, [165, 128, 193]), solid(30, 30, [149, 105, 181]))).toBe(true);
+  });
+
+  it("stays independent of, and stricter than, screenshot-diff's DEFAULT_THRESHOLD", () => {
+    // The two tolerances are deliberately NOT mirrored: screenshot-diff holds
+    // a baseline stored across sessions/machines against a live capture and
+    // must absorb real drift, while this compares two captures from one live
+    // session, where a static screen reads back byte-identical. Pin the value
+    // so the gate — the whole motion oracle — cannot drift silently, and pin
+    // the direction so "restoring parity" is a deliberate act that trips a
+    // test rather than a quiet 3.3x widening of the cross-fade blind spot.
+    expect(PIXEL_THRESHOLD).toBe(0.03);
+    expect(PIXEL_THRESHOLD).toBeLessThan(DEFAULT_THRESHOLD);
   });
 
   it("ignores a handful of changed pixels below the motion fraction", () => {

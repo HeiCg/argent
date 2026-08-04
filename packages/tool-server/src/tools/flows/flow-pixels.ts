@@ -22,22 +22,44 @@ export interface PixelFrame {
 // ignores the scale and returns full-res — the comparison is scale-agnostic.)
 const CAPTURE_SCALE = 0.25;
 
-// Per-pixel RGB tolerance (mirrors screenshot-diff's DEFAULT_THRESHOLD — the
-// parity is pinned in test) so encoder / resample noise between two captures
-// never reads as motion.
-export const PIXEL_THRESHOLD = 0.1;
+// Per-pixel RGB tolerance, owned by the settle and deliberately NOT
+// screenshot-diff's DEFAULT_THRESHOLD: the two comparisons have different
+// noise floors. That one holds a baseline PNG stored across sessions, machines
+// and OS versions against a live capture, so it must tolerate real drift. This
+// one holds two captures ~PIXEL_SETTLE_POLL_MS apart from ONE live session
+// through one encoder, where a static screen normally reads back byte-identical
+// — both capture paths are lossless PNG and the CAPTURE_SCALE downscale is
+// deterministic. Borrowing the baseline tolerance put the gate at ~25.5
+// levels/channel, orders of magnitude above anything this comparison can
+// produce as noise, and that mattered because uniform change is all-or-nothing:
+// every pixel moves by the same amount, so it either all clears the gate or
+// none of it does and MOTION_FRACTION is never consulted (see below). At ~25.5
+// levels a cross-fade slower than ~1.4s counted exactly zero pixels and read as
+// settled mid-animation. ~7.6 levels/channel keeps a comfortable margin over
+// the +5/channel drift the tests treat as the noise floor while moving that
+// cliff out ~3.3x.
+export const PIXEL_THRESHOLD = 0.03;
 const MAX_RGB_DISTANCE_SQUARED = 255 * 255 * 3;
 const PIXEL_THRESHOLD_SQUARED = PIXEL_THRESHOLD * PIXEL_THRESHOLD * MAX_RGB_DISTANCE_SQUARED;
 
 // Captures match when fewer than this fraction of pixels changed — and only
-// pixels that individually clear the per-pixel gate above (~25 levels/channel
+// pixels that individually clear the per-pixel gate above (~7.6 levels/channel
 // between consecutive captures) count. That sits above the noise of a blinking
 // cursor or small spinner and catches localized motion and moving edges at any
 // speed, plus screen-filling changes whose per-interval rate clears the gate.
-// A spatially uniform change below that rate — a slow fade, dim, or tint, e.g.
-// a 600 ms fade to 0.25 opacity — shifts every pixel by the same sub-gate
-// amount and contributes zero counted pixels by construction: a documented
-// blindness, so the degradation note never fires for that class.
+//
+// This fraction is NOT what bounds spatially uniform change (a fade, dim, tint
+// or scrim, where every pixel moves by the same amount): such a change either
+// clears the per-pixel gate on 100% of pixels — 500x this fraction — or on none
+// of them, so the fraction is never the deciding term. Loosening it does not
+// widen that class; only the gate above does. What remains is a rate floor, not
+// a duration floor: a uniform change moving slower than the gate per sample
+// interval contributes zero counted pixels however long it runs or however much
+// of the screen it covers. At the current gate that is roughly a fade slower
+// than (its total RGB distance / 13.25) x PIXEL_SETTLE_POLL_MS — ~4.5s for a
+// full-contrast cross-fade, well past any conventional transition, but a
+// documented blindness still: for that class the settle reports `settled` and
+// the snapshot degradation note never fires.
 const MOTION_FRACTION = 0.002;
 
 // `httpScreenshot` may spend its full first-frame wait before it even returns a
