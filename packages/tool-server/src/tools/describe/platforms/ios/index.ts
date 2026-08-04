@@ -64,13 +64,13 @@ const PHYSICAL_IOS_AX_HINT =
   "This is the live accessibility tree of the frontmost app (or the home screen), read over " +
   "CoreDevice. The set of elements and their labels/values/traits are exact. Their ORDER and " +
   "FRAMES are not: the read starts from the device's current VoiceOver cursor, so each call " +
-  "returns the same elements rotated by one, and since the device exposes no per-element " +
+  "returns the same elements rotated by one, and since the read carries no per-element " +
   "geometry, every frame is synthesised from list position and therefore changes between calls. " +
   "Use this to learn WHAT is on screen, never WHERE. Locate anything you intend to tap with " +
   "screenshot first — screenshot is authoritative for positions — and do not compare two describe " +
   "results to decide whether the screen changed (use screenshot for that too). No element carries an " +
-  "`identifier`: the audit reports no accessibilityIdentifier, so an identifier selector matches " +
-  "nothing here — select by label/value/role instead.";
+  "`identifier`: this read does not surface accessibility identifiers, so an identifier selector " +
+  "matches nothing here — select by label/value/role instead.";
 
 // The frontmost app has no focusable elements when the phone is asleep or on the
 // lock screen: the audit walk finds nothing and returns an empty list, which is
