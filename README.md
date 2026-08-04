@@ -139,9 +139,12 @@ no manual step, no `sudo`.
   injecting a dylib through `simctl spawn`, which has no physical-device equivalent — a real device
   would need that dylib linked into a signed build. (The `debugger-*` and `react-profiler-*` family
   is a different mechanism — it talks to the app's JS runtime through Metro, not through the
-  device — so it is not gated here.) `native-profiler-*` is blocked by the same signing
-  requirement: `xctrace` only enumerates processes it is entitled to profile, so on a device with
-  no developer-signed app installed there is nothing to attach to. `settings-permissions` drives
+  device — so it is not gated here.) `native-profiler-*` is gated for a narrower reason: its iOS
+  capture path resolves the target process and bundle through `simctl spawn` and `simctl listapps`,
+  both simulator-only. The instrument itself is not the obstacle — `xctrace record --device`
+  attaches to a process on a tethered iPhone and returns symbolicated stacks with no code-signing
+  identity on the host — so this one is an unimplemented device path rather than a platform wall.
+  `settings-permissions` drives
   `simctl privacy`, which edits a simulator's TCC store on the host filesystem. A physical device
   exposes no equivalent switch: `devicectl` carries no privacy verb anywhere in its command tree
   (`device settings` covers appearance, audio, biometrics and reset), and installing a
