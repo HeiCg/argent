@@ -127,18 +127,29 @@ to remove or reorder steps.`,
       params.project_root,
       params.name,
       async () => {
-        // Count the take BEFORE the truncate destroys it, and count it where it
-        // actually lives: on disk in host mode, since a hand-edit made
-        // mid-recording is part of the take and the session's in-memory copy
-        // only catches up on the next append (see {@link countStepsOnDisk}). In
-        // client mode this host has no file and the in-memory copy IS the take.
-        const previous = getRecordingSession(params.project_root, params.name);
+        // Read the take being discarded ONCE, here, and drive both the
+        // `restarted` flag and its step count off that single read. Count it
+        // BEFORE the truncate destroys it, and where it actually lives: on disk
+        // in host mode, since a hand-edit made mid-recording is part of the take
+        // and the session's in-memory copy only catches up on the next append
+        // (see {@link countStepsOnDisk}). In client mode this host has no file
+        // and the in-memory copy IS the take.
+        //
+        // `replaced` is this read, NOT `startRecordingSession`'s return: in host
+        // mode two awaits (countStepsOnDisk, writeNewFlowFile) sit between them,
+        // and {@link evictIfOverCapacity} runs under some OTHER key's lock, so
+        // it can drop this key in that window. Reading `replaced` after the
+        // register would then see the key already gone and report a destructive
+        // restart — the file is already truncated — as a plain fresh start,
+        // discarding the count computed here. This read is inside our own key's
+        // lock, so it and the count agree.
+        const replaced = getRecordingSession(params.project_root, params.name) ?? null;
         const discardedSteps =
-          previous === undefined
+          replaced === null
             ? undefined
-            : previous.persist === "host"
-              ? await countStepsOnDisk(previous.filePath)
-              : previous.flow.steps.length;
+            : replaced.persist === "host"
+              ? await countStepsOnDisk(replaced.filePath)
+              : replaced.flow.steps.length;
 
         let savedTo: FlowSavedTo;
         if (persist === "host") {
@@ -147,7 +158,7 @@ to remove or reorder steps.`,
         } else {
           savedTo = clientFileDirective(filePath, flowFile);
         }
-        const replaced = startRecordingSession({
+        startRecordingSession({
           name: params.name,
           projectRoot: params.project_root,
           persist,

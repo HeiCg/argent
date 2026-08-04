@@ -330,8 +330,9 @@ async function startCaptureLocked(
     }
 
     // No await between here and `api.pendingChild = child`: if dispose() ran
-    // (shutdown) while this start was suspended above, abort now rather than
-    // spawn an encoder the teardown can no longer reap.
+    // (shutdown, or a stop-all-simulator-servers teardown of this device) while
+    // this start was suspended above, abort now rather than spawn an encoder the
+    // teardown can no longer reap.
     assertNotDisposed(api, "screen_recording_start");
     child = spawn(ffmpeg, ffmpegArgs({ outputFile, logoFile, graph }), {
       stdio: ["pipe", "ignore", "pipe"],
@@ -424,7 +425,8 @@ async function startCaptureLocked(
   if (params.pointer) {
     // Arm the touch visualizer before returning, so the very first interaction
     // is already drawn into the recording. Store the teardown first so a
-    // shutdown racing this await still restores the overlay. Best-effort: a
+    // shutdown (or a stop-all-simulator-servers teardown of this device) racing
+    // this await still restores the overlay. Best-effort: a
     // failure only costs the touch markers, surfaced as a warning at stop.
     api.pointerDisable = params.pointer.disable;
     api.pointerFailed = !(await params.pointer.enable());
