@@ -84,6 +84,7 @@ Decision order:
   If the user started Metro separately, ask whether to call `stop-metro` (specify the port if not 8081).
 - If tools provided by mcp-server are not sufficient and action can be done using `xcrun`, `adb`, or other commands, use the command. Examples: changing device options, performing a device action such as lock, shake, etc.
 - When waiting for an action, do not call `screenshot` repeatedly without a proper wait mechanism. Use the `await-ui-element` tool to block until the UI settles (e.g. wait for an element to become `visible`/`hidden`, or to contain expected `text`) instead of polling.
+- To confirm which screen a React Native app is on, use `screen-fingerprint` — it reads the app's focused navigation route. It answers only "which screen": it does not see a modal or system alert on top, and the route commits before the transition finishes animating.
   </general_rules>
 
 <react_native_detection>

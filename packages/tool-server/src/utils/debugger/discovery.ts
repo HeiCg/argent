@@ -6,6 +6,8 @@ export interface CDPTarget {
   description: string;
   webSocketDebuggerUrl: string;
   deviceName?: string;
+  /** Bundle id / package name of the app that registered the target (modern RN). */
+  appId?: string;
   /** Legacy inspector-proxy only. Its synthetic reload page reports "don't use". */
   vm?: string;
   reactNative?: {
@@ -33,6 +35,28 @@ export interface MetroInfo {
  * reports no pages) correctly reads as "no targets" instead of connecting to it.
  */
 const DECOY_VM = "don't use";
+
+/**
+ * Is a Metro dev server LISTENING on `port` — regardless of whether any app is
+ * currently attached to it? Probes `/status` only. Never throws.
+ *
+ * Deliberately not `discoverMetro`, which also requires at least one CDP
+ * target and throws `DEBUGGER_METRO_NO_TARGETS` otherwise. That distinction is
+ * the whole point here: a Metro serving ONE app has an empty target list for
+ * several seconds after that app is relaunched, so "no targets" is the normal
+ * post-launch state, not a down server. Callers that used discovery for this
+ * question therefore concluded "Metro is down" exactly when an app was coming
+ * back up — telling the author to start a server that was already running, and
+ * skipping the extended connect budget that window exists to cover.
+ */
+export async function metroServerRunning(port: number): Promise<boolean> {
+  try {
+    const res = await fetch(`http://localhost:${port}/status`);
+    return (await res.text()).includes("packager-status:running");
+  } catch {
+    return false;
+  }
+}
 
 export async function discoverMetro(port: number): Promise<MetroInfo> {
   let statusRes: Response;

@@ -50,6 +50,7 @@ import { networkRequestTool } from "../tools/network/network-request";
 import { createDescribeTool } from "../tools/describe";
 import { createAwaitUiElementTool } from "../tools/await-ui-element";
 import { createAwaitScreenIdleTool } from "../tools/await-screen-idle";
+import { createScreenFingerprintTool } from "../tools/screen-fingerprint";
 import { createReactProfilerStartTool } from "../tools/profiler/react/react-profiler-start";
 import { createReactProfilerStopTool } from "../tools/profiler/react/react-profiler-stop";
 import { createReactProfilerStatusTool } from "../tools/profiler/react/react-profiler-status";
@@ -148,6 +149,7 @@ export function createRegistry(): Registry {
   registry.registerTool(createDescribeTool(registry));
   registry.registerTool(createAwaitUiElementTool(registry));
   registry.registerTool(createAwaitScreenIdleTool(registry));
+  registry.registerTool(createScreenFingerprintTool(registry));
   registry.registerTool(createReactProfilerStartTool(registry));
   registry.registerTool(createReactProfilerStopTool(registry));
   registry.registerTool(createReactProfilerStatusTool(registry));
