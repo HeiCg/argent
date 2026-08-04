@@ -160,6 +160,36 @@ describe("tool interaction messages", () => {
     ).toBe("Restarted recording flow checkout, discarding 4 steps");
   });
 
+  it("names the flow in every recording-tool interaction line", () => {
+    // Recordings are concurrent, so several of these lines interleave in one log
+    // and an unqualified "flow recording" would not say which one died or
+    // finished. Only two of the twelve formatters on the four recording tools
+    // are pinned elsewhere (flow-start-recording.completedMsg above,
+    // flow-add-echo.completedMsg in the secrets test), so the other ten could
+    // silently revert to name-free wording. Hold every one to naming the flow —
+    // the property the concurrency support introduced — including the failure
+    // lines, which are the diagnostic when several recordings are live.
+    const definitions = definitionsById(createRegistry());
+    const name = "checkout";
+    const params = { name, project_root: "/tmp/proj", command: "gesture-tap", message: "note" };
+    const result = { message: "", flowFile: "", savedTo: "project" as const };
+
+    for (const id of [
+      "flow-start-recording",
+      "flow-add-step",
+      "flow-add-echo",
+      "flow-finish-recording",
+    ]) {
+      const i = definitions.get(id)!.interaction!;
+      expect(i.startedMsg!({ params }), `${id}.startedMsg`).toContain(name);
+      expect(i.completedMsg!({ params, result }), `${id}.completedMsg`).toContain(name);
+      expect(
+        i.failedMsg!({ params, error: new Error("raw error"), failureSignal }),
+        `${id}.failedMsg`
+      ).toContain(name);
+    }
+  });
+
   it("does not expose sensitive inputs", () => {
     const definitions = definitionsById(createRegistry());
     const secret = "INTERACTION_MESSAGE_SECRET";

@@ -158,12 +158,12 @@ describe("stop-simulator-server", () => {
     expect(registry.disposeService).toHaveBeenCalledWith("ChromiumCdp:chromium-cdp-9222");
   });
 
-  // Both stop tools resolve "which services does this device own" through one
-  // shared matcher. This tool used to look its URNs up with an exact,
-  // case-sensitive `services.get()`, which no-op'd on a mis-cased udid; stop-all
-  // took no device id at all and swept every matching namespace on the host, so
-  // there was no second opinion to compare against. Now that stop-all is scoped,
-  // the same spelling has to reach the same services through both.
+  // Both stop tools resolve "which services does this device own" through the
+  // one shared matcher in device-services.ts, so a given udid — whatever its
+  // case — reaches the same services through either. Case-insensitivity is the
+  // property that matters here: an exact `services.get()` would no-op on a
+  // mis-cased udid, leaving a device the caller believes it stopped still
+  // running while the scoped stop-all (which folds case) reaps it.
 
   it("matches a UDID case-insensitively, like the scoped stop-all does", async () => {
     // Agents pass through whatever spelling they were handed, and a case
@@ -222,6 +222,30 @@ describe("stop-simulator-server", () => {
     expect(registry.disposeService).toHaveBeenCalledOnce();
     expect(registry.disposeService).toHaveBeenCalledWith(`SimulatorServer:${udid}`);
   });
+
+  it("leaves an android device's devtools service alone", async () => {
+    // The android twin of the iOS narrowness case above, and the branch the
+    // rationale in device-services.ts covers but no prior test did.
+    // stop-simulator-server is the wedged-transport recovery, and
+    // AndroidDevtools is the tree source an Android recording's selector capture
+    // runs on — dropping it on a retry degrades another agent's flow to
+    // coordinate taps, exactly what the narrow set exists to prevent. An
+    // `emulator-N` serial classifies as android, so widening the android branch
+    // to include AndroidDevtools would dispose it here and fail this case.
+    const serial = "emulator-5554";
+    const services = new Map([
+      [`SimulatorServer:${serial}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`AndroidDevtools:${serial}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopSimulatorServerTool(registry);
+
+    const result = await tool.execute!({}, { udid: serial });
+
+    expect(result).toEqual({ stopped: true, udid: serial });
+    expect(registry.disposeService).toHaveBeenCalledOnce();
+    expect(registry.disposeService).toHaveBeenCalledWith(`SimulatorServer:${serial}`);
+  });
 });
 
 describe("stop-all-simulator-servers", () => {
@@ -245,6 +269,29 @@ describe("stop-all-simulator-servers", () => {
     expect(registry.disposeService).toHaveBeenCalledTimes(3);
     expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:AAA");
     expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:BBB");
+  });
+
+  it("leaves a service whose namespace is not device-owned untouched", async () => {
+    // The negative control for the unscoped sweep's namespace filter. Every
+    // blueprint registered today is device-owned, so nothing real is left out —
+    // but `isDeviceServiceUrn` is the only guard between this machine-wide stop
+    // (the session-end call every agent makes) and any future non-device
+    // service, or a namespace added to the list by mistake. A synthetic
+    // out-of-set URN pins that the sweep is namespace-scoped, not "dispose
+    // everything": degrade `isDeviceServiceUrn` to `return true` and this fails.
+    const services = new Map([
+      ["SimulatorServer:AAA", { state: ServiceState.RUNNING, dependents: [] }],
+      ["NotADeviceService:global-singleton", { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, {});
+
+    expect(result).toEqual({ stopped: ["SimulatorServer:AAA"] });
+    expect(registry.disposeService).toHaveBeenCalledOnce();
+    expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:AAA");
+    expect(registry.disposeService).not.toHaveBeenCalledWith("NotADeviceService:global-singleton");
   });
 
   // `stopped` is documented as "the services that were actually live and got
@@ -504,9 +551,12 @@ describe("stop-all-simulator-servers device scoping", () => {
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
-    // Upper-cased id against a lower-cased URN AND vice versa: passing the
-    // lower-cased spelling here would leave the upper/upper and lower/lower
-    // pairs matching, so only a contrived asymmetric mutation would be caught.
+    // MINE is upper-cased, and the snapshot pairs it against an upper-cased URN
+    // (`SimulatorServer:${MINE}`) and a lower-cased one
+    // (`NativeDevtools:${MINE.toLowerCase()}:tcp`) — so this exercises
+    // upper-id/upper-URN and upper-id/lower-URN. The reverse direction (a
+    // lower-cased id against an upper-cased URN) is covered by a separate case
+    // below; both must match for a case mismatch never to silently no-op.
     const result = await tool.execute!({}, { devices: [MINE] });
 
     expect(result).toEqual({
@@ -693,10 +743,11 @@ describe("stop-all-simulator-servers unmatched ids", () => {
 
   it("stops AXService and does not call a describe-only iOS session a typo", async () => {
     // An iOS session that only ran boot/launch/describe owns `AXService:<udid>`
-    // and nothing else — nothing cascades to it from SimulatorServer. While that
-    // namespace was outside the tool's set, the mandated session-end call both
-    // left the in-sim ax daemon (spawned --timeout 3600) running AND reported
-    // the perfectly correct UDID as unmatched, i.e. as a mistyped id.
+    // — and also `NativeDevtools:<udid>`, which bootIos and launch-app resolve
+    // unconditionally (omitted from this snapshot to isolate the AXService
+    // case). `AXService` is a device-owned namespace holding the in-sim ax
+    // daemon (spawned --timeout 3600), so a scoped stop reaps it AND does not
+    // report the correct UDID as unmatched: it owns a real service, not a typo.
     const services = new Map([
       [`AXService:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
     ]);
@@ -733,9 +784,9 @@ describe("stop-all-simulator-servers unmatched ids", () => {
   it("owns and stops a device whose only service is a screen recording", async () => {
     // ScreenRecordingSession holds an ffmpeg child, an MJPEG frame stream and
     // the touch-visualizer overlay it enabled on the device, and nothing
-    // cascades to it. While it was outside the namespace set, a session that
-    // ran screen-recording-start and then the mandated teardown left ffmpeg
-    // running and was told its correct serial was a mistyped id.
+    // cascades to it. It is a device-owned namespace, so a session that ran
+    // screen-recording-start is correctly reaped by a scoped stop and its
+    // serial is not reported as a mistyped id.
     const services = new Map([
       [`ScreenRecordingSession:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
     ]);
@@ -765,10 +816,11 @@ describe("stop-all-simulator-servers unmatched ids", () => {
 
   it("scopes the port-keyed debugger URNs to the right device", async () => {
     // JsRuntimeDebugger's URN interposes the Metro port: `<ns>:<port>:<id>`.
-    // Matched as `<ns>:<id>` it belongs to nobody, so a debugger-only session
-    // was reported unmatched while its bound port and Metro CDP socket stayed
-    // open. Both devices sit behind the SAME port, so this also pins that the
-    // port is not what the scoping keys on.
+    // Matched as `<ns>:<id>` it would belong to nobody, so a debugger-only
+    // session's serial would read as unmatched while its bound port and Metro
+    // CDP socket stayed open — the port-keyed match is what prevents that. Both
+    // devices sit behind the SAME port, so this also pins that the port is not
+    // what the scoping keys on.
     const services = new Map([
       [`JsRuntimeDebugger:8081:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
       [`JsRuntimeDebugger:8081:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],

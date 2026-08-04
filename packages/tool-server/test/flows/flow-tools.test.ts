@@ -617,6 +617,8 @@ describe("flow-add-step", () => {
     const result = await tool.execute(
       {},
       {
+        name: "compose-pinned",
+        project_root: tmpDir,
         command: "flow-execute",
         args: JSON.stringify({ name: "elsewhere", project_root: tmpDir, device: "ABC" }),
       }

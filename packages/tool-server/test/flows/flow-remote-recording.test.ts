@@ -139,9 +139,12 @@ describe("flow recording with a remote client (probe miss)", () => {
     const stepResult = await addStep.execute(
       {},
       {
+        name: "remote-flow",
+        project_root: CLIENT_ROOT,
         command: "flow-execute",
         args: JSON.stringify({ name: "sub", project_root: CLIENT_ROOT, device: "RECORD-TIME-ID" }),
-      }
+      },
+      remoteCtx()
     );
 
     const directive = stepResult.savedTo as { content: string };
