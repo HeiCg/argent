@@ -350,7 +350,8 @@ describe("flow-add-step tap selector capture", () => {
     const result = await recordTap({ x: 0.05, y: 0.5 });
 
     expect(result.message).toContain("covers most of the screen");
-    expect(result.message).toContain("it is a container, not a control");
+    expect(result.message).toContain("a container is indistinguishable from a control");
+    expect(result.message).toContain("not the full-screen container it sits in");
     // The point reproduces the tap; the container selector would not. Keeping
     // it beats recording a step that fires 45% of the screen away.
     expect(await recordedSteps()).toEqual([{ kind: "tap", x: 0.05, y: 0.5 }]);
