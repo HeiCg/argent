@@ -54,8 +54,20 @@ import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flo
 import { describeVega } from "../describe/platforms/vega";
 import { pinStatusBar, restoreStatusBar } from "../../utils/status-bar";
 
+// `flow_name` is the parameter name callers reach for — the tool is
+// `flow-execute`, so "the flow's name" spells itself that way. Getting it
+// wrong used to return raw Zod JSON
+// (`[{"expected":"string","code":"invalid_type","path":["name"]}]`), which
+// names the field it wanted but not the one that was sent. Accept the alias
+// instead of spending a turn on a rename.
 const zodSchema = z.object({
-  name: z.string().describe('Name of the flow to run (e.g. "settings-explore")'),
+  name: z
+    .string()
+    .optional()
+    .describe(
+      'Name of the flow to run (e.g. "settings-explore"). `flow_name` is accepted as an alias.'
+    ),
+  flow_name: z.string().optional().describe("Alias for `name`."),
   project_root: z
     .string()
     .describe(
@@ -94,6 +106,35 @@ const zodSchema = z.object({
 });
 
 type Params = z.infer<typeof zodSchema>;
+
+/**
+ * The flow name, from `name` or its alias. Required, but deliberately not by
+ * the schema: a Zod `required` failure names the field it wanted and never
+ * the one the caller actually sent, which is the whole reason the alias
+ * exists.
+ *
+ * The message has to name the rejected spellings itself. Every other tool's
+ * schema error closes with the caller's own keys ("You sent: `udidd`, …"), but
+ * this check runs AFTER zod has stripped the unknown ones, so a caller who
+ * wrote `flowName` is no longer distinguishable here from one who sent no name
+ * at all — and the bare version of this text left that caller with nothing
+ * saying their key had been dropped.
+ */
+function resolveFlowName(params: Params): string {
+  // `||`, not `??`: an empty `name` is not a name, and must not mask a valid
+  // alias — rejecting the call while pointing at the field it ignored is the
+  // exact confusion the alias exists to prevent.
+  const name = params.name || params.flow_name;
+  if (name === undefined || name === "") {
+    throw new Error(
+      "flow-execute needs the flow's name in `name` (`flow_name` is accepted as an alias) — " +
+        "it resolves <project_root>/.argent/flows/<name>.yaml. No other spelling is read: " +
+        "`flowName`, `flow`, and `flow_file` are discarded before the tool runs, so this is " +
+        "also what you get when the name was sent under one of those."
+    );
+  }
+  return name;
+}
 
 const fileInputs: FileInputSpec[] = [
   { target: "flow_file", path: "${project_root}/.argent/flows/${name}.yaml", kind: "file" },
@@ -481,7 +522,11 @@ returns a notice with the prerequisite instead of running.`,
     services: () => ({}),
     async execute(_services, params, ctx?: ToolContext) {
       const signal = ctx?.signal;
-      const filePath = resolveFlowFilePath(params, ctx?.fileInputs?.flow_file);
+      const flowName = resolveFlowName(params);
+      const filePath = resolveFlowFilePath(
+        { ...params, name: flowName },
+        ctx?.fileInputs?.flow_file
+      );
       const flowsDir = path.dirname(filePath);
       const flow = parseFlow(await fs.readFile(filePath, "utf8"));
 
@@ -489,7 +534,7 @@ returns a notice with the prerequisite instead of running.`,
       // launch step cannot declare one — validated at parse).
       if (flow.executionPrerequisite && !params.prerequisiteAcknowledged) {
         return {
-          flow: params.name,
+          flow: flowName,
           notice:
             "This flow has an execution prerequisite that must be fulfilled before it can run. " +
             "Verify the prerequisite is met and call flow-execute again with prerequisiteAcknowledged set to true.",
@@ -521,7 +566,7 @@ returns a notice with the prerequisite instead of running.`,
       const state: ExecState = {
         ...env,
         flowsDir,
-        topFlowName: params.name,
+        topFlowName: flowName,
         updateBaselines: Boolean(params.updateBaselines),
         reports: [],
         stopped: false,
@@ -534,8 +579,8 @@ returns a notice with the prerequisite instead of running.`,
       let aborted: boolean;
       try {
         await execSteps(state, flow.steps, {
-          flow: params.name,
-          runStack: [params.name],
+          flow: flowName,
+          runStack: [flowName],
           depth: 0,
         });
       } finally {
@@ -547,7 +592,7 @@ returns a notice with the prerequisite instead of running.`,
         if (resolved.booted) await teardownBootedChromium(registry, resolved.booted);
       }
 
-      return summarize(params.name, device.id, flow.executionPrerequisite, state.reports, aborted);
+      return summarize(flowName, device.id, flow.executionPrerequisite, state.reports, aborted);
     },
   };
 }
