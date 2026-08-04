@@ -664,6 +664,44 @@ describe("flow-file writes as seen by a concurrent reader", () => {
     expect(listActiveRecordings()).toEqual([]);
   });
 
+  it("cleans up the scratch file and names the flow when the WRITE half fails", async () => {
+    // The "failed swap" case above reaches only `fs.rename`; a read-only dir
+    // fails even earlier, at the temp open, before a file exists. Neither
+    // exercises the other live trigger the cleanup exists for: the write itself
+    // failing (ENOSPC / EIO) with the scratch file ALREADY created. Force
+    // exactly that — write the real temp file, then throw — and assert both that
+    // the scratch file is swept and that the surfaced error names the flow file
+    // rather than the internal `.argent-flow-*.tmp` path (which is gone by then).
+    const root = await makeRoot("write-fails");
+    const target = flowPath(root, "alpha");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+
+    const realWriteFile = fs.writeFile;
+    const spy = vi.spyOn(fs, "writeFile").mockImplementationOnce(async (p, data, opts) => {
+      await realWriteFile(p as Parameters<typeof realWriteFile>[0], data as string, opts as never);
+      const err: NodeJS.ErrnoException = new Error(
+        `ENOSPC: no space left on device, write ${String(p)}`
+      );
+      err.code = "ENOSPC";
+      throw err;
+    });
+
+    const err = await start(root, "alpha").catch((e: unknown) => e);
+    spy.mockRestore();
+
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    // Names the flow file and the directory (the real cause), not the scratch path.
+    expect(message).toContain(target);
+    expect(message).not.toMatch(/\.argent-flow-\d+-\d+\.tmp/);
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_FILE_WRITE_FAILED);
+
+    // The half-written scratch file must not survive in the committed flows dir.
+    const entries = await fs.readdir(path.dirname(target));
+    expect(entries.filter((e) => e.endsWith(".tmp"))).toEqual([]);
+    expect(listActiveRecordings()).toEqual([]);
+  });
+
   it("never exposes an empty or unparseable file while appends are in flight", async () => {
     // The property the two inode assertions above encode, observed the way a
     // reader actually experiences it: poll the path as fast as the event loop
@@ -1364,6 +1402,63 @@ describe("the concurrent-recording cap", () => {
     const late = await captureFailure(addEcho(root, "rec-0", "late"));
     expect(getFailureSignal(late)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
     expect(getFailureSignal(late)?.failure_stage).toBe("flow_require_recording");
+  });
+
+  it("reports a destructive restart even when eviction drops the key mid-restart", async () => {
+    // A restart reads the take it is discarding ONCE, at the top of its critical
+    // section, and drives BOTH `restarted` and `discardedSteps` off that read.
+    // It must not re-derive `restarted` from the map after the truncate:
+    // `evictIfOverCapacity` runs under another key's lock and can drop this key
+    // in the window between the read and the register, and a `restarted` read
+    // there would see the key already gone and report a restart that truncated a
+    // real take (its file already reset) as a plain fresh start.
+    const root = await makeRoot("restart-evict-race");
+    const names = await fillRecordings(root);
+
+    // rec-0 holds a real step and is the least-recently-used entry: record the
+    // step first, then touch every other recording, so rec-0's last use is
+    // oldest and the next overflow evicts exactly it.
+    await addStep(root, "rec-0", "real");
+    for (const name of names.slice(1)) await addEcho(root, name, "touch");
+
+    // Park rec-0's restart on its own `countStepsOnDisk` read — after it has
+    // captured the live session, before it truncates or re-registers.
+    const target = flowPath(root, "rec-0");
+    const arrived = openGate();
+    const held = openGate();
+    let gated = false;
+    const realReadFile = fs.readFile;
+    const spy = vi.spyOn(fs, "readFile").mockImplementation((async (
+      p: unknown,
+      ...rest: unknown[]
+    ) => {
+      if (!gated && String(p) === target) {
+        gated = true;
+        arrived.open();
+        await held.promise;
+      }
+      return (realReadFile as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
+    }) as unknown as typeof fs.readFile);
+
+    const restarting = start(root, "rec-0");
+    await arrived.promise;
+
+    // A 33rd recording overflows the cap and evicts the LRU — rec-0's key —
+    // while the restart is parked with rec-0's live session already captured.
+    await start(root, "overflow");
+    expect(getRecordingSession(root, "rec-0")).toBeUndefined();
+
+    held.open();
+    const res = await restarting;
+    spy.mockRestore();
+
+    // The take really was destroyed…
+    expect(await readMarkers(root, "rec-0")).toEqual([]);
+    // …and the result says so, rather than collapsing to a plain fresh start.
+    // Reading `restarted` from `startRecordingSession`'s post-eviction return
+    // instead leaves `restarted` undefined here, so this separates the two.
+    expect(res.restarted).toBe(true);
+    expect(res.discardedSteps).toBe(1);
   });
 });
 
