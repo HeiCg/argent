@@ -526,10 +526,6 @@ If a step was recorded by mistake, edit the .yaml file directly to remove it.`,
         step = { kind: "launch", app: strippedArgs.bundleId as string };
       } else if (runTarget?.flow) {
         step = { kind: "run", flow: runTarget.flow };
-        // A resolved target can still carry a warning (a same-named sibling in
-        // another project), so this branch surfaces it too — not only the
-        // kept-the-raw-step one below.
-        warning = runTarget.warning;
       } else {
         warning = runTarget?.warning;
         // The step ran live with the full args (incl. the device id), but the

@@ -143,6 +143,14 @@ function extractDeviceArg(data: unknown): string | null {
   const record = data as Record<string, unknown>;
   if (typeof record.udid === "string") return record.udid;
   if (typeof record.device_id === "string") return record.device_id;
+  // `devices: string[]` is a third spelling, used only by
+  // `stop-all-simulator-servers`' scoped teardown. A call can name several
+  // devices of different platforms; the first is enough for the coarse
+  // telemetry platform. It never reaches the capability gate — that tool
+  // declares no capability — so this is a telemetry-only refinement.
+  if (Array.isArray(record.devices) && typeof record.devices[0] === "string") {
+    return record.devices[0];
+  }
   return null;
 }
 
@@ -199,9 +207,10 @@ function extractInvocationMeta(
 
 /**
  * Telemetry platform from a tool call's device arg, or null when it carries none.
- * A `udid` / `device_id` resolves through the runtime-kind cache and refines to
- * `tvos` / `android-tv` once that cache is warm (coarse `ios` / `android` until
- * then); only the `avdName`-only fallback is unconditionally coarse.
+ * A `udid` / `device_id` (or the first of a scoped stop-all's `devices`) resolves
+ * through the runtime-kind cache and refines to `tvos` / `android-tv` once that
+ * cache is warm (coarse `ios` / `android` until then); only the `avdName`-only
+ * fallback is unconditionally coarse.
  */
 function platformFromArgs(data: unknown): TelemetryPlatform | null {
   if (!data || typeof data !== "object") return null;
@@ -737,11 +746,14 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // Cross-platform tools double-check inside their dispatch helper, so
       // non-HTTP callers (run-sequence, flow-run) are also covered.
       //
-      // Tools spell the device parameter two ways — `udid` (legacy iOS-only
-      // tools and gestures) and `device_id` (debugger / profiler / network
-      // tools). Honour both so an Android serial reaching an iOS-only
-      // device_id-tool is rejected at the gate instead of falling through
-      // to the deeper blueprint error (which surfaces as a generic 500).
+      // Tools spell the device parameter three ways — `udid` (legacy iOS-only
+      // tools and gestures), `device_id` (debugger / profiler / network tools),
+      // and `devices` (only `stop-all-simulator-servers`' scoped teardown).
+      // `extractDeviceArg` honours all three so an Android serial reaching an
+      // iOS-only device_id-tool is rejected at the gate instead of falling
+      // through to the deeper blueprint error (which surfaces as a generic 500).
+      // Only the first two ever reach this gate — the `devices` tool declares no
+      // capability — but the third is read the same way for telemetry platform.
       const deviceArg = extractDeviceArg(parsedData);
       if (def.capability && deviceArg) {
         try {

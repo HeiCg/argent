@@ -15,13 +15,16 @@ import { REACT_PROFILER_SESSION_NAMESPACE } from "../../blueprints/react-profile
 /**
  * Which services one device id owns — the single definition of that mapping,
  * shared by `stop-simulator-server` (one device, transport scope) and
- * `stop-all-simulator-servers` (every device-owned service). The two tools had
- * two separate matchers that drifted apart: one was case-sensitive and blind to
- * the `:tcp` suffix, so the same udid reaped different services depending on
- * which tool the agent reached for.
+ * `stop-all-simulator-servers` (every device-owned service). Both resolve a
+ * URN through one matcher here, so a given udid resolves to the same URNs for
+ * either tool — case-insensitively, and with the `:tcp` suffix understood.
  *
- * Note this unifies how a URN is matched, not how a raw id is classified:
- * `stop-simulator-server` still picks its namespace set from
+ * This unifies how a URN is MATCHED, not which namespaces each tool sweeps:
+ * `stop-simulator-server` deliberately scopes to the transport session (see
+ * {@link transportNamespacesForPlatform}) while `stop-all-simulator-servers`
+ * takes every {@link DEVICE_OWNED_NAMESPACES} entry, so the same udid still
+ * reaps a different SET through each tool — by design. Nor does it unify how a
+ * raw id is CLASSIFIED: `stop-simulator-server` picks its namespace set from
  * `resolveDevice().platform`, whose prefix tests are case-SENSITIVE, so an id
  * spelled in the wrong case can still land on the wrong namespace set there.
  */
@@ -107,9 +110,13 @@ const PORT_KEYED_NAMESPACES: readonly string[] = [
  *   on-device perfetto process plus its trace file.
  * - `JsRuntimeDebugger` owns a bound loopback HTTP/WebSocket server, the CDP
  *   socket to Metro, and a log file handle.
- * - `ChromiumJsRuntimeDebugger` owns the same, plus its captured console
- *   history. Its dependency (`ChromiumCdp`) is listed here too, so a scoped
- *   stop reaches it twice over — as it does the two `JsRuntimeDebugger`
+ * - `ChromiumJsRuntimeDebugger` owns a bound loopback server, a log handle and
+ *   its captured console history — but NOT the CDP socket: its `dispose()`
+ *   deliberately leaves that to `ChromiumCdp` (and there is no Metro on the
+ *   chromium path). That is precisely why the narrowness note below holds —
+ *   disposing `ChromiumCdp` cascades to this one BECAUSE this one does not own
+ *   the transport. Its dependency (`ChromiumCdp`) is listed here too, so a
+ *   scoped stop reaches it twice over — as it does the two `JsRuntimeDebugger`
  *   dependents, whose own dependency is equally listed. All three are here for
  *   the naming, not for the reaping. What is particular to this one is its URN
  *   SHAPE: `<ns>:<deviceId>`, not port-keyed like the other two dependents, so

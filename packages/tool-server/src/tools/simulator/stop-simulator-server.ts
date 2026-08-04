@@ -39,11 +39,11 @@ export function createStopSimulatorServerTool(
       const snapshot = registry.getSnapshot();
       let stopped = false;
       // Scanned rather than looked up by exact URN, so this agrees with
-      // `stop-all-simulator-servers` on which services a device id owns. The
-      // live difference is case: an exact `services.get()` silently no-op'd on
-      // a lower-cased UDID that the scoped stop-all reaped. (The shared matcher
-      // also understands the `:tcp` suffix, which no namespace in this tool's
-      // set currently emits — it costs nothing and keeps one grammar.)
+      // `stop-all-simulator-servers` on which services a device id owns — in
+      // particular the match is case-insensitive, where an exact
+      // `services.get()` would silently no-op on a lower-cased UDID. (The shared
+      // matcher also understands the `:tcp` suffix, which no namespace in this
+      // tool's set currently emits — it costs nothing and keeps one grammar.)
       const urns = [...snapshot.services.keys()].filter(
         (urn) => deviceIdOwningUrn(urn, namespaces, [udid]) !== undefined
       );
