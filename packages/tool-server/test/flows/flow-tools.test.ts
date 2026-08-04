@@ -22,6 +22,15 @@ import {
   type FlowStep,
 } from "../../src/tools/flows/flow-utils";
 
+/**
+ * The flow as PERSISTED. The recorder deliberately no longer returns the whole
+ * growing YAML per step (it was the single largest consumer of a session's
+ * context), so the file on disk is the assertion surface.
+ */
+async function onDisk(name: string, root = tmpDir): Promise<string> {
+  return fs.readFile(path.join(root, ".argent", "flows", `${name}.yaml`), "utf8");
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function assertFlowRunResult(
@@ -238,7 +247,10 @@ describe("flow-start-recording edge cases", () => {
       {},
       { name: "same-flow", project_root: tmpDir, message: "new take" }
     );
-    expect(parseFlow(echo.flowFile).steps).toEqual([{ kind: "echo", message: "new take" }]);
+    expect(echo.stepCount).toBe(1);
+    expect(parseFlow(await onDisk("same-flow")).steps).toEqual([
+      { kind: "echo", message: "new take" },
+    ]);
   });
 
   it("does not report a restart when the flow was not already recording", async () => {
@@ -266,7 +278,7 @@ describe("flow-add-echo", () => {
     );
 
     expect(result.message).toContain("echo-test");
-    const flow = parseFlow(result.flowFile);
+    const flow = parseFlow(await onDisk("echo-test"));
     expect(flow.steps).toEqual([{ kind: "echo", message: "Hello world" }]);
   });
 
@@ -279,12 +291,12 @@ describe("flow-add-echo", () => {
       {},
       { name: "multi-echo", project_root: tmpDir, message: "First" }
     );
-    const result = await flowInsertEchoTool.execute(
+    await flowInsertEchoTool.execute(
       {},
       { name: "multi-echo", project_root: tmpDir, message: "Second" }
     );
 
-    const flow = parseFlow(result.flowFile);
+    const flow = parseFlow(await onDisk("multi-echo"));
     expect(flow.steps).toEqual([
       { kind: "echo", message: "First" },
       { kind: "echo", message: "Second" },
@@ -345,7 +357,7 @@ describe("flow-add-step", () => {
     );
 
     expect(result.toolResult).toEqual({ tapped: true });
-    const flow = parseFlow(result.flowFile);
+    const flow = parseFlow(await onDisk("step-test"));
     expect(flow.steps).toEqual([{ kind: "tool", name: "tap", args: { x: 0.5, y: 0.3 } }]);
     expect(registry.invokeTool).toHaveBeenCalledWith("tap", {
       x: 0.5,
@@ -445,7 +457,7 @@ describe("flow-add-step", () => {
     const tool = createFlowAddStepTool(registry);
 
     await flowStartRecordingTool.execute({}, { name: "launch-rewrite", project_root: tmpDir });
-    const result = await tool.execute(
+    await tool.execute(
       {},
       {
         name: "launch-rewrite",
@@ -461,7 +473,9 @@ describe("flow-add-step", () => {
       bundleId: "com.acme.app",
     });
     // …but recorded the launch directive, making this an e2e flow.
-    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "launch", app: "com.acme.app" }]);
+    expect(parseFlow(await onDisk("launch-rewrite")).steps).toEqual([
+      { kind: "launch", app: "com.acme.app" },
+    ]);
   });
 
   it("keeps a restart-app with extra args (e.g. activity) as a raw tool step", async () => {
@@ -471,7 +485,7 @@ describe("flow-add-step", () => {
     const tool = createFlowAddStepTool(registry);
 
     await flowStartRecordingTool.execute({}, { name: "launch-activity", project_root: tmpDir });
-    const result = await tool.execute(
+    await tool.execute(
       {},
       {
         name: "launch-activity",
@@ -481,7 +495,7 @@ describe("flow-add-step", () => {
       }
     );
 
-    expect(parseFlow(result.flowFile).steps).toEqual([
+    expect(parseFlow(await onDisk("launch-activity")).steps).toEqual([
       {
         kind: "tool",
         name: "restart-app",
@@ -549,7 +563,7 @@ describe("flow-add-step", () => {
     // Ran the fragment live to set up state…
     expect(result.toolResult).toEqual({ ok: true, steps: [] });
     // …but recorded the portable composition directive, not the raw tool call.
-    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "login" }]);
+    expect(parseFlow(await onDisk("compose-test")).steps).toEqual([{ kind: "run", flow: "login" }]);
   });
 
   it("records a run: directive when the target is an e2e flow", async () => {
@@ -561,7 +575,7 @@ describe("flow-add-step", () => {
     await flowStartRecordingTool.execute({}, { name: "compose-e2e", project_root: tmpDir });
     await writeSiblingFlow("other-e2e", "steps:\n  - launch: com.acme.app\n  - echo: hi\n");
 
-    const result = await tool.execute(
+    await tool.execute(
       {},
       {
         name: "compose-e2e",
@@ -572,7 +586,9 @@ describe("flow-add-step", () => {
     );
 
     // e2e flows now compose via run: just like fragments — their launch runs inline.
-    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "other-e2e" }]);
+    expect(parseFlow(await onDisk("compose-e2e")).steps).toEqual([
+      { kind: "run", flow: "other-e2e" },
+    ]);
   });
 
   it("keeps the raw flow-execute step when the target is not a sibling", async () => {
@@ -594,7 +610,7 @@ describe("flow-add-step", () => {
     );
 
     expect(result.message).toMatch(/could not resolve/i);
-    expect(parseFlow(result.flowFile).steps).toEqual([
+    expect(parseFlow(await onDisk("compose-missing")).steps).toEqual([
       { kind: "tool", name: "flow-execute", args: { name: "elsewhere", project_root: tmpDir } },
     ]);
   });
@@ -632,7 +648,7 @@ describe("flow-add-step", () => {
     const tool = createFlowAddStepTool(registry);
 
     await flowStartRecordingTool.execute({}, { name: "teardown-test", project_root: tmpDir });
-    const result = await tool.execute(
+    await tool.execute(
       {},
       {
         name: "teardown-test",
@@ -647,7 +663,7 @@ describe("flow-add-step", () => {
       devices: ["00000000-HOST-DEVICE-ID"],
     });
     // …but the recorded step carries no device id, keeping the flow portable.
-    expect(parseFlow(result.flowFile).steps).toEqual([
+    expect(parseFlow(await onDisk("teardown-test")).steps).toEqual([
       { kind: "tool", name: "stop-all-simulator-servers", args: {} },
     ]);
   });
