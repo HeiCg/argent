@@ -86,8 +86,9 @@ no manual step, no `sudo`.
   elements (or the home screen), read app-free via the iOS-26+ accessibility-audit service over
   CoreDevice. It tells you **what** is on screen, not **where**. Element labels, values and traits
   (roles) are exact, but two things are not:
-  - **Frames.** Apple exposes no per-element geometry app-free on a physical device, so every frame
-    is a placeholder synthesised from the element's position in the list.
+  - **Frames.** The accessibility read carries no geometry — the inspector publishes no frame
+    attribute for an element — so every frame is a placeholder synthesised from the element's
+    position in the list.
   - **Order.** The read starts from the device's current VoiceOver cursor and advances it, so
     consecutive calls return the same elements rotated by one — which also means a given element's
     synthesised frame changes between calls, and two `describe` results are not comparable. The read
@@ -141,15 +142,18 @@ no manual step, no `sudo`.
   is a different mechanism — it talks to the app's JS runtime through Metro, not through the
   device — so it is not gated here.) `native-profiler-*` is gated for a narrower reason: its iOS
   capture path resolves the target process and bundle through `simctl spawn` and `simctl listapps`,
-  both simulator-only. The instrument itself is not the obstacle — `xctrace record --device`
-  attaches to a process on a tethered iPhone and returns symbolicated stacks with no code-signing
-  identity on the host — so this one is an unimplemented device path rather than a platform wall.
-  `settings-permissions` drives
-  `simctl privacy`, which edits a simulator's TCC store on the host filesystem. A physical device
-  exposes no equivalent switch: `devicectl` carries no privacy verb anywhere in its command tree
-  (`device settings` covers appearance, audio, biometrics and reset), and installing a
-  configuration profile instead requires a CMS-signed one, which lands back on the same signing
-  requirement.
+  both simulator-only. The instrument itself is not the obstacle — on Xcode 16.4,
+  `xctrace record --device <ecid> --attach <pid>` profiles a process on a tethered iPhone and
+  returns symbolicated stacks with no code-signing identity on the host, so this one is an
+  unimplemented device path rather than a platform wall. (Attach by pid: the name lookup only sees
+  processes it could launch, so `--attach <name>` reports "Cannot find process" for a process that
+  is running. Xcode 26.4 and later also carry the `--device` recording-start deadlock the
+  simulator capture path already works around.)
+  `settings-permissions` drives `simctl privacy`, which edits a simulator's TCC store on the host
+  filesystem; a physical device exposes no equivalent switch. `devicectl` carries no privacy verb
+  anywhere in its command tree (`device settings` covers appearance, audio, biometrics and reset),
+  and installing a configuration profile instead requires a CMS-signed one, which lands back on the
+  same signing requirement.
 
 - `launch-app`, `restart-app`, `reinstall-app` and `open-url` go through `devicectl` rather than
   the CoreDevice session, so they work even before the first interaction has warmed it.
