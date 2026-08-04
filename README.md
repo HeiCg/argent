@@ -103,13 +103,12 @@ no manual step, no `sudo`.
   to tell whether the screen changed. (For pixel-exact in-app frames + taps you'd need an on-device
   XCUITest runner, which requires code-signing.)
 
-- **Multi-touch is not available.** `gesture-pinch` and `gesture-rotate` return a clear "not
-  supported" error, and `gesture-custom` rejects any event carrying a second touch point
-  (`x2`/`y2`) — its single-touch sequences (long press, drag-and-drop, custom scroll) work. The
-  device registers a single touch surface, `mainTouchscreen` (HID usage page `0x0D` "Digitizer" /
-  usage `0x04` "Touch Screen"), and its report carries one contact. The surface that sounds like a
-  second candidate, `touchscreenGesture`, enumerates as usage page `0x01` "Generic Desktop" /
-  usage `0x02` "Mouse" — the pointer for the mirroring window, not a second finger.
+- **Two simultaneous touches, but no rotation.** `gesture-pinch` and the two-point form of
+  `gesture-custom` (`x2`/`y2`) work: the device's touch surface tracks each contact by an id
+  carried in its HID report, so a two-finger gesture is two interleaved streams of ordinary
+  touches. `gesture-rotate` is the exception and returns a clear "not supported" error — the
+  contacts arrive, but iOS reads no rotation out of them on hardware, where the identical arc
+  turns a map on a simulator. Three or more fingers are untested.
 
 - **`await-screen-idle` ignores the read's element order here**, because that order rotates every
   call (see above). "Settled" therefore means the on-screen elements stopped changing, not that
