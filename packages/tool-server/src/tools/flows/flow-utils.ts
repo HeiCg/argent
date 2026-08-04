@@ -401,11 +401,15 @@ export function requireRecordingSession(projectRoot: string, name: string): Reco
       : `none in this project${others}`;
     // Do NOT tell the agent to just call flow-start-recording. This message is
     // reached when the key was never started, but equally when a take was
-    // finished, superseded, or dropped by the MAX_RECORDINGS backstop — and in
-    // those cases the flow file on disk is fully populated while no session
-    // owns it. flow-start-recording truncates unconditionally, so the advice
-    // that recovers the first case destroys the others. Same doctrine as
-    // {@link assertSessionStillLive}, which faces the identical ambiguity.
+    // finished or dropped by the MAX_RECORDINGS backstop — and in those cases
+    // the flow file on disk is fully populated while no session owns it. (A key
+    // SUPERSEDED by a restart is NOT one of them: the superseding session holds
+    // the key, so this call resolves to it and returns success rather than
+    // reaching here — and that restart has already truncated the file, so
+    // "fully populated" would not hold there anyway.) flow-start-recording
+    // truncates unconditionally, so the advice that recovers the never-started
+    // case destroys the others. Same doctrine as {@link assertSessionStillLive},
+    // which faces the identical ambiguity.
     throw new FailureError(
       `No active recording for flow "${name}" in ${projectRoot}. ` +
         `If you have not started it yet, call flow-start-recording — but note it ` +
@@ -2374,8 +2378,14 @@ export function parseFlow(content: string): FlowFile {
 
 /**
  * Suffix counter for {@link writeFlowFile}'s scratch file. Paired with the pid,
- * this keeps two concurrent writers — in this process or in a CLI sharing the
- * directory — off each other's temp file.
+ * this keeps two concurrent writers off each other's temp file: the counter
+ * separates writers inside this process, and the pid separates this process
+ * from a SECOND tool-server — a different install bundle can record the same
+ * `(project_root, name)` and compute the same scratch path (see the
+ * cross-install note on {@link recordings}). The CLI is not one of the writers:
+ * it writes the destination flow file directly and mints no scratch file, and
+ * host and client persist modes are mutually exclusive per call, so no CLI is
+ * writing this directory while the tool-server is.
  */
 let flowWriteSeq = 0;
 
@@ -2404,8 +2414,9 @@ let flowWriteSeq = 0;
  * legitimately run to NAME_MAX — and prefixing that with a discriminator would
  * push the scratch name past the limit, turning an append that used to work
  * into ENAMETOOLONG. pid + counter is unique on its own: the counter separates
- * writers inside this process, the pid separates this process from any CLI
- * sharing the directory.
+ * writers inside this process, the pid separates this process from a second
+ * tool-server (a different install bundle) that could be writing the same
+ * directory.
  *
  * The swap costs two things a write-through would have kept, both accepted for
  * the atomicity: it needs write permission on the DIRECTORY rather than on the
@@ -2427,7 +2438,28 @@ async function writeFlowFile(filePath: string, content: string): Promise<void> {
     // fail with the file already created (ENOSPC, EIO), so this has to cover it
     // too — nothing else ever sweeps this directory.
     await fs.rm(tmpPath, { force: true }).catch(() => {});
-    throw err;
+    // Rethrow against the flow file, never the scratch path. The temp name is
+    // an internal detail — pid+counter suffixed, and already removed above — so
+    // surfacing its raw errno (`EACCES: … open '.argent-flow-<pid>-<n>.tmp'`)
+    // would name a file that no longer exists and never mention the flow. The
+    // swap writes a sibling and renames, so the actual cause is write
+    // permission (or space) on the DIRECTORY: name the flow file and the
+    // directory, and keep the original errno as `cause`.
+    const code =
+      err instanceof Error && typeof (err as NodeJS.ErrnoException).code === "string"
+        ? (err as NodeJS.ErrnoException).code
+        : undefined;
+    throw new FailureError(
+      `Failed to write flow file ${filePath}${code ? ` (${code})` : ""} — an append replaces ` +
+        `the file via a sibling temp file and rename, so ${path.dirname(filePath)} must be writable.`,
+      {
+        error_code: FAILURE_CODES.FLOW_FILE_WRITE_FAILED,
+        failure_stage: "flow_file_write",
+        failure_area: "tool_server",
+        error_kind: "unknown",
+      },
+      { cause: err instanceof Error ? err : new Error(String(err)) }
+    );
   }
 }
 
