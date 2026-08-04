@@ -29,17 +29,18 @@ import {
   isUnmetUiWaitResult,
   vacuousHiddenSelectors,
 } from "../await-ui-element";
+import { SCREEN_FINGERPRINT_TOOL_ID, type ScreenFingerprintResult } from "../screen-fingerprint";
 import { AWAIT_SCREEN_IDLE_TOOL_ID } from "../await-screen-idle";
-import { selectorEstablishedInSteps } from "./flow-selector-evidence";
 import { runSequenceFailure } from "../run-sequence";
-import { probeWhenCondition } from "./flow-actions";
+import { selectorEstablishedInSteps } from "./flow-selector-evidence";
 import { NATIVE_READY_POLL_MS, NATIVE_READY_TIMEOUT_MS } from "./flow-run";
-import { summarizeStep } from "./flow-finish-recording";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { settleWithin, sleepOrAbort } from "../../utils/timing";
 import { resolveDevice } from "../../utils/device-info";
 import { stripDeviceKeys } from "./flow-device";
 import { fetchFlowTree } from "./flow-tree";
+import { probeWhenCondition } from "./flow-actions";
+import { summarizeStep } from "./flow-finish-recording";
 import type { DescribeFrame, DescribeNode, DescribeSource } from "../describe/contract";
 import {
   nodeAtPoint,
@@ -61,7 +62,7 @@ const zodSchema = z.object({
     .describe(
       "Absolute path to the project root of the flow being recorded — the same value passed to flow-start-recording. Together with `name` it identifies which recording this step belongs to."
     ),
-  command: z.string().describe('MCP tool name (e.g. "gesture-tap", "screenshot", "launch-app")'),
+  command: z.string().describe('MCP tool name (e.g. "gesture-tap", "screenshot", "restart-app")'),
   args: z
     .string()
     .optional()
@@ -123,82 +124,6 @@ function readinessMissesFor(session: RecordingSession): Set<string> {
   return misses;
 }
 
-async function awaitIosDevtoolsTarget(
-  registry: Registry,
-  device: DeviceInfo,
-  bundleId?: string,
-  signal?: AbortSignal
-): Promise<CaptureReadiness> {
-  if (signal?.aborted) return "aborted";
-  let api: NativeDevtoolsApi;
-  try {
-    const ndRef = nativeDevtoolsRef(device);
-    api = await registry.resolveService<NativeDevtoolsApi>(ndRef.urn, ndRef.options);
-  } catch {
-    return signal?.aborted ? "aborted" : "unavailable";
-  }
-  const deadline = Date.now() + NATIVE_READY_TIMEOUT_MS;
-  for (;;) {
-    if (signal?.aborted) return "aborted";
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return "timed-out";
-
-    if (bundleId) {
-      try {
-        if (api.isConnected(bundleId)) return "ready";
-      } catch {
-        // Treat a transient connection read as not-ready and keep polling.
-      }
-    } else {
-      // Fragment auto-targeting must inspect app state, whose RPC can itself
-      // wedge. Race it against the remaining budget so the advertised
-      // 8-second gate stays a hard cap rather than 8 seconds between
-      // potentially multi-second getAppState calls.
-      const inspected = await settleWithin(inspectConnectedNativeApps(api), remaining, signal);
-      if (inspected.type === "aborted") return "aborted";
-      if (inspected.type === "timeout") return "timed-out";
-      if (inspected.type === "value" && chooseFrontmostConnectedApp(inspected.value)) {
-        return "ready";
-      }
-    }
-
-    const delayMs = Math.min(NATIVE_READY_POLL_MS, deadline - Date.now());
-    if (delayMs <= 0) return "timed-out";
-    if (!(await sleepOrAbort(delayMs, signal))) return "aborted";
-  }
-}
-
-function leadingLaunch(session: RecordingSession): Extract<FlowStep, { kind: "launch" }> | null {
-  const first = session.flow.steps.find((step) => step.kind !== "echo");
-  return first?.kind === "launch" ? first : null;
-}
-
-function recordedLaunchApp(session: RecordingSession, platform: string): string | null {
-  const launch = leadingLaunch(session);
-  return launch ? appIdForPlatform(launch.app, platform) : null;
-}
-
-function invalidateReadinessMissAfterAppStart(
-  session: RecordingSession,
-  command: string,
-  args: Record<string, unknown>,
-  result: unknown
-): void {
-  const didStart =
-    typeof result === "object" &&
-    result !== null &&
-    ((command === "restart-app" && (result as { restarted?: unknown }).restarted === true) ||
-      (command === "launch-app" && (result as { launched?: unknown }).launched === true));
-  if (!didStart) return;
-
-  const misses = readinessMissesFor(session);
-  // Both tools require a device id, but clearing all misses is the safe fallback
-  // for older/custom registry adapters that omit it: a successful app start is
-  // fresh evidence and another bounded probe is preferable to a stale miss.
-  if (typeof args.udid === "string") misses.delete(args.udid);
-  else misses.clear();
-}
-
 function platformOf(udid: unknown): string | undefined {
   try {
     if (typeof udid === "string") return resolveDevice(udid).platform;
@@ -256,75 +181,69 @@ function abortError(): Error {
   return err;
 }
 
-/**
- * The recorder and the runner read DIFFERENT trees. `await-ui-element`
- * evaluates against the accessibility tree; the `await:`/`assert:` DIRECTIVE
- * that polish converts this step into is evaluated against the runner's tree.
- * They overlap but neither contains the other — an id present in one can be
- * absent from the other, and on iOS even the role vocabularies are disjoint.
- * So a check can pass live and fail once converted, which makes "each step is
- * executed live so you verify it works" untrue exactly where it matters.
- *
- * Re-probe the same condition against the runner's tree and report the answer.
- * It is a WARNING, never a refusal: the step is recorded as a raw
- * `tool: await-ui-element`, and at replay that tool reads the SAME
- * accessibility tree it just passed against — so "it would fail every run" was
- * false for the form actually written. What the probe really tells the author
- * is whether the conversion is safe, which is a polish-time decision, and the
- * blocking audit is where a flow is held to it.
- */
-async function probeAgainstRunnerTree(
+async function awaitIosDevtoolsTarget(
   registry: Registry,
-  ctx: Parameters<typeof invokeSubTool>[1],
-  args: Record<string, unknown>
-): Promise<{ warning?: string }> {
-  const selector = args.selector;
-  const condition = args.condition;
-  if (typeof condition !== "string" || selector === null || typeof selector !== "object") {
-    return {};
-  }
-  if (typeof args.udid !== "string") return {}; // nothing to probe against
-  let device: DeviceInfo;
+  device: DeviceInfo,
+  bundleId?: string,
+  signal?: AbortSignal
+): Promise<CaptureReadiness> {
+  if (signal?.aborted) return "aborted";
+  let api: NativeDevtoolsApi;
   try {
-    device = resolveDevice(args.udid);
+    const ndRef = nativeDevtoolsRef(device);
+    api = await registry.resolveService<NativeDevtoolsApi>(ndRef.urn, ndRef.options);
   } catch {
-    return {}; // unresolvable device; the live result stands
+    return signal?.aborted ? "aborted" : "unavailable";
   }
-  const outcome = await probeWhenCondition(
-    // The signal rides on ActionEnv separately from `ctx`, so pass it too:
-    // a cancelled flow-add-step must stop this probe rather than polling on.
-    { registry, ctx, device, signal: ctx?.signal },
-    {
-      condition: condition as WaitCondition,
-      selector: selector as FlowSelector,
-      expectedText: typeof args.expectedText === "string" ? args.expectedText : undefined,
-      textMatch: args.textMatch as TextMatchMode | undefined,
+  const deadline = Date.now() + NATIVE_READY_TIMEOUT_MS;
+  for (;;) {
+    if (signal?.aborted) return "aborted";
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return "timed-out";
+
+    if (bundleId) {
+      try {
+        if (api.isConnected(bundleId)) return "ready";
+      } catch {
+        // Treat a transient connection read as not-ready and keep polling.
+      }
+    } else {
+      // Fragment auto-targeting must inspect app state, whose RPC can itself
+      // wedge. Race it against the remaining budget so the advertised
+      // 8-second gate stays a hard cap rather than 8 seconds between
+      // potentially multi-second getAppState calls.
+      const inspected = await settleWithin(inspectConnectedNativeApps(api), remaining, signal);
+      if (inspected.type === "aborted") return "aborted";
+      if (inspected.type === "timeout") return "timed-out";
+      if (inspected.type === "value" && chooseFrontmostConnectedApp(inspected.value)) {
+        return "ready";
+      }
     }
-  );
-  if (outcome.ok) return {};
-  if (outcome.aborted) throw abortError();
-  if (outcome.indeterminate) {
-    return {
-      // No trailing period: the caller joins this with ". " and a second one
-      // renders as "..". And no claim that the two trees DIFFER — nothing was
-      // compared. The runner's tree could not be read at all, which is an
-      // environment failure; reporting it as a known divergence sends the
-      // author to rewrite a selector that may be perfectly good.
-      warning:
-        `this check could not be re-verified against the tree the RUNNER reads ` +
-        `(${outcome.reason}), so it passed against the accessibility tree only. Whether it ` +
-        `would convert to \`await:\`/\`assert:\` is UNKNOWN, not known-bad — re-probe once that ` +
-        `tree source is back before trusting the conversion`,
-    };
+
+    const delayMs = Math.min(NATIVE_READY_POLL_MS, deadline - Date.now());
+    if (delayMs <= 0) return "timed-out";
+    if (!(await sleepOrAbort(delayMs, signal))) return "aborted";
   }
-  return {
-    warning:
-      `recorded, but this condition does NOT hold against the tree the runner resolves ` +
-      `directives against (${outcome.reason ?? "no match"}). As the raw ` +
-      `\`tool: ${AWAIT_UI_ELEMENT_TOOL_ID}\` step it replays fine — it reads the same tree it ` +
-      `just passed against — but converting it to \`await:\`/\`assert:\` at polish WILL fail. ` +
-      `Either keep it raw deliberately, or re-record the wait with a selector present in both`,
-  };
+}
+
+function leadingLaunch(session: RecordingSession): Extract<FlowStep, { kind: "launch" }> | null {
+  const first = session.flow.steps.find((step) => step.kind !== "echo");
+  return first?.kind === "launch" ? first : null;
+}
+
+function recordedLaunchApp(session: RecordingSession, platform: string): string | null {
+  const launch = leadingLaunch(session);
+  return launch ? appIdForPlatform(launch.app, platform) : null;
+}
+
+/**
+ * Whether the flow being recorded is a self-contained e2e flow (it starts the
+ * app itself) rather than a fragment. A fragment inherits nothing from a
+ * launch step at replay, so anything a step would have taken from one has to
+ * be baked in at record time.
+ */
+function hasLeadingLaunch(session: RecordingSession): boolean {
+  return leadingLaunch(session) !== null;
 }
 
 /**
@@ -515,15 +434,40 @@ async function captureTapSelector(
 }
 
 /**
+ * What to do about a tap whose selector could not be captured, now that the
+ * raw point has been kept.
+ *
+ * Two different failures, and they call for opposite responses: an element
+ * nothing can address, versus one that several things address equally. Saying
+ * "no selector could be derived" for the second sends the author to
+ * re-discover a selector they already have. The advice rides on the recorded
+ * step's warning because that is the only moment it is read while the screen
+ * is still there to retarget against — a coordinate step replays fine today
+ * and breaks on the first layout change, which is why the skills treat this
+ * warning as a stop rather than a note.
+ */
+function coordinateRemedy(captured: { ambiguous?: boolean }, udid: unknown): string {
+  return captured.ambiguous
+    ? `Disambiguate it: give the intended element its own testID, or tap a target whose id is ` +
+        `unique on this screen. At polish, a hand-written \`within\`/\`after\`/\`next\` scope can ` +
+        `also single out the element this point hit.`
+    : `Find the real target with ${treeReaderFor(udid)} and tap its centre; an element with no ` +
+        `id or label is usually worth fixing in the app.`;
+}
+
+/**
  * How far the recording has got, without mutating anything — for responses
  * that record nothing but must still say where the flow stands. Host mode
  * re-reads the file so manual edits made mid-recording are honored; client
  * mode's in-memory copy is authoritative.
  *
  * Deliberately NOT the flow's YAML. Returning the whole growing file on every
- * call made the recorder the single largest consumer of a session's context,
- * and that pressure was observed removing checks from tests. The full file
- * comes back once, from `flow-finish-recording`.
+ * call made the recorder the single largest consumer of a session's context —
+ * 55-77% of all tool-result text across the measured sessions, growing
+ * quadratically with step count — and that pressure was observed removing
+ * checks from tests ("context cost per recorded step is high, so I'll trim to
+ * the minimum discriminating check set"). The full file comes back once, from
+ * `flow-finish-recording`.
  */
 async function activeFlowState(
   session: RecordingSession
@@ -543,6 +487,158 @@ async function activeFlowState(
   return { stepCount: session.flow.steps.length };
 }
 
+// Replaying a fragment to set up state during recording is done by running it
+// through `flow-execute`. Recorded verbatim that becomes a brittle
+// `tool: flow-execute` step (baked-in project_root + device, no portability).
+// Instead, capture it as a `run: <name>` composition directive — mirroring the
+// gesture-tap → tap rewrite.
+const RUN_TARGET_COMMAND = "flow-execute";
+
+function flowExecuteRecordBlock(
+  result: unknown
+): { reason: string; mayHaveMutated: boolean } | null {
+  if (typeof result !== "object" || result === null) return null;
+  const value = result as { ok?: unknown; notice?: unknown };
+  if (value.ok === false) {
+    return { reason: "flow-execute returned ok: false", mayHaveMutated: true };
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "notice")) {
+    return {
+      reason:
+        typeof value.notice === "string"
+          ? `flow-execute returned a prerequisite notice: ${value.notice}`
+          : "flow-execute returned a prerequisite notice without executing steps",
+      mayHaveMutated: false,
+    };
+  }
+  return null;
+}
+
+function invalidateReadinessMissAfterAppStart(
+  session: RecordingSession,
+  command: string,
+  args: Record<string, unknown>,
+  result: unknown
+): void {
+  const didStart =
+    typeof result === "object" &&
+    result !== null &&
+    ((command === "restart-app" && (result as { restarted?: unknown }).restarted === true) ||
+      (command === "launch-app" && (result as { launched?: unknown }).launched === true));
+  if (!didStart) return;
+
+  const misses = readinessMissesFor(session);
+  // Both tools require a device id, but clearing all misses is the safe fallback
+  // for older/custom registry adapters that omit it: a successful app start is
+  // fresh evidence and another bounded probe is preferable to a stale miss.
+  if (typeof args.udid === "string") misses.delete(args.udid);
+  else misses.clear();
+}
+
+/**
+ * The recorder and the runner read DIFFERENT trees. `await-ui-element`
+ * evaluates against the accessibility tree; the `await:`/`assert:` DIRECTIVE
+ * that polish converts this step into is evaluated against the runner's tree.
+ * They overlap but neither contains the other — an id present in one can be
+ * absent from the other, and on iOS even the role vocabularies are disjoint.
+ * So a check can pass live and fail once converted, which makes "each step is
+ * executed live so you verify it works" untrue exactly where it matters.
+ *
+ * Re-probe the same condition against the runner's tree and report the answer.
+ * It is a WARNING, never a refusal: the step is recorded as a raw
+ * `tool: await-ui-element`, and at replay that tool reads the SAME
+ * accessibility tree it just passed against — so "it would fail every run" was
+ * false for the form actually written. What the probe really tells the author
+ * is whether the conversion is safe, which is a polish-time decision, and the
+ * blocking audit is where a flow is held to it.
+ */
+async function probeAgainstRunnerTree(
+  registry: Registry,
+  ctx: Parameters<typeof invokeSubTool>[1],
+  args: Record<string, unknown>
+): Promise<{ warning?: string }> {
+  const selector = args.selector;
+  const condition = args.condition;
+  if (typeof condition !== "string" || selector === null || typeof selector !== "object") {
+    return {};
+  }
+  if (typeof args.udid !== "string") return {}; // nothing to probe against
+  let device: DeviceInfo;
+  try {
+    device = resolveDevice(args.udid);
+  } catch {
+    return {}; // unresolvable device; the live result stands
+  }
+  const outcome = await probeWhenCondition(
+    // The signal rides on ActionEnv separately from `ctx`, so pass it too:
+    // a cancelled flow-add-step must stop this probe rather than polling on.
+    { registry, ctx, device, signal: ctx?.signal },
+    {
+      condition: condition as WaitCondition,
+      selector: selector as FlowSelector,
+      expectedText: typeof args.expectedText === "string" ? args.expectedText : undefined,
+      textMatch: args.textMatch as TextMatchMode | undefined,
+    }
+  );
+  if (outcome.ok) return {};
+  if (outcome.aborted) throw abortError();
+  if (outcome.indeterminate) {
+    return {
+      // No trailing period: the caller joins this with ". " and a second one
+      // renders as "..". And no claim that the two trees DIFFER — nothing was
+      // compared. The runner's tree could not be read at all, which is an
+      // environment failure; reporting it as a known divergence sends the
+      // author to rewrite a selector that may be perfectly good.
+      warning:
+        `this check could not be re-verified against the tree the RUNNER reads ` +
+        `(${outcome.reason}), so it passed against the accessibility tree only. Whether it ` +
+        `would convert to \`await:\`/\`assert:\` is UNKNOWN, not known-bad — re-probe once that ` +
+        `tree source is back before trusting the conversion`,
+    };
+  }
+  return {
+    warning:
+      `recorded, but this condition does NOT hold against the tree the runner resolves ` +
+      `directives against (${outcome.reason ?? "no match"}). As the raw ` +
+      `\`tool: ${AWAIT_UI_ELEMENT_TOOL_ID}\` step it replays fine — it reads the same tree it ` +
+      `just passed against — but converting it to \`await:\`/\`assert:\` at polish WILL fail. ` +
+      `Either keep it raw deliberately, or re-record the wait with a selector present in both`,
+  };
+}
+
+/**
+ * True when the flow being recorded has ALREADY established this selector
+ * positively — acted on it, or proved it present — in an earlier step.
+ *
+ * This is what makes a later `hidden` check falsifiable. The wait tool itself
+ * can only see its own poll window, so an element removed by the immediately
+ * preceding action reads as "never matched" even though the flow proves it
+ * existed two steps ago. Without this lookup the recorder would reject the
+ * correct authoring order (prove visible → act → prove gone) and push authors
+ * into adding absence checks by hand in YAML, which the skill forbids.
+ */
+function selectorEstablishedInFlow(session: RecordingSession, selector: unknown): boolean {
+  return selectorEstablishedInSteps(session.flow.steps, selector);
+}
+
+/**
+ * The route of the most recent `screen` gate already recorded, or undefined
+ * when the flow has none yet. Walks `when:` blocks too — a gate recorded inside
+ * one still establishes where the flow believes it is. Order matters, so the
+ * walk keeps the last hit rather than the first.
+ */
+function lastRecordedRoute(session: RecordingSession): string | undefined {
+  let latest: string | undefined;
+  const walk = (steps: FlowStep[]): void => {
+    for (const step of steps) {
+      if (step.kind === "screen") latest = step.route;
+      if (step.kind === "when") walk(step.steps);
+    }
+  };
+  walk(session.flow.steps);
+  return latest;
+}
+
 /**
  * `command` names an MCP tool, but the names an author has in mind while
  * recording are the flow file's own directives — so `command: "echo"` reaches
@@ -553,17 +649,18 @@ interface DirectiveHint {
   /** The tool to call instead. */
   tool: string;
   /**
-   * Whether the recorder REWRITES that tool call into this directive. Only the
-   * commands the step-shaping switch handles are rewritten; everything else is
-   * stored as a raw `tool:` step that the polish pass converts. Claiming a
-   * rewrite that does not happen sends the author looking for a directive that
-   * is not in the file.
+   * Whether the recorder REWRITES that tool call into this directive. Only
+   * four commands are rewritten (see the step-shaping switch); everything else
+   * is stored as a raw `tool:` step that the polish pass converts. Claiming
+   * a rewrite that does not happen sends the author looking for a directive
+   * that is not in the file.
    */
   rewritten: boolean;
 }
 
 const DIRECTIVE_COMMAND_HINTS: Record<string, DirectiveHint> = {
   tap: { tool: "gesture-tap", rewritten: true },
+  screen: { tool: SCREEN_FINGERPRINT_TOOL_ID, rewritten: true },
   launch: { tool: "restart-app", rewritten: true },
   run: { tool: "flow-execute", rewritten: true },
   type: { tool: "keyboard", rewritten: false },
@@ -621,7 +718,7 @@ function directiveCommandHint(command: string): string | undefined {
     return (
       `"wait" is a flow directive, not a tool, and there is no tool that records one — a fixed ` +
       `sleep is not a readiness signal. Record the thing you are actually waiting for with ` +
-      `\`${AWAIT_UI_ELEMENT_TOOL_ID}\` instead.`
+      `\`${AWAIT_UI_ELEMENT_TOOL_ID}\` instead, or \`${SCREEN_FINGERPRINT_TOOL_ID}\` for a navigation.`
     );
   }
   if (command === "long-press") {
@@ -643,26 +740,21 @@ function directiveCommandHint(command: string): string | undefined {
   );
 }
 
-/**
- * What to do about a tap whose selector could not be captured, now that the
- * raw point has been kept.
- *
- * Two different failures, and they call for opposite responses: an element
- * nothing can address, versus one that several things address equally. Saying
- * "no selector could be derived" for the second sends the author to
- * re-discover a selector they already have. The advice rides on the recorded
- * step's warning because that is the only moment it is read while the screen
- * is still there to retarget against — a coordinate step replays fine today
- * and breaks on the first layout change, which is why the skills treat this
- * warning as a stop rather than a note.
- */
-function coordinateRemedy(captured: { ambiguous?: boolean }, udid: unknown): string {
-  return captured.ambiguous
-    ? `Disambiguate it: give the intended element its own testID, or tap a target whose id is ` +
-        `unique on this screen. At polish, a hand-written \`within\`/\`after\`/\`next\` scope can ` +
-        `also single out the element this point hit.`
-    : `Find the real target with ${treeReaderFor(udid)} and tap its centre; an element with no ` +
-        `id or label is usually worth fixing in the app.`;
+function partialMutationWarning(command: "flow-execute" | "run-sequence"): string {
+  const stepKind = command === "flow-execute" ? "composed" : "nested";
+  return (
+    `Prior ${stepKind} steps may already have mutated device state. ` +
+    "Restore the device to the state produced by the recorded prefix before adding another " +
+    "step, or the remaining recording may not be reproducible."
+  );
+}
+
+function runSequenceProgress(result: unknown): string | null {
+  if (typeof result !== "object" || result === null) return null;
+  const { completed, total } = result as { completed?: unknown; total?: unknown };
+  return typeof completed === "number" && typeof total === "number"
+    ? `${completed}/${total} nested steps completed`
+    : null;
 }
 
 function rawCoordinateWarning(
@@ -707,65 +799,6 @@ function rawCoordinateWarning(
   }
   return undefined;
 }
-
-/**
- * True when the flow being recorded has ALREADY established this selector
- * positively — acted on it, or proved it present — in an earlier step.
- *
- * This is what makes a later `hidden` check falsifiable. The wait tool itself
- * can only see its own poll window, so an element removed by the immediately
- * preceding action reads as "never matched" even though the flow proves it
- * existed two steps ago. Without this lookup the recorder would reject the
- * correct authoring order (prove visible -> act -> prove gone) and push authors
- * into adding absence checks by hand in YAML, which the skill forbids.
- */
-function selectorEstablishedInFlow(session: RecordingSession, selector: unknown): boolean {
-  return selectorEstablishedInSteps(session.flow.steps, selector);
-}
-
-function flowExecuteRecordBlock(
-  result: unknown
-): { reason: string; mayHaveMutated: boolean } | null {
-  if (typeof result !== "object" || result === null) return null;
-  const value = result as { ok?: unknown; notice?: unknown };
-  if (value.ok === false) {
-    return { reason: "flow-execute returned ok: false", mayHaveMutated: true };
-  }
-  if (Object.prototype.hasOwnProperty.call(value, "notice")) {
-    return {
-      reason:
-        typeof value.notice === "string"
-          ? `flow-execute returned a prerequisite notice: ${value.notice}`
-          : "flow-execute returned a prerequisite notice without executing steps",
-      mayHaveMutated: false,
-    };
-  }
-  return null;
-}
-
-function partialMutationWarning(command: "flow-execute" | "run-sequence"): string {
-  const stepKind = command === "flow-execute" ? "composed" : "nested";
-  return (
-    `Prior ${stepKind} steps may already have mutated device state. ` +
-    "Restore the device to the state produced by the recorded prefix before adding another " +
-    "step, or the remaining recording may not be reproducible."
-  );
-}
-
-function runSequenceProgress(result: unknown): string | null {
-  if (typeof result !== "object" || result === null) return null;
-  const { completed, total } = result as { completed?: unknown; total?: unknown };
-  return typeof completed === "number" && typeof total === "number"
-    ? `${completed}/${total} nested steps completed`
-    : null;
-}
-
-// Replaying a fragment to set up state during recording is done by running it
-// through `flow-execute`. Recorded verbatim that becomes a brittle
-// `tool: flow-execute` step (baked-in project_root + device, no portability).
-// Instead, capture it as a `run: <name>` composition directive — mirroring the
-// gesture-tap → tap rewrite.
-const RUN_TARGET_COMMAND = "flow-execute";
 
 /**
  * The flows dir of a root, or null if it is not a valid one. Used only to
@@ -870,7 +903,10 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
       failedMsg: ({ params, failureSignal }) =>
         `Failed to add ${params.command} step to flow ${params.name}: ${failureSignal.error_code}`,
     },
-    description: `Execute a tool call and record it as a step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). Use when recording a flow and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier (otherwise coordinates are kept with a warning); a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow).
+    description: `Execute a tool call and record it as a step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). Use when recording a flow and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier; a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow); a \`screen-fingerprint\` read is recorded as the \`await: { screen: <route> }\` identity gate for the screen it just read.
+When no selector can be captured the point is kept, and the warning names both the reason and the retarget — treat it as a stop and repair the step, because a coordinate tap replays at a fixed point and breaks on any layout change.
+Three results are surfaced and NOT recorded, because each would bake a step that cannot prove what it appears to: an \`await-ui-element\` whose condition is not met (it would fail every replay); an \`await-ui-element\` \`hidden\` check that passed without its selector ever matching (it can never fail — record \`visible\` for that selector first, while the element is on screen); and a \`screen-fingerprint\` that could not read a route (there is no identity to gate on).
+A wait that held for the tool but would NOT hold against the tree the RUNNER reads IS recorded, with a warning: as the raw \`tool: await-ui-element\` step it replays against the same tree it just passed against, so it is only the \`await:\`/\`assert:\` conversion at polish that would fail. Act on that warning then — do not re-record the step, which would duplicate it.
 Returns { message, toolResult, stepCount, recorded, savedTo } - \`recorded\` is the one line that was appended, and \`stepCount\` how many steps the flow now has. The flow's full YAML is deliberately NOT returned per step; read it back from \`flow-finish-recording\`. \`savedTo\` is where the YAML landed: a host path, or, against a remote client, the directive that has the client write it (the only field naming the destination in that mode). If it fails an error is returned and nothing is recorded.
 If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-recording\` — editing the file while the recording is active can be overwritten by the in-memory copy.`,
     zodSchema,
@@ -971,7 +1007,9 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       // rather than a failure, so persisting it bakes a step that is green on
       // every replay whatever the screen does — the same unfalsifiable class
       // the `hidden` gate below exists to block. The skills already say never
-      // to persist it; without this gate the recorder did it silently.
+      // to persist it; without this gate the recorder did it silently, and
+      // since there is no recorder form of `await: { idle: true }`, the ONLY
+      // readiness gate an author could record was the decorative one.
       if (params.command === AWAIT_SCREEN_IDLE_TOOL_ID) {
         const { stepCount, note } = await activeFlowState(session);
         const settled = (toolResult as { settled?: unknown }).settled;
@@ -997,7 +1035,7 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       //
       // "Ever matched" is scoped to the wait's own poll window, which is too
       // narrow on its own: the action that removes an element runs BEFORE the
-      // check, so the normal authoring order (prove visible -> act -> prove
+      // check, so the normal authoring order (prove visible → act → prove
       // gone) always reaches here with everMatched false. The flow itself is
       // the wider evidence — if an earlier recorded step established this
       // selector, the check is falsifiable and is recorded.
@@ -1010,12 +1048,12 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       );
       if (vacuousHidden.length > 0) {
         const { stepCount, note } = await activeFlowState(session);
-        const wrapped = params.command !== AWAIT_UI_ELEMENT_TOOL_ID;
+        const nested = params.command !== AWAIT_UI_ELEMENT_TOOL_ID;
         return {
           message:
             `the \`hidden\` condition was met without the selector ever matching, and no earlier ` +
             `step in this flow established it — step NOT recorded.${
-              wrapped
+              nested
                 ? ` (Inside the \`${params.command}\` you passed; wrapping the wait does not make it provable, so the whole step is refused.)`
                 : ""
             } This check cannot fail, so ` +
@@ -1029,15 +1067,66 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         };
       }
 
-      // The wait held against the accessibility tree. Ask the tree the runner
-      // resolves DIRECTIVES against too, so the author learns now — rather than
-      // after polish — whether the conversion is safe.
+      // The wait held against the accessibility tree. Ask the tree the
+      // runner resolves DIRECTIVES against too, so the author learns now —
+      // rather than after polish — whether the conversion is safe.
       let crossTreeWarning: string | undefined;
+      // Set by the screen-fingerprint branch below; surfaced when the step is
+      // appended, since unlike the refusals above this one still records.
+      let sameRouteWarning: string | undefined;
       if (params.command === AWAIT_UI_ELEMENT_TOOL_ID) {
         const probe = await probeAgainstRunnerTree(registry, ctx, args);
         crossTreeWarning = probe.warning
           ? `${probe.warning}. ${treeDivergenceFor(args.udid)} ${treeReaderFor(args.udid)} reads the runner's side`
           : undefined;
+      }
+
+      // A screen-fingerprint read that could not name the screen is not a gate.
+      // Recording it raw would persist a `tool:` step whose output nothing
+      // checks; refusing keeps the failure where the evidence is.
+      if (params.command === SCREEN_FINGERPRINT_TOOL_ID) {
+        const fp = toolResult as ScreenFingerprintResult;
+        if (fp?.route == null) {
+          const { stepCount, note } = await activeFlowState(session);
+          return {
+            message:
+              `no screen identity could be read — step NOT recorded. ${fp?.reason ?? ""} ` +
+              (fp?.available === false
+                ? "Gate this navigation on a destination-only element instead."
+                : "Let the screen finish settling and call this again.") +
+              `${note ? ` ${note}` : ""}`,
+            toolResult,
+            stepCount,
+            savedTo: session.filePath,
+          };
+        }
+        // A route equal to the one the flow last gated on MAY prove nothing:
+        // an app whose sign-in form is presented inside its landing route
+        // reports one fingerprint for both screens, so a gate recorded after
+        // "tap Sign in" passes whether or not the tap landed.
+        //
+        // But it may equally be a return trip — Home → Search → Home — where
+        // the gate is perfectly falsifiable. Telling the two apart needs the
+        // route as it was IMMEDIATELY BEFORE the last action, and the recorder
+        // does not have it: `lastRecordedRoute` is the last route this flow
+        // GATED on, which says nothing about where the app went in between
+        // (the intermediate screen is routinely gated on an element instead —
+        // exactly what the skills prescribe for a route-less screen).
+        //
+        // So this warns and records, rather than refusing. A refusal needs
+        // certainty; without it, blocking would make the ordinary "go there,
+        // come back, verify" shape unrecordable, and `argent-qa-flows` calls a
+        // navigation with no identity gate a blocking defect — the recorder
+        // would be making its own contract unsatisfiable.
+        sameRouteWarning =
+          lastRecordedRoute(session) === fp.route
+            ? `this gate names the same route ("${fp.route}") as the last screen gate in this ` +
+              `flow. If the app did not actually leave that screen and come back, the two ` +
+              `screens are ONE route and this gate proves nothing — it would pass even if the ` +
+              `action never landed. Check that it changed; if it did not, prove this screen ` +
+              `with a destination-only element instead (one that exists here and NOT on the ` +
+              `previous screen).`
+            : undefined;
       }
 
       const sequenceFailure = runSequenceFailure(params.command, toolResult);
@@ -1124,11 +1213,10 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         warning = captured.warning;
       } else if (isTap) {
         // No stable selector — keep a coordinate tap, but still as a `tap:`
-        // directive so every tap reads uniformly.
-        // No stable selector — keep a coordinate tap, but recording the point
-        // is not an endorsement of it: say what failed AND what to do instead,
-        // since this warning is the whole of the author's signal that the flow
-        // just took on a step that survives only until the layout moves.
+        // directive so every tap reads uniformly. Recording the point is not
+        // an endorsement of it: say what failed AND what to do instead, since
+        // this warning is the whole of the author's signal that the flow just
+        // took on a step that survives only until the layout moves.
         step = { kind: "tap", x: args.x as number, y: args.y as number, ...tapTimes };
         warning = captured?.warning
           ? `${captured.warning}; kept coordinates, which replay at a fixed point and break on ` +
@@ -1138,6 +1226,53 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
           : undefined;
       } else if (isLaunch) {
         step = { kind: "launch", app: strippedArgs.bundleId as string };
+      } else if (params.command === SCREEN_FINGERPRINT_TOOL_ID) {
+        // A fingerprint READ becomes a fingerprint CHECK: the route just
+        // observed is what the flow will require on replay. Recorded as the
+        // portable directive rather than a raw tool call, so the runner
+        // compares it instead of merely re-reading it.
+        const route = (toolResult as ScreenFingerprintResult).route as string;
+        const port = args.metro_port;
+        // At replay the runner reads the route from the app the flow's
+        // own `launch` named. A FRAGMENT has no launch step, so the gate would
+        // have nothing to read from and fail as an environment error — and
+        // only at replay, long after the recording looked fine. The
+        // fingerprint call had to name the app to run at all, so carry that id
+        // onto the step whenever the recording cannot supply one itself.
+        const appId = typeof args.app_id === "string" ? args.app_id : undefined;
+        const needsApp = !hasLeadingLaunch(session) && appId !== undefined;
+        step = {
+          kind: "screen",
+          mode: "await",
+          route,
+          ...(needsApp ? { app: appId } : {}),
+          ...(typeof port === "number" && port !== 8081 ? { metroPort: port } : {}),
+        };
+        if (needsApp) {
+          // One app id, not a per-platform map: this fragment's screen gate is
+          // pinned to the platform it was recorded on.
+          warning =
+            `this flow has no launch step, so the screen gate carries \`app: ${appId}\` — ` +
+            `without it the gate would have no app to read the route from at replay. That id ` +
+            `is platform-specific: to run this fragment on another platform, compose it from ` +
+            `an e2e flow whose \`launch\` declares that platform's app instead.`;
+        }
+        // A `screen` step has no `delayMs` field — the gate POLLS, so a fixed
+        // pre-step sleep would be the one thing it does not need. Every other
+        // rewrite refuses to convert while `delayMs` is set precisely so the
+        // delay survives; this one converts anyway, and dropping the author's
+        // parameter without a word is what must not happen. Say it, and name
+        // the parameter that does express the same intent.
+        const droppedDelay =
+          params.delayMs !== undefined
+            ? `\`delayMs: ${params.delayMs}\` was NOT carried onto this step — a \`screen\` gate ` +
+              `has no pre-step delay because it polls for the route. Raise its \`timeout:\` if ` +
+              `the navigation is slow, or record the wait you actually mean as its own step.`
+            : undefined;
+        // All three can apply at once, and the falsifiability one matters most,
+        // so it leads rather than replacing the others.
+        warning =
+          [sameRouteWarning, warning, droppedDelay].filter(Boolean).join(" Also: ") || undefined;
       } else if (runTarget?.flow) {
         step = { kind: "run", flow: runTarget.flow };
         // A resolved target can still carry a warning (a same-named sibling in
