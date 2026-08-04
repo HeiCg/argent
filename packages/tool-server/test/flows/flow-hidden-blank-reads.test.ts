@@ -95,7 +95,7 @@ describe("hidden timeout diagnostics", () => {
     const result = await run("blank-hidden");
 
     expect(result.ok).toBe(false);
-    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].status).toBe("error");
     expect(result.steps[0].reason).toMatch(/could not confirm/);
     expect(result.steps[0].reason).not.toMatch(/still visible/);
   });
@@ -127,7 +127,7 @@ describe("hidden timeout diagnostics", () => {
     const result = await run("dark-hidden");
 
     expect(result.ok).toBe(false);
-    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].status).toBe("error");
     expect(result.steps[0].reason).toMatch(/could not confirm/);
     expect(result.steps[0].reason).toMatch(/native devtools disconnected/);
     expect(result.steps[0].reason).not.toMatch(/still visible/);
@@ -209,7 +209,7 @@ describe("dark-tail diagnostics (non-hidden conditions)", () => {
     const result = await run("dark-exists");
 
     expect(result.ok).toBe(false);
-    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].status).toBe("error");
     expect(result.steps[0].reason).toMatch(/unreadable for the final \d+ms/i);
     expect(result.steps[0].reason).toMatch(/native devtools disconnected/);
     expect(result.steps[0].reason).not.toMatch(/no element matched/);
@@ -235,7 +235,7 @@ describe("dark-tail diagnostics (non-hidden conditions)", () => {
     const result = await run("dark-await");
 
     expect(result.ok).toBe(false);
-    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].status).toBe("error");
     expect(result.steps[0].reason).toMatch(/unreadable for the final \d+ms/i);
     expect(result.steps[0].reason).toMatch(/native devtools disconnected/);
     expect(result.steps[0].reason).not.toMatch(/no element matched/);
@@ -279,7 +279,7 @@ describe("dark-tail diagnostics (non-hidden conditions)", () => {
     const result = await run("dark-text");
 
     expect(result.ok).toBe(false);
-    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].status).toBe("error");
     expect(result.steps[0].reason).toMatch(/unreadable for the final \d+ms/i);
     expect(result.steps[0].reason).toMatch(/native devtools disconnected/);
     expect(result.steps[0].reason).not.toMatch(/Loading/);
