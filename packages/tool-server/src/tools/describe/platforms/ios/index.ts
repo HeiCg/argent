@@ -55,8 +55,8 @@ const TVOS_HINT =
 //     of an unchanged screen return the same elements ROTATED by one. The
 //     sequence is a rotation of the true reading order with an arbitrary,
 //     per-call starting offset.
-//   - The payload carries no geometry at all (Apple exposes none app-free on
-//     hardware), so every frame is synthesised from list position — and because
+//   - The payload carries no geometry at all (the inspector publishes no frame
+//     attribute), so every frame is synthesised from list position — and because
 //     the position rotates, a given element's frame is different on every call.
 // The hint states both so the agent neither taps a synthesised frame nor treats
 // two reads as comparable.

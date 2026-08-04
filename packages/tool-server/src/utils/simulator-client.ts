@@ -204,8 +204,9 @@ export interface CoreDeviceAxElement {
   id: string;
   /**
    * On-screen rect "{{x, y}, {w, h}}" in points. Reserved by the wire contract
-   * but never sent today — Apple exposes no per-element geometry app-free on
-   * hardware, so the adapter interpolates every frame. See the adapter docs.
+   * but never sent today — the inspector the read goes through publishes no
+   * frame attribute, so the adapter interpolates every frame. See the adapter
+   * docs.
    */
   rect?: string;
 }

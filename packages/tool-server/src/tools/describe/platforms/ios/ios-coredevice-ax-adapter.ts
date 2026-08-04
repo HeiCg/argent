@@ -7,8 +7,8 @@ import { mapNativeTraitsToDescribeRole } from "./ios-native-adapter";
  * axAudit service, read app-free over CoreDevice) into a describe tree.
  *
  * The audit gives a rich VoiceOver caption (label + value + traits) for EVERY
- * on-screen element. It gives nothing else: Apple exposes no per-element
- * geometry app-free on hardware, so the payload carries no `screen` and no
+ * on-screen element. It gives nothing else that reaches here: the inspector
+ * publishes no frame attribute, so the payload carries no `screen` and no
  * `rect`, and the order is a rotation of the true reading order (the walk starts
  * at the device's current VoiceOver cursor). Every frame below is therefore
  * **synthesised from list position** — full-width rows spread top to bottom —
