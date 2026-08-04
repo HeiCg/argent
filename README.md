@@ -142,11 +142,11 @@ no manual step, no `sudo`.
   device — so it is not gated here.) `native-profiler-*` is blocked by the same signing
   requirement: `xctrace` only enumerates processes it is entitled to profile, so on a device with
   no developer-signed app installed there is nothing to attach to. `settings-permissions` drives
-  `simctl privacy`, which addresses a simulator's TCC database and has no CoreDevice counterpart.
-  `paste` is off for a different reason: the `ios_device` controller implements clipboard write over
-  the CoreDevice pasteboard service, but behind a cargo feature the shipped simulator-server binary
-  is not built with — so it is a build-flag away rather than out of reach, and the gate is what stops
-  a paste from reporting success while the text goes nowhere.
+  `simctl privacy`, which edits a simulator's TCC store on the host filesystem. A physical device
+  exposes no equivalent switch: `devicectl` carries no privacy verb anywhere in its command tree
+  (`device settings` covers appearance, audio, biometrics and reset), and installing a
+  configuration profile instead requires a CMS-signed one, which lands back on the same signing
+  requirement.
 
 - `launch-app`, `restart-app`, `reinstall-app` and `open-url` go through `devicectl` rather than
   the CoreDevice session, so they work even before the first interaction has warmed it.
