@@ -55,7 +55,7 @@ CoreDevice "remote control" services (the same path Xcode's device window uses).
 interaction runs natively inside the bundled **simulator-server** (radon's `ios_device`
 controller). The CoreDevice tunnel is a userspace TCP stack over the USB connection, so every
 command runs unprivileged, with no admin prompt and nothing installed on the host. Supported interactions: `screenshot`, `screen-recording-start` / `screen-recording-stop`,
-`gesture-tap`, `gesture-swipe`, `gesture-custom`, `gesture-pinch`, `keyboard`, `button`, `rotate`,
+`gesture-tap`, `gesture-swipe`, `gesture-custom` (single touch), `keyboard`, `button`, `rotate`,
 `launch-app`, `restart-app`, `reinstall-app`, `open-url`, `screenshot-diff`, `await-screen-idle`,
 `await-ui-element`, `run-sequence`, and
 `describe` (the live on-screen accessibility tree — see the note below). The device shows up in `list-devices` with `kind: "device"`.
@@ -103,12 +103,17 @@ no manual step, no `sudo`.
   to tell whether the screen changed. (For pixel-exact in-app frames + taps you'd need an on-device
   XCUITest runner, which requires code-signing.)
 
-- **Two simultaneous touches, but no rotation.** `gesture-pinch` and the two-point form of
-  `gesture-custom` (`x2`/`y2`) work: the device's touch surface tracks each contact by an id
-  carried in its HID report, so a two-finger gesture is two interleaved streams of ordinary
-  touches. `gesture-rotate` is the exception and returns a clear "not supported" error — the
-  contacts arrive, but iOS reads no rotation out of them on hardware, where the identical arc
-  turns a map on a simulator. Three or more fingers are untested.
+- **Multi-touch is not available.** `gesture-pinch` and `gesture-rotate` return a clear "not
+  supported" error, and `gesture-custom` rejects any event carrying a second touch point
+  (`x2`/`y2`) — its single-touch sequences (long press, drag-and-drop, custom scroll) work. The
+  device registers a single touch surface, `mainTouchscreen` (HID usage page `0x0D` "Digitizer" /
+  usage `0x04` "Touch Screen"). Its report does carry a contact identifier, and the device accepts
+  reports addressed to different ids, but iOS reads one finger off them all the same: fed
+  byte-identical two-finger input that makes an iOS simulator zoom out a step, enter 3D and pinch,
+  an iPhone 15 on iOS 27 did nothing, panned, and panned by exactly one contact's displacement —
+  and held two contacts still long enough to fire a _single_-finger long press. The surface that
+  sounds like a second candidate, `touchscreenGesture`, enumerates as usage page `0x01` "Generic
+  Desktop" / usage `0x02` "Mouse" — the pointer for the mirroring window, not a second finger.
 
 - **`await-screen-idle` ignores the read's element order here**, because that order rotates every
   call (see above). "Settled" therefore means the on-screen elements stopped changing, not that

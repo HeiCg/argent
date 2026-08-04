@@ -11,8 +11,8 @@
  *    sim-server, so it can't ride the factory's gate);
  *  - tools that are unsupported on physical iOS reject with a 400-mapped
  *    UnsupportedOperationError, not a generic 500 (the native-devtools family,
- *    gesture-rotate), while `describe` returns the CoreDevice ax tree and
- *    two-finger gestures are dispatched like any other;
+ *    the multi-touch gestures), while `describe` returns the CoreDevice ax tree
+ *    and stays supported on simulators/Android;
  *  - run-sequence must not eagerly hold simulator-server for a physical iPhone;
  *  - gesture-swipe routes a physical iPhone to the sim-server and honors `settle`.
  */
@@ -351,7 +351,7 @@ describe("gesture-swipe on physical iOS routes to the sim-server ios_device cont
   });
 });
 
-describe("gesture-custom on physical iOS: one and two contacts both dispatch", () => {
+describe("gesture-custom on physical iOS: single contact only, rejected as a whole", () => {
   const touch = vi.fn();
   const services = () => ({ simulatorServer: { transport: { touch } } });
 
@@ -376,46 +376,61 @@ describe("gesture-custom on physical iOS: one and two contacts both dispatch", (
     expect(touch.mock.calls.every(([c]) => c.secondX === undefined)).toBe(true);
   });
 
-  it("dispatches a two-finger sequence to a physical iPhone", async () => {
-    // The CoreDevice touchscreen tracks two contacts (radon addresses them by
-    // the contact-id byte of its report), so x2/y2 must reach the sim-server
-    // rather than be rejected. Asserts the second point's own coordinates
-    // travel: dropping them and reusing the primary's would still dispatch two
-    // events and still "work".
-    const result = await gestureCustomTool.execute(
-      services() as never,
-      {
-        udid: PHYSICAL_UDID,
-        events: [
-          { type: "Down", x: 0.4, y: 0.5, x2: 0.6, y2: 0.55 },
-          { type: "Up", x: 0.2, y: 0.5, x2: 0.8, y2: 0.55 },
-        ],
-      } as never
-    );
-
-    expect(result.events).toBe(2);
-    expect(touch.mock.calls.map(([c]) => c.secondX)).toEqual([0.6, 0.8]);
-    expect(touch.mock.calls.map(([c]) => c.secondY)).toEqual([0.55, 0.55]);
+  it("rejects a second touch point before dispatching anything, so no contact is left down", async () => {
+    await expect(
+      gestureCustomTool.execute(
+        services() as never,
+        {
+          udid: PHYSICAL_UDID,
+          events: [
+            { type: "Down", x: 0.5, y: 0.5 },
+            { type: "Move", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
+            { type: "Up", x: 0.3, y: 0.5, x2: 0.7, y2: 0.5 },
+          ],
+        } as never
+      )
+    ).rejects.toBeInstanceOf(UnsupportedOperationError);
+    // The `Down` before the offending event must NOT have gone out: a partial
+    // dispatch would strand a finger on the screen with no `Up` to follow.
+    expect(touch).not.toHaveBeenCalled();
   });
 
-  it("passes an event carrying only one of x2 / y2 through untouched", async () => {
-    // A half-specified second point is the caller's to resolve, not something
-    // this tool rewrites: whichever half was given must arrive as given, and the
-    // missing half must stay absent rather than being filled from the primary.
-    await gestureCustomTool.execute(
-      services() as never,
-      {
-        udid: PHYSICAL_UDID,
-        events: [
-          { type: "Down", x: 0.5, y: 0.5 },
-          { type: "Up", x: 0.5, y: 0.5, x2: 0.6 },
-        ],
-      } as never
-    );
+  it("refuses an event that carries only one of x2 / y2", async () => {
+    // The guard is `x2 !== undefined || y2 !== undefined`; every other case here
+    // sets both, so the second half is unexercised. A y2-only event would then
+    // go out with `second_y` set on a digitizer that has one contact.
+    for (const half of [{ x2: 0.6 }, { y2: 0.7 }]) {
+      await expect(
+        gestureCustomTool.execute(
+          services() as never,
+          {
+            udid: PHYSICAL_UDID,
+            events: [
+              { type: "Down", x: 0.5, y: 0.5 },
+              { type: "Up", x: 0.5, y: 0.5, ...half },
+            ],
+          } as never
+        ),
+        JSON.stringify(half)
+      ).rejects.toBeInstanceOf(UnsupportedOperationError);
+      expect(touch, JSON.stringify(half)).not.toHaveBeenCalled();
+    }
+  });
 
-    expect(touch).toHaveBeenCalledTimes(2);
-    expect(touch.mock.calls[1][0].secondX).toBe(0.6);
-    expect(touch.mock.calls[1][0].secondY).toBeUndefined();
+  it("indexes the rejection against the caller's events, not the interpolated expansion", async () => {
+    await expect(
+      gestureCustomTool.execute(
+        services() as never,
+        {
+          udid: PHYSICAL_UDID,
+          events: [
+            { type: "Down", x: 0.5, y: 0.5 },
+            { type: "Up", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
+          ],
+          interpolate: 10,
+        } as never
+      )
+    ).rejects.toThrow(/events\[1\]/);
   });
 
   it("still sends a two-finger sequence to a simulator (no regression)", async () => {
@@ -435,9 +450,10 @@ describe("gesture-custom on physical iOS: one and two contacts both dispatch", (
   });
 
   it("leaves a physical ANDROID phone's two-finger gestures alone", () => {
-    // Two-contact support arrived for physical iOS by deleting a platform+kind
-    // guard. A replacement guard that narrowed on `kind: "device"` alone would
-    // take these away from Android, where adb does drive them.
+    // The guard narrows on platform AND kind, and a physical Android phone is
+    // also `kind: "device"`. Every other case here uses an iPhone udid or a
+    // simulator UUID, so dropping the platform half would silently take
+    // two-contact gestures away from Android — where adb does drive them.
     const androidTwoTouch = {
       udid: "R5CT30ABCDE",
       events: [
@@ -446,30 +462,45 @@ describe("gesture-custom on physical iOS: one and two contacts both dispatch", (
       ],
     };
     expect(resolveDevice("R5CT30ABCDE")).toMatchObject({ platform: "android", kind: "device" });
+    expect(Object.keys(gestureCustomTool.services!(androidTwoTouch as never))).toEqual([
+      "simulatorServer",
+    ]);
     return expect(
       gestureCustomTool.execute(services() as never, androidTwoTouch as never)
     ).resolves.toMatchObject({ events: 2 });
   });
 
-  it("resolves simulator-server for every request, two-contact included", () => {
-    // A two-contact request used to resolve no service, because execute() was
-    // going to reject it before touching the device. Now it is dispatched, so it
-    // needs the session like any other — resolving nothing would fail at the
-    // first send instead.
-    for (const udid of [PHYSICAL_UDID, SIM_UDID]) {
-      expect(
-        Object.keys(
-          gestureCustomTool.services!({
-            udid,
-            events: [
-              { type: "Down", x: 0.5, y: 0.5 },
-              { type: "Up", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
-            ],
-          } as never)
-        ),
-        udid
-      ).toEqual(["simulatorServer"]);
-    }
+  it("resolves no service for a request it is going to reject (no wasted spawn)", () => {
+    // The registry resolves every declared service before calling execute, so a
+    // ref here would bring the CoreDevice session up purely to reject — and on a
+    // device whose session cannot start (locked, unplugged, Developer Mode off)
+    // the caller would get that transport error instead of "this gesture needs
+    // two contacts". Same shape as `button`'s no-HID-equivalent case above.
+    const twoTouch = {
+      udid: PHYSICAL_UDID,
+      events: [
+        { type: "Down", x: 0.5, y: 0.5 },
+        { type: "Up", x: 0.4, y: 0.5, x2: 0.6, y2: 0.5 },
+      ],
+    };
+    expect(Object.keys(gestureCustomTool.services!(twoTouch as never))).toEqual([]);
+
+    // The single-touch half must still resolve one, or the tool stops working.
+    const singleTouch = {
+      udid: PHYSICAL_UDID,
+      events: [
+        { type: "Down", x: 0.5, y: 0.5 },
+        { type: "Up", x: 0.5, y: 0.4 },
+      ],
+    };
+    expect(Object.keys(gestureCustomTool.services!(singleTouch as never))).toEqual([
+      "simulatorServer",
+    ]);
+
+    // …and a simulator keeps its two-finger support.
+    expect(
+      Object.keys(gestureCustomTool.services!({ ...twoTouch, udid: SIM_UDID } as never))
+    ).toEqual(["simulatorServer"]);
   });
 });
 
@@ -713,16 +744,6 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
     expect(() =>
       assertSupported("screen-recording-stop", screenRecordingStopTool.capability, physical)
     ).not.toThrow();
-    // Two-finger gestures: the CoreDevice touchscreen tracks a second contact
-    // addressed by its report's contact-id byte, verified by a pinch that zooms
-    // a real app in and back out. gesture-rotate is the deliberate exception —
-    // see the simulator-only list below.
-    expect(() =>
-      assertSupported("gesture-pinch", gesturePinchTool.capability, physical)
-    ).not.toThrow();
-    expect(() =>
-      assertSupported("gesture-custom", gestureCustomTool.capability, physical)
-    ).not.toThrow();
     // await-screen-idle rides describe, which works on hardware once the read's
     // element ORDER is ignored (see the rotating-read cases above).
     expect(() =>
@@ -736,6 +757,7 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
 
   it("simulator-only tools reject a physical iPhone via the capability gate", () => {
     for (const [id, cap] of [
+      ["gesture-pinch", gesturePinchTool.capability],
       ["native-describe-screen", nativeDescribeScreenTool.capability],
       // native-profiler-start does LIVE capture via simulator-only simctl (the
       // process enumeration mislabels a real iPhone as a "simulator"), so it
@@ -768,10 +790,7 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
   it("every simulator-only tool rejects a physical iPhone, and none of them lost simulator support", () => {
     const simulatorOnly: ReadonlyArray<readonly [string, ToolCapability | undefined]> = [
       ["paste", pasteTool.capability],
-      // gesture-rotate but NOT gesture-pinch: both need two contacts and a
-      // physical iPhone supplies them, but iOS only reads a pinch out of them —
-      // an identical arc turns the map on a simulator and merely pans on
-      // hardware, so rotate alone stays gated.
+      ["gesture-pinch", gesturePinchTool.capability],
       ["gesture-rotate", gestureRotateTool.capability],
       ["tv-remote", createTvRemoteTool({} as never).capability],
       ["native-describe-screen", nativeDescribeScreenTool.capability],

@@ -83,14 +83,11 @@ interface Result {
   timestampMs: number;
 }
 
-// `apple.device: false`, and not for want of contacts: a physical iPhone does
-// take two, and `gesture-pinch` drives them through the same path. Rotation
-// specifically is not recognized there — the identical arc (same centre, radii
-// and frame rate) turns the map on a simulator and raises its compass, while on
-// an iPhone 15 / iOS 27 it only pans, across sweeps from 90° to 150° and
-// durations from 0.5s to 2s. Two fingers arrive; iOS declines to read a rotation
-// out of them. Left gated rather than shipped as a call that reports
-// `rotated: true` over a screen that did not turn.
+// `apple.device: false`: this gesture needs two simultaneous contacts, and the
+// CoreDevice digitizer a physical iPhone is driven through exposes a
+// single-contact touchscreen (see gesture-custom, which stays enabled and
+// rejects only its own two-contact half per request). There is no single-touch
+// approximation of this gesture worth offering, so the whole tool is gated.
 const capability: ToolCapability = {
   apple: { simulator: true, device: false },
   appleRemote: { simulator: true },
