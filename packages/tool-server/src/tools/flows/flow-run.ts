@@ -30,7 +30,8 @@ import {
 import type { TextMatchMode, WaitCondition } from "../../utils/ui-tree-match";
 import { sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool } from "../../utils/sub-invoke";
-import { isUnmetUiWaitResult } from "../await-ui-element";
+import { isUnmetUiWaitResult, vacuousHiddenSelectors } from "../await-ui-element";
+import { establishedTerms, selectorIdentityTerms } from "./flow-selector-evidence";
 import { runSequenceFailure } from "../run-sequence";
 import { resolveFlowDevice, bindDeviceArgs, type FlowPlatform } from "./flow-device";
 import {
@@ -38,6 +39,7 @@ import {
   invokeOnDevice,
   ABORTED_OUTCOME,
   probeWhenCondition,
+  vacuousHiddenReason,
   type ActionEnv,
   type DirectiveOutcome,
 } from "./flow-actions";
@@ -158,6 +160,15 @@ export interface StepReport {
    * percentage, baseline written/updated).
    */
   reason?: string;
+  /**
+   * The step passed, but the WAY it passed weakens it as proof. Rendered as a
+   * "⚠" suffix by the MCP client, which already understood this field.
+   * Currently only a `hidden` check that held without its selector ever
+   * matching, in a run that never established it: the condition genuinely held
+   * (so it is not a failure), but it is indistinguishable from a typo'd
+   * selector or the wrong screen, and it would keep holding forever.
+   */
+  warning?: string;
   /** Underlying tool id for `tool` steps. */
   tool?: string;
   /** Tool result for `tool` steps. */
@@ -474,6 +485,13 @@ interface ExecState extends ActionEnv {
    * rejected instead of silently passing against the already-launched app.
    */
   chromiumLaunched: boolean;
+  /**
+   * Selector identity terms the run has positively established (see
+   * flow-selector-evidence). Required here — unlike on ActionEnv, where a
+   * one-off directive caller legitimately has none — because a flow run always
+   * has a flow to draw evidence from.
+   */
+  establishedSelectors: Set<string>;
   /** Live progress hook: receives every report the moment it is appended. */
   onStepReport?: (report: StepReport) => void;
 }
@@ -583,6 +601,7 @@ returns a notice with the prerequisite instead of running.`,
         reports: [],
         stopped: false,
         pinned: statusBarPinned,
+        establishedSelectors: new Set<string>(),
         chromiumBooted: resolved.booted !== null,
         chromiumLaunched: false,
         ...(ctx?.emitProgress ? { onStepReport: ctx.emitProgress } : {}),
@@ -929,6 +948,11 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
 
     const report = await execLeafStep(state, step, index, scope);
     pushReport(state, report);
+    // Only a step that PASSED is evidence. A `visible` check that failed proves
+    // nothing was there, and must not license a later `hidden` check.
+    if (report.status === "pass") {
+      for (const term of establishedTerms(step)) state.establishedSelectors.add(term);
+    }
     if (report.status === "fail" || report.status === "error") state.stopped = true;
   }
 }
@@ -1129,7 +1153,12 @@ async function execLeafStep(
         // A run cancelled mid-directive is a skip (matching the pre-step guard
         // and `wait`), never a step failure — the app did nothing wrong.
         if (r.aborted) return { ...base, status: "skip", reason: r.reason };
-        return { ...base, status: r.ok ? "pass" : "fail", reason: r.reason };
+        return {
+          ...base,
+          status: r.ok ? "pass" : "fail",
+          reason: r.reason,
+          ...(r.warning !== undefined ? { warning: r.warning } : {}),
+        };
       } catch (err) {
         return { ...base, status: "error", reason: errMsg(err) };
       }
@@ -1184,6 +1213,19 @@ async function execLeafStep(
             reason: `await-ui-element condition not met${note ? `: ${note}` : ""}`,
           };
         }
+        // Covers a wait nested in a `run-sequence` as well as a direct one —
+        // the recorder refuses both, so scoring only the direct one would let a
+        // wrapped check replay as a clean pass forever.
+        let vacuousWarning: string | undefined;
+        for (const selector of vacuousHiddenSelectors(step.name, result, step.args)) {
+          const terms = selectorIdentityTerms(selector);
+          const falsifiable =
+            terms.length === 0 || terms.some((t) => state.establishedSelectors.has(t));
+          if (!falsifiable) {
+            vacuousWarning = vacuousHiddenReason(selector as never);
+            break;
+          }
+        }
         const sequenceFailure = runSequenceFailure(step.name, result);
         if (sequenceFailure) {
           return {
@@ -1193,7 +1235,15 @@ async function execLeafStep(
             reason: `run-sequence stopped on a failed nested step: ${sequenceFailure}`,
           };
         }
-        return { ...base, status: "pass", tool: step.name, result, outputHint, args };
+        return {
+          ...base,
+          status: "pass",
+          tool: step.name,
+          result,
+          outputHint,
+          args,
+          ...(vacuousWarning !== undefined ? { warning: vacuousWarning } : {}),
+        };
       } catch (err) {
         return { ...base, status: "error", tool: step.name, reason: errMsg(err) };
       }
