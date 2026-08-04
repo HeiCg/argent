@@ -513,6 +513,29 @@ export type FlowStep =
       expectedText?: string;
       textMatch?: TextMatchMode;
     }
+  /**
+   * Screen IDENTITY: the app's own focused React Navigation route path
+   * ("HomeTab>Profile"). Spelled `await: { screen: … }` / `assert: { screen: … }`
+   * in YAML — it is a condition like any other, but it takes a route rather
+   * than a selector because it reads navigation state instead of the UI tree.
+   * `mode` records which key it was written under so the step round-trips.
+   */
+  | {
+      kind: "screen";
+      mode: "await" | "assert";
+      route: string;
+      /** App whose route to read; defaults to the flow's last `launch` app. */
+      app?: string;
+      /** Metro port the app was launched from (default 8081). */
+      metroPort?: number;
+      timeout?: number;
+    }
+  /**
+   * Screen READINESS: the UI tree has content and stopped changing. Spelled
+   * `await: { idle: true }`. There is no `assert` form — "has it stopped
+   * moving yet" is inherently a wait.
+   */
+  | { kind: "idle"; timeout?: number; minStableMs?: number }
   | { kind: "wait"; ms: number }
   | { kind: "scroll-to"; target: FlowSelector; direction: ScrollDirection; within?: FlowSelector }
   | { kind: "pinch"; selector?: FlowSelector; scale: number }
@@ -650,6 +673,24 @@ type YamlWaitCondition =
 
 type YamlTextWaitCondition = Extract<YamlWaitCondition, { text: unknown }>;
 
+/**
+ * The non-selector conditions. They share the `await:` / `assert:` keys with
+ * {@link YamlWaitCondition} but do not take a selector, so they are parsed by
+ * their own functions and are deliberately NOT part of that union — a step body
+ * carries either a selector condition or one of these, never a mix.
+ *
+ *   - `{ screen: "HomeTab>Profile" }`      ← identity, read from navigation state
+ *   - `{ idle: true }`                     ← readiness, the tree stopped changing
+ */
+type YamlScreenCondition = {
+  screen: string;
+  app?: string;
+  metroPort?: number;
+  timeout?: number;
+};
+
+type YamlIdleCondition = { idle: true; minStableMs?: number; timeout?: number };
+
 /** `scroll-to` body: a bare target (scrolls down), or a map with options. */
 type YamlScrollBody =
   | YamlSelector
@@ -674,8 +715,10 @@ type YamlStep =
   | { tap: TapBody }
   | { "long-press": YamlTarget | { on: YamlTarget; duration?: number } }
   | { type: { into: YamlSelector; text: string; submit?: boolean } }
-  | { await: YamlWaitCondition & { timeout?: number } }
-  | { assert: YamlWaitCondition }
+  | {
+      await: (YamlWaitCondition & { timeout?: number }) | YamlScreenCondition | YamlIdleCondition;
+    }
+  | { assert: YamlWaitCondition | Omit<YamlScreenCondition, "timeout"> }
   | { wait: number }
   | { "scroll-to": YamlScrollBody }
   | { pinch: { on?: YamlSelector; scale: number } }
@@ -957,10 +1000,37 @@ function waitToYaml(
   return body;
 }
 
+/**
+ * Sugar a `screen` / `idle` step back under its `await:` or `assert:` key.
+ * Optional fields are emitted only when set, so the canonical minimal spelling
+ * (`await: { screen: "Home" }`) round-trips unchanged.
+ */
+function identityToYaml(step: Extract<FlowStep, { kind: "screen" | "idle" }>): YamlStep {
+  switch (step.kind) {
+    case "screen": {
+      const body: YamlScreenCondition = { screen: step.route };
+      if (step.app !== undefined) body.app = step.app;
+      if (step.metroPort !== undefined) body.metroPort = step.metroPort;
+      if (step.mode === "assert") return { assert: body };
+      if (step.timeout !== undefined) body.timeout = step.timeout;
+      return { await: body };
+    }
+    case "idle": {
+      const body: YamlIdleCondition = { idle: true };
+      if (step.minStableMs !== undefined) body.minStableMs = step.minStableMs;
+      if (step.timeout !== undefined) body.timeout = step.timeout;
+      return { await: body };
+    }
+  }
+}
+
 function toYamlStep(step: FlowStep): YamlStep {
   switch (step.kind) {
     case "echo":
       return { echo: step.message };
+    case "screen":
+    case "idle":
+      return identityToYaml(step);
     case "launch":
       return { launch: step.app };
     case "run":
@@ -1361,18 +1431,23 @@ type WaitFields = {
  * `assert` carrying one is rejected rather than silently ignored.
  */
 function parseWaitFields(raw: unknown, kind: "await" | "assert" | "when"): WaitFields {
+  // What the author is allowed to write, which is NOT the same as what this
+  // function parses: `screen` and `idle` are routed away to
+  // parseIdentityFields before we get here, so listing only the selector
+  // conditions told an author with a typo next to a `screen:` gate that
+  // `screen` itself was not a legal key. A `when:` guard genuinely has no
+  // identity form, so its list stays as it is.
+  const legalKeys =
+    kind === "when" ? WAIT_CONDITIONS : [...WAIT_CONDITIONS, ...IDENTITY_CONDITIONS];
   if (raw === null || typeof raw !== "object") {
-    badEntry({ [kind]: raw }, `${kind} needs a condition (${WAIT_CONDITIONS.join(", ")})`);
+    badEntry({ [kind]: raw }, `${kind} needs a condition (${legalKeys.join(", ")})`);
   }
   const b = raw as Record<string, unknown>;
 
   // The condition is the key; its value is the selector.
   const present = WAIT_CONDITIONS.filter((c) => c in b);
   if (present.length !== 1) {
-    badEntry(
-      { [kind]: b },
-      `${kind} needs exactly one condition key (${WAIT_CONDITIONS.join(", ")})`
-    );
+    badEntry({ [kind]: b }, `${kind} needs exactly one condition key (${legalKeys.join(", ")})`);
   }
   const condition = present[0]!;
 
@@ -1449,6 +1524,172 @@ function parseWaitFields(raw: unknown, kind: "await" | "assert" | "when"): WaitF
   }
 
   return { condition, selector: parseSelector(b[condition], `${kind}.${condition}`), timeout };
+}
+
+/**
+ * The non-selector condition keys. Their presence in an `await`/`assert` body
+ * routes parsing away from {@link parseWaitFields} — see {@link parseIdentityFields}.
+ */
+const IDENTITY_CONDITIONS = ["screen", "idle"] as const;
+type IdentityCondition = (typeof IDENTITY_CONDITIONS)[number];
+
+/** Ceiling shared by every condition timeout, matching `await.timeout`'s. */
+const MAX_IDLE_STABLE_MS = 10_000;
+
+/**
+ * Validate a route fingerprint: focused route names outermost→innermost joined
+ * with ">", exactly as `screen-fingerprint` reports it. Rejected here, at
+ * parse, so a typo fails deviceless instead of timing out against a live app
+ * that was on the right screen all along.
+ */
+function parseRouteFingerprint(entry: unknown, value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    badEntry(
+      entry,
+      'screen needs a route fingerprint string as reported by `screen-fingerprint` (e.g. "HomeTab>Profile")'
+    );
+  }
+  const segments = (value as string).split(">");
+  if (segments.some((segment) => segment.trim().length === 0)) {
+    badEntry(
+      entry,
+      `screen route "${value as string}" has an empty path segment — join focused route names ` +
+        'with ">" and no leading, trailing, or doubled separator (e.g. "HomeTab>Profile")'
+    );
+  }
+  return value as string;
+}
+
+/** Positive-integer option shared by the identity conditions' numeric keys. */
+function parseBoundedMs(entry: unknown, value: unknown, where: string, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max) {
+    badEntry(entry, `${where} needs an integer between 0 and ${max} (milliseconds)`);
+  }
+  return value as number;
+}
+
+/**
+ * Parse an `await`/`assert` body carrying one of the non-selector conditions.
+ * Returns the finished step, because unlike the selector conditions these two
+ * have nothing in common to hand back as fields.
+ *
+ * `assert` is rejected for `idle` (waiting is the whole point of the check) and
+ * carries no `timeout` for `screen`, matching {@link parseWaitFields}.
+ */
+function parseIdentityFields(
+  raw: Record<string, unknown>,
+  condition: IdentityCondition,
+  kind: "await" | "assert"
+): FlowStep {
+  const entry = { [kind]: raw };
+
+  if (condition === "idle" && kind !== "await") {
+    badEntry(
+      entry,
+      "idle has no assert form — it waits for the screen to stop changing, which is an `await`"
+    );
+  }
+  if ("timeout" in raw && kind === "assert") {
+    badEntry(
+      entry,
+      "assert has no timeout — it is an immediate check; use `await` for a timed wait"
+    );
+  }
+
+  const allowed = condition === "screen" ? ["screen", "app", "metroPort"] : ["idle", "minStableMs"];
+  rejectUnknownKeys(entry, raw, kind === "await" ? [...allowed, "timeout"] : allowed, kind);
+
+  const timeout =
+    "timeout" in raw
+      ? {
+          timeout: (() => {
+            if (
+              typeof raw.timeout !== "number" ||
+              !Number.isFinite(raw.timeout) ||
+              raw.timeout <= 0
+            ) {
+              badEntry(
+                entry,
+                "await.timeout needs a positive number of milliseconds (e.g. `timeout: 10000`)"
+              );
+            }
+            return raw.timeout as number;
+          })(),
+        }
+      : {};
+
+  if (condition === "screen") {
+    const step: Extract<FlowStep, { kind: "screen" }> = {
+      kind: "screen",
+      mode: kind,
+      route: parseRouteFingerprint(entry, raw.screen),
+      ...timeout,
+    };
+    if (raw.app !== undefined) {
+      if (typeof raw.app !== "string" || raw.app.length === 0) {
+        badEntry(entry, "screen.app needs a non-empty app id (bundle id / package name)");
+      }
+      step.app = raw.app;
+    }
+    if (raw.metroPort !== undefined) {
+      if (
+        typeof raw.metroPort !== "number" ||
+        !Number.isInteger(raw.metroPort) ||
+        raw.metroPort < 1 ||
+        raw.metroPort > 65535
+      ) {
+        badEntry(entry, "screen.metroPort needs an integer TCP port between 1 and 65535");
+      }
+      step.metroPort = raw.metroPort;
+    }
+    return step;
+  }
+
+  // `idle: true` only. A falsey value would spell "assert the screen is NOT
+  // settled", which no flow wants and the runner cannot answer.
+  if (raw.idle !== true) {
+    badEntry(entry, "idle takes only `true` (`await: { idle: true }`)");
+  }
+  const step: Extract<FlowStep, { kind: "idle" }> = { kind: "idle", ...timeout };
+  if (raw.minStableMs !== undefined) {
+    step.minStableMs = parseBoundedMs(
+      entry,
+      raw.minStableMs,
+      "idle.minStableMs",
+      MAX_IDLE_STABLE_MS
+    );
+  }
+  return step;
+}
+
+/**
+ * The identity condition named by an `await`/`assert` body, or undefined when
+ * the body is an ordinary selector condition. Rejects a body that mixes the two
+ * families, or names two identity conditions, rather than silently preferring one.
+ */
+function identityConditionOf(
+  raw: unknown,
+  kind: "await" | "assert"
+): IdentityCondition | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const body = raw as Record<string, unknown>;
+  const present = IDENTITY_CONDITIONS.filter((c) => c in body);
+  if (present.length === 0) return undefined;
+  if (present.length > 1) {
+    badEntry(
+      { [kind]: body },
+      `${kind} needs exactly one condition key, not ${present.join(" + ")}`
+    );
+  }
+  const selectorConditions = WAIT_CONDITIONS.filter((c) => c in body);
+  if (selectorConditions.length > 0) {
+    badEntry(
+      { [kind]: body },
+      `${kind} mixes \`${present[0]!}\` with \`${selectorConditions.join("`, `")}\` — a step ` +
+        `checks exactly one condition`
+    );
+  }
+  return present[0];
 }
 
 /**
@@ -1955,12 +2196,26 @@ function fromYamlStep(raw: YamlStep, whenDepth = 0): FlowStep {
     return step;
   }
 
+  // `await:` / `assert:` carry two families of condition: the selector ones
+  // (visible/hidden/exists/text, matched against the UI tree) and the
+  // non-selector ones (screen/idle, which read navigation state and tree
+  // stability). The body's key decides which.
   if ("await" in raw) {
-    return { kind: "await", ...parseWaitFields((raw as { await: unknown }).await, "await") };
+    const body = (raw as { await: unknown }).await;
+    const identity = identityConditionOf(body, "await");
+    if (identity !== undefined) {
+      return parseIdentityFields(body as Record<string, unknown>, identity, "await");
+    }
+    return { kind: "await", ...parseWaitFields(body, "await") };
   }
 
   if ("assert" in raw) {
-    return { kind: "assert", ...parseWaitFields((raw as { assert: unknown }).assert, "assert") };
+    const body = (raw as { assert: unknown }).assert;
+    const identity = identityConditionOf(body, "assert");
+    if (identity !== undefined) {
+      return parseIdentityFields(body as Record<string, unknown>, identity, "assert");
+    }
+    return { kind: "assert", ...parseWaitFields(body, "assert") };
   }
 
   if ("wait" in raw) {

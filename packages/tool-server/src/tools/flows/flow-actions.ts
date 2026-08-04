@@ -24,6 +24,12 @@ import {
 } from "../../utils/ui-tree-match";
 import { sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool } from "../../utils/sub-invoke";
+import {
+  connectRouteReader,
+  verifyRouteFingerprint,
+  type RouteReader,
+} from "../../utils/route-identity";
+import { metroServerRunning } from "../../utils/debugger/discovery";
 import { selectorIdentityTerms } from "./flow-selector-evidence";
 import { bindDeviceArgs } from "./flow-device";
 import { fetchFlowTree } from "./flow-tree";
@@ -50,12 +56,69 @@ import {
   type ScrollDirection,
 } from "./flow-utils";
 
+/**
+ * Per-run scratch for `await: { screen: … }` gates. Connecting the RN debugger
+ * costs a Metro discovery plus a CDP attach, so the reader is established once
+ * and reused for every gate in the run. A failed connect is memoized as `null`
+ * (not retried), because "this app has no route reader" is a property of the
+ * build, not a transient.
+ */
+export interface ScreenIdentityState {
+  /** App id of the last executed `launch` step — the default a gate reads. */
+  launchedAppId?: string;
+  /**
+   * Memoized readers keyed `<appId>@<metroPort>`. SUCCESSES ONLY — a failed
+   * connect is never stored, because the debugger session comes and goes with
+   * the app: a `launch` invalidates it, and the first gate after one routinely
+   * connects too early. Caching that failure made every later gate on the run
+   * fail instantly with no wait, which no per-step `timeout:` could rescue.
+   */
+  readers: Map<string, RouteReader>;
+  /**
+   * Keys whose platform can never have a route reader (chromium has no React
+   * Navigation). Permanent for the run — unlike a failed connect, retrying
+   * cannot change the answer.
+   */
+  unsupported: Set<string>;
+  /**
+   * Keys whose connect exhausted its whole retry budget since the last
+   * `launch`. NOT the cache R2 forbids: this one is scoped to the launch
+   * epoch and cleared by every launch, so the case that poisoned runs — a
+   * gate that connected into the post-launch gap and condemned the rest of
+   * the run — cannot recur.
+   *
+   * It is a backstop, not a load-bearing optimization, and the difference is
+   * worth stating because the obvious reading ("it saves the flow's LATER
+   * gates from paying the budget again") does not hold: an exhausted connect
+   * makes the step `indeterminate`, the runner scores that `error`, and an
+   * errored step stops the run — so no later step gets to consult this set.
+   * What it does cover is a second `routeReaderFor` inside ONE step, and the
+   * only such caller (the reconnect after an all-null poll) deliberately
+   * clears the key first. Keep it as the guard that bounds any future caller;
+   * do not credit it with saving time on today's paths.
+   */
+  connectExhausted: Set<string>;
+  /**
+   * True while the app is in the window right after a `launch` (and at the
+   * start of a run, whose first step is a launch for an e2e flow). The first
+   * connect of such an epoch is allowed a much larger budget, because the app
+   * is not slow to answer — it is not registered with Metro yet at all.
+   * Cleared by the first successful connect.
+   */
+  coldSinceLaunch: boolean;
+}
+
 /** Everything a directive needs to act on the run's device. */
 export interface ActionEnv {
   registry: Registry;
   ctx?: ToolContext;
   device: DeviceInfo;
   signal?: AbortSignal;
+  /**
+   * Present for a flow run; absent for one-off directive callers. A `screen`
+   * gate without it fails with authoring guidance rather than silently passing.
+   */
+  screenIdentity?: ScreenIdentityState;
   /**
    * Selector identity terms (`id:…`/`text:…`) the run has positively
    * established so far — populated by the runner as each step passes. Absent
@@ -107,10 +170,22 @@ export const ABORTED_OUTCOME: DirectiveOutcome = {
   reason: "run aborted",
 };
 
-/** The selector-acting steps {@link runDirective} handles. */
+/** The condition/action steps {@link runDirective} handles. */
 export type DirectiveStep = Extract<
   FlowStep,
-  { kind: "tap" | "long-press" | "type" | "await" | "assert" | "scroll-to" | "pinch" | "rotate" }
+  {
+    kind:
+      | "tap"
+      | "long-press"
+      | "type"
+      | "await"
+      | "assert"
+      | "screen"
+      | "idle"
+      | "scroll-to"
+      | "pinch"
+      | "rotate";
+  }
 >;
 
 /** Dispatch a tool with the run's resolved device id bound into its args. */
@@ -492,16 +567,26 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
 }
 
 /**
- * Poll until an element reporting `focused` overlaps the typed-into element.
- * Overlap, not identity: the selector often matches a testID container while
- * focus is reported by the input inside it. The target's frame is re-resolved
- * each round — the keyboard sliding up routinely scrolls the field away from
- * where it was tapped (keyboard avoidance), and the focused element must be
- * compared against where the field is NOW; `tappedFrame` covers rounds where
- * the selector momentarily doesn't resolve. Best-effort by design — a source
- * that can't report focus returns immediately, and an unconfirmed poll falls
- * through to typing after the timeout rather than failing the step, since "no
- * focus seen" can also mean the focused view didn't make it into the tree.
+ * Poll until an element reporting `focused` nests with the typed-into element,
+ * per {@link framesNest} — containment, not identity and not bare overlap. The
+ * selector often matches a testID container while focus is reported by the
+ * input inside it, which is why identity is too strict; an element that merely
+ * clips a corner of the target is evidence of nothing, which is why overlap is
+ * too loose. The target's frame is re-resolved each round — the keyboard
+ * sliding up routinely scrolls the field away from where it was tapped
+ * (keyboard avoidance), and the focused element must be compared against where
+ * the field is NOW; `tappedFrame` covers rounds where the selector momentarily
+ * doesn't resolve.
+ *
+ * The verdict is returned rather than swallowed, and the three ways of not
+ * saying "confirmed" are kept apart, because they warrant opposite responses:
+ *
+ * - `unreported` — the source cannot surface focus at all (Vega). Nothing to
+ *   wait for and nothing to conclude; typing proceeds as it always has.
+ * - `unreadable` — the source can, but every read of the window threw. That is
+ *   an environment problem, not evidence about where focus went.
+ * - `unconfirmed` — reads succeeded and no focused element overlapped the
+ *   field. This is real evidence the keys would land somewhere else.
  */
 type FocusVerdict = "confirmed" | "unconfirmed" | "unreported" | "unreadable" | "aborted";
 
@@ -727,6 +812,10 @@ export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise
       return waitForCondition(env, step, step.timeout ?? DEFAULT_ACTION_TIMEOUT_MS);
     case "assert":
       return waitForCondition(env, step, DEFAULT_ASSERT_TIMEOUT_MS);
+    case "screen":
+      return waitForScreen(env, step);
+    case "idle":
+      return waitForIdle(env, step);
     case "scroll-to": {
       const r = await scrollToVisible(env, step.target, step.direction, step.within);
       if (r.aborted) return ABORTED_OUTCOME;
@@ -987,13 +1076,6 @@ async function runRotate(
 }
 
 /**
- * Resolve `into` → tap to focus → wait for focus to land → type text via the
- * keyboard tool. Unless `submit` is explicitly `false`, a trailing Enter is
- * pressed to commit the value and dismiss the keyboard, so it can't obscure
- * later steps (chained form fields that end in an explicit submit `tap` should
- * pass `submit: false`).
- */
-/**
  * Tap a field's centre and wait for focus to land there, re-resolving the
  * field's frame first (the keyboard sliding up can scroll it).
  */
@@ -1004,11 +1086,25 @@ async function tapForFocus(
 ): Promise<FocusVerdict> {
   await invokeOnDevice(env, "gesture-tap", getDescribeTapPoint(frame));
   // Keys are injected at the HID level and go to whatever holds focus, so the
-  // tap-to-type gap must cover the app's focus round-trip (see the constants).
+  // tap→type gap must cover the app's focus round-trip (see the constants).
   if (!(await sleepOrAbort(TYPE_FOCUS_SETTLE_MS, env.signal))) return "aborted";
   return waitForFocus(env, into, frame);
 }
 
+/**
+ * Resolve `into` → tap to focus → wait for focus to land → type text via the
+ * keyboard tool. Unless `submit` is explicitly `false`, a trailing Enter is
+ * pressed to commit the value and dismiss the keyboard, so it can't obscure
+ * later steps (chained form fields that end in an explicit submit `tap` should
+ * pass `submit: false`).
+ *
+ * Typing is refused when focus was NOT confirmed on a source that reports it.
+ * Keys go to the HID layer, not to the element — unfocused, they land wherever
+ * the app last put the caret, and the damage shows up much later: the observed
+ * case was a dropped leading character that iOS autocorrect then completed into
+ * a different word, which the app saved. One retry first, because losing the
+ * focus race is far more common than the field being untappable.
+ */
 async function runType(
   env: ActionEnv,
   step: { into: FlowSelector; text: string; submit?: boolean }
@@ -1068,23 +1164,6 @@ async function runType(
 const NEEDS_SECOND_READ: ReadonlySet<WaitCondition> = new Set(["exists", "visible", "text"]);
 
 /**
- * Identity of the set of nodes a selector matched, for comparing one read
- * against the next. Frames are included: an element still sliding into place
- * has not settled, and a `tap` resolved against a moving frame lands where the
- * element no longer is.
- */
-function matchFingerprint(matches: DescribeNode[]): string {
-  return matches
-    .map(
-      (n) =>
-        `${n.role}|${Math.round(n.frame.x * 1000)},${Math.round(n.frame.y * 1000)},` +
-        `${Math.round(n.frame.width * 1000)},${Math.round(n.frame.height * 1000)}` +
-        `|${n.label ?? ""}|${n.value ?? ""}|${n.identifier ?? ""}|${n.subtreeText ?? ""}`
-    )
-    .join("\n");
-}
-
-/**
  * Whether a `hidden` check that never saw its selector can still fail — i.e.
  * whether an earlier step of the run positively established that selector.
  * With no evidence set at all (a one-off directive caller outside a flow run)
@@ -1126,6 +1205,23 @@ export function vacuousHiddenReason(selector: FlowSelector): string {
 }
 
 /**
+ * Identity of the set of nodes a selector matched, for comparing one read
+ * against the next. Frames are included: an element still sliding into place
+ * has not settled, and a `tap` resolved against a moving frame lands where the
+ * element no longer is.
+ */
+function matchFingerprint(matches: DescribeNode[]): string {
+  return matches
+    .map(
+      (n) =>
+        `${n.role}|${Math.round(n.frame.x * 1000)},${Math.round(n.frame.y * 1000)},` +
+        `${Math.round(n.frame.width * 1000)},${Math.round(n.frame.height * 1000)}` +
+        `|${n.label ?? ""}|${n.value ?? ""}|${n.identifier ?? ""}|${n.subtreeText ?? ""}`
+    )
+    .join("\n");
+}
+
+/**
  * Poll a condition against the flow tree until it holds or `timeoutMs` passes.
  * One engine behind both conditional directives — they differ only in budget
  * and intent:
@@ -1146,6 +1242,10 @@ export function vacuousHiddenReason(selector: FlowSelector): string {
  * satisfies) when the adapter flagged the read as degraded or the selector had
  * matched on an earlier poll — a transient blank frame mid-navigation must not
  * confirm the element left.
+ *
+ * A POSITIVE verdict additionally has to survive a second read (see
+ * {@link matchFingerprint}). A silently-wrong green is worse than a flake: the
+ * test has stopped testing, and nothing downstream will ever flag it.
  */
 async function waitForCondition(
   env: ActionEnv,
@@ -1197,13 +1297,14 @@ async function waitForCondition(
         !blind &&
         evaluateCondition(step.condition, step.expectedText, lastMatches, step.textMatch)
       ) {
-        // `hidden` satisfied without the selector ever matching, by a flow
-        // that never showed it present, is a gate that cannot fail — a typo,
-        // a renamed id and the wrong screen all pass it. The recorder refuses
-        // to WRITE one; refuse to score one as clean, or a hand-written (or
-        // hand-edited) flow keeps the permanently-green check the recorder
-        // exists to prevent.
         if (!NEEDS_SECOND_READ.has(step.condition)) {
+          // `hidden` satisfied without the selector ever matching, by a flow
+          // that never showed it present, is a gate that cannot fail — a typo,
+          // a renamed id and the wrong screen all pass it. The recorder refuses
+          // to WRITE one; refuse to score one, or a hand-written (or
+          // hand-edited) flow keeps the permanently-green check the recorder
+          // exists to prevent. Indeterminate, not failed: nothing was learned
+          // about the app, and reporting a regression here would be a lie.
           if (
             step.condition === "hidden" &&
             !everMatched &&
@@ -1376,6 +1477,380 @@ function compatibilityMissNote(
         `(a rendered "…" is ONE character, not three dots; likewise ligatures and fullwidth ` +
         `forms). Those are not folded together, because doing so would also equate a styled ` +
         `display name with the plain one it imitates. Copy the characters the app actually renders.`;
+}
+
+// ── Screen identity and readiness ────────────────────────────────────
+//
+// Two checks a selector condition cannot express, and which the flows that
+// prompted them were substituting fixed `wait:` steps for:
+//
+//   screen  — WHICH screen, from the app's own navigation state
+//   idle    — has it stopped moving
+//
+// They are deliberately separate. A dropped tap leaves the source screen
+// perfectly idle, so readiness cannot prove identity; navigation state commits
+// before the transition animates, so identity cannot prove readiness.
+
+/** Route-fingerprint poll cadence. `assert` uses timeout 0 — one probe. */
+const SCREEN_POLL_MS = 250;
+const SCREEN_DEFAULT_TIMEOUT_MS = 7500;
+const DEFAULT_METRO_PORT = 8081;
+
+/** `idle` poll cadence, matching `await-screen-idle`'s defaults. */
+const IDLE_POLL_MS = 200;
+const IDLE_DEFAULT_TIMEOUT_MS = 7500;
+const IDLE_DEFAULT_MIN_STABLE_MS = 250;
+
+/**
+ * How long a route-reader connect may keep retrying. Floored so an `assert`
+ * (budget 0) still rides out a connect that is merely early, and otherwise the
+ * step's own `timeout:` — connecting is setup, so it is NOT charged against the
+ * route-polling budget (see {@link waitForScreen}); a `timeout:` therefore buys
+ * time for both phases rather than being silently spent on one.
+ */
+const CONNECT_RETRY_FLOOR_MS = 2500;
+const CONNECT_RETRY_INTERVAL_MS = 400;
+
+/**
+ * The floor for the FIRST connect after a `launch`, which is a cold one: the
+ * app has just been terminated and relaunched, and it re-registers with Metro
+ * on its own schedule — measured at ~12.5s for a React Native app on a loaded
+ * simulator host. The previous 5s cap made the gate in the position both flow
+ * skills mandate (`launch:` then identity) unreachable: the connect gave up
+ * before the app came back, no `timeout:` could raise the cap, and the step
+ * reported an environment failure naming three causes that were all false.
+ *
+ * Spent only while Metro is actually REACHABLE on the port (see
+ * {@link metroReachable}). An app with no Metro at all — a release build, a
+ * fully native app — still fails fast on the floor above rather than making
+ * every run wait out this window to be told what it could learn immediately.
+ */
+const POST_LAUNCH_CONNECT_FLOOR_MS = 20_000;
+
+function connectBudgetMs(stepTimeoutMs: number): number {
+  return Math.max(CONNECT_RETRY_FLOOR_MS, stepTimeoutMs);
+}
+
+/**
+ * The run's route reader for `appId`, connecting on first use and retrying
+ * within `budgetMs` until one lands.
+ *
+ * Only a SUCCESSFUL connect is memoized. The debugger session is tied to the
+ * app process, so a `launch` invalidates it and the gate that follows connects
+ * into the gap while the app re-registers with Metro; remembering that failure
+ * poisoned every later gate on the run. Retrying inside the step's budget is
+ * also what makes `flow-execute` own connection setup end to end — recycling
+ * the simulator services before a run no longer needs an external ordering
+ * ritual to be survivable.
+ */
+async function routeReaderFor(
+  env: ActionEnv,
+  appId: string,
+  metroPort: number,
+  budgetMs: number
+): Promise<RouteReader | null> {
+  const state = env.screenIdentity;
+  if (state === undefined) return null;
+  const key = `${appId}@${metroPort}`;
+  const cached = state.readers.get(key);
+  if (cached !== undefined) return cached;
+  if (state.unsupported.has(key) || state.connectExhausted.has(key)) return null;
+  // chromium has no React Navigation; ios-remote is an iOS simulator over a
+  // remote bridge and reads exactly like a local one.
+  const platform = env.device.platform === "ios-remote" ? "ios" : env.device.platform;
+  if (platform === "chromium") {
+    state.unsupported.add(key);
+    return null;
+  }
+  let deadline = Date.now() + budgetMs;
+  // A cold epoch is the window after a `launch`, where the app is not merely
+  // slow to answer but absent from Metro entirely while it boots. Extending the
+  // budget there is only justified while Metro itself is up: that is what
+  // distinguishes "the app has not re-registered YET" from "this build has no
+  // reader at all", and only the first is worth waiting out.
+  if (state.coldSinceLaunch && budgetMs < POST_LAUNCH_CONNECT_FLOOR_MS) {
+    if (await metroReachable(metroPort)) {
+      deadline = Math.max(deadline, Date.now() + POST_LAUNCH_CONNECT_FLOOR_MS);
+    }
+  }
+  for (;;) {
+    if (env.signal?.aborted) return null;
+    const reader = await connectRouteReader(env.registry, env.ctx, {
+      udid: env.device.id,
+      bundleId: appId,
+      metroPort,
+      platform,
+    });
+    if (reader) {
+      state.readers.set(key, reader);
+      // The app is registered and attached; a later connect in this run is a
+      // reconnect, not a cold boot, and must not buy the launch window again.
+      state.coldSinceLaunch = false;
+      return reader;
+    }
+    if (Date.now() >= deadline) {
+      state.connectExhausted.add(key);
+      return null;
+    }
+    const sleepMs = Math.min(CONNECT_RETRY_INTERVAL_MS, Math.max(0, deadline - Date.now()));
+    if (!(await sleepOrAbort(sleepMs, env.signal))) return null;
+  }
+}
+
+/**
+ * Whether a Metro dev server is answering on `port` at all. Never throws.
+ *
+ * Asks only whether the SERVER is up, not whether an app is attached to it —
+ * see {@link metroServerRunning}. Both callers below are in the window right
+ * after a `launch`, where the app under test has deregistered and a Metro
+ * serving only that app reports an empty target list. Answering this question
+ * with target discovery made both of them read that normal window as "Metro is
+ * down": the connect budget lost its post-launch extension, and the failure
+ * told the author to start a server that was already running.
+ */
+async function metroReachable(port: number): Promise<boolean> {
+  return metroServerRunning(port);
+}
+
+/**
+ * Drop a memoized reader whose debugger session has gone dead (the app
+ * reloaded, the services were recycled) so the next gate reconnects instead of
+ * reusing a handle that can only ever return null.
+ */
+function evictRouteReader(env: ActionEnv, appId: string, metroPort: number): boolean {
+  const key = `${appId}@${metroPort}`;
+  // Re-arm the budget alongside the eviction: this path exists precisely to
+  // spend one more connect, so an exhaustion recorded earlier in the epoch
+  // must not short-circuit it.
+  env.screenIdentity?.connectExhausted.delete(key);
+  return env.screenIdentity?.readers.delete(key) ?? false;
+}
+
+/**
+ * Forget every route reader, and re-arm the retry budget — called by `launch`,
+ * which terminates the app and with it the JS runtime each reader is attached
+ * to. Without this a post-launch gate would probe a handle onto a process that
+ * no longer exists, and a connect that failed before the relaunch would keep
+ * standing in for one that has every reason to succeed now.
+ */
+export function resetRouteReaders(state: ScreenIdentityState | undefined): void {
+  state?.readers.clear();
+  state?.connectExhausted.clear();
+  // The app is coming back from a cold start; the next connect must be allowed
+  // to wait out its Metro re-registration (see POST_LAUNCH_CONNECT_FLOOR_MS).
+  if (state) state.coldSinceLaunch = true;
+}
+
+/**
+ * Prove the app is on the screen the step names, by exact route match.
+ *
+ * Every failure mode is distinct in the reason, because they call for opposite
+ * responses: a DIFFERENT route means the app is genuinely elsewhere (a dropped
+ * tap, or a real regression — the thing the flow exists to catch); NO route
+ * means the check itself could not run, which is never allowed to read as a
+ * pass.
+ */
+async function waitForScreen(
+  env: ActionEnv,
+  step: Extract<FlowStep, { kind: "screen" }>
+): Promise<DirectiveOutcome> {
+  const appId = step.app ?? env.screenIdentity?.launchedAppId;
+  if (appId === undefined) {
+    return {
+      ok: false,
+      indeterminate: true,
+      reason:
+        "no app to read the route from — add `app:` to the screen check, or a `launch` step " +
+        "before it so the flow declares which app it drives",
+    };
+  }
+  const metroPort = step.metroPort ?? DEFAULT_METRO_PORT;
+  const timeoutMs = step.mode === "assert" ? 0 : (step.timeout ?? SCREEN_DEFAULT_TIMEOUT_MS);
+
+  const reader = await routeReaderFor(env, appId, metroPort, connectBudgetMs(timeoutMs));
+  // Deliberately anchored AFTER the connect. `timeout:` is the author's answer
+  // to "how long may this screen take to arrive", and attaching the debugger is
+  // not the screen arriving: charging setup to the same budget made a generous
+  // timeout buy nothing on exactly the gate that needed it (the one after a
+  // `launch`), and made "waited 7500ms" describe a window that was mostly spent
+  // connecting.
+  const deadline = Date.now() + timeoutMs;
+  if (env.signal?.aborted) return ABORTED_OUTCOME;
+  if (reader === null) {
+    // A platform that can never have a route reader is a different answer from
+    // a connect that did not land, and it deserves to be said: telling a
+    // Chromium author that "Metro is down" and to "fix the connection" sends
+    // them after something that does not exist and cannot be repaired — and
+    // since an indeterminate step reports as `errored`, the QA contract's
+    // "fix the environment and rerun" would loop forever on it.
+    const unsupported = env.screenIdentity?.unsupported.has(`${appId}@${metroPort}`) === true;
+    if (unsupported) {
+      return {
+        ok: false,
+        indeterminate: true,
+        reason:
+          `\`screen\` reads the focused React Navigation route over the Metro debugger, and ` +
+          `${env.device.platform} has neither — no retry or environment change will make this ` +
+          `work. Gate this navigation on a destination-only element instead.`,
+      };
+    }
+    // Which of the causes actually holds is checkable, so check it rather than
+    // listing all of them: naming "Metro is down" while Metro is demonstrably
+    // up sends the author to repair something that is not broken, and the
+    // conclusion they draw — that this app can only be gated on elements —
+    // deletes the identity proof for the rest of the flow.
+    const metroUp = await metroReachable(metroPort);
+    return {
+      ok: false,
+      indeterminate: true,
+      reason: metroUp
+        ? `Metro is running on port ${metroPort}, but no debuggable target for "${appId}" ` +
+          `registered there in time. The app re-registers a few seconds AFTER it relaunches, so ` +
+          `a gate this close to a \`launch\` can outrun it. The fix is the readiness gate the ` +
+          `launch itself is supposed to have: an \`await\` on the real first screen, recorded ` +
+          `directly after \`launch:\`, which holds until the app is actually up and leaves this ` +
+          `route readable. (That is the launch's own gate — it does NOT reorder identity and ` +
+          `readiness within a navigation, where identity still comes first.) Failing that, ` +
+          `raise this step's \`timeout:\`. Otherwise this build is not a debuggable RN build, ` +
+          `or the port serves a different app. Screen identity is unknown, not wrong.`
+        : `no Metro dev server is answering on port ${metroPort}, so the route cannot be read ` +
+          `for "${appId}". This is an environment failure, not a verdict about the app: start ` +
+          `Metro (or point the step at the right \`metroPort:\`), or gate on a destination-only ` +
+          `element instead of \`screen\`.`,
+    };
+  }
+  // The polling budget is the step's whole `timeout:`, because `deadline` was
+  // anchored after the connect (above) — the connect is setup and is NOT
+  // charged here. A function rather than a constant because the reconnect path
+  // below re-enters this with time already spent, and an `assert` (budget 0)
+  // still gets its single probe, the same floor it runs on everywhere.
+  const pollMs = () => Math.max(0, deadline - Date.now());
+  let outcome = await verifyRouteFingerprint(
+    reader,
+    step.route,
+    pollMs(),
+    SCREEN_POLL_MS,
+    env.signal
+  );
+  // Every probe came back null: either the screen genuinely has no route, or
+  // the memoized reader is attached to a runtime that has since gone away (a
+  // Fast Refresh reload, recycled services). The two are indistinguishable
+  // from here, so spend one reconnect finding out rather than reporting an
+  // environment problem the run could have repaired itself.
+  if (!outcome.ok && !outcome.aborted && outcome.observedRoute === undefined) {
+    if (env.signal?.aborted) return ABORTED_OUTCOME;
+    if (evictRouteReader(env, appId, metroPort)) {
+      const fresh = await routeReaderFor(env, appId, metroPort, connectBudgetMs(timeoutMs));
+      if (env.signal?.aborted) return ABORTED_OUTCOME;
+      if (fresh) {
+        outcome = await verifyRouteFingerprint(
+          fresh,
+          step.route,
+          pollMs(),
+          SCREEN_POLL_MS,
+          env.signal
+        );
+      }
+    }
+  }
+  if (outcome.aborted) return ABORTED_OUTCOME;
+  if (outcome.ok) return { ok: true };
+  if (outcome.observedRoute !== undefined) {
+    return {
+      ok: false,
+      reason:
+        `the app is on "${outcome.observedRoute}", not "${step.route}"` +
+        (timeoutMs > 0 ? ` (waited ${timeoutMs}ms)` : "") +
+        " — the navigation did not land where this step expects",
+    };
+  }
+  return {
+    ok: false,
+    indeterminate: true,
+    reason:
+      `no focused route could be read within ${timeoutMs}ms — the screen is native, the app ` +
+      `reloaded, or the transition never settled. Screen identity is unknown, not wrong.`,
+  };
+}
+
+/**
+ * Wait until the UI tree has content and holds it identical for `minStableMs`.
+ *
+ * This is `await-screen-idle`'s question asked against the tree the directives
+ * actually resolve against, and — unlike that tool — it FAILS when the screen
+ * never settles, which is what makes it safe to persist in a flow. It says
+ * nothing about which screen settled: pair it with a `screen` or element check.
+ */
+async function waitForIdle(
+  env: ActionEnv,
+  step: Extract<FlowStep, { kind: "idle" }>
+): Promise<DirectiveOutcome> {
+  const timeoutMs = step.timeout ?? IDLE_DEFAULT_TIMEOUT_MS;
+  const minStableMs = step.minStableMs ?? IDLE_DEFAULT_MIN_STABLE_MS;
+  const deadline = Date.now() + timeoutMs;
+  let stableSignature: string | undefined;
+  let stableSince = 0;
+  let sawContent = false;
+  let fetchError: string | undefined;
+
+  for (;;) {
+    if (env.signal?.aborted) return ABORTED_OUTCOME;
+    try {
+      const { tree } = await fetchFlowTree(env.registry, env.device);
+      fetchError = undefined;
+      if (tree.children.length === 0) {
+        // Blank or still loading — never "settled", and it resets the hold.
+        stableSignature = undefined;
+        stableSince = 0;
+      } else {
+        sawContent = true;
+        const signature = treeFingerprint(tree);
+        const now = Date.now();
+        if (signature === stableSignature) {
+          if (now - stableSince >= minStableMs) return { ok: true };
+        } else {
+          stableSignature = signature;
+          stableSince = now;
+          if (minStableMs === 0) return { ok: true };
+        }
+      }
+    } catch (err) {
+      // A tree-source blip mid-animation is expected; keep polling. Only its
+      // persistence to the deadline is reportable.
+      fetchError = err instanceof Error ? err.message : String(err);
+      stableSignature = undefined;
+      stableSince = 0;
+    }
+    if (env.signal?.aborted) return ABORTED_OUTCOME;
+    if (Date.now() >= deadline) break;
+    if (!(await sleepOrAbort(IDLE_POLL_MS, env.signal))) return ABORTED_OUTCOME;
+  }
+
+  // "Never stopped moving" is a real verdict about the app. "Never got a
+  // readable tree" is not — it must not masquerade as one.
+  if (!sawContent) {
+    return {
+      ok: false,
+      indeterminate: true,
+      reason: fetchError
+        ? // The underlying reader reports an instrumentation failure, whose
+          // remedy (relaunch the app) is the wrong repair for the commonest
+          // cause of it here: the app is simply not in the foreground, which
+          // reads exactly the same from the tree source. Name that first so
+          // the author checks it before relaunching anything.
+          `could not read the UI tree while waiting for the screen to settle — check the app is ` +
+          `still in the foreground (a backgrounded app reads the same as an uninstrumented one). ` +
+          `Underlying error: ${fetchError}`
+        : `the UI tree stayed empty for ${timeoutMs}ms — the screen never rendered content`,
+    };
+  }
+  return {
+    ok: false,
+    reason:
+      `the screen never held still for ${minStableMs}ms within ${timeoutMs}ms — it is still ` +
+      `animating, or something on it is permanently in motion (a spinner, a looping animation). ` +
+      `Gate on the element you actually need instead of on stillness.`,
+  };
 }
 
 function assertReason(

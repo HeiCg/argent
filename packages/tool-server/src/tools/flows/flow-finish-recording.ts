@@ -237,6 +237,21 @@ export function summarizeStep(step: FlowStep, n: number): string {
       return `${n}. rotate: by ${step.by}°${step.selector ? ` on ${selectorLabel(step.selector)}` : ""}`;
     case "snapshot":
       return `${n}. snapshot: ${step.name}`;
+    case "screen": {
+      // Spell it the way the FILE does. `app` gets a warning of its own when it
+      // is written, but a non-default `metroPort` gets none — so a port-pinned
+      // gate was invisible in both the per-step line and the final summary,
+      // which is the author's only per-step view of a recorder that
+      // deliberately stopped returning the YAML.
+      const qualifiers = [
+        ...(step.app !== undefined ? [`app: ${step.app}`] : []),
+        ...(step.metroPort !== undefined ? [`metroPort: ${step.metroPort}`] : []),
+      ];
+      const suffix = qualifiers.length > 0 ? ` (${qualifiers.join(", ")})` : "";
+      return `${n}. ${step.mode}: screen ${step.route}${suffix}`;
+    }
+    case "idle":
+      return `${n}. await: screen idle`;
     case "tool":
     default:
       return `${n}. tool: ${step.name} ${renderToolArgs(step.args)}${delayLabel(step)}`;

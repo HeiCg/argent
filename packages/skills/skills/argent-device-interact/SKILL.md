@@ -210,6 +210,18 @@ Instead of polling `screenshot`/`describe` in a loop, use `await-ui-element` to 
 
 Returns `{ success, elapsed }`; on a timeout `success` is `false` and a `note` explains what was seen.
 
+### await-screen-idle — Block until the screen tree settles
+
+Use this after launch/navigation and before a raw tap when an early-painted element may still be moving or non-interactive:
+
+```json
+{ "udid": "<UDID>", "timeoutMs": 3000, "minStableMs": 250 }
+```
+
+The tool supports local iOS, Android, and Chromium. It polls the same accessibility/DOM tree as `describe` until a non-empty tree remains unchanged. Continue only when it returns `settled: true`; `settled: false` is a soft timeout result, not a thrown error. Pair it with `await-ui-element` for a destination-specific landmark because an idle wrong screen is still wrong, and verify the action's outcome because tree stability does not directly test hit-testing. Call it directly for live diagnosis: do not add it with `flow-add-step` or persist it as a raw flow `tool:` step, where a soft `settled: false` result would not hard-fail replay. Do not place it inside `run-sequence` (it is not an allowed nested tool). Flow selector actions already resolve their target from a settled flow tree during replay.
+
+Within a flow, the persistable equivalent is `await: { idle: true }`, which hard-fails on timeout.
+
 ### screen-fingerprint — Which screen is the app on
 
 For a React Native app served by Metro, this reads the focused React Navigation route path and returns it as `"HomeTab>Profile"`:

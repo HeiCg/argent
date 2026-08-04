@@ -39,6 +39,7 @@ import {
   invokeOnDevice,
   ABORTED_OUTCOME,
   probeWhenCondition,
+  resetRouteReaders,
   vacuousHiddenReason,
   type ActionEnv,
   type DirectiveOutcome,
@@ -61,7 +62,7 @@ import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flo
 import { describeVega } from "../describe/platforms/vega";
 import { pinStatusBar, restoreStatusBar } from "../../utils/status-bar";
 
-// `flow_name` is the parameter name callers reach for — the tool is
+// R21. `flow_name` is the parameter name callers reach for — the tool is
 // `flow-execute`, so "the flow's name" spells itself that way. Getting it
 // wrong used to return raw Zod JSON
 // (`[{"expected":"string","code":"invalid_type","path":["name"]}]`), which
@@ -452,6 +453,16 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
       reason: `no app id declared for platform "${device.platform}" — add a launch entry for it`,
     };
   }
+  // Remember which app a later `await: { screen: … }` reads the route from.
+  // Nested e2e flows pulled in via `run:` overwrite it in replay order, which
+  // matches whichever app is actually foreground. The chromium branch returned
+  // above, so a chromium run never records an app path here.
+  if (state.screenIdentity) state.screenIdentity.launchedAppId = bundleId;
+  // Terminating the app kills the JS runtime every memoized route reader is
+  // attached to. Forget them here so the first gate after this launch dials a
+  // fresh debugger session (retrying while the app re-registers with Metro)
+  // instead of probing a dead handle.
+  resetRouteReaders(state.screenIdentity);
   try {
     await invokeOnDevice(state, "restart-app", { bundleId });
   } catch (err) {
@@ -525,6 +536,14 @@ order), \`next: <selector>\` (CSS \`+\` — the nearest such follower, which unl
 non-matching neighbour rather than failing), plus \`any: true\` (CSS \`*\` — legal only WITH a scope and
 never beside text/id/role). Scopes nest to disambiguate — \`within: { id: card, within: { id: list } }\`
 reads "inside card inside list", each container's frame inside the next);
+\`await\`/\`assert\` additionally take two non-selector conditions: \`screen: "HomeTab>Profile"\` proves
+WHICH screen the app is on by exact React Navigation route match (identity, read from the app's own
+navigation state via the RN debugger — record it with the \`screen-fingerprint\` tool; the app defaults to
+the flow's last \`launch\`, override with \`app:\`/\`metroPort:\`); \`idle: true\` waits until the UI tree has
+content and holds still (readiness — and unlike the \`await-screen-idle\` tool it FAILS on timeout, so it
+is safe to persist). Identity and readiness are independent — a dropped tap leaves the
+source screen perfectly idle, and navigation state commits before the transition finishes animating —
+so a navigation wants both;
 \`scroll-to\` scrolls (momentum-free) until a target is visible; \`pinch\` zooms
 (\`pinch: { on?, scale }\` — scale > 1 in, < 1 out; screen center when \`on\` is omitted); \`rotate\` is the
 two-finger rotation gesture (\`rotate: { on?, by }\` — degrees, + clockwise, within ±3000°; screen center
@@ -600,8 +619,19 @@ returns a notice with the prerequisite instead of running.`,
         updateBaselines: Boolean(params.updateBaselines),
         reports: [],
         stopped: false,
-        pinned: statusBarPinned,
+        // One route reader per run, shared by every `screen` gate (see
+        // ScreenIdentityState) and filled in by the first `launch` step.
+        screenIdentity: {
+          readers: new Map(),
+          unsupported: new Set(),
+          connectExhausted: new Set(),
+          // An e2e flow opens with `launch:`, and a fragment runs against an
+          // app someone else just started; either way the run's first connect
+          // may land inside a cold start, so it starts the run armed.
+          coldSinceLaunch: true,
+        },
         establishedSelectors: new Set<string>(),
+        pinned: statusBarPinned,
         chromiumBooted: resolved.booted !== null,
         chromiumLaunched: false,
         ...(ctx?.emitProgress ? { onStepReport: ctx.emitProgress } : {}),
@@ -846,6 +876,14 @@ function stepTarget(step: FlowStep): string | undefined {
     case "await":
     case "assert":
       return conditionLabel(step, selectorLabel);
+    case "screen":
+      // The kind is already printed by the caller, so returning "screen …"
+      // here rendered as "screen screen HomeTab". Carry the mode instead,
+      // which the caller does NOT print and which distinguishes an `assert`
+      // from an `await` in the run log.
+      return step.mode === "assert" ? `assert ${step.route}` : step.route;
+    case "idle":
+      return "screen idle";
     case "when":
       return step.condition.kind === "platform"
         ? `platform ${step.condition.platform}`
@@ -1142,6 +1180,8 @@ async function execLeafStep(
     case "type":
     case "await":
     case "assert":
+    case "screen":
+    case "idle":
     case "scroll-to":
     case "pinch":
     case "rotate": {
