@@ -31,6 +31,7 @@ import type { TextMatchMode, WaitCondition } from "../../utils/ui-tree-match";
 import { sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { isUnmetUiWaitResult } from "../await-ui-element";
+import { runSequenceFailure } from "../run-sequence";
 import { resolveFlowDevice, bindDeviceArgs, type FlowPlatform } from "./flow-device";
 import {
   runDirective,
@@ -1160,6 +1161,9 @@ async function execLeafStep(
       }
       try {
         const result = await invokeSubTool(registry, ctx, step.name, args);
+        if (signal?.aborted) {
+          return { ...base, status: "skip", tool: step.name, reason: "run aborted during tool" };
+        }
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;
           return {
@@ -1167,6 +1171,15 @@ async function execLeafStep(
             status: "fail",
             tool: step.name,
             reason: `await-ui-element condition not met${note ? `: ${note}` : ""}`,
+          };
+        }
+        const sequenceFailure = runSequenceFailure(step.name, result);
+        if (sequenceFailure) {
+          return {
+            ...base,
+            status: "fail",
+            tool: step.name,
+            reason: `run-sequence stopped on a failed nested step: ${sequenceFailure}`,
           };
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
