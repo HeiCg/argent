@@ -368,23 +368,18 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { registry: registryWhereWaitTimesOut() }
     );
 
-    const warning = warningOf(result, "unmet");
-    expect(warning).toContain("the wait itself never held");
-    expect(warning).toContain("stops the run there");
-    expect(warning).not.toContain("replays fine");
+    // A wait that never held is a check that cannot pass, so it is refused
+    // outright rather than recorded with a caveat.
+    expect(result.message).toContain("condition not met");
+    expect(result.message).toContain("step NOT recorded");
+    expect(result.message).not.toContain("replays fine");
     // Nothing was compared, so nothing may blame a tree divergence or send the
     // author to re-record against "a selector present in both".
-    expect(warning).not.toContain("neither contains the other");
-    expect(warning).not.toContain("present in both");
-    // "Delete it from the .yaml" holds in host mode only: against a remote
-    // client the in-memory copy is authoritative mid-recording and the next
-    // append writes the step straight back, with nothing reporting the restore.
-    expect(warning).toContain("after `flow-finish-recording`");
+    expect(result.message).not.toContain("neither contains the other");
+    expect(result.message).not.toContain("present in both");
     // The probe never ran, so the runner's tree was never read.
     expect(fetchCount).toBe(0);
-    // Recording the step anyway is the pre-existing behaviour; only the
-    // narration changes.
-    expect(await recordedSteps("unmet")).toHaveLength(1);
+    expect(await recordedSteps("unmet")).toHaveLength(0);
   });
 
   // ── The probe is gated on the command ─────────────────────────────────────
