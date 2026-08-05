@@ -1,7 +1,12 @@
 import { z } from "zod";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { FAILURE_CODES, FailureError, isLiveServiceState } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  FailureError,
+  isLiveServiceState,
+  zodObjectToJsonSchema,
+} from "@argent/registry";
 import type {
   DeviceInfo,
   FileInputSpec,
@@ -14,6 +19,7 @@ import {
   appIdForPlatform,
   assertSafeFlowName,
   chromiumLaunchSpec,
+  classifyOnDiskSpelling,
   describeSelector,
   describeTextExpectation,
   getFlowPath,
@@ -62,47 +68,97 @@ import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flo
 import { describeVega } from "../describe/platforms/vega";
 import { pinStatusBar, restoreStatusBar } from "../../utils/status-bar";
 
-const zodSchema = z.object({
-  name: z.string().describe('Name of the flow to run (e.g. "settings-explore")'),
-  project_root: z
-    .string()
-    .describe(
-      "Absolute path to the project root directory that contains `.argent/flows/<name>.yaml`."
-    ),
-  flow_file: z
-    .string()
-    .optional()
-    .describe(
-      "Path to the flow .yaml as readable by the tool-server. Internal — the argent client derives it from project_root and name automatically; leave unset."
-    ),
-  device: z
-    .string()
-    .optional()
-    .describe(
-      "Device id to run against (iOS UDID, Android/Vega serial, Chromium id). Auto-detected when omitted."
-    ),
-  platform: z
-    .enum(LAUNCH_PLATFORMS)
-    .optional()
-    .describe("Restrict auto-detection to this platform when several devices are booted."),
-  updateBaselines: z
-    .boolean()
-    .optional()
-    .describe(
-      "Write/refresh screenshot baselines for `snapshot` steps instead of diffing against them."
-    ),
-  prerequisiteAcknowledged: z
-    .boolean()
-    .optional()
-    .describe(
-      "Set to true to confirm the execution prerequisite has been met. Required (LLM path) when a fragment defines an executionPrerequisite."
-    ),
-});
+const zodSchema = z
+  .object({
+    name: z
+      .string()
+      .optional()
+      .describe(
+        'Name of a saved flow to run from `.argent/flows` (e.g. "settings-explore"). Omit when flow_path is set.'
+      ),
+    project_root: z
+      .string()
+      .describe(
+        "Absolute path to the calling agent's project root — the cwd it is working in. With name, the saved flow is read from `.argent/flows/<name>.yaml` under this root; with flow_path, the flow, its run: siblings, and baselines all resolve beside the YAML instead, so pass the agent's cwd."
+      ),
+    flow_file: z
+      .string()
+      .optional()
+      .describe(
+        "Path to the flow .yaml as readable by the tool-server. Internal — the argent client derives it from project_root and name automatically; leave unset."
+      ),
+    flow_path: z
+      .string()
+      .optional()
+      .describe(
+        "Absolute path to a co-located flow .yaml on the client and tool server's shared filesystem. This must be supplied through the file-input boundary. For remote execution, pass name + project_root instead."
+      ),
+    device: z
+      .string()
+      .optional()
+      .describe(
+        "Device id to run against (iOS UDID, Android/Vega serial, Chromium id). Auto-detected when omitted."
+      ),
+    platform: z
+      .enum(LAUNCH_PLATFORMS)
+      .optional()
+      .describe("Restrict auto-detection to this platform when several devices are booted."),
+    updateBaselines: z
+      .boolean()
+      .optional()
+      .describe(
+        "Write/refresh screenshot baselines for `snapshot` steps instead of diffing against them."
+      ),
+    prerequisiteAcknowledged: z
+      .boolean()
+      .optional()
+      .describe(
+        "Set to true to confirm the execution prerequisite has been met. Required (LLM path) when a fragment defines an executionPrerequisite."
+      ),
+  })
+  .superRefine((params, ctx) => {
+    if ((params.name === undefined) === (params.flow_path === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Pass exactly one flow source: name or flow_path.",
+        path: ["flow_path"],
+      });
+    }
+  });
 
 type Params = z.infer<typeof zodSchema>;
 
+const inputSchema: Record<string, unknown> = {
+  ...zodObjectToJsonSchema(zodSchema),
+  // Zod's JSON Schema conversion cannot represent superRefine. `oneOf` makes
+  // the same exactly-one source rule visible to MCP and HTTP clients: neither
+  // branch matches when both fields are absent, and both branches match (which
+  // is invalid for oneOf) when both fields are present.
+  oneOf: [{ required: ["name"] }, { required: ["flow_path"] }],
+};
+
+// A dual-source call (name + flow_path) must be diagnosed by the schema's
+// exactly-one rule, not by whether either unused file happens to exist — in
+// each direction the boundary keeps its hands off the wrapper:
+// - unwrapWhenSet: flow_path is caller-authored, so alongside name it is
+//   handed to zod as its plain client path (dropping it would legitimize the
+//   call and silently run the saved flow the caller did not ask for).
+// - skipWhenSet: flow_file is client-derived from name, so alongside flow_path
+//   it is dropped — the caller never authored it, there is nothing to surface.
 const fileInputs: FileInputSpec[] = [
-  { target: "flow_file", path: "${project_root}/.argent/flows/${name}.yaml", kind: "file" },
+  {
+    target: "flow_path",
+    path: "${flow_path}",
+    kind: "file",
+    optional: true,
+    unwrapWhenSet: "name",
+  },
+  {
+    target: "flow_file",
+    path: "${project_root}/.argent/flows/${name}.yaml",
+    kind: "file",
+    skipWhenSet: "flow_path",
+  },
 ];
 
 export type StepStatus = "pass" | "fail" | "skip" | "error";
@@ -458,18 +514,33 @@ interface BootedChromium {
   pid: number;
 }
 
+/**
+ * Flow name for interaction messages: the display half of resolveFlowSource
+ * (basename stem on the flow_path branch) without its validation — these
+ * messages render before validation and must still say something on a call
+ * validation is about to reject. path.basename keeps a bare ".yaml" filename
+ * intact (stripping the suffix would leave nothing), and the raw-path /
+ * placeholder fallbacks keep a pathological source from rendering as "" or
+ * "undefined".
+ */
+function displayFlowName(params: { name?: string; flow_path?: string }): string {
+  const stem =
+    params.flow_path === undefined ? undefined : path.basename(params.flow_path, ".yaml");
+  return params.name || stem || params.flow_path || "(unspecified)";
+}
+
 export function createRunFlowTool(
   registry: Registry
 ): ToolDefinition<Params, FlowRunResult | FlowPrerequisiteNotice> {
   return {
     id: "flow-execute",
     interaction: {
-      startedMsg: ({ params }) => `Running flow ${params.name}`,
-      completedMsg: ({ params }) => `Ran flow ${params.name}`,
+      startedMsg: ({ params }) => `Running flow ${displayFlowName(params)}`,
+      completedMsg: ({ params }) => `Ran flow ${displayFlowName(params)}`,
       failedMsg: ({ params, failureSignal }) =>
-        `Failed to run flow ${params.name}: ${failureSignal.error_code}`,
+        `Failed to run flow ${displayFlowName(params)}: ${failureSignal.error_code}`,
     },
-    description: `Run a saved flow from the .argent/flows/ directory.
+    description: `Run a saved flow from the .argent/flows/ directory, or an explicit boundary-managed flow_path.
 Steps run in order: \`launch\` starts an app from scratch (terminate + relaunch) and waits until it is
 ready; \`tool\` calls dispatch through the registry; \`tap\`/\`long-press\`/\`type\` resolve a selector to an
 element and act on it (\`tap: { on, times: 2 }\` double-taps; \`long-press: { on, duration }\` presses and
@@ -503,11 +574,16 @@ If a fragment has an execution prerequisite and prerequisiteAcknowledged is not 
 returns a notice with the prerequisite instead of running.`,
     longRunning: true,
     zodSchema,
+    inputSchema,
     fileInputs,
     services: () => ({}),
     async execute(_services, params, ctx?: ToolContext) {
       const signal = ctx?.signal;
-      const filePath = resolveFlowFilePath(params, ctx?.fileInputs?.flow_file);
+      const { filePath, flowName } = await resolveFlowSource(
+        params,
+        ctx?.fileInputs?.flow_file,
+        ctx?.fileInputs?.flow_path
+      );
       const flowsDir = path.dirname(filePath);
       const flow = parseFlow(await fs.readFile(filePath, "utf8"));
 
@@ -515,7 +591,7 @@ returns a notice with the prerequisite instead of running.`,
       // launch step cannot declare one — validated at parse).
       if (flow.executionPrerequisite && !params.prerequisiteAcknowledged) {
         return {
-          flow: params.name,
+          flow: flowName,
           notice:
             "This flow has an execution prerequisite that must be fulfilled before it can run. " +
             "Verify the prerequisite is met and call flow-execute again with prerequisiteAcknowledged set to true.",
@@ -549,7 +625,7 @@ returns a notice with the prerequisite instead of running.`,
         device,
         signal,
         flowsDir,
-        topFlowName: params.name,
+        topFlowName: flowName,
         updateBaselines: Boolean(params.updateBaselines),
         reports: [],
         stopped: false,
@@ -562,8 +638,8 @@ returns a notice with the prerequisite instead of running.`,
       let aborted: boolean;
       try {
         await execSteps(state, flow.steps, {
-          flow: params.name,
-          runStack: [params.name],
+          flow: flowName,
+          runStack: [flowName],
           depth: 0,
         });
       } finally {
@@ -578,7 +654,7 @@ returns a notice with the prerequisite instead of running.`,
       // Empty when the flow needed no device — the run is not attributed to one
       // it never touched.
       return summarize(
-        params.name,
+        flowName,
         device?.id ?? "",
         flow.executionPrerequisite,
         state.reports,
@@ -1222,36 +1298,243 @@ function errMsg(err: unknown): string {
 }
 
 /**
- * Resolve the flow YAML path a tool reads. With no `flow_file`, derive it from
+ * Resolve the flow YAML source a tool reads. An explicit `flow_path` is accepted
+ * only when the file-input boundary resolved the exact client path in place on
+ * this host AND matched the client-recorded stat (`statVerified`) — presence
+ * alone is satisfiable by a hand-crafted stat-less wrapper, so it is not
+ * containment. Uploaded explicit paths are rejected: the uploaded root YAML
+ * would lose sibling `run:` files, baseline reads, and baseline write-back. A
+ * remote `name` call uploads the same way and is accepted below, so this
+ * rejection does not make composition or baselines work remotely — it only
+ * keeps `flow_path`, whose whole contract is that those resolve beside the
+ * caller's YAML, from silently meaning a temp directory instead. A raw
+ * `flow_path` is also rejected even if the file exists, so callers cannot
+ * bypass the boundary and read arbitrary server files.
+ *
+ * With no `flow_path` or `flow_file`, derive the saved-flow path from
  * project_root + name. When `flow_file` is set it must be one of the two shapes
- * the file-input boundary legitimately produces: the exact
+ * its existing file-input boundary legitimately produces: the exact
  * `${project_root}/.argent/flows/${name}.yaml` path (co-located client,
  * resolved in place), or a temp file THIS server materialized from uploaded
  * content (`fileInput.viaUpload` — remote client). Anything else is rejected:
  * the schema marks `flow_file` internal, and honoring an arbitrary path would
  * let a caller execute (and, under --update-baselines, write PNGs next to) any
  * YAML on the host, bypassing the project-root containment the rest of the
- * module enforces. Name and project_root are validated in every branch.
+ * module enforces. The logical flow name for an explicit path comes from the
+ * caller-visible YAML basename recorded by the boundary. Either source's flow
+ * name must then appear in that flow's own directory listing byte-for-byte — a
+ * case-insensitive filesystem opens files under spellings no directory entry
+ * carries, and the name is what keys the report and `__baselines__/` (see
+ * {@link classifyOnDiskSpelling}). Name and project_root are validated in every
+ * branch.
  */
-export function resolveFlowFilePath(
+export async function resolveFlowSource(
   params: {
-    name: string;
+    name?: string;
     project_root: string;
     flow_file?: string;
+    flow_path?: string;
   },
-  fileInput?: ResolvedFileInput
-): string {
-  assertSafeFlowName(params.name);
+  fileInput?: ResolvedFileInput,
+  flowPathInput?: ResolvedFileInput
+): Promise<{ filePath: string; flowName: string }> {
+  // The schemas' superRefine already enforces this for flow-execute and
+  // flow-read-prerequisite; this copy covers direct execute() callers (tests,
+  // in-process invocations) and keeps the params.name! below sound.
+  if ((params.name === undefined) === (params.flow_path === undefined)) {
+    throw new FailureError("Pass exactly one flow source: name or flow_path.", {
+      error_code: FAILURE_CODES.FLOW_FILE_INVALID,
+      failure_stage: "flow_source",
+      failure_area: "tool_server",
+      error_kind: "validation",
+    });
+  }
+
   setActiveProjectRoot(params.project_root);
-  const expected = getFlowPath(params.name);
-  if (!params.flow_file) return expected;
+
+  if (params.flow_path !== undefined) {
+    if (flowPathInput?.viaUpload) {
+      throw new FailureError(
+        `Invalid flow_path "${flowPathInput.clientPath}": explicit flow paths require a ` +
+          `co-located client and tool server with a shared filesystem, and this one arrived as ` +
+          `an upload — sibling run: files, baselines, and baseline write-back all resolve beside ` +
+          `the copy this server materialized, alone in a temp directory. Pass name + ` +
+          `project_root to run a self-contained flow from a remote client; name uploads the same ` +
+          `way, so a flow with run: or snapshot: steps needs the client and tool server on one ` +
+          `filesystem.`,
+        {
+          error_code: FAILURE_CODES.FLOW_FILE_INVALID,
+          failure_stage: "flow_path_shared_filesystem",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        }
+      );
+    }
+
+    // The last conjunct is not containment — over HTTP both sides come from the
+    // same wire path (file-inputs.ts). It ties the string returned below to the
+    // one the extension/name checks read, so no caller can have them validate a
+    // different file than the one that gets opened.
+    const isVerifiedHostPath =
+      flowPathInput?.presentOnHost === true &&
+      flowPathInput.statVerified === true &&
+      path.resolve(params.flow_path) === path.resolve(flowPathInput.clientPath);
+
+    if (!isVerifiedHostPath) {
+      throw new FailureError(
+        `Invalid flow_path "${params.flow_path}": explicit flow paths must be supplied through ` +
+          `the flow_path file-input boundary. Pass the client-local path and let the argent ` +
+          `client resolve it.`,
+        {
+          error_code: FAILURE_CODES.FLOW_FILE_INVALID,
+          failure_stage: "flow_path_boundary",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        }
+      );
+    }
+
+    // The two rules below are about the shape of the path string itself, not
+    // about how it reached us, so they are reported apart from the boundary
+    // gate above — a caller that did use the boundary must not be told to use
+    // the boundary.
+
+    // Reject a relative path: this string is used verbatim downstream — read
+    // with fs.readFile and turned into flowsDir = path.dirname(filePath) for
+    // the flow's run: siblings, baselines, and baseline write-back — so it must
+    // name the file independently of the tool server's working directory, which
+    // is not the caller's. `argent flow list` prints repo-relative paths, so
+    // this is the spelling an agent is most likely to pass back.
+    if (!path.isAbsolute(params.flow_path)) {
+      throw new FailureError(
+        `Invalid flow_path "${params.flow_path}": flow paths must be absolute — a relative path ` +
+          `is resolved against the tool server's working directory, not the caller's. Pass the ` +
+          `absolute path to the flow's YAML.`,
+        {
+          error_code: FAILURE_CODES.FLOW_FILE_INVALID,
+          failure_stage: "flow_path_absolute",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        }
+      );
+    }
+
+    // Reject ".." segments: this path is opened with fs.readFile, so the kernel
+    // resolves a symlinked directory component before the "..", but
+    // flowsDir = path.dirname(filePath) keeps the raw string and path.join
+    // collapses ".." lexically — the flow's run: siblings and __baselines__
+    // would then resolve against a directory the flow that was read does not
+    // live in. The argent client rejects ".." segments before sending; only a
+    // direct MCP/HTTP caller can pass an unresolved flow_path.
+    if (params.flow_path.split(/[\\/]+/).includes("..")) {
+      throw new FailureError(
+        `Invalid flow_path "${params.flow_path}": flow paths must not contain ".." segments — ` +
+          `sibling run: files and baselines are resolved lexically from this path. Pass the ` +
+          `fully resolved absolute path to the flow's YAML.`,
+        {
+          error_code: FAILURE_CODES.FLOW_FILE_INVALID,
+          failure_stage: "flow_path_dotdot",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        }
+      );
+    }
+
+    const clientPath = flowPathInput!.clientPath;
+    const clientExt = path.extname(clientPath);
+    // path.extname reads a basename that is only the extension as an
+    // extensionless dotfile, so clientExt is "" for ".yaml" (and ".YAML") and
+    // the arms below would blame the extension of a path that visibly ends in
+    // .yaml. What is actually missing is the filename stem — fall past this
+    // check and let assertSafeFlowName name it, the way the CLI does.
+    const bareExtension = path.basename(clientPath).toLowerCase() === ".yaml";
+    if (!bareExtension && clientExt !== ".yaml") {
+      // On case-insensitive filesystems the path looks valid to the user, so name the real problem.
+      const detail =
+        clientExt.toLowerCase() === ".yaml"
+          ? `flow files must use the lowercase .yaml extension, not "${clientExt}".`
+          : `flow files must use the .yaml extension.`;
+      throw new FailureError(`Invalid flow_path "${clientPath}": ${detail}`, {
+        error_code: FAILURE_CODES.FLOW_FILE_INVALID,
+        failure_stage: "flow_path_extension",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      });
+    }
+    // basename leaves a suffix in place when stripping it would leave nothing,
+    // and strips only an exact-case one — so both ".yaml" and ".YAML" would
+    // otherwise be reported as a flow *named* that, not as a missing stem.
+    const flowName = bareExtension ? "" : path.basename(clientPath, ".yaml");
+    assertSafeFlowName(flowName);
+
+    // The boundary's stat matched the basename by the filesystem's rules,
+    // which on a case-insensitive filesystem (APFS, NTFS) finds a file really
+    // named "uppercase.yaml" for "UpperCase.yaml" — every arm above would then
+    // have validated a spelling that exists nowhere on disk, and the flow name
+    // derived from it (which keys the report and __baselines__/) would be one
+    // no directory entry carries: a baseline seeded under it is unfindable the
+    // moment the tree lands on a case-sensitive volume. Require the supplied
+    // basename to appear in the parent directory byte-for-byte. Absence from
+    // the listing refuses either way here — unlike the name branch below, this
+    // path arrives with the boundary's stat vouching for the file, so a
+    // listing that lacks it entirely is the same phantom spelling, just
+    // without a neighbour to name.
+    const suppliedBase = path.basename(clientPath);
+    const spelling = await classifyOnDiskSpelling(path.dirname(params.flow_path), suppliedBase);
+    if (spelling.state !== "listed") {
+      // Hint the real spelling only when this same ladder would accept it (a
+      // stem-case slip like Checkout.yaml); an invalid real name (Upper.YAML)
+      // needs a rename, and pointing at a flow_path the extension arm will
+      // refuse helps no one.
+      const recovery =
+        spelling.state === "absent"
+          ? `Pass the basename exactly as it appears on disk.`
+          : spelling.addressable
+            ? `Pass flow_path with the on-disk basename "${spelling.actual}".`
+            : `Rename "${spelling.actual}" to "${suppliedBase}" to run it — flow files must be lowercase .yaml.`;
+      throw new FailureError(
+        `Invalid flow_path "${clientPath}": the file must be named as it appears on disk — this ` +
+          `filesystem matched "${suppliedBase}" case-insensitively` +
+          (spelling.state === "case_folded" ? ` to "${spelling.actual}"` : "") +
+          `, so the flow name (which keys the report and __baselines__/) would be one no ` +
+          `directory entry carries. ${recovery}`,
+        {
+          error_code: FAILURE_CODES.FLOW_FILE_INVALID,
+          failure_stage: "flow_path_casing",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        }
+      );
+    }
+
+    return { filePath: params.flow_path, flowName };
+  }
+
+  const flowName = params.name!;
+  assertSafeFlowName(flowName);
+  const expected = getFlowPath(flowName);
   // A path the boundary materialized from uploaded content is a fresh temp
-  // file this process itself created (see file-inputs.ts) — trusted as-is.
-  if (fileInput?.viaUpload) return params.flow_file;
+  // file this process itself created (see file-inputs.ts) — trusted as-is, and
+  // returned ahead of the on-disk-spelling gate below deliberately: the only
+  // directory there is to list is that temp dir, whose single entry this
+  // server named from `name` itself, so the comparison could only ever agree
+  // with itself. The listing that could disagree is the remote client's, on a
+  // host this process cannot read — a mis-cased name on an uploading client
+  // stays the client's to catch, and refusing here on the strength of whatever
+  // happens to sit at the same path on THIS host would reject legitimate
+  // remote runs. That temp dir is also what a run takes flowsDir from, so a
+  // remote `name` run resolves `run:` targets and `__baselines__/` there and
+  // finds neither — the flow's siblings never left the client. What this branch
+  // buys a remote caller is a self-contained flow; one that composes or
+  // snapshots fails against that temp dir, and the failure names it (a fragment
+  // that could not be loaded, a baseline missing from a path under the system
+  // temp dir) rather than the missing co-location that is the real cause.
+  if (params.flow_file && fileInput?.viaUpload) return { filePath: params.flow_file, flowName };
   if (
-    !path.isAbsolute(params.flow_file) ||
-    params.flow_file.split(/[\\/]+/).includes("..") ||
-    path.resolve(params.flow_file) !== path.resolve(expected)
+    params.flow_file &&
+    (!path.isAbsolute(params.flow_file) ||
+      params.flow_file.split(/[\\/]+/).includes("..") ||
+      path.resolve(params.flow_file) !== path.resolve(expected))
   ) {
     throw new FailureError(
       `Invalid flow_file "${params.flow_file}": it must resolve to the flow's path under the ` +
@@ -1265,5 +1548,40 @@ export function resolveFlowFilePath(
       }
     );
   }
-  return params.flow_file;
+
+  // Same invariant as the flow_path branch, on the route every remote/MCP
+  // caller takes: nothing above consulted the directory, so on a
+  // case-insensitive filesystem `name: "Snap"` opens a file really named
+  // snap.yaml and then keys the report and __baselines__/ under "Snap" — a
+  // directory no entry carries, whose baselines vanish the moment the tree
+  // lands on a case-sensitive volume. Only a case-folded match refuses: a name
+  // that matches nothing at all is an ordinary missing flow, and the read that
+  // follows says so far better than a casing complaint would.
+  const spelling = await classifyOnDiskSpelling(path.dirname(expected), `${flowName}.yaml`);
+  if (spelling.state === "case_folded") {
+    // Hand back a name only when one can reach the file: an on-disk .YAML is
+    // addressable by no name at all (this branch always builds "<name>.yaml"),
+    // it is omitted from `argent flow list`, and flow_path refuses it too — so
+    // that fork asks for the rename it really needs.
+    const recovery = spelling.addressable
+      ? `Pass name "${path.basename(spelling.actual, ".yaml")}".`
+      : `Rename "${spelling.actual}" to "${flowName}.yaml" to run it — flow files must be ` +
+        `lowercase .yaml.`;
+    throw new FailureError(
+      `Invalid flow name "${flowName}": no saved flow is named "${flowName}.yaml" — this ` +
+        `filesystem matched it case-insensitively to "${spelling.actual}", so the flow name ` +
+        `(which keys the report and __baselines__/) would be one no directory entry carries. ` +
+        recovery,
+      {
+        error_code: FAILURE_CODES.FLOW_NAME_INVALID,
+        failure_stage: "flow_name_casing",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      }
+    );
+  }
+
+  // Either the boundary's own path for this flow (containment-checked above,
+  // so it resolves to `expected`) or `expected` itself.
+  return { filePath: params.flow_file || expected, flowName };
 }
