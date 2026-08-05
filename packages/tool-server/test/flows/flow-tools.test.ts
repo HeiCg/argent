@@ -419,7 +419,7 @@ describe("flow-add-step", () => {
     // Ran the fragment live to set up state…
     expect(result.toolResult).toEqual({ ok: true, steps: [] });
     // …but recorded the portable composition directive, not the raw tool call.
-    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "login" }]);
+    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "login.yaml" }]);
   });
 
   it("records a run: directive when the target is an e2e flow", async () => {
@@ -440,7 +440,7 @@ describe("flow-add-step", () => {
     );
 
     // e2e flows now compose via run: just like fragments — their launch runs inline.
-    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "other-e2e" }]);
+    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "other-e2e.yaml" }]);
   });
 
   it("keeps the raw flow-execute step when the target is not a sibling", async () => {
@@ -514,8 +514,14 @@ describe("flow-add-step", () => {
     expect(registry.invokeTool).toHaveBeenCalledWith("flow-execute", args);
     // …so the recorded step must be the raw call that reproduces it — naming
     // both files, since either one alone reads as the flow the author meant.
-    expect(result.message).toContain(otherTwin);
-    expect(result.message).toContain(path.join(tmpDir, ".argent", "flows", "twin.yaml"));
+    // Both anchors are canonicalized before the comparison (the recording's
+    // real file on one side, the executed path on the other), so the message
+    // quotes the realpath'd spellings — on macOS tmpdir lives behind the
+    // /var → /private/var symlink, which these paths carry as written.
+    expect(result.message).toContain(await fs.realpath(otherTwin));
+    expect(result.message).toContain(
+      await fs.realpath(path.join(tmpDir, ".argent", "flows", "twin.yaml"))
+    );
     expect(result.message).toMatch(/would replay a different flow/);
     expect(parseFlow(result.flowFile).steps).toEqual([
       { kind: "tool", name: "flow-execute", args },
@@ -598,7 +604,7 @@ describe("flow-add-step", () => {
       }
     );
 
-    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "MixedCase" }]);
+    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "MixedCase.yaml" }]);
   });
 
   // A root the recorder cannot anchor is not a root it can check the name
@@ -641,6 +647,122 @@ describe("flow-add-step", () => {
     }
   });
 
+  // The runner resolves a recorded `run:` against the CANONICAL containing
+  // file's directory (scopeFlowDir in flow-run.ts), so when the recording is
+  // itself a symlink the recorder must validate the sibling beside the real
+  // file — AND confirm it is the same file the live sub-invoke executed from
+  // the flows-dir spelling. The three tests below pin the accept, reject, and
+  // divergence directions of those anchors. The base
+  // is realpath'd so the only spelling/real divergence is the test's own
+  // symlink: macOS's tmpdir lives behind the /var → /private/var symlink,
+  // which would otherwise make every path here diverge from its canonical
+  // form for reasons unrelated to what's being tested.
+  async function symlinkedRecordingSetup(): Promise<{ base: string; vault: string }> {
+    const base = await fs.realpath(tmpDir);
+    const vault = path.join(base, "vault");
+    const flowsDir = path.join(base, ".argent", "flows");
+    await fs.mkdir(vault, { recursive: true });
+    await fs.mkdir(flowsDir, { recursive: true });
+    // The real file must exist before the recording starts: flow-start-recording
+    // writes THROUGH .argent/flows/rec.yaml, which is a symlink into vault/.
+    await fs.writeFile(path.join(vault, "rec.yaml"), "steps: []\n", "utf8");
+    await fs.symlink(path.join(vault, "rec.yaml"), path.join(flowsDir, "rec.yaml"));
+    return { base, vault };
+  }
+
+  it("validates the run: sibling beside a symlinked recording's real file", async () => {
+    const registry = createMockRegistry({
+      "flow-execute": { result: { ok: true, steps: [] } },
+    });
+    const tool = createFlowAddStepTool(registry);
+
+    const { base, vault } = await symlinkedRecordingSetup();
+    // The fragment's real file lives in vault/, beside the recording's real
+    // file, with the flows dir carrying a symlink to it — the same vault
+    // layout the recording itself models. The live sub-invoke resolves the
+    // flows-dir spelling (getFlowPath under project_root) and the runner's
+    // canonical anchor (scopeFlowDir in flow-run.ts) resolves the vault file;
+    // both canonicalize to this one file, so the composition is sound. Vault
+    // only would leave the flows-dir path — the one the live sub-invoke reads
+    // — nonexistent, a layout the shipped path cannot produce.
+    await fs.writeFile(path.join(vault, "frag.yaml"), "steps:\n  - echo: hi\n", "utf8");
+    await fs.symlink(
+      path.join(vault, "frag.yaml"),
+      path.join(base, ".argent", "flows", "frag.yaml")
+    );
+    await flowStartRecordingTool.execute({}, { name: "rec", project_root: base });
+
+    const result = await tool.execute(
+      {},
+      { command: "flow-execute", args: JSON.stringify({ name: "frag", project_root: base }) }
+    );
+
+    // Anchored beside the symlink's spelling this would miss the fragment and
+    // demote a perfectly replayable composition to a raw tool step.
+    expect(result.message).not.toMatch(/could not resolve/i);
+    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "frag.yaml" }]);
+  });
+
+  it("keeps the raw step when the sibling exists only beside the symlink's spelling", async () => {
+    const registry = createMockRegistry({
+      "flow-execute": { result: { ok: true, steps: [] } },
+    });
+    const tool = createFlowAddStepTool(registry);
+
+    const { base } = await symlinkedRecordingSetup();
+    // A decoy beside the symlink's SPELLING only — replay resolves `run:`
+    // beside the real file, where nothing exists, so recording this as `run:`
+    // would report success for a step that cannot replay.
+    await fs.writeFile(
+      path.join(base, ".argent", "flows", "frag.yaml"),
+      "steps:\n  - echo: decoy\n",
+      "utf8"
+    );
+    await flowStartRecordingTool.execute({}, { name: "rec", project_root: base });
+
+    const result = await tool.execute(
+      {},
+      { command: "flow-execute", args: JSON.stringify({ name: "frag", project_root: base }) }
+    );
+
+    expect(result.message).toMatch(/could not resolve/i);
+    expect(parseFlow(result.flowFile).steps).toEqual([
+      { kind: "tool", name: "flow-execute", args: { name: "frag", project_root: base } },
+    ]);
+  });
+
+  it("keeps the raw step when the flows-dir file and the real-file sibling diverge", async () => {
+    const registry = createMockRegistry({
+      "flow-execute": { result: { ok: true, steps: [] } },
+    });
+    const tool = createFlowAddStepTool(registry);
+
+    const { base, vault } = await symlinkedRecordingSetup();
+    // frag.yaml exists at BOTH spellings as two DIFFERENT real files. The live
+    // sub-invoke runs the flows-dir one (getFlowPath under project_root); a
+    // recorded `run:` would replay the vault one (scopeFlowDir in flow-run.ts
+    // anchors at the canonical containing dir). Recording `run:` here would
+    // report success for a step naming a flow that never ran — the raw step,
+    // which replays via name + project_root, is the only honest record.
+    await fs.writeFile(
+      path.join(base, ".argent", "flows", "frag.yaml"),
+      "steps:\n  - echo: decoy\n",
+      "utf8"
+    );
+    await fs.writeFile(path.join(vault, "frag.yaml"), "steps:\n  - echo: real\n", "utf8");
+    await flowStartRecordingTool.execute({}, { name: "rec", project_root: base });
+
+    const result = await tool.execute(
+      {},
+      { command: "flow-execute", args: JSON.stringify({ name: "frag", project_root: base }) }
+    );
+
+    expect(result.message).toMatch(/not the file the live flow-execute ran/i);
+    expect(parseFlow(result.flowFile).steps).toEqual([
+      { kind: "tool", name: "flow-execute", args: { name: "frag", project_root: base } },
+    ]);
+  });
+
   it("records a flow-execute of a sibling flow_path as a run: directive", async () => {
     const registry = createMockRegistry({
       "flow-execute": { result: { ok: true, steps: [] } },
@@ -659,13 +781,17 @@ describe("flow-add-step", () => {
       }
     );
 
-    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "login" }]);
+    expect(parseFlow(result.flowFile).steps).toEqual([{ kind: "run", flow: "login.yaml" }]);
     // The live sub-invoke gets no file-input boundary, so it must run the
     // sibling by name…
     const nested = (registry.invokeTool as any).mock.calls[0][1];
     expect(nested).toEqual({ name: "login", project_root: tmpDir });
     // …which a real tool-server resolves to that same file.
-    expect(await resolveFlowSource(nested)).toEqual({ filePath: sibling, flowName: "login" });
+    expect(await resolveFlowSource(nested)).toEqual({
+      filePath: sibling,
+      flowName: "login",
+      viaUpload: false,
+    });
   });
 
   it("rejects a mis-cased sibling flow_path, naming the on-disk spelling", async () => {
@@ -1763,6 +1889,7 @@ describe("saved-flow name spelling", () => {
     await expect(resolveFlowSource({ name: "MixedCase", project_root: tmpDir })).resolves.toEqual({
       filePath,
       flowName: "MixedCase",
+      viaUpload: false,
     });
   });
 
@@ -1777,6 +1904,7 @@ describe("saved-flow name spelling", () => {
       {
         filePath: path.join(tmpDir, ".argent", "flows", "nonexistent.yaml"),
         flowName: "nonexistent",
+        viaUpload: false,
       }
     );
 
@@ -1797,6 +1925,7 @@ describe("saved-flow name spelling", () => {
     await expect(resolveFlowSource({ name: "unlisted", project_root: tmpDir })).resolves.toEqual({
       filePath: path.join(tmpDir, ".argent", "flows", "unlisted.yaml"),
       flowName: "unlisted",
+      viaUpload: false,
     });
   });
 
@@ -1818,7 +1947,7 @@ describe("saved-flow name spelling", () => {
           viaUpload: true,
         }
       )
-    ).resolves.toEqual({ filePath: uploaded, flowName: "Snap" });
+    ).resolves.toEqual({ filePath: uploaded, flowName: "Snap", viaUpload: true });
   });
 
   it("flow-execute refuses the mis-cased name before running any step", async () => {

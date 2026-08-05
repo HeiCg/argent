@@ -45,8 +45,12 @@ function makeRegistry(invoke: (id: string, args: unknown) => Promise<unknown> = 
 
 const writtenFiles: string[] = [];
 async function writeFlow(yaml: string): Promise<string> {
+  // realpath'd so path math on the returned file matches the runner's
+  // canonical root anchor: macOS's tmpdir lives behind the /var → /private/var
+  // symlink, which would otherwise skew the appPath equalities for reasons
+  // unrelated to what a test pins.
   const file = path.join(
-    os.tmpdir(),
+    await fs.realpath(os.tmpdir()),
     `flow-chromium-boot-${writtenFiles.length}-${process.pid}.yaml`
   );
   await fs.writeFile(file, yaml, "utf8");
@@ -73,15 +77,28 @@ async function runFlow(
   params: Record<string, unknown>
 ): Promise<FlowRunResult> {
   // The flow file deliberately lives outside project_root (it pins the
-  // flow-relative app-path anchor), which the containment check only allows
-  // for a boundary-materialized upload — mark it as one, like a remote
-  // client's call would be.
+  // flow-relative app-path anchor). Run it as a co-located explicit flow_path
+  // verified by the file-input boundary — an uploaded flow would reject the
+  // run: composition some of these flows use.
+  const flowPath = String(params.flow_file);
+  const { name: _name, flow_file: _flowFile, ...rest } = params;
   const ctx = {
     fileInputs: {
-      flow_file: { clientPath: String(params.flow_file), presentOnHost: false, viaUpload: true },
+      flow_path: {
+        clientPath: flowPath,
+        presentOnHost: true,
+        viaUpload: false,
+        statVerified: true,
+      },
     },
   };
-  return asRun(await createRunFlowTool(registry).execute({}, params as never, ctx as never));
+  return asRun(
+    await createRunFlowTool(registry).execute(
+      {},
+      { ...rest, flow_path: flowPath } as never,
+      ctx as never
+    )
+  );
 }
 
 beforeEach(() => {
@@ -90,7 +107,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await Promise.all(writtenFiles.splice(0).map((f) => fs.rm(f, { force: true })));
+  // recursive: the symlink-anchor test tracks a whole temp tree, not one file.
+  await Promise.all(writtenFiles.splice(0).map((f) => fs.rm(f, { force: true, recursive: true })));
 });
 
 describe("flow-execute chromium boot", () => {
@@ -159,6 +177,92 @@ describe("flow-execute chromium boot", () => {
     expect(bootElectronApp.mock.calls[0][0]).toMatchObject({ appPath: "/abs/app" });
   });
 
+  it("resolves a symlinked root flow's relative app path beside the real file, not the symlink", async () => {
+    // proj/.argent/flows/main.yaml is a symlink to shared/flows/main.yaml, and
+    // the flow references ../app — the app lives beside the REAL file
+    // (shared/app); nothing exists under proj/.argent/. Only the canonical
+    // root anchor — the one `run:` targets already use — finds it; the
+    // as-written dirname would boot a path in a tree the author never wrote.
+    const base = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "flow-chromium-link-")));
+    writtenFiles.push(base);
+    const sharedFlows = path.join(base, "shared", "flows");
+    const linkDir = path.join(base, "proj", ".argent", "flows");
+    await fs.mkdir(sharedFlows, { recursive: true });
+    await fs.mkdir(linkDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sharedFlows, "main.yaml"),
+      "steps:\n  - launch: { chromium: ../app }\n  - echo: done\n",
+      "utf8"
+    );
+    const linkPath = path.join(linkDir, "main.yaml");
+    await fs.symlink(path.join(sharedFlows, "main.yaml"), linkPath);
+    const registry = makeRegistry();
+
+    const result = await runFlow(registry, {
+      name: "main",
+      project_root: PROJECT_ROOT,
+      flow_file: linkPath,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(bootElectronApp).toHaveBeenCalledTimes(1);
+    expect(bootElectronApp.mock.calls[0][0]).toMatchObject({
+      appPath: path.join(base, "shared", "app"),
+    });
+    expect(bootElectronApp.mock.calls[0][0].appPath).not.toBe(
+      path.join(base, "proj", ".argent", "app")
+    );
+  });
+
+  it("rejects a relative app path when the flow was uploaded (temp-dir anchor)", async () => {
+    // An uploaded flow's materialized temp file is not the anchor its author
+    // wrote the relative path against — booting from there would ENOENT or,
+    // worse, launch a same-named host path.
+    const flowFile = await writeFlow("steps:\n  - launch: { chromium: ./app }\n  - echo: done\n");
+    const registry = makeRegistry();
+
+    await expect(
+      createRunFlowTool(registry).execute(
+        {},
+        { name: "uploaded", project_root: PROJECT_ROOT, flow_file: flowFile } as never,
+        {
+          fileInputs: {
+            flow_file: {
+              clientPath: "/client/.argent/flows/uploaded.yaml",
+              presentOnHost: false,
+              viaUpload: true,
+            },
+          },
+        } as never
+      )
+    ).rejects.toThrow(/co-located/i);
+    expect(bootElectronApp).not.toHaveBeenCalled();
+  });
+
+  it("boots an uploaded flow's absolute app path (valid on the tool-server host)", async () => {
+    const flowFile = await writeFlow("steps:\n  - launch: { chromium: /abs/app }\n");
+    const registry = makeRegistry();
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "uploaded-abs", project_root: PROJECT_ROOT, flow_file: flowFile } as never,
+        {
+          fileInputs: {
+            flow_file: {
+              clientPath: "/client/.argent/flows/uploaded-abs.yaml",
+              presentOnHost: false,
+              viaUpload: true,
+            },
+          },
+        } as never
+      )
+    );
+
+    expect(bootElectronApp.mock.calls[0][0]).toMatchObject({ appPath: "/abs/app" });
+    expect(result.ok).toBe(true);
+  });
+
   it("does not boot or tear down when an explicit --device pins an existing instance", async () => {
     const flowFile = await writeFlow("steps:\n  - launch: { chromium: ./app }\n");
     const registry = makeRegistry();
@@ -197,7 +301,7 @@ describe("flow-execute chromium boot", () => {
     // can't boot its own instance — it must fail loudly, not silently pass
     // against the already-launched app. The parent's own launch still works.
     const parent = await writeFlow(
-      "steps:\n  - launch: { chromium: ./app-a }\n  - run: nested-chromium\n"
+      "steps:\n  - launch: { chromium: ./app-a }\n  - run: nested-chromium.yaml\n"
     );
     await writeSiblingFlow(
       parent,
@@ -237,7 +341,7 @@ describe("flow-execute chromium boot", () => {
     // not fire — it attaches to the pinned instance and passes. Only a *second*
     // launch is rejected. Uses a pinned device: a fragment top-level means the
     // runner boots nothing itself, so an already-running instance is required.
-    const fragmentB = await writeFlow("steps:\n  - run: setup-a\n  - echo: B after A\n");
+    const fragmentB = await writeFlow("steps:\n  - run: setup-a.yaml\n  - echo: B after A\n");
     await writeSiblingFlow(
       fragmentB,
       "setup-a",
