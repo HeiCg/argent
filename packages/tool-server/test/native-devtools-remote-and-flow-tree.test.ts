@@ -120,10 +120,22 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
   it("does not measure when auto-targeting resolved an app", async () => {
     // The measurement is for the app the flow launched, not a second-guess of a
     // resolution that succeeded: a connected app is connected by construction.
+    // The stub serves a real window, so this walks the whole readable path — an
+    // empty `windows` is its own error now (a no-windows read is untrustworthy,
+    // not a blank screen) and would end the call before it proves anything.
     const appConnectionState = vi.fn(async () => "connected" as const);
     const registry = registryWith([BUNDLE], {
       appConnectionState,
-      queryViewHierarchy: async () => ({ windows: [] }),
+      queryViewHierarchy: async () => ({
+        windows: [
+          {
+            className: "UIWindow",
+            frame: { x: 0, y: 0, width: 400, height: 800 },
+            windowFrame: { x: 0, y: 0, width: 400, height: 800 },
+            children: [],
+          },
+        ],
+      }),
     } as unknown as Partial<NativeDevtoolsApi>);
 
     await queryFullHierarchyTree(registry, DEVICE, BUNDLE);
