@@ -416,7 +416,7 @@ describe("describe tool", () => {
     expect(result.hint).not.toMatch(/Pass `bundleId`/);
     // Dropping the bundleId half must not drop the reader's only remaining
     // action with it: `screenshot` is what is left when the hierarchy cannot be
-    // read, and the device-interact skill tells the agent to follow this hint.
+    // read, and a hint that names no next step leaves the agent nowhere to go.
     expect(result.hint).toMatch(/screenshot/);
   });
 
