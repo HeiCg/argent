@@ -2,7 +2,7 @@ import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import { resolveDevice } from "../../utils/device-info";
 import { invokeSubTool } from "../../utils/sub-invoke";
-import type { WhenPlatform } from "./flow-utils";
+import type { FlowStep, WhenPlatform } from "./flow-utils";
 
 /**
  * Device resolution + binding for the flow runner. Flows store no device id
@@ -15,7 +15,32 @@ import type { WhenPlatform } from "./flow-utils";
 // flow-utils, which this aliases via WhenPlatform.
 export type FlowPlatform = WhenPlatform;
 
-const DEVICE_BIND_KEYS = ["udid", "device_id"] as const;
+/**
+ * Arg names that mean "the device to act on".
+ *
+ * The runner strips these from every recorded step and re-injects the resolved
+ * run device, so a name here must mean a device id on EVERY tool that declares
+ * one — the strip is schema-blind. `udid` covers most tools, `device_id` the
+ * debugger and profiler families, and `device` is `flow-execute`'s own, so a
+ * nested flow inherits the run device instead of pinning the one it was
+ * recorded on (#607).
+ *
+ * `platform` is deliberately absent, for two independent reasons. It is only
+ * ever read when no device was given — `resolveFlowDevice` returns on
+ * `opts.device` before touching it, and the chromium boot spec is gated on
+ * `!params.device` — so once `device` is bound it is inert. And it is not
+ * device-specific on every tool: `react-profiler-analyze` declares its own
+ * `platform`, which a blind strip would silently retarget.
+ */
+const DEVICE_BIND_KEYS = ["udid", "device_id", "device"] as const;
+
+/**
+ * Keys that mean a tool acts on a device. A superset of the keys the runner
+ * injects: `device` names one without receiving the run's own (a nested flow
+ * takes it that way), and a step that drives a device must count as needing one
+ * even when the runner does not hand it over.
+ */
+const DEVICE_ARG_KEYS = [...DEVICE_BIND_KEYS, "device"] as const;
 
 interface RawDevice {
   platform: FlowPlatform;
@@ -94,7 +119,13 @@ export async function resolveFlowDevice(
   );
 }
 
-/** Strip the device-id keys from a set of args (so a flow stores none). */
+/**
+ * Strip the device-id keys from a set of args (so a flow stores none).
+ *
+ * Schema-blind on purpose: `bindDeviceArgs` strips unconditionally and re-injects
+ * only what the target tool declares, so a stale id is never forwarded to a tool
+ * that does not want it.
+ */
 export function stripDeviceKeys(args: Record<string, unknown>): Record<string, unknown> {
   const out = { ...args };
   for (const k of DEVICE_BIND_KEYS) delete out[k];
@@ -108,7 +139,73 @@ export function stripDeviceKeys(args: Record<string, unknown>): Record<string, u
  * a stale baked-in udid can't override the run target. The id is injected only
  * for the device-id keys the tool's input schema declares (so `.strict()`
  * schemas stay valid).
+ *
+ * This covers a nested `tool: flow-execute` step too — its own `device` arg is
+ * rebound, so a composed run inherits the run device rather than driving the one
+ * it was recorded against, matching how `run:` composition already behaves.
  */
+/**
+ * Whether a step acts on a device.
+ *
+ * Answered per kind rather than by trying and failing, so a flow that touches no
+ * device never has to have one. The default is that a step DOES need one: a kind
+ * added later inherits today's behaviour instead of silently running against no
+ * device, and the `never` binding makes leaving it unclassified a compile error.
+ *
+ * Two of the classifications are worth stating outright:
+ *
+ * - `when` needs a device whatever its body contains, because the guard itself
+ *   reads one — the device's platform, or its view tree.
+ * - `run` needs one without the fragment being read here. The flow it names is
+ *   resolved at run time; resolving it a second time would duplicate that lookup
+ *   and could disagree with it if the file changed in between. The cost is that
+ *   composing a narration-only fragment still resolves a device.
+ */
+export function stepRequiresDevice(registry: Registry, step: FlowStep): boolean {
+  switch (step.kind) {
+    case "echo":
+    case "wait":
+      return false;
+    case "tool":
+      return toolRequiresDevice(registry, step.name);
+    case "when":
+    case "run":
+    case "launch":
+    case "tap":
+    case "long-press":
+    case "type":
+    case "await":
+    case "assert":
+    case "scroll-to":
+    case "pinch":
+    case "rotate":
+    case "snapshot":
+      return true;
+    default: {
+      const unclassified: never = step;
+      void unclassified;
+      return true;
+    }
+  }
+}
+
+/** Whether any step in a flow acts on a device. */
+export function flowRequiresDevice(registry: Registry, steps: FlowStep[]): boolean {
+  return steps.some((step) => stepRequiresDevice(registry, step));
+}
+
+function toolRequiresDevice(registry: Registry, toolName: string): boolean {
+  const toolDef = registry.getTool(toolName);
+  // An unknown tool is assumed to need a device: the step is going to fail
+  // either way, and it fails more usefully with one resolved.
+  if (!toolDef) return true;
+  const props = (toolDef.inputSchema as { properties?: Record<string, unknown> } | undefined)
+    ?.properties;
+  // A tool with no declared input takes no device.
+  if (!props) return false;
+  return DEVICE_ARG_KEYS.some((k) => k in props);
+}
+
 export function bindDeviceArgs(
   registry: Registry,
   toolName: string,
