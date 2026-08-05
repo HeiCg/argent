@@ -27,14 +27,13 @@ export const NATIVE_DEVTOOLS_NAMESPACE = "NativeDevtools";
  * Whether the Argent native devtools dylib can ever be injected into an app.
  *
  * Apple system / built-in apps (bundle ids under `com.apple.`) are platform
- * binaries shipped with library validation enabled, and the simulator is not
- * reliably willing to honour `DYLD_INSERT_LIBRARIES` for them — so our dylib
- * cannot be counted on to load, and no amount of relaunching changes which way
- * it goes. How absolute that is has not held up uniformly: issue #453 recorded
- * `connected: false` for `com.apple.Preferences` on iOS 26.5, and an E2E review
- * recorded `connected: true`, with both dylibs mapped, on 18.5. The predicate
- * answers "not injectable" for both, because an app that MIGHT connect cannot
- * be the basis of a retry loop either. Third-party apps the user installs carry
+ * binaries shipped with library validation enabled, so the simulator may refuse
+ * to honour `DYLD_INSERT_LIBRARIES` for them — and no amount of relaunching
+ * changes which way it goes. It is runtime-dependent: #453 recorded
+ * `connected: false` for `com.apple.Preferences` on iOS 26.5, an E2E run
+ * `connected: true` (both dylibs mapped) on 18.5. The predicate answers "not
+ * injectable" for both, because an app that MIGHT connect is no basis for a
+ * retry loop either. Third-party apps the user installs carry
  * no such restriction and inject normally. Treating the `com.apple.` prefix as
  * non-injectable gives the native-* tools a terminal signal instead of an
  * unbounded restart-app → retry loop.
@@ -53,14 +52,11 @@ export function isInjectableBundleId(bundleId: string): boolean {
 /**
  * The invariant half of the non-injectable recovery guidance: which tools NOT
  * to fall back to. Shared VERBATIM by every surface that reports this terminal
- * state to an agent that could otherwise reach for one (this precheck's throw,
- * the `describe` iOS fallback hint, and the `native-devtools-status`
- * description) so none of them can drift into recommending a dead-end. The
- * flow path reports the same terminal state but deliberately does NOT carry
- * this text: its reader is authoring a flow, not choosing an inspection tool,
- * so it names the flow-level remedy (drive by coordinate) instead. That surface
- * is the tree source — a launch of such an app is allowed through, and only a
- * selector that needs the hierarchy is refused.
+ * state (this precheck's throw, the `describe` iOS fallback hint, and the
+ * `native-devtools-status` description) so none of them can drift into
+ * recommending a dead-end. The flow tree source reports the same terminal state
+ * without this text: its reader is authoring a flow, not choosing an inspection
+ * tool, so it names the flow-level remedy (drive by coordinate) instead.
  *
  * Every native-* *feature* tool — notably the two
  * view-at-point tools, which run this same 3-arg precheck — re-throws this
@@ -108,32 +104,25 @@ export const MAX_NATIVE_DEVTOOLS_INIT_ATTEMPTS = 3;
  * restarting it would change.
  *
  * `restart-app` relaunches into the simulator's *current* launchd environment,
- * so it can only ever help a process launched under different terms than a fresh
- * launch would get: without the bootstrap dylib, pointed at a stale endpoint, or
- * before this service's listener existed. Those are `stale_process` — note that
- * the last of them is injected, and injected against this very endpoint, so the
- * state's message speaks of what the process can still reach rather than of what
- * was inserted into it.
+ * so it only helps a process launched under terms a fresh launch would not
+ * repeat: no bootstrap dylib, a stale endpoint, or a listener since rebound —
+ * `stale_process`. The last of those is injected against this very endpoint, so
+ * the state's message speaks of what the process can reach, not what was
+ * inserted into it.
  *
- * `unregistered` is the opposite and the reason this is derived rather than
+ * `unregistered` is the opposite, and the reason this is measured rather than
  * assumed: the process already carries this service's injection and started
- * after the listener came up, so the launch a restart would perform has demonstrably
- * already happened and left us unconnected. Advising a restart there is advice to
- * repeat something that just failed, which is what turned an unregistered
- * connection into an unbounded restart-app loop that only a tool-server restart
- * could break.
+ * after the listener came up, so the launch a restart would perform has already
+ * happened and left us unconnected. Advising a restart there is the unbounded
+ * restart-app loop that only a tool-server restart could break.
  *
- * `connecting` is that same process caught mid-handshake — injected against this
- * endpoint, but only seconds old, so its silence is not yet evidence of
- * anything. It is separated from `indeterminate` because a relaunch is not
- * merely useless here but self-perpetuating: exec is what starts the dial, so
- * every restart resets the age this verdict is read from and lands back inside
- * the same window. Its remedy is to wait, and it is the one unconnected state
- * that resolves itself.
+ * `connecting` is that same process seconds after exec, so its silence is not
+ * yet evidence. Kept apart from `indeterminate` because exec is what starts the
+ * dial: a relaunch resets the age this verdict reads, so obeying "restart"
+ * never terminates.
  *
- * `indeterminate` is the absence of a reading, not a reading: the process could
- * not be inspected at all (ios-remote, an unreadable `ps`), so nothing above can
- * be ruled in or out.
+ * `indeterminate` is the absence of a reading — the process could not be
+ * inspected at all (ios-remote, an unreadable `ps`).
  */
 export type NativeDevtoolsAppState =
   | "connected"
@@ -148,24 +137,15 @@ export type NativeDevtoolsAppState =
  * and how much younger than the listener it must be to have plainly started
  * after it. Covers the dylib's dial + handshake after exec and the whole-second
  * resolution of `ps -o etime`. Both comparisons lean away from `unregistered`
- * — the first towards `stale_process`, the second towards `connecting`. So an
- * uncertain read costs a wasted relaunch or a wasted second, rather than sending
+ * — the first towards `stale_process`, the second towards `connecting` — so an
+ * uncertain read costs a wasted relaunch or a wasted second rather than sending
  * an agent off to restart a healthy tool-server.
- *
- * That lean holds because both ages are read off the same wall clock: `etime`
- * is `now - p_starttime`, so a clock step shifts it and `Date.now()` alike and
- * cancels out of the difference. The exception is a step landing between the
- * app's exec and the listener's bind, which leaves the two stamped on different
- * timebases — a backward step there can make an old process read young enough
- * to be called `unregistered`. It needs a clock correction inside that window,
- * and the next restart-app clears it.
  */
 const NATIVE_DEVTOOLS_CONNECT_GRACE_MS = 3000;
 
 /**
  * The agent-facing remedy for each measured state. `connected` is excluded at
- * the type level: it has no remedy, and every caller reaches this only after
- * ruling it out, so a future state that slips in unhandled is a compile error
+ * the type level so a future state that slips in unhandled is a compile error
  * rather than a silent fall-through to the least specific advice.
  */
 export function buildAppStateMessage(
@@ -174,14 +154,11 @@ export function buildAppStateMessage(
 ): string {
   switch (state) {
     case "not_running":
-      // The evidence is the absence of a `UIKitApplication:<id>` row, and a
-      // bundle id that was never installed has no row either — so this state
-      // cannot tell "installed and stopped" from "not installed", and the
-      // launch it prescribes is unrunnable in the second case (`simctl launch`
-      // fails outright). Naming the second reading is what keeps that from
-      // becoming its own retry loop: the agent has somewhere to go when the
-      // remedy fails, instead of a state whose only advice has already been
-      // refused. Measuring it instead would take a `simctl get_app_container`
+      // The evidence is a missing `UIKitApplication:<id>` row, which an
+      // uninstalled bundle id lacks too — so the message names that second
+      // reading, leaving the agent somewhere to go when the launch it prescribes
+      // fails outright instead of a state whose only advice was just refused.
+      // Telling the two apart would take a `simctl get_app_container`
       // round-trip that ios-remote cannot serve at all.
       return (
         `${bundleId} has no running process on this simulator, so there is no injected process to ` +
@@ -269,15 +246,15 @@ export async function precheckNativeDevtools(
   udid: string,
   bundleId?: string
 ): Promise<NativeDevtoolsPrecheckBlock | null> {
-  // Terminal case first: an app injection cannot be relied on for (Apple system app).
-  // Injectability is a static property of the bundle id, knowable without any
-  // env state, so this fires before the env plumbing below — a given-up sim or
-  // a transient ensureEnvReady failure must not mask the terminal signal behind
-  // init_failed's "re-boot the simulator" guidance (a reboot cannot make a
-  // system app injectable), and no env-setup work is spent on an app that can
-  // never load the dylib. Throwing (rather than returning a restart-required
-  // block) makes the native-* feature tools surface a hard error instead of
-  // instructing an unbounded restart→retry loop that can never succeed. The
+  // Terminal case first: an Apple system app, which injection cannot be relied
+  // on for. Injectability is a static property of the bundle id, knowable
+  // without any env state, so this fires before the env plumbing below — a
+  // given-up sim or a transient ensureEnvReady failure must not mask the
+  // terminal signal behind init_failed's "re-boot the simulator" guidance (a
+  // reboot cannot make a system app injectable), and no env-setup work is spent
+  // on an app that may never load the dylib. Throwing (rather than returning a
+  // restart-required block) makes the native-* feature tools surface a hard
+  // error instead of an unbounded restart→retry loop that can never succeed. The
   // 2-arg overload (bundleId undefined) must NOT throw: native-devtools-status
   // reports the state instead, and launch-app / restart-app run it too —
   // launching or restarting a system app is legitimate, it just may not inject.
@@ -311,15 +288,12 @@ export async function precheckNativeDevtools(
 
   if (bundleId === undefined) return null;
 
-  // Degrade a rejection rather than letting it out raw, as every other consumer
-  // of this call does. It re-applies the launchd env before it can answer
-  // anything, so a sim that goes away between `ensureEnvReady` above and here
-  // rejects — and this is the path all six native-* feature tools take, so a
-  // raw `Invalid device: <udid>` would reach the agent in place of the
-  // structured guidance the same failure produces from `native-devtools-status`
-  // and `describe`. A failure recorded by that env re-apply says the sim itself
-  // is gone, which is init_failed's case; anything else leaves the connection
-  // simply unmeasured.
+  // `appConnectionState` re-applies the launchd env before it can answer, so a
+  // sim that goes away after `ensureEnvReady` rejects here — on the path all six
+  // native-* feature tools take. Degrade like every other consumer rather than
+  // letting a raw `Invalid device: <udid>` out: a failure recorded by that
+  // re-apply means the sim itself is gone (init_failed's case), anything else
+  // leaves the connection simply unmeasured.
   const state = await api.appConnectionState(bundleId).catch(() => {
     const failure = api.getInitFailure();
     return failure ? buildInitFailedResult(udid, failure) : ("indeterminate" as const);
@@ -327,10 +301,10 @@ export async function precheckNativeDevtools(
   if (typeof state !== "string") return state;
   if (state === "connected") return null;
   return {
-    // Two states must not be reported as restart_required: `unregistered`, which
-    // a relaunch provably cannot fix, and `connecting`, where a relaunch aborts
-    // the handshake it would be waiting on and resets the age the verdict is
-    // read from — so obeying it returns here forever.
+    // Neither `unregistered` (a relaunch provably cannot fix it) nor
+    // `connecting` (a relaunch aborts the handshake and resets the age the
+    // verdict reads) may be reported as restart_required — obeying that would
+    // return here forever.
     status:
       state === "unregistered"
         ? "service_stale"
@@ -786,9 +760,9 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
     } else {
       await bindNativeDevtoolsUnixSocket(server, socketPath);
     }
-    // An app that predates this moment dialed a listener we no longer hold, so
-    // it needs relaunching however well-injected it looks. Stamped after the
-    // bind so the window where the dylib could dial and be missed is empty.
+    // A process older than this dialed a listener we no longer hold, so it needs
+    // relaunching however well-injected it looks. Stamped after the bind, so no
+    // dial can land before it.
     const listeningSince = Date.now();
 
     // Tolerate ensureEnv failure: throwing here would leak `server` — the
@@ -813,34 +787,25 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         // Re-verify and re-set env — handles the case where the simulator was
         // rebooted and launchd cleared DYLD_INSERT_LIBRARIES. Must use
         // reverifyEnv (not ensureEnvReady): the latter latches after the first
-        // success and would skip re-applying the wiped env. It also has to run
-        // before the process is judged: the env a restart would launch into is
-        // the thing the process gets compared against — this call is what makes
-        // launchd carry the same two facts `endpoint` does. And the age
-        // comparison below is two clock readings, the process's stamped by `ps`
-        // and the listener's when the verdict is taken, so every simctl
-        // round-trip sitting between them is skew charged against the connect
-        // grace. This re-apply is several of them; below the probe it would
-        // spend the whole grace and report a process that predates the listener
-        // as one that never registered.
+        // success and would skip re-applying the wiped env. Order matters: this
+        // is several simctl round-trips, and the age comparison below subtracts
+        // two clock readings taken either side of it — run after the probe it
+        // would spend the whole grace and read a process that predates the
+        // listener as one that never registered.
         await reverifyEnv();
 
-        // Logged for the same reason the `ps` probe logs: a probe that is
-        // broken rather than merely uninformative degrades every app to
-        // `indeterminate`, and the two are indistinguishable at the tool
-        // surface. Never fatal — the diagnosis is advisory.
+        // Logged, like the `ps` probe: a broken probe degrades every app to
+        // `indeterminate`, indistinguishable at the tool surface from a
+        // genuinely uninspectable one. Never fatal — the diagnosis is advisory.
         const inspection = await host.inspectRunningApp(udid, bundleId).catch((err: unknown) => {
           process.stderr.write(
             `[native-devtools] app inspection failed for ${bundleId}: ${String(err)}\n`
           );
           return null;
         });
-        // Everything below describes a process that is NOT connected, and the
-        // snapshot that claim rests on was taken before `reverifyEnv` and a
-        // `launchctl list` — several simctl round-trips ago. A dial landing
-        // inside that window would be reported as an app the service never
-        // registered, i.e. sent to restart a tool-server that had just
-        // succeeded. Re-read the live map instead of the entry snapshot.
+        // The entry check was several simctl round-trips ago; a dial landing
+        // since would read as `unregistered` and send the agent to restart a
+        // tool-server that had just succeeded. Re-read the live map.
         if (connections.has(bundleId)) return "connected";
 
         if (inspection === null) return "indeterminate";
@@ -851,16 +816,15 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
 
         // Injected, but against which listener? A process older than this
         // service's socket dialed one that no longer exists (a tool-server
-        // restart rebinds the same per-udid path to a new inode), and a relaunch
-        // is exactly what re-dials the live one.
+        // restart rebinds the same per-udid path to a new inode); a relaunch
+        // re-dials the live one.
         const listenerAgeMs = Date.now() - listeningSince;
         const processAgeMs = inspection.process.ageMs;
         if (processAgeMs + NATIVE_DEVTOOLS_CONNECT_GRACE_MS >= listenerAgeMs) {
           return "stale_process";
         }
-        // Injected against this listener and launched after it came up. Inside
-        // the grace the dial is still plausibly in flight, so the silence says
-        // nothing yet; past it, the connection had its chance and never arrived.
+        // Injected against this listener and younger than it. Inside the grace
+        // the dial is plausibly still in flight; past it, it had its chance.
         if (processAgeMs < NATIVE_DEVTOOLS_CONNECT_GRACE_MS) return "connecting";
         return "unregistered";
       },

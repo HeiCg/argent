@@ -2,12 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
  * Every per-device simctl call in `ios-host` has to carry the device set the
- * UDID lives in. A simulator in an additional set (Radon IDE's, say) is simply
- * not addressable from the default set, so a call that skips `--set` fails with
- * "Invalid device" — and the two app-state probes fail in a way that reads as a
- * verdict: `listRunningBundleIds` rejects and `inspectRunningApp` reports the
- * app as not running, which is `not_running`, which tells an agent to relaunch
- * an app that is already up.
+ * UDID lives in. A simulator in an additional set (Radon IDE's, say) is not
+ * addressable from the default set, so a call that skips `--set` fails with
+ * "Invalid device" — and the app-state probes fail in a way that reads as a
+ * verdict: `inspectRunningApp` reports the app as not running, which is
+ * `not_running`, which tells an agent to relaunch an app that is already up.
  *
  * `ios-device-sets.test.ts` covers the resolver; this covers the two call sites
  * it can't see.
@@ -96,10 +95,9 @@ beforeEach(() => {
     }
     if (argv.includes("launchctl")) {
       spawnCalls.push(argv);
-      // Stand where simctl stands: the device answers from the set that owns
-      // it and is "invalid" from any other. So a call site that drops `--set`
-      // fails here the way it would in the field, instead of being waved
-      // through by a mock that answers every argv alike.
+      // Stand where simctl stands: the device answers from the set that owns it
+      // and is "invalid" from any other, so a call site that drops `--set` fails
+      // here the way it would in the field.
       const owningSet = additionalSets.length > 0 ? EXTRA_SET : null;
       const addressedSet = argv[1] === "--set" ? argv[2]! : null;
       if (addressedSet !== owningSet) return new Error(`Invalid device: ${UDID}`);

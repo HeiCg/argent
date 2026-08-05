@@ -550,9 +550,8 @@ async function bootIos(
     // `ensureEnvReady()` short-circuits and never re-sets the env. The result:
     // launch-app / restart-app produce an uninjected process and
     // native-devtools-status stays `connected:false` until something re-applies
-    // the env out of band (`appConnectionState` does, via reverifyEnv, which
-    // bypasses the latch on purpose — but only once an app is queried, and only
-    // for that query's own sake). Dropping the cached service here forces
+    // the env out of band — `appConnectionState` does, via reverifyEnv, but only
+    // once an app is queried. Dropping the cached service here forces
     // the resolveService below to rebuild it with a fresh `envSetup=false`, so
     // ensureEnv re-applies DYLD on this boot. The DYLD-clear-on-reboot is not
     // strictly tvOS-specific, but we gate this on tvOS to match the validated

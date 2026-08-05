@@ -41,8 +41,8 @@ const TVOS_HINT =
   "(up/down/left/right/select/back/menu/home) to move focus, and `keyboard` to type. " +
   "See the argent-tv-interact skill.";
 
-// Apple system apps (`com.apple.*`) cannot be relied on to load argent's dylib, so
-// the native-devtools fallback can't read their view hierarchy and restarting
+// Apple system apps (`com.apple.*`) cannot be relied on to load argent's dylib,
+// so the native-devtools fallback can't read their view hierarchy and restarting
 // them would never help — returning `should_restart` here puts the agent in an
 // unbounded restart-app → describe loop. This hint is reached only once
 // `describe`'s own ax-service path has already returned empty, so it leads with
@@ -118,15 +118,12 @@ export async function describeIos(
     return { tree, source: "ax-service", hint };
   }
 
-  // A non-injectable system app may never connect, and the launchd env carrying
-  // the bootstrap dylib is simulator-wide — so its process inherits the very
-  // tokens the measurement reads and scores as injected. Which unconnected state
-  // that lands on is just its age against this service's listener:
-  // `stale_process` (already running when the service bound) with a restart-app
-  // remedy, or `unregistered` (launched after) with a tool-server one. Both are
-  // wrong for an app no restart of anything can help, and the first rebuilds the
-  // restart-app → describe loop. Return the (empty) AX result with the terminal
-  // screenshot hint instead.
+  // The launchd env carrying the bootstrap dylib is simulator-wide, so a system
+  // app's process inherits the very tokens the measurement reads and scores as
+  // injected — landing on `stale_process` (restart-app) or `unregistered`
+  // (restart the tool-server) by nothing but its age. Both are wrong for an app
+  // no restart can help, and the first rebuilds the restart-app → describe loop.
+  // Return the (empty) AX result with the terminal screenshot hint instead.
   // The gate sits BEFORE the native-devtools fallback: injectability is a
   // static property of the explicit bundle id, so the terminal hint must not
   // depend on service resolution succeeding (a downed ios-remote tunnel or a
@@ -151,41 +148,33 @@ export async function describeIos(
   } catch (err) {
     // The blueprint is registered unconditionally, so on an iOS target this
     // rejects only when the service failed to come up — a socket bind losing to
-    // a concurrent same-udid server, a host that could not be picked. That is a
-    // failed attempt at corroboration, not an absence of one, so the empty read
-    // is as unexplained here as it is below: without saying so, a `hidden` wait
-    // releases against a screen nothing ever read.
+    // a concurrent same-udid server, a host that could not be picked. A failed
+    // attempt at corroboration, not an absence of one, so the empty read is as
+    // unexplained here as it is below.
     return { tree, source: "ax-service", hint: unexplainedHint(hint, errMsg(err), params) };
   }
 
   try {
     const target = await resolveNativeTargetApp(nativeApi, params.bundleId);
 
-    // A rejection here (the env re-apply this runs first fails on a sim that
-    // went away mid-call) is degraded rather than thrown, matching every other
-    // consumer of this call: the outer catch would report only that the read
-    // could not be taken, where this says which state it could not be taken in
-    // — the difference between "unexplained" and a named remedy.
+    // Degrade a rejection (the env re-apply this runs first fails on a sim that
+    // went away mid-call) rather than letting the outer catch turn a named
+    // remedy into a bare "could not be read".
     const state = await nativeApi
       .appConnectionState(target.bundleId)
       .catch(() => "indeterminate" as const);
     if (state !== "connected") {
-      // The diagnosis rides out as a hint for every state, because `hint` is the
-      // only channel describe has for prose: `should_restart` reaches the agent
-      // as a bare JSON boolean, and the one place it is rendered as English —
-      // await-ui-element's timeout note — spells it "call restart-app and
-      // retry", the loop instruction with no escape. `indeterminate` is where
-      // that costs the most: its message is the one carrying "do not keep
-      // restarting the app", and it is the only state a *running* app can reach
-      // on ios-remote, whose app processes live on the orchestrator and so
-      // cannot be inspected — without the hint that path has no exit at all.
+      // The diagnosis rides out as a hint in every state: `hint` is describe's
+      // only prose channel, and the one place `should_restart` is rendered as
+      // English — await-ui-element's timeout note — spells it "call restart-app
+      // and retry", the loop instruction with no escape. It costs most on
+      // `indeterminate`, the only state a running app reaches on ios-remote,
+      // whose message is the one saying to stop restarting the app.
       //
-      // `should_restart` itself is the agent-facing instruction to relaunch, so
-      // it stays limited to the states a relaunch actually fixes. An
-      // `unregistered` process already launched under the terms a restart would
-      // recreate, and a `connecting` one is mid-handshake, which exec is what
-      // begins — flagging either would rebuild the restart-app → describe loop
-      // this gate exists to avoid.
+      // `should_restart` stays limited to the states a relaunch fixes:
+      // `unregistered` already launched under the terms a restart recreates, and
+      // `connecting` is the handshake exec begins, so flagging either would
+      // rebuild the restart-app → describe loop.
       const diagnosis = buildAppStateMessage(target.bundleId, state);
       const merged = hint ? `${hint} ${diagnosis}` : diagnosis;
       return state === "unregistered" || state === "connecting"
@@ -206,25 +195,18 @@ export async function describeIos(
     const nativeTree = adaptNativeDescribeToDescribeResult(parsed);
     return { tree: nativeTree, source: "native-devtools", hint };
   } catch (err) {
-    // The service answered, but no hierarchy came back: no connected app to
-    // auto-target, an ambiguous frontmost, or the query itself threw. Returning
-    // the bare tree here says the screen is empty when what happened is that it
-    // could not be read — and `await-ui-element`'s blind-read guard keys off
-    // `hint` / `should_restart`, so with neither set an empty tree is taken at
-    // face value and a `hidden` wait resolves immediately against an element
-    // that may still be on screen.
+    // The service answered but no hierarchy came back: no connected app to
+    // auto-target, an ambiguous frontmost, or the query threw. Returning the
+    // bare tree would say the screen is empty when it could not be read — and
+    // `await-ui-element`'s blind-read guard keys off `hint` / `should_restart`,
+    // so with neither set a `hidden` wait resolves against an element that may
+    // still be on screen.
     //
-    // This is reachable on the DEFAULT form of the call. `bundleId` is
-    // optional, and without it `resolveNativeTargetApp` draws its candidates
-    // from the connected list — so every state the diagnosis above exists to
-    // explain throws here, before anything is measured. With `bundleId` the
-    // resolution short-circuits and that diagnosis is reached, so without this
-    // the two forms answer differently for one device state.
-    //
-    // No bundle id was resolved on that path, so there is nothing to measure and
-    // no remedy to invent — the resolver's own message already carries one.
-    // Recording that the read is uncorroborated is the whole of what the guard
-    // needs.
+    // This is the DEFAULT (no `bundleId`) form's path: auto-targeting draws its
+    // candidates from the connected list, so every state the diagnosis above
+    // explains throws here before anything is measured. Nothing was resolved, so
+    // there is nothing to measure and no remedy to invent — the resolver's own
+    // message already carries one.
     return { tree, source: "ax-service", hint: unexplainedHint(hint, errMsg(err), params) };
   }
 }
@@ -236,16 +218,13 @@ function errMsg(err: unknown): string {
 /**
  * Mark an empty accessibility read as unexplained rather than empty.
  *
- * Any hint already set is kept ahead of it, not replaced: that hint is the
- * ax-service's own state — `DEGRADED_HINT`'s "boot-device with force=true" is
- * the corrective action for the sim itself, and dropping it would trade a
- * repairable simulator for a note about one read.
+ * Any hint already set is kept ahead of it: `DEGRADED_HINT`'s "boot-device with
+ * force=true" is corrective for the simulator itself, and dropping it would
+ * trade a repairable sim for a note about one read.
  *
- * `screenshot` is named on every path — it is the one action available whatever
- * went wrong, and without it the hint leaves the reader no next step. Only the
- * `bundleId` half is conditional: all three call sites are reachable with an
- * explicit id, so suggesting it to a caller who supplied one names the step
- * they already took.
+ * `screenshot` is named on every path — the one action available whatever went
+ * wrong. Only the `bundleId` half is conditional, so a caller who supplied one
+ * is not told to take the step they already took.
  */
 function unexplainedHint(
   hint: string | undefined,

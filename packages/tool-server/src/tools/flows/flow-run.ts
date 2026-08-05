@@ -205,8 +205,8 @@ const POST_LAUNCH_SETTLE_MS = 1500;
  * the launch step reports the problem where it belongs, with the measured
  * reason the connection never came up.
  *
- * Exported so the gate's own reason text can be pinned against this value
- * rather than a literal that drifts from it.
+ * Exported so the gate's reason text can be pinned against it rather than a
+ * drifting literal.
  */
 export const NATIVE_READY_TIMEOUT_MS = 8000;
 const NATIVE_READY_POLL_MS = 250;
@@ -215,26 +215,21 @@ const NATIVE_READY_POLL_MS = 250;
  * How long the launch step has spent on the app by the time the gate takes its
  * verdict: the post-launch settle plus the whole connect wait. The gate's own
  * timeout is only the second half, so quoting it alone understates the age of a
- * process the step launched — which is the fact its rewritten remedies rest on.
- *
- * Exported so those remedies can be pinned against this value rather than a
- * literal that drifts from either constant.
+ * process the step launched — the fact the remedies below rest on. Exported so
+ * they can be pinned against it rather than a drifting literal.
  */
 export const LAUNCH_TO_VERDICT_MS = POST_LAUNCH_SETTLE_MS + NATIVE_READY_TIMEOUT_MS;
 
 /**
  * Poll until native-devtools is connected for `bundleId`. Returns null once
- * connected, on abort — where the caller reports the cancellation itself rather
- * than a connection problem — and for an app whose hierarchy this gate cannot
- * wait for in the first place. Otherwise the reason the connection never came
- * up: the resolution error when the service cannot be reached at all, and for
- * everything else the state measured off the running process, rewritten for the
- * one thing that distinguishes this caller — it has just launched the app.
+ * connected, on abort (the caller reports the cancellation itself), and for an
+ * app whose hierarchy this gate cannot wait for at all. Otherwise the reason the
+ * connection never came up: the resolution error when the service is
+ * unreachable, else the state measured off the running process, rewritten for
+ * the one thing that distinguishes this caller — it has just launched the app.
  *
- * The reason is read off the process rather than guessed. A relaunch is the
- * wrong advice for an app that already launched under the terms a relaunch
- * would recreate, and this gate is reached right after a launch — so guessing
- * "re-run to relaunch" here is the same restart loop `appConnectionState`
+ * Measured rather than guessed: this gate is reached right after a launch, so
+ * "re-run to relaunch" would be the same restart loop `appConnectionState`
  * exists to break, one level up.
  */
 async function waitForNativeDevtools(
@@ -248,10 +243,9 @@ async function waitForNativeDevtools(
     const ref = nativeDevtoolsRef(device);
     api = await registry.resolveService<NativeDevtoolsApi>(ref.urn, ref.options);
   } catch (err) {
-    // Same withholding as the timeout below, for the same reason: an app that
-    // may never load the dylib was never going to be served by this service, so
-    // its failure is not what stops the launch — otherwise a service failure
-    // irrelevant to such an app is the one way its launch can still fail.
+    // Withheld for the same reason as the timeout below: an app that may never
+    // load the dylib was never going to be served by this service, so its
+    // failure is not what stops the launch.
     if (!isInjectableBundleId(bundleId)) return null;
     return `the native-devtools service is unavailable for ${bundleId} (${errMsg(err)})`;
   }
@@ -264,40 +258,22 @@ async function waitForNativeDevtools(
   }
   // Timed out with no connection. An app that may never load the dylib has no
   // hierarchy to wait for, so that is its expected outcome rather than a launch
-  // failure: the step started the app, which is its job, and a flow that drives
-  // it by coordinate needs nothing more. Failing here denies that flow its first
-  // step while telling its author to drive by coordinate. The impossibility
-  // bites only where a selector needs the hierarchy, and `fetchFlowTree` reports
-  // it there — a selector-driven flow still fails, just at the step that cannot
-  // be served rather than at the one that worked.
+  // failure: the step started the app, and a coordinate-driven flow needs
+  // nothing more. The impossibility bites only where a selector needs the
+  // hierarchy, and `fetchFlowTree` reports it there.
   //
-  // The wait itself is not skipped, and that is deliberate rather than
-  // incidental. Whether the dylib can load into a simulator system app is not
-  // settled: issue #453 recorded `connected: false` for com.apple.Preferences
-  // on iOS 26.5, and an E2E review recorded `connected: true`, with both dylibs
-  // mapped, on 18.5. `isInjectableBundleId` answers "no" for both. Polling costs
-  // this step its timeout where the pessimistic reading holds, and widens the
-  // connect latency a flow tolerates where the optimistic one does — so the
-  // wait runs and only the VERDICT is withheld. Skipping it would bake the
-  // contested claim into behaviour; waiting merely spends time on it.
-  //
-  // The poll is not what makes selectors work. `settleTree` retries a failed
-  // tree read for SETTLE_TIMEOUT_MS, on top of POST_LAUNCH_SETTLE_MS, so a
-  // connection arriving inside roughly the first 4.5 s is absorbed with no gate
-  // at all — which is why a fragment, having no launch step and so no gate,
-  // resolves selectors against a system app on a runtime where it connects.
-  // What the poll adds is the band from there out to LAUNCH_TO_VERDICT_MS.
-  //
-  // The withholding happens before the measurement, which no arm below would
+  // The wait itself still runs, deliberately: whether the dylib loads into a
+  // simulator system app is unsettled (#453 saw `connected: false` for
+  // com.apple.Preferences on iOS 26.5, an E2E run `connected: true` on 18.5),
+  // and skipping it would bake that contested claim into behaviour. Only the
+  // VERDICT is withheld — before the measurement, which no arm below would
   // consult for such an app and which costs several simctl round-trips the
   // caller cannot interrupt.
   if (!isInjectableBundleId(bundleId)) return null;
-  // Measure why — the state may have flipped to connected in the gap since the
-  // last poll, in which case there is nothing to report. The loop's own abort
-  // check covers every exit but this one: `break` is reached synchronously from
-  // that check, so an abort cannot land in between. One landing during the
-  // measurement — seconds of uninterruptible simctl work — is caught by the
-  // caller, which drops the reason rather than acting on it.
+  // Measure why — the state may have flipped to connected since the last poll.
+  // The loop's abort check covers every exit but this one (`break` follows it
+  // synchronously); an abort landing during the measurement's uninterruptible
+  // simctl work is caught by the caller, which drops the reason.
   const state = await api.appConnectionState(bundleId).catch(() => "indeterminate" as const);
   if (state === "connected") return null;
   return flowLaunchGateReason(bundleId, state);
@@ -308,14 +284,12 @@ async function waitForNativeDevtools(
  * from every other consumer of {@link buildAppStateMessage}: it has just run
  * `restart-app` on this bundle id and spent {@link LAUNCH_TO_VERDICT_MS} on it.
  *
- * Those messages are written for the native-* tool surface, where the reader
- * has not launched anything and "launch it" / "restart it" is the missing step.
- * Emitted verbatim here they hand back the action the step itself just took, so
- * an author who obeys re-runs the flow into the identical state — the restart
- * loop this file's measurement exists to break, one level up. Each state gets
- * the sentence that is true *after* a launch instead. The switch is exhaustive
- * on purpose: a state added later must be given its own post-launch reading
- * rather than inheriting a remedy written for a reader who never launched.
+ * Those messages are written for a reader who has not launched anything, so
+ * "launch it" / "restart it" is the missing step. Emitted verbatim here they
+ * hand back the action this step just took, and an author who obeys re-runs the
+ * flow into the identical state. Each state gets the sentence that is true
+ * *after* a launch instead; the switch is exhaustive so a state added later
+ * cannot inherit a remedy written for a reader who never launched.
  */
 export function flowLaunchGateReason(
   bundleId: string,
@@ -325,27 +299,21 @@ export function flowLaunchGateReason(
   switch (state) {
     case "not_running":
       // The step launched it and it is gone — the one state a relaunch provably
-      // reproduces, since a relaunch is what produced it. Naming the exit is the
-      // whole value: the measured remedy is the step's own action, so it reads
-      // as advice to do nothing differently.
+      // reproduces, since a relaunch is what produced it. The measured remedy is
+      // the step's own action, so it reads as advice to change nothing.
       return (
         `${bundleId} was relaunched by this step and is no longer running ${LAUNCH_TO_VERDICT_MS} ms later, ` +
         `so it exited after launch rather than failing to connect. Re-running the flow repeats the same launch: ` +
         `start it by hand (launch-app, then describe or screenshot) to see the crash or early exit first.`
       );
     case "stale_process":
-      // The first sentence must not pick between the state's two producers:
-      // one is a process carrying no argent injection at all, the other carries
-      // THIS endpoint and is merely older than the listener, so blaming the
-      // launchd environment there would be false — and the measured text this
-      // wraps already names both. What holds after a launch either way is that
-      // the process predates something the next launch would pick up.
-      //
-      // The environment IS the right thing to name on a SECOND landing, and
-      // only there. A re-run relaunches the app now, so its process is younger
-      // than a listener that has been up any appreciable time — which rules the
-      // second producer out (it needs `processAge + grace >= listenerAge`).
-      // What is left is a relaunch that picked up no instrumentation at all.
+      // The first sentence must not pick between the state's two producers: a
+      // process carrying no argent injection at all, or one carrying THIS
+      // endpoint and merely older than the listener. Blaming the launchd
+      // environment would be false for the second — and the measured text names
+      // both. The environment IS right on a SECOND landing: a re-run's process
+      // is younger than any long-up listener, which rules that second producer
+      // out (it needs `processAge + grace >= listenerAge`).
       return (
         `${measured} This step already relaunched it, so the process it measured predates whatever the ` +
         `relaunch would have given it — re-run the flow to launch again. If it lands here twice, the ` +
@@ -353,26 +321,21 @@ export function flowLaunchGateReason(
         `(boot-device with force) before re-running.`
       );
     case "unregistered":
-      // `unregistered` means the connection never arrived in the window this
-      // gate waited. Everywhere else that window is the app's whole lifetime, so
-      // the verdict is unambiguous; here it is the launch this step performed
-      // plus what it then waited, which a cold start (an RN build fetching its
-      // bundle) can outlast. The measured remedy would have the author restart a
-      // healthy tool-server for an app that had simply not finished starting.
-      //
-      // The figure is the whole spend, not the poll alone: the connection is
-      // read off the live map, and the poll checks it once before its first
-      // sleep, so a dial landing during the post-launch settle is caught too.
+      // Everywhere else the window this verdict reads is the app's whole
+      // lifetime; here it is only this step's launch plus its wait, which a cold
+      // start (an RN build fetching its bundle) can outlast — so the measured
+      // remedy would have the author restart a healthy tool-server. The figure
+      // is the whole spend: the poll checks the live map once before its first
+      // sleep, so a dial during the post-launch settle counts too.
       return (
         `${measured} A cold start slower than the ${LAUNCH_TO_VERDICT_MS} ms this step waited reads the ` +
         `same way — if that is likely, re-run the flow to relaunch and wait again before restarting anything.`
       );
     case "connecting":
-      // Odd here rather than routine: the state means a process seconds old,
-      // while this step launched the app LAUNCH_TO_VERDICT_MS ago — so something
-      // restarted it after the step did, and the handshake being waited on
-      // belongs to that later process. Saying "wait" (the measured remedy) is
-      // still right; claiming the step launched what is being measured is not.
+      // A process seconds old, though this step launched the app
+      // LAUNCH_TO_VERDICT_MS ago — so something relaunched it in between, and
+      // the handshake being waited on belongs to that later process. "Wait" is
+      // still right; crediting this step with that launch is not.
       return (
         `${measured} This step launched it ${LAUNCH_TO_VERDICT_MS} ms before that reading, so the process ` +
         `being measured started after the step's own launch — something relaunched it in between. Re-run ` +
@@ -380,8 +343,7 @@ export function flowLaunchGateReason(
       );
     case "indeterminate":
       // The measured text opens with "Call restart-app then retry", which this
-      // step has already done once. What survives from it is the part that
-      // terminates: one relaunch, then stop relaunching.
+      // step already did once. What survives is the part that terminates.
       return (
         `${measured} This step already performed that one restart, so re-run the flow at most once more ` +
         `before restarting the tool-server rather than the app.`
@@ -442,10 +404,9 @@ async function androidDevtoolsReady(registry: Registry, device: DeviceInfo): Pro
  * letting the first directive surface a raw tree-source error.
  *
  * Returns null when ready, when the platform needs no gate, when the run was
- * aborted, and for an iOS app whose hierarchy may never be servable at all
- * (see {@link waitForNativeDevtools}) — there the launch is not what failed,
- * and the first selector read reports the impossibility instead. Otherwise the
- * reason to report.
+ * aborted, and for an iOS app whose hierarchy may never be servable at all (see
+ * {@link waitForNativeDevtools}) — there the launch is not what failed, and the
+ * first selector read reports the impossibility. Otherwise the reason to report.
  */
 async function treeSourceGate(
   registry: Registry,
@@ -456,8 +417,8 @@ async function treeSourceGate(
   if (device.platform === "ios" && !signal?.aborted) {
     const reason = await waitForNativeDevtools(registry, device, bundleId, signal);
     if (reason !== null && !signal?.aborted) {
-      // Every reason names the bundle id itself, so the prefix must not: doubled,
-      // it reads as two separate failures reported back to back.
+      // Every reason names the bundle id, so the prefix must not: doubled, it
+      // reads as two separate failures reported back to back.
       return `could not connect to native devtools. ${reason}`;
     }
   }
@@ -559,10 +520,10 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
       reason: `no app id declared for platform "${device.platform}" — add a launch entry for it`,
     };
   }
-  // The app this run is about, for the tree source to name in the states where
-  // nothing is connected and auto-targeting therefore cannot. A later launch —
-  // including one inside a nested `run:` — replaces it, which is what the
-  // device shows: its `restart-app` is what fronted that app.
+  // For the tree source to name in the states where nothing is connected and
+  // auto-targeting therefore cannot. A later launch — including one inside a
+  // nested `run:` — replaces it, matching what the device shows: that step's
+  // `restart-app` is what fronted the app.
   state.launchedBundleId = bundleId;
   try {
     await invokeOnDevice(env, "restart-app", { bundleId });

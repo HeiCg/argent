@@ -266,13 +266,10 @@ describe("describe tool", () => {
 
   it("carries the loop escape for a process it could not inspect", async () => {
     // `indeterminate` is the only unconnected state a *running* app reaches on
-    // ios-remote, whose app processes live on the orchestrator and so cannot be
-    // inspected (a stopped one still reads `not_running` there). describe
-    // sets should_restart there, and await-ui-element renders that as "call
-    // restart-app and retry" — so if the diagnosis does not ride along, the
-    // agent restarts forever with nothing ever naming the tool-server. This is
-    // the loop the derivation exists to break, reached through the one state
-    // that can never resolve itself.
+    // ios-remote, whose app processes cannot be inspected. describe sets
+    // should_restart there and await-ui-element renders it as "call restart-app
+    // and retry", so without the diagnosis riding along the agent restarts
+    // forever with nothing ever naming the tool-server.
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({
       connectedBundleIds: [],
@@ -312,8 +309,8 @@ describe("describe tool", () => {
   it("keeps the AX-degraded hint alongside the connection diagnosis", async () => {
     // The two hints answer different questions — how to fix the sim boot, and
     // why the native fallback is silent — so neither may displace the other.
-    // Both arms of the should_restart split have to merge: they build the hint
-    // in separate places, so covering one leaves the other free to drop it.
+    // Both arms of the should_restart split build the hint separately, so
+    // covering one leaves the other free to drop it.
     const remedies: Record<string, string> = {
       stale_process: "restart-app",
       unregistered: "argent server stop && argent server start --detach",
@@ -337,10 +334,8 @@ describe("describe tool", () => {
   });
 
   // `appConnectionState` re-applies the launchd env before it can answer, so it
-  // rejects outright on a sim that went away mid-call. The outer catch returns
-  // the empty tree with no hint at all, which reads as "nothing on screen"
-  // rather than "could not be read" — and await-ui-element then has nothing to
-  // append to its timeout note.
+  // rejects on a sim that went away mid-call. An empty tree returned bare there
+  // reads as "nothing on screen" rather than "could not be read".
   it("still explains itself when the connection probe throws", async () => {
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({ connectedBundleIds: [], state: "stale_process" });
@@ -358,12 +353,11 @@ describe("describe tool", () => {
     expect(result.hint).toContain("do not keep restarting the app");
   });
 
-  // `bundleId` is optional, and without it `resolveNativeTargetApp` draws its
-  // candidates from the connected list — so every state the diagnosis exists to
-  // explain throws out of the resolution, before anything is measured. An empty
-  // tree returned bare there reads as "nothing on screen" rather than "could not
-  // be read", and this is the DEFAULT form of the call, so the two forms would
-  // answer differently for one device state.
+  // Without `bundleId`, `resolveNativeTargetApp` draws its candidates from the
+  // connected list — so every state the diagnosis explains throws out of the
+  // resolution, before anything is measured. This is the DEFAULT form of the
+  // call, so the two forms would otherwise answer differently for one device
+  // state.
   it("explains an unreadable empty screen even with no bundleId to measure", async () => {
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({ connectedBundleIds: [], state: "unregistered" });
@@ -380,10 +374,9 @@ describe("describe tool", () => {
   });
 
   // The blueprint is registered unconditionally, so on an iOS target a failed
-  // service resolution never means "this device has no such service" — it means
-  // the service did not come up (a socket bind losing to a concurrent same-udid
-  // server is the documented common case). That is a failed attempt at
-  // corroboration, so the empty read is as unexplained as any other.
+  // resolution never means "no such service" — it means the service did not come
+  // up (commonly a socket bind losing to a concurrent same-udid server). A
+  // failed attempt at corroboration, so the empty read is still unexplained.
   it("explains the read when the native-devtools service fails to come up", async () => {
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const registry = makeMockRegistry({ axService: axApi });
@@ -395,9 +388,8 @@ describe("describe tool", () => {
     expect(result.should_restart).toBeUndefined();
   });
 
-  // The remedy has to fit the caller. All three sites that emit this hint are
-  // reachable with an explicit bundleId, so "pass bundleId" would name the step
-  // the caller already took.
+  // All three sites that emit this hint are reachable with an explicit
+  // bundleId, so "pass bundleId" would name the step the caller already took.
   it("does not tell a caller that passed bundleId to pass bundleId", async () => {
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({ connectedBundleIds: ["com.example.app"] });
@@ -414,16 +406,14 @@ describe("describe tool", () => {
 
     expect(result.hint).toMatch(/not evidence that nothing is on screen/);
     expect(result.hint).not.toMatch(/Pass `bundleId`/);
-    // Dropping the bundleId half must not drop the reader's only remaining
-    // action with it: `screenshot` is what is left when the hierarchy cannot be
-    // read.
+    // Dropping the bundleId half must not drop `screenshot` with it — the only
+    // action left when the hierarchy cannot be read.
     expect(result.hint).toMatch(/screenshot/);
   });
 
-  // Both forms of the sentence are read by an agent, so both have to parse as
-  // English — the conditional clause and the action it leads into are one
-  // sentence, and joining them wrongly produced "measured, or Take a
-  // `screenshot`".
+  // An agent reads both forms, so both have to parse as English: the
+  // conditional clause and the action it leads into are one sentence, and
+  // joining them wrongly yields "measured, or Take a `screenshot`".
   it.each([
     ["with bundleId", "com.example.app", /on screen\. Take a `screenshot` to see what is there\.$/],
     [
@@ -455,20 +445,18 @@ describe("describe tool", () => {
 
     expect(result.hint).toContain("boot-device");
     expect(result.hint).toMatch(/not evidence that nothing is on screen/);
-    // "ahead of" is the point: the sim-level guidance is the corrective action,
-    // and a reader who stops at the first sentence must reach it, not the note
-    // about one read. Presence alone passes with the two swapped.
+    // "ahead of" is the point: a reader who stops at the first sentence must
+    // reach the sim-level corrective action, not the note about one read.
+    // Presence alone passes with the two swapped.
     expect(result.hint!.indexOf("boot-device")).toBeLessThan(
       result.hint!.indexOf("not evidence that nothing is on screen")
     );
   });
 
   it("does NOT return should_restart while the app is still connecting", async () => {
-    // await-ui-element renders `should_restart` as "call restart-app and retry".
-    // Exec is what starts the devtools dial, so obeying that mid-handshake
-    // discards the connection being waited on and resets the process age the
-    // verdict is read from — the same describe → restart-app loop, reached from
-    // the one state that would have resolved itself.
+    // await-ui-element renders `should_restart` as "call restart-app and retry",
+    // and exec is what starts the dial — so obeying it mid-handshake discards the
+    // connection being waited on and resets the age the verdict reads.
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({
       connectedBundleIds: [],
@@ -488,12 +476,10 @@ describe("describe tool", () => {
   });
 
   it("does NOT return should_restart when the app is injected but unregistered", async () => {
-    // `should_restart` is describe's instruction to relaunch. The process here
-    // already launched with this service's injection in place, so a relaunch
-    // reproduces it — setting the flag would be the restart-app → describe loop
-    // again, just reached through a live service instead of a system app. The
-    // diagnosis has to travel as a hint, which still marks the empty read as
-    // untrustworthy for await-ui-element.
+    // The process here already launched with this service's injection in place,
+    // so a relaunch reproduces it and `should_restart` would rebuild the
+    // restart-app → describe loop. The diagnosis travels as a hint instead,
+    // which still marks the empty read untrustworthy for await-ui-element.
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({
       connectedBundleIds: [],
@@ -513,15 +499,15 @@ describe("describe tool", () => {
   });
 
   it("does NOT return should_restart for a non-injectable Apple system app (no restart loop)", async () => {
-    // A com.apple.* app can never load the injected dylib, so it never
-    // connects. The simulator's launchd env is applied process-wide, so its
-    // process does carry the injection tokens and the measurement judges it on
-    // age: older than this tool-server's listener — the usual case, a system app
-    // is typically already running when the server starts — reads
-    // `stale_process`, whose remedy is restart-app. Without an injectability
-    // gate describe returns should_restart:true → the agent restarts the system
-    // app → AX is still empty → describe again → unbounded loop. The fallback
-    // must instead return the (empty) AX result with a screenshot hint.
+    // A com.apple.* app cannot be relied on to load the dylib, so it may never
+    // connect — yet the simulator's launchd env is applied process-wide, so its
+    // process carries the injection tokens and the measurement judges it on age.
+    // Older than this tool-server's listener (the usual case: system apps are
+    // already running when the server starts) reads `stale_process`, whose
+    // remedy is restart-app. Without an injectability gate that is
+    // should_restart:true → restart → AX still empty → describe → unbounded
+    // loop. The fallback must return the (empty) AX result with a screenshot
+    // hint instead.
     const axApi = makeAXServiceApi({ alertVisible: false, elements: [] });
     const nativeApi = makeNativeDevtoolsApi({
       connectedBundleIds: [],
@@ -544,12 +530,11 @@ describe("describe tool", () => {
     // and the native-devtools-status description.
     expect(result.hint).toMatch(/`screenshot`/);
     expect(result.hint).toContain(NON_INJECTABLE_NATIVE_WARNING);
-    // This hint is one of the agent-facing surfaces that must agree with the
-    // rest on HOW certain the injectability claim is (see the cross-surface
-    // check in native-devtools-status.test.ts). Whether the dylib loads into an
-    // Apple system app is not settled — #453 saw it fail on iOS 26.5, an E2E
-    // review saw it succeed on 18.5 — so no surface may claim impossibility,
-    // while all of them keep the terminal do-not-retry instruction.
+    // One of the agent-facing surfaces that must agree with the rest on HOW
+    // certain the injectability claim is (see the cross-surface check in
+    // native-devtools-status.test.ts): #453 saw the dylib fail to load on iOS
+    // 26.5, an E2E run saw it succeed on 18.5, so no surface may claim
+    // impossibility while all keep the terminal do-not-retry instruction.
     expect(result.hint).not.toMatch(/can never (be injected|load|inject)/);
     expect(result.hint).toMatch(/will NOT\s+help|cannot be relied on/);
   });

@@ -53,17 +53,15 @@ export interface ActionEnv {
   device: DeviceInfo;
   signal?: AbortSignal;
   /**
-   * The app the most recent `launch` step started, once one has — including a
-   * launch inside a nested `run:`, which replaces it and is not restored
-   * afterwards, because that step's `restart-app` is what fronted the device.
-   * Undefined until the first launch runs, so a fragment that never launches
-   * (it is brought to its entry state out of band) has none; a fragment MAY
-   * still carry a launch step in a later position, and then it has one.
+   * The app the most recent `launch` step started — including one inside a
+   * nested `run:`, which replaces it and is not restored afterwards, since that
+   * step's `restart-app` is what fronted the device. Undefined until a launch
+   * runs, so a fragment brought to its entry state out of band has none.
    *
-   * The tree source uses it to explain a read it could not take: on iOS,
-   * auto-targeting resolves only out of the connected list, so an app that is
-   * not connected cannot be named by the very lookup whose failure needs
-   * explaining. This id comes from the flow file instead and survives that.
+   * The tree source uses it to explain a read it could not take: iOS
+   * auto-targeting resolves only out of the connected list, so it cannot name
+   * the very app whose disconnection needs explaining. This id comes from the
+   * flow file and survives that.
    */
   launchedBundleId?: string;
 }
