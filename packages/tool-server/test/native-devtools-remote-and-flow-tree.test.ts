@@ -120,9 +120,9 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
   it("does not measure when auto-targeting resolved an app", async () => {
     // The measurement is for the app the flow launched, not a second-guess of a
     // resolution that succeeded: a connected app is connected by construction.
-    // The stub serves a real window, so this walks the whole readable path — an
-    // empty `windows` is its own error now (a no-windows read is untrustworthy,
-    // not a blank screen) and would end the call before it proves anything.
+    // The stub serves a real window because an empty `windows` is its own error
+    // — an untrustworthy read, not a blank screen — and would end the call
+    // before it reaches the assertion.
     const appConnectionState = vi.fn(async () => "connected" as const);
     const registry = registryWith([BUNDLE], {
       appConnectionState,
@@ -199,8 +199,6 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
       queryFullHierarchyTree(registry, DEVICE, "com.apple.Preferences")
     ).rejects.not.toThrow(/argent server stop|restart-app/);
     // The remedy has to name a step form that exists AND reads no tree.
-    // `tap: { x, y }` is the flow-native one; `tool: gesture-tap` is the raw
-    // escape hatch that goes through the same point resolution.
     await expect(queryFullHierarchyTree(registry, DEVICE, "com.apple.Preferences")).rejects.toThrow(
       /tap: \{ x: [\d.]+, y: [\d.]+ \}/
     );
