@@ -316,22 +316,49 @@ describe("stop-all-simulator-servers", () => {
   it.each([
     ["debugger-connect first (dependent inserted first)", [CHROMIUM_DEBUGGER, CDP]],
     ["boot/describe first (dependency inserted first)", [CDP, CHROMIUM_DEBUGGER]],
-  ])("names a cascading debugger in `stopped` — %s", async (_label, order) => {
-    const services = new Map(
-      order.map((urn) => [urn, urn === CDP ? cdpWithDependent() : live()] as const)
-    );
+  ])(
+    "names a chromium debugger in `stopped` whichever order it was inserted — %s",
+    async (_label, order) => {
+      // Both URNs carry the device id, so each is matched DIRECTLY; the
+      // cascade is incidental here and this case is about insertion order not
+      // changing membership. What the cascade alone decides is pinned below.
+      const services = new Map(
+        order.map((urn) => [urn, urn === CDP ? cdpWithDependent() : live()] as const)
+      );
+      const registry = createMockRegistry(services);
+      const tool = createStopAllSimulatorServersTool(registry);
+
+      const result = await tool.execute!({}, { devices: ["chromium-cdp-9222"] });
+
+      // Order follows the snapshot; membership must not.
+      expect((result as { stopped: string[] }).stopped.slice().sort()).toEqual(
+        [CDP, CHROMIUM_DEBUGGER].sort()
+      );
+      expect(result).not.toHaveProperty("unmatched");
+      expect(services.get(CHROMIUM_DEBUGGER)?.state).toBe(ServiceState.IDLE);
+      expect(services.get(CDP)?.state).toBe(ServiceState.IDLE);
+    }
+  );
+
+  it("takes a non-device dependent down with its dependency without claiming to have reaped it", async () => {
+    // The distinction the mock's recursion exists for, and the one the case
+    // above cannot make: a dependent this tool does NOT match by device. It
+    // still dies — the registry cascades — but it is somebody else's
+    // dependent, not something the teardown reaped by name, so it must not
+    // appear in `stopped`. Reporting it there would tell an agent a
+    // device-scoped teardown deliberately killed its Metro session.
+    const METRO = "Metro:8081";
+    const services = new Map([
+      [CDP, { state: ServiceState.RUNNING, dependents: [METRO] }],
+      [METRO, { state: ServiceState.RUNNING, dependents: [] as string[] }],
+    ]);
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
 
     const result = await tool.execute!({}, { devices: ["chromium-cdp-9222"] });
 
-    // Order follows the snapshot; membership must not.
-    expect((result as { stopped: string[] }).stopped.slice().sort()).toEqual(
-      [CDP, CHROMIUM_DEBUGGER].sort()
-    );
-    expect(result).not.toHaveProperty("unmatched");
-    expect(services.get(CHROMIUM_DEBUGGER)?.state).toBe(ServiceState.IDLE);
-    expect(services.get(CDP)?.state).toBe(ServiceState.IDLE);
+    expect(result).toEqual({ stopped: [CDP] });
+    expect(services.get(METRO)?.state).toBe(ServiceState.IDLE);
   });
 
   it("returns empty list when no simulators are running", async () => {
@@ -373,6 +400,27 @@ describe("stop-all-simulator-servers", () => {
     expect(result).toEqual({ stopped: ["SimulatorServer:BBB"] });
     expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:TV-UDID");
     expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:BBB");
+    expect(registry.disposeService).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a STARTING node as stopped and a TERMINATING one as not, in the sweep", async () => {
+    // `wasLive` is `isLiveServiceState` — RUNNING or STARTING. The sweep's use
+    // of it was only ever exercised for RUNNING and ERROR; STARTING (a server
+    // mid-boot, which really is being killed) and TERMINATING (already on its
+    // way down, so nothing here stopped it) are the two arms that decide
+    // whether a caller is told their device was reaped.
+    const services = new Map([
+      ["SimulatorServer:STARTING-ONE", { state: ServiceState.STARTING, dependents: [] }],
+      ["SimulatorServer:TERMINATING-ONE", { state: ServiceState.TERMINATING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, {});
+
+    expect(result).toEqual({ stopped: ["SimulatorServer:STARTING-ONE"] });
+    // Both are disposed — the point is what gets REPORTED, not what gets cleaned.
+    expect(registry.disposeService).toHaveBeenCalledWith("SimulatorServer:TERMINATING-ONE");
     expect(registry.disposeService).toHaveBeenCalledTimes(2);
   });
 
@@ -982,6 +1030,22 @@ describe("stop-all-simulator-servers unmatched ids", () => {
       stopped: [`SimulatorServer:${MINE}`],
       unmatched: ["GHOST-9999"],
     });
+  });
+
+  it("names a repeated missing id only once across CASE variants too", async () => {
+    // The de-duplication lowercases, matching the lookup — but every case above
+    // repeats an id in one spelling, so mutating `seen` to identity kept the
+    // whole stop-tool suite green. Two spellings of one wrong id are one
+    // mistake, and it is reported in the caller's FIRST spelling.
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: ["GHOST-9999", "ghost-9999"] });
+
+    expect(result).toEqual({ stopped: [], unmatched: ["GHOST-9999"] });
   });
 
   it("reports neither spelling when one device is named twice in different cases", async () => {
