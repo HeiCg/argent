@@ -757,6 +757,32 @@ describe("flow_file containment", () => {
     ).toBe(uploaded);
   });
 
+  it("exempts an upload, and ONLY an upload, from containment", async () => {
+    // The exemption keys on `viaUpload`, not on the mere presence of a file
+    // input — but nothing pinned that discrimination: every containment case
+    // above passes `fileInput: undefined`, and the one case that supplies one
+    // uses `viaUpload: true`. So relaxing the guard to
+    //
+    //   if (fileInput?.viaUpload)   ->   if (fileInput)
+    //
+    // left the whole suite green while opening the containment bypass to the
+    // COMMON shape: `resolveOne` returns `viaUpload: false` for any wire path
+    // that already exists on the host, i.e. every same-machine `flow-execute`
+    // carrying a `flow_file`.
+    const hostPath = { clientPath: CLIENT_FLOW_PATH, presentOnHost: true, viaUpload: false };
+
+    await expect(resolveFlowSource(params("/etc/anything.yaml"), hostPath)).rejects.toThrow(
+      "Invalid flow_file"
+    );
+    // The same input with the upload flag set is the trusted case, and must
+    // still pass — otherwise this test would also hold for a guard that simply
+    // ignored `fileInput` altogether.
+    expect(
+      (await resolveFlowSource(params("/etc/anything.yaml"), { ...hostPath, viaUpload: true }))
+        .filePath
+    ).toBe("/etc/anything.yaml");
+  });
+
   it("rejects a relative flow_file", async () => {
     await expect(resolveFlowSource(params(".argent/flows/remote-flow.yaml"))).rejects.toThrow(
       "Invalid flow_file"

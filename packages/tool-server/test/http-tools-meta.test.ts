@@ -190,6 +190,46 @@ describe("GET /tools progressive-loading metadata", () => {
     expect(recordInvocation).toHaveBeenCalledWith(expect.any(String), { platform: "android" });
   });
 
+  it("records the platform of a scoped teardown, whose device arg is a LIST", async () => {
+    // `devices` is the third device-arg spelling and the only one that is an
+    // array — `stop-all-simulator-servers`' scope. The other two spellings are
+    // pinned above; deleting the `devices` branch of `extractDeviceArg` left
+    // the whole suite green, so a scoped teardown silently lost its platform.
+    // Driven through `device-tool` because `extractInvocationMeta` derives a
+    // platform only for a tool that declares a capability. `stop-all-simulator-
+    // servers`, the sole tool spelling `devices` today, declares none — so this
+    // branch is latent in production and only a capability-bearing tool can
+    // exercise it.
+    let seenMeta: Record<string, unknown> | undefined;
+    const recordInvocation = vi.fn((_id: string, meta: Record<string, unknown>) => {
+      seenMeta = meta;
+      return vi.fn();
+    });
+    handle.dispose();
+    handle = createHttpApp(stubRegistry(), { recordInvocation });
+
+    await request(handle.app)
+      .post("/tools/device-tool")
+      .send({ devices: ["emulator-5554", "11111111-1111-1111-1111-111111111111"] })
+      .expect(200);
+
+    // The first id is enough for the coarse platform; a mixed-platform scope
+    // is not something this dimension tries to represent.
+    expect(seenMeta).toEqual({ platform: "android" });
+  });
+
+  it("ignores a devices list that holds no usable id", async () => {
+    const recordInvocation = vi.fn(() => vi.fn());
+    handle.dispose();
+    handle = createHttpApp(stubRegistry(), { recordInvocation });
+
+    await request(handle.app).post("/tools/device-tool").send({ devices: [] }).expect(200);
+
+    // An empty scope yields no device arg, so no platform — and with nothing
+    // else to record, no invocation metadata at all.
+    expect(recordInvocation).not.toHaveBeenCalled();
+  });
+
   it("refines an iOS device to `tvos` when its cached runtime kind is tv", async () => {
     tvKinds.ios = "tv";
     let seenMeta: Record<string, unknown> | undefined;

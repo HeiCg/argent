@@ -146,8 +146,14 @@ function extractDeviceArg(data: unknown): string | null {
   // `devices: string[]` is a third spelling, used only by
   // `stop-all-simulator-servers`' scoped teardown. A call can name several
   // devices of different platforms; the first is enough for the coarse
-  // telemetry platform. It never reaches the capability gate — that tool
-  // declares no capability — so this is a telemetry-only refinement.
+  // telemetry platform.
+  //
+  // Latent today: BOTH consumers of this function are gated on the tool
+  // declaring a capability — the gate directly, and `extractInvocationMeta`
+  // through its `hasCapability` argument — and the one tool that spells the
+  // parameter this way declares none. Kept so the reading of `devices` is
+  // defined in one place if a capability-bearing tool ever takes a device list,
+  // rather than being rediscovered then.
   if (Array.isArray(record.devices) && typeof record.devices[0] === "string") {
     return record.devices[0];
   }
@@ -753,7 +759,9 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // iOS-only device_id-tool is rejected at the gate instead of falling
       // through to the deeper blueprint error (which surfaces as a generic 500).
       // Only the first two ever reach this gate — the `devices` tool declares no
-      // capability — but the third is read the same way for telemetry platform.
+      // capability, and neither does telemetry read it for the same reason (see
+      // `extractDeviceArg`). The third is defined here so it behaves like the
+      // others the day a capability-bearing tool takes a device list.
       const deviceArg = extractDeviceArg(parsedData);
       if (def.capability && deviceArg) {
         try {
