@@ -291,11 +291,16 @@ describe("stepRequiresDevice", () => {
     expect(stepRequiresDevice(registry, toolStep("not-a-tool"))).toBe(true);
   });
 
-  it("counts the REAL stop-all-simulator-servers schema as acting on a device", () => {
+  it("does NOT count the REAL stop-all-simulator-servers schema as needing a device", () => {
     // Against the derived JSON schema, not the mock above: the mock is only as
     // good as its agreement with the tool, and the failure this guards is
-    // exactly a drift between the two — the tool declaring a device key that
-    // `DEVICE_ARG_KEYS` does not list. Catches a rename of `devices` too.
+    // exactly a drift between the two. Catches a rename of `devices` too.
+    //
+    // `devices` is a SCOPE, not a target: the unscoped call is a complete,
+    // meaningful machine-wide sweep, so a flow whose only step is this one
+    // needs no device. Counting it made such a flow demand one — see the
+    // cleanup-flow cases below, which are the two situations it actually runs
+    // in.
     const schema = zodObjectToJsonSchema(
       createStopAllSimulatorServersTool({} as unknown as Registry).zodSchema!
     );
@@ -305,30 +310,106 @@ describe("stepRequiresDevice", () => {
     const registry = { getTool: () => ({ inputSchema: schema }) } as unknown as Registry;
     expect(
       stepRequiresDevice(registry, { kind: "tool", name: "stop-all-simulator-servers", args: {} })
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("counts a device LIST argument as acting on a device", () => {
-    // `stop-all-simulator-servers` spells its scope `devices`, the only tool
-    // that does. Missing it here is not a missing injection but a wrong one:
-    // the run resolves no device, and the binding then rebinds the recorded
-    // scope to `[""]` — a teardown that reaps nothing and still reports pass.
+  it("counts a device TARGET argument, but not a device LIST scope", () => {
+    // The distinction is what a missing device does to the step: `screenshot`
+    // with no `udid` has nothing to point at, while the teardown with no
+    // `devices` is the sweep itself.
     const { registry } = mockRegistry();
     expect(
       stepRequiresDevice(registry, { kind: "tool", name: "stop-all-simulator-servers", args: {} })
-    ).toBe(true);
+    ).toBe(false);
+    expect(stepRequiresDevice(registry, { kind: "tool", name: "tap", args: {} })).toBe(true);
   });
 });
 
-describe("a recorded teardown step", () => {
-  it("replays against the run device, not against an empty scope", async () => {
-    await writeFlow("teardownonly", [
-      // What the recorder writes for a scoped `stop-all-simulator-servers`:
-      // the `devices` key is stripped at record time and re-injected here.
-      { kind: "tool", name: "stop-all-simulator-servers", args: {} },
-    ]);
+describe("a cleanup flow whose only step is stop-all-simulator-servers", () => {
+  const teardownOnly: FlowStep[] = [
+    // What the recorder writes for a `stop-all-simulator-servers`: the
+    // `devices` key is stripped at record time and re-injected at replay.
+    { kind: "tool", name: "stop-all-simulator-servers", args: {} },
+  ];
+
+  it("replays against the run device when exactly one is booted", async () => {
+    await writeFlow("teardownonly", teardownOnly);
     const { registry, invokeTool } = mockRegistry({ booted: [DEVICE] });
     const run = asRun(await runAuto(registry, "teardownonly"));
+
+    expect(run.device).toBe(DEVICE);
+    expect(run.ok).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", { devices: [DEVICE] });
+  });
+
+  it("runs as the machine-wide sweep with NOTHING booted", async () => {
+    // One of the two situations a cleanup flow actually runs in. Requiring a
+    // device here failed it with "No booted device found" — on a flow whose
+    // entire purpose is to run when the machine needs clearing.
+    await writeFlow("teardownonly", teardownOnly);
+    const { registry, invokeTool } = mockRegistry({ booted: [] });
+    const run = asRun(await runAuto(registry, "teardownonly"));
+
+    expect(run.ok).toBe(true);
+    expect(run.passed).toBe(1);
+    // No scope, and emphatically not `[""]` — an id that owns nothing would
+    // reap nothing and still pass.
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", {});
+  });
+
+  it("runs as the machine-wide sweep with SEVERAL booted, without disambiguation", async () => {
+    // The other one. Requiring a device here failed with "2 booted devices
+    // matched — pass --device or --platform", which is not a question a sweep
+    // has an answer to.
+    await writeFlow("teardownonly", teardownOnly);
+    const other = "11111111-1111-1111-1111-111111111111";
+    const { registry, invokeTool } = mockRegistry({ booted: [DEVICE, other] });
+    const run = asRun(await runAuto(registry, "teardownonly"));
+
+    expect(run.ok).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", {});
+  });
+
+  it("scopes to an explicitly passed device", async () => {
+    // The narrowing is deliberate where the run has an answer: a replayed
+    // teardown must not reap devices another agent is mid-session on.
+    await writeFlow("teardownonly", teardownOnly);
+    const other = "11111111-1111-1111-1111-111111111111";
+    const { registry, invokeTool } = mockRegistry({ booted: [DEVICE, other] });
+    const runFlow = createRunFlowTool(registry);
+    const run = asRun(
+      await runFlow.execute({}, { name: "teardownonly", project_root: tmpDir, device: DEVICE })
+    );
+
+    expect(run.ok).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", { devices: [DEVICE] });
+  });
+
+  it("falls back to the sweep when a passed platform still matches several", async () => {
+    // A platform that does not narrow to one device is not an answer either,
+    // and the flow must still run rather than demanding --device.
+    await writeFlow("teardownonly", teardownOnly);
+    const other = "11111111-1111-1111-1111-111111111111";
+    const { registry, invokeTool } = mockRegistry({ booted: [DEVICE, other] });
+    const runFlow = createRunFlowTool(registry);
+    const run = asRun(
+      await runFlow.execute({}, { name: "teardownonly", project_root: tmpDir, platform: "ios" })
+    );
+
+    expect(run.ok).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", {});
+  });
+
+  it("still scopes the teardown when the flow ALSO has a device step", async () => {
+    // A flow with a real device step resolves one as it always did, and the
+    // teardown is scoped to it — the cross-agent protection the scope exists
+    // for is unaffected by any of the above.
+    await writeFlow("teardownmixed", [
+      { kind: "tool", name: "tap", args: { x: 1, y: 2 } },
+      ...teardownOnly,
+    ]);
+    const { registry, invokeTool } = mockRegistry({ booted: [DEVICE] });
+    const run = asRun(await runAuto(registry, "teardownmixed"));
 
     expect(run.device).toBe(DEVICE);
     expect(run.ok).toBe(true);

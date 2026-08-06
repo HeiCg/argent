@@ -57,21 +57,26 @@ const DEVICE_BIND_KEYS = ["udid", "device_id", "device"] as const;
 const DEVICE_BIND_LIST_KEYS = ["devices"] as const;
 
 /**
- * Keys that mean a tool acts on a device — every key either bind set covers.
+ * Keys that mean a tool needs a device to act on at all — the TARGET keys, and
+ * deliberately not the scope keys in {@link DEVICE_BIND_LIST_KEYS}.
  *
  * `toolRequiresDevice` consults this, and `resolveRunDevice` skips resolving a
- * device for a flow no step here matches. So a key that is BOUND but not listed
- * here is worse than an unbound one: the run resolves `device: null`, and
- * `bindDeviceArgs(…, device?.id ?? "", …)` then rebinds the recorded value to
- * the empty string rather than leaving it alone. For `devices` that is
- * `{ devices: [""] }` — a teardown scoped to an id that owns nothing, which
- * reaps nothing and still reports pass, exactly the failure
- * {@link DEVICE_BIND_LIST_KEYS} exists to prevent.
+ * device for a flow no step here matches. The distinction is what a missing
+ * device does to the step: a `screenshot` with no `udid` has nothing to point
+ * at and cannot run, while `stop-all-simulator-servers` with no `devices` is
+ * the machine-wide sweep — a complete, meaningful call, and the whole content
+ * of a cleanup flow. Listing `devices` here made such a flow demand a device it
+ * has no use for, so the two situations a cleanup flow actually runs in — none
+ * booted, or several — failed it outright.
  *
- * Both sets, therefore, and not a hand-maintained superset: a key added to
- * either one is covered here by construction.
+ * A scope key is therefore bound OPPORTUNISTICALLY: {@link bindDeviceArgs}
+ * injects it when the run resolved a device (so a replayed teardown cannot reap
+ * devices another agent is mid-session on) and leaves it off when the run has
+ * none, rather than binding the empty string — `{ devices: [""] }` would be a
+ * teardown scoped to an id that owns nothing, reaping nothing while reporting
+ * pass, which is the failure {@link DEVICE_BIND_LIST_KEYS} exists to prevent.
  */
-const DEVICE_ARG_KEYS = [...DEVICE_BIND_KEYS, ...DEVICE_BIND_LIST_KEYS] as const;
+const DEVICE_ARG_KEYS = DEVICE_BIND_KEYS;
 
 interface RawDevice {
   platform: FlowPlatform;
@@ -227,16 +232,36 @@ export function flowRequiresDevice(registry: Registry, steps: FlowStep[]): boole
   return steps.some((step) => stepRequiresDevice(registry, step));
 }
 
+/**
+ * Whether any step would NARROW itself to the run device if one were resolved,
+ * without needing one to run — a `devices` scope, and only that today.
+ *
+ * Asked of a flow that {@link flowRequiresDevice} said no to, so the run has a
+ * choice: resolve a device opportunistically and scope the teardown to it
+ * (keeping the cross-agent protection the scope exists for), or, where no
+ * single device is resolvable, run the step's unscoped meaning rather than
+ * failing a flow whose whole purpose is to clear the machine.
+ */
+export function flowScopesDevice(registry: Registry, steps: FlowStep[]): boolean {
+  return steps.some(
+    (step) => step.kind === "tool" && declaresAny(registry, step.name, DEVICE_BIND_LIST_KEYS)
+  );
+}
+
 function toolRequiresDevice(registry: Registry, toolName: string): boolean {
-  const toolDef = registry.getTool(toolName);
   // An unknown tool is assumed to need a device: the step is going to fail
   // either way, and it fails more usefully with one resolved.
-  if (!toolDef) return true;
-  const props = (toolDef.inputSchema as { properties?: Record<string, unknown> } | undefined)
+  if (!registry.getTool(toolName)) return true;
+  return declaresAny(registry, toolName, DEVICE_ARG_KEYS);
+}
+
+function declaresAny(registry: Registry, toolName: string, keys: readonly string[]): boolean {
+  const toolDef = registry.getTool(toolName);
+  const props = (toolDef?.inputSchema as { properties?: Record<string, unknown> } | undefined)
     ?.properties;
   // A tool with no declared input takes no device.
   if (!props) return false;
-  return DEVICE_ARG_KEYS.some((k) => k in props);
+  return keys.some((k) => k in props);
 }
 
 export function bindDeviceArgs(
@@ -251,7 +276,12 @@ export function bindDeviceArgs(
   const out = stripDeviceKeys(args);
   if (props) {
     for (const k of DEVICE_BIND_KEYS) if (k in props) out[k] = deviceId;
-    for (const k of DEVICE_BIND_LIST_KEYS) if (k in props) out[k] = [deviceId];
+    // Scope keys only when there IS a device. A device-free run reaches here
+    // for a cleanup flow (see {@link DEVICE_ARG_KEYS}), and `[""]` there would
+    // scope the teardown to an id that owns nothing — it would reap nothing and
+    // still pass. Leaving the key off runs the sweep the YAML actually
+    // expresses.
+    if (deviceId) for (const k of DEVICE_BIND_LIST_KEYS) if (k in props) out[k] = [deviceId];
   }
   return out;
 }

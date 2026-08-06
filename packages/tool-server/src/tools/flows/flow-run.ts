@@ -45,6 +45,7 @@ import {
   resolveFlowDevice,
   bindDeviceArgs,
   flowRequiresDevice,
+  flowScopesDevice,
   stepRequiresDevice,
   type FlowPlatform,
 } from "./flow-device";
@@ -1149,14 +1150,30 @@ async function resolveRunDevice(
     // Checked after the chromium boot path, which only applies to a flow led by
     // a `launch` step — and a launch needs a device, so the two never compete.
     if (!flowRequiresDevice(registry, flow.steps)) {
-      return { device: null, booted: null };
+      if (!flowScopesDevice(registry, flow.steps)) return { device: null, booted: null };
+      // A flow that only SCOPES to a device (a cleanup flow) takes one when one
+      // is unambiguous, so the teardown stays narrowed to the run device and
+      // cannot reap what another agent is mid-session on. When resolution has
+      // no single answer — nothing booted, or several — that is not a question
+      // a sweep has an answer to, so run it unscoped rather than failing the
+      // flow. Swallowed only here: every other caller genuinely needs the
+      // device, and the diagnosis in the error is the useful thing there.
+      try {
+        return {
+          device: await resolveFlowDevice(registry, ctx, resolveOpts(params)),
+          booted: null,
+        };
+      } catch {
+        return { device: null, booted: null };
+      }
     }
   }
-  const device = await resolveFlowDevice(registry, ctx, {
-    device: params.device,
-    platform: params.platform as FlowPlatform | undefined,
-  });
+  const device = await resolveFlowDevice(registry, ctx, resolveOpts(params));
   return { device, booted: null };
+}
+
+function resolveOpts(params: Params): { device?: string; platform?: FlowPlatform } {
+  return { device: params.device, platform: params.platform as FlowPlatform | undefined };
 }
 
 /**
@@ -2115,10 +2132,12 @@ async function execLeafStep(
 
     case "tool": {
       // A device-less run reaches here only for a tool declaring none of
-      // `DEVICE_ARG_KEYS`, so binding injects nothing and merely strips any
-      // device key the recorded args carried. The `?? ""` is unreachable in
-      // that pairing and must stay unreachable: injecting the empty string
-      // would not fail the step, it would silently retarget it at no device.
+      // `DEVICE_ARG_KEYS` — a target key — so binding injects no target and
+      // merely strips any device key the recorded args carried. The `?? ""` is
+      // unreachable for those and must stay unreachable: injecting the empty
+      // string would not fail the step, it would silently retarget it at no
+      // device. A SCOPE key (`devices`) does reach here device-free, which is
+      // the cleanup-flow case `bindDeviceArgs` guards by leaving it unset.
       const args = bindDeviceArgs(registry, step.name, device?.id ?? "", step.args);
       const outputHint = registry.getTool(step.name)?.outputHint;
       if (step.delayMs && !(await sleepOrAbort(step.delayMs, signal))) {
