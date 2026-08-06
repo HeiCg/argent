@@ -10,6 +10,7 @@ import { classifyDevice } from "../utils/device-info";
 import { proxyStart } from "../utils/sim-remote";
 import { selectTarget } from "../utils/debugger/target-selection";
 import { rememberDeviceAlias, forgetDeviceAlias } from "../utils/debugger/device-alias";
+import { recordReapedSession } from "../utils/reaped-sessions";
 import { CDPClient, type ConsoleAPICalledParams } from "../utils/debugger/cdp-client";
 import { createSourceResolver, type SourceResolver } from "../utils/debugger/source-resolver";
 import { SourceMapsRegistry } from "../utils/debugger/source-maps";
@@ -284,6 +285,30 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     return {
       api,
       dispose: async () => {
+        // `logWriter.close()` below unlinks the log file — up to 50,000
+        // captured console entries. That is correct as cleanup (nothing can
+        // read it again: the next resolve builds a new writer over a new path)
+        // but it is invisible, and since `JsRuntimeDebugger` joined the
+        // teardown's namespace set this dispose is routinely triggered by
+        // another agent's `stop-all-simulator-servers`. Leave a breadcrumb so
+        // `debugger-log-registry`'s otherwise silent `totalEntries: 0` can say
+        // what happened to the history.
+        //
+        // Only when there IS history to lose, and under both ids this device
+        // answers to: the caller may read back with either the id it connected
+        // with or the `logicalDeviceId` Metro echoed, and `forgetDeviceAlias`
+        // below removes the only thing that joins them.
+        const captured = logWriter.getStats().totalEntries;
+        if (captured > 0) {
+          const salvage =
+            `The ${captured} captured console ${captured === 1 ? "entry" : "entries"} went with ` +
+            `it — the log file is deleted on teardown, so this registry starts empty rather ` +
+            `than the app having logged nothing.`;
+          recordReapedSession("js-runtime-debugger", deviceId, salvage);
+          if (api.logicalDeviceId && api.logicalDeviceId !== deviceId) {
+            recordReapedSession("js-runtime-debugger", api.logicalDeviceId, salvage);
+          }
+        }
         forgetDeviceAlias(api.logicalDeviceId);
         await consoleServer.close();
         logWriter.close();
