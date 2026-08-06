@@ -167,6 +167,8 @@ describe("flow recording with a remote client (probe miss)", () => {
       addStep.execute(
         {},
         {
+          name: "remote-flow",
+          project_root: CLIENT_ROOT,
           command: "flow-execute",
           args: JSON.stringify({
             flow_path: path.join(CLIENT_ROOT, ".argent", "flows", "login.yaml"),

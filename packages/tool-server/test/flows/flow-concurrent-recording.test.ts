@@ -606,13 +606,18 @@ describe("flow-file writes as seen by a concurrent reader", () => {
     // `os.tmpdir()` itself is caught by the directory comparison below on any
     // host, without ever needing two real filesystems to reproduce EXDEV.
     const root = await makeRoot("scratch-sibling");
-    const flowsDir = path.dirname(flowPath(root, "alpha"));
     vi.mocked(fs.rename).mockClear();
 
     await start(root, "alpha"); // writeNewFlowFile → writeFlowFile → 1 rename
     await addStep(root, "alpha", "a1"); // appendStep → writeFlowFile → 1 rename
     await addEcho(root, "alpha", "a2"); // appendStep → writeFlowFile → 1 rename
 
+    // Canonical, because the writer swaps onto the flow file's REAL path so a
+    // symlinked flow keeps its link (see writeFlowFile). The directory that
+    // must hold the scratch file is therefore the resolved one — still a strict
+    // subdirectory of the temp root, so the os.tmpdir() relocation this case
+    // exists to catch is caught exactly as before.
+    const flowsDir = await fs.realpath(path.dirname(flowPath(root, "alpha")));
     const renameCalls = vi.mocked(fs.rename).mock.calls;
     expect(renameCalls).toHaveLength(3);
     for (const [from, to] of renameCalls) {
@@ -1549,12 +1554,16 @@ describe("recording a flow-execute step while several projects are in play", () 
     ]);
   });
 
-  it("records run: when the target sits next to the recording", async () => {
+  it("keeps the raw step when the executed project has no file to compare against", async () => {
     const recordingRoot = await makeRoot("run-target-sibling");
     const executedRoot = await makeRoot("run-target-elsewhere");
 
     // Mirror image: the fragment is a sibling of the flow being recorded and is
-    // absent from the executed project.
+    // absent from the executed project. Being a sibling is necessary for `run:`
+    // but not sufficient — the recorded directive must replay the file that
+    // just RAN, and nothing verifiable ran from the executed project's flows
+    // dir, so the two cannot be shown to be one file. The raw step, which
+    // replays via name + project_root, is then the only honest record.
     await writeSavedFlow(recordingRoot, "helper", fragment);
     await fs.mkdir(path.join(executedRoot, ".argent", "flows"), { recursive: true });
 
@@ -1565,17 +1574,22 @@ describe("recording a flow-execute step while several projects are in play", () 
       udid: IOS_DEVICE,
     });
 
-    expect(res.message).not.toContain("kept the raw flow-execute step");
-    expect(await readSteps(recordingRoot, "wrapper")).toEqual([{ kind: "run", flow: "helper" }]);
+    expect(res.message).toContain("could not verify which file the live flow-execute ran");
+    expect(await readSteps(recordingRoot, "wrapper")).toEqual([
+      { kind: "tool", name: "flow-execute", args: { name: "helper", project_root: executedRoot } },
+    ]);
   });
 
-  it("warns when a same-named fragment exists in BOTH projects", async () => {
+  it("keeps the raw step when a same-named fragment exists in BOTH projects", async () => {
     const recordingRoot = await makeRoot("run-target-both");
     const executedRoot = await makeRoot("run-target-both-other");
 
     // The ambiguous case concurrent recording makes routine: a generic fragment
     // name that exists in two projects. `run: helper` resolves against the
-    // recording, so replay runs a DIFFERENT file than the one that just ran.
+    // recording, so replay would run a DIFFERENT file than the one that just
+    // ran — same name, different flow, both green and nothing said. The
+    // recorder refuses the substitution and keeps the raw call, which names
+    // both files and reproduces exactly what ran.
     await writeSavedFlow(recordingRoot, "helper", fragment);
     await writeSavedFlow(executedRoot, "helper", {
       executionPrerequisite: "",
@@ -1589,13 +1603,14 @@ describe("recording a flow-execute step while several projects are in play", () 
       udid: IOS_DEVICE,
     });
 
-    // Still recorded as composition — that is what `run:` means — but the
-    // substitution is stated rather than silent.
-    expect(await readSteps(recordingRoot, "wrapper")).toEqual([{ kind: "run", flow: "helper" }]);
-    expect(res.message).toContain("replays THIS project's helper.yaml");
+    expect(res.message).toContain("not the file the live flow-execute ran");
     expect(res.message).toContain(executedRoot);
+    expect(await readSteps(recordingRoot, "wrapper")).toEqual([
+      { kind: "tool", name: "flow-execute", args: { name: "helper", project_root: executedRoot } },
+    ]);
 
-    // Same project on both sides is the unambiguous case and stays quiet.
+    // Same project on both sides is the unambiguous case: the file that ran and
+    // the sibling that would replay are one file, so it composes and stays quiet.
     await start(recordingRoot, "quiet");
     const same = await addRawStep(recordingRoot, "quiet", "flow-execute", {
       name: "helper",
@@ -1603,6 +1618,7 @@ describe("recording a flow-execute step while several projects are in play", () 
       udid: IOS_DEVICE,
     });
     expect(same.message).toBe('Step added to "quiet" flow');
+    expect(await readSteps(recordingRoot, "quiet")).toEqual([{ kind: "run", flow: "helper.yaml" }]);
   });
 });
 

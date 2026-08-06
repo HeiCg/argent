@@ -2467,15 +2467,30 @@ function scrubTempPath(err: unknown, tmpPath: string, filePath: string): Error {
 }
 
 async function writeFlowFile(filePath: string, content: string): Promise<void> {
+  // Swap onto the flow file's REAL path. A saved flow may be a symlink into a
+  // shared vault — the runner canonicalizes before reading, and `run:`
+  // composition anchors on the real file — and rename(2) replaces the path it
+  // is handed, so renaming onto the link's own spelling would swap the symlink
+  // for a regular file and strand the vault copy with the pre-recording
+  // content. A plain write follows the link; resolving first keeps that
+  // behavior while keeping the swap atomic.
+  //
+  // The directory is resolved separately so that a flow file which does not
+  // exist yet (the first write of a recording, which has no realpath of its
+  // own) still lands on the same canonical spelling as every later append —
+  // otherwise the first swap and the rest would disagree wherever an ancestor
+  // is itself a symlink, which is the default for the temp dir on macOS.
+  const dir = await fs.realpath(path.dirname(filePath)).catch(() => path.dirname(filePath));
+  const target = await fs.realpath(filePath).catch(() => path.join(dir, path.basename(filePath)));
   const tmpPath = path.join(
-    path.dirname(filePath),
+    path.dirname(target),
     `.argent-flow-${process.pid}-${++flowWriteSeq}.tmp`
   );
   try {
     await fs.writeFile(tmpPath, content, "utf8");
     // Atomic within a filesystem, and the temp file is a sibling of the target,
     // so it is always the same one.
-    await fs.rename(tmpPath, filePath);
+    await fs.rename(tmpPath, target);
   } catch (err) {
     // Leave no scratch file behind, whichever half failed. The write itself can
     // fail with the file already created (ENOSPC, EIO), so this has to cover it
