@@ -90,7 +90,7 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
       params.project_root,
       params.name,
       async () => {
-        const session = requireRecordingSession(params.project_root, params.name);
+        const session = await requireRecordingSession(params.project_root, params.name);
 
         // Host mode re-reads the file so manual edits made during the recording
         // survive into the summary; in client mode this host never has the file,
@@ -119,7 +119,7 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // {@link renderToolArgs}; keeping the order is what makes the next one
         // recoverable rather than fatal.
         const summary = summarizeSteps(flow);
-        clearRecordingSession(params.project_root, params.name);
+        await clearRecordingSession(params.project_root, params.name);
         return { filePath, flowFile, savedTo, flow, summary };
       }
     );

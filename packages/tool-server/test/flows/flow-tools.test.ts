@@ -2124,7 +2124,7 @@ describe("flow-execute", () => {
       {},
       { name: "recording", project_root: tmpDir, executionPrerequisite: PREREQ }
     );
-    const before = getRecordingSession(tmpDir, "recording");
+    const before = await getRecordingSession(tmpDir, "recording");
     expect(before).toBeDefined();
 
     // Execute saved flows — neither should affect the active recording
@@ -2133,7 +2133,7 @@ describe("flow-execute", () => {
 
     // The recording still points at the flow it was opened for, in its own
     // project — a replay elsewhere must not rebind name/root/file.
-    const after = getRecordingSession(tmpDir, "recording");
+    const after = await getRecordingSession(tmpDir, "recording");
     expect(after).toBe(before);
     expect(after).toMatchObject({
       name: "recording",

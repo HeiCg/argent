@@ -455,7 +455,7 @@ If a step was recorded by mistake, edit the .yaml file directly to remove it.`,
     zodSchema,
     services: () => ({}),
     async execute(_services, params, ctx) {
-      const session = requireRecordingSession(params.project_root, params.name);
+      const session = await requireRecordingSession(params.project_root, params.name);
       const args: Record<string, unknown> = params.args ? JSON.parse(params.args) : {};
 
       // A nested flow-execute must never carry a raw flow_path into the live

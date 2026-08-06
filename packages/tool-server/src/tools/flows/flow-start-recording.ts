@@ -143,7 +143,7 @@ to remove or reorder steps.`,
         // restart — the file is already truncated — as a plain fresh start,
         // discarding the count computed here. This read is inside our own key's
         // lock, so it and the count agree.
-        const replaced = getRecordingSession(params.project_root, params.name) ?? null;
+        const replaced = (await getRecordingSession(params.project_root, params.name)) ?? null;
         const discardedSteps =
           replaced === null
             ? undefined
@@ -158,7 +158,7 @@ to remove or reorder steps.`,
         } else {
           savedTo = clientFileDirective(filePath, flowFile);
         }
-        startRecordingSession({
+        await startRecordingSession({
           name: params.name,
           projectRoot: params.project_root,
           persist,

@@ -33,7 +33,7 @@ Returns { message, flowFile, savedTo }. Fails if that flow has no recording in p
   zodSchema,
   services: () => ({}),
   async execute(_services, params) {
-    const session = requireRecordingSession(params.project_root, params.name);
+    const session = await requireRecordingSession(params.project_root, params.name);
 
     const { flowFile, savedTo } = await appendStepToFlow(session, {
       kind: "echo",
