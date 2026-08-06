@@ -68,9 +68,28 @@ Use when investigating warnings, errors, or unexpected output — call this firs
     // reporting this session's own capture, and consuming a breadcrumb there
     // would attach a stale explanation to a healthy result.
     if (stats.totalEntries === 0) {
-      const reaped =
-        takeReapedSession("js-runtime-debugger", canonicalDeviceId(params.device_id)!) ??
-        takeReapedSession("js-runtime-debugger", params.device_id);
+      // Every id this device answers to, and all of them unconditionally — NOT
+      // `a ?? b`. The disposer writes ONE event under two keys (the id the
+      // caller connected with and the `logicalDeviceId` Metro echoed) so either
+      // spelling can read it back. Short-circuiting consumed only the key that
+      // matched and left the other behind, where it would attach a stale
+      // explanation to a later, unrelated empty read — against the report-once
+      // invariant the breadcrumb store states. `forgetDeviceAlias` runs in that
+      // same dispose, so by the time this read happens the alias no longer
+      // joins the two: the logical id has to come from the freshly resolved
+      // api, which is the only thing that still knows it.
+      const aliases = [
+        canonicalDeviceId(params.device_id),
+        params.device_id,
+        api.logicalDeviceId,
+      ].filter((id): id is string => id !== undefined);
+      let reaped: ReturnType<typeof takeReapedSession>;
+      for (const id of new Set(aliases)) {
+        // Take FIRST, keep second: `reaped ??= take(...)` would short-circuit
+        // once one matched and leave the rest behind — the very bug above.
+        const entry = takeReapedSession("js-runtime-debugger", id);
+        reaped ??= entry;
+      }
       if (reaped) response.note = describeReapedSession(reaped, "JS-runtime debugger session");
     }
     return response;
