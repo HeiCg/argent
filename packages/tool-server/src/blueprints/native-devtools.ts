@@ -114,10 +114,14 @@ export const MAX_NATIVE_DEVTOOLS_INIT_ATTEMPTS = 3;
  * assumed: the process already carries this service's injection and started
  * after the listener came up, so the launch a restart would perform has already
  * happened and left us unconnected. Advising a restart there is the unbounded
- * restart-app loop that only a tool-server restart could break.
+ * restart-app loop. A tool-server restart is the remedy that can fix it, but it
+ * is not a way out on its own — it rebinds the listener, which re-reads the same
+ * never-dialing process as `stale_process`, from where the states cycle back
+ * here. Only the second-landing escape in that state's message terminates.
  *
- * `connecting` is that same process seconds after exec, so its silence is not
- * yet evidence. Kept apart from `indeterminate` because exec is what starts the
+ * `connecting` is that same process within {@link
+ * NATIVE_DEVTOOLS_CONNECT_BUDGET_MS} of exec, so its silence is not yet
+ * evidence. Kept apart from `indeterminate` because exec is what starts the
  * dial: a relaunch resets the age this verdict reads, so obeying "restart"
  * never terminates.
  *
@@ -133,15 +137,28 @@ export type NativeDevtoolsAppState =
   | "indeterminate";
 
 /**
- * How long a process must have been alive before its silence counts as evidence,
- * and how much younger than the listener it must be to have plainly started
- * after it. Covers the dylib's dial + handshake after exec and the whole-second
- * resolution of `ps -o etime`. Both comparisons lean away from `unregistered`
- * — the first towards `stale_process`, the second towards `connecting` — so an
- * uncertain read costs a wasted relaunch or a wasted second rather than sending
- * an agent off to restart a healthy tool-server.
+ * How much younger than the listener a process must be to have plainly started
+ * after it. Covers the whole-second resolution of `ps -o etime` plus the
+ * round-trips between the two clock readings the comparison subtracts. Leans
+ * towards `stale_process`, so an uncertain read costs a wasted relaunch rather
+ * than sending an agent off to restart a healthy tool-server.
  */
-const NATIVE_DEVTOOLS_CONNECT_GRACE_MS = 3000;
+const NATIVE_DEVTOOLS_AGE_SLOP_MS = 3000;
+
+/**
+ * How long a process may have been alive before its silence counts as evidence
+ * it will never register — the dylib's dial and handshake after exec.
+ *
+ * This is the same quantity the flow launch gate waits out, and the two must
+ * agree: below it the verdict is `connecting`, whose remedy is to wait; at it
+ * the verdict is `unregistered`, whose remedy is a tool-server restart that
+ * drops every service on every device. A budget shorter than the gate's hands
+ * that remedy to an app the gate would still be patiently waiting for — and a
+ * cold start (an RN build fetching its bundle) can outlast even this one, which
+ * is why `unregistered` carries a second-landing escape rather than a bare
+ * instruction.
+ */
+export const NATIVE_DEVTOOLS_CONNECT_BUDGET_MS = 8000;
 
 /**
  * The agent-facing remedy for each measured state. `connected` is excluded at
@@ -173,18 +190,29 @@ export function buildAppStateMessage(
         `tool-server's listener. A fresh process picks up the current one: call restart-app then retry.`
       );
     case "unregistered":
+      // The escape is what stops the remedies closing into a ring. A tool-server
+      // restart rebinds the listener, so the same never-dialing process reads
+      // `stale_process` next (it now predates the listener), whose remedy is a
+      // relaunch, which makes it `connecting`, which becomes this state again —
+      // each verdict correct, the cycle unbounded. Nothing distinguishes the
+      // first landing from the second, so the message has to hand the reader the
+      // test, exactly as `not_running` and `indeterminate` do.
       return (
         `${bundleId} is running with argent's native devtools injected and pointed at this ` +
         `simulator's devtools endpoint, but the service never registered its connection. ` +
         `Restarting the app cannot change that — it already launched under exactly the terms a ` +
         `restart would recreate. Restart the tool-server ` +
-        `(\`argent server stop && argent server start --detach\`) and retry.`
+        `(\`argent server stop && argent server start --detach\`) and retry. If you have already ` +
+        `restarted the tool-server for this app and it reads this way again, stop: the process is ` +
+        `loading argent's dylib but never dialing, which no further restart on either side fixes. ` +
+        `Treat native devtools as unavailable — read the screen with describe or screenshot and ` +
+        `drive it by coordinate.`
       );
     case "connecting":
       return (
         `${bundleId} is running with argent's native devtools injected and pointed at this ` +
         `simulator's devtools endpoint, and it launched moments ago — its connection has not ` +
-        `finished being established. Wait a second or two and retry the same call. Do NOT restart ` +
+        `finished being established. Wait a few seconds and retry the same call. Do NOT restart ` +
         `the app: launching it is what starts the connection, so a relaunch discards the one in ` +
         `progress and returns you to this same state.`
       );
@@ -820,12 +848,12 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         // re-dials the live one.
         const listenerAgeMs = Date.now() - listeningSince;
         const processAgeMs = inspection.process.ageMs;
-        if (processAgeMs + NATIVE_DEVTOOLS_CONNECT_GRACE_MS >= listenerAgeMs) {
+        if (processAgeMs + NATIVE_DEVTOOLS_AGE_SLOP_MS >= listenerAgeMs) {
           return "stale_process";
         }
         // Injected against this listener and younger than it. Inside the grace
         // the dial is plausibly still in flight; past it, it had its chance.
-        if (processAgeMs < NATIVE_DEVTOOLS_CONNECT_GRACE_MS) return "connecting";
+        if (processAgeMs < NATIVE_DEVTOOLS_CONNECT_BUDGET_MS) return "connecting";
         return "unregistered";
       },
 

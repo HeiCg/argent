@@ -102,7 +102,12 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-import { nativeDevtoolsBlueprint, type NativeDevtoolsApi } from "../src/blueprints/native-devtools";
+import {
+  nativeDevtoolsBlueprint,
+  NATIVE_DEVTOOLS_CONNECT_BUDGET_MS,
+  type NativeDevtoolsApi,
+} from "../src/blueprints/native-devtools";
+import { NATIVE_READY_TIMEOUT_MS } from "../src/tools/flows/flow-run";
 import { parsePsElapsedSeconds, processCarriesInjection } from "../src/utils/ios-host";
 
 const UDID = "AAAAAAAA-1111-2222-3333-444444444444";
@@ -283,24 +288,37 @@ describe("appConnectionState measures the running process", () => {
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("connecting");
   });
 
-  // Pins the grace from above. Every other injected fixture sits 10x clear of
-  // it, so the term could grow to any of them and stay green while swallowing
+  // Pins the connect budget from above. Every other injected fixture sits clear
+  // of it, so the term could grow to any of them and stay green while swallowing
   // real `unregistered` verdicts — the tool-server escape is withheld until a
-  // process is older than the grace, so upward creep withholds it for longer.
-  it("stops calling a process connecting one second past the grace", async () => {
-    probe.psOutput = psLine("00:04", INJECTED_ENV);
+  // process is older than the budget, so upward creep withholds it for longer.
+  it("stops calling a process connecting one second past the connect budget", async () => {
+    probe.psOutput = psLine("00:09", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
   });
 
-  it("stops calling a process connecting the instant the grace elapses", async () => {
-    // The 4 s fixture above leaves a whole second the grace could grow into
-    // unnoticed. A process exactly at the grace is the first whose silence counts
-    // as evidence — `processAgeMs < GRACE` is false at equality — so any upward
-    // creep flips this one to `connecting`.
-    probe.psOutput = psLine("00:03", INJECTED_ENV);
+  it("stops calling a process connecting the instant the connect budget elapses", async () => {
+    // The 9 s fixture above leaves a whole second the budget could grow into
+    // unnoticed. A process exactly at the budget is the first whose silence
+    // counts as evidence — `processAgeMs < BUDGET` is false at equality — so any
+    // upward creep flips this one to `connecting`.
+    probe.psOutput = psLine("00:08", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
+  });
+
+  // The budget is the window in which "wait and retry" is the answer. Shorter
+  // than the flow gate's, and an app the gate is still waiting out gets the
+  // tool-server restart from every other surface instead — the two answer one
+  // question and a literal in either place could drift from the other.
+  it("gives a dial the same budget the flow launch gate waits out", async () => {
+    expect(NATIVE_READY_TIMEOUT_MS).toBe(NATIVE_DEVTOOLS_CONNECT_BUDGET_MS);
+
+    // A cold start still dialing at 7 s: inside both, so it waits.
+    probe.psOutput = psLine("00:07", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("connecting");
   });
 
   it("reports indeterminate when the process table cannot be read", async () => {

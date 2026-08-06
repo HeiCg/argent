@@ -337,6 +337,55 @@ describe("flow composition (run:)", () => {
 
   // The case above resolves connected, so the gate never reaches its verdict.
   // This is the one that matters: a system app that never connects at all. The
+  // A blocked precheck comes back RESOLVED, and returns before the terminate and
+  // the launch — so this is a step whose app was never started. The gate's
+  // remedies are all written for one that was: read as a launch, `not_running`
+  // becomes "it exited after launch", which sends the author after a crash that
+  // never happened and drops the message that named the real cause.
+  it("fails a launch whose restart-app was blocked before it started anything", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.acme.app" },
+        { kind: "tool", name: "gesture-tap", args: { x: 0.5, y: 0.35 } },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "list-devices") return { devices: [] };
+        if (id === "restart-app") {
+          return {
+            status: "init_failed",
+            attempts: 3,
+            message:
+              `Native devtools failed to initialize for ${DEVICE} after 3 attempts. ` +
+              `Last error: Native devtools dylib not found: /x/libArgentInjectionBootstrap.dylib. ` +
+              `Try shutting down and re-booting the simulator, or restart CoreSimulatorService.`,
+          };
+        }
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => ({
+        isConnected: () => false,
+        listConnectedBundleIds: () => [],
+        // What the gate would measure for an app nothing launched.
+        appConnectionState: async () => "not_running" as const,
+      })),
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:error", "tool:skip"]);
+    expect(result.steps[0].reason).toContain("dylib not found");
+    expect(result.steps[0].reason).not.toContain("exited after launch");
+  });
+
   // launch must STILL pass, where every measured state would have failed it —
   // and failed it with a remedy that cannot apply to such an app.
   it("passes a system-app launch that never connects at all", async () => {

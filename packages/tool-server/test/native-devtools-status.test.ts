@@ -649,7 +649,7 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
 
     expect(result).toMatchObject({ status: "connect_pending" });
     const message = (result as { message: string }).message;
-    expect(message).toContain("Wait a second or two");
+    expect(message).toContain("Wait a few seconds");
     expect(message).not.toContain("restart-app");
     expect(message).not.toContain("could not be inspected");
   });
@@ -1059,6 +1059,25 @@ describe("native-* tool descriptions document every precheck outcome", () => {
   it("tells native-devtools-status readers not to restart an unregistered app", () => {
     expect(nativeDevtoolsStatusTool.description).toContain("unregistered");
     expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app again");
+  });
+
+  // Every remedy in the set is individually correct and together they close into
+  // a ring: the tool-server restart this state prescribes rebinds the listener,
+  // so the same never-dialing process reads `stale_process` (it now predates the
+  // listener) -> restart-app -> `connecting` -> `unregistered` again, unbounded.
+  // Nothing measured separates the first landing from the second, so both
+  // surfaces have to hand the reader the test — as `not_running` and
+  // `indeterminate` already do. Without it this PR lengthens the loop it fixes.
+  it("gives an unregistered app a way out of the remedy cycle on its second landing", () => {
+    for (const [name, text] of [
+      ["message", buildAppStateMessage("com.example.app", "unregistered")],
+      ["description", nativeDevtoolsStatusTool.description!],
+    ] as const) {
+      // The escape is conditional on having already spent the remedy, so it must
+      // say so — an unconditional "treat as unavailable" would give up first try.
+      expect(text, `${name} does not test for a second landing`).toMatch(/already|again after/);
+      expect(text, `${name} names no terminal fallback`).toMatch(/describe|screenshot/);
+    }
   });
 
   // `indeterminate` gives the agent `requiresRestart: true` and nothing else, so

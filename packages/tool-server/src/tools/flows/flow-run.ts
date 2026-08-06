@@ -52,8 +52,10 @@ import {
   buildAppStateMessage,
   isInjectableBundleId,
   nativeDevtoolsRef,
+  NATIVE_DEVTOOLS_CONNECT_BUDGET_MS,
   type NativeDevtoolsApi,
   type NativeDevtoolsAppState,
+  type NativeDevtoolsInitFailedResult,
 } from "../../blueprints/native-devtools";
 import { androidDevtoolsRef, type AndroidDevtoolsApi } from "../../blueprints/android-devtools";
 import {
@@ -205,10 +207,15 @@ const POST_LAUNCH_SETTLE_MS = 1500;
  * the launch step reports the problem where it belongs, with the measured
  * reason the connection never came up.
  *
+ * The same budget the measurement allows a dial, and deliberately the same
+ * constant: a gate that waited longer than the state machine's window would
+ * time out onto `unregistered`, whose remedy is a tool-server restart, for an
+ * app it had itself decided was still worth waiting for.
+ *
  * Exported so the gate's reason text can be pinned against it rather than a
  * drifting literal.
  */
-export const NATIVE_READY_TIMEOUT_MS = 8000;
+export const NATIVE_READY_TIMEOUT_MS = NATIVE_DEVTOOLS_CONNECT_BUDGET_MS;
 const NATIVE_READY_POLL_MS = 250;
 
 /**
@@ -444,6 +451,19 @@ async function treeSourceGate(
 }
 
 /**
+ * Whether a sub-tool answered with the native-devtools init failure instead of
+ * doing its work — the one blocking result `restart-app` can resolve with, its
+ * iOS handler running the precheck's 2-arg overload.
+ */
+function isInitFailed(result: unknown): result is NativeDevtoolsInitFailedResult {
+  return (
+    typeof result === "object" &&
+    result !== null &&
+    (result as { status?: unknown }).status === "init_failed"
+  );
+}
+
+/**
  * Execute a `launch` step: start the app from a clean state — terminate and
  * relaunch via `restart-app`, so a copy left running by a prior run can't leak
  * state in. Then let the app settle and wait for the platform's full-hierarchy
@@ -525,13 +545,23 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
   // nested `run:` — replaces it, matching what the device shows: that step's
   // `restart-app` is what fronted the app.
   state.launchedBundleId = bundleId;
+  let restart: unknown;
   try {
-    await invokeOnDevice(env, "restart-app", { bundleId });
+    restart = await invokeOnDevice(env, "restart-app", { bundleId });
   } catch (err) {
     // A cancellation makes the sub-tool itself reject; that rejection is the
     // abort, not an app failure, so it must not be attributed to restart-app.
     if (signal?.aborted) return ABORTED_OUTCOME;
     return { ok: false, reason: `restart-app failed: ${errMsg(err)}` };
+  }
+  // A blocked precheck is RESOLVED rather than thrown, and returns before the
+  // terminate and the launch — so the app was never started. Every remedy below
+  // is written for one this step did launch: unread, the gate measures an app
+  // that never ran and `not_running` becomes "it exited after launch", sending
+  // the author after a crash that did not happen while the message naming the
+  // real cause is dropped.
+  if (isInitFailed(restart)) {
+    return { ok: false, reason: `restart-app did not start ${bundleId}: ${restart.message}` };
   }
   if (!(await sleepOrAbort(POST_LAUNCH_SETTLE_MS, signal))) return ABORTED_OUTCOME;
   const gate = await treeSourceGate(registry, device, bundleId, signal);

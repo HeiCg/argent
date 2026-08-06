@@ -471,7 +471,7 @@ describe("describe tool", () => {
     );
     expect(result.source).toBe("ax-service");
     expect(result.should_restart).toBeUndefined();
-    expect(result.hint).toContain("Wait a second or two");
+    expect(result.hint).toContain("Wait a few seconds");
     expect(result.hint).not.toMatch(/restart-app/);
   });
 
