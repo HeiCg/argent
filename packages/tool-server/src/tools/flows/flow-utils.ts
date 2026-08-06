@@ -2625,11 +2625,64 @@ async function writeFlowFile(filePath: string, content: string): Promise<void> {
 }
 
 /**
+ * Why the flows directory could not be created, per errno. Separate from
+ * {@link writeFailureHint} because the surprising cause differs: the swap's
+ * hazard is needing permission on the directory, while `mkdir -p`'s is a path
+ * COMPONENT that is not a directory — which for a caller-supplied
+ * `project_root` almost always means it named a file.
+ */
+function mkdirFailureHint(code: string | undefined, dir: string): string {
+  switch (code) {
+    case "ENOTDIR":
+      return (
+        `a component of ${dir} exists and is not a directory — check that project_root ` +
+        `names a directory rather than a file.`
+      );
+    case "EACCES":
+    case "EPERM":
+    case "EROFS":
+      return `the nearest existing parent of ${dir} is not writable.`;
+    case "ENOSPC":
+    case "EDQUOT":
+      return `the filesystem holding ${dir} is out of space (or over quota).`;
+    case "ENAMETOOLONG":
+      return `${dir} is longer than this filesystem allows.`;
+    default:
+      return `${dir} could not be created.`;
+  }
+}
+
+/**
  * Create or reset a flow file with `content`, making the parent directory if
  * needed. Atomic (see {@link writeFlowFile}).
+ *
+ * Both halves are classified. The tool description promises this "fails if the
+ * `.argent/flows/` directory cannot be created OR the flow file cannot be
+ * written", and leaving the mkdir outside the wrapping made only the second
+ * half keep that promise: a `project_root` naming an existing file, or an
+ * unwritable one, surfaced as a bare `ENOTDIR`/`EACCES` under
+ * REGISTRY_TOOL_EXECUTION_FAILED — no remediation hint, and telemetry
+ * attributing a flow failure to the registry — while the same permission
+ * problem one line later returned FLOW_FILE_WRITE_FAILED with a hint.
  */
 export async function writeNewFlowFile(filePath: string, content: string): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const dir = path.dirname(filePath);
+  try {
+    await fs.mkdir(dir, { recursive: true });
+  } catch (err) {
+    const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+    throw new FailureError(
+      `Failed to create the flows directory ${dir}${typeof code === "string" ? ` (${code})` : ""} — ` +
+        mkdirFailureHint(typeof code === "string" ? code : undefined, dir),
+      {
+        error_code: FAILURE_CODES.FLOW_FILE_WRITE_FAILED,
+        failure_stage: "flow_dir_create",
+        failure_area: "tool_server",
+        error_kind: "unknown",
+      },
+      { cause: err instanceof Error ? err : new Error(String(err)) }
+    );
+  }
   await writeFlowFile(filePath, content);
 }
 
