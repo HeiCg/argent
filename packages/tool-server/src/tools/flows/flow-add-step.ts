@@ -49,7 +49,15 @@ const zodSchema = z.object({
     .describe(
       "Absolute path to the project root of the flow being recorded — the same value passed to flow-start-recording. Together with `name` it identifies which recording this step belongs to."
     ),
-  command: z.string().describe('MCP tool name (e.g. "gesture-tap", "screenshot", "launch-app")'),
+  command: z
+    .string()
+    .describe(
+      'MCP tool name (e.g. "gesture-tap", "screenshot", "launch-app") — a TOOL, not a flow directive. ' +
+        'A flow-file directive name ("tap", "launch", "run", "type", "await", "assert", "echo", "wait", ' +
+        '"long-press") is answered with the tool that records it, and nothing runs or is recorded. So is ' +
+        "a recording tool (flow-add-step, flow-add-echo, flow-start-recording, flow-finish-recording): " +
+        "nesting one would record the action twice and fail on every replay."
+    ),
   args: z
     .string()
     .optional()
@@ -1145,11 +1153,14 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     toolResult: unknown;
     stepCount: number;
     /**
-     * The flow line just appended. Absent on the paths that deliberately record
-     * NOTHING — an unrecognized `command`, or a rejected wait — where the tool
-     * still reports the unchanged `stepCount` so the caller can see its take was
-     * left alone. Required while every return appended a step; these returns are
-     * what reopened it, and a placeholder would claim a line that is not there.
+     * The flow line just appended. Absent on the two paths that deliberately
+     * record NOTHING and still SUCCEED — a recorder tool as `command`, and a
+     * flow-directive name — where the tool answers with guidance and reports
+     * the unchanged `stepCount` so the caller can see its take was left alone.
+     * Required while every return appended a step; these returns are what
+     * reopened it, and a placeholder would claim a line that is not there. Also
+     * the discriminator the completion message reads, so the log line does not
+     * announce a step the body says was never recorded.
      */
     recorded?: string;
     savedTo: FlowSavedTo;
@@ -1175,7 +1186,7 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     },
     description: `Execute a tool call and record it as a step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). Use when recording a flow and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier (otherwise coordinates are kept with a warning); a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow; restart-app has no chromium support, so a chromium flow records as a fragment — add the \`launch: { chromium: <app path> }\` line to the YAML afterward, deleting the executionPrerequisite line if one was recorded: a flow that starts with a launch must not declare it).
 A recorded \`await-ui-element\` is re-probed against the tree the RUNNER resolves \`await:\`/\`assert:\` directives against, which is NOT the tree the live call read; when the condition does not hold there the step is still recorded and \`message\` carries a warning to read before converting — whether the conversion actually breaks depends on WHY the two disagree, since a screen that moved on between the live wait and the re-probe reads the same way. If that tree could not be read at all, the warning says so instead: the conversion is UNKNOWN, not known-bad. The probe judges the selector exactly as recorded, so write the conversion in the strict map spelling (\`{ visible: { text: Continue } }\`, copying the step's \`selector:\`) — the bare-string spelling (\`{ visible: Continue }\`) re-parses as a loose selector that resolves identifier-first and falls back to text, which is a different check. \`message\` also warns when the live wait never held — that tool reports an unmet condition by returning \`{ success: false }\` rather than failing, so the step is recorded and will stop the run at replay.
-Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded.
+Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded. Two calls SUCCEED while recording nothing, and omit \`recorded\` to say so: a \`command\` naming a recording tool, and one naming a flow-file directive rather than a tool. Both answer with the call to make instead, run nothing at the device, and leave the take untouched — read \`recorded\`, not the status, to know whether a step was appended.
 If a step was recorded by mistake, edit the .yaml to remove it — against a remote client, only after \`flow-finish-recording\`: the in-memory copy is authoritative there, and every write serializes it over your edit.`,
     zodSchema,
     services: () => ({}),
