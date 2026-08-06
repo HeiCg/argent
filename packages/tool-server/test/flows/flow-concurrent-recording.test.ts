@@ -837,6 +837,42 @@ describe("flow-file writes as seen by a concurrent reader", () => {
     expect(listActiveRecordings()).toEqual([]);
   });
 
+  it("classifies a project_root that is a FILE as a flow write failure, not a registry one", async () => {
+    // The tool description promises it "fails if the .argent/flows/ directory
+    // cannot be created OR the flow file cannot be written". With the mkdir
+    // outside the wrapping only the second half kept that promise: this
+    // surfaced as a bare ENOTDIR under REGISTRY_TOOL_EXECUTION_FAILED, with no
+    // remediation hint, and telemetry blaming the registry for a flow failure.
+    const root = await makeRoot("root-is-a-file");
+    const notADir = path.join(root, "notadir");
+    await fs.writeFile(notADir, "x", "utf8");
+
+    const err = await start(notADir, "alpha").catch((e: unknown) => e);
+
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_FILE_WRITE_FAILED);
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_dir_create");
+    const message = formatErrorForAgent(err);
+    expect(message).toContain(path.join(notADir, ".argent", "flows"));
+    expect(message).toContain("project_root");
+    // The kernel's own errno is worth keeping.
+    expect(message).toContain("ENOTDIR");
+  });
+
+  it("classifies an unwritable project_root the same way", async () => {
+    const root = await makeRoot("root-unwritable");
+    const proj = path.join(root, "proj");
+    await fs.mkdir(proj);
+    await fs.chmod(proj, 0o555);
+    try {
+      const err = await start(proj, "alpha").catch((e: unknown) => e);
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_FILE_WRITE_FAILED);
+      expect(getFailureSignal(err)?.failure_stage).toBe("flow_dir_create");
+      expect(formatErrorForAgent(err)).toMatch(/not writable/);
+    } finally {
+      await fs.chmod(proj, 0o755);
+    }
+  });
+
   it("names only the flow file when a read-only flows dir fails an append", async () => {
     // The review's own repro: chmod 500 the flows dir, then append to a live
     // recording. This fails at the temp OPEN — earlier than either case above —
