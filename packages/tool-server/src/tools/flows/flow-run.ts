@@ -2114,9 +2114,11 @@ async function execLeafStep(
     }
 
     case "tool": {
-      // With no device, the step reached here only because its tool declares no
-      // device argument, so there is nothing to inject — binding still strips
-      // any device key the recorded args carried.
+      // A device-less run reaches here only for a tool declaring none of
+      // `DEVICE_ARG_KEYS`, so binding injects nothing and merely strips any
+      // device key the recorded args carried. The `?? ""` is unreachable in
+      // that pairing and must stay unreachable: injecting the empty string
+      // would not fail the step, it would silently retarget it at no device.
       const args = bindDeviceArgs(registry, step.name, device?.id ?? "", step.args);
       const outputHint = registry.getTool(step.name)?.outputHint;
       if (step.delayMs && !(await sleepOrAbort(step.delayMs, signal))) {

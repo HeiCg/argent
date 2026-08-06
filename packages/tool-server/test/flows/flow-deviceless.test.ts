@@ -3,9 +3,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Registry } from "@argent/registry";
+import { zodObjectToJsonSchema } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
 import { serializeFlow, type FlowStep } from "../../src/tools/flows/flow-utils";
 import { stepRequiresDevice } from "../../src/tools/flows/flow-device";
+import { createStopAllSimulatorServersTool } from "../../src/tools/simulator/stop-all-simulator-servers";
 
 const DEVICE = "00000000-0000-0000-0000-0000000000ab";
 let tmpDir: string;
@@ -17,8 +19,11 @@ let tmpDir: string;
 const TOOLS: Record<string, { inputSchema?: unknown } | undefined> = {
   "tap": { inputSchema: { properties: { udid: {}, x: {}, y: {} } } },
   "stop-metro": { inputSchema: { properties: { port: {} } } },
-  // A real tool that declares no input at all.
-  "stop-all-simulator-servers": {},
+  // Declares a device LIST rather than a single id — the shape the runner has
+  // to rebind to the run device, and therefore one that makes a step need one.
+  "stop-all-simulator-servers": { inputSchema: { properties: { devices: {} } } },
+  // A tool that declares no input at all.
+  "gather-workspace-data": {},
   // Takes a device without receiving the run's own.
   "flow-execute": { inputSchema: { properties: { name: {}, device: {} } } },
 };
@@ -141,10 +146,10 @@ describe("a flow that touches no device", () => {
   it("runs a tool step whose tool declares no input at all", async () => {
     // A tool with no schema must not be mistaken for one that needs a device,
     // and reading its absent schema must not throw.
-    await writeFlow("stop-all", [{ kind: "tool", name: "stop-all-simulator-servers", args: {} }]);
+    await writeFlow("no-schema", [{ kind: "tool", name: "gather-workspace-data", args: {} }]);
     const { registry } = mockRegistry({ booted: [] });
 
-    expect(asRun(await runAuto(registry, "stop-all")).ok).toBe(true);
+    expect(asRun(await runAuto(registry, "no-schema")).ok).toBe(true);
   });
 
   it("runs an empty flow", async () => {
@@ -282,7 +287,51 @@ describe("stepRequiresDevice", () => {
     expect(stepRequiresDevice(registry, toolStep("tap"))).toBe(true);
     expect(stepRequiresDevice(registry, toolStep("flow-execute"))).toBe(true);
     expect(stepRequiresDevice(registry, toolStep("stop-metro"))).toBe(false);
-    expect(stepRequiresDevice(registry, toolStep("stop-all-simulator-servers"))).toBe(false);
+    expect(stepRequiresDevice(registry, toolStep("gather-workspace-data"))).toBe(false);
     expect(stepRequiresDevice(registry, toolStep("not-a-tool"))).toBe(true);
+  });
+
+  it("counts the REAL stop-all-simulator-servers schema as acting on a device", () => {
+    // Against the derived JSON schema, not the mock above: the mock is only as
+    // good as its agreement with the tool, and the failure this guards is
+    // exactly a drift between the two — the tool declaring a device key that
+    // `DEVICE_ARG_KEYS` does not list. Catches a rename of `devices` too.
+    const schema = zodObjectToJsonSchema(
+      createStopAllSimulatorServersTool({} as unknown as Registry).zodSchema!
+    );
+    expect(Object.keys((schema as { properties: Record<string, unknown> }).properties)).toContain(
+      "devices"
+    );
+    const registry = { getTool: () => ({ inputSchema: schema }) } as unknown as Registry;
+    expect(
+      stepRequiresDevice(registry, { kind: "tool", name: "stop-all-simulator-servers", args: {} })
+    ).toBe(true);
+  });
+
+  it("counts a device LIST argument as acting on a device", () => {
+    // `stop-all-simulator-servers` spells its scope `devices`, the only tool
+    // that does. Missing it here is not a missing injection but a wrong one:
+    // the run resolves no device, and the binding then rebinds the recorded
+    // scope to `[""]` — a teardown that reaps nothing and still reports pass.
+    const { registry } = mockRegistry();
+    expect(
+      stepRequiresDevice(registry, { kind: "tool", name: "stop-all-simulator-servers", args: {} })
+    ).toBe(true);
+  });
+});
+
+describe("a recorded teardown step", () => {
+  it("replays against the run device, not against an empty scope", async () => {
+    await writeFlow("teardownonly", [
+      // What the recorder writes for a scoped `stop-all-simulator-servers`:
+      // the `devices` key is stripped at record time and re-injected here.
+      { kind: "tool", name: "stop-all-simulator-servers", args: {} },
+    ]);
+    const { registry, invokeTool } = mockRegistry({ booted: [DEVICE] });
+    const run = asRun(await runAuto(registry, "teardownonly"));
+
+    expect(run.device).toBe(DEVICE);
+    expect(run.ok).toBe(true);
+    expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", { devices: [DEVICE] });
   });
 });
