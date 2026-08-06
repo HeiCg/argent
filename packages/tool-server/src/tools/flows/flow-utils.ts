@@ -155,7 +155,9 @@ export function getFlowPath(projectRoot: string, name: string): string {
  * when the file is on another machine. Two clients that share a flow file
  * across that boundary are beyond this process's reach, as they were before.
  */
-export function resolveFlowKey(projectRoot: string, name: string): Promise<string> {
+// `async`, so `getFlowPath`'s validation throws land as a rejection like every
+// other failure here rather than synchronously out of a promise-returning call.
+export async function resolveFlowKey(projectRoot: string, name: string): Promise<string> {
   const spelled = getFlowPath(projectRoot, name);
   const inFlight = keyResolutions.get(spelled);
   if (inFlight) return inFlight;
