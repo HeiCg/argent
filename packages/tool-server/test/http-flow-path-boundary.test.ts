@@ -7,11 +7,7 @@ import { ArtifactStore, type Registry, type ToolContext } from "@argent/registry
 import { createHttpApp, type HttpAppHandle } from "../src/http";
 import { createRunFlowTool } from "../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../src/tools/flows/flow-read-prerequisite";
-import {
-  clearActiveFlow,
-  clearActiveProjectRoot,
-  serializeFlow,
-} from "../src/tools/flows/flow-utils";
+import { serializeFlow } from "../src/tools/flows/flow-utils";
 
 vi.mock("../src/utils/update-checker", () => ({
   getUpdateState: vi.fn(() => ({ updateInstallable: false, currentVersion: "1.0.0" })),
@@ -99,13 +95,10 @@ beforeEach(async () => {
   );
   steps = stepRegistry();
   handle = createHttpApp(httpRegistry(steps));
-  clearActiveFlow();
 });
 
 afterEach(async () => {
   handle?.dispose();
-  clearActiveFlow();
-  clearActiveProjectRoot();
   await fs.rm(tmpDir, { recursive: true, force: true });
   if (originalToken === undefined) delete process.env.ARGENT_AUTH_TOKEN;
   else process.env.ARGENT_AUTH_TOKEN = originalToken;

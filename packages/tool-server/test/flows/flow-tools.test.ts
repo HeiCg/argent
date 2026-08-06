@@ -647,7 +647,15 @@ describe("flow-add-step", () => {
     await fs.writeFile(otherTwin, "steps:\n  - echo: theirs\n", "utf8");
 
     const args = { name: "twin", project_root: otherRoot };
-    const result = await tool.execute({}, { command: "flow-execute", args: JSON.stringify(args) });
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-twin",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify(args),
+      }
+    );
 
     // The live invoke ran the other project's copy…
     expect(registry.invokeTool).toHaveBeenCalledWith("flow-execute", args);
@@ -685,7 +693,15 @@ describe("flow-add-step", () => {
     await writeSiblingFlow("frag", "steps:\n  - echo: hi\n");
 
     const args = { name: "Frag", project_root: tmpDir };
-    const result = await tool.execute({}, { command: "flow-execute", args: JSON.stringify(args) });
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-name-casing",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify(args),
+      }
+    );
 
     // `run: Frag` names a flow no case-sensitive checkout can find, so the raw
     // step is kept and the warning hands back the recordable spelling.
@@ -712,7 +728,15 @@ describe("flow-add-step", () => {
     );
 
     const args = { name: "frag", project_root: tmpDir };
-    const result = await tool.execute({}, { command: "flow-execute", args: JSON.stringify(args) });
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-name-rename",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify(args),
+      }
+    );
 
     expect(result.message).toContain('case-insensitively to "frag.YAML"');
     expect(result.message).toContain(
@@ -738,6 +762,8 @@ describe("flow-add-step", () => {
     const result = await tool.execute(
       {},
       {
+        name: "compose-name-mixed",
+        project_root: tmpDir,
         command: "flow-execute",
         args: JSON.stringify({ name: "MixedCase", project_root: tmpDir }),
       }
@@ -774,7 +800,12 @@ describe("flow-add-step", () => {
       }
       const result = await tool.execute(
         {},
-        { command: "flow-execute", args: JSON.stringify(args) }
+        {
+          name: "compose-unanchored",
+          project_root: tmpDir,
+          command: "flow-execute",
+          args: JSON.stringify(args),
+        }
       );
 
       expect(result.message).toContain(`project_root must be an absolute path ${detail}`);
@@ -833,7 +864,12 @@ describe("flow-add-step", () => {
 
     const result = await tool.execute(
       {},
-      { command: "flow-execute", args: JSON.stringify({ name: "frag", project_root: base }) }
+      {
+        name: "rec",
+        project_root: base,
+        command: "flow-execute",
+        args: JSON.stringify({ name: "frag", project_root: base }),
+      }
     );
 
     // Anchored beside the symlink's spelling this would miss the fragment and
@@ -861,7 +897,12 @@ describe("flow-add-step", () => {
 
     const result = await tool.execute(
       {},
-      { command: "flow-execute", args: JSON.stringify({ name: "frag", project_root: base }) }
+      {
+        name: "rec",
+        project_root: base,
+        command: "flow-execute",
+        args: JSON.stringify({ name: "frag", project_root: base }),
+      }
     );
 
     expect(result.message).toMatch(/could not resolve/i);
@@ -893,7 +934,12 @@ describe("flow-add-step", () => {
 
     const result = await tool.execute(
       {},
-      { command: "flow-execute", args: JSON.stringify({ name: "frag", project_root: base }) }
+      {
+        name: "rec",
+        project_root: base,
+        command: "flow-execute",
+        args: JSON.stringify({ name: "frag", project_root: base }),
+      }
     );
 
     expect(result.message).toMatch(/not the file the live flow-execute ran/i);
@@ -915,6 +961,8 @@ describe("flow-add-step", () => {
     const result = await tool.execute(
       {},
       {
+        name: "compose-path",
+        project_root: tmpDir,
         command: "flow-execute",
         args: JSON.stringify({ flow_path: sibling, project_root: tmpDir }),
       }
@@ -952,6 +1000,8 @@ describe("flow-add-step", () => {
       .execute(
         {},
         {
+          name: "compose-casing",
+          project_root: tmpDir,
           command: "flow-execute",
           args: JSON.stringify({
             flow_path: path.join(tmpDir, ".argent", "flows", "Sibling.yaml"),
@@ -994,6 +1044,8 @@ describe("flow-add-step", () => {
       .execute(
         {},
         {
+          name: "compose-rename",
+          project_root: tmpDir,
           command: "flow-execute",
           args: JSON.stringify({
             flow_path: path.join(tmpDir, ".argent", "flows", "frag.yaml"),
@@ -1028,6 +1080,8 @@ describe("flow-add-step", () => {
       tool.execute(
         {},
         {
+          name: "compose-outside",
+          project_root: tmpDir,
           command: "flow-execute",
           args: JSON.stringify({ flow_path: outside, project_root: tmpDir }),
         }
@@ -1056,6 +1110,8 @@ describe("flow-add-step", () => {
       tool.execute(
         {},
         {
+          name: "compose-dotdot",
+          project_root: tmpDir,
           command: "flow-execute",
           args: JSON.stringify({ flow_path: dotdot, project_root: tmpDir }),
         }
@@ -1084,6 +1140,8 @@ describe("flow-add-step", () => {
         tool.execute(
           {},
           {
+            name: "compose-stemless",
+            project_root: tmpDir,
             command: "flow-execute",
             args: JSON.stringify({ flow_path: stemless, project_root: tmpDir }),
           }
@@ -1110,6 +1168,8 @@ describe("flow-add-step", () => {
       tool.execute(
         {},
         {
+          name: "compose-cased",
+          project_root: tmpDir,
           command: "flow-execute",
           args: JSON.stringify({
             flow_path: path.join(tmpDir, ".argent", "flows", "Login.YAML"),
@@ -1135,6 +1195,8 @@ describe("flow-add-step", () => {
       tool.execute(
         {},
         {
+          name: "compose-mismatch",
+          project_root: tmpDir,
           command: "flow-execute",
           args: JSON.stringify({
             flow_path: path.join(tmpDir, ".argent", "flows", "login.yaml"),
@@ -1184,6 +1246,8 @@ describe("flow-add-step", () => {
           tool.execute(
             {},
             {
+              name: "compose-relative",
+              project_root: tmpDir,
               command: "flow-execute",
               args: JSON.stringify({ flow_path: sibling, project_root: root }),
             }
@@ -1213,6 +1277,8 @@ describe("flow-add-step", () => {
       tool.execute(
         {},
         {
+          name: "compose-rootless",
+          project_root: tmpDir,
           command: "flow-execute",
           args: JSON.stringify({
             flow_path: path.join(tmpDir, ".argent", "flows", "login.yaml"),
@@ -1254,7 +1320,15 @@ describe("flow-add-step", () => {
     const args = buildArgs(path.join(tmpDir, ".argent", "flows", "login.yaml"), tmpDir);
 
     await expect(
-      tool.execute({}, { command: "flow-execute", args: JSON.stringify(args) })
+      tool.execute(
+        {},
+        {
+          name: "compose-ambiguous",
+          project_root: tmpDir,
+          command: "flow-execute",
+          args: JSON.stringify(args),
+        }
+      )
     ).rejects.toThrow();
 
     // The nested call must reach flow-execute exactly as written — no flow_path
