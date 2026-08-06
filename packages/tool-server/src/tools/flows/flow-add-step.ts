@@ -216,7 +216,8 @@ async function rewriteSiblingFlowPath(
   // anchors a relative root at the tool SERVER's cwd, which bears no relation
   // to the calling agent's, so a relative root would pass or fail by accident
   // of where the server was started. flow-execute itself demands an absolute
-  // root (setActiveProjectRoot), so this refuses nothing that could have run.
+  // root (`assertValidProjectRoot`, called by `resolveFlowSource` before either
+  // of its branches), so this refuses nothing that could have run.
   const projectRoot = args.project_root;
   if (typeof projectRoot !== "string" || !path.isAbsolute(projectRoot)) {
     throw invalid(
