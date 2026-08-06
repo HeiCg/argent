@@ -178,4 +178,63 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     expect(first.note).toBeDefined();
     expect(second.note).toBeUndefined();
   });
+
+  describe("when the connect id and the logicalDeviceId differ", () => {
+    // Every case above connects with LOGICAL_ID, so `api.logicalDeviceId ===
+    // deviceId` and the disposer's SECOND recordReapedSession never fires —
+    // that is the Chromium/Vega shape. On iOS/Android the caller connects with
+    // a udid/serial and Metro echoes its own logical id, so one teardown writes
+    // two breadcrumbs. They describe one event and must be spent as one.
+    const CONNECT_ID = "00000000-0000-0000-0000-0000000000ab";
+
+    beforeEach(async () => {
+      await registry.disposeService(`JsRuntimeDebugger:${mockPort}:${CONNECT_ID}`).catch(() => {});
+      __resetReapedSessionsForTesting();
+    });
+
+    it("explains the loss whichever of the two ids the read uses", async () => {
+      const urn = await connectAndCapture(CONNECT_ID, 29);
+      const api = await registry.resolveService<JsRuntimeDebuggerApi>(urn);
+      // The premise: this really is the two-id shape, so both keys get written.
+      expect(api.logicalDeviceId).toBe(LOGICAL_ID);
+      expect(api.logicalDeviceId).not.toBe(CONNECT_ID);
+      await registry.disposeService(urn);
+
+      const viaConnectId = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: CONNECT_ID,
+      })) as { totalEntries: number; note?: string };
+
+      expect(viaConnectId.totalEntries).toBe(0);
+      expect(viaConnectId.note).toContain("29 captured console entries");
+    });
+
+    it("spends BOTH breadcrumbs on that one read, so no copy outlives the event", async () => {
+      // The read consumed one key and left the other, so a later unrelated
+      // empty read — a fresh session that genuinely logged nothing — collected
+      // the leftover and blamed a teardown that had already been explained.
+      const urn = await connectAndCapture(CONNECT_ID, 7);
+      await registry.disposeService(urn);
+
+      const first = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: CONNECT_ID,
+      })) as { note?: string };
+      expect(first.note).toBeDefined();
+
+      // The other spelling of the same device, and the same spelling again:
+      // neither may still be holding a copy of that one teardown.
+      const viaLogicalId = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: LOGICAL_ID,
+      })) as { note?: string };
+      const again = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: CONNECT_ID,
+      })) as { note?: string };
+
+      expect(viaLogicalId.note).toBeUndefined();
+      expect(again.note).toBeUndefined();
+    });
+  });
 });
