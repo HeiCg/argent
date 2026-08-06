@@ -11,6 +11,7 @@ import { flowFinishRecordingTool } from "../../src/tools/flows/flow-finish-recor
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { createRunFlowTool } from "../../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
+import { formatErrorForAgent } from "../../src/utils/format-error";
 import {
   __resetRecordingsForTesting,
   getRecordingSession,
@@ -690,16 +691,71 @@ describe("flow-file writes as seen by a concurrent reader", () => {
     spy.mockRestore();
 
     expect(err).toBeInstanceOf(Error);
-    const message = (err as Error).message;
-    // Names the flow file and the directory (the real cause), not the scratch path.
+    // Against the string an agent actually READS, not `err.message`:
+    // `formatErrorForAgent` appends the cause chain, so asserting on the
+    // message alone passed while the rendered text still named the scratch
+    // file. The invariant is about what is disclosed, so assert on what is.
+    const message = formatErrorForAgent(err);
     expect(message).toContain(target);
     expect(message).not.toMatch(/\.argent-flow-\d+-\d+\.tmp/);
+    // The errno itself is worth keeping — only the phantom path is not.
+    expect(message).toContain("ENOSPC");
+    expect(message).toContain("out of space");
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_FILE_WRITE_FAILED);
 
     // The half-written scratch file must not survive in the committed flows dir.
     const entries = await fs.readdir(path.dirname(target));
     expect(entries.filter((e) => e.endsWith(".tmp"))).toEqual([]);
     expect(listActiveRecordings()).toEqual([]);
+  });
+
+  it("names only the flow file when a read-only flows dir fails an append", async () => {
+    // The review's own repro: chmod 500 the flows dir, then append to a live
+    // recording. This fails at the temp OPEN — earlier than either case above —
+    // and the errno names a scratch file that has never existed on disk.
+    const root = await makeRoot("readonly-dir");
+    const target = flowPath(root, "alpha");
+    await start(root, "alpha");
+    const flowsDir = path.dirname(target);
+    await fs.chmod(flowsDir, 0o500);
+    try {
+      const err = await addEcho(root, "alpha", "note").catch((e: unknown) => e);
+
+      const message = formatErrorForAgent(err);
+      expect(message).toContain(target);
+      expect(message).not.toMatch(/\.argent-flow-\d+-\d+\.tmp/);
+      // Here the directory-permission explanation IS the right one.
+      expect(message).toContain("must be writable");
+    } finally {
+      await fs.chmod(flowsDir, 0o700);
+    }
+  });
+
+  it("explains the errno it actually got, not directory permissions every time", async () => {
+    // "so <dir> must be writable" used to be appended to every failure. An
+    // over-long flow name fails in `rename` with ENAMETOOLONG — a writable
+    // directory does not help, and sending someone to check permissions on one
+    // they will find perfectly writable is a wrong lead, not a vague one.
+    const root = await makeRoot("nametoolong");
+    const target = flowPath(root, "alpha");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+
+    const realRename = fs.rename;
+    const spy = vi.spyOn(fs, "rename").mockImplementationOnce(async () => {
+      const err: NodeJS.ErrnoException = new Error(
+        `ENAMETOOLONG: name too long, rename '${target}'`
+      );
+      err.code = "ENAMETOOLONG";
+      throw err;
+    });
+    const err = await start(root, "alpha").catch((e: unknown) => e);
+    spy.mockRestore();
+    void realRename;
+
+    const message = formatErrorForAgent(err);
+    expect(message).toContain("ENAMETOOLONG");
+    expect(message).toContain("use a shorter name");
+    expect(message).not.toContain("must be writable");
   });
 
   it("never exposes an empty or unparseable file while appends are in flight", async () => {
