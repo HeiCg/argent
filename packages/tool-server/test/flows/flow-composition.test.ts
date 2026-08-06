@@ -335,8 +335,6 @@ describe("flow composition (run:)", () => {
     expect(result.ok).toBe(true);
   });
 
-  // The case above resolves connected, so the gate never reaches its verdict.
-  // This is the one that matters: a system app that never connects at all. The
   // A blocked precheck comes back RESOLVED, and returns before the terminate and
   // the launch — so this is a step whose app was never started. The gate's
   // remedies are all written for one that was: read as a launch, `not_running`
@@ -386,8 +384,10 @@ describe("flow composition (run:)", () => {
     expect(result.steps[0].reason).not.toContain("exited after launch");
   });
 
-  // launch must STILL pass, where every measured state would have failed it —
-  // and failed it with a remedy that cannot apply to such an app.
+  // The connected case above never reaches the gate's verdict. This is the one
+  // that matters: a system app that never connects at all. The launch must STILL
+  // pass, where every measured state would have failed it — and failed it with a
+  // remedy that cannot apply to such an app.
   it("passes a system-app launch that never connects at all", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
