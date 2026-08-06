@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import supertest from "supertest";
+import { z } from "zod";
 import { createHttpApp, type HttpAppHandle } from "../src/http";
 import type { Registry } from "@argent/registry";
 
@@ -196,10 +197,12 @@ describe("GET /tools progressive-loading metadata", () => {
     // pinned above; deleting the `devices` branch of `extractDeviceArg` left
     // the whole suite green, so a scoped teardown silently lost its platform.
     // Driven through `device-tool` because `extractInvocationMeta` derives a
-    // platform only for a tool that declares a capability. `stop-all-simulator-
-    // servers`, the sole tool spelling `devices` today, declares none — so this
-    // branch is latent in production and only a capability-bearing tool can
-    // exercise it.
+    // platform only for a tool that declares a capability, and
+    // `stop-all-simulator-servers` — the sole tool spelling `devices` today —
+    // declares none. That is a fact about THIS consumer: `extractDeviceArg`'s
+    // other two are ungated and read `devices` in production (a failure
+    // classified from `req.body`, and a replayed teardown step attributed
+    // through `deriveChildInvocationMeta`).
     let seenMeta: Record<string, unknown> | undefined;
     const recordInvocation = vi.fn((_id: string, meta: Record<string, unknown>) => {
       seenMeta = meta;
@@ -219,15 +222,54 @@ describe("GET /tools progressive-loading metadata", () => {
   });
 
   it("ignores a devices list that holds no usable id", async () => {
+    // `devices: []` and `devices: [123]` must both yield no device arg. The
+    // empty case alone was a tautology — deleting the
+    // `typeof record.devices[0] === "string"` guard left the whole suite green,
+    // because a non-string element was never sent. The schema rejects such a
+    // call in production, so this is the guard's only exercise.
     const recordInvocation = vi.fn(() => vi.fn());
     handle.dispose();
     handle = createHttpApp(stubRegistry(), { recordInvocation });
 
-    await request(handle.app).post("/tools/device-tool").send({ devices: [] }).expect(200);
+    for (const devices of [[], [123], [null]]) {
+      recordInvocation.mockClear();
+      await request(handle.app).post("/tools/device-tool").send({ devices }).expect(200);
+      // No device arg, so no platform — and with nothing else to record, no
+      // invocation metadata at all.
+      expect(recordInvocation, `devices: ${JSON.stringify(devices)}`).not.toHaveBeenCalled();
+    }
+  });
 
-    // An empty scope yields no device arg, so no platform — and with nothing
-    // else to record, no invocation metadata at all.
-    expect(recordInvocation).not.toHaveBeenCalled();
+  it("classifies a FAILED call from its devices scope, with no capability in play", async () => {
+    // `emitHttpFailure` is one of `extractDeviceArg`'s two UNGATED consumers,
+    // and the one that makes the `devices` branch live in production: a
+    // rejected `stop-all-simulator-servers` call is classified straight from
+    // `req.body`, which carries the scope. Driven through a tool that declares
+    // no capability, exactly like the real one.
+    const recordFailure = vi.fn();
+    const registry = stubRegistry();
+    // The real shape: `stop-all-simulator-servers` is `.strict()` precisely so
+    // the `udids` slip cannot be stripped down to a machine-wide sweep, and
+    // that rejection is a 400 classified from `req.body` — which carries
+    // `devices`. No capability anywhere in the path.
+    (registry.getTool as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+      id: "strict-teardown",
+      description: "Scoped teardown",
+      inputSchema: { type: "object", properties: { devices: {} } },
+      zodSchema: z.object({ devices: z.array(z.string()).optional() }).strict(),
+      services: () => ({}),
+      execute: async () => ({}),
+    });
+    handle.dispose();
+    handle = createHttpApp(registry, { recordFailure });
+
+    await request(handle.app)
+      .post("/tools/strict-teardown")
+      .send({ devices: ["emulator-5554"], udids: ["oops"] })
+      .expect(400);
+
+    expect(recordFailure).toHaveBeenCalled();
+    expect(recordFailure.mock.calls[0][1]).toMatchObject({ platform: "android" });
   });
 
   it("refines an iOS device to `tvos` when its cached runtime kind is tv", async () => {

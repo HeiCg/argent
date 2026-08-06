@@ -2485,40 +2485,6 @@ export function parseFlow(content: string): FlowFile {
 let flowWriteSeq = 0;
 
 /**
- * Replace a flow file's contents so no reader can ever observe it half-written.
- *
- * {@link withFlowFileLock} serializes WRITERS, but every reader of a flow YAML
- * stays outside it — `flow-execute`'s own load, its `run:` fragment load,
- * `flow-read-prerequisite`, `flow-add-step`'s sibling-fragment check — and the
- * `argent` CLI reads these files from another process entirely, where an
- * in-process lock cannot reach. A plain `fs.writeFile` opens with O_TRUNC, so
- * such a reader could land in the window between the truncate and the write and
- * parse a truncated file, or an empty one — and `parseFlow("")` yields
- * `{ steps: [] }` with no error, which replays as a top-level PASS over zero
- * steps.
- *
- * Writing to a sibling temp file and renaming makes the swap atomic: a reader
- * sees either the whole previous file or the whole new one. The temp name is
- * dotted and `.tmp`-suffixed so a half-written scratch file can never be
- * mistaken for a flow: `getFlowPath` only ever produces `<name>.yaml`, and the
- * one thing that enumerates this directory — `argent flow list` — filters on
- * that extension. Keep both halves of that agreement if either side changes.
- *
- * It deliberately does NOT embed the flow name. A flow name has no length cap
- * (`FLOW_NAME_PATTERN` constrains the character set only), so `<name>.yaml` can
- * legitimately run to NAME_MAX — and prefixing that with a discriminator would
- * push the scratch name past the limit, turning an append that used to work
- * into ENAMETOOLONG. pid + counter is unique on its own: the counter separates
- * writers inside this process, the pid separates this process from a second
- * tool-server (a different install bundle) that could be writing the same
- * directory.
- *
- * The swap costs two things a write-through would have kept, both accepted for
- * the atomicity: it needs write permission on the DIRECTORY rather than on the
- * file, and it replaces the inode, so a chmod on the flow file or a hardlink to
- * it does not survive an append.
- */
-/**
  * What actually went wrong, per errno. The swap needs write permission on the
  * DIRECTORY, which is the surprising part and worth stating — but only when
  * that is the failure. Stating it for every code turned an over-long flow name
@@ -2594,6 +2560,46 @@ async function canonicalFlowPath(filePath: string): Promise<string> {
   return await fs.realpath(filePath).catch(() => path.join(dir, path.basename(filePath)));
 }
 
+/**
+ * Replace a flow file's contents so no reader can ever observe it half-written.
+ *
+ * {@link withFlowFileLock} serializes WRITERS, but every reader of a flow YAML
+ * stays outside it — `flow-execute`'s own load, its `run:` fragment load,
+ * `flow-read-prerequisite`, `flow-add-step`'s sibling-fragment check — and the
+ * `argent` CLI reads these files from another process entirely, where an
+ * in-process lock cannot reach. A plain `fs.writeFile` opens with O_TRUNC, so
+ * such a reader could land in the window between the truncate and the write and
+ * parse a truncated file, or an empty one — and `parseFlow("")` yields
+ * `{ steps: [] }` with no error, which replays as a top-level PASS over zero
+ * steps.
+ *
+ * Writing to a temp file beside the target and renaming makes the swap atomic:
+ * a reader sees either the whole previous file or the whole new one. Beside the
+ * TARGET, note — `canonicalFlowPath`'s result — which for a symlinked flow is
+ * the vault the link points into, not `path.dirname(filePath)`; rename(2) is
+ * atomic only within one filesystem, and that is the pairing that guarantees it.
+ *
+ * The temp name is dotted and `.tmp`-suffixed so a half-written scratch file can
+ * never be mistaken for a flow: `getFlowPath` only ever produces `<name>.yaml`,
+ * and every site that enumerates a flows directory — `argent flow list`,
+ * {@link classifyOnDiskSpelling}, the CLI's recursive suite walk — filters on
+ * `.yaml` plus `FLOW_NAME_PATTERN`, so none of them can see one. Keep both
+ * halves of that agreement if either side changes.
+ *
+ * It deliberately does NOT embed the flow name. A flow name has no length cap
+ * (`FLOW_NAME_PATTERN` constrains the character set only), so `<name>.yaml` can
+ * legitimately run to NAME_MAX — and prefixing that with a discriminator would
+ * push the scratch name past the limit, turning an append that used to work
+ * into ENAMETOOLONG. pid + counter is unique on its own: the counter separates
+ * writers inside this process, the pid separates this process from a second
+ * tool-server (a different install bundle) that could be writing the same
+ * directory.
+ *
+ * The swap costs two things a write-through would have kept, both accepted for
+ * the atomicity: it needs write permission on the DIRECTORY rather than on the
+ * file, and it replaces the inode, so a chmod on the flow file or a hardlink to
+ * it does not survive an append.
+ */
 async function writeFlowFile(filePath: string, content: string): Promise<void> {
   const target = await canonicalFlowPath(filePath);
   const tmpPath = path.join(
