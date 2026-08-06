@@ -650,6 +650,12 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result).toMatchObject({ status: "connect_pending" });
     const message = (result as { message: string }).message;
     expect(message).toContain("Wait a few seconds");
+    // The prohibition itself, not just the absence of the hyphenated tool name:
+    // "wait a few seconds, then relaunch the app and retry" satisfies every
+    // other assertion here while prescribing the one action that resets the age
+    // this verdict reads. The sibling `unregistered` case above pins its
+    // prohibition the same way.
+    expect(message).toContain("Do NOT restart the app");
     expect(message).not.toContain("restart-app");
     expect(message).not.toContain("could not be inspected");
   });
@@ -1051,14 +1057,31 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     }
   });
 
+  /**
+   * The one `If state is <state>:` line out of the description.
+   *
+   * A whole-description `toContain` is not a pin on any of them: the guidance
+   * lines echo each other closely enough that deleting one outright leaves its
+   * assertions satisfied by a sibling — "do NOT restart the app again" appears
+   * verbatim in the `indeterminate` line too — and the field list and the
+   * `injectable: false` paragraph between them supply most of the remaining
+   * words, down to "describe" inside `native-describe-screen`.
+   */
+  function guidanceLine(state: NativeDevtoolsAppState): string {
+    const prefix = `If state is ${state}:`;
+    const line = nativeDevtoolsStatusTool
+      .description!.split("\n")
+      .find((l) => l.startsWith(prefix));
+    expect(line, `description has no "${prefix}" line`).toBeTypeOf("string");
+    return line!;
+  }
+
   it("tells native-devtools-status readers to wait out a connecting app", () => {
-    expect(nativeDevtoolsStatusTool.description).toContain("If state is connecting:");
-    expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app");
+    expect(guidanceLine("connecting")).toContain("do NOT restart the app");
   });
 
   it("tells native-devtools-status readers not to restart an unregistered app", () => {
-    expect(nativeDevtoolsStatusTool.description).toContain("unregistered");
-    expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app again");
+    expect(guidanceLine("unregistered")).toContain("do NOT restart the app again");
   });
 
   // Every remedy in the set is individually correct and together they close into
@@ -1069,14 +1092,33 @@ describe("native-* tool descriptions document every precheck outcome", () => {
   // surfaces have to hand the reader the test — as `not_running` and
   // `indeterminate` already do. Without it this PR lengthens the loop it fixes.
   it("gives an unregistered app a way out of the remedy cycle on its second landing", () => {
+    const message = buildAppStateMessage("com.example.app", "unregistered");
+    const line = guidanceLine("unregistered");
+
+    // Pinned as each surface's own conditional clause rather than a shared
+    // /already|again/: the description line opens "If state is unregistered: do
+    // NOT restart the app again", so a loose pattern matches the wrapper the
+    // escape sits in and survives the escape being deleted from it.
+    expect(message).toContain("If you have already restarted the tool-server for this app");
+    expect(line).toContain("If it reads unregistered again after that restart");
+
     for (const [name, text] of [
-      ["message", buildAppStateMessage("com.example.app", "unregistered")],
-      ["description", nativeDevtoolsStatusTool.description!],
+      ["message", message],
+      ["description", line],
     ] as const) {
-      // The escape is conditional on having already spent the remedy, so it must
-      // say so — an unconditional "treat as unavailable" would give up first try.
-      expect(text, `${name} does not test for a second landing`).toMatch(/already|again after/);
-      expect(text, `${name} names no terminal fallback`).toMatch(/describe|screenshot/);
+      // Conditional, so "stop" is not the last word: a reader who has spent both
+      // remedies needs somewhere to go.
+      expect(text, `${name} names no terminal fallback`).toMatch(
+        /treat native devtools as unavailable/i
+      );
+      // A tool that reads the screen WITHOUT injection. Pointing back at a
+      // native-* tool re-enters the same precheck, which is the cycle again with
+      // an extra hop — and `native-describe-screen` contains "describe", so the
+      // tool name has to be matched on its own.
+      expect(text, `${name} names no injection-free reader`).toMatch(/\bscreenshot\b/);
+      expect(text, `${name} falls back to a tool behind the same precheck`).not.toMatch(
+        /native-(describe-screen|find-views|full-hierarchy|network-logs|view-at-point)/
+      );
     }
   });
 

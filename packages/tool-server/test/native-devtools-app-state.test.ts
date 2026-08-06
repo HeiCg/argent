@@ -67,8 +67,13 @@ vi.mock("node:child_process", async () => {
           // `ps` reads the age at the instant it runs. A literal would carry the
           // age the test *set*, which is exactly the reading whose timing is
           // under test.
+          const execAt = probe.psExecAt;
+          // Consumed like `dialDuringPs`, so it cannot outlive its test and
+          // silently override a later `psOutput` fixture — this branch is
+          // checked first, so a leak would decide the age of every case after it.
+          probe.psExecAt = null;
           callback(null, {
-            stdout: psLine(formatEtime(Date.now() - probe.psExecAt), INJECTED_ENV),
+            stdout: psLine(formatEtime(Date.now() - execAt), INJECTED_ENV),
             stderr: "",
           });
           return;
@@ -365,10 +370,26 @@ describe("appConnectionState measures the running process", () => {
 
   it("still calls a process launched a second after the listener stale", async () => {
     // 599 s old against the same 600 s listener: exec'd 1 s after the bind, so
-    // 2 s inside the grace rather than on its edge.
+    // 2 s inside the slop rather than on its edge.
     probe.psOutput = psLine("09:59", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("stale_process");
+  });
+
+  // The pair above pins the slop only from BELOW — both want `stale_process`, so
+  // a grown term keeps them green. Every other injected fixture reads a 600 s
+  // listener against a process of seconds, a gap the slop could grow into
+  // undetected, swallowing `connecting` and `unregistered` alike into a verdict
+  // whose remedy is restart-app. That is the loop: right after the tool-server
+  // starts, a freshly launched app sits inside a grown slop, is told to relaunch,
+  // and the relaunched process is inside it again. The connect budget is pinned
+  // both ways already (the 00:08/00:09 pair from above, the gate equality below).
+  it("does not let the slop swallow a young process against a young listener", async () => {
+    // 1 s old against a 4.1 s listener: exec'd 3.1 s after the bind, just past
+    // the slop, and well inside the connect budget.
+    probe.psOutput = psLine("00:01", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 4_100 })).resolves.toBe("connecting");
   });
 
   it("re-applies the launchd env before reading the process, not after", async () => {

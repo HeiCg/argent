@@ -472,6 +472,10 @@ describe("describe tool", () => {
     expect(result.source).toBe("ax-service");
     expect(result.should_restart).toBeUndefined();
     expect(result.hint).toContain("Wait a few seconds");
+    // The prohibition, not just the absence of the hyphenated tool name — the
+    // hint is describe's only prose channel, and "then relaunch the app" would
+    // satisfy every other assertion here.
+    expect(result.hint).toContain("Do NOT restart the app");
     expect(result.hint).not.toMatch(/restart-app/);
   });
 
