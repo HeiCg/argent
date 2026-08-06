@@ -46,6 +46,7 @@ import {
   __resetActiveScreenRecordingsForTesting,
   getActiveScreenRecordings,
 } from "../src/utils/screen-recording-reminder";
+import { __resetReapedSessionsForTesting } from "../src/utils/reaped-sessions";
 
 const mockSpawn = vi.mocked(spawn);
 const mockOpenStream = vi.mocked(openMjpegStream);
@@ -192,6 +193,7 @@ const androidDevice: DeviceInfo = {
 
 beforeEach(() => {
   __resetActiveScreenRecordingsForTesting();
+  __resetReapedSessionsForTesting();
   mockSpawn.mockReset();
   mockOpenStream.mockReset();
   mockResolveFfmpeg.mockReset();
@@ -276,6 +278,86 @@ describe("screen-recording session blueprint", () => {
 
     await expect(fs.access(logo)).rejects.toThrow();
     expect(api.logoFile).toBeNull();
+  });
+
+  describe("a capture reaped by stop-all-simulator-servers", () => {
+    // The teardown sequence from the review: start a recording, let
+    // `stop-all-simulator-servers` reap the device (which is what disposes this
+    // service), then call `screen-recording-stop`. `Registry._teardown` nulls
+    // the node's instance, so that stop resolves a BRAND NEW session — modelled
+    // here by building a second one for the same device.
+    async function reapDuringCapture(): Promise<{
+      output: string;
+      fresh: ScreenRecordingSessionApi;
+    }> {
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      fakeChild().exitOnStdinEnd();
+      await startAndSettle(instance.api);
+      const output = instance.api.outputFile!;
+
+      await instance.dispose();
+
+      return { output, fresh: await makeSession(iosDevice) };
+    }
+
+    it("tells the owner the recording was torn down, and where the video landed", async () => {
+      const { output, fresh } = await reapDuringCapture();
+
+      const err = await stopCapture(fresh).catch((e: unknown) => e);
+
+      const message = (err as Error).message;
+      // The bug: this used to be "No active screen recording … Call
+      // `screen-recording-start` first." while a finalized video sat on disk.
+      expect(message).not.toMatch(/Call `screen-recording-start` first/);
+      expect(message).toContain("torn down");
+      expect(message).toContain("stop-all-simulator-servers");
+      // Nothing else in the process still knows this path exists.
+      expect(message).toContain(output);
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+    });
+
+    it("still reports a plain absence when no capture was reaped", async () => {
+      // The breadcrumb must not turn every "you never started one" into an
+      // accusation: disposing an idle session leaves nothing behind.
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      await instance.dispose();
+
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      expect((err as Error).message).toContain("No active screen recording");
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_NO_ACTIVE_SESSION
+      );
+    });
+
+    it("is consumed once, so it cannot blame a later unrelated absence", async () => {
+      const { fresh } = await reapDuringCapture();
+      await stopCapture(fresh).catch(() => {});
+
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      expect((err as Error).message).toContain("No active screen recording");
+    });
+
+    it("is dropped by a new recording, which would otherwise never consume it", async () => {
+      const { fresh } = await reapDuringCapture();
+      fakeStream();
+      fakeChild().exitOnStdinEnd();
+      await startAndSettle(fresh);
+      await fs.writeFile(fresh.outputFile!, Buffer.alloc(16, 1));
+      await stopCapture(fresh);
+
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      expect((err as Error).message).toContain("No active screen recording");
+    });
   });
 });
 

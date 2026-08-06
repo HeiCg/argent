@@ -10,6 +10,7 @@ import {
   markScreenRecordingFinalized,
   registerActiveScreenRecording,
 } from "../../utils/screen-recording-reminder";
+import { takeReapedSession } from "../../utils/reaped-sessions";
 import { openMjpegStream, readJpegDimensions, type MjpegStream } from "./mjpeg-stream";
 import {
   assertNoActiveRecording,
@@ -393,6 +394,10 @@ async function startCaptureLocked(
   api.wallClockEndMs = null;
   api.timeLimitSeconds = params.timeLimitSeconds;
   registerActiveScreenRecording(api.deviceId, api.wallClockStartMs, params.timeLimitSeconds);
+  // A live capture makes any earlier teardown breadcrumb unreportable: this
+  // recording's own stop will succeed, so nothing would ever consume it, and it
+  // would be left to blame a much later, genuine "no active recording".
+  takeReapedSession("screen-recording", api.deviceId);
   startPump(api, stream);
 
   // Arm the exit handler BEFORE the pointer-enable await below. readiness

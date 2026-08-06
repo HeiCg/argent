@@ -4,6 +4,7 @@ import { promises as fs } from "fs";
 import { existsSync } from "node:fs";
 import * as path from "path";
 import type { NativeProfilerSessionApi } from "../../../../blueprints/native-profiler-session";
+import { describeReapedSession, takeReapedSession } from "../../../../utils/reaped-sessions";
 import { deviceSetForUdid, simctlArgsForUdidSync } from "../../../../utils/ios-device-sets";
 import { getDebugDir } from "../../../../utils/react-profiler/debug/dump";
 import {
@@ -777,6 +778,9 @@ export async function startNativeProfilerIos(
   api.cpuFilterPid = strategy ? strategy.cpuFilterPid(detected!) : null;
   api.profilingActive = true;
   api.wallClockStartMs = Date.now();
+  // See the Android twin: a live capture makes any earlier teardown breadcrumb
+  // unconsumable, and therefore a future false accusation.
+  takeReapedSession("native-profiler", api.deviceId);
   api.recordingTimeout = setTimeout(() => {
     try {
       xctraceProcess.kill("SIGINT");
@@ -834,8 +838,15 @@ export async function stopNativeProfilerIos(api: NativeProfilerSessionApi): Prom
   }
 
   if (!api.profilingActive || !api.captureProcess || !api.traceFile) {
+    // A teardown reaps NativeProfilerSession and the registry nulls the
+    // instance, so `api` here can be a fresh session that never saw the capture
+    // this caller started. Say that happened rather than "you never started
+    // one" — the trace really is gone, but the reason is not the caller's.
+    const reaped = takeReapedSession("native-profiler", api.deviceId);
     throw new FailureError(
-      "No active native profiling session found. Call native-profiler-start first.",
+      reaped
+        ? describeReapedSession(reaped, "native profiling session")
+        : "No active native profiling session found. Call native-profiler-start first.",
       {
         error_code: FAILURE_CODES.NATIVE_PROFILER_NO_ACTIVE_SESSION,
         failure_stage: "native_profiler_stop_session_state",
