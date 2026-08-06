@@ -184,6 +184,35 @@ describe("flow-execute flow_path over HTTP", () => {
     }
   });
 
+  it("still validates project_root on the flow_path branch", async () => {
+    // `getFlowPath` validates the root, but only the `name` branch reaches it.
+    // Deleting `setActiveProjectRoot` — which ran unconditionally, ahead of
+    // both branches — left this branch with no check at all, so a relative or
+    // ".."-bearing root sailed through. Nothing reads project_root here today,
+    // which is exactly why the guardrail has to be pinned rather than assumed.
+    const st = await fs.stat(flowPath);
+    const wrapper = {
+      __argentFileInput: true,
+      path: flowPath,
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+    };
+
+    for (const [root, expected] of [
+      ["relative/root", /project_root must be an absolute path/],
+      [`${projectRoot}/../elsewhere`, /must not contain "\.\." segments/],
+    ] as const) {
+      const res = await supertest(handle.app)
+        .post("/tools/flow-execute")
+        .send({ project_root: root, device: DEVICE, flow_path: wrapper });
+
+      expect(res.status).toBe(500);
+      expect(res.body.error).toMatch(expected);
+      expect(res.body.error_code).toBe("FLOW_PROJECT_ROOT_INVALID");
+      expect(steps.invokeTool).not.toHaveBeenCalled();
+    }
+  });
+
   it('rejects a ".." flow_path whose kernel and lexical resolutions disagree', async () => {
     // <tmp>/link -> <tmp>/deep/inner, so the kernel reads <tmp>/deep/flow.yaml
     // while path.dirname keeps "<tmp>/link/.." and path.join collapses it to

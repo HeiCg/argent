@@ -22,6 +22,7 @@ import type {
 import {
   appIdForPlatform,
   assertSafeFlowName,
+  assertValidProjectRoot,
   chromiumLaunchSpec,
   classifyOnDiskSpelling,
   describeSelector,
@@ -2215,8 +2216,9 @@ function errMsg(err: unknown): string {
  * name must then appear in that flow's own directory listing byte-for-byte — a
  * case-insensitive filesystem opens files under spellings no directory entry
  * carries, and the name is what keys the report and `__baselines__/` (see
- * {@link classifyOnDiskSpelling}). Name and project_root are validated in every
- * branch.
+ * {@link classifyOnDiskSpelling}). Name is validated on the branch that has one;
+ * project_root is validated up front, before either branch, since only the
+ * `name` branch would otherwise reach a check.
  *
  * Resolution is pure: it reads and mutates no shared state, so replaying a flow
  * in one project can never rebind the paths of a recording in progress in
@@ -2243,6 +2245,15 @@ export async function resolveFlowSource(
       error_kind: "validation",
     });
   }
+
+  // Before either branch, so both are covered. `getFlowPath` validates the root
+  // on the `name` branch only, and deleting `setActiveProjectRoot` — which ran
+  // here, unconditionally, and whose body is today's assertValidProjectRoot —
+  // removed the check on the `flow_path` branch entirely, letting relative and
+  // ".."-bearing roots through. Nothing reads project_root on that branch
+  // today, so this restores a guardrail rather than fixing a live exploit; it
+  // is here so a future reader of it does not have to establish that.
+  assertValidProjectRoot(params.project_root);
 
   if (params.flow_path !== undefined) {
     if (flowPathInput?.viaUpload) {
