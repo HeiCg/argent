@@ -255,8 +255,8 @@ describe("two recordings in one project", () => {
     expect(finished.steps).toBe(1);
 
     // Only alpha's key was cleared.
-    expect(getRecordingSession(root, "alpha")).toBeUndefined();
-    expect(getRecordingSession(root, "beta")?.filePath).toBe(flowPath(root, "beta"));
+    expect(await getRecordingSession(root, "alpha")).toBeUndefined();
+    expect((await getRecordingSession(root, "beta"))?.filePath).toBe(flowPath(root, "beta"));
 
     // beta keeps recording into its own file.
     await addEcho(root, "beta", "b2");
@@ -288,8 +288,8 @@ describe("the same flow name under two project roots", () => {
     expect(await readMarkers(rootB, "checkout")).toEqual(["tool:b1", "tool:b2"]);
 
     // Sessions carry their own project root and prerequisite, not the other's.
-    expect(getRecordingSession(rootA, "checkout")?.projectRoot).toBe(rootA);
-    expect(getRecordingSession(rootB, "checkout")?.projectRoot).toBe(rootB);
+    expect((await getRecordingSession(rootA, "checkout"))?.projectRoot).toBe(rootA);
+    expect((await getRecordingSession(rootB, "checkout"))?.projectRoot).toBe(rootB);
 
     const finishedA = await finish(rootA, "checkout");
     expect(finishedA.path).toBe(flowPath(rootA, "checkout"));
@@ -300,6 +300,126 @@ describe("the same flow name under two project roots", () => {
     expect(finishedB.path).toBe(flowPath(rootB, "checkout"));
     expect(finishedB.executionPrerequisite).toBe("Cart is empty");
     expect(markers(parseFlow(finishedB.flowFile).steps)).toEqual(["tool:b1", "tool:b2"]);
+  });
+});
+
+// ── Two keys the filesystem considers one file ───────────────────────
+
+/**
+ * The isolation above is stated per KEY, and the key is `path.join` string
+ * math while the write resolves through the filesystem. Everything here is a
+ * pair of distinct, correctly spelled keys that land on ONE real file — via a
+ * symlink, or via a case-insensitive volume. Nothing may treat those as
+ * independent: the second start must read as the restart it actually is
+ * (discarding the first take, counted), and the first recording's next append
+ * must fail loudly rather than land in a take that is no longer its own.
+ */
+describe("two recording keys that resolve to one file", () => {
+  /** Skipped on a case-sensitive volume, where the two names ARE two files. */
+  async function fsFoldsCase(dir: string): Promise<boolean> {
+    const probe = path.join(dir, "ArgentCaseProbe");
+    await fs.writeFile(probe, "", "utf8");
+    try {
+      await fs.stat(path.join(dir, "argentcaseprobe"));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await fs.rm(probe, { force: true });
+    }
+  }
+
+  it("treats a second project's symlink to the same flow file as a restart", async () => {
+    const vault = await makeRoot("vault");
+    const rootA = await makeRoot("symlink-a");
+    const rootB = await makeRoot("symlink-b");
+    const shared = path.join(vault, "checkout.yaml");
+    await fs.writeFile(shared, "steps: []\n", "utf8");
+    for (const root of [rootA, rootB]) {
+      await fs.mkdir(path.dirname(flowPath(root, "checkout")), { recursive: true });
+      await fs.symlink(shared, flowPath(root, "checkout"));
+    }
+
+    await start(rootA, "checkout");
+    await addEcho(rootA, "checkout", "h1-a");
+    await addEcho(rootA, "checkout", "h1-b");
+    await addEcho(rootA, "checkout", "h1-c");
+
+    // B addresses the same real file under its own spelling. That is a
+    // restart, and it destroys A's three-step take — so it must say so.
+    const restarted = await start(rootB, "checkout");
+    expect(restarted.restarted).toBe(true);
+    expect(restarted.discardedSteps).toBe(3);
+
+    // A's session lost the key; its next append fails instead of landing in
+    // B's take.
+    const err = await captureFailure(addEcho(rootA, "checkout", "h1-d"));
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect(formatErrorForAgent(err)).toContain("no longer active");
+
+    await addEcho(rootB, "checkout", "h2-a");
+    // A's finish reports the same loss, rather than handing back B's take as
+    // if it were A's own.
+    const finishErr = await captureFailure(finish(rootA, "checkout"));
+    expect(getFailureSignal(finishErr)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+
+    const finishedB = await finish(rootB, "checkout");
+    expect(markers(parseFlow(finishedB.flowFile).steps)).toEqual(["echo:h2-a"]);
+    // The link survived the swap: one real file, holding only B's take.
+    expect(markers(parseFlow(await fs.readFile(shared, "utf8")).steps)).toEqual(["echo:h2-a"]);
+    expect((await fs.lstat(flowPath(rootA, "checkout"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("treats a shared symlinked flows DIRECTORY the same way", async () => {
+    const vault = await makeRoot("vault-dir");
+    const rootA = await makeRoot("symdir-a");
+    const rootB = await makeRoot("symdir-b");
+    for (const root of [rootA, rootB]) {
+      await fs.mkdir(path.join(root, ".argent"), { recursive: true });
+      await fs.symlink(vault, path.join(root, ".argent", "flows"));
+    }
+
+    await start(rootA, "checkout");
+    await addEcho(rootA, "checkout", "a1");
+    await addEcho(rootA, "checkout", "a2");
+
+    const restarted = await start(rootB, "checkout");
+    expect(restarted.restarted).toBe(true);
+    expect(restarted.discardedSteps).toBe(2);
+
+    const err = await captureFailure(addEcho(rootA, "checkout", "a3"));
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+  });
+
+  it("treats two case-variant flow names on a case-folding volume as one key", async () => {
+    const root = await makeRoot("case-variant");
+    await fs.mkdir(path.dirname(flowPath(root, "Login")), { recursive: true });
+    if (!(await fsFoldsCase(path.dirname(flowPath(root, "Login"))))) return;
+
+    await start(root, "Login");
+    await addEcho(root, "Login", "l1");
+    await addEcho(root, "Login", "l2");
+
+    // `login` is a different key by string math, the same file by this volume.
+    const restarted = await start(root, "login");
+    expect(restarted.restarted).toBe(true);
+    expect(restarted.discardedSteps).toBe(2);
+
+    const err = await captureFailure(addEcho(root, "Login", "l3"));
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+  });
+
+  it("keeps two genuinely distinct flows independent", async () => {
+    // The control: no symlink, no case variance, so nothing is canonicalized
+    // together and the isolation guarantee holds exactly as stated.
+    const rootA = await makeRoot("control-a");
+    const rootB = await makeRoot("control-b");
+    await start(rootA, "checkout");
+    await start(rootB, "checkout");
+    await addEcho(rootA, "checkout", "a1");
+    await addEcho(rootB, "checkout", "b1");
+    expect(await readMarkers(rootA, "checkout")).toEqual(["echo:a1"]);
+    expect(await readMarkers(rootB, "checkout")).toEqual(["echo:b1"]);
   });
 });
 
@@ -371,7 +491,7 @@ describe("concurrent flow-add-step calls on one recording", () => {
     expect([...recorded].sort()).toEqual(tags.map((t) => `tool:${t}`).sort());
 
     // The in-memory copy the session serves to flow-finish-recording agrees.
-    expect(getRecordingSession(root, "burst")?.flow.steps).toHaveLength(tags.length);
+    expect((await getRecordingSession(root, "burst"))?.flow.steps).toHaveLength(tags.length);
     const finished = await finish(root, "burst");
     expect(finished.steps).toBe(tags.length);
   });
@@ -513,6 +633,9 @@ describe("the flow-file lock", () => {
     // assertion above is about release, not about the map never being used.
     const gate = openGate();
     const held = withFlowFileLock(root, "alpha", () => gate.promise);
+    // `settle` first: the lock is taken on the CANONICAL key, so the entry
+    // appears only once that resolution has come back from the filesystem.
+    await settle();
     expect(__flowFileLockCountForTesting()).toBe(before + 1);
     gate.open();
     await held;
@@ -868,8 +991,8 @@ describe("running a flow in a third project while two recordings are live", () =
     expect(runResult).toHaveProperty("ok", true);
 
     // Both sessions still point at their own files…
-    expect(getRecordingSession(rootA, "alpha")?.filePath).toBe(flowPath(rootA, "alpha"));
-    expect(getRecordingSession(rootB, "beta")?.filePath).toBe(flowPath(rootB, "beta"));
+    expect((await getRecordingSession(rootA, "alpha"))?.filePath).toBe(flowPath(rootA, "alpha"));
+    expect((await getRecordingSession(rootB, "beta"))?.filePath).toBe(flowPath(rootB, "beta"));
 
     // …and subsequent steps still land there.
     await addStep(rootA, "alpha", "a2");
@@ -908,7 +1031,7 @@ describe("restarting a recording on one key", () => {
 
     // beta neither lost its steps nor its session.
     expect(await readMarkers(root, "beta")).toEqual(["echo:b1"]);
-    expect(getRecordingSession(root, "beta")?.flow.steps).toHaveLength(1);
+    expect((await getRecordingSession(root, "beta"))?.flow.steps).toHaveLength(1);
     await addEcho(root, "beta", "b2");
     expect(await readMarkers(root, "beta")).toEqual(["echo:b1", "echo:b2"]);
 
@@ -935,7 +1058,7 @@ describe("restarting a recording on one key", () => {
     // …while the same name under the other root — a different key — is not
     // touched: that recording kept its step and its session.
     expect(await readMarkers(rootA, "alpha")).toEqual(["tool:a1"]);
-    expect(getRecordingSession(rootA, "alpha")?.flow.steps).toHaveLength(1);
+    expect((await getRecordingSession(rootA, "alpha"))?.flow.steps).toHaveLength(1);
   });
 
   it("counts the steps the FILE held, not the ones this session appended", async () => {
@@ -1029,7 +1152,7 @@ describe("a restart that lands while a step is still running", () => {
 
     // The new take is empty — no step from the discarded one leaked into it.
     expect(await readMarkers(root, "alpha")).toEqual([]);
-    expect(getRecordingSession(root, "alpha")?.flow.steps).toHaveLength(0);
+    expect((await getRecordingSession(root, "alpha"))?.flow.steps).toHaveLength(0);
 
     // …and the restarted recording still works.
     await addStep(root, "alpha", "a3");
@@ -1072,7 +1195,7 @@ describe("a restart that lands while a step is still running", () => {
     const root = await makeRoot("restart-lock");
     await start(root, "alpha");
     await addStep(root, "alpha", "a1");
-    const firstSession = getRecordingSession(root, "alpha");
+    const firstSession = await getRecordingSession(root, "alpha");
 
     // Stand in for an append that is mid read-modify-write on alpha's file.
     const order: string[] = [];
@@ -1089,7 +1212,7 @@ describe("a restart that lands while a step is still running", () => {
     // while another writer holds the file.
     expect(order).toEqual([]);
     expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
-    expect(getRecordingSession(root, "alpha")).toBe(firstSession);
+    expect(await getRecordingSession(root, "alpha")).toBe(firstSession);
 
     order.push("lock-released");
     lock.open();
@@ -1100,14 +1223,14 @@ describe("a restart that lands while a step is still running", () => {
     expect(restarted.restarted).toBe(true);
     expect(restarted.discardedSteps).toBe(1);
     expect(await readMarkers(root, "alpha")).toEqual([]);
-    expect(getRecordingSession(root, "alpha")).not.toBe(firstSession);
+    expect(await getRecordingSession(root, "alpha")).not.toBe(firstSession);
   });
 
   it("keeps a step queued behind the restart out of the new take", async () => {
     const root = await makeRoot("restart-queued-append");
     await start(root, "alpha");
     await addStep(root, "alpha", "a1");
-    const discarded = getRecordingSession(root, "alpha");
+    const discarded = await getRecordingSession(root, "alpha");
 
     // Park a holder on alpha's file lock. Everything issued below queues behind
     // it, so the interleaving is fixed by the lock's arrival order rather than
@@ -1117,13 +1240,14 @@ describe("a restart that lands while a step is still running", () => {
 
     // Second in the queue: the restart — truncate the file, swap the session.
     const restarting = start(root, "alpha");
-    // Third: a step for the take the restart is discarding. flow-add-echo
-    // resolves its session and takes the lock in one synchronous block, so this
+    // Third: a step for the take the restart is discarding. Both calls resolve
+    // the same spelled path, so they share one in-flight key resolution and
+    // join the lock queue in the order issued (see `keyResolutions`) — this
     // append is bound to the OLD session and enters the lock the instant the
-    // restart's critical section ends — the window a truncate that is not fused
-    // to the session swap leaves open, onto a file that is already empty.
+    // restart's critical section ends, which is the window a truncate that is
+    // not fused to the session swap leaves open, onto a file already empty.
     const appending = addEcho(root, "alpha", "stray");
-    expect(getRecordingSession(root, "alpha")).toBe(discarded);
+    expect(await getRecordingSession(root, "alpha")).toBe(discarded);
 
     holder.open();
     const [restartResult, appendResult] = await Promise.allSettled([restarting, appending]);
@@ -1143,7 +1267,7 @@ describe("a restart that lands while a step is still running", () => {
 
     // The invariant: the new take's file is what the new take says it is, and
     // carries nothing from the discarded one.
-    const session = getRecordingSession(root, "alpha");
+    const session = await getRecordingSession(root, "alpha");
     expect(session).toBeDefined();
     expect(session).not.toBe(discarded);
     const onDisk = await readMarkers(root, "alpha");
@@ -1199,7 +1323,7 @@ describe("a finish that lands while a step is still running", () => {
       }
 
       // Either way the recording is gone, and nothing can be appended to it.
-      expect(getRecordingSession(root, "alpha")).toBeUndefined();
+      expect(await getRecordingSession(root, "alpha")).toBeUndefined();
     }
   });
 
@@ -1220,7 +1344,7 @@ describe("a finish that lands while a step is still running", () => {
     await settle();
     expect(order).toEqual([]);
     // The session is still live: resolve-read-clear is one critical section.
-    expect(getRecordingSession(root, "alpha")).toBeDefined();
+    expect(await getRecordingSession(root, "alpha")).toBeDefined();
 
     order.push("lock-released");
     lock.open();
@@ -1230,7 +1354,7 @@ describe("a finish that lands while a step is still running", () => {
     expect(order).toEqual(["lock-released", "finish-returned"]);
     expect(finished.steps).toBe(1);
     expect(markers(parseFlow(finished.flowFile).steps)).toEqual(["tool:a1"]);
-    expect(getRecordingSession(root, "alpha")).toBeUndefined();
+    expect(await getRecordingSession(root, "alpha")).toBeUndefined();
   });
 
   it("rejects a step whose recording was already finished", async () => {
@@ -1282,7 +1406,7 @@ describe("a finish on a flow file that no longer parses", () => {
     await start(root, "alpha");
     await addStep(root, "alpha", "a1");
     await addEcho(root, "alpha", "a2");
-    const session = getRecordingSession(root, "alpha");
+    const session = await getRecordingSession(root, "alpha");
     const repaired = await fs.readFile(flowPath(root, "alpha"), "utf8");
 
     await fs.writeFile(flowPath(root, "alpha"), NOT_A_LIST, "utf8");
@@ -1296,7 +1420,7 @@ describe("a finish on a flow file that no longer parses", () => {
     expect(await fs.readFile(flowPath(root, "alpha"), "utf8")).toBe(NOT_A_LIST);
 
     // The take survived the failure, as the same session object.
-    expect(getRecordingSession(root, "alpha")).toBe(session);
+    expect(await getRecordingSession(root, "alpha")).toBe(session);
     expect(session?.flow.steps).toHaveLength(2);
 
     // A retry while the file is still broken fails the same way — the recording
@@ -1314,7 +1438,7 @@ describe("a finish on a flow file that no longer parses", () => {
     expect(finished.steps).toBe(3);
     expect(finished.summary).toHaveLength(3);
     expect(markers(parseFlow(finished.flowFile).steps)).toEqual(["tool:a1", "echo:a2", "echo:a3"]);
-    expect(getRecordingSession(root, "alpha")).toBeUndefined();
+    expect(await getRecordingSession(root, "alpha")).toBeUndefined();
   });
 
   it("leaves a concurrent recording — and its own key — exactly as they were", async () => {
@@ -1340,7 +1464,7 @@ describe("a finish on a flow file that no longer parses", () => {
         .map((r) => r.name)
         .sort()
     ).toEqual(["alpha", "beta"]);
-    expect(getRecordingSession(root, "alpha")?.filePath).toBe(flowPath(root, "alpha"));
+    expect((await getRecordingSession(root, "alpha"))?.filePath).toBe(flowPath(root, "alpha"));
 
     // beta neither lost its file nor its ability to finish.
     expect(await readMarkers(root, "beta")).toEqual(["echo:b1"]);
@@ -1348,7 +1472,7 @@ describe("a finish on a flow file that no longer parses", () => {
     expect(markers(parseFlow(finishedBeta.flowFile).steps)).toEqual(["echo:b1"]);
 
     // alpha outlived beta's finish too, and finishes on the repaired file.
-    expect(getRecordingSession(root, "alpha")).toBeDefined();
+    expect(await getRecordingSession(root, "alpha")).toBeDefined();
     await fs.writeFile(
       flowPath(root, "alpha"),
       'executionPrerequisite: ""\nsteps:\n  - echo: repaired\n',
@@ -1384,9 +1508,9 @@ describe("the concurrent-recording cap", () => {
       .sort();
     expect(live).toHaveLength(MAX_RECORDINGS);
     expect(live).toEqual([...names.filter((n) => n !== untouched), "overflow"].sort());
-    expect(getRecordingSession(root, untouched)).toBeUndefined();
+    expect(await getRecordingSession(root, untouched)).toBeUndefined();
     // The oldest registration survived, because it was still being used.
-    expect(getRecordingSession(root, names[0])).toBeDefined();
+    expect(await getRecordingSession(root, names[0])).toBeDefined();
     // The survivors are still usable — eviction dropped one, not the table.
     await addEcho(root, names[0], "still-live");
     expect(await readMarkers(root, names[0])).toEqual(["echo:touch", "echo:still-live"]);
@@ -1425,8 +1549,8 @@ describe("the concurrent-recording cap", () => {
     // The recording that just appended survives; the victim is the one whose
     // last use really is the oldest. Without the stamp on land, rec-0 is the
     // one dropped here.
-    expect(getRecordingSession(root, "rec-0")).toBeDefined();
-    expect(getRecordingSession(root, names[1])).toBeUndefined();
+    expect(await getRecordingSession(root, "rec-0")).toBeDefined();
+    expect(await getRecordingSession(root, names[1])).toBeUndefined();
     // And it is still usable, not merely present.
     await addEcho(root, "rec-0", "after");
     expect(await readMarkers(root, "rec-0")).toEqual(["tool:slow", "echo:after"]);
@@ -1446,7 +1570,7 @@ describe("the concurrent-recording cap", () => {
     // under the running step.
     for (const name of names.slice(1)) await addEcho(root, name, "touch");
     await start(root, "overflow");
-    expect(getRecordingSession(root, "rec-0")).toBeUndefined();
+    expect(await getRecordingSession(root, "rec-0")).toBeUndefined();
 
     gate.release();
     const err = await captureFailure(appending);
@@ -1507,7 +1631,7 @@ describe("the concurrent-recording cap", () => {
     // A 33rd recording overflows the cap and evicts the LRU — rec-0's key —
     // while the restart is parked with rec-0's live session already captured.
     await start(root, "overflow");
-    expect(getRecordingSession(root, "rec-0")).toBeUndefined();
+    expect(await getRecordingSession(root, "rec-0")).toBeUndefined();
 
     held.open();
     const res = await restarting;
@@ -1643,6 +1767,6 @@ describe("finishing a recording whose YAML was hand-edited into an unrenderable 
     expect(finished.steps).toBe(1);
     expect(finished.summary).toEqual(["1. tool: keyboard [cyclic args]"]);
     // The recording is properly closed, not left dangling by a thrown summary.
-    expect(getRecordingSession(root, "alpha")).toBeUndefined();
+    expect(await getRecordingSession(root, "alpha")).toBeUndefined();
   });
 });

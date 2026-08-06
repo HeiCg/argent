@@ -95,32 +95,18 @@ export function assertSafeFlowName(name: string): void {
 }
 
 /**
- * The flow file `<project_root>/.argent/flows/<name>.yaml`. Pure path math over
- * two validated inputs, and the recording-session key (see
- * {@link startRecordingSession}).
+ * The flow file `<project_root>/.argent/flows/<name>.yaml`, as the CALLER
+ * spelled it. Pure path math over two validated inputs — this is the path
+ * reported back to the agent, not the recording-session key (that is
+ * {@link resolveFlowKey}, which asks the filesystem instead).
  *
- * Two different projects can never collide on one key. The converse is only
- * true up to `path.join`, which folds a trailing slash, `//` and `.` segments
- * but NOT symlinks or case. Two spellings that the filesystem considers one
- * path therefore mint two sessions — and two independent locks — over one file,
- * which bypasses every guarantee here: neither session is ever "superseded", so
- * a restart silently truncates the other's live take and both agents are told
- * they finished successfully with a mixture of each other's steps.
- *
- * Two ways in, and the second is the likelier one:
- * - the ROOT spelled two ways (`/tmp/p` vs `/private/tmp/p` on macOS). Needs
- *   two callers disagreeing about one directory; roots are cwd-derived, so this
- *   is rare.
- * - the NAME cased two ways (`Login` vs `login`) on a case-insensitive volume,
- *   which APFS is by default. The name is agent-chosen free text, so this needs
- *   only two agents naming the same flow differently — hence the "pick a name
- *   unique to your task" warning on `flow-start-recording`.
- *
- * Neither is normalized away, because the correct normalization is the
- * filesystem's and we cannot ask it: case-folding the key would wrongly merge
- * two genuinely distinct flows on a case-SENSITIVE volume (ext4), and resolving
- * symlinks is impossible in "client" mode, where the root does not exist on this
- * host at all.
+ * `path.join` folds a trailing slash, `//` and `.` segments but NOT symlinks or
+ * case, so two callers can spell one real file two ways here: the ROOT spelled
+ * two ways (`/tmp/p` vs `/private/tmp/p` on macOS), the flows dir or the flow
+ * file symlinked into a shared vault from two projects, or the NAME cased two
+ * ways (`Login` vs `login`) on a case-insensitive volume, which APFS is by
+ * default. Keying sessions on this string would mint two sessions — and two
+ * independent locks — over one file, so nothing here is a session key.
  */
 export function getFlowPath(projectRoot: string, name: string): string {
   const flowsDir = getFlowsDir(projectRoot);
@@ -139,6 +125,66 @@ export function getFlowPath(projectRoot: string, name: string): string {
   }
   return filePath;
 }
+
+/**
+ * The flow file's identity as the FILESYSTEM sees it, which is what a recording
+ * session and its lock are keyed by. Two callers who spell one real file two
+ * ways — a symlink into a shared vault, a symlinked `.argent/flows`, a root
+ * spelled `/tmp` vs `/private/tmp`, a name cased two ways on APFS — resolve to
+ * one key here, so the collision reads as the restart it actually is instead of
+ * minting a second session that silently truncates the first.
+ *
+ * This is the same resolution {@link writeFlowFile} performs before its swap,
+ * deliberately: the key and the write agree by construction, so wherever the
+ * filesystem declines to answer (a dangling symlink, a flows dir that does not
+ * exist yet) both fall back to the same pure-path spelling and the two remain
+ * two — which is correct, because two files is what the write then produces.
+ *
+ * It costs one `realpath` pair per recording tool call, on a path already doing
+ * file I/O.
+ *
+ * The earlier objection to normalizing — that the correct normalization is the
+ * filesystem's and we cannot ask it — held only for a hand-rolled one. Asking
+ * the filesystem is exactly what this does, so a case-SENSITIVE volume (ext4)
+ * keeps `Login` and `login` apart on its own: `realpath` there simply fails to
+ * find the variant spelling.
+ *
+ * "client" mode needs no special case. The caller's root does not exist on this
+ * host, so both `realpath` calls fail and the fallback returns
+ * {@link getFlowPath} unchanged — the old behavior, and the only one available
+ * when the file is on another machine. Two clients that share a flow file
+ * across that boundary are beyond this process's reach, as they were before.
+ */
+export function resolveFlowKey(projectRoot: string, name: string): Promise<string> {
+  const spelled = getFlowPath(projectRoot, name);
+  const inFlight = keyResolutions.get(spelled);
+  if (inFlight) return inFlight;
+  const resolving = canonicalFlowPath(spelled).finally(() => {
+    if (keyResolutions.get(spelled) === resolving) keyResolutions.delete(spelled);
+  });
+  keyResolutions.set(spelled, resolving);
+  return resolving;
+}
+
+/**
+ * Canonical-key resolutions currently IN FLIGHT, keyed by the spelled path.
+ * Not a cache — the entry is dropped the moment it settles, so a symlink
+ * repointed between two tool calls is seen — but a sequencer.
+ *
+ * Resolution is `realpath`, which runs on libuv's threadpool and therefore
+ * completes in an order unrelated to the order it was requested in. Every
+ * recording tool resolves its key before joining its flow file's lock queue, so
+ * without this, which of two tool calls acquires the lock first would be
+ * decided by threadpool scheduling rather than by which was issued first — a
+ * restart could land behind the append it is supposed to discard. Callers that
+ * spell one path the same way share one promise, so their continuations run in
+ * subscription order and the queue they join stays FIFO.
+ *
+ * Two DIFFERENT spellings of one file resolve independently and so race, as
+ * they did before. Nothing depends on their order: mutual exclusion comes from
+ * the resolved key, which is the same for both.
+ */
+const keyResolutions = new Map<string, Promise<string>>();
 
 /**
  * How the flow file a caller addressed is spelled in its own directory.
@@ -207,6 +253,12 @@ export interface RecordingSession {
   name: string;
   /** Caller-supplied project root, as passed to every recording tool. */
   projectRoot: string;
+  /**
+   * The {@link resolveFlowKey} this session is registered under. Stored rather
+   * than re-derived, so {@link assertSessionStillLive} asks about the key the
+   * session actually holds — and needs no filesystem round trip to do it.
+   */
+  key: string;
   persist: FlowPersistMode;
   /**
    * Absolute path of the flow file as the CALLER knows it. A real host path in
@@ -221,11 +273,21 @@ export interface RecordingSession {
 }
 
 /**
- * Live recordings, keyed by {@link getFlowPath} — the identity of the artifact
- * being built. Two sessions on one key mean two writers on one output file (a
- * genuine collision); two different keys are independent, so concurrent agents
- * recording different flows — in one project or across projects, against one
- * device or several — never write into each other's take.
+ * Live recordings, keyed by {@link resolveFlowKey} — the identity of the
+ * artifact being built, as the FILESYSTEM resolves it rather than as a caller
+ * spelled it. Two sessions on one key mean two writers on one output file (a
+ * genuine collision, reported as a restart); two different keys are two
+ * different files, so concurrent agents recording different flows — in one
+ * project or across projects, against one device or several — never write into
+ * each other's take.
+ *
+ * The one window the key does not close: two starts BOTH in flight before
+ * either has created its file. Neither realpath can see a file that is not
+ * there yet, so two spellings of one not-yet-existing file resolve apart, and
+ * the two writes then land on one file. It closes itself on the next call —
+ * the file exists by then, so both spellings resolve together and the loser
+ * finds its key held by the other session, which fails loudly in
+ * {@link requireRecordingSession} rather than silently mixing takes.
  *
  * Isolation of the recorded artifact, not of the fact that a recording exists:
  * the not-found path of {@link requireRecordingSession} deliberately names the
@@ -284,12 +346,12 @@ async function withFlowLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
  * truncate-then-register, `flow-finish-recording`'s read-then-clear — hold the
  * same lock that {@link appendStepToFlow} takes.
  */
-export function withFlowFileLock<T>(
+export async function withFlowFileLock<T>(
   projectRoot: string,
   name: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  return withFlowLock(getFlowPath(projectRoot, name), fn);
+  return withFlowLock(await resolveFlowKey(projectRoot, name), fn);
 }
 
 /**
@@ -348,19 +410,21 @@ export interface RecordingSessionInit {
  * take), or null — the common case, including starting a second, unrelated
  * recording while others are in progress.
  */
-export function startRecordingSession(init: RecordingSessionInit): RecordingSession | null {
-  const key = getFlowPath(init.projectRoot, init.name);
+export async function startRecordingSession(
+  init: RecordingSessionInit
+): Promise<RecordingSession | null> {
+  const key = await resolveFlowKey(init.projectRoot, init.name);
   const previous = recordings.get(key) ?? null;
-  recordings.set(key, { ...init, lastTouchedSeq: touch() });
+  recordings.set(key, { ...init, key, lastTouchedSeq: touch() });
   evictIfOverCapacity();
   return previous;
 }
 
-export function getRecordingSession(
+export async function getRecordingSession(
   projectRoot: string,
   name: string
-): RecordingSession | undefined {
-  return recordings.get(getFlowPath(projectRoot, name));
+): Promise<RecordingSession | undefined> {
+  return recordings.get(await resolveFlowKey(projectRoot, name));
 }
 
 /**
@@ -375,8 +439,11 @@ export function listActiveRecordings(): { name: string; projectRoot: string; ste
   }));
 }
 
-export function requireRecordingSession(projectRoot: string, name: string): RecordingSession {
-  const session = getRecordingSession(projectRoot, name);
+export async function requireRecordingSession(
+  projectRoot: string,
+  name: string
+): Promise<RecordingSession> {
+  const session = await getRecordingSession(projectRoot, name);
   if (!session) {
     // Name what was asked for AND what is live, so the agent can self-correct:
     // with concurrent recordings the usual cause is a typo in `name` or the
@@ -424,17 +491,45 @@ export function requireRecordingSession(projectRoot: string, name: string): Reco
       }
     );
   }
+  // The key is the file's identity, so a session found under it may have been
+  // registered by a caller who spells that one file differently — a symlink
+  // into a shared vault, a symlinked `.argent/flows`, a name cased two ways on
+  // APFS. Handing it over would silently enrol this caller in the OTHER take:
+  // its steps would land in a file it never addressed, under a prerequisite it
+  // never declared, and its finish would report the other agent's steps as its
+  // own. That collision is what the restart already destroyed this caller's
+  // take for, so report it as the loss it is rather than papering over it. A
+  // root spelled with a trailing slash is not one of these — `getFlowPath`
+  // normalizes both sides before they are compared.
+  const asked = getFlowPath(projectRoot, name);
+  const held = getFlowPath(session.projectRoot, session.name);
+  if (asked !== held) {
+    throw new FailureError(
+      `Recording of "${name}" in ${projectRoot} is no longer active — ${held} and ${asked} ` +
+        `are the same file on this filesystem (a symlink, or a case-insensitive volume), and ` +
+        `"${session.name}" in ${session.projectRoot} is the take that now holds it. Starting ` +
+        `that recording truncated this one. Record under a name that resolves to its own file, ` +
+        `or coordinate with the other caller — restarting here would destroy their take in turn.`,
+      {
+        error_code: FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING,
+        failure_stage: "flow_recording_key_aliased",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      }
+    );
+  }
   session.lastTouchedSeq = touch();
   return session;
 }
 
-export function clearRecordingSession(projectRoot: string, name: string): void {
-  recordings.delete(getFlowPath(projectRoot, name));
+export async function clearRecordingSession(projectRoot: string, name: string): Promise<void> {
+  recordings.delete(await resolveFlowKey(projectRoot, name));
 }
 
 export function __resetRecordingsForTesting(): void {
   recordings.clear();
   flowFileLocks.clear();
+  keyResolutions.clear();
 }
 
 /**
@@ -2466,22 +2561,30 @@ function scrubTempPath(err: unknown, tmpPath: string, filePath: string): Error {
   return scrubbed;
 }
 
-async function writeFlowFile(filePath: string, content: string): Promise<void> {
-  // Swap onto the flow file's REAL path. A saved flow may be a symlink into a
-  // shared vault — the runner canonicalizes before reading, and `run:`
-  // composition anchors on the real file — and rename(2) replaces the path it
-  // is handed, so renaming onto the link's own spelling would swap the symlink
-  // for a regular file and strand the vault copy with the pre-recording
-  // content. A plain write follows the link; resolving first keeps that
-  // behavior while keeping the swap atomic.
-  //
-  // The directory is resolved separately so that a flow file which does not
-  // exist yet (the first write of a recording, which has no realpath of its
-  // own) still lands on the same canonical spelling as every later append —
-  // otherwise the first swap and the rest would disagree wherever an ancestor
-  // is itself a symlink, which is the default for the temp dir on macOS.
+/**
+ * A flow file's REAL path. A saved flow may be a symlink into a shared vault —
+ * the runner canonicalizes before reading, and `run:` composition anchors on
+ * the real file — and rename(2) replaces the path it is handed, so renaming
+ * onto the link's own spelling would swap the symlink for a regular file and
+ * strand the vault copy with the pre-recording content. A plain write follows
+ * the link; resolving first keeps that behavior while keeping the swap atomic.
+ *
+ * The directory is resolved separately so that a flow file which does not exist
+ * yet (the first write of a recording, which has no realpath of its own) still
+ * lands on the same canonical spelling as every later append — otherwise the
+ * first swap and the rest would disagree wherever an ancestor is itself a
+ * symlink, which is the default for the temp dir on macOS.
+ *
+ * Shared with {@link resolveFlowKey}, so the identity a recording is keyed by
+ * and the file its steps land in can never disagree.
+ */
+async function canonicalFlowPath(filePath: string): Promise<string> {
   const dir = await fs.realpath(path.dirname(filePath)).catch(() => path.dirname(filePath));
-  const target = await fs.realpath(filePath).catch(() => path.join(dir, path.basename(filePath)));
+  return await fs.realpath(filePath).catch(() => path.join(dir, path.basename(filePath)));
+}
+
+async function writeFlowFile(filePath: string, content: string): Promise<void> {
+  const target = await canonicalFlowPath(filePath);
   const tmpPath = path.join(
     path.dirname(target),
     `.argent-flow-${process.pid}-${++flowWriteSeq}.tmp`
@@ -2606,7 +2709,7 @@ export type FlowSavedTo = string | ClientFileDirective;
  * NEXT call on the key reports the recording gone.
  */
 function assertSessionStillLive(session: RecordingSession, step: FlowStep): void {
-  const current = recordings.get(getFlowPath(session.projectRoot, session.name));
+  const current = recordings.get(session.key);
   if (current === session) return;
   // A key that is occupied by a DIFFERENT session was restarted; an empty key
   // was either finished or evicted by the MAX_RECORDINGS backstop, which the
@@ -2660,7 +2763,12 @@ export async function appendStepToFlow(
   session: RecordingSession,
   step: FlowStep
 ): Promise<{ flowFile: string; savedTo: FlowSavedTo }> {
-  return withFlowFileLock(session.projectRoot, session.name, async () => {
+  // The session's OWN key, not a fresh resolution of it: the lock this append
+  // takes and the identity {@link assertSessionStillLive} checks must be the
+  // same one, or a key that moved under the session (a symlink repointed
+  // mid-recording) would let the append hold one lock while asserting about
+  // another.
+  return withFlowLock(session.key, async () => {
     assertSessionStillLive(session, step);
     session.lastTouchedSeq = touch();
     if (session.persist === "host") {
