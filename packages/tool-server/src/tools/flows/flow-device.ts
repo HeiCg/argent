@@ -35,14 +35,6 @@ export type FlowPlatform = WhenPlatform;
 const DEVICE_BIND_KEYS = ["udid", "device_id", "device"] as const;
 
 /**
- * Keys that mean a tool acts on a device. A superset of the keys the runner
- * injects: `device` names one without receiving the run's own (a nested flow
- * takes it that way), and a step that drives a device must count as needing one
- * even when the runner does not hand it over.
- */
-const DEVICE_ARG_KEYS = [...DEVICE_BIND_KEYS, "device"] as const;
-
-/**
  * Args keys holding a LIST of device ids. Same treatment as
  * {@link DEVICE_BIND_KEYS} — stripped at record time, re-injected at replay —
  * but rebound to `[deviceId]`, since the runner resolves exactly one device per
@@ -63,6 +55,23 @@ const DEVICE_ARG_KEYS = [...DEVICE_BIND_KEYS, "device"] as const;
  * flow has exactly one resolved device to be talking about.
  */
 const DEVICE_BIND_LIST_KEYS = ["devices"] as const;
+
+/**
+ * Keys that mean a tool acts on a device — every key either bind set covers.
+ *
+ * `toolRequiresDevice` consults this, and `resolveRunDevice` skips resolving a
+ * device for a flow no step here matches. So a key that is BOUND but not listed
+ * here is worse than an unbound one: the run resolves `device: null`, and
+ * `bindDeviceArgs(…, device?.id ?? "", …)` then rebinds the recorded value to
+ * the empty string rather than leaving it alone. For `devices` that is
+ * `{ devices: [""] }` — a teardown scoped to an id that owns nothing, which
+ * reaps nothing and still reports pass, exactly the failure
+ * {@link DEVICE_BIND_LIST_KEYS} exists to prevent.
+ *
+ * Both sets, therefore, and not a hand-maintained superset: a key added to
+ * either one is covered here by construction.
+ */
+const DEVICE_ARG_KEYS = [...DEVICE_BIND_KEYS, ...DEVICE_BIND_LIST_KEYS] as const;
 
 interface RawDevice {
   platform: FlowPlatform;
