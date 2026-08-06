@@ -19,6 +19,14 @@ const probe = vi.hoisted(() => ({
   psInvocation: null as { args: string[]; opts: Record<string, unknown> } | null,
   /** Set when `inspectRunningApp`'s own `launchctl list` should reject. */
   launchctlFails: false,
+  /**
+   * Fake-clock ms the next launchd env re-apply costs, charged once so the bill
+   * does not depend on how many round-trips it makes. Simulated device work is
+   * free by default, which is what leaves the ordering below unmeasurable.
+   */
+  envClockCostMs: 0,
+  /** Fake-clock instant the process exec'd, for a `ps` age read at probe time. */
+  psExecAt: null as number | null,
 }));
 
 vi.mock("@argent/native-devtools-ios", () => ({
@@ -55,6 +63,16 @@ vi.mock("node:child_process", async () => {
           });
           return;
         }
+        if (probe.psExecAt !== null) {
+          // `ps` reads the age at the instant it runs. A literal would carry the
+          // age the test *set*, which is exactly the reading whose timing is
+          // under test.
+          callback(null, {
+            stdout: psLine(formatEtime(Date.now() - probe.psExecAt), INJECTED_ENV),
+            stderr: "",
+          });
+          return;
+        }
         callback(null, { stdout: probe.psOutput, stderr: "" });
         return;
       }
@@ -68,6 +86,10 @@ vi.mock("node:child_process", async () => {
       }
       if (argv.includes("launchctl setenv") || argv.includes("launchctl getenv")) {
         probe.envOps += 1;
+        if (probe.envClockCostMs > 0) {
+          vi.setSystemTime(Date.now() + probe.envClockCostMs);
+          probe.envClockCostMs = 0;
+        }
         callback(null, { stdout: "", stderr: "" });
         return;
       }
@@ -98,6 +120,12 @@ function runningRow(pid: number | "-" = PID, bundleId = BUNDLE): string {
 /** `ps eww -p <pid> -o etime=,command=` output: age, argv, then the launch env. */
 function psLine(etime: string, env: string): string {
   return `${etime} /Devices/${UDID}/Bluesky.app/Bluesky ${env}\n`;
+}
+
+/** Render an age as `ps -o etime` does, to the whole second it resolves. */
+function formatEtime(ageMs: number): string {
+  const total = Math.floor(ageMs / 1000);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
 const INJECTED_ENV =
@@ -187,6 +215,8 @@ describe("appConnectionState measures the running process", () => {
     probe.dialDuringPs = null;
     probe.psInvocation = null;
     probe.launchctlFails = false;
+    probe.envClockCostMs = 0;
+    probe.psExecAt = null;
   });
 
   afterEach(() => {
@@ -321,6 +351,32 @@ describe("appConnectionState measures the running process", () => {
     probe.psOutput = psLine("09:59", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("stale_process");
+  });
+
+  it("re-applies the launchd env before reading the process, not after", async () => {
+    // The two ages this verdict subtracts are read at different moments: `ps`
+    // takes the process's, `Date.now()` takes the listener's once the probe is
+    // back. Whatever is spent in between shortens the process against the
+    // listener by that much, and the env re-apply is several simctl round-trips
+    // — enough to spend the whole grace and report a relaunchable process as one
+    // no relaunch can help. Running it first leaves both readings past it.
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      // The factory stamps the listener as it binds and bills no clock after, so
+      // this is that instant.
+      const listeningSince = Date.now();
+      probe.psExecAt = listeningSince + 1_000;
+      vi.setSystemTime(listeningSince + 600_000);
+      probe.envClockCostMs = 4_000;
+
+      // Exec'd 1 s after the bind, so it dialed this listener and a relaunch is
+      // what re-dials it — whichever side of the re-apply `ps` is read on.
+      await expect((instance.api as NativeDevtoolsApi).appConnectionState(BUNDLE)).resolves.toBe(
+        "stale_process"
+      );
+    } finally {
+      await instance.dispose();
+    }
   });
 
   it("re-applies the launchd env on every read, not just the first", async () => {
