@@ -148,12 +148,14 @@ function extractDeviceArg(data: unknown): string | null {
   // devices of different platforms; the first is enough for the coarse
   // telemetry platform.
   //
-  // Latent today: BOTH consumers of this function are gated on the tool
-  // declaring a capability — the gate directly, and `extractInvocationMeta`
-  // through its `hasCapability` argument — and the one tool that spells the
-  // parameter this way declares none. Kept so the reading of `devices` is
-  // defined in one place if a capability-bearing tool ever takes a device list,
-  // rather than being rediscovered then.
+  // Live today, not latent. Of this function's three consumers only the
+  // capability gate is gated — and `stop-all-simulator-servers` declares no
+  // capability, so `devices` never reaches that one. The other two are ungated
+  // and do read it: `emitHttpFailure` classifies a rejected call straight from
+  // `req.body` (a `.strict()` rejection of the `udids` slip is a real 400 on a
+  // body that carries `devices`), and `platformFromArgs` via
+  // `deriveChildInvocationMeta` attributes a sub-tool from its own args — which
+  // for a replayed teardown step is exactly `devices`.
   if (Array.isArray(record.devices) && typeof record.devices[0] === "string") {
     return record.devices[0];
   }
@@ -234,9 +236,12 @@ function platformFromArgs(data: unknown): TelemetryPlatform | null {
 /**
  * Attribution for a sub-tool an orchestrator dispatches: the outer request's AI
  * client is inherited unchanged, but the platform is re-derived from the child's
- * OWN device arg. Orchestrators like flow-execute carry no platform (and a flow
- * can span several devices), so the child's `udid` is the only correct source;
- * the parent's platform is the fallback when the child has no device arg.
+ * OWN device arg — `udid` / `device_id` / `devices` / `avdName`, whichever it
+ * spells. Orchestrators like flow-execute carry no platform (and a flow can span
+ * several devices), so the child's device arg is the only correct source; the
+ * parent's platform is the fallback when the child has none. A replayed
+ * `stop-all-simulator-servers` step is the `devices` case, and it resolves here
+ * rather than falling back.
  */
 function deriveChildInvocationMeta(parentMeta: InvocationMeta, childArgs: unknown): InvocationMeta {
   const childPlatform = platformFromArgs(childArgs);
@@ -758,10 +763,11 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // `extractDeviceArg` honours all three so an Android serial reaching an
       // iOS-only device_id-tool is rejected at the gate instead of falling
       // through to the deeper blueprint error (which surfaces as a generic 500).
-      // Only the first two ever reach this gate — the `devices` tool declares no
-      // capability, and neither does telemetry read it for the same reason (see
-      // `extractDeviceArg`). The third is defined here so it behaves like the
-      // others the day a capability-bearing tool takes a device list.
+      // Only the first two ever reach THIS gate — the `devices` tool declares
+      // no capability. That is a fact about the gate alone: telemetry reads
+      // `devices` today through two ungated consumers (see `extractDeviceArg`).
+      // The third spelling is honoured here so it behaves like the others the
+      // day a capability-bearing tool takes a device list.
       const deviceArg = extractDeviceArg(parsedData);
       if (def.capability && deviceArg) {
         try {
