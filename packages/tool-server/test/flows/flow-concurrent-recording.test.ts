@@ -837,6 +837,35 @@ describe("flow-file writes as seen by a concurrent reader", () => {
     expect(listActiveRecordings()).toEqual([]);
   });
 
+  it("blames the LINK TARGET's directory when a symlinked flow cannot be written", async () => {
+    // A 0755 flows dir holding a link into a 0555 vault. The hint used
+    // `dirname(filePath)` while the temp file and rename use
+    // `dirname(realpath(filePath))`, so it named a directory that already IS
+    // writable and never mentioned the vault — the only unwritable thing.
+    const vault = await makeRoot("hint-vault");
+    const root = await makeRoot("hint-proj");
+    const shared = path.join(vault, "f.yaml");
+    const link = flowPath(root, "f");
+    await fs.writeFile(shared, "steps: []\n", "utf8");
+    await fs.mkdir(path.dirname(link), { recursive: true });
+    await fs.symlink(shared, link);
+    await start(root, "f");
+    await fs.chmod(vault, 0o555);
+    try {
+      const err = await addEcho(root, "f", "note").catch((e: unknown) => e);
+
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_FILE_WRITE_FAILED);
+      const message = formatErrorForAgent(err);
+      // The real directory is named…
+      expect(message).toContain(await fs.realpath(vault));
+      // …and the reader is told why it is not the one they expected.
+      expect(message).toContain("is a symlink");
+      expect(message).toMatch(/must be writable/);
+    } finally {
+      await fs.chmod(vault, 0o755);
+    }
+  });
+
   it("classifies a project_root that is a FILE as a flow write failure, not a registry one", async () => {
     // The tool description promises it "fails if the .argent/flows/ directory
     // cannot be created OR the flow file cannot be written". With the mkdir

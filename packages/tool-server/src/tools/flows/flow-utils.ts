@@ -2525,25 +2525,36 @@ let flowWriteSeq = 0;
  * (`ENAMETOOLONG` out of `rename`) into a report of a directory-permissions
  * problem the user would then go and not find.
  */
-function writeFailureHint(code: string | undefined, filePath: string): string {
-  const dir = path.dirname(filePath);
+function writeFailureHint(code: string | undefined, filePath: string, target: string): string {
+  // The directory the swap actually uses — `dirname(realpath(filePath))`, not
+  // `dirname(filePath)`. For a flow file that is a symlink into a shared vault
+  // those are different directories, and only the first one can be the cause:
+  // naming the second sent the reader to a `.argent/flows` that is already
+  // writable while the vault, the only unwritable thing in the picture, went
+  // unmentioned. Say so when they differ, since "your flows dir is fine, the
+  // link target is not" is the whole diagnosis there.
+  const dir = path.dirname(target);
+  const via =
+    dir === path.dirname(filePath)
+      ? ""
+      : ` (${path.basename(filePath)} is a symlink, so the write lands in ${dir}, not in ${path.dirname(filePath)})`;
   switch (code) {
     case "EACCES":
     case "EPERM":
     case "EROFS":
       return (
         `an append replaces the file via a sibling temp file and rename, so ${dir} must be ` +
-        `writable — permission on the flow file itself is not enough.`
+        `writable — permission on the flow file itself is not enough${via}.`
       );
     case "ENOSPC":
     case "EDQUOT":
-      return `the filesystem holding ${dir} is out of space (or over quota).`;
+      return `the filesystem holding ${dir} is out of space (or over quota)${via}.`;
     case "ENAMETOOLONG":
-      return `the flow name makes ${path.basename(filePath)} longer than this filesystem allows — use a shorter name.`;
+      return `the flow name makes ${path.basename(target)} longer than this filesystem allows — use a shorter name.`;
     case "ENOENT":
-      return `${dir} does not exist.`;
+      return `${dir} does not exist${via}.`;
     default:
-      return `an append replaces the file via a sibling temp file and rename in ${dir}.`;
+      return `an append replaces the file via a sibling temp file and rename in ${dir}${via}.`;
   }
 }
 
@@ -2612,7 +2623,7 @@ async function writeFlowFile(filePath: string, content: string): Promise<void> {
     const errno = err instanceof Error ? (err as NodeJS.ErrnoException) : undefined;
     const code = typeof errno?.code === "string" ? errno.code : undefined;
     throw new FailureError(
-      `Failed to write flow file ${filePath}${code ? ` (${code})` : ""} — ${writeFailureHint(code, filePath)}`,
+      `Failed to write flow file ${filePath}${code ? ` (${code})` : ""} — ${writeFailureHint(code, filePath, target)}`,
       {
         error_code: FAILURE_CODES.FLOW_FILE_WRITE_FAILED,
         failure_stage: "flow_file_write",
