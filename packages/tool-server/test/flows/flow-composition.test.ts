@@ -2375,10 +2375,43 @@ describe("device binding (portability)", () => {
     expect(out).toEqual({ foo: 1 });
   });
 
-  it("stripDeviceKeys removes udid / device_id / device / devices, leaving other args untouched", () => {
+  it("stripDeviceKeys removes udid / device_id / device, leaving other args untouched", () => {
+    expect(stripDeviceKeys({ udid: "A", device_id: "B", device: "C", x: 1 })).toEqual({ x: 1 });
+  });
+
+  it("stripDeviceKeys KEEPS a `devices` scope, because dropping it changes the step's meaning", () => {
+    // A target is stripped so the flow points at no device. A scope is not:
+    // `stop-all-simulator-servers` with no `devices` is the machine-wide sweep,
+    // so stripping it would record a correctly scoped teardown as a bare step
+    // that reaps every device on the machine when hand-run from the YAML — the
+    // manual-execution strategy the create-flow skill documents. Replay rebinds
+    // it either way (see bindDeviceArgs below).
+    expect(stripDeviceKeys({ udid: "A", devices: ["D", "E"], x: 1 })).toEqual({
+      devices: ["D", "E"],
+      x: 1,
+    });
+  });
+
+  it("bindDeviceArgs keeps a recorded scope when the run resolved NO device", () => {
+    // A cleanup flow resolves no device when none is unambiguous. Dropping the
+    // recorded scope there would widen the teardown from the devices the
+    // recording named to every device on the machine — the one direction that
+    // costs another agent their session. There is no run target to override.
     expect(
-      stripDeviceKeys({ udid: "A", device_id: "B", device: "C", devices: ["D", "E"], x: 1 })
-    ).toEqual({ x: 1 });
+      bindDeviceArgs(reg({ devices: {} }), "stop-all-simulator-servers", "", {
+        devices: ["RECORDED"],
+      })
+    ).toEqual({ devices: ["RECORDED"] });
+  });
+
+  it("bindDeviceArgs never forwards a scope to a tool that does not declare it", () => {
+    // The schema-blind strip's job: a `.strict()` schema would reject the call.
+    expect(
+      bindDeviceArgs(reg({ port: {} }), "stop-metro", "RESOLVED", {
+        devices: ["RECORDED"],
+        port: 8081,
+      })
+    ).toEqual({ port: 8081 });
   });
 
   it("rebinds a nested flow-execute onto the run device (issue #607)", () => {
