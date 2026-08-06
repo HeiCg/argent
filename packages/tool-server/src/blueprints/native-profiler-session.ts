@@ -11,6 +11,7 @@ import type { ChildProcess } from "child_process";
 import type { CpuSample, UiHang, MemoryLeak, CpuHotspot } from "../utils/ios-profiler/types";
 import { waitForChildExit } from "../utils/profiler-shared/lifecycle";
 import { adbShell } from "../utils/adb";
+import { recordReapedSession } from "../utils/reaped-sessions";
 import { disposeWarmEngine } from "@argent/native-devtools-android";
 
 // Cross-platform session for the `native-profiler-*` tools: iOS uses an xctrace
@@ -179,6 +180,13 @@ export const nativeProfilerSessionBlueprint: ServiceBlueprint<
           clearTimeout(state.recordingTimeout);
           state.recordingTimeout = null;
         }
+        // Read before the teardown below clears it. A capture killed here is
+        // destroyed rather than salvaged — no SIGINT finalize grace, and on
+        // Android the on-device trace is removed outright — so the breadcrumb
+        // exists purely so `native-profiler-stop` stops answering "call
+        // native-profiler-start first" for a session that really did run.
+        const abandonedCapture = state.profilingActive;
+        const abandonedTrace = state.traceFile;
 
         if (state.platform === "ios") {
           const child = state.captureProcess;
@@ -193,6 +201,17 @@ export const nativeProfilerSessionBlueprint: ServiceBlueprint<
             }
           } finally {
             clearLiveState(state);
+            if (abandonedCapture) {
+              recordReapedSession(
+                "native-profiler",
+                state.deviceId,
+                abandonedTrace
+                  ? `xctrace was killed without its finalize pass, so the partial bundle at ` +
+                      `${abandonedTrace} is very likely unreadable — re-profile rather than ` +
+                      `trying to salvage it.`
+                  : undefined
+              );
+            }
           }
           return;
         }
@@ -214,6 +233,16 @@ export const nativeProfilerSessionBlueprint: ServiceBlueprint<
           }
         } finally {
           clearLiveState(state);
+          if (abandonedCapture) {
+            recordReapedSession(
+              "native-profiler",
+              state.deviceId,
+              // The on-device .pftrace is removed above, and nothing was pulled
+              // to the host yet, so there is genuinely nothing to point at.
+              "The perfetto daemon was killed and its on-device trace removed, so no trace " +
+                "survived — re-profile to capture again."
+            );
+          }
         }
 
         // ANDROID: Free this trace's warm Perfetto engine (trace memory + wasm heap) now

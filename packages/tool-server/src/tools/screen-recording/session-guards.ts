@@ -1,6 +1,7 @@
 import { promises as fs } from "fs";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { ScreenRecordingSessionApi } from "../../blueprints/screen-recording-session";
+import { describeReapedSession, takeReapedSession } from "../../utils/reaped-sessions";
 
 export interface StartRecordingResult {
   status: "recording";
@@ -106,10 +107,21 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
   }
   const recoverable = api.pendingRetrieval && api.outputFile !== null;
   if (!api.recordingActive && !recoverable) {
+    // A teardown reaps this device's ScreenRecordingSession, and the registry
+    // nulls the instance — so the session resolved above is a brand new one
+    // that has never heard of the capture that was running a moment ago. Absent
+    // the breadcrumb, the only thing distinguishing "your recording was
+    // destroyed, here is where the video landed" from "you never started one"
+    // is gone, and this reports the second.
+    const reaped = takeReapedSession("screen-recording", api.deviceId);
     throw new FailureError(
-      `No active screen recording on device ${api.deviceId}. Call \`screen-recording-start\` first.`,
+      reaped
+        ? describeReapedSession(reaped, "screen recording")
+        : `No active screen recording on device ${api.deviceId}. Call \`screen-recording-start\` first.`,
       {
-        error_code: FAILURE_CODES.SCREEN_RECORDING_NO_ACTIVE_SESSION,
+        error_code: reaped
+          ? FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+          : FAILURE_CODES.SCREEN_RECORDING_NO_ACTIVE_SESSION,
         failure_stage: stage,
         failure_area: "tool_server",
         // Session-state, not caller input — matches the profiler family's

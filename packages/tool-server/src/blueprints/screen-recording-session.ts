@@ -11,6 +11,7 @@ import type { ChildProcess } from "child_process";
 import { promises as fs } from "fs";
 import { waitForChildExit } from "../utils/profiler-shared/lifecycle";
 import { clearActiveScreenRecording } from "../utils/screen-recording-reminder";
+import { recordReapedSession } from "../utils/reaped-sessions";
 
 // Session for the `screen-recording-*` tools. One shape for every platform:
 // frames come from simulator-server's MJPEG stream and are paced into an ffmpeg
@@ -205,6 +206,13 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
         // await will observe this and abort instead of spawning an orphan the
         // teardown below can no longer reap.
         state.disposed = true;
+        // Whether this dispose is destroying an unretrieved capture, decided
+        // BEFORE the teardown below clears the flags it is read from. Both
+        // states owe the caller a video: one is still encoding, the other
+        // finished and is waiting to be handed over.
+        const hadUnretrievedCapture =
+          state.recordingActive || state.startPending || state.pendingRetrieval;
+        const abandonedOutput = state.outputFile;
         if (state.recordingTimeout) {
           clearTimeout(state.recordingTimeout);
           state.recordingTimeout = null;
@@ -262,6 +270,22 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
           clearLiveState(state);
           // The reminder must not outlive the process that owns the capture.
           clearActiveScreenRecording(state.deviceId);
+          // Leave a breadcrumb so the owner's `screen-recording-stop` reports
+          // the teardown instead of "you never started a recording". The stdin
+          // close above is ffmpeg's normal finalize path, so the file usually
+          // is playable — but nothing else would ever say it exists, and the
+          // next resolve builds a session that has never heard of it.
+          if (hadUnretrievedCapture) {
+            recordReapedSession(
+              "screen-recording",
+              state.deviceId,
+              abandonedOutput
+                ? `ffmpeg was given a moment to finalize the container first, so the video ` +
+                    `captured up to that point is usually playable at ${abandonedOutput} — ` +
+                    `check it before re-recording.`
+                : undefined
+            );
+          }
         }
       },
       events,

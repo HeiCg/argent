@@ -1,6 +1,7 @@
 import * as path from "path";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { NativeProfilerSessionApi } from "../../../../blueprints/native-profiler-session";
+import { describeReapedSession, takeReapedSession } from "../../../../utils/reaped-sessions";
 import { getDebugDir } from "../../../../utils/react-profiler/debug/dump";
 import { startPerfetto, stopPerfetto } from "../../../../utils/android-profiler/capture";
 import {
@@ -82,6 +83,10 @@ export async function startNativeProfilerAndroid(
   api.androidOnDeviceTracePath = onDeviceTracePath;
   api.profilingActive = true;
   api.wallClockStartMs = Date.now();
+  // This capture's own stop will succeed, so an earlier teardown breadcrumb
+  // would never be consumed — and would go on to blame a much later, genuine
+  // "no active session" on a teardown that had nothing to do with it.
+  takeReapedSession("native-profiler", api.deviceId);
 
   api.recordingTimeout = setTimeout(() => {
     // Best-effort SIGTERM to the on-device perfetto daemon; stop tool will pull
@@ -117,8 +122,13 @@ export async function stopNativeProfilerAndroid(
 ): Promise<AndroidStopResult> {
   const recoveringPartialTrace = api.recordingTimedOut || api.recordingExitedUnexpectedly;
   if (!api.profilingActive && !recoveringPartialTrace) {
+    // See the iOS twin: a teardown leaves a fresh session behind, which is
+    // indistinguishable from one that never started without this breadcrumb.
+    const reaped = takeReapedSession("native-profiler", api.deviceId);
     throw new FailureError(
-      "No active native profiling session found. Call native-profiler-start first.",
+      reaped
+        ? describeReapedSession(reaped, "native profiling session")
+        : "No active native profiling session found. Call native-profiler-start first.",
       {
         error_code: FAILURE_CODES.NATIVE_PROFILER_NO_ACTIVE_SESSION,
         failure_stage: "android_native_profiler_stop",
