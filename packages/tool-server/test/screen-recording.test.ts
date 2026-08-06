@@ -616,6 +616,19 @@ describe("screen recording capture", () => {
       expect(getFailureSignal(err)?.error_code).toBe(
         FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
       );
+      // The error CODE is not the behaviour here — its enum name still says
+      // "shutting down", which is exactly the claim the message stopped making.
+      // A dispose is now far more often a `stop-all-simulator-servers` reaping
+      // this device than a process shutdown, and the two are indistinguishable
+      // from `api.disposed`. So the message must name both, and must not tell
+      // the caller a retry is pointless: on the teardown branch the device is
+      // usually still up. Asserted here because reverting the whole rewrite to
+      // the old one-liner otherwise leaves the suite green.
+      const message = (err as Error).message;
+      expect(message).toContain("stop-all-simulator-servers");
+      expect(message).toContain("nothing was recorded");
+      expect(message).toContain("start the recording again");
+      expect(message).toContain(IOS_UDID);
     }
     expect(mockSpawn).not.toHaveBeenCalled();
     expect(stream.close).toHaveBeenCalled();

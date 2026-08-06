@@ -606,6 +606,39 @@ describe("stop-all-simulator-servers device scoping", () => {
     });
   });
 
+  it("drives the scope through its own schema, not just past it", async () => {
+    // Every other case here hands `execute` a hand-built params object, so zod
+    // is never in the loop and the ONLY schema assertion is a negative (the
+    // `udids` rejection above). That leaves the parse itself unpinned: changing
+    //
+    //   devices: z.array(z.string()).optional()   ->   .default([])
+    //
+    // typechecks, keeps all 3255 tests green, and makes `params.devices` always
+    // `[]` — so `scoped` is permanently true and the machine-wide sweep reaps
+    // nothing while answering `{ stopped: [] }`, which the tool documents as
+    // "only means nothing was still running". Parse, then execute what the
+    // parse produced, on both shapes.
+    const registry = createMockRegistry(twoAgentServices());
+    const tool = createStopAllSimulatorServersTool(registry);
+    const schema = tool.zodSchema!;
+
+    // A scoped call is accepted and reaches execute as the ids it was given.
+    expect(schema.safeParse({ devices: [MINE] }).success).toBe(true);
+    const scoped = await tool.execute!({}, schema.parse({ devices: [MINE] }));
+    expect(scoped).toEqual({
+      stopped: [`SimulatorServer:${MINE}`, `NativeDevtools:${MINE}`],
+    });
+
+    // And an omitted scope still parses to "absent" — the machine-wide sweep —
+    // rather than to an empty list that would scope to nothing.
+    const swept = createMockRegistry(twoAgentServices());
+    const sweepTool = createStopAllSimulatorServersTool(swept);
+    expect(schema.parse({}).devices).toBeUndefined();
+    const unscoped = await sweepTool.execute!({}, schema.parse({}));
+    expect(unscoped.stopped).toHaveLength(5);
+    expect(unscoped).not.toHaveProperty("unmatched");
+  });
+
   it("does not match a device id that is a prefix of another device's id", async () => {
     const services = new Map([
       ["SimulatorServer:AAAA", { state: ServiceState.RUNNING, dependents: [] }],

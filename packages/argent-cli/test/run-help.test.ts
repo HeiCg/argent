@@ -121,9 +121,14 @@ describe("argent run --help — whole-payload --args advertisement", () => {
     await run(["flow-add-step", "--help"], { paths: {} as never });
 
     const help = capturedHelp();
-    // The tool's own prose is printed above the flag block, so the help names
-    // the recording a step is being added to rather than an implicit active one.
-    expect(help).toContain(flowAddStepMeta.description);
+    // The tool's own prose is printed ABOVE the flag block. Asserting mere
+    // containment says almost nothing here — `help` is rendered from this same
+    // fixture, so it reduces to `x.toContain(x)` and holds for any renderer
+    // that emits the description anywhere at all, including below the flags.
+    // Pin the placement, which is the part the renderer decides.
+    const descriptionAt = help.indexOf(flowAddStepMeta.description);
+    expect(descriptionAt).toBeGreaterThanOrEqual(0);
+    expect(descriptionAt).toBeLessThan(help.indexOf("--name <value>"));
     // The recording identity is required alongside `command`: omitting either
     // flag fails the server's zod validation, so the help has to say so up front
     // instead of presenting them as optional extras.
