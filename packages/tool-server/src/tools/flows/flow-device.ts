@@ -156,16 +156,29 @@ export async function resolveFlowDevice(
 }
 
 /**
- * Strip the device-id keys from a set of args (so a flow stores none).
+ * Strip the device-TARGET keys from a set of args (so a recorded flow stores no
+ * device to point at). Scope keys are deliberately kept — see below.
  *
  * Schema-blind on purpose: `bindDeviceArgs` strips unconditionally and re-injects
  * only what the target tool declares, so a stale id is never forwarded to a tool
  * that does not want it.
+ *
+ * A SCOPE survives into the YAML because dropping it changes what the recorded
+ * step MEANS. `stop-all-simulator-servers` with no `devices` is the machine-wide
+ * sweep, so a correctly scoped teardown would record as a bare
+ * `- tool: stop-all-simulator-servers` — and the YAML is the artifact that gets
+ * committed, read, and (per the create-flow skill's manual-execution strategy)
+ * hand-run a step at a time. Replay rebinds it either way, but hand-running that
+ * bare step reaps every device on the machine, which is the cross-agent teardown
+ * the scope exists to prevent. The contrast is the point: a recorded `screenshot`
+ * loses its `udid` too, and hand-running it fails loudly because `udid` is
+ * required. Losing `devices` fails OPEN. The recorded ids are host-specific, but
+ * that costs only a no-op plus an `unmatched` report on another machine — the
+ * safe direction, and a legible one.
  */
 export function stripDeviceKeys(args: Record<string, unknown>): Record<string, unknown> {
   const out = { ...args };
   for (const k of DEVICE_BIND_KEYS) delete out[k];
-  for (const k of DEVICE_BIND_LIST_KEYS) delete out[k];
   return out;
 }
 
@@ -274,14 +287,19 @@ export function bindDeviceArgs(
   const props = (toolDef?.inputSchema as { properties?: Record<string, unknown> } | undefined)
     ?.properties;
   const out = stripDeviceKeys(args);
-  if (props) {
-    for (const k of DEVICE_BIND_KEYS) if (k in props) out[k] = deviceId;
-    // Scope keys only when there IS a device. A device-free run reaches here
-    // for a cleanup flow (see {@link DEVICE_ARG_KEYS}), and `[""]` there would
-    // scope the teardown to an id that owns nothing — it would reap nothing and
-    // still pass. Leaving the key off runs the sweep the YAML actually
-    // expresses.
-    if (deviceId) for (const k of DEVICE_BIND_LIST_KEYS) if (k in props) out[k] = [deviceId];
+  for (const k of DEVICE_BIND_LIST_KEYS) {
+    // Never forward a scope to a tool that does not declare it — a `.strict()`
+    // schema would reject the whole call.
+    if (!props || !(k in props)) delete out[k];
+    // The run device wins over anything recorded, so a flow recorded against
+    // one device stays portable. With NO run device (a cleanup flow, see
+    // {@link DEVICE_ARG_KEYS}) the recorded scope is kept rather than dropped:
+    // there is no run target for it to override, and dropping it would widen a
+    // teardown the recording scoped — the one direction that costs another
+    // agent their devices. `[""]` is never bound: an id that owns nothing reaps
+    // nothing and still reports pass.
+    else if (deviceId) out[k] = [deviceId];
   }
+  if (props) for (const k of DEVICE_BIND_KEYS) if (k in props) out[k] = deviceId;
   return out;
 }

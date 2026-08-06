@@ -1363,10 +1363,13 @@ describe("flow-add-step", () => {
     expect(flow.steps).toEqual([]);
   });
 
-  it("strips the devices list when recording a scoped teardown (device ids stay off disk)", async () => {
-    // stop-all-simulator-servers' `devices` names the recording host's device
-    // ids the same way a udid does; a recorded scoped teardown must not bake
-    // that host's ids into the flow, or replay on another host stops nothing.
+  it("keeps the devices list when recording a scoped teardown, so the YAML stays scoped", async () => {
+    // `devices` is a scope, not a target: with it stripped, a correctly scoped
+    // teardown recorded as a bare `- tool: stop-all-simulator-servers`, which
+    // IS the machine-wide sweep — so hand-running the step from the YAML (the
+    // create-flow skill's manual-execution strategy) reaped every device on the
+    // machine. Replay rebinds the scope to the run device regardless, so
+    // keeping it costs portability nothing.
     const registry = createMockRegistry({
       "stop-all-simulator-servers": { result: { stopped: 1 } },
     });
@@ -1387,9 +1390,13 @@ describe("flow-add-step", () => {
     expect(registry.invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", {
       devices: ["00000000-HOST-DEVICE-ID"],
     });
-    // …but the recorded step carries no device id, keeping the flow portable.
+    // …and the recorded step still reads as the scoped teardown it was.
     expect(parseFlow(result.flowFile).steps).toEqual([
-      { kind: "tool", name: "stop-all-simulator-servers", args: {} },
+      {
+        kind: "tool",
+        name: "stop-all-simulator-servers",
+        args: { devices: ["00000000-HOST-DEVICE-ID"] },
+      },
     ]);
   });
 
