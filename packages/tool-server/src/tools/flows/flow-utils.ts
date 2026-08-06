@@ -2423,6 +2423,49 @@ let flowWriteSeq = 0;
  * file, and it replaces the inode, so a chmod on the flow file or a hardlink to
  * it does not survive an append.
  */
+/**
+ * What actually went wrong, per errno. The swap needs write permission on the
+ * DIRECTORY, which is the surprising part and worth stating — but only when
+ * that is the failure. Stating it for every code turned an over-long flow name
+ * (`ENAMETOOLONG` out of `rename`) into a report of a directory-permissions
+ * problem the user would then go and not find.
+ */
+function writeFailureHint(code: string | undefined, filePath: string): string {
+  const dir = path.dirname(filePath);
+  switch (code) {
+    case "EACCES":
+    case "EPERM":
+    case "EROFS":
+      return (
+        `an append replaces the file via a sibling temp file and rename, so ${dir} must be ` +
+        `writable — permission on the flow file itself is not enough.`
+      );
+    case "ENOSPC":
+    case "EDQUOT":
+      return `the filesystem holding ${dir} is out of space (or over quota).`;
+    case "ENAMETOOLONG":
+      return `the flow name makes ${path.basename(filePath)} longer than this filesystem allows — use a shorter name.`;
+    case "ENOENT":
+      return `${dir} does not exist.`;
+    default:
+      return `an append replaces the file via a sibling temp file and rename in ${dir}.`;
+  }
+}
+
+/**
+ * The original error with the internal scratch path rewritten to the flow file,
+ * so the cause chain `formatErrorForAgent` renders never names a temp file that
+ * was already deleted. Everything else about the errno — code, syscall, the
+ * kernel's own wording — is kept.
+ */
+function scrubTempPath(err: unknown, tmpPath: string, filePath: string): Error {
+  if (!(err instanceof Error)) return new Error(String(err));
+  if (!err.message.includes(tmpPath)) return err;
+  const scrubbed = new Error(err.message.split(tmpPath).join(filePath));
+  scrubbed.name = err.name;
+  return scrubbed;
+}
+
 async function writeFlowFile(filePath: string, content: string): Promise<void> {
   const tmpPath = path.join(
     path.dirname(filePath),
@@ -2441,24 +2484,24 @@ async function writeFlowFile(filePath: string, content: string): Promise<void> {
     // Rethrow against the flow file, never the scratch path. The temp name is
     // an internal detail — pid+counter suffixed, and already removed above — so
     // surfacing its raw errno (`EACCES: … open '.argent-flow-<pid>-<n>.tmp'`)
-    // would name a file that no longer exists and never mention the flow. The
-    // swap writes a sibling and renames, so the actual cause is write
-    // permission (or space) on the DIRECTORY: name the flow file and the
-    // directory, and keep the original errno as `cause`.
-    const code =
-      err instanceof Error && typeof (err as NodeJS.ErrnoException).code === "string"
-        ? (err as NodeJS.ErrnoException).code
-        : undefined;
+    // would name a file that no longer exists and never mention the flow.
+    //
+    // That applies to the CAUSE as much as to this message:
+    // `formatErrorForAgent` walks the cause chain and appends each new message,
+    // so attaching the raw errno puts the scratch path in front of the agent
+    // anyway — through the one string it actually reads. Scrub the path out of
+    // the cause and keep the rest, which is the part worth having.
+    const errno = err instanceof Error ? (err as NodeJS.ErrnoException) : undefined;
+    const code = typeof errno?.code === "string" ? errno.code : undefined;
     throw new FailureError(
-      `Failed to write flow file ${filePath}${code ? ` (${code})` : ""} — an append replaces ` +
-        `the file via a sibling temp file and rename, so ${path.dirname(filePath)} must be writable.`,
+      `Failed to write flow file ${filePath}${code ? ` (${code})` : ""} — ${writeFailureHint(code, filePath)}`,
       {
         error_code: FAILURE_CODES.FLOW_FILE_WRITE_FAILED,
         failure_stage: "flow_file_write",
         failure_area: "tool_server",
         error_kind: "unknown",
       },
-      { cause: err instanceof Error ? err : new Error(String(err)) }
+      { cause: scrubTempPath(err, tmpPath, filePath) }
     );
   }
 }
