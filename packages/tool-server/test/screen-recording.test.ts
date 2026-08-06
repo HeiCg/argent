@@ -321,6 +321,64 @@ describe("screen-recording session blueprint", () => {
       );
     });
 
+    it("tells the owner when the teardown hit a CAPPED capture awaiting retrieval", async () => {
+      // `hadUnretrievedCapture` has three arms and only `recordingActive` was
+      // covered. This is the likeliest real sequence of the three: the time
+      // limit fires, the video is finalized and waiting to be handed over, and
+      // the teardown lands in that window. The caller is owed a video just as
+      // much as in the mid-capture case.
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      fakeChild().exitOnStdinEnd();
+      await startAndSettle(instance.api, { timeLimitSeconds: 5 });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(instance.api.recordingActive).toBe(false);
+      expect(instance.api.pendingRetrieval).toBe(true);
+      const output = instance.api.outputFile!;
+
+      await instance.dispose();
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      const message = (err as Error).message;
+      expect(message).not.toMatch(/Call `screen-recording-start` first/);
+      expect(message).toContain("torn down");
+      expect(message).toContain(output);
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+    });
+
+    it("tells the owner when the teardown hit a start still mid-readiness", async () => {
+      // The third arm. `startPending` is set synchronously before start's first
+      // await, so a teardown here destroys a capture whose child may already be
+      // spawned — reported as a teardown, not as "you never started one".
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      fakeChild();
+      const pending = startCapture(instance.api, {
+        streamUrl: STREAM_URL,
+        timeLimitSeconds: 180,
+        watermark: false,
+        trimStatic: false,
+      });
+      pending.catch(() => {});
+      expect(instance.api.startPending).toBe(true);
+
+      await instance.dispose();
+      await pending.catch(() => {});
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      expect((err as Error).message).not.toMatch(/Call `screen-recording-start` first/);
+      expect((err as Error).message).toContain("torn down");
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+    });
+
     it("still reports a plain absence when no capture was reaped", async () => {
       // The breadcrumb must not turn every "you never started one" into an
       // accusation: disposing an idle session leaves nothing behind.
