@@ -1185,6 +1185,42 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     expect(nativeDevtoolsStatusTool.description).toContain("argent server start");
   });
 
+  // One agent reads the tool description AND the message the same call returns.
+  // The descriptions must be plain literals (extract-tools.mjs reads them
+  // statically), so the wording is copied eight ways and nothing but this pins
+  // the copies together — which is how six of them kept telling the reader to
+  // wait "a second or two" after the connect budget was raised to 8 s and the
+  // other two were updated.
+  it("agrees with the message on how long a connecting app is worth waiting for", () => {
+    const surfaces: [string, string][] = [
+      ["connecting message", buildAppStateMessage("com.example.app", "connecting")],
+      ["native-devtools-status description", guidanceLine("connecting")],
+      ...tools.map((t): [string, string] => [`${t.id} description`, t.description!]),
+    ];
+    for (const [name, text] of surfaces) {
+      expect(text, `${name} has no wait guidance to check`).toMatch(/wait a few seconds/i);
+      // The wording the budget outgrew. Pinned as its own assertion so the
+      // failure names the drift rather than a missing phrase.
+      expect(text, `${name} still quotes the pre-budget wait`).not.toMatch(/second or two/i);
+    }
+  });
+
+  // Same split surface, same hazard: round 2 gave `unregistered` a landing that
+  // terminates, and the six tool descriptions route `service_stale` — the status
+  // that state maps to — with their own copy of the remedy.
+  it("stops every service_stale surface from prescribing an unbounded tool-server restart", () => {
+    for (const tool of tools) {
+      const routing = tool
+        .description!.split("\n")
+        .find((l) => l.includes("If status is service_stale:"));
+      expect(routing, `${tool.id} does not route service_stale`).toBeTypeOf("string");
+      expect(
+        routing!,
+        `${tool.id} prescribes a tool-server restart with no second landing`
+      ).toMatch(/if the same status comes back|stop restarting/i);
+    }
+  });
+
   // Whether the dylib loads into an Apple system app is not settled — #453
   // recorded `connected: false` on iOS 26.5, an E2E run `connected: true` on
   // 18.5 — and one agent reads every surface below, so hedging one while its
