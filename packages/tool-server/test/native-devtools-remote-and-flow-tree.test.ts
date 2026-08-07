@@ -129,7 +129,20 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
     const appConnectionState = vi.fn(async () => "connected" as const);
     const registry = registryWith([BUNDLE], {
       appConnectionState,
-      queryViewHierarchy: async () => ({ windows: [] }),
+      // Window-bearing, so the read is a trusted one and the call reaches its
+      // normal return. An empty window list is itself an untrusted read and
+      // throws (see flow-ios-tree.ts), which would fail the test on a path that
+      // says nothing about whether the measurement ran.
+      queryViewHierarchy: async () => ({
+        windows: [
+          {
+            className: "UIWindow",
+            frame: { x: 0, y: 0, width: 400, height: 800 },
+            windowFrame: { x: 0, y: 0, width: 400, height: 800 },
+            children: [],
+          },
+        ],
+      }),
     } as unknown as Partial<NativeDevtoolsApi>);
 
     await queryFullHierarchyTree(registry, DEVICE, BUNDLE);
