@@ -125,14 +125,11 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
 
   it("does not measure when auto-targeting resolved an app", async () => {
     // The measurement is for the app the flow launched, not a second-guess of a
-    // resolution that succeeded: a connected app is connected by construction.
+    // resolution that succeeded. The stub serves a real window because an empty
+    // `windows` is its own error and would end the call before the assertion.
     const appConnectionState = vi.fn(async () => "connected" as const);
     const registry = registryWith([BUNDLE], {
       appConnectionState,
-      // Window-bearing, so the read is a trusted one and the call reaches its
-      // normal return. An empty window list is itself an untrusted read and
-      // throws (see flow-ios-tree.ts), which would fail the test on a path that
-      // says nothing about whether the measurement ran.
       queryViewHierarchy: async () => ({
         windows: [
           {
