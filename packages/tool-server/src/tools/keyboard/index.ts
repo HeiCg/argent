@@ -20,10 +20,13 @@ const zodSchema = z.object({
     .describe(
       "Text to type character by character. Handles uppercase and common punctuation. " +
         "To type a credential without its plaintext ever entering your context, use a secret placeholder: " +
-        "`{{secret:<NAME>}}` types the value of the `ARGENT_SECRET_<NAME>` environment variable set on the machine running the tool-server " +
-        '— e.g. text: "{{secret:APP_PASSWORD}}" types the value of `ARGENT_SECRET_APP_PASSWORD`. Only env vars with the `ARGENT_SECRET_` prefix are resolvable. ' +
+        '`{{secret:<NAME>}}` — e.g. text: "{{secret:APP_PASSWORD}}". The value is resolved on the machine running the ' +
+        "tool-server, from the first source that defines the name: the `ARGENT_SECRET_<NAME>` environment variable, " +
+        "`.argent/secrets.env` in the project, the project's `.env.local` / `.env` (only their `ARGENT_SECRET_`-prefixed keys), " +
+        "then `~/.argent/secrets.env`. Nothing else on the host is reachable. " +
         "Placeholders can be embedded in longer text and are never echoed back resolved. " +
-        "If the secret you need is not set, ask the user to export it as `ARGENT_SECRET_<NAME>` and restart the session — NEVER ask the user to paste the secret value into the conversation."
+        "If the secret you need is not set, the failure lists the available names and every source it looked in — ask the user to add it " +
+        "to one of them (a secrets file applies immediately; an env var needs a restart), NEVER ask the user to paste the secret value into the conversation."
     ),
   key: z
     .string()
@@ -104,7 +107,7 @@ export function createKeyboardTool(registry: Registry): ToolDefinition<Params, K
 Use when you need to enter text or trigger a named key such as enter, escape, or arrow keys. On Vega and Apple TV / Android TV, prefer the remote tools for D-pad navigation; use keyboard to type into a focused text field (e.g. a search or login box).
 Returns { typed: string, keys: number, verified?: boolean, note?: string }. On an Android phone or tablet the typed text is read back off the screen, because \`adb input text\` injects it as one key-event burst that a field re-rendering per keystroke silently drops part of. verified=true means the focused field really holds the text. verified=false means it does not, and note reports how many characters were typed and how many the field now holds in total (that total includes anything the field already showed, so it is not a loss count); before reporting that, the tool retries ONCE where it can prove which characters are its own — it backspaces that many and retypes them in smaller chunks, so a \`keyboard\` call may modify the field beyond appending — and it leaves the field untouched where it cannot prove it, including when the field was empty and its hint overlaps the typed text. verified is absent whenever the check could not conclude — no editable field held focus, focus moved to another field mid-typing, the focused field is a password field (deliberately not read back), the read failed or was truncated, the reading is equally consistent with success and failure, or the android-devtools helper is unavailable — with note giving the reason. It is also absent on every other platform, including Android TV, which shares this transport but is not checked: absent always means "not checked", never "checked and fine". note is absent when there is nothing to caveat.
 Fails if an unsupported key name is provided or the device's input backend is not reachable. A read-back that cannot run never fails the call: the text is typed either way.
-- text: types a string (supports uppercase, digits, common punctuation). To type a credential, use \`{{secret:<NAME>}}\` — resolved server-side from the \`ARGENT_SECRET_<NAME>\` env var (prefix mandatory; \`{{secret:APP_PASSWORD}}\` ↔ \`ARGENT_SECRET_APP_PASSWORD\`), so the plaintext never enters agent context; the result echoes the placeholder, not the value, and the after-typing auto-screenshot is skipped.
+- text: types a string (supports uppercase, digits, common punctuation). To type a credential, use \`{{secret:<NAME>}}\` — resolved server-side from the \`ARGENT_SECRET_<NAME>\` env var or an argent secrets file (\`.argent/secrets.env\` in the project, \`~/.argent/secrets.env\`, or an \`ARGENT_SECRET_\`-prefixed key in the project's \`.env\`/\`.env.local\`), so the plaintext never enters agent context; the result echoes the placeholder, not the value, and the after-typing auto-screenshot is skipped.
 - key: presses a single named key (enter, escape, backspace, tab, arrow-up/down/left/right, f1–f12) — NOT supported on TV targets; move focus with \`tv-remote\` instead.
 On a TV target (runtimeKind 'tv') only \`text\` applies — focus a text field first (with \`tv-remote\`), then type into it (injected HID keyboard on Apple TV, \`adb input text\` on Android TV).
 Provide text, key, or both — when both are given, the text is typed first and the key is pressed after it (text + key:"enter" types and submits).`,
