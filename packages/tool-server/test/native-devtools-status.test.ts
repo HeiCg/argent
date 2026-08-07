@@ -1126,10 +1126,14 @@ describe("native-* tool descriptions document every precheck outcome", () => {
   // the description is where "restart once, then stop" has to be stated. It is
   // also the only unconnected state a running app reaches on a remote simulator.
   it("bounds the restart advice for a process it could not inspect", () => {
-    expect(nativeDevtoolsStatusTool.description).toContain("If state is indeterminate");
-    expect(nativeDevtoolsStatusTool.description).toContain(
-      "argent server stop && argent server start --detach"
-    );
+    // Over the whole description neither assertion says anything about this
+    // line: the prefix is all the first one needs, and the `unregistered` line
+    // supplies the command verbatim. So the bound this test is named for — the
+    // one stop-condition on the description side for the only unconnected state
+    // a running app reaches on ios-remote — could be deleted outright.
+    const line = guidanceLine("indeterminate");
+    expect(line).toContain("do NOT restart the app again");
+    expect(line).toContain("argent server stop && argent server start --detach");
   });
 
   // Rename a state in one place and the prose describes names the tool never
