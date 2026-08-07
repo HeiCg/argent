@@ -474,8 +474,10 @@ describe("describe tool", () => {
     expect(result.hint).toContain("Wait a few seconds");
     // The prohibition, not just the absence of the hyphenated tool name — the
     // hint is describe's only prose channel, and "then relaunch the app" would
-    // satisfy every other assertion here.
-    expect(result.hint).toContain("Do NOT restart the app");
+    // satisfy every other assertion here. With its colon, so that a qualified
+    // "…more than once" cannot pass off one relaunch as permitted: here the
+    // first one is already the one that discards the handshake.
+    expect(result.hint).toContain("Do NOT restart the app:");
     expect(result.hint).not.toMatch(/restart-app/);
   });
 

@@ -655,7 +655,15 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     // other assertion here while prescribing the one action that resets the age
     // this verdict reads. The sibling `unregistered` case above pins its
     // prohibition the same way.
-    expect(message).toContain("Do NOT restart the app");
+    //
+    // Matched with its colon, so it is the UNQUALIFIED form: this state is the
+    // one where not even a single relaunch is right — it discards a handshake
+    // that is already in flight — and "Do NOT restart the app more than once"
+    // permits exactly that while still containing the bare phrase.
+    expect(message).toContain("Do NOT restart the app:");
+    // And the reason, so the prohibition cannot be left standing without the
+    // fact that makes it true.
+    expect(message).toContain("a relaunch discards the one in progress");
     expect(message).not.toContain("restart-app");
     expect(message).not.toContain("could not be inspected");
   });
@@ -1206,6 +1214,16 @@ describe("native-* tool descriptions document every precheck outcome", () => {
       // The wording the budget outgrew. Pinned as its own assertion so the
       // failure names the drift rather than a missing phrase.
       expect(text, `${name} still quotes the pre-budget wait`).not.toMatch(/second or two/i);
+    }
+    // The six carry their own phrasing of the prohibition, so they need their
+    // own pin — and it has to reject a qualified one for the same reason the
+    // message's does: the first relaunch is already the one that discards the
+    // handshake, so "do not restart it more than once" is wrong advice that
+    // still contains "do not restart it".
+    for (const tool of tools) {
+      expect(tool.description!, `${tool.id} qualifies the connecting prohibition`).toContain(
+        "do not restart it, wait"
+      );
     }
   });
 
