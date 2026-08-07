@@ -1243,6 +1243,84 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     }
   });
 
+  /**
+   * The remedy prose an agent obeys to decide whether to STOP, pinned verbatim.
+   *
+   * Every other assertion in this file matches an opening clause, and that has
+   * repeatedly proved to constrain nothing: the claim can be negated by a
+   * sentence appended after the part that matched ("go ahead and relaunch … keep
+   * relaunching until it connects"), qualified inside it ("do NOT restart the app
+   * MORE THAN ONCE"), or scoped away ("restart the tool-server AGAIN and keep
+   * retrying until it clears") — each of which reopens the unbounded loop this
+   * whole change exists to close, with every pattern still green.
+   *
+   * A pattern cannot fix that, because the defect is always in the words it did
+   * not look at. So these strings are duplicated here on purpose, exactly as
+   * NON_INJECTABLE_RECOVERY is: rewording one has to fail, be re-read, and be
+   * re-approved rather than absorbed. Edit both together.
+   */
+  const CONNECTING_PROHIBITION =
+    "Do NOT restart the app: launching it is what starts the connection, so a relaunch " +
+    "discards the one in progress and returns you to this same state.";
+  const UNREGISTERED_ESCAPE =
+    "If you have already restarted the tool-server for this app and it reads this way again, " +
+    "stop: the process is loading argent's dylib but never dialing, which no further restart on " +
+    "either side fixes. Treat native devtools as unavailable — read the screen with describe or " +
+    "screenshot and drive it by coordinate.";
+  const INDETERMINATE_ESCALATION =
+    "If it is still not connected after that restart, the native-devtools service is stale rather " +
+    "than the app being uninjected — do not keep restarting the app; restart the tool-server " +
+    "(`argent server stop && argent server start --detach`) and retry.";
+
+  it.each([
+    ["connecting", CONNECTING_PROHIBITION],
+    ["unregistered", UNREGISTERED_ESCAPE],
+    ["indeterminate", INDETERMINATE_ESCALATION],
+  ] as const)("ends the %s message on its stop-condition, verbatim", (state, tail) => {
+    // `endsWith`, not `toContain`: the failure mode is a permitting sentence
+    // AFTER the stop-condition, which any containment check reads straight past.
+    const message = buildAppStateMessage("com.example.app", state);
+    expect(message.trimEnd().endsWith(tail), `${state} message does not end on its remedy`).toBe(
+      true
+    );
+  });
+
+  it.each([
+    [
+      "connecting",
+      "If state is connecting: do NOT restart the app — launching it is what starts the connection, so a relaunch discards the one in progress and returns this same state. Wait a few seconds and repeat this call.",
+    ],
+    [
+      "unregistered",
+      "If state is unregistered: do NOT restart the app again — it already launched under the terms a restart would recreate. Restart the tool-server (`argent server stop && argent server start --detach`), then retry. If it reads unregistered again after that restart, stop: the process loads argent's dylib but never dials, and no further restart on either side changes it — treat native devtools as unavailable, then use `describe` or `screenshot` and drive by coordinate.",
+    ],
+    [
+      "indeterminate",
+      "If state is indeterminate: the process could not be inspected, so restart-app is worth one attempt. If this call still reports it after that restart, do NOT restart the app again — the service is stale rather than the app uninjected, so restart the tool-server (`argent server stop && argent server start --detach`) and retry. Remote simulators can never inspect the process, so this is the only unconnected state a running app reaches there.",
+    ],
+  ] as const)("routes %s in the description exactly as written", (state, line) => {
+    expect(guidanceLine(state)).toBe(line);
+  });
+
+  it.each([
+    [
+      "connect_pending",
+      "If status is connect_pending: the app is injected and still connecting — do not restart it, wait a few seconds and retry.",
+    ],
+    [
+      "service_stale",
+      "If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (`argent server stop && argent server start --detach`) and retry. If the same status comes back after that restart, stop restarting: follow the message, which names the terminal fallback.",
+    ],
+  ])("routes %s identically on all six native-* tools", (status, clause) => {
+    for (const tool of tools) {
+      const start = tool.description!.indexOf(`If status is ${status}:`);
+      expect(start, `${tool.id} does not route ${status}`).toBeGreaterThanOrEqual(0);
+      const rest = tool.description!.slice(start);
+      const next = rest.slice(1).search(/If status is /);
+      expect(rest.slice(0, next === -1 ? undefined : next + 1).trim(), tool.id).toBe(clause);
+    }
+  });
+
   // Whether the dylib loads into an Apple system app is not settled — #453
   // recorded `connected: false` on iOS 26.5, an E2E run `connected: true` on
   // 18.5 — and one agent reads every surface below, so hedging one while its
