@@ -26,6 +26,7 @@ vi.mock("../src/utils/check-deps", async (importOriginal) => {
   };
 });
 
+import { flowLaunchGateReason } from "../src/tools/flows/flow-run";
 import { nativeDevtoolsStatusTool } from "../src/tools/native-devtools/native-devtools-status";
 import { nativeDescribeScreenTool } from "../src/tools/native-devtools/native-describe-screen";
 import { nativeFindViewsTool } from "../src/tools/native-devtools/native-find-views";
@@ -1272,10 +1273,91 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     "than the app being uninjected — do not keep restarting the app; restart the tool-server " +
     "(`argent server stop && argent server start --detach`) and retry.";
 
+  /**
+   * An instruction to retry without bound, in any of the ways these surfaces
+   * could phrase one.
+   *
+   * The pins below all constrain a SLICE of a surface — a named line, a clause
+   * between two markers, the final sentence — and every round of review has
+   * found the same defect in whatever slice was left over: a second guidance
+   * line for the same state, a clause appended past the last marker, a
+   * permitting sentence before the pinned tail. Pinning more slices only moves
+   * the gap, so this asks the one question that does not depend on where the
+   * text sits: does this surface, anywhere, tell an agent to keep going?
+   *
+   * A clause that FORBIDS one is the point of these messages, so it is the
+   * un-negated ones that fail.
+   */
+  const UNBOUNDED_RETRY =
+    /keep [\w-]+ing|more than once|again and again|a couple more|until (it|connected)\b|ignore the stop/i;
+  // Deliberately not a bare `stop`: "ignore the stop-conditions above and keep
+  // calling restart-app" contains the word while saying the opposite, so the
+  // escape hatch would have covered for the negation it exists to allow.
+  const FORBIDDEN =
+    /\bdo not\b|\bdo NOT\b|\bnever\b|\bcannot\b|\bno further\b|\bat most\b|\bstop (restarting|:)/i;
+
+  /** Split on sentence and clause boundaries, so polarity is judged locally. */
+  function clausesOf(text: string): string[] {
+    return text
+      .split(/(?<=[.;:])\s+|\s+—\s+|\n/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+  }
+
+  it("never tells an agent to keep retrying, on any surface that carries a remedy", () => {
+    const surfaces: [string, string][] = [
+      ...(Object.keys(ALL_STATES) as NativeDevtoolsAppState[])
+        .filter((s): s is Exclude<NativeDevtoolsAppState, "connected"> => s !== "connected")
+        .flatMap((s): [string, string][] => [
+          [`${s} message`, buildAppStateMessage("com.example.app", s)],
+          // The flow gate rewrites every state for a reader who has just
+          // launched, so it is a second copy of the same remedies on a surface
+          // none of the verbatim pins reach.
+          [`${s} flow-gate reason`, flowLaunchGateReason("com.example.app", s)],
+        ]),
+      ["native-devtools-status description", nativeDevtoolsStatusTool.description!],
+      ...tools.map((t): [string, string] => [`${t.id} description`, t.description!]),
+    ];
+
+    for (const [name, text] of surfaces) {
+      for (const clause of clausesOf(text)) {
+        if (!UNBOUNDED_RETRY.test(clause)) continue;
+        expect(FORBIDDEN.test(clause), `${name} permits an unbounded retry: "${clause}"`).toBe(
+          true
+        );
+      }
+    }
+  });
+
+  it("gives each state exactly one guidance line to obey", () => {
+    // A verbatim `toBe` on the first matching line says nothing about a second
+    // one appended later, which an agent reads just as readily.
+    const lines = nativeDevtoolsStatusTool.description!.split("\n");
+    for (const state of Object.keys(ALL_STATES) as NativeDevtoolsAppState[]) {
+      const matches = lines.filter((l) => l.startsWith(`If state is ${state}:`));
+      expect(matches.length, `description routes ${state} ${matches.length} times`).toBeLessThan(2);
+    }
+  });
+
+  it("routes exactly the four precheck statuses on every native-* tool", () => {
+    // The clause pins slice up to the NEXT `If status is `, so the last slice is
+    // open-ended: a fifth clause is unconstrained on all six tools at once.
+    for (const tool of tools) {
+      const count = tool.description!.match(/If status is /g)?.length ?? 0;
+      expect(count, `${tool.id} routes ${count} statuses`).toBe(4);
+    }
+  });
+
   it.each([
     ["connecting", CONNECTING_PROHIBITION],
     ["unregistered", UNREGISTERED_ESCAPE],
     ["indeterminate", INDETERMINATE_ESCALATION],
+    [
+      "not_running",
+      "If that launch fails rather than starting the app, the bundle id is not installed on this " +
+        "device — this state cannot tell the two apart; install it and no relaunch will be needed.",
+    ],
+    ["stale_process", "A fresh process picks up the current one: call restart-app then retry."],
   ] as const)("ends the %s message on its stop-condition, verbatim", (state, tail) => {
     // `endsWith`, not `toContain`: the failure mode is a permitting sentence
     // AFTER the stop-condition, which any containment check reads straight past.
