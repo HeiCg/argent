@@ -2397,7 +2397,55 @@ describe("flow composition (run:)", () => {
     expect(result.steps[0].reason).toMatch(/Apple system app/i);
     expect(result.steps[0].reason).toMatch(/await-ui-element/);
     expect(result.steps[0].reason).not.toMatch(/stale or duplicate argent server/i);
+    // The remedy has to act on the step that failed. This one hard-stops the
+    // run, so an agent that only rewrites the steps after it re-runs into the
+    // same wall — hence the `launch` directive itself is named as what to
+    // replace, with the shape that dispatches the same relaunch un-gated.
+    expect(result.steps[0].reason).toMatch(/tool: restart-app/);
   }, 15000);
+
+  it("runs the shape the gate's system-app remedy prescribes", async () => {
+    // The remedy above is only worth printing if it gets past a devtools
+    // service that never connects. A raw `tool: restart-app` step dispatches
+    // through the registry instead of `runLaunch`, so it never reaches
+    // treeSourceGate, and point taps plus `tool:` steps resolve no selectors.
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "tool", name: "restart-app", args: { bundleId: "com.apple.Preferences" } },
+        {
+          kind: "tool",
+          name: "await-ui-element",
+          args: { condition: "visible", selector: { text: "General" } },
+        },
+        { kind: "tap", x: 0.5, y: 0.35 },
+      ],
+    });
+    const resolveService = vi.fn(async () => ({ isConnected: () => false }));
+    const registry = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => undefined),
+      resolveService,
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual([
+      "tool:pass",
+      "tool:pass",
+      "tap:pass",
+    ]);
+    expect(result.ok).toBe(true);
+    // Nothing waited on the connection this flow can never get.
+    expect(resolveService).not.toHaveBeenCalled();
+  });
 
   it("passes the gate for a com.apple.* app that does connect", async () => {
     // Argent treats these bundles as non-injectable, but on the simulator they

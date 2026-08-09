@@ -504,11 +504,20 @@ async function treeSourceGate(
       // Safari all connect after the `restart-app` this step just ran. So name
       // the retry first for every bundle, and differ only on what to try when
       // it keeps failing.
+      //
+      // The fallback has to act on THIS step. `execSteps` stops the run on a
+      // launch error, so every later step is skipped — advice that only changes
+      // how the app is driven costs a whole cycle and lands back here. What
+      // gets past the gate is not running the `launch` directive at all: a raw
+      // `tool: restart-app` step terminates and relaunches exactly the same way
+      // but dispatches through the registry, without `runLaunch`. (The recorder
+      // rewrites a bundle-id-only `restart-app` into a `launch:` step, so this
+      // is a hand edit — name it explicitly rather than leave it to be found.)
       return (
         `could not connect to native devtools for ${bundleId}. Re-run to relaunch the app and retry. ` +
         (isInjectableBundleId(bundleId)
           ? `If it keeps failing, a stale or duplicate argent server may be holding the devtools connection — restart the argent server and try again.`
-          : `If it keeps failing, ${bundleId} is an Apple system app, which argent does not guarantee is injectable — drive it with raw point taps and \`tool: await-ui-element\` steps, which read the AX tree instead of selectors.`)
+          : `If it keeps failing, ${bundleId} is an Apple system app, which argent does not guarantee is injectable. This \`launch\` step is what stops the run, so changing the steps after it cannot help: replace it with a raw \`tool: restart-app\` step (same terminate + relaunch, no readiness gate), and drive the app with point taps and \`tool: await-ui-element\` steps, which read the AX tree instead of selectors.`)
       );
     }
   }
