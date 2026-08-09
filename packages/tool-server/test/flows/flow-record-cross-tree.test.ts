@@ -587,12 +587,29 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       "if the SCREEN simply moved on since the live wait, this verdict is no evidence"
     );
     expect(warning).not.toContain("WILL fail");
+    // WHY the two disagree, in iOS's own terms — the one platform arm nothing
+    // else here reaches. The two places this text is named elsewhere (the
+    // unmet-wait and indeterminate cases) pin its ABSENCE, so without a
+    // positive assertion the whole arm could return "" and ship green.
+    expect(warning).toContain(
+      "The recorder reads the accessibility tree and the runner reads the full native view " +
+        "hierarchy; they overlap but neither contains the other."
+    );
+    // And the admission that no tree story rules out — appended per arm, so
+    // dropping it from iOS alone is its own mutation. The consequence sentence
+    // upstream conditions itself on this cause ("if the SCREEN simply moved
+    // on…"); an arm that never raises it leaves that conditional groundless.
+    expect(warning).toContain("changed between the live wait and this re-probe");
     // iOS must NOT be told a tool "reads the runner's side": the Apple-only
     // full-hierarchy readers return the RAW view tree — both UILabels included,
     // and still no view carrying the merged label — and they match
     // identifier/label/className exactly, while a recorded selector's
-    // `text`/`role` are substrings.
-    expect(warning).toContain("No read-only tool reports the runner's projection on iOS");
+    // `text`/`role` are substrings. Anchored on the preceding sentence's end so
+    // it also pins the join: the reader clause is its own sentence, not
+    // "…first. no read-only…".
+    expect(warning).toContain(
+      "rule that out first. No read-only tool reports the runner's projection on iOS"
+    );
     // Nor may it answer "re-record". The skill's own workflow for a testID the
     // trimmed tree hides is to gate on visible text and retarget the id at
     // polish — which is what PRODUCES this divergence — so sending the author
