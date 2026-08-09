@@ -100,13 +100,19 @@ const UNSUPPORTED_PLATFORM = {
  * iOS, Android and Chromium, that no read-only tool does.
  *
  * Android's runner tree is the full accessibility hierarchy, and Android
- * `describe` returns the TRIMMED interactables tree the recorder already read.
- * Chromium's runner tree keeps only addressable nodes that are on screen, yet
- * `describe` returns the FULL DOM the recorder read — a superset that still
- * shows the very nodes the runner drops, including the off-viewport ones whose
- * frame it reports clamped to zero area. iOS is the same trap in the other
- * direction: the Apple-only
- * full-hierarchy readers see the raw UIView tree, which is a superset of what
+ * `describe` returns the TRIMMED interactables tree the recorder already read —
+ * strictly less than the runner resolves against.
+ * Chromium's `describe` re-reads the same DOM the flow tree is built from, but
+ * on a shorter walk and without the flow tree's projection, so it misses the
+ * runner in BOTH directions (see {@link treeDivergenceFor}'s chromium arm): it
+ * lists nodes the runner drops — unaddressable ones, and off-viewport ones
+ * whose frame the walker clamps to zero area — and it omits nodes the runner
+ * keeps, since its walk stops at 5000 nodes where the flow tree's goes to
+ * 12000. Calling it the full DOM, a superset of the runner's tree, is exactly
+ * the reading that fails on a dense page: past 5000 nodes `describe` cannot
+ * show the element at all. iOS overshoots where Android undershoots: the
+ * Apple-only full-hierarchy readers see the raw UIView tree, which is a
+ * superset of what
  * `queryFullHierarchyTree` projects (it drops hidden, transparent,
  * scroll-clipped and unlabelled container views), AND they match `identifier` /
  * `label` / `className` EXACTLY — a recorded selector's `text` is a
