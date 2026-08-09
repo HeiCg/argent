@@ -751,6 +751,29 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
     });
   });
 
+  it("grades an exact identifier at the LITERAL tier, not the folded one", () => {
+    // The test above only pins the arm above zero, so demoting it from two
+    // points to one survives it — and that demotion retargets a tap wherever a
+    // second field is what the other candidate is exact about. Same shape as
+    // the regex arm's test: the exact-identifier node is the larger and carries
+    // the weaker role grade, so only the identifier's two points keep it ahead.
+    const exactId: DescribeNode = {
+      ...cta,
+      identifier: "save", // exact, grade 2
+      role: `button${NBSP}`, // folded-equal to the selector's role, grade 1
+      frame: { x: 0, y: 0.5, width: 0.4, height: 0.08 },
+    };
+    const suffixId: DescribeNode = {
+      ...icon,
+      identifier: "com.example.app:id/save", // suffix rule, grade 0
+      role: "button", // literal, grade 2
+      frame: { x: 0, y: 0, width: 0.02, height: 0.02 },
+    };
+    const selector = { identifier: "save", role: "button" };
+    expect(selectorToFrame(screen([exactId, suffixId]), selector)).toMatchObject({ width: 0.4 });
+    expect(selectorToFrame(screen([suffixId, exactId]), selector)).toMatchObject({ width: 0.4 });
+  });
+
   it("grades a literal role above one only the fold equates", () => {
     // The other field the scale covers, and the one the old test named without
     // asserting anything about. Both roles match (`role` is a folded substring
