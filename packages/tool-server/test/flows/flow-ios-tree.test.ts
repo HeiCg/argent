@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FAILURE_CODES,
   FailureError,
@@ -13,6 +13,10 @@ import {
 } from "../../src/tools/flows/flow-ios-tree";
 import { selectorToFrame } from "../../src/utils/ui-tree-match";
 import { resolveNativeTargetApp } from "../../src/utils/native-target-app";
+import {
+  __resetDeviceSetCacheForTesting,
+  rememberDeviceSet,
+} from "../../src/utils/ios-device-sets";
 
 const DEVICE = {
   id: "00000000-0000-0000-0000-0000000000ab",
@@ -25,6 +29,12 @@ function registryFor(api: Partial<NativeDevtoolsApi>): Registry {
     resolveService: vi.fn(async () => api),
   } as unknown as Registry;
 }
+
+// The udid → device-set memo is module state; a case that seeds it must not
+// leave the next one measuring a `--set`-prefixed command it never asked for.
+afterEach(() => {
+  __resetDeviceSetCacheForTesting();
+});
 
 describe("flow iOS full-hierarchy source", () => {
   it("requests enough hierarchy depth for deeply nested app content", async () => {
@@ -397,6 +407,44 @@ describe("flow iOS full-hierarchy source", () => {
     // instrumented, so relaunching one discards state and cannot fix the read.
     expect(error.message).not.toMatch(/Relaunch with restart-app/i);
     expect(error.message).toContain("do not relaunch");
+  });
+
+  it("addresses the terminate command to the device set the simulator lives in", async () => {
+    // simctl scopes every operation to ONE device set, so the bare command does
+    // not resolve a udid from a configured `ios.additionalDeviceSets` set (a
+    // Radon IDE simulator, say) — the remedy would fail for the one device
+    // class that needs `--set`. Both list-bearing reasons offer this command.
+    const RADON = "/Users/dev/Library/Caches/com.swmansion.radon-ide/Devices/iOS";
+    rememberDeviceSet(DEVICE.id, RADON);
+    const api = {
+      listConnectedBundleIds: () => ["com.example.driven", "com.example.stale"],
+      getAppState: vi.fn(rpcTimeout),
+    } as unknown as NativeDevtoolsApi;
+
+    const error = await queryFullHierarchyTree(registryFor(api), DEVICE).catch((err) => err);
+
+    expect(error.message).toContain(`xcrun simctl --set ${RADON} terminate <udid> <bundleId>`);
+
+    // The ambiguous branch offers the same command and must resolve it the same way.
+    const ambiguous = {
+      listConnectedBundleIds: () => ["com.example.driven", "com.example.stale"],
+      getAppState: vi.fn(async (bundleId: string) =>
+        appState(bundleId, {
+          applicationState: "background",
+          isFrontmostCandidate: false,
+          foregroundActiveSceneCount: 0,
+          backgroundSceneCount: 1,
+        })
+      ),
+    } as unknown as NativeDevtoolsApi;
+
+    const ambiguousError = await queryFullHierarchyTree(registryFor(ambiguous), DEVICE).catch(
+      (err) => err
+    );
+
+    expect(ambiguousError.message).toContain(
+      `xcrun simctl --set ${RADON} terminate <udid> <bundleId>`
+    );
   });
 
   // Every failure `queryFullHierarchyTree` can produce, one entry per branch.

@@ -10,6 +10,7 @@ import {
   resolveNativeTargetApp,
   type ResolvedNativeTargetApp,
 } from "../../utils/native-target-app";
+import { deviceSetForUdid, simctlPrefix } from "../../utils/ios-device-sets";
 import { flattenHoisting, type FlatNode } from "./flow-tree-flatten";
 import {
   type DescribeFrame,
@@ -347,6 +348,7 @@ export async function queryFullHierarchyTree(
     target = await resolveNativeTargetApp(nativeApi, undefined);
   } catch (err) {
     const failureCode = getFailureSignal(err)?.error_code;
+    const terminate = await terminateCommand(device);
     if (failureCode === FAILURE_CODES.NATIVE_TARGET_MULTIPLE_APPS_AMBIGUOUS) {
       // Backgrounding the others is deliberately NOT offered: it leaves them
       // connected, so the set stays ambiguous, and once iOS suspends one it
@@ -361,7 +363,7 @@ export async function queryFullHierarchyTree(
           `${cappedAppDiagnostic(withoutExplicitBundleIdAdvice(errMsg(err)))}\n` +
           `Flow selectors auto-target and cannot name a bundleId. Foreground the intended app with ` +
           `launch-app (it does not terminate), then retry; clear the others with ` +
-          `\`xcrun simctl terminate <udid> <bundleId>\` (argent has no terminate tool, and ` +
+          `\`${terminate}\` (argent has no terminate tool, and ` +
           `restart-app would just bring that app back to the front).`,
         err
       );
@@ -406,7 +408,7 @@ export async function queryFullHierarchyTree(
           // has to name a command that exists: argent exposes no terminate tool,
           // and restart-app on the other app would make it frontmost instead.
           (stillConnected.length > 1
-            ? ` To clear the others use \`xcrun simctl terminate <udid> <bundleId>\` — argent ` +
+            ? ` To clear the others use \`${terminate}\` — argent ` +
               `exposes no terminate tool, and restart-app would bring that app to the front instead.`
             : ``),
         err
@@ -482,6 +484,26 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * The `xcrun simctl terminate` invocation an agent can actually run against
+ * THIS device — the out-of-band step two targeting reasons offer for clearing
+ * a competing connected app, since argent exposes no terminate tool.
+ *
+ * simctl scopes every operation to ONE device set, so a UDID from a configured
+ * `ios.additionalDeviceSets` set (Radon IDE's, say) does not resolve without
+ * `--set` — see `simctlArgsForUdid`, the choke point argent's own call sites
+ * use. Only the prefix is resolved; the udid and bundleId stay placeholders,
+ * since the agent knows the device it is driving and picks which app to clear.
+ * A default-set device — the common case, and the one `deviceSetForUdid`
+ * answers without any probe when no additional sets are configured — yields
+ * the plain `xcrun simctl terminate …`, so the reasons' size budget is
+ * unchanged for it (see {@link MAX_TARGETING_REASON_CHARS}).
+ */
+async function terminateCommand(device: DeviceInfo): Promise<string> {
+  const prefix = simctlPrefix(await deviceSetForUdid(device.id));
+  return `xcrun ${prefix.join(" ")} terminate <udid> <bundleId>`;
+}
+
 // The first SENTENCE of a diagnostic's first line — the part that names what
 // went wrong, without the remedy paragraph each source appends for its own
 // callers. A sentence ends at a period followed by whitespace (or the end of
@@ -523,6 +545,10 @@ const MAX_LISTED_APPS = 2;
  * `waitForCondition` adds "could not read the UI tree: " (27 chars) and a
  * `when:` guard adds "could not evaluate when guard (<label>): " with a
  * caller-supplied label — so this is not the number the agent ends up reading.
+ * A device from a configured `ios.additionalDeviceSets` set also spends the
+ * `--set <dir>` its terminate command needs to resolve the udid (see
+ * {@link terminateCommand}); that is one path, fixed by the config, and the
+ * ceiling is measured without it.
  *
  * The ceiling is set by the ambiguous branch, which carries two full per-app
  * `applicationState` diagnostics: that IS the diagnosis on the one branch where
