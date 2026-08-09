@@ -233,6 +233,32 @@ describe("flow-add-step tap selector capture", () => {
     expect(await recordedSteps()).toEqual([{ kind: "tap", selector: { text: "Settings" } }]);
   });
 
+  it("reports both caveats when a role-only selector comes off the fallback tree", async () => {
+    // The two warnings are independent and can fire on the same capture: a
+    // fallback-source read is exactly the one most likely to hand back an
+    // unlabeled node. Each was only ever exercised alone, so nothing held the
+    // composition — keeping just the first left the whole suite green while
+    // silently dropping the source caveat.
+    setTree(
+      [
+        n({
+          identifier: "product-card",
+          frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+          children: [
+            n({ role: "AXImage", frame: { x: 0.48, y: 0.48, width: 0.04, height: 0.04 } }),
+          ],
+        }),
+      ],
+      "ax-service"
+    );
+
+    const result = await recordTap({ x: 0.5, y: 0.5 });
+
+    expect(result.message).toContain("matches by role alone");
+    expect(result.message).toContain("fallback ax-service tree");
+    expect(await recordedSteps()).toEqual([{ kind: "tap", selector: { role: "AXImage" } }]);
+  });
+
   it("keeps coordinates with a warning when the tree fetch fails", async () => {
     currentTreeData = () => {
       throw new Error("devtools gone");
