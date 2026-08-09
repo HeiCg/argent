@@ -1366,11 +1366,29 @@ describe("evidence and tree-source gaps the widened match set now reaches", () =
     // lastTree is only updated by a TRUSTED read, so a trailing degraded tree
     // must not wipe out the evidence the note draws on. The blip has to land
     // inside the dark-tail tolerance (2 poll intervals), or the verdict goes
-    // indeterminate and there is no reason left to annotate — so go blind only
-    // in the window's last stretch, keyed on elapsed time rather than a count.
-    const started = Date.now();
+    // indeterminate and there is no reason left to annotate.
+    //
+    // So the blindness is keyed on the runner's OWN poll sequence rather than
+    // on a wall-clock cutoff: measured from the FIRST read (which the runner
+    // issues immediately after it anchors its deadline), every read up to and
+    // INCLUDING the first one at the end of the window is trusted, and only
+    // the reads after it go blind. Those are the deadline poll and its
+    // back-to-back final retry, issued with no sleep in between, so the dark
+    // tail is a fetch's own latency. A mid-window cutoff instead left a whole
+    // poll interval's sleep inside the tail, which a loaded machine stretched
+    // past the tolerance — flipping the verdict to indeterminate and taking
+    // the reason this test reads with it.
+    const ASSERT_WINDOW_MS = 1000; // DEFAULT_ASSERT_TIMEOUT_MS in flow-actions
+    let firstReadAt: number | undefined;
+    let servedWindowEnd = false;
     currentFetch = () => {
-      if (Date.now() - started < 850) {
+      firstReadAt ??= Date.now();
+      // A hair inside the window, so the read that trips it is the last one
+      // the runner takes with any budget left rather than one it might never
+      // take at all.
+      const atWindowEnd = Date.now() - firstReadAt >= ASSERT_WINDOW_MS - 50;
+      if (!atWindowEnd || !servedWindowEnd) {
+        servedWindowEnd ||= atWindowEnd;
         return {
           tree: screen([
             n({
