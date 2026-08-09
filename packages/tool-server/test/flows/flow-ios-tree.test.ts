@@ -8,6 +8,7 @@ import {
 } from "@argent/registry";
 import type { NativeDevtoolsApi } from "../../src/blueprints/native-devtools";
 import {
+  MAX_LISTED_APPS,
   MAX_TARGETING_REASON_CHARS,
   queryFullHierarchyTree,
 } from "../../src/tools/flows/flow-ios-tree";
@@ -579,6 +580,23 @@ describe("flow iOS full-hierarchy source", () => {
       // each uncapped entry ran to ~110 characters.
       expect(`${branch}: ${lengths[2] - lengths[1] < 5}`).toBe(`${branch}: true`);
       expect(lengths[2]).toBeLessThanOrEqual(MAX_TARGETING_REASON_CHARS);
+    }
+  });
+
+  it("reports nothing withheld when the connected set is exactly at the cap", async () => {
+    // The boundary both cap helpers turn on. Driven only below and above it,
+    // `<=` and `<` are indistinguishable — and the `<` spelling appends
+    // "(+0 more)" to a list that dropped nothing, in the two branches whose
+    // whole point is that what was left out is never silently lost.
+    for (const { branch, api } of targetingFailures(MAX_LISTED_APPS)) {
+      if (branch !== "ambiguous connected set" && branch !== "state probe failed, connections live")
+        continue;
+      const error = await queryFullHierarchyTree(registryFor(api), DEVICE).catch((err) => err);
+
+      for (let i = 0; i < MAX_LISTED_APPS; i++) {
+        expect(`${branch}: ${error.message.includes(`${LONG_ID}${i}`)}`).toBe(`${branch}: true`);
+      }
+      expect(`${branch}: ${/\(\+\d+ more/.test(error.message)}`).toBe(`${branch}: false`);
     }
   });
 

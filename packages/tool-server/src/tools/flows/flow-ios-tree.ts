@@ -535,7 +535,7 @@ function firstClause(err: unknown): string {
  * the rest", which does not change with the fourth entry. The count of what was
  * dropped is still reported, so nothing is silently truncated.
  */
-const MAX_LISTED_APPS = 2;
+export const MAX_LISTED_APPS = 2;
 
 /**
  * Ceiling every reason thrown from {@link queryFullHierarchyTree} must fit,
