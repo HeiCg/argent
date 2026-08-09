@@ -1691,13 +1691,14 @@ async function runType(
   // trees: on iOS a field's contents never reach them at all (`flow-ios-tree`
   // projects {role, frame, children, label, identifier, focused}), and where the
   // check CAN see something it misfires — an emptied Android field with a
-  // contentDescription reports its HINT, and a Chromium `<textarea>` exposes its
-  // default content once `el.value` empties. What each platform does expose is
-  // tabulated once in the `argent-create-flow` skill, in
+  // contentDescription reports its HINT, and a Chromium field carrying an
+  // aria-label / aria-labelledby / placeholder reports that LABEL, since
+  // `accessibleName` returns it long before it reaches `el.value`. What each
+  // platform does expose is tabulated once in the `argent-create-flow` skill, in
   // `references/asserting-field-values.md`, beside the assert guidance that
-  // depends on it. The focus refusal above — plus the keyboard tool
-  // rejecting `clear` outright on backends that cannot perform it — is where
-  // that risk is actually handled.
+  // depends on it. The focus refusal above — plus the keyboard tool rejecting
+  // `clear` outright on backends that cannot perform it — is where that risk is
+  // actually handled.
   if (step.clear || step.text !== undefined) {
     const sent = await dispatchOrAbort(env, "keyboard", {
       ...(step.clear ? { clear: true } : {}),
