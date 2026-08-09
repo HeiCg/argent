@@ -295,9 +295,15 @@ const FULL_HIERARCHY_FIELDS = [
  * `assert { text }` came back at 87 chars under a device cap of 40 and 466
  * under 100 (686 with no scroll container to clip the hoist). That is the
  * trade this cap accepts, and it is worth it — under the old cap those
- * selectors did not resolve AT ALL. `compatibilityMissNote` is NOT this path:
- * it short-circuits on its first hit and quotes exactly one candidate, so it
- * does not grow with the tree.
+ * selectors did not resolve AT ALL. `compatibilityMissNote` rides that same
+ * path on one of its two arms: when a `text` condition's locator MATCHED, the
+ * near-miss quote it appends is that same `assertText(first)`, so a
+ * typographic near-miss against an identified container carries the hoisted
+ * string TWICE and grows at twice the rate — measured on a `testID`'d card of
+ * 60 hoisting rows, one failing `assert { on: { id }, text }` came back at
+ * 1520 chars under a device cap of 40 and 2210 under 100. Its OTHER arm — the
+ * whole-tree walk every `exists`/`visible` miss takes — compares `label` and
+ * `value` only, never `subtreeText`, so that one does not grow with the cap.
  *
  * Otherwise the cap only grows the getFullHierarchy payload over the
  * native-devtools socket, which is field-limited (`FULL_HIERARCHY_FIELDS`). In

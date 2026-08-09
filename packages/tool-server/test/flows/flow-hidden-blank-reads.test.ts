@@ -418,6 +418,79 @@ describe("compatibility miss note is scoped to a MISS", () => {
     expect(result.steps[0].reason).not.toMatch(/typographic variant/);
   });
 
+  it("quotes the hoisted subtree text twice when the located container near-misses", async () => {
+    // What FLOW_TREE_MAX_DEPTH's cost note claims, pinned. On the arm where a
+    // `text` locator MATCHED, the note's candidate is the located node's
+    // hoisted subtreeText — the same string `assertReason` already quoted — so
+    // this reason carries it twice and grows at twice the rate the depth cap
+    // admits descendants. The other arm (below) walks label/value only.
+    const HOISTED = "row-a-content row-b-content Add more languages…";
+    currentFetch = () => ({
+      tree: screen([
+        n({
+          identifier: "card",
+          subtreeText: HOISTED,
+          frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.4 },
+        }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("hoisted-compat", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { identifier: "card" },
+          expectedText: "Add more languages...",
+        },
+      ],
+    });
+
+    const result = await run("hoisted-compat");
+    const reason = result.steps[0].reason ?? "";
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(reason).toMatch(/typographic variant/);
+    expect(reason.split(HOISTED).length - 1).toBe(2);
+  });
+
+  it("does not quote hoisted subtree text on the whole-tree walk an `exists` miss takes", async () => {
+    // The arm the cost note exempts: nothing was located, so the walk compares
+    // each node's own label/value — never its subtreeText — which is why this
+    // one does not grow with the depth cap.
+    currentFetch = () => ({
+      tree: screen([
+        n({
+          identifier: "card",
+          subtreeText: "row-a-content row-b-content Add more languages…",
+          frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.4 },
+          children: [
+            n({
+              label: "Add more languages…",
+              frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 },
+            }),
+          ],
+        }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("exists-compat", {
+      executionPrerequisite: "",
+      steps: [{ kind: "assert", condition: "exists", selector: { text: "Add more languages..." } }],
+    });
+
+    const result = await run("exists-compat");
+    const reason = result.steps[0].reason ?? "";
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(reason).toMatch(/typographic variant/);
+    // The leaf's own label is quoted; the container's hoisted string is not.
+    expect(reason).not.toMatch(/row-a-content/);
+  });
+
   it("still fires the note on a genuine miss (visible), so the guard is not over-broad", async () => {
     // The intended case: a selector typed with three dots misses a label the app
     // renders with one "…". Naming it turns an unexplainable miss into a fix.
