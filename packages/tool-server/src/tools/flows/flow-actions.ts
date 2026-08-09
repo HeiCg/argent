@@ -1714,12 +1714,16 @@ async function runType(
     // ../keyboard/index.ts), so two calls are the only way to express "type,
     // then submit". That is why the clear/text pair above does NOT split the
     // same way — `clear` combines with `text` freely, and folding it in is what
-    // keeps it atomic with the text it replaces. On an Android TV target this
-    // call is also the one that fails: `typeTv` rejects `key` unconditionally,
-    // so the text lands and the submit errors. (Android TV is the TV kind that
-    // gets this far: `runDirective` gates `type` on Vega alone, and an Apple TV
-    // stops at the focus tap above, whose `gesture-tap` resolves
-    // simulator-server and rejects a tvOS UDID.)
+    // keeps it atomic with the text it replaces.
+    //
+    // On an Android TV target this call is where a step with NO `clear` fails:
+    // the text lands and the submit errors, because `typeTv` rejects `key`
+    // unconditionally. A `clear: true` step never gets this far — `typeTv`
+    // checks `params.clear` before `params.key` and before it types anything, so
+    // the FIRST dispatch above is the one that fails and nothing is typed.
+    // (Android TV is the TV kind that reaches here at all: `runDirective` gates
+    // `type` on Vega alone, and an Apple TV stops at the focus tap above, whose
+    // `gesture-tap` resolves simulator-server and rejects a tvOS UDID.)
     if (!(await dispatchOrAbort(env, "keyboard", { key: "enter" }))) {
       return ABORTED_OUTCOME;
     }
