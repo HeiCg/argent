@@ -137,6 +137,8 @@ The standalone command uses only the auto-started local tool server. It is unava
 | `flow-read-prerequisite` | Read a flow's execution prerequisite without running it (same `name`/`flow_path` sources)                                                               |
 | `flow-execute`           | Replay a flow — a saved one by `name`, or any flow YAML by absolute `flow_path`                                                                         |
 
+Track a recording from what each call returns: `flow-add-step` gives you `recorded` (a one-line summary of the step it just appended, in the flow file's own spelling) and `stepCount`; `flow-add-echo` gives you `stepCount`; `flow-start-recording` and `flow-finish-recording` give you the whole YAML as `flowFile`; all four give you `savedTo`. Read `recorded` — a step is not always stored as the tool call you made (a coordinate `gesture-tap` becomes a `tap: { selector }`, a `restart-app` becomes a `launch`), and per step that line is the only place the rewrite shows up.
+
 **Rules:**
 
 - **Every step runs live.** You see the real tool result (including screenshots) — verify the step worked before continuing. **Only successful steps are recorded**: a failed call writes nothing to the flow file; fix the issue and try again.
