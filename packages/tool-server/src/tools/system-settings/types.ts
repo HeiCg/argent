@@ -20,12 +20,12 @@ export const SYSTEM_SETTINGS = [
 export type SystemSetting = (typeof SYSTEM_SETTINGS)[number];
 
 // `appearance` is the only non-boolean, non-scale setting: a light/dark choice.
-export const APPEARANCE_VALUES = ["light", "dark"] as const;
+const APPEARANCE_VALUES = ["light", "dark"] as const;
 
 // The shared value vocabulary for every boolean toggle (accessibility flags,
 // radios, location, rotation). `on` turns the named setting on — e.g.
 // `reduce-motion on` reduces motion, `airplane-mode on` enables airplane mode.
-export const ON_OFF_VALUES = ["on", "off"] as const;
+const ON_OFF_VALUES = ["on", "off"] as const;
 
 // The 12 Dynamic Type content-size categories `simctl ui content_size` accepts,
 // smallest to largest (the 5 `accessibility-*` sizes are the AX range). Kept in
