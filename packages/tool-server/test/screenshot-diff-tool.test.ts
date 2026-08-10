@@ -308,6 +308,33 @@ describe("screenshotDiffTool", () => {
     expect(captureHarmonyScreenshotPng).not.toHaveBeenCalled();
   });
 
+  it("still diffs two saved PNGs on HarmonyOS when a rotation is passed", async () => {
+    // rotation only ever applies to a live capture, and is inert on every
+    // platform for a two-path diff — rejecting it here would make HarmonyOS
+    // the one platform where an unused parameter fails the call.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-harmony-static-"));
+    const baselinePath = path.join(dir, "baseline.png");
+    const currentPath = path.join(dir, "current.png");
+    await writePng(baselinePath, 2, 2, { r: 1, g: 2, b: 3 });
+    await writePng(currentPath, 2, 2, { r: 1, g: 2, b: 3 });
+    vi.mocked(captureHarmonyScreenshotPng).mockClear();
+
+    const result = await executeScreenshotDiffTool(
+      {},
+      {
+        baselinePath,
+        currentPath,
+        udid: "harmony-025DEK236V035771",
+        rotation: "LandscapeLeft",
+        outputDir: dir,
+      },
+      { artifacts: new ArtifactStore() }
+    );
+
+    expect(result.summary).toContain("Screenshot diff summary");
+    expect(captureHarmonyScreenshotPng).not.toHaveBeenCalled();
+  });
+
   it("declares no simulator-server service for a HarmonyOS live capture", () => {
     // Resolving the iOS/Android-only blueprint for a HarmonyOS device throws
     // before the capture path runs.

@@ -234,18 +234,20 @@ function liveCapture(
   const device = resolveDevice(params.udid);
 
   if (device.platform === "harmony") {
-    if (params.rotation) {
-      // `uitest screenCap` captures the display as the device is currently
-      // oriented and takes no orientation argument, so honouring this would
-      // mean silently returning an unrotated image — and a diff of the wrong
-      // orientation reads as a huge legitimate visual change.
-      throw new UnsupportedOperationError(
-        "screenshot-diff",
-        device,
-        "rotation is not supported for a live HarmonyOS capture: `uitest screenCap` captures the display in its current orientation and has no override. Rotate the device itself, or drop the rotation parameter."
-      );
-    }
     return async () => {
+      if (params.rotation) {
+        // `uitest screenCap` captures the display as the device is currently
+        // oriented and takes no orientation argument, so honouring this would
+        // mean silently returning an unrotated image — and a diff of the wrong
+        // orientation reads as a huge legitimate visual change. Checked here
+        // rather than up front so a static two-path diff, where rotation is
+        // inert on every platform, is not rejected for carrying it.
+        throw new UnsupportedOperationError(
+          "screenshot-diff",
+          device,
+          "rotation is not supported for a live HarmonyOS capture: `uitest screenCap` captures the display in its current orientation and has no override. Rotate the device itself, or drop the rotation parameter."
+        );
+      }
       await ensureDep("hdc");
       return captureHarmonyScreenshotPng({
         connectKey: harmonyConnectKey(device.id),
