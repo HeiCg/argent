@@ -22,7 +22,9 @@ import { isDebugEnabled, emitDebugError } from "./debug.js";
  * value only wins for the keys the code sets, which would leave every other
  * header the environment names riding along.
  */
-export const OTLP_LOGS_ENDPOINT = "https://otel.swmansion.com/v1/logs"; // TODO(release): confirm the production collector URL.
+// TODO(release): swap to the production collector, https://argent-otel.swmansion.com/v1/logs,
+// once it serves OTLP — it currently 301s /v1/logs to /v1/logs/, which 404s.
+export const OTLP_LOGS_ENDPOINT = "https://argent-otel.swmtest.xyz/v1/logs";
 
 /**
  * Build-time-injected ingest token (esbuild `define`, mirroring the

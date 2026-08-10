@@ -83,7 +83,7 @@ describe("otel endpoint invariance", () => {
   });
 
   it("OTLP_LOGS_ENDPOINT is the hard-coded Software Mansion collector URL", () => {
-    expect(OTLP_LOGS_ENDPOINT).toBe("https://otel.swmansion.com/v1/logs");
+    expect(OTLP_LOGS_ENDPOINT).toBe("https://argent-otel.swmtest.xyz/v1/logs");
   });
 
   it.each([
@@ -101,7 +101,7 @@ describe("otel endpoint invariance", () => {
       const client = getClient();
       expect(client).not.toBeNull();
       expect(otelMock.exporters).toHaveLength(1);
-      expect(otelMock.exporters[0]!.opts.url).toBe("https://otel.swmansion.com/v1/logs");
+      expect(otelMock.exporters[0]!.opts.url).toBe("https://argent-otel.swmtest.xyz/v1/logs");
     } finally {
       if (old === undefined) delete process.env[envName];
       else process.env[envName] = old;
@@ -136,7 +136,7 @@ describe("otel endpoint invariance", () => {
     (globalThis as Record<string, unknown>).__ARGENT_OTEL_TOKEN_TEST = "otel_single";
     const config = resolveConfig();
     expect(config.token).toBe("otel_single");
-    expect(config.endpoint).toBe("https://otel.swmansion.com/v1/logs");
+    expect(config.endpoint).toBe("https://argent-otel.swmtest.xyz/v1/logs");
     expect(config.isUsable).toBe(true);
   });
 
