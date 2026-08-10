@@ -55,6 +55,7 @@ import {
   __resetActiveScreenRecordingsForTesting,
   getActiveScreenRecordings,
 } from "../src/utils/screen-recording-reminder";
+import { __resetReapedSessionsForTesting } from "../src/utils/reaped-sessions";
 
 const mockSpawn = vi.mocked(spawn);
 const mockOpenStream = vi.mocked(openMjpegStream);
@@ -201,6 +202,7 @@ const androidDevice: DeviceInfo = {
 
 beforeEach(() => {
   __resetActiveScreenRecordingsForTesting();
+  __resetReapedSessionsForTesting();
   mockSpawn.mockReset();
   mockOpenStream.mockReset();
   mockResolveFfmpeg.mockReset();
@@ -285,6 +287,144 @@ describe("screen-recording session blueprint", () => {
 
     await expect(fs.access(logo)).rejects.toThrow();
     expect(api.logoFile).toBeNull();
+  });
+
+  describe("a capture reaped by stop-all-simulator-servers", () => {
+    // The teardown sequence from the review: start a recording, let
+    // `stop-all-simulator-servers` reap the device (which is what disposes this
+    // service), then call `screen-recording-stop`. `Registry._teardown` nulls
+    // the node's instance, so that stop resolves a BRAND NEW session — modelled
+    // here by building a second one for the same device.
+    async function reapDuringCapture(): Promise<{
+      output: string;
+      fresh: ScreenRecordingSessionApi;
+    }> {
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      fakeChild().exitOnStdinEnd();
+      await startAndSettle(instance.api);
+      const output = instance.api.outputFile!;
+
+      await instance.dispose();
+
+      return { output, fresh: await makeSession(iosDevice) };
+    }
+
+    it("tells the owner the recording was torn down, and where the video landed", async () => {
+      const { output, fresh } = await reapDuringCapture();
+
+      const err = await stopCapture(fresh).catch((e: unknown) => e);
+
+      const message = (err as Error).message;
+      // The bug: this used to be "No active screen recording … Call
+      // `screen-recording-start` first." while a finalized video sat on disk.
+      expect(message).not.toMatch(/Call `screen-recording-start` first/);
+      expect(message).toContain("torn down");
+      expect(message).toContain("stop-all-simulator-servers");
+      // Nothing else in the process still knows this path exists.
+      expect(message).toContain(output);
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+    });
+
+    it("tells the owner when the teardown hit a CAPPED capture awaiting retrieval", async () => {
+      // `hadUnretrievedCapture` has three arms and only `recordingActive` was
+      // covered. This is the likeliest real sequence of the three: the time
+      // limit fires, the video is finalized and waiting to be handed over, and
+      // the teardown lands in that window. The caller is owed a video just as
+      // much as in the mid-capture case.
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      fakeChild().exitOnStdinEnd();
+      await startAndSettle(instance.api, { timeLimitSeconds: 5 });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(instance.api.recordingActive).toBe(false);
+      expect(instance.api.pendingRetrieval).toBe(true);
+      const output = instance.api.outputFile!;
+
+      await instance.dispose();
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      const message = (err as Error).message;
+      expect(message).not.toMatch(/Call `screen-recording-start` first/);
+      expect(message).toContain("torn down");
+      expect(message).toContain(output);
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+    });
+
+    it("tells the owner when the teardown hit a start still mid-readiness", async () => {
+      // The third arm. `startPending` is set synchronously before start's first
+      // await, so a teardown here destroys a capture whose child may already be
+      // spawned — reported as a teardown, not as "you never started one".
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      fakeChild();
+      const pending = startCapture(instance.api, {
+        streamUrl: STREAM_URL,
+        timeLimitSeconds: 180,
+        watermark: false,
+        trimStatic: false,
+      });
+      pending.catch(() => {});
+      expect(instance.api.startPending).toBe(true);
+
+      await instance.dispose();
+      await pending.catch(() => {});
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      expect((err as Error).message).not.toMatch(/Call `screen-recording-start` first/);
+      expect((err as Error).message).toContain("torn down");
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+    });
+
+    it("still reports a plain absence when no capture was reaped", async () => {
+      // The breadcrumb must not turn every "you never started one" into an
+      // accusation: disposing an idle session leaves nothing behind.
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      await instance.dispose();
+
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      expect((err as Error).message).toContain("No active screen recording");
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_NO_ACTIVE_SESSION
+      );
+    });
+
+    it("is consumed once, so it cannot blame a later unrelated absence", async () => {
+      const { fresh } = await reapDuringCapture();
+      await stopCapture(fresh).catch(() => {});
+
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      expect((err as Error).message).toContain("No active screen recording");
+    });
+
+    it("is dropped by a new recording, which would otherwise never consume it", async () => {
+      const { fresh } = await reapDuringCapture();
+      fakeStream();
+      fakeChild().exitOnStdinEnd();
+      await startAndSettle(fresh);
+      await fs.writeFile(fresh.outputFile!, Buffer.alloc(16, 1));
+      await stopCapture(fresh);
+
+      const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+      expect((err as Error).message).toContain("No active screen recording");
+    });
   });
 });
 
@@ -543,6 +683,19 @@ describe("screen recording capture", () => {
       expect(getFailureSignal(err)?.error_code).toBe(
         FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
       );
+      // The error CODE is not the behaviour here — its enum name still says
+      // "shutting down", which is exactly the claim the message stopped making.
+      // A dispose is now far more often a `stop-all-simulator-servers` reaping
+      // this device than a process shutdown, and the two are indistinguishable
+      // from `api.disposed`. So the message must name both, and must not tell
+      // the caller a retry is pointless: on the teardown branch the device is
+      // usually still up. Asserted here because reverting the whole rewrite to
+      // the old one-liner otherwise leaves the suite green.
+      const message = (err as Error).message;
+      expect(message).toContain("stop-all-simulator-servers");
+      expect(message).toContain("nothing was recorded");
+      expect(message).toContain("start the recording again");
+      expect(message).toContain(IOS_UDID);
     }
     expect(mockSpawn).not.toHaveBeenCalled();
     expect(stream.close).toHaveBeenCalled();
@@ -1516,6 +1669,54 @@ describe("server-side recording", () => {
     // inside simulator-server with nothing left to stop it.
     expect(server.stop).toHaveBeenCalledTimes(1);
     expect(instance.api.serverStop).toBeNull();
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("does not point a reaped server recording at a host file that was never written", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const server = await fakeServer();
+    const { outputFile } = await startOnServer(instance.api, server, {});
+
+    await instance.dispose();
+    const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+    const message = (err as Error).message;
+    // The teardown is still reported — a recording did run.
+    expect(message).toContain("torn down");
+    // But the fallback path's salvage story is the opposite of this one: no
+    // ffmpeg ever wrote `outputFile`, because simulator-server muxes into its
+    // own session directory and only stop copies the video out. Offering it as
+    // "usually playable" sends the caller after a file that never existed.
+    expect(message).not.toContain("ffmpeg");
+    expect(message).toContain("nothing was written to");
+    expect(message).toContain(outputFile);
+    await expect(fs.access(outputFile)).rejects.toThrow();
+    await fs.rm(server.serverDir, { recursive: true, force: true });
+  });
+
+  it("drops an earlier teardown breadcrumb when the new recording runs on the server", async () => {
+    // The fallback path clears it at the same point. Left behind, it outlives a
+    // recording that stops perfectly well — nothing consumes it — and then
+    // blames a much later, genuine "no active recording" on that old teardown.
+    const reaped = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const first = await fakeServer();
+    await startOnServer(reaped.api, first, {});
+    await reaped.dispose();
+
+    const api = await makeSession(iosDevice);
+    const server = await fakeServer();
+    await startOnServer(api, server, {});
+    const stopped = await stopCapture(api);
+
+    const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
+
+    expect((err as Error).message).toContain("No active screen recording");
+    await fs.rm(stopped.outputFile, { force: true });
+    await fs.rm(first.serverDir, { recursive: true, force: true });
     await fs.rm(server.serverDir, { recursive: true, force: true });
   });
 

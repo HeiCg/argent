@@ -7,6 +7,7 @@ import {
   markScreenRecordingFinalized,
   registerActiveScreenRecording,
 } from "../../utils/screen-recording-reminder";
+import { takeReapedSession } from "../../utils/reaped-sessions";
 import {
   assertNotDisposed,
   statNonEmptyOutput,
@@ -100,6 +101,11 @@ export async function startServerCapture(
   api.wallClockEndMs = null;
   api.timeLimitSeconds = params.timeLimitSeconds;
   registerActiveScreenRecording(api.deviceId, api.wallClockStartMs, params.timeLimitSeconds);
+  // As on the fallback path: a live capture makes an earlier teardown
+  // breadcrumb unreportable, since this recording's own stop will succeed and
+  // nothing would ever consume it — left behind, it would blame a much later,
+  // genuine "no active recording".
+  takeReapedSession("screen-recording", api.deviceId);
 
   if (params.pointer) {
     // Arm the touch visualizer before returning so the very first interaction is
