@@ -186,9 +186,6 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
       // back over hdc; there is no simulator-server controller for the platform.
       if (device.platform === "harmony") {
         if (params.rotation) {
-          // `uitest screenCap` writes the display as it is currently oriented
-          // and takes no orientation argument, so accepting this would return
-          // an unrotated image under a name that says otherwise.
           throw new UnsupportedOperationError(
             "screenshot",
             device,

@@ -77,9 +77,8 @@ const capability: ToolCapability = {
   // capability gate (HTTP layer's assertSupported) would reject a Vega udid
   // before any step runs — each step's own capability is still enforced below.
   vega: { vvd: true },
-  // Same for HarmonyOS: `gesture-tap`, `gesture-swipe`, `button`, `keyboard`
-  // and `await-ui-element` all support it, and batching matters more there
-  // than anywhere else — every HarmonyOS step is an `hdc` process spawn.
+  // Same for HarmonyOS, where batching pays most: every step there is an
+  // `hdc` process spawn.
   harmony: { device: true },
 };
 

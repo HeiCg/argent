@@ -126,9 +126,8 @@ Fails if the input sources are invalid, PNG files cannot be read, outputDir cann
     // SimulatorServer backend.
     if (!params.captureBaseline && !params.captureCurrent) return {};
     const device = resolveDevice(params.udid);
-    // HarmonyOS captures on-device over `hdc`; it has no simulator-server
-    // controller at all, so resolving the blueprint for one would throw before
-    // the capture path runs.
+    // HarmonyOS has no simulator-server controller, so resolving the blueprint
+    // for one would throw before the capture path runs.
     if (device.platform === "harmony") return {};
     return { simulatorServer: simulatorServerRef(device) };
   },
@@ -236,12 +235,9 @@ function liveCapture(
   if (device.platform === "harmony") {
     return async () => {
       if (params.rotation) {
-        // `uitest screenCap` captures the display as the device is currently
-        // oriented and takes no orientation argument, so honouring this would
-        // mean silently returning an unrotated image — and a diff of the wrong
-        // orientation reads as a huge legitimate visual change. Checked here
-        // rather than up front so a static two-path diff, where rotation is
-        // inert on every platform, is not rejected for carrying it.
+        // Inside the capture rather than up front: for a static two-path diff
+        // rotation is inert on every platform, and rejecting it there would
+        // make HarmonyOS the one platform an unused argument fails.
         throw new UnsupportedOperationError(
           "screenshot-diff",
           device,
