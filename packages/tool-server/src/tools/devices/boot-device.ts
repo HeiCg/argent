@@ -39,7 +39,7 @@ import {
   classifyDevice,
   harmonyInstanceName,
   stripRemotePrefix,
-  HARMONY_ID_PREFIX,
+  harmonyEmulatorId,
 } from "../../utils/device-info";
 import {
   simctlBoot as simRemoteBoot,
@@ -1445,8 +1445,11 @@ function bootVega(params: {
   return promise;
 }
 
-// A HarmonyOS emulator exposes no serial that can be observed, so its id is
-// minted from the instance name — see `HARMONY_ID_PREFIX`.
+// The returned id names the *instance*, not a connect key: `-start` reports
+// only that it handed the instance off, and the key a booted emulator registers
+// with `hdc` could not be observed here (no image is obtainable — see
+// HARMONY_IMAGE_RESTRICTION). Once it has registered, `list-devices` reports it
+// as a `kind: "device"` entry, which is the id the interaction tools take.
 type HarmonyBootResult = {
   platform: "harmony";
   udid: string;
@@ -1504,10 +1507,10 @@ async function bootHarmonyImpl(params: {
     const imageMissing =
       isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image");
     // A start that failed because no instance exists is the same wall one step
-    // earlier, so ask whether any exists at all. `-list` is read only here, on
-    // the failure path: its populated output shape could not be observed, so
-    // misreading it must never block a start that would otherwise have worked.
-    // `null` means the listing itself failed — unknown, so claim nothing.
+    // earlier, so ask whether any exists at all. Read only here, on the failure
+    // path — a listing that misfires must never block a start that would
+    // otherwise have worked. `null` means the listing itself failed — unknown,
+    // so claim nothing.
     const instances = imageMissing ? null : await listHarmonyInstances().catch(() => null);
     // Only the manager's own words justify blaming the region; an empty instance
     // list is merely consistent with it.
@@ -1525,7 +1528,7 @@ async function bootHarmonyImpl(params: {
 
   return {
     platform: "harmony",
-    udid: `${HARMONY_ID_PREFIX}${params.instanceName}`,
+    udid: harmonyEmulatorId(params.instanceName),
     instanceName: params.instanceName,
     booted: true,
   };

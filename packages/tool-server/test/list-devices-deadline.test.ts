@@ -6,7 +6,7 @@ import {
 } from "../src/utils/vega-devices";
 import { VVD_PS_PROBE_TIMEOUT_MS } from "../src/utils/vega-process";
 import { ADB_DEVICES_TIMEOUT_MS, ENRICH_TIMEOUT_MS } from "../src/utils/adb";
-import { HARMONY_LIST_TIMEOUT_MS } from "../src/utils/harmony-devices";
+import { HARMONY_LIST_TIMEOUT_MS, HDC_LIST_TIMEOUT_MS } from "../src/utils/harmony-devices";
 
 // Guards the timeout/backstop ordering: the backstop must sit ABOVE every branch's
 // FULL per-call worst case, or it stops being a last-resort and starts truncating a
@@ -41,12 +41,16 @@ describe("discovery timeout vs backstop invariant", () => {
     expect(BRANCH_DEADLINE_MS - androidWorstCase).toBeGreaterThanOrEqual(MIN_MARGIN_MS);
   });
 
-  it("the HarmonyOS branch's full worst case stays comfortably under the branch deadline", () => {
-    // A single bounded `Emulator -list`. It must carry its own timeout: the
-    // wrapper's 30s default is itself above the deadline, so relying on it would
-    // let the backstop cut off a branch that was still working.
-    expect(HARMONY_LIST_TIMEOUT_MS).toBeLessThan(BRANCH_DEADLINE_MS);
-    expect(BRANCH_DEADLINE_MS - HARMONY_LIST_TIMEOUT_MS).toBeGreaterThanOrEqual(MIN_MARGIN_MS);
+  it("both HarmonyOS branches' full worst case stays comfortably under the branch deadline", () => {
+    // Two branches, each a single bounded call: `Emulator -list -details` and
+    // `hdc list targets`. They are separate entries in the same `Promise.all`
+    // fan-out, so the platform's worst case is the slower of the two, not their
+    // sum. Each must carry its own timeout: both wrappers default to 30s, itself
+    // above the deadline, so relying on the default would let the backstop cut
+    // off a branch that was still working.
+    const harmonyWorstCase = Math.max(HARMONY_LIST_TIMEOUT_MS, HDC_LIST_TIMEOUT_MS);
+    expect(harmonyWorstCase).toBeLessThan(BRANCH_DEADLINE_MS);
+    expect(BRANCH_DEADLINE_MS - harmonyWorstCase).toBeGreaterThanOrEqual(MIN_MARGIN_MS);
   });
 });
 

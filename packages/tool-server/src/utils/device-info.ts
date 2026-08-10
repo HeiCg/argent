@@ -45,21 +45,55 @@ export const CHROMIUM_ID_PREFIX = "chromium-cdp-";
 export const VEGA_SERIAL_PREFIX = "amazon-";
 
 /**
- * HarmonyOS device-id prefix, applied by `list-devices` to an emulator instance
- * name (`harmony-Phone_1`).
- *
- * Unlike the other platforms this is not a vendor-assigned serial shape: the
- * `hdc` connect key of a running HarmonyOS emulator could not be observed, since
- * Huawei restricts the emulator image download to mainland China and no instance
- * can exist without one. Minting the id from the instance name — which the
- * `Emulator` CLI does report — keeps classification exact and avoids encoding a
- * guessed serial format, the same way `chromium-cdp-<port>` is argent's own id
- * rather than something CDP hands out.
+ * HarmonyOS device-id prefix. Every HarmonyOS id carries it, so the platform is
+ * decided by shape like the others — argent mints these ids rather than
+ * receiving them, the same way `chromium-cdp-<port>` is argent's own.
  */
 export const HARMONY_ID_PREFIX = "harmony-";
 
-/** Strip the `harmony-` prefix, returning the bare emulator instance name. */
+/**
+ * Marks the ids that name an emulator *instance* rather than a connected target.
+ *
+ * The two are different things addressed by different CLIs: an instance is a
+ * config directory that `Emulator -start` boots, a connected target is an `hdc`
+ * connect key that `uitest` drives. They cannot be told apart by shape — an
+ * instance name is user-chosen and could be spelled exactly like a hardware
+ * serial — so the distinction is carried in the id itself, mirroring how a local
+ * Android AVD is identifiable from its `emulator-<port>` serial.
+ *
+ * A running emulator therefore appears twice in `list-devices`: once as its
+ * instance (bootable, stoppable) and once as whatever connect key it registered
+ * with `hdc` (drivable). This is exactly what Android does with `avds` vs
+ * `adb devices`, and for the same reason.
+ */
+export const HARMONY_EMULATOR_ID_PREFIX = "harmony-emulator-";
+
+/** Build the `list-devices` id for an emulator instance. */
+export function harmonyEmulatorId(instanceName: string): string {
+  return `${HARMONY_EMULATOR_ID_PREFIX}${instanceName}`;
+}
+
+/** Build the `list-devices` id for a target `hdc` is connected to. */
+export function harmonyDeviceId(connectKey: string): string {
+  return `${HARMONY_ID_PREFIX}${connectKey}`;
+}
+
+/**
+ * The emulator instance name behind a `harmony-emulator-<name>` id.
+ *
+ * Exactly one prefix is stripped, so an instance genuinely named `emulator-x`
+ * round-trips through `harmonyEmulatorId` unharmed.
+ */
 export function harmonyInstanceName(udid: string): string {
+  return udid.startsWith(HARMONY_EMULATOR_ID_PREFIX)
+    ? udid.slice(HARMONY_EMULATOR_ID_PREFIX.length)
+    : udid.startsWith(HARMONY_ID_PREFIX)
+      ? udid.slice(HARMONY_ID_PREFIX.length)
+      : udid;
+}
+
+/** The `hdc` connect key behind a `harmony-<connectKey>` id. */
+export function harmonyConnectKey(udid: string): string {
   return udid.startsWith(HARMONY_ID_PREFIX) ? udid.slice(HARMONY_ID_PREFIX.length) : udid;
 }
 
@@ -93,8 +127,9 @@ export function isAndroidEmulatorSerial(serial: string): boolean {
 /**
  * Build a `DeviceInfo` from a raw udid, by shape. Kind defaults per platform:
  * 'simulator' for iOS / ios-remote, 'vvd' for Vega, 'emulator'/'device' for
- * Android by serial shape, 'app' for Chromium — platform impls can enrich with
- * name/state/sdkLevel via simctl/adb/sim-remote if needed.
+ * Android by serial shape and for HarmonyOS by id prefix, 'app' for Chromium —
+ * platform impls can enrich with name/state/sdkLevel via simctl/adb/sim-remote
+ * if needed.
  *
  * Vega is VVD-only in v1: the tool-server does not connect to or detect physical
  * Fire TV hardware, so every `amazon-` serial resolves to kind `vvd` by shape. A
@@ -111,7 +146,9 @@ export function resolveDevice(udid: string): DeviceInfo {
       : platform === "vega"
         ? "vvd"
         : platform === "harmony"
-          ? "emulator"
+          ? udid.startsWith(HARMONY_EMULATOR_ID_PREFIX)
+            ? "emulator"
+            : "device"
           : platform === "android"
             ? isAndroidEmulatorSerial(udid)
               ? "emulator"

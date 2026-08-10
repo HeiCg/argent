@@ -1,0 +1,255 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { access, constants as fsConstants } from "node:fs/promises";
+import { join } from "node:path";
+import { FAILURE_CODES, FailureError } from "@argent/registry";
+import { formatSubprocessFailure } from "./subprocess-error";
+import { commandOnPath } from "./command-on-path";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Wrapper for `hdc`, the HarmonyOS device connector — the platform's `adb`.
+ *
+ * It shares the `Emulator` manager's defining hazard (see `harmony-cli.ts`) and
+ * makes it worse: `hdc` exits 0 for *everything*. Measured against hdc 3.2.0d:
+ *
+ *   list targets           (none)             exit 0   ok, prints `[Empty]`
+ *   shell echo hi                             exit 0   ok
+ *   shell (unknown target)                    exit 0   FAILED, `[Fail]Not match target...`
+ *   file recv (missing file)                  exit 0   FAILED, `[Fail]Error opening file...`
+ *   shell 'exit 3'                            exit 0   remote status DISCARDED
+ *
+ * Two consequences drive this module:
+ *
+ * 1. Transport failures are classified from the `[Fail]` prefix, never the exit
+ *    code, so `runHdc` returns output rather than rejecting on a non-zero exit.
+ * 2. The remote command's own exit status never reaches the host — `hdc shell`
+ *    reports the status of the *connection*, not of what ran. `runHdcShell`
+ *    therefore appends an `echo` of `$?` and parses it back off stdout, which is
+ *    the only way to tell `uitest` succeeding from `uitest` not being installed.
+ */
+
+/** Prefix `hdc` puts on its own transport-level diagnostics. */
+const HDC_FAILURE_PREFIX = "[Fail]";
+
+/** `hdc list targets` prints this token rather than nothing when no device is attached. */
+export const HDC_EMPTY_SENTINEL = "[Empty]";
+
+/**
+ * Sentinel used to smuggle the remote exit status back over a transport that
+ * drops it. Prefixed with `__argent` so it cannot collide with a line the
+ * command under test legitimately prints.
+ */
+const RC_SENTINEL = "__argent_hdc_rc";
+
+const MACOS_DEVECO_ROOT = "/Applications/DevEco-Studio.app/Contents";
+
+/** Path of `hdc` relative to a DevEco Studio install root. */
+const HDC_RELATIVE = join("sdk", "default", "openharmony", "toolchains", "hdc");
+
+const BINARY_TTL_MS = 60_000;
+let cachedHdc: { path: string | null; checkedAt: number } | undefined;
+
+async function isExecutable(p: string): Promise<boolean> {
+  try {
+    await access(p, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Absolute path to `hdc`, or null when neither DevEco Studio nor a standalone
+ * OpenHarmony command-line-tools install provides it.
+ *
+ * Unlike the emulator manager — whose binary is named `Emulator`, too generic to
+ * match on PATH — `hdc` is a distinctive name owned by the HarmonyOS toolchain,
+ * so PATH is consulted as a fallback for hosts that installed the command-line
+ * tools without the IDE.
+ */
+export async function resolveHdc(): Promise<string | null> {
+  const now = Date.now();
+  if (cachedHdc && now - cachedHdc.checkedAt < BINARY_TTL_MS) {
+    return cachedHdc.path;
+  }
+  const configured = process.env.DEVECO_STUDIO_HOME?.trim();
+  const root = configured || (process.platform === "darwin" ? MACOS_DEVECO_ROOT : null);
+  let path: string | null = null;
+  if (root) {
+    const candidate = join(root, HDC_RELATIVE);
+    if (await isExecutable(candidate)) path = candidate;
+  }
+  path ??= await commandOnPath("hdc");
+  cachedHdc = { path, checkedAt: now };
+  return path;
+}
+
+export async function resolveHdcOrThrow(): Promise<string> {
+  const path = await resolveHdc();
+  if (!path) {
+    throw new FailureError(
+      "`hdc` (the HarmonyOS device connector) was not found. Install DevEco Studio, or set " +
+        "`$DEVECO_STUDIO_HOME` to its install root, or put `hdc` from the OpenHarmony " +
+        "command-line tools on PATH.",
+      {
+        error_code: FAILURE_CODES.HARMONY_HDC_NOT_FOUND,
+        failure_stage: "harmony_hdc_resolve_binary",
+        failure_area: "tool_server",
+        error_kind: "dependency_missing",
+      }
+    );
+  }
+  return path;
+}
+
+export interface HdcRunResult {
+  stdout: string;
+  stderr: string;
+}
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Run `hdc` with the given argv. Returns the child's output whether it exited 0
+ * or not — see the header: the exit code carries no signal, so classification is
+ * left to `hdcFailure`. Only a spawn failure or a timeout kill rejects.
+ */
+export async function runHdc(
+  args: string[],
+  timeoutMs = DEFAULT_TIMEOUT_MS
+): Promise<HdcRunResult> {
+  const bin = await resolveHdcOrThrow();
+  try {
+    const { stdout, stderr } = await execFileAsync(bin, args, {
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return { stdout, stderr };
+  } catch (err) {
+    const e = err as { killed?: boolean; code?: unknown; stdout?: string; stderr?: string };
+    if (!e.killed && typeof e.code === "number" && (e.stdout != null || e.stderr != null)) {
+      return { stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
+    }
+    throw new FailureError(formatSubprocessFailure("hdc", args, err), {
+      error_code: FAILURE_CODES.HARMONY_HDC_COMMAND_FAILED,
+      failure_stage: "harmony_hdc_run",
+      failure_area: "tool_server",
+      error_kind: "subprocess",
+    });
+  }
+}
+
+/**
+ * The `[Fail]…` line `hdc` printed, or null when it reported no transport error.
+ *
+ * Matched on the prefix rather than a substring so a remote command that merely
+ * prints the token — a log line, a test name — cannot forge a transport failure.
+ */
+export function hdcFailure(result: HdcRunResult): string | null {
+  const text = `${result.stdout}\n${result.stderr}`;
+  const line = text.split(/\r?\n/).find((l) => l.trimStart().startsWith(HDC_FAILURE_PREFIX));
+  return line ? line.trim() : null;
+}
+
+/**
+ * Escape a string for interpolation into the single remote command line that
+ * `hdc shell` hands to the device's `/bin/sh`.
+ *
+ * `hdc shell` takes a *command line*, not an argv — so every value that reaches
+ * it (text to type, a bundle name, a file path) is shell metacharacter-bearing
+ * input on a shell running as the `shell` user. POSIX single-quoting with the
+ * `'\''` break is the only form that needs no escape table: verified through a
+ * real device against `;`, backticks, `$`, both quote characters and non-ASCII.
+ */
+export function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+export interface HdcShellResult {
+  /** Everything the remote command wrote, with the status sentinel removed. */
+  stdout: string;
+  /** The remote command's own exit status, recovered via the sentinel. */
+  exitCode: number;
+}
+
+/**
+ * Run a command on the device and return its output *and its real exit status*.
+ *
+ * `command` is interpolated into a remote `/bin/sh` line verbatim — build it with
+ * `shellQuote` around every caller-supplied value.
+ *
+ * Throws on a transport failure (unknown target, dead connection) so callers can
+ * treat the result as "the command ran"; a non-zero `exitCode` then means the
+ * command ran and failed, which is a different thing and theirs to interpret.
+ */
+export async function runHdcShell(
+  connectKey: string,
+  command: string,
+  timeoutMs = DEFAULT_TIMEOUT_MS
+): Promise<HdcShellResult> {
+  const result = await runHdc(
+    ["-t", connectKey, "shell", `${command}; echo ${RC_SENTINEL}=$?`],
+    timeoutMs
+  );
+  const failure = hdcFailure(result);
+  if (failure) {
+    throw new FailureError(
+      `hdc could not reach HarmonyOS device '${connectKey}': ${failure}. ` +
+        `Check that it is still listed by \`hdc list targets\` and that USB debugging is authorised.`,
+      {
+        error_code: FAILURE_CODES.HARMONY_DEVICE_UNREACHABLE,
+        failure_stage: "harmony_hdc_shell",
+        failure_area: "tool_server",
+        error_kind: "not_found",
+      }
+    );
+  }
+  const lines = `${result.stdout}`.split(/\r?\n/);
+  // Scan from the end: the sentinel is the last thing echoed, and a command that
+  // printed something resembling it earlier must not win over the real one.
+  const idx = lines.findLastIndex((l) => l.trim().startsWith(`${RC_SENTINEL}=`));
+  if (idx === -1) {
+    // The device dropped the trailing echo — the command was killed on-device, or
+    // the transport truncated. Either way the status is unknown, and reporting a
+    // fabricated 0 here would turn a dead command into a silent success.
+    throw new FailureError(
+      `HarmonyOS device '${connectKey}' returned no exit status for \`${command}\`. ` +
+        `The command was terminated on the device or the hdc connection dropped mid-call.`,
+      {
+        error_code: FAILURE_CODES.HARMONY_SHELL_NO_STATUS,
+        failure_stage: "harmony_hdc_shell",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+      }
+    );
+  }
+  const exitCode = Number.parseInt(lines[idx].trim().slice(RC_SENTINEL.length + 1), 10);
+  return {
+    stdout: lines.slice(0, idx).join("\n").replaceAll("\r", "").trimEnd(),
+    exitCode: Number.isFinite(exitCode) ? exitCode : -1,
+  };
+}
+
+/** Copy a file off the device. Throws with hdc's own diagnostic if it did not arrive. */
+export async function hdcFileRecv(
+  connectKey: string,
+  remotePath: string,
+  localPath: string,
+  timeoutMs = DEFAULT_TIMEOUT_MS
+): Promise<void> {
+  const result = await runHdc(["-t", connectKey, "file", "recv", remotePath, localPath], timeoutMs);
+  const failure = hdcFailure(result);
+  if (failure) {
+    throw new FailureError(
+      `Failed to copy '${remotePath}' off HarmonyOS device '${connectKey}': ${failure}`,
+      {
+        error_code: FAILURE_CODES.HARMONY_FILE_TRANSFER_FAILED,
+        failure_stage: "harmony_hdc_file_recv",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+      }
+    );
+  }
+}

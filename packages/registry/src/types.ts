@@ -196,12 +196,14 @@ export interface ToolCapability {
     device?: boolean;
   };
   /**
-   * HarmonyOS support. Emulator-only: the tool-server neither detects nor
-   * connects to physical HarmonyOS hardware, so there is no `device` flag to
-   * declare — adding one is deferred to a version where it can be tested.
+   * HarmonyOS support. `device` is a phone reached over `hdc`; `emulator` is a
+   * DevEco Studio instance, which only `boot-device` addresses — every
+   * interaction tool drives a *connected* target, and a booted emulator presents
+   * as one of those, so interaction tools declare `device` alone.
    */
   harmony?: {
     emulator?: boolean;
+    device?: boolean;
   };
   /** Optional refiner. Returns true if this device is supported. */
   supports?: (device: DeviceInfo) => boolean;
@@ -233,7 +235,8 @@ export type ToolDependency =
   | "emulator"
   | "sim-remote"
   | "vega"
-  | "harmony-emulator";
+  | "harmony-emulator"
+  | "hdc";
 
 // ── Tool Types ──
 
