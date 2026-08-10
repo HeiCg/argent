@@ -42,6 +42,7 @@ import type { TextMatchMode, WaitCondition } from "../../utils/ui-tree-match";
 import { sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { isUnmetUiWaitResult } from "../await-ui-element";
+import { isDebuggerNotConnectedResult } from "../debugger/not-connected";
 import {
   resolveFlowDevice,
   bindDeviceArgs,
@@ -2228,6 +2229,23 @@ async function execLeafStep(
             status: nested.status,
             tool: step.name,
             reason: nested.reason,
+            result,
+            outputHint,
+            args,
+          };
+        }
+        if (isDebuggerNotConnectedResult(step.name, result)) {
+          // Keep `detail` in the report: it is the only place the underlying
+          // error text lives (device_mismatch's guidance points the agent at
+          // the logicalDeviceIds "listed in the detail message", and the
+          // metro_not_running `got:` fragment names what actually answered the
+          // port). The full structured result rides along like a passing
+          // step's would, so nothing the tool returned is dropped.
+          return {
+            ...base,
+            status: "fail",
+            tool: step.name,
+            reason: `debugger not connected (${result.reason}): ${result.detail} — ${result.guidance}`,
             result,
             outputHint,
             args,
