@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { InvalidToolInputError } from "../../../utils/capability";
+import { simctlArgsForUdid } from "../../../utils/ios-device-sets";
 import { IOS_SUPPORTED_SETTINGS } from "../types";
 import type {
   SystemSetting,
@@ -126,7 +127,7 @@ export const iosImpl: PlatformImpl<
       try {
         ({ stderr } = await execFileAsync(
           "xcrun",
-          ["simctl", "ui", udid, mechanism.option, mechanism.arg],
+          await simctlArgsForUdid(udid, ["ui", udid, mechanism.option, mechanism.arg]),
           { timeout: 30_000 }
         ));
       } catch (err) {
@@ -149,8 +150,7 @@ export const iosImpl: PlatformImpl<
     try {
       await execFileAsync(
         "xcrun",
-        [
-          "simctl",
+        await simctlArgsForUdid(udid, [
           "spawn",
           udid,
           "defaults",
@@ -159,7 +159,7 @@ export const iosImpl: PlatformImpl<
           mechanism.key,
           "-bool",
           boolArg,
-        ],
+        ]),
         { timeout: 30_000 }
       );
     } catch (err) {
@@ -172,7 +172,7 @@ export const iosImpl: PlatformImpl<
     try {
       await execFileAsync(
         "xcrun",
-        ["simctl", "spawn", udid, "notifyutil", "-p", mechanism.notify],
+        await simctlArgsForUdid(udid, ["spawn", udid, "notifyutil", "-p", mechanism.notify]),
         {
           timeout: 10_000,
         }

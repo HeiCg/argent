@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const execFileMock = vi.fn();
 vi.mock("node:child_process", async () => {
@@ -22,6 +22,7 @@ import { SYSTEM_SETTINGS, TEXT_SIZE_VALUES } from "../src/tools/system-settings/
 import type { SystemSettingsParams } from "../src/tools/system-settings/types";
 import { adbShell } from "../src/utils/adb";
 import { InvalidToolInputError } from "../src/utils/capability";
+import { rememberDeviceSet, __resetDeviceSetCacheForTesting } from "../src/utils/ios-device-sets";
 
 const mockAdbShell = vi.mocked(adbShell);
 
@@ -375,6 +376,71 @@ describe("system-settings iOS branch", () => {
     const rejection = expect(iosImpl.handler({}, params({}), IOS_DEVICE)).rejects;
     await rejection.toSatisfy(failsWith(FAILURE_CODES.IOS_SYSTEM_SETTING_FAILED));
     await rejection.not.toThrow(/must be booted first|isn't supported/);
+  });
+
+  // Every argv above omits `--set` because the UDID resolves to the default
+  // device set. A simulator in an additional set (`ios.additionalDeviceSets`,
+  // e.g. Radon IDE) is only addressable with the flag — without it simctl
+  // searches the default set and answers `Invalid device: <udid>`. Both
+  // mechanisms must route through `simctlArgsForUdid`, so pin all three calls.
+  describe("a simulator in an additional device set", () => {
+    const RADON_UDID = "11111111-2222-3333-4444-555555555555";
+    const RADON_SET = "/tmp/radon-ide/Devices/iOS";
+    const radonDevice = { id: RADON_UDID, platform: "ios", kind: "simulator" } as const;
+
+    beforeEach(() => rememberDeviceSet(RADON_UDID, RADON_SET));
+    afterEach(() => __resetDeviceSetCacheForTesting());
+
+    it("prefixes `simctl ui` with --set", async () => {
+      execFileSucceeds();
+      await iosImpl.handler(
+        {},
+        { udid: RADON_UDID, setting: "appearance", value: "dark" },
+        radonDevice
+      );
+      expect(execFileMock.mock.calls[0]![1]).toEqual([
+        "simctl",
+        "--set",
+        RADON_SET,
+        "ui",
+        RADON_UDID,
+        "appearance",
+        "dark",
+      ]);
+    });
+
+    it("prefixes both the `defaults write` and its notifyutil post with --set", async () => {
+      execFileSucceeds();
+      await iosImpl.handler(
+        {},
+        { udid: RADON_UDID, setting: "reduce-motion", value: "on" },
+        radonDevice
+      );
+      expect(execFileMock).toHaveBeenCalledTimes(2);
+      expect(execFileMock.mock.calls[0]![1]).toEqual([
+        "simctl",
+        "--set",
+        RADON_SET,
+        "spawn",
+        RADON_UDID,
+        "defaults",
+        "write",
+        "com.apple.Accessibility",
+        "ReduceMotionEnabled",
+        "-bool",
+        "YES",
+      ]);
+      expect(execFileMock.mock.calls[1]![1]).toEqual([
+        "simctl",
+        "--set",
+        RADON_SET,
+        "spawn",
+        RADON_UDID,
+        "notifyutil",
+        "-p",
+        "com.apple.Accessibility.ReduceMotionStatusDidChange",
+      ]);
+    });
   });
 });
 
