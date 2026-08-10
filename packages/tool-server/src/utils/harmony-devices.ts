@@ -14,9 +14,7 @@ import {
  */
 
 /** A HarmonyOS emulator instance as reported by `Emulator -list`. */
-export interface HarmonyInstance {
-  name: string;
-}
+type HarmonyInstance = { name: string };
 
 /**
  * Lines the emulator manager prints alongside a listing that are not instance

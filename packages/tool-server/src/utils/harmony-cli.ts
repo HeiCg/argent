@@ -84,11 +84,6 @@ export async function resolveHarmonyEmulator(): Promise<string | null> {
   return path;
 }
 
-/** Test-only: clear the binary-resolution memo. */
-export function __resetHarmonyBinaryCacheForTests(): void {
-  cachedEmulator = undefined;
-}
-
 export interface HarmonyRunResult {
   stdout: string;
   stderr: string;
