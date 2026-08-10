@@ -5,7 +5,8 @@ import * as fs from "node:fs";
 import { Registry } from "@argent/registry";
 import { jsRuntimeDebuggerBlueprint } from "../../src/blueprints/js-runtime-debugger";
 import { debuggerConnectTool } from "../../src/tools/debugger/debugger-connect";
-import { debuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
+import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
+import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions";
 
 /**
  * The console log file must outlive the app: when the CDP socket drops
@@ -84,7 +85,7 @@ beforeAll(async () => {
   registry = new Registry();
   registry.registerBlueprint(jsRuntimeDebuggerBlueprint);
   registry.registerTool(debuggerConnectTool);
-  registry.registerTool(debuggerLogRegistryTool);
+  registry.registerTool(createDebuggerLogRegistryTool(registry));
 });
 
 afterAll(async () => {
@@ -129,6 +130,53 @@ describe("console logs across an app crash", () => {
     // The file the tool already handed to the caller must still be readable.
     expect(fs.existsSync(logPath)).toBe(true);
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
+
+    fs.rmSync(logPath, { force: true });
+  });
+
+  it("points a post-crash reader at the file the crash left behind", async () => {
+    // The half the surviving file does not fix on its own: an agent that only
+    // calls `debugger-log-registry` AFTER the crash resolves a fresh session
+    // and reads `totalEntries: 0`. The teardown breadcrumb is what stops that
+    // being read as "the app logged nothing" — and because this teardown KEPT
+    // the file, the breadcrumb has to name it rather than report a deletion.
+    __resetReapedSessionsForTesting();
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "crash-note" });
+
+    cdpConn!.send(
+      JSON.stringify({
+        method: "Runtime.consoleAPICalled",
+        params: {
+          type: "error",
+          args: [{ type: "string", value: "CRITICAL pre-crash error" }],
+          executionContextId: 1,
+          timestamp: Date.now(),
+        },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 200));
+
+    const { file: logPath } = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: "crash-note",
+    })) as { file: string };
+
+    cdpConn!.terminate();
+    await new Promise((r) => setTimeout(r, 500));
+
+    const after = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: "crash-note",
+    })) as { totalEntries: number; file: string; note?: string };
+
+    expect(after.totalEntries).toBe(0);
+    expect(after.file).not.toBe(logPath);
+    expect(after.note).toBeDefined();
+    // The path, and a file actually there to be read at it.
+    expect(after.note).toContain(logPath);
+    expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
+    // Never the reaped-by-stop-all wording: nothing was deleted here.
+    expect(after.note).not.toContain("deleted on teardown");
 
     fs.rmSync(logPath, { force: true });
   });

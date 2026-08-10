@@ -2,6 +2,7 @@ import {
   FAILURE_CODES,
   FailureError,
   TypedEventEmitter,
+  getFailureSignal,
   type ServiceBlueprint,
   type ServiceEvents,
 } from "@argent/registry";
@@ -9,7 +10,13 @@ import { discoverMetro } from "../utils/debugger/discovery";
 import { classifyDevice } from "../utils/device-info";
 import { proxyStart } from "../utils/sim-remote";
 import { selectTarget } from "../utils/debugger/target-selection";
-import { rememberDeviceAlias, forgetDeviceAlias } from "../utils/debugger/device-alias";
+import {
+  rememberDeviceAlias,
+  forgetDeviceAlias,
+  rememberLogicalKeyedDevice,
+  forgetLogicalKeyedDevice,
+} from "../utils/debugger/device-alias";
+import { recordReapedSession, describeLostHistory } from "../utils/reaped-sessions";
 import { CDPClient, type ConsoleAPICalledParams } from "../utils/debugger/cdp-client";
 import { createSourceResolver, type SourceResolver } from "../utils/debugger/source-resolver";
 import { SourceMapsRegistry } from "../utils/debugger/source-maps";
@@ -133,6 +140,26 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
 
   getURN(payload: string) {
     return `${JS_RUNTIME_DEBUGGER_NAMESPACE}:${payload}`;
+  },
+
+  // Consulted by the registry's dispose-and-retry-once self-heal, and only for
+  // a node still in RUNNING state. On this blueprint a detected socket death
+  // tears the node down via the terminated cascade before the failing call's
+  // catch runs, so the only recoverable window is the send() guard rejecting
+  // while the WebSocket is CLOSING but the close event has not dispatched yet —
+  // there the request provably never left the host, making a retry safe.
+  // Deliberately NOT recoverable:
+  // - DEBUGGER_CDP_CONNECTION_CLOSED: the request was delivered and may have
+  //   taken effect (double-execution risk); on this path the node has also
+  //   already left RUNNING when it fires.
+  // - DEBUGGER_CDP_REQUEST_TIMEOUT: the request may have taken effect, and a
+  //   hung-but-open runtime (e.g. paused at a breakpoint) is not fixed by
+  //   reconnecting.
+  // - Metro discovery / target-selection codes: init-path failures — the node
+  //   never reaches RUNNING, so recovery is never consulted, and a retry would
+  //   be hopeless anyway.
+  recoverable(error: unknown): boolean {
+    return getFailureSignal(error)?.error_code === FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED;
   },
 
   async factory(_deps, payload, options?) {
@@ -265,14 +292,23 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     // logicalDeviceId canonicalizes back to this instance instead of opening a
     // second connection. See utils/debugger/device-alias.ts.
     rememberDeviceAlias(api.logicalDeviceId, deviceId);
+    // The other half of that comparison: when the two ids are the SAME string
+    // the caller connected with the logicalDeviceId itself, which is what
+    // `selectTarget` demands once a second device shares this Metro. Nothing
+    // then joins this session to a udid or serial, so `stop-all-simulator-servers`
+    // cannot reap it from a `list-devices`-derived scope — note it so that
+    // teardown can report the session instead of leaving it silently open.
+    rememberLogicalKeyedDevice(api.logicalDeviceId, deviceId);
 
     const events = new TypedEventEmitter<ServiceEvents>();
 
-    // Distinguishes the two ways this service is torn down. An explicit
-    // teardown (server shutdown, a tool re-creating the debugger) leaves it
-    // false and the log file is removed; a `disconnected` means the app died,
-    // and the console logs it produced on the way out are what the developer
-    // is about to grep, so `dispose` keeps them.
+    // Distinguishes the two ways this service is torn down. A teardown nothing
+    // died for leaves it false and the log file is removed: server shutdown, a
+    // tool re-creating the debugger, or the `recoverable` self-heal above,
+    // which disposes and retries while the socket is merely CLOSING. A
+    // `disconnected` means the app died, and the console logs it produced on
+    // the way out are what the developer is about to grep, so `dispose` keeps
+    // them.
     let runtimeDied = false;
 
     cdp.events.on("disconnected", (error) => {
@@ -292,7 +328,33 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     return {
       api,
       dispose: async () => {
+        // This dispose ends the capture session — up to 50,000 captured console
+        // entries stop being reachable through the registry, because the next
+        // resolve builds a new writer over a new path. That is invisible, and
+        // since `JsRuntimeDebugger` joined the teardown's namespace set this
+        // dispose is routinely triggered by another agent's
+        // `stop-all-simulator-servers`. Leave a breadcrumb so
+        // `debugger-log-registry`'s otherwise silent `totalEntries: 0` can say
+        // what happened to the history, and where it went: on a runtime death
+        // `close` below keeps the file, so the breadcrumb can name it.
+        //
+        // Only when there IS history to lose, and under both ids this device
+        // answers to: the caller may read back with either the id it connected
+        // with or the `logicalDeviceId` Metro echoed, and `forgetDeviceAlias`
+        // below removes the only thing that joins them.
+        const captured = logWriter.getStats().totalEntries;
+        if (captured > 0) {
+          const salvage = describeLostHistory(
+            captured,
+            runtimeDied ? logWriter.getFilePath() : undefined
+          );
+          recordReapedSession("js-runtime-debugger", deviceId, salvage);
+          if (api.logicalDeviceId && api.logicalDeviceId !== deviceId) {
+            recordReapedSession("js-runtime-debugger", api.logicalDeviceId, salvage);
+          }
+        }
         forgetDeviceAlias(api.logicalDeviceId);
+        forgetLogicalKeyedDevice(deviceId);
         await consoleServer.close();
         logWriter.close({ keepFile: runtimeDied });
         await cdp.disconnect();
