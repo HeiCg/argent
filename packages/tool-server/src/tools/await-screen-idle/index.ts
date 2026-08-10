@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@argent/registry";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
@@ -18,6 +18,7 @@ import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
+import { describeHarmony, harmonyRequires } from "../describe/platforms/harmony";
 
 export const AWAIT_SCREEN_IDLE_TOOL_ID = "await-screen-idle";
 
@@ -72,6 +73,7 @@ const capability: ToolCapability = {
   apple: { simulator: true, device: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
+  harmony: { device: true },
 };
 
 // A cheap fingerprint of the screen: role + label + value + frame (rounded to
@@ -109,6 +111,9 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
     if (device.platform === "android") {
       return describeAndroid(registry, device.id, undefined, androidIsTv);
     }
+    if (device.platform === "harmony") {
+      return describeHarmony(harmonyConnectKey(device.id));
+    }
     return describeChromium(services.chromium as ChromiumCdpApi);
   }
 
@@ -144,6 +149,7 @@ still before the timeout. Use after a launch/navigation to wait for the UI to re
       assertSupported(AWAIT_SCREEN_IDLE_TOOL_ID, capability, device);
       if (device.platform === "ios") await ensureDeps(iosRequires);
       else if (device.platform === "android") await ensureDeps(androidRequires);
+      else if (device.platform === "harmony") await ensureDeps(harmonyRequires);
 
       // Resolved once, outside the poll loop, like `isTvOs` — an unlisted
       // serial's TV probe is never cached, so leaving it inside

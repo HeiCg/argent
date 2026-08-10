@@ -3,11 +3,17 @@ import type { Registry, ServiceRef, ToolCapability, ToolDefinition } from "@arge
 import { nativeDevtoolsRef } from "../../blueprints/native-devtools";
 import { resolveDevice } from "../../utils/device-info";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
-import type { RestartAppResult, RestartAppVegaServices, RestartAppIosServices } from "./types";
+import type {
+  RestartAppResult,
+  RestartAppVegaServices,
+  RestartAppIosServices,
+  RestartAppHarmonyServices,
+} from "./types";
 import { makeIosImpl } from "./platforms/ios";
 import { iosRemoteImpl } from "./platforms/ios-remote";
 import { androidImpl } from "./platforms/android";
 import { vegaImpl } from "./platforms/vega";
+import { harmonyImpl } from "./platforms/harmony";
 
 // Bundle id / package name. Head must be letter or underscore so a bundleId
 // like `--user` can't masquerade as a flag inside `am force-stop …`.
@@ -43,6 +49,7 @@ const capability: ToolCapability = {
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   vega: { vvd: true },
+  harmony: { device: true },
 };
 
 // `restart-app` resolves native-devtools through `registry` inside the iOS
@@ -89,7 +96,8 @@ Returns { restarted, bundleId }. Fails if the app is not installed.`,
       // No chromium branch — falls back to the ChromiumServices default.
       Record<string, unknown>,
       RestartAppVegaServices,
-      RestartAppIosServices
+      RestartAppIosServices,
+      RestartAppHarmonyServices
     >({
       toolId: "restart-app",
       capability,
@@ -97,6 +105,7 @@ Returns { restarted, bundleId }. Fails if the app is not installed.`,
       iosRemote: iosRemoteImpl,
       android: androidImpl,
       vega: vegaImpl,
+      harmony: harmonyImpl,
     }),
   };
 }

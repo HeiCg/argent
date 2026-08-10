@@ -64,7 +64,7 @@ async function runUitest(
   return stdout;
 }
 
-export interface HarmonyDisplay {
+interface HarmonyDisplay {
   width: number;
   height: number;
   /** False when the display is suspended — injected touches land nowhere. */
@@ -123,7 +123,7 @@ export function toDevicePoint(
   return { x: clamp(x, display.width), y: clamp(y, display.height) };
 }
 
-export type HarmonyTouchCommand = "click" | "doubleClick" | "longClick";
+type HarmonyTouchCommand = "click" | "doubleClick" | "longClick";
 
 export async function harmonyTouch(
   connectKey: string,
@@ -133,16 +133,16 @@ export async function harmonyTouch(
   await runUitest(connectKey, `uiInput ${command} ${point.x} ${point.y}`);
 }
 
-export type HarmonySwipeCommand = "swipe" | "drag" | "fling";
+type HarmonySwipeCommand = "swipe" | "drag" | "fling";
 
 /**
  * `uitest` rejects a velocity outside this range with `Invalid parameters.`, so
  * callers translating a duration into a velocity must land inside it.
  */
-export const HARMONY_VELOCITY_MIN = 200;
-export const HARMONY_VELOCITY_MAX = 40_000;
+const HARMONY_VELOCITY_MIN = 200;
+const HARMONY_VELOCITY_MAX = 40_000;
 
-export async function harmonySwipe(
+async function harmonySwipe(
   connectKey: string,
   command: HarmonySwipeCommand,
   from: { x: number; y: number },
@@ -153,6 +153,37 @@ export async function harmonySwipe(
   await runUitest(connectKey, `uiInput ${command} ${from.x} ${from.y} ${to.x} ${to.y} ${v}`);
 }
 
+/**
+ * Swipe between two normalized points over `durationMs`.
+ *
+ * `uitest` takes a **velocity**, not a duration, so the duration argent's tools
+ * speak is converted here: velocity = pixels travelled / seconds. Doing it the
+ * other way — passing a fixed velocity — would make a short swipe and a
+ * screen-length one take wildly different times, and the callers that pace a
+ * scroll loop against `durationMs` would be pacing against nothing.
+ *
+ * `settle` picks the verb rather than reshaping the path. `uitest` exposes both
+ * `swipe` (a drag that ends where it ends) and `fling` (which hands the scroller
+ * a release velocity to coast on), so the momentum-free request maps onto the
+ * one the platform already means by it. That is the vendor's own distinction
+ * between the two commands; the resulting difference in coast distance was not
+ * measured here.
+ */
+export async function harmonySwipeNormalized(
+  connectKey: string,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  durationMs: number,
+  settle: boolean
+): Promise<void> {
+  const display = await harmonyDisplay(connectKey);
+  const fromPx = toDevicePoint(from.x, from.y, display);
+  const toPx = toDevicePoint(to.x, to.y, display);
+  const distance = Math.hypot(toPx.x - fromPx.x, toPx.y - fromPx.y);
+  const seconds = Math.max(durationMs, 1) / 1000;
+  await harmonySwipe(connectKey, settle ? "swipe" : "fling", fromPx, toPx, distance / seconds);
+}
+
 export async function harmonyKeyEvent(connectKey: string, key: string): Promise<void> {
   await runUitest(connectKey, `uiInput keyEvent ${key}`);
 }
@@ -160,15 +191,6 @@ export async function harmonyKeyEvent(connectKey: string, key: string): Promise<
 /** Type into whatever currently holds focus. */
 export async function harmonyTypeText(connectKey: string, text: string): Promise<void> {
   await runUitest(connectKey, `uiInput text ${shellQuote(text)}`);
-}
-
-/** Focus the field at a point and type into it in one call. */
-export async function harmonyInputTextAt(
-  connectKey: string,
-  point: { x: number; y: number },
-  text: string
-): Promise<void> {
-  await runUitest(connectKey, `uiInput inputText ${point.x} ${point.y} ${shellQuote(text)}`);
 }
 
 /**

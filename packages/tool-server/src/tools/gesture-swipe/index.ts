@@ -1,7 +1,9 @@
 import { z } from "zod";
-import type { ToolCapability, ToolDefinition } from "@argent/registry";
+import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
+import { harmonySwipeNormalized } from "../../utils/harmony-uitest";
+import { ensureDep } from "../../utils/check-deps";
 import { sendCommand } from "../../utils/simulator-client";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -45,6 +47,7 @@ const capability: ToolCapability = {
   apple: { simulator: true, device: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
+  harmony: { device: true },
 };
 
 export const gestureSwipeTool: ToolDefinition<Params, Result> = {
@@ -56,7 +59,7 @@ export const gestureSwipeTool: ToolDefinition<Params, Result> = {
       `Swiped from (${Math.round(params.fromX * 100)}%, ${Math.round(params.fromY * 100)}%) to (${Math.round(params.toX * 100)}%, ${Math.round(params.toY * 100)}%)`,
     failedMsg: ({ failureSignal }) => `Failed to swipe: ${failureSignal.error_code}`,
   },
-  description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator or Android emulator). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
+  description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator, Android emulator, or HarmonyOS device). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
 Generates interpolated Move events for a natural feel (~60fps).
 Swipe up (fromY > toY) to scroll content down.
 Use when you need to scroll a list, dismiss a modal, drag an element, or navigate between pages. Not supported on Chromium — use gesture-scroll there instead.
@@ -65,13 +68,32 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
   searchHint: "swipe scroll drag pan gesture device simulator emulator touch move",
   zodSchema,
   capability,
-  services: (params) => ({
-    simulatorServer: simulatorServerRef(resolveDevice(params.udid)),
-  }),
+  services: (params): Record<string, ServiceRef> => {
+    const device = resolveDevice(params.udid);
+    // HarmonyOS swipes go over hdc; resolving the iOS/Android-only blueprint
+    // would spawn a backend this path never uses and wait on it to come up.
+    if (device.platform === "harmony") return {};
+    return { simulatorServer: simulatorServerRef(device) };
+  },
   async execute(services, params) {
     const duration = params.durationMs ?? 300;
     const settle = params.settle ?? false;
     const timestampMs = Date.now();
+    const device = resolveDevice(params.udid);
+    // HarmonyOS has no simulator-server controller: the whole gesture is one
+    // `uitest uiInput` call, which owns its own interpolation on-device, so
+    // there is no per-frame Move train to emit here.
+    if (device.platform === "harmony") {
+      await ensureDep("hdc");
+      await harmonySwipeNormalized(
+        harmonyConnectKey(device.id),
+        { x: params.fromX, y: params.fromY },
+        { x: params.toX, y: params.toY },
+        duration,
+        settle
+      );
+      return { swiped: true, timestampMs };
+    }
     const api = services.simulatorServer as SimulatorServerApi;
     const steps = Math.max(1, Math.round(duration / 16));
 

@@ -26,7 +26,7 @@ import { HDC_EMPTY_SENTINEL, hdcFailure, resolveHdc, runHdc } from "./harmony-hd
  */
 
 /** A HarmonyOS emulator instance as reported by `Emulator -list -details`. */
-export interface HarmonyInstance {
+interface HarmonyInstance {
   name: string;
   /** `Phone`, `Foldable`, `Tablet`, `TV`, … as configured at creation. */
   deviceType: string | null;
@@ -111,7 +111,7 @@ export async function listHarmonyInstances(): Promise<HarmonyInstance[]> {
 }
 
 /** A target `hdc` is connected to — a physical device, or a running emulator. */
-export interface HarmonyHdcTarget {
+interface HarmonyHdcTarget {
   /** The key every `hdc -t <key>` call takes. A hardware serial, or `ip:port`. */
   connectKey: string;
   /** `USB`, `TCP`, … as reported in column 2. */

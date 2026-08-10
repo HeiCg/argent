@@ -6,6 +6,7 @@ import { chromiumCdpRef } from "../../blueprints/chromium-cdp";
 import type { OpenUrlResult, OpenUrlServices } from "./types";
 import { iosImpl } from "./platforms/ios";
 import { androidImpl } from "./platforms/android";
+import { harmonyImpl } from "./platforms/harmony";
 import { iosRemoteImpl } from "./platforms/ios-remote";
 import { chromiumImpl, type OpenUrlChromiumServices } from "./platforms/chromium";
 
@@ -41,6 +42,7 @@ const capability: ToolCapability = {
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
+  harmony: { device: true },
 };
 
 export const openUrlTool: ToolDefinition<Params, OpenUrlResult> = {
@@ -70,12 +72,16 @@ Returns { opened, url, note? }. note carries the deep-linking caveat when a web 
     OpenUrlServices,
     Params,
     OpenUrlResult,
-    OpenUrlChromiumServices
+    OpenUrlChromiumServices,
+    OpenUrlServices,
+    OpenUrlServices,
+    OpenUrlServices
   >({
     toolId: "open-url",
     capability,
     ios: iosImpl,
     android: androidImpl,
+    harmony: harmonyImpl,
     iosRemote: iosRemoteImpl,
     chromium: chromiumImpl,
   }),

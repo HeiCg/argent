@@ -3,7 +3,9 @@ import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registr
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
+import { harmonyDisplay, harmonyTouch, toDevicePoint } from "../../utils/harmony-uitest";
+import { ensureDep } from "../../utils/check-deps";
 import { sendCommand } from "../../utils/simulator-client";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -54,6 +56,7 @@ const capability: ToolCapability = {
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
+  harmony: { device: true },
 };
 
 // One press-release is 50ms; taps in a multi-tap gesture are 100ms apart —
@@ -82,6 +85,36 @@ async function tapChromium(
   }
 }
 
+/**
+ * HarmonyOS taps go through the device's own `uitest uiInput`, not
+ * simulator-server — the platform has no simulator-server controller, and
+ * `uitest` is the vendor's supported injection path. This mirrors how `button`
+ * and `keyboard` already reach Android through `adb` rather than the HID
+ * transport.
+ *
+ * `uitest` has a native double-click, so a 2-tap request uses it rather than two
+ * timed clicks: two separate injections are not guaranteed to land inside the
+ * OS double-tap window, which is the whole point of `clickCount`. Counts above 2
+ * have no native form and fall back to repeated clicks.
+ */
+async function tapHarmony(
+  connectKey: string,
+  x: number,
+  y: number,
+  clickCount: number
+): Promise<void> {
+  const display = await harmonyDisplay(connectKey);
+  const point = toDevicePoint(x, y, display);
+  if (clickCount === 2) {
+    await harmonyTouch(connectKey, "doubleClick", point);
+    return;
+  }
+  for (let i = 0; i < clickCount; i++) {
+    if (i > 0) await sleep(MULTI_TAP_GAP_MS);
+    await harmonyTouch(connectKey, "click", point);
+  }
+}
+
 export const gestureTapTool: ToolDefinition<Params, Result> = {
   id: "gesture-tap",
   interaction: {
@@ -90,7 +123,7 @@ export const gestureTapTool: ToolDefinition<Params, Result> = {
     failedMsg: ({ params, failureSignal }) =>
       `Failed to tap at (${Math.round(params.x * 100)}%, ${Math.round(params.y * 100)}%): ${failureSignal.error_code}`,
   },
-  description: `Press the device screen (iOS simulator, Android emulator, or Chromium app) at normalized coordinates: x and y are fractions of screen width and height in 0.0–1.0 (not pixels).
+  description: `Press the device screen (iOS simulator, Android emulator, HarmonyOS device, or Chromium app) at normalized coordinates: x and y are fractions of screen width and height in 0.0–1.0 (not pixels).
 Sends a Down event followed by an Up event at the same point. For Chromium, this dispatches a CDP mouse-press/release on the renderer.
 Set clickCount: 2 for a double-tap / double-click — the taps are dispatched as one gesture with proper click counting, which two separate tap calls cannot guarantee.
 Use when you need to tap a button, link, or any tappable element on the screen.
@@ -105,6 +138,10 @@ Before tapping, determine the correct coordinates by using discovery tools — p
     if (device.platform === "chromium") {
       return { chromium: chromiumCdpRef(device) };
     }
+    // HarmonyOS drives `uitest` over hdc, so resolving the iOS/Android-only
+    // simulator-server blueprint here would spawn a backend the tap never uses
+    // and block on its ready-wait.
+    if (device.platform === "harmony") return {};
     return { simulatorServer: simulatorServerRef(device) };
   },
   async execute(services, params) {
@@ -117,6 +154,11 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       // window services at ~5s per event — refuse up front like gesture-scroll.
       await assertChromiumWindowVisible(chromium, "tap", "chromium_tap_window_hidden");
       await tapChromium(chromium, params.x, params.y, clickCount);
+      return { tapped: true, timestampMs };
+    }
+    if (device.platform === "harmony") {
+      await ensureDep("hdc");
+      await tapHarmony(harmonyConnectKey(device.id), params.x, params.y, clickCount);
       return { tapped: true, timestampMs };
     }
     const api = services.simulatorServer as SimulatorServerApi;

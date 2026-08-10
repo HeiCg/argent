@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@argent/registry";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
@@ -19,6 +19,7 @@ import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
 import { describeVega, vegaRequires } from "../describe/platforms/vega";
+import { describeHarmony, harmonyRequires } from "../describe/platforms/harmony";
 import {
   selectorSchema,
   nodeText,
@@ -136,6 +137,7 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },
+  harmony: { device: true },
 };
 
 // ── Tree matching ────────────────────────────────────────────────────────
@@ -243,6 +245,9 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
     if (device.platform === "vega") {
       return describeVega(device.id);
     }
+    if (device.platform === "harmony") {
+      return describeHarmony(harmonyConnectKey(device.id));
+    }
     return describeChromium(services.chromium as ChromiumCdpApi);
   }
 
@@ -298,6 +303,7 @@ or before tapping an element that appears asynchronously.`,
       if (device.platform === "ios") await ensureDeps(iosRequires);
       else if (device.platform === "android") await ensureDeps(androidRequires);
       else if (device.platform === "vega") await ensureDeps(vegaRequires);
+      else if (device.platform === "harmony") await ensureDeps(harmonyRequires);
 
       // Resolve once, outside the poll loop — re-probing `xcrun` per fetch would
       // blow the per-fetch budget for a fake UDID that never caches. Same for

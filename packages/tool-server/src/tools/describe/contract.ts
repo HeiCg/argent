@@ -85,6 +85,7 @@ export type DescribeSource =
   | "android-devtools"
   | "cdp-dom"
   | "vega-automation"
+  | "harmony-uitest"
   | "tv-focus";
 
 // Internal shape produced by the per-platform adapters. The `tree` is consumed

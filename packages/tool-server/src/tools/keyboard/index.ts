@@ -7,6 +7,7 @@ import { makeIosImpl, makeIosRemoteImpl } from "./platforms/ios";
 import { makeAndroidImpl } from "./platforms/android";
 import { makeChromiumImpl } from "./platforms/chromium";
 import { vegaImpl } from "./platforms/vega";
+import { harmonyImpl } from "./platforms/harmony";
 
 const zodSchema = z.object({
   udid: z
@@ -50,6 +51,7 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },
+  harmony: { device: true },
 };
 
 // `keyboard` goes through `dispatchByPlatform`. The chromium branch resolves the
@@ -69,6 +71,8 @@ export function createKeyboardTool(registry: Registry): ToolDefinition<Params, K
     KeyboardParams,
     KeyboardResult,
     Record<string, unknown>,
+    Record<string, unknown>,
+    Record<string, unknown>,
     Record<string, unknown>
   >({
     toolId: "keyboard",
@@ -78,6 +82,7 @@ export function createKeyboardTool(registry: Registry): ToolDefinition<Params, K
     android: makeAndroidImpl(registry),
     chromium: makeChromiumImpl(registry),
     vega: vegaImpl,
+    harmony: harmonyImpl,
   });
   return {
     id: "keyboard",

@@ -4,12 +4,18 @@ import { chromiumCdpRef } from "../../blueprints/chromium-cdp";
 import { nativeDevtoolsRef } from "../../blueprints/native-devtools";
 import { resolveDevice } from "../../utils/device-info";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
-import type { LaunchAppResult, LaunchAppVegaServices, LaunchAppIosServices } from "./types";
+import type {
+  LaunchAppResult,
+  LaunchAppVegaServices,
+  LaunchAppIosServices,
+  LaunchAppHarmonyServices,
+} from "./types";
 import { makeIosImpl } from "./platforms/ios";
 import { iosRemoteImpl } from "./platforms/ios-remote";
 import { androidImpl } from "./platforms/android";
 import { chromiumImpl, type LaunchAppChromiumServices } from "./platforms/chromium";
 import { vegaImpl } from "./platforms/vega";
+import { harmonyImpl } from "./platforms/harmony";
 
 // Android package grammar is `[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+`;
 // iOS bundle ids use the same reverse-DNS shape with dashes allowed. The union
@@ -51,6 +57,7 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },
+  harmony: { device: true },
 };
 
 // `launch-app` resolves native-devtools through `registry` inside the iOS
@@ -102,7 +109,8 @@ Common Android packages: com.android.settings, com.android.chrome, com.google.an
       LaunchAppResult,
       LaunchAppChromiumServices,
       LaunchAppVegaServices,
-      LaunchAppIosServices
+      LaunchAppIosServices,
+      LaunchAppHarmonyServices
     >({
       toolId: "launch-app",
       capability,
@@ -111,6 +119,7 @@ Common Android packages: com.android.settings, com.android.chrome, com.google.an
       android: androidImpl,
       chromium: chromiumImpl,
       vega: vegaImpl,
+      harmony: harmonyImpl,
     }),
   };
 }

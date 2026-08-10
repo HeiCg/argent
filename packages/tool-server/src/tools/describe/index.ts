@@ -13,8 +13,9 @@ import { iosRequires, describeIos } from "./platforms/ios";
 import { describeChromium } from "./platforms/chromium";
 import { describeTv } from "./platforms/tv";
 import { describeVega, vegaRequires } from "./platforms/vega";
+import { describeHarmony, harmonyRequires } from "./platforms/harmony";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { isAndroidTv } from "../../utils/adb";
 import { formatDescribeTree } from "./format-tree";
@@ -59,6 +60,7 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },
+  harmony: { device: true },
 };
 
 interface ChromiumServices {
@@ -132,6 +134,11 @@ function makeDescribeExecute(
     vega: {
       requires: vegaRequires,
       handler: async (_services, params) => withDescription(await describeVega(params.udid)),
+    },
+    harmony: {
+      requires: harmonyRequires,
+      handler: async (_services, _params, device) =>
+        withDescription(await describeHarmony(harmonyConnectKey(device.id))),
     },
   });
 }

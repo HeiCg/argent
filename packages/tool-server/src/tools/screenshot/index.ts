@@ -6,11 +6,13 @@ import { z } from "zod";
 import type { Registry, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import { getScreenshotScale, httpScreenshot } from "../../utils/simulator-client";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
+import { captureHarmonyScreenshotPng } from "../../utils/harmony-screen";
+import { ensureDep } from "../../utils/check-deps";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 
 const execFileAsync = promisify(execFile);
@@ -69,6 +71,7 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },
+  harmony: { device: true },
 };
 
 /**
@@ -131,7 +134,7 @@ export function createScreenshotTool(registry: Registry): ToolDefinition<Params,
       completedMsg: ({ result }) => `Captured screenshot ${result.image.filename}`,
       failedMsg: ({ failureSignal }) => `Failed to capture screenshot: ${failureSignal.error_code}`,
     },
-    description: `Capture a screenshot of the device screen (iOS simulator, Android emulator, Apple TV simulator, Vega, or Chromium app). Returns { image }; the MCP adapter renders it as a visible image unless the caller passed includeImageInContext: false.
+    description: `Capture a screenshot of the device screen (iOS simulator, Android emulator, Apple TV simulator, Vega, HarmonyOS device, or Chromium app). Returns { image }; the MCP adapter renders it as a visible image unless the caller passed includeImageInContext: false.
 Use when you need a baseline image before an interaction or to inspect the current screen state after a delay.
 Fails if the simulator-server / emulator backend / Chromium CDP is not reachable for the given device.`,
     alwaysLoad: true,
@@ -174,6 +177,18 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
       // Vega device would throw), so capture directly here.
       if (device.platform === "vega") {
         const pngPath = await captureVegaScreenshotPng({ scale: params.scale });
+        const image = await requireArtifacts(ctx).register(pngPath, { mimeType: "image/png" });
+        return { image };
+      }
+
+      // HarmonyOS captures on-device with `uitest screenCap` and copies the PNG
+      // back over hdc; there is no simulator-server controller for the platform.
+      if (device.platform === "harmony") {
+        await ensureDep("hdc");
+        const pngPath = await captureHarmonyScreenshotPng({
+          connectKey: harmonyConnectKey(device.id),
+          scale: params.scale,
+        });
         const image = await requireArtifacts(ctx).register(pngPath, { mimeType: "image/png" });
         return { image };
       }

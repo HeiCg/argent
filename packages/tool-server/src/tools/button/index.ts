@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { Platform, ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
+import { harmonyKeyEvent } from "../../utils/harmony-uitest";
 import { UnsupportedOperationError } from "../../utils/capability";
 import { sendCommand } from "../../utils/simulator-client";
 import { ANDROID_BUTTON_KEYCODES, injectAndroidKeycode } from "../../utils/android-input";
@@ -44,16 +45,28 @@ export const BUTTONS_BY_PLATFORM: Record<Platform, ReadonlySet<Params["button"]>
   // `tv-remote` tool, and this tool's capability omits `vega` so a Vega device is
   // rejected before this map is consulted. Empty set keeps the record total.
   "vega": new Set([]),
-  // No tool drives a booted HarmonyOS device yet, and this tool's capability
-  // omits `harmony`, so a HarmonyOS device is rejected before this map is
-  // consulted. Empty set keeps the record total.
-  "harmony": new Set([]),
+  // `uitest uiInput keyEvent` names exactly these three (`Back`/`Home`/`Power`)
+  // and otherwise takes a raw numeric keyID. The named three are listed because
+  // each was confirmed on a device: Power toggles `powerStatus` ON↔SUSPEND, Home
+  // and Back both move the foreground bundle out of an app and back to the
+  // launcher. The rest are omitted rather than mapped from documented keycodes —
+  // `uitest` accepts any number and reports `No Error` whatever it does, so an
+  // unverified mapping would be indistinguishable from a working one.
+  "harmony": new Set(["home", "back", "power"]),
 };
 
 const capability: ToolCapability = {
   apple: { simulator: true, device: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
+  harmony: { device: true },
+};
+
+/** The names `uitest uiInput keyEvent` accepts, for the buttons it can press. */
+const HARMONY_BUTTON_KEYS: Partial<Record<Params["button"], string>> = {
+  home: "Home",
+  back: "Back",
+  power: "Power",
 };
 
 export const buttonTool: ToolDefinition<Params, Result> = {
@@ -64,8 +77,8 @@ export const buttonTool: ToolDefinition<Params, Result> = {
     failedMsg: ({ params, failureSignal }) =>
       `Failed to press ${params.button} button: ${failureSignal.error_code}`,
   },
-  description: `Press a device hardware button (iOS simulator, Android emulator or device). iOS sends a Down then Up event automatically; Android injects a single \`adb\` key event.
-Supported buttons depend on the platform: home, back, power, volumeUp, volumeDown, appSwitch, actionButton — buttons not present on the target platform (e.g. 'back' on iOS, 'actionButton' on Android) are rejected with a clear error.
+  description: `Press a device hardware button (iOS simulator, Android emulator or device, HarmonyOS device). iOS sends a Down then Up event automatically; Android injects a single \`adb\` key event; HarmonyOS injects one \`uitest uiInput keyEvent\`.
+Supported buttons depend on the platform: home, back, power, volumeUp, volumeDown, appSwitch, actionButton — buttons not present on the target platform (e.g. 'back' on iOS, 'actionButton' on Android, anything beyond home/back/power on HarmonyOS) are rejected with a clear error.
 Use when you need to trigger hardware button events.
 Returns { pressed: buttonName }.
 Fails if the device backend is not reachable — the simulator-server for iOS, or \`adb\` for Android (Android presses are injected with \`adb shell input keyevent\`).`,
@@ -79,7 +92,9 @@ Fails if the device backend is not reachable — the simulator-server for iOS, o
   // actually consumes it (mirrors the sibling `keyboard` tool's lazy services).
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
-    return device.platform === "android" ? {} : { simulatorServer: simulatorServerRef(device) };
+    return device.platform === "android" || device.platform === "harmony"
+      ? {}
+      : { simulatorServer: simulatorServerRef(device) };
   },
   async execute(services, params) {
     const device = resolveDevice(params.udid);
@@ -103,6 +118,16 @@ Fails if the device backend is not reachable — the simulator-server for iOS, o
       // mirroring the sibling `keyboard` tool's per-platform `requires: ["adb"]`.
       await ensureDep("adb");
       await injectAndroidKeycode(params.udid, ANDROID_BUTTON_KEYCODES[params.button]!);
+      return { pressed: params.button };
+    }
+    if (device.platform === "harmony") {
+      // Same reasoning as the Android branch above: presses go over the
+      // platform's own injection path rather than the simulator-server HID
+      // transport, so preflight the connector here (services() skips the
+      // sim-server for HarmonyOS). The BUTTONS_BY_PLATFORM guard above
+      // guarantees a key name exists for every accepted button.
+      await ensureDep("hdc");
+      await harmonyKeyEvent(harmonyConnectKey(device.id), HARMONY_BUTTON_KEYS[params.button]!);
       return { pressed: params.button };
     }
     const api = services.simulatorServer as SimulatorServerApi;

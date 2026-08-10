@@ -86,7 +86,7 @@ export async function resolveHdc(): Promise<string | null> {
   return path;
 }
 
-export async function resolveHdcOrThrow(): Promise<string> {
+async function resolveHdcOrThrow(): Promise<string> {
   const path = await resolveHdc();
   if (!path) {
     throw new FailureError(
@@ -104,7 +104,7 @@ export async function resolveHdcOrThrow(): Promise<string> {
   return path;
 }
 
-export interface HdcRunResult {
+interface HdcRunResult {
   stdout: string;
   stderr: string;
 }
@@ -167,7 +167,7 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-export interface HdcShellResult {
+interface HdcShellResult {
   /** Everything the remote command wrote, with the status sentinel removed. */
   stdout: string;
   /** The remote command's own exit status, recovered via the sentinel. */
