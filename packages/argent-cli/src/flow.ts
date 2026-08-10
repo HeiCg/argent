@@ -34,7 +34,8 @@ export interface StepReport {
   target?: string;
   /**
    * Nesting depth: absent/0 at top level, +1 inside each nesting step (`when:`
-   * guarded steps, `run:` fragment steps). Renderers indent by it.
+   * guarded steps, `run:` fragment steps, `repeat:` iteration markers and body
+   * steps). Renderers indent by it.
    */
   depth?: number;
   /**
