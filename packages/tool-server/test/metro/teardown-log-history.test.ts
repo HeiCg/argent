@@ -22,7 +22,7 @@ import {
   type JsRuntimeDebuggerApi,
 } from "../../src/blueprints/js-runtime-debugger";
 import { debuggerConnectTool } from "../../src/tools/debugger/debugger-connect";
-import { debuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
+import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
 import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions";
 
 let mockServer: http.Server;
@@ -80,7 +80,7 @@ beforeAll(async () => {
   registry = new Registry();
   registry.registerBlueprint(jsRuntimeDebuggerBlueprint);
   registry.registerTool(debuggerConnectTool);
-  registry.registerTool(debuggerLogRegistryTool);
+  registry.registerTool(createDebuggerLogRegistryTool(registry));
 });
 
 afterAll(async () => {
@@ -179,6 +179,27 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     expect(second.note).toBeUndefined();
   });
 
+  it("is dropped by an explicit debugger-connect, which starts a capture of its own", async () => {
+    // The consumer is gated on an EMPTY registry, so a breadcrumb survives every
+    // read that finds entries — and would then attach "a teardown ate your logs"
+    // to some later, unrelated empty read. An explicit connect makes it wrong
+    // anyway: from there the capture is this session's own, so empty honestly
+    // means nothing has been logged since. Same discipline as the
+    // screen-recording and native-profiler starts.
+    const urn = await connectAndCapture(LOGICAL_ID, 40);
+    await registry.disposeService(urn);
+
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: LOGICAL_ID });
+
+    const result = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: LOGICAL_ID,
+    })) as { totalEntries: number; note?: string };
+
+    expect(result.totalEntries).toBe(0);
+    expect(result.note).toBeUndefined();
+  });
+
   describe("when the connect id and the logicalDeviceId differ", () => {
     // Every case above connects with LOGICAL_ID, so `api.logicalDeviceId ===
     // deviceId` and the disposer's SECOND recordReapedSession never fires —
@@ -235,6 +256,21 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
 
       expect(viaLogicalId.note).toBeUndefined();
       expect(again.note).toBeUndefined();
+    });
+
+    it("drops BOTH breadcrumbs on an explicit connect, under either spelling", async () => {
+      const urn = await connectAndCapture(CONNECT_ID, 11);
+      await registry.disposeService(urn);
+
+      await registry.invokeTool("debugger-connect", { port: mockPort, device_id: CONNECT_ID });
+
+      for (const device_id of [CONNECT_ID, LOGICAL_ID]) {
+        const result = (await registry.invokeTool("debugger-log-registry", {
+          port: mockPort,
+          device_id,
+        })) as { note?: string };
+        expect(result.note).toBeUndefined();
+      }
     });
   });
 });

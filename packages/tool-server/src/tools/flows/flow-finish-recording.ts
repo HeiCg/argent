@@ -90,7 +90,7 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // flow-step-definitions; keeping the order is what makes the next one
         // recoverable rather than fatal.
         const summary = summarizeSteps(flow);
-        await clearRecordingSession(params.project_root, params.name);
+        clearRecordingSession(session);
         return { filePath, flowFile, savedTo, flow, summary };
       }
     );

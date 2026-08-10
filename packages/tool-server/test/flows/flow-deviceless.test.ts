@@ -251,6 +251,7 @@ describe("stepRequiresDevice", () => {
       "type": true,
       "await": true,
       "assert": true,
+      "idle": true,
       "scroll-to": true,
       "pinch": true,
       "rotate": true,
@@ -268,6 +269,7 @@ describe("stepRequiresDevice", () => {
       "type": { kind: "type", into: { text: "f" }, text: "hi" },
       "await": { kind: "await", condition: "visible", selector: { text: "f" } },
       "assert": { kind: "assert", condition: "visible", selector: { text: "f" } },
+      "idle": { kind: "idle" },
       "scroll-to": { kind: "scroll-to", target: { text: "f" }, direction: "down" },
       "pinch": { kind: "pinch", scale: 2 },
       "rotate": { kind: "rotate", by: 90 },
@@ -327,8 +329,12 @@ describe("stepRequiresDevice", () => {
 
 describe("a cleanup flow whose only step is stop-all-simulator-servers", () => {
   const teardownOnly: FlowStep[] = [
-    // What the recorder writes for a `stop-all-simulator-servers`: the
-    // `devices` key is stripped at record time and re-injected at replay.
+    // What the recorder writes for an UNSCOPED `stop-all-simulator-servers`.
+    // A scoped one keeps its `devices` in the YAML — `stripDeviceKeys` touches
+    // only the target keys, and `flow-tools.test.ts`'s "keeps the devices list
+    // when recording a scoped teardown" pins that — so the empty args here are
+    // the recording of the machine-wide sweep, which replay then NARROWS onto
+    // the run device.
     { kind: "tool", name: "stop-all-simulator-servers", args: {} },
   ];
 
@@ -398,6 +404,27 @@ describe("a cleanup flow whose only step is stop-all-simulator-servers", () => {
 
     expect(run.ok).toBe(true);
     expect(invokeTool).toHaveBeenCalledWith("stop-all-simulator-servers", {});
+  });
+
+  it("fails the run when list-devices itself breaks, rather than sweeping the machine", async () => {
+    // The opportunistic resolve swallows one answer — "nothing booted, or
+    // several" — and used to swallow every other failure with it: an
+    // adb/simctl error, a dead sub-tool, an abort. The teardown then ran
+    // UNSCOPED and reported pass, which is the machine-wide sweep this path
+    // exists to avoid, on a machine whose device list nobody could even read.
+    await writeFlow("teardownonly", teardownOnly);
+    const { registry, invokeTool } = mockRegistry({ booted: [DEVICE] });
+    vi.mocked(registry.invokeTool).mockImplementation(async (id: string) => {
+      if (id === "list-devices") throw new Error("adb: device offline");
+      return { ok: true };
+    });
+
+    await expect(runAuto(registry, "teardownonly")).rejects.toThrow(/adb: device offline/);
+    expect(invokeTool).not.toHaveBeenCalledWith(
+      "stop-all-simulator-servers",
+      expect.anything(),
+      expect.anything()
+    );
   });
 
   it("still scopes the teardown when the flow ALSO has a device step", async () => {

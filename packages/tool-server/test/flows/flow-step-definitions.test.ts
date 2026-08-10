@@ -130,6 +130,16 @@ const CASES = {
       target: "id=status matches /Done/",
     },
   ],
+  // Summarized under `await`, the key the flow file spells it with, not under
+  // its kind; its tuning fields are not part of either rendering.
+  "idle": [
+    { step: { kind: "idle" }, summary: "1. await: screen idle", target: undefined },
+    {
+      step: { kind: "idle", stableFor: 500, timeout: 8000 },
+      summary: "1. await: screen idle",
+      target: undefined,
+    },
+  ],
   "wait": [{ step: { kind: "wait", ms: 250 }, summary: "1. wait: 250ms", target: undefined }],
   "scroll-to": [
     {

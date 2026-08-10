@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import { stringify as yamlStringify, parse as yamlParse } from "yaml";
 import {
@@ -135,10 +136,14 @@ export function getFlowPath(projectRoot: string, name: string): string {
  * minting a second session that silently truncates the first.
  *
  * This is the same resolution {@link writeFlowFile} performs before its swap,
- * deliberately: the key and the write agree by construction, so wherever the
- * filesystem declines to answer (a dangling symlink, a flows dir that does not
- * exist yet) both fall back to the same pure-path spelling and the two remain
- * two — which is correct, because two files is what the write then produces.
+ * deliberately: the key and the write agree by construction. Where the
+ * filesystem declines to answer at all — a flows dir that does not exist yet —
+ * both fall back to the same pure-path spelling and two spellings remain two,
+ * which is correct, because two files is what the write then produces. Where it
+ * declines only because the target is missing — a dangling vault symlink — both
+ * follow the link by hand ({@link followDanglingLink}), so the two spellings
+ * become one key, which is equally correct: one file is what the write produces
+ * there.
  *
  * It costs one `realpath` pair per recording tool call, on a path already doing
  * file I/O.
@@ -494,24 +499,36 @@ export async function requireRecordingSession(
     );
   }
   // The key is the file's identity, so a session found under it may have been
-  // registered by a caller who spells that one file differently — a symlink
-  // into a shared vault, a symlinked `.argent/flows`, a name cased two ways on
-  // APFS. Handing it over would silently enrol this caller in the OTHER take:
-  // its steps would land in a file it never addressed, under a prerequisite it
-  // never declared, and its finish would report the other agent's steps as its
-  // own. That collision is what the restart already destroyed this caller's
-  // take for, so report it as the loss it is rather than papering over it. A
-  // root spelled with a trailing slash is not one of these — `getFlowPath`
-  // normalizes both sides before they are compared.
+  // registered under a DIFFERENT spelling of that one file — a symlink into a
+  // shared vault, a symlinked `.argent/flows`, a root spelled `/tmp` vs
+  // `/private/tmp`, a name cased two ways on APFS. Handing it over would risk
+  // silently enrolling this caller in someone else's take: its steps would land
+  // in a file it never addressed, under a prerequisite it never declared, and
+  // its finish would report the other agent's steps as its own. A root spelled
+  // with a trailing slash is not one of these — `getFlowPath` normalizes both
+  // sides before they are compared.
+  //
+  // Which of two situations this is cannot be told apart from here, so the
+  // message must assert neither. It is EITHER the same caller respelling its
+  // own root or name — nothing was truncated, the take is live and intact, and
+  // re-addressing it under the registered spelling resumes it — OR another
+  // caller's restart, which did truncate. Naming the second as fact sent a
+  // caller in the first situation to abandon a healthy recording and re-walk
+  // the whole flow on the device. The advice that recovers both is the same:
+  // use the spelling the session is registered under, which is the one
+  // `flow-start-recording` was given.
   const asked = getFlowPath(projectRoot, name);
   const held = getFlowPath(session.projectRoot, session.name);
   if (asked !== held) {
     throw new FailureError(
-      `Recording of "${name}" in ${projectRoot} is no longer active — ${held} and ${asked} ` +
-        `are the same file on this filesystem (a symlink, or a case-insensitive volume), and ` +
-        `"${session.name}" in ${session.projectRoot} is the take that now holds it. Starting ` +
-        `that recording truncated this one. Record under a name that resolves to its own file, ` +
-        `or coordinate with the other caller — restarting here would destroy their take in turn.`,
+      `Recording of "${name}" in ${projectRoot} is not registered under that spelling — ${held} ` +
+        `and ${asked} are the same file on this filesystem (a symlink, or a case-insensitive ` +
+        `volume), and the live take on it is registered as "${session.name}" in ` +
+        `${session.projectRoot}. If that is your own recording spelled another way, re-address ` +
+        `it exactly as you passed it to flow-start-recording — the take is intact and still ` +
+        `recording. If it is another caller's, their flow-start-recording truncated yours; ` +
+        `record under a name that resolves to its own file rather than restarting here, which ` +
+        `would destroy their take in turn.`,
       {
         error_code: FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING,
         failure_stage: "flow_recording_key_aliased",
@@ -524,8 +541,18 @@ export async function requireRecordingSession(
   return session;
 }
 
-export async function clearRecordingSession(projectRoot: string, name: string): Promise<void> {
-  recordings.delete(await resolveFlowKey(projectRoot, name));
+/**
+ * Retire a finished recording, by the key the session actually HOLDS rather
+ * than a fresh resolution of its spelling — the same choice
+ * {@link appendStepToFlow} makes, and for the same reason. A key that moved
+ * under the session (a symlinked flow file whose target went away
+ * mid-recording, or a link repointed) re-resolves to something this map does
+ * not hold, so the delete missed silently: the finish reported success while
+ * the session stayed live, unfinishable, and holding the key against its own
+ * restart.
+ */
+export function clearRecordingSession(session: RecordingSession): void {
+  recordings.delete(session.key);
 }
 
 export function __resetRecordingsForTesting(): void {
@@ -679,6 +706,14 @@ export type FlowStep =
       expectedText?: string;
       textMatch?: TextMatchMode;
     }
+  /**
+   * Screen READINESS: the UI tree has content, and neither it nor the rendered
+   * pixels are still changing. Spelled `await: { idle: true }` — a condition
+   * like any other, but the only one that takes no selector, because stillness
+   * is a property of the whole screen. There is no `assert` form: "has it
+   * stopped moving yet" is inherently a wait.
+   */
+  | { kind: "idle"; timeout?: number; stableFor?: number }
   | { kind: "wait"; ms: number }
   | { kind: "scroll-to"; target: FlowSelector; direction: ScrollDirection; within?: FlowSelector }
   | { kind: "pinch"; selector?: FlowSelector; scale: number }
@@ -816,6 +851,14 @@ type YamlWaitCondition =
 
 type YamlTextWaitCondition = Extract<YamlWaitCondition, { text: unknown }>;
 
+/**
+ * The one condition that takes no selector. It shares the `await:` key with
+ * {@link YamlWaitCondition} but is deliberately NOT part of that union — a step
+ * body carries either a selector condition or this one, never a mix — so it is
+ * parsed by {@link parseIdleFields} rather than by parseWaitFields.
+ */
+type YamlIdleCondition = { idle: true; stableFor?: number; timeout?: number };
+
 /** `scroll-to` body: a bare target (scrolls down), or a map with options. */
 type YamlScrollBody =
   | YamlSelector
@@ -840,7 +883,7 @@ type YamlStep =
   | { tap: TapBody }
   | { "long-press": YamlTarget | { on: YamlTarget; duration?: number } }
   | { type: { into: YamlSelector; text: string; submit?: boolean } }
-  | { await: YamlWaitCondition & { timeout?: number } }
+  | { await: (YamlWaitCondition & { timeout?: number }) | YamlIdleCondition }
   | { assert: YamlWaitCondition }
   | { wait: number }
   | { "scroll-to": YamlScrollBody }
@@ -1123,10 +1166,24 @@ function waitToYaml(
   return body;
 }
 
+/**
+ * Sugar an `idle` step back under its `await:` key. Optional fields are emitted
+ * only when set, so the canonical minimal spelling (`await: { idle: true }`)
+ * round-trips unchanged.
+ */
+function idleToYaml(step: Extract<FlowStep, { kind: "idle" }>): YamlStep {
+  const body: YamlIdleCondition = { idle: true };
+  if (step.stableFor !== undefined) body.stableFor = step.stableFor;
+  if (step.timeout !== undefined) body.timeout = step.timeout;
+  return { await: body };
+}
+
 function toYamlStep(step: FlowStep): YamlStep {
   switch (step.kind) {
     case "echo":
       return { echo: step.message };
+    case "idle":
+      return idleToYaml(step);
     case "launch":
       return { launch: step.app };
     case "run":
@@ -1541,18 +1598,22 @@ type WaitFields = {
  * `assert` carrying one is rejected rather than silently ignored.
  */
 function parseWaitFields(raw: unknown, kind: "await" | "assert" | "when"): WaitFields {
+  // What the author is allowed to write, which is NOT the same as what this
+  // function parses: a body naming `idle` is routed to parseIdleFields before
+  // we get here, so this list is only ever read by an author whose body named
+  // no legal condition, or more than one — and omitting `idle` from it left the
+  // one condition they may have been reaching for out of the answer. Only
+  // `await` gains it; `assert` and `when:` genuinely have no readiness form.
+  const legalKeys = kind === "await" ? [...WAIT_CONDITIONS, IDLE_CONDITION] : WAIT_CONDITIONS;
   if (raw === null || typeof raw !== "object") {
-    badEntry({ [kind]: raw }, `${kind} needs a condition (${WAIT_CONDITIONS.join(", ")})`);
+    badEntry({ [kind]: raw }, `${kind} needs a condition (${legalKeys.join(", ")})`);
   }
   const b = raw as Record<string, unknown>;
 
   // The condition is the key; its value is the selector.
   const present = WAIT_CONDITIONS.filter((c) => c in b);
   if (present.length !== 1) {
-    badEntry(
-      { [kind]: b },
-      `${kind} needs exactly one condition key (${WAIT_CONDITIONS.join(", ")})`
-    );
+    badEntry({ [kind]: b }, `${kind} needs exactly one condition key (${legalKeys.join(", ")})`);
   }
   const condition = present[0]!;
 
@@ -1564,16 +1625,7 @@ function parseWaitFields(raw: unknown, kind: "await" | "assert" | "when"): WaitF
         "assert has no timeout — it is an immediate check; use `await` for a timed wait"
       );
     }
-    // Like `wait`, reject non-finite values: YAML `.inf` (or an overflowing
-    // literal like 1e400) parses to Infinity — typeof number and > 0 — which
-    // would make the runner's poll deadline unreachable and the await unbounded.
-    if (typeof b.timeout !== "number" || !Number.isFinite(b.timeout) || b.timeout <= 0) {
-      badEntry(
-        { [kind]: b },
-        "await.timeout needs a positive number of milliseconds (e.g. `timeout: 10000`)"
-      );
-    }
-    timeout = b.timeout as number;
+    timeout = parseAwaitTimeout({ [kind]: b }, b.timeout);
   }
 
   // `await` takes the condition key plus `timeout`; `assert` the condition key
@@ -1629,6 +1681,198 @@ function parseWaitFields(raw: unknown, kind: "await" | "assert" | "when"): WaitF
   }
 
   return { condition, selector: parseSelector(b[condition], `${kind}.${condition}`), timeout };
+}
+
+/**
+ * The one condition key that takes no selector. Its presence in an
+ * `await`/`assert` body routes parsing away from {@link parseWaitFields} — see
+ * {@link parseIdleFields}.
+ */
+const IDLE_CONDITION = "idle";
+
+/**
+ * `idle`'s defaults and cadence, spelled here rather than beside the runner
+ * because the parser needs all of them: a wait that cannot contain the settle
+ * it asks for can never be satisfied, and this file rejects unsatisfiable
+ * gates. The runner imports them back.
+ */
+export const IDLE_DEFAULT_TIMEOUT_MS = 7500;
+export const IDLE_DEFAULT_STABLE_FOR_MS = 250;
+
+/** `idle` poll cadence, matching `await-screen-idle`'s own. */
+export const IDLE_POLL_MS = 200;
+
+/**
+ * How many consecutive intervals must read as still before the screen is
+ * called settled. Two, not one, because a single agreeing pair of captures is
+ * not evidence of stillness: any animation that reverses — a cross-fade, a
+ * pulse, a bounce — has a turning point, and two samples straddling it come
+ * back identical while the screen is very much moving. Observed on a 3s
+ * white/indigo cross-fade, where a default-shaped step passed on roughly one
+ * run in three. A second agreeing interval needs a third sample, which the
+ * same phase symmetry cannot supply unless the animation's period happens to
+ * match the poll — so the aliasing that survives one comparison does not
+ * survive two.
+ */
+export const IDLE_MIN_STILL_INTERVALS = 2;
+
+/**
+ * The stretch a settle is measured over: the intervals it takes, at one poll
+ * each. Nothing can be concluded about motion in less.
+ */
+export const IDLE_SETTLE_SPAN_MS = IDLE_MIN_STILL_INTERVALS * IDLE_POLL_MS;
+
+/**
+ * The smallest `timeout:` that can contain a settle holding for `stableFor`. A
+ * `timeout:` under this cannot produce a clean settle however still the screen
+ * is, so the step would report on a screen it never had the chance to judge.
+ *
+ * The hold is measured ACROSS the polls, not after them: the runner starts the
+ * hold clock on the first read that carries content and settles on the first
+ * round that has both {@link IDLE_MIN_STILL_INTERVALS} agreeing intervals AND
+ * `stableFor` of elapsed hold. The two costs therefore overlap, and what the
+ * wait must contain is whichever of them is longer — plus one poll, the budget
+ * the closing round needs to be allowed to start (see the runner's
+ * MIN_ROUND_BUDGET_MS).
+ *
+ * Adding them instead over-demanded by up to {@link IDLE_SETTLE_SPAN_MS}, and
+ * taught a cost model the runner does not implement: `timeout: 1000,
+ * stableFor: 800` was rejected as impossible and settles in ~820ms, and the
+ * default hold was rejected at `timeout: 600` while settling in ~411ms. The
+ * two agree exactly at `stableFor: 0`, which is where the sum was derived.
+ */
+export function idleMinimumTimeoutMs(stableFor: number): number {
+  return Math.max(IDLE_SETTLE_SPAN_MS, stableFor) + IDLE_POLL_MS;
+}
+
+/**
+ * Absolute ceiling on the hold, so an obviously wrong unit (seconds, or a
+ * pasted timestamp) is rejected as a number rather than silently becoming a
+ * gate no run can pass. The relationship that actually matters is with
+ * `timeout`, checked separately.
+ */
+const IDLE_MAX_STABLE_FOR_MS = 600_000;
+
+/**
+ * The `timeout` sibling key an `await` may carry, spelled once for both the
+ * selector conditions and `idle`.
+ *
+ * Non-finite values are rejected alongside non-positive ones: YAML `.inf` (or
+ * an overflowing literal like 1e400) parses to Infinity — typeof number and
+ * > 0 — which would make the runner's poll deadline unreachable and the await
+ * unbounded.
+ */
+function parseAwaitTimeout(entry: unknown, value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    badEntry(
+      entry,
+      "await.timeout needs a positive number of milliseconds (e.g. `timeout: 10000`)"
+    );
+  }
+  return value as number;
+}
+
+/** Bounded non-negative integer option, in milliseconds. */
+function parseBoundedMs(entry: unknown, value: unknown, where: string, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > max) {
+    badEntry(entry, `${where} needs an integer between 0 and ${max} (milliseconds)`);
+  }
+  return value as number;
+}
+
+/**
+ * Parse an `await`/`assert` body carrying the `idle` condition. Returns the
+ * finished step, because unlike the selector conditions it has no selector to
+ * hand back as fields.
+ *
+ * `assert` is rejected outright: waiting is the whole point of the check.
+ */
+function parseIdleFields(raw: Record<string, unknown>, kind: "await" | "assert"): FlowStep {
+  const entry = { [kind]: raw };
+
+  if (kind !== "await") {
+    // Name the other condition's home too when the body carries one. Reporting
+    // the mixing error first sent the author to a second round trip: splitting
+    // `assert: { idle: true, visible: X }` as instructed yields
+    // `assert: { idle: true }`, which has no assert form either.
+    const mixed = WAIT_CONDITIONS.filter((c) => c in raw);
+    badEntry(
+      entry,
+      "idle has no assert form — it waits for the screen to stop changing, which is an `await`" +
+        (mixed.length > 0
+          ? `. Give it its own step as \`await: { idle: true }\` and leave \`${mixed.join(
+              "`, `"
+            )}\` in the assert — a step checks exactly one condition`
+          : "")
+    );
+  }
+  rejectUnknownKeys(entry, raw, ["idle", "stableFor", "timeout"], kind);
+
+  // `idle: true` only. A falsey value would spell "assert the screen is NOT
+  // settled", which no flow wants and the runner cannot answer.
+  if (raw.idle !== true) {
+    badEntry(entry, "idle takes only `true` (`await: { idle: true }`)");
+  }
+
+  const step: Extract<FlowStep, { kind: "idle" }> = { kind: "idle" };
+  if ("timeout" in raw) step.timeout = parseAwaitTimeout(entry, raw.timeout);
+  if (raw.stableFor !== undefined) {
+    step.stableFor = parseBoundedMs(entry, raw.stableFor, "idle.stableFor", IDLE_MAX_STABLE_FOR_MS);
+  }
+
+  // A wait that cannot contain the settle it asks for is a gate that never
+  // passes, however still the screen is — and it does not fail quietly: the
+  // step spends its whole timeout and then reports either that the screen
+  // never stopped moving or that it could not be screenshotted, both of them
+  // claims about an app that did nothing. Which one it picks depends on where
+  // the budget ran out, so the same file yields different verdicts run to run.
+  // Caught here, deviceless.
+  //
+  // Checked against the EFFECTIVE hold, not just a written-out one: the
+  // default is what most steps run with, so leaving it out was the way to get
+  // an unsatisfiable step past the parser (`timeout: 100` was accepted while
+  // the identical `timeout: 100, stableFor: 250` was rejected).
+  const timeoutMs = step.timeout ?? IDLE_DEFAULT_TIMEOUT_MS;
+  const stableFor = step.stableFor ?? IDLE_DEFAULT_STABLE_FOR_MS;
+  const needed = idleMinimumTimeoutMs(stableFor);
+  if (timeoutMs < needed) {
+    badEntry(
+      entry,
+      `idle needs a timeout of at least ${needed}ms to hold still for ` +
+        `${step.stableFor === undefined ? `the default ` : ``}${stableFor}ms: a settle is ` +
+        `${IDLE_MIN_STILL_INTERVALS + 1} reads spanning ${IDLE_MIN_STILL_INTERVALS} ` +
+        `${IDLE_POLL_MS}ms polls, and the hold is counted across those polls rather than after ` +
+        `them — so the wait has to contain whichever of the two is longer, plus the ` +
+        `${IDLE_POLL_MS}ms of budget the closing round has to have left to be allowed to start. ` +
+        `Raise ` +
+        `\`timeout\`${step.stableFor === undefined ? "" : " or lower `stableFor`"}`
+    );
+  }
+  return step;
+}
+
+/**
+ * Whether an `await`/`assert` body names the `idle` condition rather than an
+ * ordinary selector one. Rejects a body that mixes the two rather than silently
+ * preferring one.
+ */
+function isIdleCondition(raw: unknown, kind: "await" | "assert"): boolean {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const body = raw as Record<string, unknown>;
+  if (!(IDLE_CONDITION in body)) return false;
+  // An `assert` body naming idle is wrong however it is spelled, so let
+  // parseIdleFields raise the one error that ends the matter — it folds the
+  // mixing advice in rather than making the author earn it on a second run.
+  if (kind === "assert") return true;
+  const selectorConditions = WAIT_CONDITIONS.filter((c) => c in body);
+  if (selectorConditions.length > 0) {
+    badEntry(
+      { [kind]: body },
+      `${kind} mixes \`${IDLE_CONDITION}\` with \`${selectorConditions.join("`, `")}\` — a step ` +
+        `checks exactly one condition`
+    );
+  }
+  return true;
 }
 
 /**
@@ -1964,6 +2208,17 @@ function parseWhenCondition(raw: unknown): WhenCondition {
     badEntry({ when: raw }, `when needs exactly one condition key (${conditionKeys})`);
   }
   const b = raw as Record<string, unknown>;
+  // A guard asks what is on the screen NOW, so "has it stopped moving yet" is
+  // not a question it can ask. Say that outright, the way the assert form does,
+  // rather than listing the keys the author could have written and leaving them
+  // to infer that the one they did write is not among them.
+  if (IDLE_CONDITION in b) {
+    badEntry(
+      { when: raw },
+      "when has no idle form — stillness is a wait, and a guard asks what is on the screen now. " +
+        "Put `await: { idle: true }` before the block instead"
+    );
+  }
   const present = [...WAIT_CONDITIONS, "platform"].filter((c) => c in b);
   if (present.length !== 1) {
     badEntry({ when: raw }, `when needs exactly one condition key (${conditionKeys})`);
@@ -2177,6 +2432,14 @@ function fromYamlStep(raw: YamlStep, whenDepth = 0): FlowStep {
   }
   const kinds = STEP_DIRECTIVE_KEYS.filter((k) => k in entry);
   if (kinds.length === 0) {
+    // `idle` is a condition, not a step kind, and it is the one near-miss the
+    // docs actively produce: every other condition is written with a selector
+    // beside it, so `await:` comes along for free, while this one reads like a
+    // directive of its own. Spell the answer rather than reporting that a step
+    // kind nobody wrote is unrecognized.
+    if (IDLE_CONDITION in entry) {
+      badEntry(raw, `idle is a condition, not a step kind — write it as \`await: { idle: true }\``);
+    }
     const hint = Object.keys(entry)
       .map((k) => closestKey(k, STEP_DIRECTIVE_KEYS))
       .find((h) => h !== null);
@@ -2240,12 +2503,24 @@ function fromYamlStep(raw: YamlStep, whenDepth = 0): FlowStep {
     return step;
   }
 
+  // `await:` / `assert:` carry two families of condition: the selector ones
+  // (visible/hidden/exists/text, matched against the UI tree) and `idle`, which
+  // takes no selector because stillness is a property of the whole screen. The
+  // body's key decides which.
   if ("await" in raw) {
-    return { kind: "await", ...parseWaitFields((raw as { await: unknown }).await, "await") };
+    const body = (raw as { await: unknown }).await;
+    if (isIdleCondition(body, "await")) {
+      return parseIdleFields(body as Record<string, unknown>, "await");
+    }
+    return { kind: "await", ...parseWaitFields(body, "await") };
   }
 
   if ("assert" in raw) {
-    return { kind: "assert", ...parseWaitFields((raw as { assert: unknown }).assert, "assert") };
+    const body = (raw as { assert: unknown }).assert;
+    if (isIdleCondition(body, "assert")) {
+      return parseIdleFields(body as Record<string, unknown>, "assert");
+    }
+    return { kind: "assert", ...parseWaitFields(body, "assert") };
   }
 
   if ("wait" in raw) {
@@ -2493,7 +2768,12 @@ let flowWriteSeq = 0;
  * (`ENAMETOOLONG` out of `rename`) into a report of a directory-permissions
  * problem the user would then go and not find.
  */
-function writeFailureHint(code: string | undefined, filePath: string, target: string): string {
+function writeFailureHint(
+  code: string | undefined,
+  filePath: string,
+  target: string,
+  resolvedDir: string
+): string {
   // The directory the swap actually uses — `dirname(realpath(filePath))`, not
   // `dirname(filePath)`. For a flow file that is a symlink into a shared vault
   // those are different directories, and only the first one can be the cause:
@@ -2501,11 +2781,17 @@ function writeFailureHint(code: string | undefined, filePath: string, target: st
   // writable while the vault, the only unwritable thing in the picture, went
   // unmentioned. Say so when they differ, since "your flows dir is fine, the
   // link target is not" is the whole diagnosis there.
+  //
+  // Compared against the RESOLVED flows dir, not the spelled one. Every
+  // symlinked ANCESTOR moves the target too — which on macOS is every `/tmp`
+  // and `/var/folders` path — so comparing against the spelling accused a flow
+  // file that is a perfectly ordinary regular file of being a symlink, and
+  // contrasted two names for one directory.
   const dir = path.dirname(target);
   const via =
-    dir === path.dirname(filePath)
+    dir === resolvedDir
       ? ""
-      : ` (${path.basename(filePath)} is a symlink, so the write lands in ${dir}, not in ${path.dirname(filePath)})`;
+      : ` (${path.basename(filePath)} is a symlink, so the write lands in ${dir}, not in ${resolvedDir})`;
   switch (code) {
     case "EACCES":
     case "EPERM":
@@ -2554,12 +2840,78 @@ function scrubTempPath(err: unknown, tmpPath: string, filePath: string): Error {
  * first swap and the rest would disagree wherever an ancestor is itself a
  * symlink, which is the default for the temp dir on macOS.
  *
+ * A DANGLING link is the case `realpath` cannot express — it fails on the whole
+ * path rather than answering with the target — and that failure would put the
+ * link's own spelling back in front of `rename`, i.e. exactly the swap this
+ * exists to prevent. {@link followDanglingLink} resolves it by hand.
+ *
  * Shared with {@link resolveFlowKey}, so the identity a recording is keyed by
  * and the file its steps land in can never disagree.
+ *
+ * `dir` — the flows directory as the filesystem sees it — is returned alongside,
+ * because it is the only thing a caller can compare `target`'s directory against
+ * to tell "the flow FILE is a symlink" from "some ancestor of it is". Comparing
+ * against the spelled `path.dirname(filePath)` cannot: on macOS every `/tmp` and
+ * `/var/folders` path has a symlinked ancestor.
  */
-async function canonicalFlowPath(filePath: string): Promise<string> {
+async function canonicalFlowTarget(filePath: string): Promise<{ dir: string; target: string }> {
   const dir = await fs.realpath(path.dirname(filePath)).catch(() => path.dirname(filePath));
-  return await fs.realpath(filePath).catch(() => path.join(dir, path.basename(filePath)));
+  const real = await fs.realpath(filePath).catch(() => null);
+  if (real !== null) return { dir, target: real };
+  return { dir, target: await followDanglingLink(path.join(dir, path.basename(filePath))) };
+}
+
+async function canonicalFlowPath(filePath: string): Promise<string> {
+  return (await canonicalFlowTarget(filePath)).target;
+}
+
+/**
+ * How deep a chain of not-yet-existing symlinks {@link followDanglingLink}
+ * walks. A backstop against a link cycle, which `readlink` alone cannot detect;
+ * far past any real vault layout, which is one hop.
+ */
+const MAX_DANGLING_LINK_HOPS = 32;
+
+/**
+ * Where a link whose TARGET does not exist actually points.
+ *
+ * `realpath` fails outright on a dangling symlink, so the fallback above would
+ * hand back the link's own path — and `rename(2)` replaces the path it is
+ * given, so the first write of a recording would swap the symlink for a regular
+ * file. That is the shared-vault setup's normal starting state: the link is
+ * created before the first recording, or its target is removed by a branch
+ * switch or a `git clean`. The vault copy is then never created, the project is
+ * permanently detached from the vault, and any sibling project linked to the
+ * same target is left dangling — with the tool reporting success.
+ *
+ * So resolve the link by hand, one hop at a time, canonicalizing each target's
+ * DIRECTORY the way {@link canonicalFlowPath} does so the result agrees with
+ * what a later append (by then a plain `realpath`) will compute. A path that is
+ * not a link — the ordinary "flow file does not exist yet" case — comes back
+ * unchanged on the first probe.
+ */
+async function followDanglingLink(linkPath: string): Promise<string> {
+  let current = linkPath;
+  for (let hop = 0; hop < MAX_DANGLING_LINK_HOPS; hop++) {
+    const target = await fs.readlink(current).catch(() => null);
+    if (target === null) return current;
+    const resolved = path.resolve(path.dirname(current), target);
+    // The rest of the chain may well exist — only the last hop has to dangle
+    // for `realpath` to have refused the whole path.
+    const real = await fs.realpath(resolved).catch(() => null);
+    if (real !== null) return real;
+    const targetDir = await fs.realpath(path.dirname(resolved)).catch(() => path.dirname(resolved));
+    current = path.join(targetDir, path.basename(resolved));
+  }
+  return current;
+}
+
+/** Whether this process may write `filePath` — its mode as the kernel reads it. */
+async function isWritable(filePath: string): Promise<boolean> {
+  return fs.access(filePath, fsConstants.W_OK).then(
+    () => true,
+    () => false
+  );
 }
 
 /**
@@ -2597,19 +2949,49 @@ async function canonicalFlowPath(filePath: string): Promise<string> {
  * tool-server (a different install bundle) that could be writing the same
  * directory.
  *
- * The swap costs two things a write-through would have kept, both accepted for
- * the atomicity: it needs write permission on the DIRECTORY rather than on the
- * file, and it replaces the inode, so a chmod on the flow file or a hardlink to
- * it does not survive an append.
+ * The swap costs one thing a write-through would have kept, accepted for the
+ * atomicity: it needs write permission on the DIRECTORY rather than on the
+ * file, and it replaces the inode, so a hardlink to the flow file does not
+ * survive an append. The file's own MODE is not among the costs — see below.
  */
 async function writeFlowFile(filePath: string, content: string): Promise<void> {
-  const target = await canonicalFlowPath(filePath);
+  const { dir: resolvedDir, target } = await canonicalFlowTarget(filePath);
+  // Null when the flow file does not exist yet (the first write of a recording),
+  // which has no mode to preserve and nothing to be refused by.
+  const previousMode = await fs.stat(target).then(
+    (s) => s.mode & 0o7777,
+    () => null
+  );
+  if (previousMode !== null && !(await isWritable(target))) {
+    // The swap needs permission on the directory, not on the file, so it would
+    // replace a `chmod 0444` flow file regardless — turning a plain write's
+    // EACCES into a silent success that also relaxed the mode to the umask
+    // default. Refuse instead, so a read-only flow file goes on meaning what it
+    // meant before the write became atomic.
+    throw new FailureError(
+      `Failed to write flow file ${filePath} (EACCES) — ${target} is not writable ` +
+        `(mode ${previousMode.toString(8).padStart(4, "0")}). An append replaces the file via a ` +
+        `sibling temp file and rename, which needs permission on the directory rather than on ` +
+        `the file — so this is refused explicitly rather than quietly overwriting a flow you ` +
+        `made read-only. chmod it writable to record over it.`,
+      {
+        error_code: FAILURE_CODES.FLOW_FILE_WRITE_FAILED,
+        failure_stage: "flow_file_write",
+        failure_area: "tool_server",
+        error_kind: "unknown",
+      }
+    );
+  }
   const tmpPath = path.join(
     path.dirname(target),
     `.argent-flow-${process.pid}-${++flowWriteSeq}.tmp`
   );
   try {
     await fs.writeFile(tmpPath, content, "utf8");
+    // The scratch file was created under this process's umask, and rename
+    // carries ITS mode over — so without this every append would quietly
+    // rewrite the flow file's permissions to 0644.
+    if (previousMode !== null) await fs.chmod(tmpPath, previousMode);
     // Atomic within a filesystem, and the temp file is a sibling of the target,
     // so it is always the same one.
     await fs.rename(tmpPath, target);
@@ -2631,7 +3013,7 @@ async function writeFlowFile(filePath: string, content: string): Promise<void> {
     const errno = err instanceof Error ? (err as NodeJS.ErrnoException) : undefined;
     const code = typeof errno?.code === "string" ? errno.code : undefined;
     throw new FailureError(
-      `Failed to write flow file ${filePath}${code ? ` (${code})` : ""} — ${writeFailureHint(code, filePath, target)}`,
+      `Failed to write flow file ${filePath}${code ? ` (${code})` : ""} — ${writeFailureHint(code, filePath, target, resolvedDir)}`,
       {
         error_code: FAILURE_CODES.FLOW_FILE_WRITE_FAILED,
         failure_stage: "flow_file_write",

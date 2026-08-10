@@ -355,7 +355,11 @@ describe("two recording keys that resolve to one file", () => {
     // B's take.
     const err = await captureFailure(addEcho(rootA, "checkout", "h1-d"));
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
-    expect(formatErrorForAgent(err)).toContain("no longer active");
+    // The guard cannot tell this from the same caller respelling its own root,
+    // so it names the take that holds the key and offers both readings rather
+    // than asserting the destructive one. Here the destructive one is true.
+    expect(formatErrorForAgent(err)).toContain("not registered under that spelling");
+    expect(formatErrorForAgent(err)).toContain("truncated yours");
 
     await addEcho(rootB, "checkout", "h2-a");
     // A's finish reports the same loss, rather than handing back B's take as
@@ -407,6 +411,113 @@ describe("two recording keys that resolve to one file", () => {
 
     const err = await captureFailure(addEcho(root, "Login", "l3"));
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+  });
+
+  it("does not accuse a caller that respelled its own root of destroying a take", async () => {
+    // The other half of the guard's ambiguity, and the common one on macOS:
+    // `/tmp` is a symlink, so any code path that realpaths a root produces the
+    // second spelling. Nothing was truncated, there is no other caller, and the
+    // take is live and intact — so the message must say how to resume it rather
+    // than sending the agent to re-walk the whole flow on the device.
+    const root = await makeRoot("respelled-root");
+    const realRoot = await fs.realpath(root);
+    if (realRoot === root) return; // no symlinked ancestor on this host
+
+    await start(root, "checkout");
+    await addEcho(root, "checkout", "c1");
+
+    const err = await captureFailure(addEcho(realRoot, "checkout", "c2"));
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    // Its own stage, so telemetry can tell an aliased key from a key that was
+    // never started — the two share an error code and want different fixes.
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_recording_key_aliased");
+    const message = formatErrorForAgent(err);
+    expect(message).toContain("re-address it exactly as you passed it to flow-start-recording");
+    expect(message).toContain("the take is intact and still recording");
+    // The claim that made this a false alarm.
+    expect(message).not.toMatch(/truncated this one/);
+    expect(message).toContain(root);
+
+    // And the take really is resumable under its registered spelling.
+    await addEcho(root, "checkout", "c3");
+    expect(await readMarkers(root, "checkout")).toEqual(["echo:c1", "echo:c3"]);
+  });
+
+  it("writes THROUGH a dangling vault symlink instead of replacing it", async () => {
+    // The shared-vault workflow's normal starting state: the link is created
+    // before the first recording, or the vault copy is removed by a branch
+    // switch or a `git clean`. `realpath` fails on the whole path there, so the
+    // swap used to rename onto the link's own spelling — replacing the symlink
+    // with a regular file, never creating the vault target, and permanently
+    // detaching the project from the vault while reporting success.
+    const vault = await makeRoot("dangling-vault");
+    const root = await makeRoot("dangling-proj");
+    const target = path.join(vault, "shared.yaml");
+    await fs.mkdir(path.dirname(flowPath(root, "shared")), { recursive: true });
+    await fs.symlink(target, flowPath(root, "shared"));
+
+    await start(root, "shared");
+    await addEcho(root, "shared", "s1");
+
+    expect((await fs.lstat(flowPath(root, "shared"))).isSymbolicLink()).toBe(true);
+    expect(markers(parseFlow(await fs.readFile(target, "utf8")).steps)).toEqual(["echo:s1"]);
+  });
+
+  it("keys two projects onto one dangling vault target, as one file", async () => {
+    // The key follows the same resolution as the write, so two projects linking
+    // the same not-yet-created vault file are one recording — matching what the
+    // write then produces, rather than two sessions racing onto one output.
+    const vault = await makeRoot("dangling-shared-vault");
+    const rootA = await makeRoot("dangling-a");
+    const rootB = await makeRoot("dangling-b");
+    const target = path.join(vault, "checkout.yaml");
+    for (const root of [rootA, rootB]) {
+      await fs.mkdir(path.dirname(flowPath(root, "checkout")), { recursive: true });
+      await fs.symlink(target, flowPath(root, "checkout"));
+    }
+
+    await start(rootA, "checkout");
+    await addEcho(rootA, "checkout", "a1");
+
+    const restarted = await start(rootB, "checkout");
+    expect(restarted.restarted).toBe(true);
+    expect(restarted.discardedSteps).toBe(1);
+    expect((await fs.lstat(flowPath(rootA, "checkout"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("keeps a recording reachable when its vault target is deleted mid-take", async () => {
+    // The link is still there and still names the same file, so the recording's
+    // identity has not moved — it is only the target that is momentarily
+    // absent. Resolving that back to the link's own path made the key move,
+    // orphaning the live session behind a generic "no active recording".
+    const vault = await makeRoot("deleted-target-vault");
+    const root = await makeRoot("deleted-target-proj");
+    const target = path.join(vault, "checkout.yaml");
+    await fs.mkdir(path.dirname(flowPath(root, "checkout")), { recursive: true });
+    await fs.symlink(target, flowPath(root, "checkout"));
+
+    await start(root, "checkout");
+    await addEcho(root, "checkout", "c1");
+    await fs.rm(target);
+
+    // Still addressable under the spelling it was started with.
+    expect((await getRecordingSession(root, "checkout"))?.name).toBe("checkout");
+
+    // The append does fail — its file really is gone — but as the missing file
+    // it is, not as a recording that was never started. The distinction is the
+    // whole point: the second answer sends the agent to flow-start-recording,
+    // which truncates.
+    const err = await captureFailure(addEcho(root, "checkout", "c2"));
+    expect(getFailureSignal(err)?.error_code).not.toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect((err as Error).message).toMatch(/ENOENT/);
+
+    // And restoring the target resumes the same take.
+    await fs.writeFile(target, "steps: []\n", "utf8");
+    await addEcho(root, "checkout", "c3");
+    const finished = await finish(root, "checkout");
+    expect(markers(parseFlow(finished.flowFile).steps)).toEqual(["echo:c3"]);
+    expect((await fs.lstat(flowPath(root, "checkout"))).isSymbolicLink()).toBe(true);
+    expect(await getRecordingSession(root, "checkout")).toBeUndefined();
   });
 
   it("keeps two genuinely distinct flows independent", async () => {
@@ -1350,46 +1461,71 @@ describe("a restart that lands while a step is still running", () => {
 // ── A finish landing on top of an in-flight append ───────────────────
 
 describe("a finish that lands while a step is still running", () => {
-  it("never reports steps, a summary or YAML the file disagrees with", async () => {
-    // Vary how far the append has progressed when the finish arrives, so both
-    // outcomes are exercised: the append wins the lock (and must be included in
-    // what finish reports) or the finish wins it (and the append must fail).
-    for (const microtasks of [0, 1, 2, 3, 4, 6, 8]) {
-      const root = await makeRoot(`finish-inflight-${microtasks}`);
-      await start(root, "alpha");
-      await addStep(root, "alpha", "a1");
+  /**
+   * The invariant both outcomes share: the whole report is one snapshot of one
+   * file state, and the recording is gone afterwards either way.
+   */
+  async function expectReportMatchesDisk(
+    root: string,
+    report: Awaited<ReturnType<typeof finish>>
+  ): Promise<string[]> {
+    const onDisk = await readMarkers(root, "alpha");
+    expect(markers(parseFlow(report.flowFile).steps)).toEqual(onDisk);
+    expect(report.steps).toBe(onDisk.length);
+    expect(report.summary).toHaveLength(onDisk.length);
+    expect(report.path).toBe(flowPath(root, "alpha"));
+    expect(report.savedTo).toBe(flowPath(root, "alpha"));
+    expect(await getRecordingSession(root, "alpha")).toBeUndefined();
+    return onDisk;
+  }
 
-      const gate = gateNextSubTool();
-      const appending = addStep(root, "alpha", "a2");
-      await gate.reached;
-      gate.release();
-      for (let i = 0; i < microtasks; i++) await Promise.resolve();
+  // Both outcomes are pinned, each by the lock rather than by timing. An
+  // earlier version varied a microtask count instead and only ever produced the
+  // first one: the finish awaits a real `realpath` before joining the lock
+  // queue, so no amount of microtask tuning can make it overtake an append
+  // already queued — the "append rejected" branch simply never ran.
 
-      const [appended, finished] = await Promise.allSettled([appending, finish(root, "alpha")]);
+  it("includes an append that WON the lock in everything it reports", async () => {
+    const root = await makeRoot("finish-inflight-append-wins");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
 
-      if (finished.status === "rejected") throw finished.reason;
-      const report = finished.value;
-      const onDisk = await readMarkers(root, "alpha");
+    // A parked holder fixes the queue order: append, then finish.
+    const holder = openGate();
+    const held = withFlowFileLock(root, "alpha", () => holder.promise);
+    const appending = addStep(root, "alpha", "a2");
+    await settle();
+    const finishing = finish(root, "alpha");
+    holder.open();
 
-      // The whole report is one snapshot of one file state.
-      expect(markers(parseFlow(report.flowFile).steps)).toEqual(onDisk);
-      expect(report.steps).toBe(onDisk.length);
-      expect(report.summary).toHaveLength(onDisk.length);
-      expect(report.path).toBe(flowPath(root, "alpha"));
-      expect(report.savedTo).toBe(flowPath(root, "alpha"));
+    const [appended, finished] = await Promise.allSettled([appending, finishing]);
+    await held;
 
-      if (appended.status === "rejected") {
-        expect(getFailureSignal(appended.reason)?.error_code).toBe(
-          FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING
-        );
-        expect(onDisk).toEqual(["tool:a1"]);
-      } else {
-        expect(onDisk).toEqual(["tool:a1", "tool:a2"]);
-      }
+    if (appended.status === "rejected") throw appended.reason;
+    if (finished.status === "rejected") throw finished.reason;
+    expect(await expectReportMatchesDisk(root, finished.value)).toEqual(["tool:a1", "tool:a2"]);
+  });
 
-      // Either way the recording is gone, and nothing can be appended to it.
-      expect(await getRecordingSession(root, "alpha")).toBeUndefined();
-    }
+  it("reports the file without an append that LOST, and rejects that append", async () => {
+    const root = await makeRoot("finish-inflight-finish-wins");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+
+    // Parked in its LIVE phase, before it has taken the lock — a real step can
+    // sit here for minutes on a device. The finish runs to completion across it.
+    const gate = gateNextSubTool();
+    const appending = addStep(root, "alpha", "a2");
+    await gate.reached;
+
+    const report = await finish(root, "alpha");
+    expect(await expectReportMatchesDisk(root, report)).toEqual(["tool:a1"]);
+
+    gate.release();
+    const appended = await captureFailure(appending);
+    expect(getFailureSignal(appended)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    // The step ran on the device but is in no take, and the file the finish
+    // reported is still exactly what is on disk.
+    expect(await readMarkers(root, "alpha")).toEqual(["tool:a1"]);
   });
 
   it("reads the file back and clears the session only once the lock is free", async () => {

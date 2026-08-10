@@ -1,4 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  forgetLogicalKeyedDevice,
+  rememberLogicalKeyedDevice,
+  resetDeviceAliases,
+} from "../src/utils/debugger/device-alias";
 import type { z } from "zod";
 import { Registry, ServiceState, zodObjectToJsonSchema } from "@argent/registry";
 import { createStopSimulatorServerTool } from "../src/tools/simulator/stop-simulator-server";
@@ -27,7 +32,11 @@ function createMockRegistry(services: Map<string, { state: ServiceState; depende
     // stop-one-then-stop-the-rest tests below exist to pin.
     disposeService: vi.fn(async function dispose(urn: string) {
       const node = services.get(urn);
-      if (!node || node.state === ServiceState.IDLE) return;
+      // `Registry._teardown` early-returns for IDLE **and TERMINATING** — a node
+      // already being torn down is not disposed a second time. The mock used to
+      // recurse into a TERMINATING node, which production never does.
+      if (!node || node.state === ServiceState.IDLE || node.state === ServiceState.TERMINATING)
+        return;
       // …and it recurses into dependents BEFORE clearing the node
       // (Registry._teardown), so a service whose dependency is disposed goes
       // down with it. Mirror that too, or a test cannot tell a namespace this
@@ -156,6 +165,18 @@ describe("stop-simulator-server", () => {
     expect(result).toEqual({ stopped: true, udid: "chromium-cdp-9222" });
     expect(registry.disposeService).toHaveBeenCalledOnce();
     expect(registry.disposeService).toHaveBeenCalledWith("ChromiumCdp:chromium-cdp-9222");
+  });
+
+  it("names the device and the error code in failedMsg", () => {
+    // The one formatter with no coverage — flattening it to a constant left the
+    // suite green, and it is the line an agent reads when a teardown fails.
+    const tool = createStopSimulatorServerTool(createMockRegistry(new Map()));
+    expect(
+      tool.interaction!.failedMsg!({
+        params: { udid: "AAAA-BBBB" },
+        failureSignal: { error_code: "REGISTRY_TOOL_EXECUTION_FAILED" },
+      } as never)
+    ).toBe("Failed to stop simulator server for AAAA-BBBB: REGISTRY_TOOL_EXECUTION_FAILED");
   });
 
   // Both stop tools resolve "which services does this device own" through the
@@ -307,6 +328,8 @@ describe("stop-all-simulator-servers", () => {
   // the answer must not depend on which happened.
   const CDP = "ChromiumCdp:chromium-cdp-9222";
   const CHROMIUM_DEBUGGER = "ChromiumJsRuntimeDebugger:chromium-cdp-9222";
+  /** A second Electron instance, belonging to somebody else. */
+  const OTHER_CDP = "ChromiumCdp:chromium-cdp-9333";
   const live = () => ({ state: ServiceState.RUNNING, dependents: [] as string[] });
   const cdpWithDependent = () => ({
     state: ServiceState.RUNNING,
@@ -322,9 +345,14 @@ describe("stop-all-simulator-servers", () => {
       // Both URNs carry the device id, so each is matched DIRECTLY; the
       // cascade is incidental here and this case is about insertion order not
       // changing membership. What the cascade alone decides is pinned below.
-      const services = new Map(
-        order.map((urn) => [urn, urn === CDP ? cdpWithDependent() : live()] as const)
-      );
+      //
+      // A second chromium instance is the control: with only the target's URNs
+      // in the snapshot an always-match matcher passes this case, and
+      // `ChromiumJsRuntimeDebugger` is a namespace nothing else here scopes.
+      const services = new Map([
+        ...order.map((urn) => [urn, urn === CDP ? cdpWithDependent() : live()] as const),
+        [OTHER_CDP, live()] as const,
+      ]);
       const registry = createMockRegistry(services);
       const tool = createStopAllSimulatorServersTool(registry);
 
@@ -335,22 +363,28 @@ describe("stop-all-simulator-servers", () => {
         [CDP, CHROMIUM_DEBUGGER].sort()
       );
       expect(result).not.toHaveProperty("unmatched");
-      expect(services.get(CHROMIUM_DEBUGGER)?.state).toBe(ServiceState.IDLE);
-      expect(services.get(CDP)?.state).toBe(ServiceState.IDLE);
+      expect(registry.disposeService).not.toHaveBeenCalledWith(OTHER_CDP);
     }
   );
 
-  it("takes a non-device dependent down with its dependency without claiming to have reaped it", async () => {
-    // The distinction the mock's recursion exists for, and the one the case
-    // above cannot make: a dependent this tool does NOT match by device. It
-    // still dies — the registry cascades — but it is somebody else's
-    // dependent, not something the teardown reaped by name, so it must not
-    // appear in `stopped`. Reporting it there would tell an agent a
-    // device-scoped teardown deliberately killed its Metro session.
-    const METRO = "Metro:8081";
+  it("does not credit `stopped` with a dependent that was already IDLE", async () => {
+    // The distinction the case above cannot make. `ChromiumJsRuntimeDebugger`
+    // declares `ChromiumCdp` as its dependency, so the transport's teardown
+    // takes it down as a dependent — but it was already IDLE, so it was not a
+    // running service this call shut down and must not be named. `stopped`
+    // reports what this teardown found LIVE, not everything the graph touched;
+    // naming it would tell an agent a session it had already stopped was still
+    // up a moment ago.
+    //
+    // The earlier version of this case fabricated a `Metro:8081` node to stand
+    // in for a non-device dependent. There is no such thing: every namespace a
+    // blueprint declares as a dependency is itself in DEVICE_OWNED_NAMESPACES,
+    // and `Metro:8081` is not a registry namespace at all — so what it asserted
+    // (`services.get(METRO)?.state`) was the mock's own recursion, which no
+    // production line reads.
     const services = new Map([
-      [CDP, { state: ServiceState.RUNNING, dependents: [METRO] }],
-      [METRO, { state: ServiceState.RUNNING, dependents: [] as string[] }],
+      [CDP, { state: ServiceState.RUNNING, dependents: [CHROMIUM_DEBUGGER] }],
+      [CHROMIUM_DEBUGGER, { state: ServiceState.IDLE, dependents: [] as string[] }],
     ]);
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
@@ -358,7 +392,25 @@ describe("stop-all-simulator-servers", () => {
     const result = await tool.execute!({}, { devices: ["chromium-cdp-9222"] });
 
     expect(result).toEqual({ stopped: [CDP] });
-    expect(services.get(METRO)?.state).toBe(ServiceState.IDLE);
+    // Matched, so not a mistyped id — the device owns both URNs either way.
+    expect(result).not.toHaveProperty("unmatched");
+  });
+
+  it("disposes a TERMINATING node without reporting it as stopped", async () => {
+    // A node already being torn down is not live, so `isLiveServiceState` keeps
+    // it out of `stopped` — but it is not IDLE either, so the sweep still calls
+    // `disposeService` on it (which the real `_teardown` then no-ops). Both
+    // halves are production lines; neither had coverage.
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.TERMINATING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [] });
+    expect(registry.disposeService).toHaveBeenCalledWith(`SimulatorServer:${MINE}`);
   });
 
   it("returns empty list when no simulators are running", async () => {
@@ -724,6 +776,25 @@ describe("stop-all-simulator-servers unmatched ids", () => {
   // meant to reap (on tvOS, two spawned --timeout 3600 daemons) stayed running.
   // `unmatched` names them, so scoping cannot fail silently.
 
+  it("owns no device from a port-keyed URN missing its device half", async () => {
+    // `<ns>:<port>` with nothing after the port is malformed — the device
+    // portion is what follows the FIRST colon, and there is none. Reading the
+    // tail as the device id instead would let the literal Metro port `8081`
+    // claim it, so a `devices: ["8081"]` typo would silently reap a debugger
+    // session and report a clean scope.
+    const services = new Map([
+      ["JsRuntimeDebugger:8081", { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    expect(await tool.execute!({}, { devices: ["8081"] })).toEqual({
+      stopped: [],
+      unmatched: ["8081"],
+    });
+    expect(registry.disposeService).not.toHaveBeenCalled();
+  });
+
   it("names an unknown id in unmatched while still stopping the live device", async () => {
     const services = new Map([
       [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
@@ -829,8 +900,12 @@ describe("stop-all-simulator-servers unmatched ids", () => {
     // case). `AXService` is a device-owned namespace holding the in-sim ax
     // daemon (spawned --timeout 3600), so a scoped stop reaps it AND does not
     // report the correct UDID as unmatched: it owns a real service, not a typo.
+    // A second device's AXService is the control: without it an always-match
+    // matcher passes this case, and AXService is one of the namespaces nothing
+    // else here scopes.
     const services = new Map([
       [`AXService:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`AXService:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
     ]);
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
@@ -840,6 +915,7 @@ describe("stop-all-simulator-servers unmatched ids", () => {
     expect(result).toEqual({ stopped: [`AXService:${MINE}`] });
     expect(result).not.toHaveProperty("unmatched");
     expect(registry.disposeService).toHaveBeenCalledWith(`AXService:${MINE}`);
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`AXService:${THEIRS}`);
   });
 
   it("scopes the tcp-transport AXService URN to its own device", async () => {
@@ -868,8 +944,11 @@ describe("stop-all-simulator-servers unmatched ids", () => {
     // cascades to it. It is a device-owned namespace, so a session that ran
     // screen-recording-start is correctly reaped by a scoped stop and its
     // serial is not reported as a mistyped id.
+    // Second device as the control — an always-match matcher would otherwise
+    // pass, and nothing else here scopes this namespace.
     const services = new Map([
       [`ScreenRecordingSession:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`ScreenRecordingSession:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
     ]);
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
@@ -878,6 +957,7 @@ describe("stop-all-simulator-servers unmatched ids", () => {
 
     expect(result).toEqual({ stopped: [`ScreenRecordingSession:${MINE}`] });
     expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`ScreenRecordingSession:${THEIRS}`);
   });
 
   it("owns and stops a device whose only service is a native profiler session", async () => {
@@ -885,6 +965,8 @@ describe("stop-all-simulator-servers unmatched ids", () => {
     // its trace file on Android.
     const services = new Map([
       [`NativeProfilerSession:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      // Control, as above.
+      [`NativeProfilerSession:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
     ]);
     const registry = createMockRegistry(services);
     const tool = createStopAllSimulatorServersTool(registry);
@@ -893,6 +975,7 @@ describe("stop-all-simulator-servers unmatched ids", () => {
 
     expect(result).toEqual({ stopped: [`NativeProfilerSession:${MINE}`] });
     expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`NativeProfilerSession:${THEIRS}`);
   });
 
   it("scopes the port-keyed debugger URNs to the right device", async () => {
@@ -1103,6 +1186,224 @@ describe("stop-all-simulator-servers unmatched ids", () => {
   });
 });
 
+describe("stop-all-simulator-servers abort", () => {
+  // A sweep is a loop of awaited disposals across thirteen namespaces, each
+  // reaping spawned processes and sockets. Ignoring the request signal billed a
+  // caller who had already given up — an MCP client timing out, a cancelled CLI
+  // run — for the whole of it.
+
+  it("stops sweeping once the request is aborted, and says the teardown is partial", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`AXService:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const controller = new AbortController();
+    // Abort as soon as the first disposal has happened.
+    vi.mocked(registry.disposeService).mockImplementationOnce(async (urn: string) => {
+      services.get(urn)!.state = ServiceState.IDLE;
+      controller.abort();
+    });
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] }, {
+      signal: controller.signal,
+    } as never);
+
+    expect(result).toEqual({ stopped: [`SimulatorServer:${MINE}`], aborted: true });
+    expect(registry.disposeService).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report `unmatched` for a partial sweep it never finished reading", async () => {
+    // The id may well own a service further down the snapshot, so calling it a
+    // typo here would be a guess — and `left_running` would name every
+    // namespace past the break.
+    const services = new Map([
+      [`SimulatorServer:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const controller = new AbortController();
+    controller.abort();
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] }, {
+      signal: controller.signal,
+    } as never);
+
+    expect(result).toEqual({ stopped: [], aborted: true });
+    expect(registry.disposeService).not.toHaveBeenCalled();
+  });
+
+  it("sweeps to completion when no signal is supplied", async () => {
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`NativeDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({
+      stopped: [`SimulatorServer:${MINE}`, `NativeDevtools:${MINE}`],
+    });
+  });
+});
+
+describe("stop-all-simulator-servers left_running", () => {
+  // With two or more devices on one Metro, `debugger-connect` refuses a udid /
+  // serial and instructs the caller to re-target with the `logicalDeviceId`
+  // Metro echoed. That id keys the session's URN, and no `list-devices` id
+  // equals it — so no `devices` scope can reap the CDP socket, the bound
+  // loopback console server or the log file handle it holds. Worse, the
+  // caller's real serial DOES match that device's other services, so it never
+  // lands in `unmatched` and the teardown reads as a clean machine.
+  const LOGICAL = "b5f2c1e0-7a44-4d8e-9c31-metro-logical";
+
+  // What the JsRuntimeDebugger factory records when the id it was resolved with
+  // IS the logicalDeviceId Metro echoed — the one place both ids are compared.
+  beforeEach(() => {
+    resetDeviceAliases();
+    rememberLogicalKeyedDevice(LOGICAL, LOGICAL);
+  });
+  afterEach(() => resetDeviceAliases());
+
+  it("names a logicalDeviceId-keyed debugger session the scope could not reach", async () => {
+    const services = new Map([
+      [`AndroidDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`JsRuntimeDebugger:8081:${LOGICAL}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({
+      stopped: [`AndroidDevtools:${MINE}`],
+      left_running: [`JsRuntimeDebugger:8081:${LOGICAL}`],
+    });
+    // The serial matched a service, so it is not a typo — the point is that
+    // `unmatched` cannot be the thing that reports this.
+    expect(result).not.toHaveProperty("unmatched");
+    expect(registry.disposeService).not.toHaveBeenCalledWith(`JsRuntimeDebugger:8081:${LOGICAL}`);
+  });
+
+  it("names the network inspector and React profiler riding on that session too", async () => {
+    const services = new Map([
+      [`AndroidDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [
+        `JsRuntimeDebugger:8081:${LOGICAL}`,
+        {
+          state: ServiceState.RUNNING,
+          dependents: [`NetworkInspector:8081:${LOGICAL}`, `ReactProfilerSession:8081:${LOGICAL}`],
+        },
+      ],
+      [`NetworkInspector:8081:${LOGICAL}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`ReactProfilerSession:8081:${LOGICAL}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const tool = createStopAllSimulatorServersTool(createMockRegistry(services));
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result.left_running).toEqual([
+      `JsRuntimeDebugger:8081:${LOGICAL}`,
+      `NetworkInspector:8081:${LOGICAL}`,
+      `ReactProfilerSession:8081:${LOGICAL}`,
+    ]);
+  });
+
+  it("reaps rather than reports the session once the logicalDeviceId is supplied", async () => {
+    // The documented recovery, and the proof the id is the whole gap: pass it
+    // alongside the serial and the session is stopped like anything else.
+    const services = new Map([
+      [`AndroidDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`JsRuntimeDebugger:8081:${LOGICAL}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const registry = createMockRegistry(services);
+    const tool = createStopAllSimulatorServersTool(registry);
+
+    const result = await tool.execute!({}, { devices: [MINE, LOGICAL] });
+
+    expect(result).toEqual({
+      stopped: [`AndroidDevtools:${MINE}`, `JsRuntimeDebugger:8081:${LOGICAL}`],
+    });
+    expect(result).not.toHaveProperty("left_running");
+  });
+
+  it("stays silent about another agent's serial-keyed session", async () => {
+    // `THEIRS` connected by serial (one device on that Metro), so it is an id
+    // `list-devices` hands out and a scope COULD have named it. A session left
+    // on it is that agent's business, not a scope that cannot express itself —
+    // reporting it would invite exactly the cross-agent teardown the `devices`
+    // scope exists to prevent.
+    const services = new Map([
+      [`SimulatorServer:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`JsRuntimeDebugger:8081:${THEIRS}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const tool = createStopAllSimulatorServersTool(createMockRegistry(services));
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`SimulatorServer:${MINE}`] });
+  });
+
+  it("stops reporting the session once its debugger connection is disposed", async () => {
+    // The marker is dropped in the blueprint's dispose alongside the alias, so a
+    // stale one cannot make a later teardown accuse a session that is gone.
+    forgetLogicalKeyedDevice(LOGICAL);
+    const services = new Map([
+      [`AndroidDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`JsRuntimeDebugger:8081:${LOGICAL}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const tool = createStopAllSimulatorServersTool(createMockRegistry(services));
+
+    expect(await tool.execute!({}, { devices: [MINE] })).toEqual({
+      stopped: [`AndroidDevtools:${MINE}`],
+    });
+  });
+
+  it("reports nothing on an unscoped sweep, which reaps every namespace anyway", async () => {
+    const services = new Map([
+      [`JsRuntimeDebugger:8081:${LOGICAL}`, { state: ServiceState.RUNNING, dependents: [] }],
+    ]);
+    const tool = createStopAllSimulatorServersTool(createMockRegistry(services));
+
+    const result = await tool.execute!({}, {});
+
+    expect(result).toEqual({ stopped: [`JsRuntimeDebugger:8081:${LOGICAL}`] });
+  });
+
+  it("ignores an IDLE session, which holds nothing left to leave running", async () => {
+    const services = new Map([
+      [`AndroidDevtools:${MINE}`, { state: ServiceState.RUNNING, dependents: [] }],
+      [`JsRuntimeDebugger:8081:${LOGICAL}`, { state: ServiceState.IDLE, dependents: [] }],
+    ]);
+    const tool = createStopAllSimulatorServersTool(createMockRegistry(services));
+
+    const result = await tool.execute!({}, { devices: [MINE] });
+
+    expect(result).toEqual({ stopped: [`AndroidDevtools:${MINE}`] });
+  });
+
+  it("matches the marker case-insensitively, as every other id comparison here does", async () => {
+    const services = new Map([
+      [
+        `JsRuntimeDebugger:8081:${LOGICAL.toUpperCase()}`,
+        { state: ServiceState.RUNNING, dependents: [] },
+      ],
+    ]);
+    const tool = createStopAllSimulatorServersTool(createMockRegistry(services));
+
+    expect(await tool.execute!({}, { devices: [MINE] })).toEqual({
+      stopped: [],
+      unmatched: [MINE],
+      left_running: [`JsRuntimeDebugger:8081:${LOGICAL.toUpperCase()}`],
+    });
+  });
+});
+
 describe("stop-all-simulator-servers interaction messages", () => {
   // Both formatters previously had no coverage at all — flattening either to
   // an unconditional string left the whole suite green. Pin the exact wording
@@ -1168,6 +1469,52 @@ describe("stop-all-simulator-servers interaction messages", () => {
         result: { stopped: [], unmatched: ["GHOST-1", "GHOST-2"] },
       })
     ).toBe("Stopped 0 simulator servers (2 supplied ids matched no service)");
+  });
+
+  it("completedMsg appends the left_running clause, singular and plural", () => {
+    const completedMsg = tool().interaction!.completedMsg!;
+    expect(
+      completedMsg({
+        params: { devices: [MINE] },
+        result: {
+          stopped: [`SimulatorServer:${MINE}`],
+          left_running: ["JsRuntimeDebugger:8081:L"],
+        },
+      })
+    ).toBe("Stopped 1 simulator server (1 debugger session left running)");
+    expect(
+      completedMsg({
+        params: { devices: [MINE] },
+        result: {
+          stopped: [],
+          left_running: ["JsRuntimeDebugger:8081:L", "NetworkInspector:8081:L"],
+        },
+      })
+    ).toBe("Stopped 0 simulator servers (2 debugger sessions left running)");
+  });
+
+  it("failedMsg names the error code", () => {
+    // The one formatter of the three with no coverage — flattening it to a
+    // constant left the suite green.
+    const failedMsg = tool().interaction!.failedMsg!;
+    expect(
+      failedMsg({
+        params: {},
+        failureSignal: { error_code: "REGISTRY_TOOL_EXECUTION_FAILED" },
+      } as never)
+    ).toBe("Failed to stop simulator servers: REGISTRY_TOOL_EXECUTION_FAILED");
+  });
+
+  it("completedMsg reports both clauses when a call hits both", () => {
+    const completedMsg = tool().interaction!.completedMsg!;
+    expect(
+      completedMsg({
+        params: { devices: ["GHOST-1"] },
+        result: { stopped: [], unmatched: ["GHOST-1"], left_running: ["JsRuntimeDebugger:8081:L"] },
+      })
+    ).toBe(
+      "Stopped 0 simulator servers (1 supplied id matched no service; 1 debugger session left running)"
+    );
   });
 });
 

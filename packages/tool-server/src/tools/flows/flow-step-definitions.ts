@@ -132,13 +132,19 @@ function renderToolArgs(args: Record<string, unknown>): string {
  */
 interface FlowStepDefinition<S extends FlowStep> {
   /**
-   * The step's summary line minus the `<n>. <kind>: ` prefix
+   * The step's summary line minus the `<n>. <key>: ` prefix
    * {@link summarizeSteps} adds, in the flow file's own spellings.
    */
   summary(step: S): string;
   /**
+   * The key the flow FILE spells this kind under, when that differs from the
+   * kind — `idle` is authored as `await: { idle: true }`. The summary is read
+   * before hand-editing the YAML, so its prefix names the key to look for.
+   */
+  summaryKind?: string;
+  /**
    * What the step acts on, for the runner's `StepReport.target`. Undefined for
-   * a step that addresses nothing (`echo`, `wait`, `launch`, `tool`).
+   * a step that addresses nothing (`echo`, `wait`, `launch`, `tool`, `idle`).
    */
   target(step: S): string | undefined;
 }
@@ -201,6 +207,13 @@ const FLOW_STEP_DEFINITIONS: {
   },
   "await": UI_CONDITION_STEP,
   "assert": UI_CONDITION_STEP,
+  "idle": {
+    summaryKind: "await",
+    summary: () => "screen idle",
+    // The report already prints the kind, and this step addresses nothing
+    // beyond the screen itself: a target would render as "idle screen idle".
+    target: () => undefined,
+  },
   "wait": {
     summary: (step) => `${step.ms}ms`,
     target: () => undefined,
@@ -251,5 +264,8 @@ export function stepTarget(step: FlowStep): string | undefined {
 
 /** One human-readable line per recorded step, in the flow file's own spellings. */
 export function summarizeSteps(flow: FlowFile): string[] {
-  return flow.steps.map((step, i) => `${i + 1}. ${step.kind}: ${definitionOf(step).summary(step)}`);
+  return flow.steps.map((step, i) => {
+    const def = definitionOf(step);
+    return `${i + 1}. ${def.summaryKind ?? step.kind}: ${def.summary(step)}`;
+  });
 }
