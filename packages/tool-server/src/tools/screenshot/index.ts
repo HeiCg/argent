@@ -13,6 +13,7 @@ import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { captureHarmonyScreenshotPng } from "../../utils/harmony-screen";
 import { ensureDep } from "../../utils/check-deps";
+import { UnsupportedOperationError } from "../../utils/capability";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 
 const execFileAsync = promisify(execFile);
@@ -21,13 +22,13 @@ const zodSchema = z.object({
   udid: z
     .string()
     .describe(
-      "Target device id from `list-devices` (iOS UDID, Android serial, Apple TV UDID, Vega serial, or Chromium id)."
+      "Target device id from `list-devices` (iOS UDID, Android serial, Apple TV UDID, Vega serial, HarmonyOS id, or Chromium id)."
     ),
   rotation: z
     .enum(["Portrait", "LandscapeLeft", "LandscapeRight", "PortraitUpsideDown"])
     .optional()
     .describe(
-      "Orientation override for the screenshot (rotates the captured image after Page.captureScreenshot on Chromium)."
+      "Orientation override for the screenshot (rotates the captured image after Page.captureScreenshot on Chromium). Rejected on HarmonyOS, which captures the display in its current orientation and has no override."
     ),
   scale: z
     .number()
@@ -184,6 +185,16 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
       // HarmonyOS captures on-device with `uitest screenCap` and copies the PNG
       // back over hdc; there is no simulator-server controller for the platform.
       if (device.platform === "harmony") {
+        if (params.rotation) {
+          // `uitest screenCap` writes the display as it is currently oriented
+          // and takes no orientation argument, so accepting this would return
+          // an unrotated image under a name that says otherwise.
+          throw new UnsupportedOperationError(
+            "screenshot",
+            device,
+            "rotation is not supported on HarmonyOS: `uitest screenCap` captures the display in its current orientation and has no override. Rotate the device itself, or drop the rotation parameter."
+          );
+        }
         await ensureDep("hdc");
         const pngPath = await captureHarmonyScreenshotPng({
           connectKey: harmonyConnectKey(device.id),

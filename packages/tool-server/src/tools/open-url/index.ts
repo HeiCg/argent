@@ -14,7 +14,9 @@ const zodSchema = z.object({
   udid: z
     .string()
     .min(1)
-    .describe("Target device id from `list-devices` (iOS UDID, Android serial, or Chromium id)."),
+    .describe(
+      "Target device id from `list-devices` (iOS UDID, Android serial, HarmonyOS id, or Chromium id)."
+    ),
   url: z
     .string()
     .describe(

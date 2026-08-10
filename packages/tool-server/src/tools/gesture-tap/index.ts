@@ -13,7 +13,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const zodSchema = z.object({
   udid: z
     .string()
-    .describe("Target device id from `list-devices` (iOS UDID, Android serial, or Chromium id)."),
+    .describe(
+      "Target device id from `list-devices` (iOS UDID, Android serial, HarmonyOS id, or Chromium id)."
+    ),
   x: z.number().describe("Normalized horizontal position 0.0–1.0 (left=0, right=1), not pixels"),
   y: z.number().describe("Normalized vertical position 0.0–1.0 (top=0, bottom=1), not pixels"),
   clickCount: z

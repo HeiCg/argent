@@ -58,7 +58,9 @@ const zodSchema = z
     udid: z
       .string()
       .min(1)
-      .describe("Target device id from `list-devices` (iOS UDID, Android serial, or Chromium id)."),
+      .describe(
+        "Target device id from `list-devices` (iOS UDID, Android serial, HarmonyOS id, or Chromium id)."
+      ),
     condition: z
       .enum(["exists", "visible", "hidden", "text"])
       .describe(

@@ -27,9 +27,9 @@ Argent drives a growing set of targets through a single toolkit, each with the r
 | **Android**       | Emulators (AVDs) and physical devices over adb                          | Touch / gesture  |
 | **TV**            | Apple TV (tvOS), Android TV / Google TV, Amazon Fire TV (Vega)          | D-pad / remote   |
 | **Desktop & web** | Electron and Chromium apps (incl. React Native Web / Expo web) over CDP | Mouse / keyboard |
-| **HarmonyOS**     | Emulator instances managed by DevEco Studio                             | None - see below |
+| **HarmonyOS**     | Phones over `hdc`, and DevEco Studio emulator instances                 | Touch / gesture  |
 
-> **HarmonyOS is discovery-only.** `list-devices` lists DevEco Studio's emulator instances (id `harmony-<instanceName>`, always `state: "unknown"` - Argent does not determine whether an instance is running) and `boot-device` can start one by name. Every other tool - screenshot, describe, tap and gestures, keyboard, launch-app - returns `501 NotImplementedOnPlatform`. Huawei restricts the emulator image download to mainland China; outside it no instance can be created, so there is nothing to list or boot.
+> **HarmonyOS drives physical devices; the emulator is discovery and boot only.** Connect a phone with USB debugging enabled and it appears as `harmony-<connectKey>` (`kind: "device"`), driven by `describe`, `screenshot`, `screenshot-diff`, `gesture-tap`, `gesture-swipe`, `keyboard`, `button`, `launch-app`, `restart-app`, `open-url`, `run-sequence` and the two `await-*` tools - all through the device's own `uitest`. DevEco Studio's emulator instances appear separately as `harmony-emulator-<name>`, which `boot-device` starts; Huawei restricts the emulator **image** download to mainland China, so outside it no instance can be created in the first place. Multi-touch and free-form touch (`gesture-pinch`, `gesture-rotate`, `gesture-custom`) return `501 NotImplementedOnPlatform`: `uitest uiInput` injects only whole gestures (click / longClick / swipe / drag / fling), one contact at a time, and `hdc shell` runs as uid 2000 with no access to `/dev/input`. The profilers, the debugger and `rotate` return 501 as unimplemented.
 
 ## Capabilities
 
@@ -59,7 +59,7 @@ Argent drives a growing set of targets through a single toolkit, each with the r
 - For iOS / tvOS: macOS with **Xcode** installed (Apple TV uses tvOS simulators — Xcode downloads the tvOS runtime on demand)
 - For Android / Android TV: **Android SDK Platform Tools** (`adb`) on `PATH`, and the **Android Emulator** package if you want to boot AVDs from Argent. Create AVDs via Android Studio or `avdmanager`.
 - For Fire TV (Vega): the **Vega SDK** (`vega` CLI) on `PATH`
-- For HarmonyOS: **DevEco Studio**, which ships the `Emulator` manager Argent drives. It is looked up inside DevEco Studio's install root - the macOS app bundle by default, `$DEVECO_STUDIO_HOME` on any other host - and never on `PATH`, since `Emulator` is too generic a name to match safely. Huawei restricts the emulator image download to mainland China, so outside it no emulator instance can be created.
+- For HarmonyOS: **DevEco Studio**, which ships both binaries Argent drives - `hdc` (the device connector, for phones) and the `Emulator` manager. Both are looked up inside DevEco Studio's install root - the macOS app bundle by default, `$DEVECO_STUDIO_HOME` on any other host. `hdc` also falls back to `PATH` for hosts that installed the OpenHarmony command-line tools without the IDE; `Emulator` never does, since it is too generic a name to match safely. Driving a phone needs only `hdc`. Huawei restricts the emulator image download to mainland China, so outside it no emulator instance can be created.
 - For Electron / Chromium: nothing extra to control an already-running app - just launch it with `--remote-debugging-port`, or let Argent spawn your Electron app for you
 
 ##### Linux host: extra prerequisites for Android emulators

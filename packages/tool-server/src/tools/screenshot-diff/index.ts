@@ -12,7 +12,10 @@ import type {
   ToolDefinition,
 } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
+import { UnsupportedOperationError } from "../../utils/capability";
+import { captureHarmonyScreenshotPng } from "../../utils/harmony-screen";
+import { ensureDep } from "../../utils/check-deps";
 import { httpScreenshot } from "../../utils/simulator-client";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 import { diffPngFiles } from "./screenshot-diff";
@@ -32,7 +35,9 @@ const zodSchema = z
     udid: z
       .string()
       .min(1)
-      .describe("Target device id from `list-devices` (iOS UDID or Android serial)."),
+      .describe(
+        "Target device id from `list-devices` (iOS UDID, Android serial, or HarmonyOS id)."
+      ),
     captureBaseline: z.coerce
       .boolean()
       .optional()
@@ -48,7 +53,9 @@ const zodSchema = z
     rotation: z
       .enum(["Portrait", "LandscapeLeft", "LandscapeRight", "PortraitUpsideDown"])
       .optional()
-      .describe("Orientation override for live baseline/current captures."),
+      .describe(
+        "Orientation override for live baseline/current captures. Rejected on HarmonyOS, which captures the display in its current orientation and has no override."
+      ),
     outputDir: z
       .string()
       .min(1)
@@ -77,6 +84,7 @@ type CaptureScreenshot = typeof httpScreenshot;
 const capability: ToolCapability = {
   apple: { simulator: true, device: true },
   android: { emulator: true, device: true, unknown: true },
+  harmony: { device: true },
 };
 
 /**
@@ -100,7 +108,7 @@ export const screenshotDiffTool: ToolDefinition<Params, ScreenshotDiffResult> = 
     failedMsg: ({ failureSignal }) => `Failed to compare screenshots: ${failureSignal.error_code}`,
   },
   description: `Compare two PNG screenshots and return a compact visual-diff summary.
-Accepts saved baseline/current PNG paths, or one saved PNG plus one live full-resolution capture from a device. Always provide udid so the simulator-server dependency can be resolved.
+Accepts saved baseline/current PNG paths, or one saved PNG plus one live full-resolution capture from a device (iOS, Android or HarmonyOS). Always provide udid so the capture backend can be resolved.
 Use when stable before/after screenshots exist and the expected result is pixel-visible: layout, spacing, color, typography, image/icon rendering, clipping, overflow, or text rendering.
 For live captures, set exactly one of captureBaseline or captureCurrent; use baselinePath + captureCurrent for the common visual-regression flow.
 Returns { summary, diffPath, contextDiffPath }. The summary uses normalized [0,1] screen locations matching describe coordinates; diffPath is the full-size diff image and contextDiffPath is a downscaled image for MCP/agent display.
@@ -116,10 +124,13 @@ Fails if the input sources are invalid, PNG files cannot be read, outputDir cann
     // Requesting it unconditionally causes it to be resolved (and started) even
     // for pure static-PNG diffs, which fails on tvOS simulators that have no
     // SimulatorServer backend.
-    if (params.captureBaseline || params.captureCurrent) {
-      return { simulatorServer: simulatorServerRef(resolveDevice(params.udid)) };
-    }
-    return {};
+    if (!params.captureBaseline && !params.captureCurrent) return {};
+    const device = resolveDevice(params.udid);
+    // HarmonyOS captures on-device over `hdc`; it has no simulator-server
+    // controller at all, so resolving the blueprint for one would throw before
+    // the capture path runs.
+    if (device.platform === "harmony") return {};
+    return { simulatorServer: simulatorServerRef(device) };
   },
   async execute(services, params, options) {
     return executeScreenshotDiffTool(services, params, options);
@@ -194,29 +205,70 @@ async function resolveInputPaths(
 ): Promise<{ baselinePath: string; currentPath: string }> {
   validateInputSources(params);
 
+  const capture = liveCapture(services, params, options, captureScreenshot);
+
   const baselinePath = params.captureBaseline
-    ? await captureLiveInput({
-        api: requireSimulatorServer(services),
-        outputDir,
-        name: "baseline",
-        rotation: params.rotation,
-        signal: options?.signal,
-        captureScreenshot,
-      })
+    ? await captureLiveInput({ capture, outputDir, name: "baseline" })
     : params.baselinePath!;
 
   const currentPath = params.captureCurrent
-    ? await captureLiveInput({
-        api: requireSimulatorServer(services),
-        outputDir,
-        name: "current",
-        rotation: params.rotation,
-        signal: options?.signal,
-        captureScreenshot,
-      })
+    ? await captureLiveInput({ capture, outputDir, name: "current" })
     : params.currentPath!;
 
   return { baselinePath, currentPath };
+}
+
+/**
+ * How this device produces a live full-resolution PNG, as a path on this host.
+ *
+ * iOS and Android go through the simulator-server; HarmonyOS has no controller
+ * there and captures on-device with `uitest screenCap` instead, the same split
+ * the `screenshot` tool makes.
+ */
+function liveCapture(
+  services: Record<string, unknown>,
+  params: Params,
+  options: Partial<ToolContext> | undefined,
+  captureScreenshot: CaptureScreenshot
+): () => Promise<string> {
+  const device = resolveDevice(params.udid);
+
+  if (device.platform === "harmony") {
+    if (params.rotation) {
+      // `uitest screenCap` captures the display as the device is currently
+      // oriented and takes no orientation argument, so honouring this would
+      // mean silently returning an unrotated image — and a diff of the wrong
+      // orientation reads as a huge legitimate visual change.
+      throw new UnsupportedOperationError(
+        "screenshot-diff",
+        device,
+        "rotation is not supported for a live HarmonyOS capture: `uitest screenCap` captures the display in its current orientation and has no override. Rotate the device itself, or drop the rotation parameter."
+      );
+    }
+    return async () => {
+      await ensureDep("hdc");
+      return captureHarmonyScreenshotPng({
+        connectKey: harmonyConnectKey(device.id),
+        scale: 1.0,
+      });
+    };
+  }
+
+  return async () => {
+    const api = requireSimulatorServer(services);
+    // Prefer a full-resolution capture for maximum diff fidelity. Some Android
+    // emulator configurations cannot stream a full-res frame — the simulator-server
+    // rejects it with a "wrong data size" framebuffer mismatch — which previously
+    // made the entire baselinePath + captureCurrent flow unusable on Android. Fall
+    // back to the server's default scale, which captures reliably; same-aspect
+    // normalization in diffPngFiles keeps a scaled capture diff-compatible with a
+    // baseline saved at any scale. Full-res is preserved wherever it works (iOS).
+    try {
+      return (await captureScreenshot(api, params.rotation, options?.signal, 1.0)).path;
+    } catch {
+      return (await captureScreenshot(api, params.rotation, options?.signal)).path;
+    }
+  };
 }
 
 function validateInputSources(params: Params): void {
@@ -276,31 +328,14 @@ function requireSimulatorServer(services: Record<string, unknown>): SimulatorSer
 }
 
 async function captureLiveInput(params: {
-  // Resolved and validated by requireSimulatorServer at the call site, so it is
-  // never undefined here.
-  api: SimulatorServerApi;
+  capture: () => Promise<string>;
   outputDir: string;
   name: "baseline" | "current";
-  rotation?: Params["rotation"];
-  signal?: AbortSignal;
-  captureScreenshot: CaptureScreenshot;
 }): Promise<string> {
-  // Prefer a full-resolution capture for maximum diff fidelity. Some Android
-  // emulator configurations cannot stream a full-res frame — the simulator-server
-  // rejects it with a "wrong data size" framebuffer mismatch — which previously
-  // made the entire baselinePath + captureCurrent flow unusable on Android. Fall
-  // back to the server's default scale, which captures reliably; same-aspect
-  // normalization in diffPngFiles keeps a scaled capture diff-compatible with a
-  // baseline saved at any scale. Full-res is preserved wherever it works (iOS).
-  let capture: Awaited<ReturnType<CaptureScreenshot>>;
-  try {
-    capture = await params.captureScreenshot(params.api, params.rotation, params.signal, 1.0);
-  } catch {
-    capture = await params.captureScreenshot(params.api, params.rotation, params.signal);
-  }
+  const capturedPath = await params.capture();
   const suffix = crypto.randomBytes(4).toString("hex");
   const destination = path.join(params.outputDir, `${params.name}-${suffix}.live.png`);
   await fs.mkdir(params.outputDir, { recursive: true });
-  await fs.copyFile(capture.path, destination);
+  await fs.copyFile(capturedPath, destination);
   return destination;
 }

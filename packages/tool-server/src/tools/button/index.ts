@@ -11,7 +11,9 @@ import { ensureDep } from "../../utils/check-deps";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const zodSchema = z.object({
-  udid: z.string().describe("Target device id from `list-devices` (iOS UDID or Android serial)."),
+  udid: z
+    .string()
+    .describe("Target device id from `list-devices` (iOS UDID, Android serial, or HarmonyOS id)."),
   button: z
     .enum(["home", "back", "power", "volumeUp", "volumeDown", "appSwitch", "actionButton"])
     .describe("Hardware button to press"),

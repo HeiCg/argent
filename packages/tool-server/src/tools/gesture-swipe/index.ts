@@ -15,7 +15,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const SETTLE_EASE_EXPONENT = 3;
 
 const zodSchema = z.object({
-  udid: z.string().describe("Target device id from `list-devices` (iOS UDID or Android serial)."),
+  udid: z
+    .string()
+    .describe("Target device id from `list-devices` (iOS UDID, Android serial, or HarmonyOS id)."),
   fromX: z.number().describe("Start x: normalized 0.0–1.0 (not pixels; same as tap)"),
   fromY: z.number().describe("Start y: normalized 0.0–1.0 (not pixels; same as tap)"),
   toX: z.number().describe("End x: normalized 0.0–1.0 (not pixels; same as tap)"),

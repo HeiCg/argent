@@ -1,6 +1,6 @@
 ---
 name: argent-device-interact
-description: Interact with an iOS simulator, Android emulator, or Chromium (CDP) app using argent MCP tools. Use when tapping UI elements, performing gestures, scrolling/swiping, typing text, pressing hardware buttons, launching apps, opening URLs, taking screenshots, waiting for an element to appear or disappear, or checking visible app state after interactions.
+description: Interact with an iOS simulator, Android emulator, HarmonyOS device, or Chromium (CDP) app using argent MCP tools. Use when tapping UI elements, performing gestures, scrolling/swiping, typing text, pressing hardware buttons, launching apps, opening URLs, taking screenshots, waiting for an element to appear or disappear, or checking visible app state after interactions.
 ---
 
 ## Unified tool surface
@@ -21,7 +21,7 @@ For platform-specific caveats (Metro `adb reverse`, locked-screen describe error
 
 If you delegate simulator tasks to sub-agents, make sure they have MCP permissions.
 
-Use `list-devices` to get a target id. Results are tagged with `platform` (`ios`, `ios-remote`, `android`, `chromium`, `vega`, or `harmony`); booted/ready devices come first. A `vega` target is a TV; drive it with `argent-tv-interact` (see the note above). A `harmony` target is a HarmonyOS emulator instance: only `list-devices` and `boot-device` support it, every tool in this skill returns 501 for one. Pick the first entry that matches the platform you need — if none are ready, call `boot-device` with `udid` (iOS), `avdName` (Android), or `electronAppPath` (boots an Electron app as a `chromium` device). A Chromium browser already running with a CDP port shows up directly — no `boot-device` needed. See `argent-ios-simulator-setup` / `argent-android-emulator-setup` for full setup flow.
+Use `list-devices` to get a target id. Results are tagged with `platform` (`ios`, `ios-remote`, `android`, `chromium`, `vega`, or `harmony`); booted/ready devices come first. A `vega` target is a TV; drive it with `argent-tv-interact` (see the note above). A `harmony` target with `kind: "device"` is a HarmonyOS phone on `hdc`: the tools in this skill drive it, except `gesture-pinch`, `gesture-rotate`, `gesture-custom` and `rotate`, which return 501 — the device injects whole gestures one contact at a time, so there is no long-press or multi-finger path. Use `button` for home/back/power only. A `harmony` target with `kind: "emulator"` is a DevEco Studio instance that only `boot-device` accepts. Pick the first entry that matches the platform you need — if none are ready, call `boot-device` with `udid` (iOS), `avdName` (Android), or `electronAppPath` (boots an Electron app as a `chromium` device). A Chromium browser already running with a CDP port shows up directly — no `boot-device` needed. See `argent-ios-simulator-setup` / `argent-android-emulator-setup` for full setup flow.
 
 **Load tool schemas before first use.** Gesture tools (`gesture-tap`, `gesture-swipe`, `gesture-pinch`, `gesture-rotate`, `gesture-custom`) may be deferred — their parameter schemas are not loaded until fetched. Always use ToolSearch to load the schemas of all gesture tools you plan to use **before** calling any of them. If you skip this step, parameters may be coerced to strings instead of numbers, causing validation errors.
 
