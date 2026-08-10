@@ -186,9 +186,9 @@ export interface StepReport {
   /**
    * Machine-readable explanation of the outcome. Always set when the step did
    * not pass; also set on some passing reports whose result is self-narrating —
-   * the `when:` guard marker, snapshot passes, and a chromium `launch` whose
-   * instance the runner booted and owns. An attach to an instance the runner
-   * does not own reports no reason.
+   * the `when:` guard marker, snapshot passes, a converged `repeat: { until }`
+   * drain, and a chromium `launch` whose instance the runner booted and owns.
+   * An attach to an instance the runner does not own reports no reason.
    */
   reason?: string;
   /**
