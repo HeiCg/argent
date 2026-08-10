@@ -123,6 +123,29 @@ function renderToolArgs(args: Record<string, unknown>): string {
   }
 }
 
+/**
+ * The pre-step sleep a replay performs, when the step carries one.
+ *
+ * A runtime check is needed because `fromYamlStep` copies `delayMs` across
+ * unvalidated and `validateFlow` does not check it, so a hand-edited non-number
+ * survives a parse. The check has to be the RUNNER's, though, not a `typeof`:
+ * flow-run gates on truthiness and hands the raw value to `setTimeout`
+ * (`if (step.delayMs && !(await sleepOrAbort(step.delayMs, …)))`), which coerces
+ * it. A quoted `delayMs: "2000"` is not a number and sleeps two real seconds;
+ * `delayMs: .nan` IS a number and sleeps none. Testing `typeof` was therefore
+ * wrong in both directions — silent about a delay that happens, and claiming
+ * `(after NaNms)` for one that does not.
+ */
+function delayLabel(step: Extract<FlowStep, { kind: "tool" }>): string {
+  // The runner's own gate: a falsy `delayMs` (absent, 0, NaN) is never slept.
+  if (!step.delayMs) return "";
+  const ms = Number(step.delayMs);
+  // What `setTimeout` will actually wait. It floors anything under 1ms — and
+  // anything non-numeric, which coerces to NaN — to an immediate tick, so there
+  // is no delay to describe; an out-of-range value is clamped the same way.
+  return Number.isFinite(ms) && ms >= 1 ? ` (after ${ms}ms)` : "";
+}
+
 // ── Step definitions ──
 
 /**
@@ -133,7 +156,7 @@ function renderToolArgs(args: Record<string, unknown>): string {
 interface FlowStepDefinition<S extends FlowStep> {
   /**
    * The step's summary line minus the `<n>. <key>: ` prefix
-   * {@link summarizeSteps} adds, in the flow file's own spellings.
+   * {@link summarizeStep} adds, in the flow file's own spellings.
    */
   summary(step: S): string;
   /**
@@ -151,7 +174,32 @@ interface FlowStepDefinition<S extends FlowStep> {
 
 /** `tap` and `long-press` address a point the same way: a selector, else raw coordinates. */
 const POINT_GESTURE_STEP: FlowStepDefinition<Extract<FlowStep, { kind: "tap" | "long-press" }>> = {
-  summary: (step) => (step.selector ? yamlSelectorLabel(step.selector) : `(${step.x}, ${step.y})`),
+  // `times` (tap) and `duration` (long-press) change what replays, so a summary
+  // line that drops them misdescribes the file. `times` has a second reason:
+  // `tap` is one of the kinds the recorder builds, and the recorder echoes this
+  // line alone rather than the growing YAML, so it is the author's only per-step
+  // view of what was appended. `long-press` has no recorder path, so it reaches
+  // an author only through flow-finish-recording's `summary`, which returns
+  // `flowFile` beside it. Neither kind carries a `delayMs` (only `tool` steps
+  // do), so no delayLabel here.
+  //
+  // That reasoning is NOT applied file-wide, and the `type` and `await`
+  // definitions show it: `type.submit` (whose `false` suppresses the Enter
+  // press) and `await.timeout` also change what replays and still render
+  // nothing. Neither kind is recorder-built, so both reach an author only
+  // through the finish `summary` — beside the `flowFile` that spells them out.
+  // Rendering them is a fair follow-up, not a gap the per-step view opened.
+  summary: (step) => {
+    const target = step.selector ? yamlSelectorLabel(step.selector) : `(${step.x}, ${step.y})`;
+    // Only ×2..×10 is renderable: `times: 1` is the default and never lands in
+    // the file (parseTapTimes normalizes it to absent), so rendering `×1` for a
+    // stray in-memory `times: 1` would describe a file that can't exist.
+    const times =
+      step.kind === "tap" && step.times !== undefined && step.times > 1 ? ` ×${step.times}` : "";
+    const held =
+      step.kind === "long-press" && step.duration !== undefined ? ` for ${step.duration}ms` : "";
+    return `${target}${times}${held}`;
+  },
   target: (step) => {
     if (step.selector) return selectorLabel(step.selector);
     if (step.x !== undefined && step.y !== undefined) return `(${step.x}, ${step.y})`;
@@ -173,7 +221,7 @@ const FLOW_STEP_DEFINITIONS: {
   [K in FlowStep["kind"]]: FlowStepDefinition<Extract<FlowStep, { kind: K }>>;
 } = {
   "tool": {
-    summary: (step) => `${step.name} ${renderToolArgs(step.args)}`,
+    summary: (step) => `${step.name} ${renderToolArgs(step.args)}${delayLabel(step)}`,
     target: () => undefined,
   },
   "echo": {
@@ -262,10 +310,17 @@ export function stepTarget(step: FlowStep): string | undefined {
   return definitionOf(step).target(step);
 }
 
+/**
+ * One recorded step, rendered the way the flow FILE spells it. Shared with the
+ * recorder, which echoes just the line it appended instead of the whole growing
+ * file.
+ */
+export function summarizeStep(step: FlowStep, n: number): string {
+  const def = definitionOf(step);
+  return `${n}. ${def.summaryKind ?? step.kind}: ${def.summary(step)}`;
+}
+
 /** One human-readable line per recorded step, in the flow file's own spellings. */
 export function summarizeSteps(flow: FlowFile): string[] {
-  return flow.steps.map((step, i) => {
-    const def = definitionOf(step);
-    return `${i + 1}. ${def.summaryKind ?? step.kind}: ${def.summary(step)}`;
-  });
+  return flow.steps.map((step, i) => summarizeStep(step, i + 1));
 }

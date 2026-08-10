@@ -26,6 +26,13 @@ const CASES = {
       summary: '1. tool: keyboard {"text":"hi"}',
       target: undefined,
     },
+    {
+      // The pre-step sleep changes what replays, so the summary spells it; the
+      // report target still names nothing, because a tool step addresses no element.
+      step: { kind: "tool", name: "screenshot", args: { scale: 0.2 }, delayMs: 500 },
+      summary: '1. tool: screenshot {"scale":0.2} (after 500ms)',
+      target: undefined,
+    },
   ],
   "echo": [
     {
@@ -90,13 +97,31 @@ const CASES = {
       summary: "1. tap: (0.5, 0.25)",
       target: "(0.5, 0.25)",
     },
+    {
+      // Not `times: 2` — that is the count a constant `×2` would also produce.
+      step: { kind: "tap", selector: { text: "Submit" }, times: 3 },
+      summary: '1. tap: {"text":"Submit"} ×3',
+      target: '"Submit"',
+    },
+    {
+      // parseTapTimes normalizes `times: 1` to absent, so no file spells a
+      // single tap with a count and `×1` must never render.
+      step: { kind: "tap", x: 0.5, y: 0.25, times: 1 },
+      summary: "1. tap: (0.5, 0.25)",
+      target: "(0.5, 0.25)",
+    },
   ],
   "long-press": [
     {
       // A loose selector spells as the bare string the YAML carries.
       step: { kind: "long-press", selector: { text: "row-1", loose: true }, duration: 900 },
-      summary: '1. long-press: "row-1"',
+      summary: '1. long-press: "row-1" for 900ms',
       target: '"row-1"',
+    },
+    {
+      step: { kind: "long-press", x: 0.4, y: 0.5 },
+      summary: "1. long-press: (0.4, 0.5)",
+      target: "(0.4, 0.5)",
     },
   ],
   "type": [
