@@ -6,6 +6,7 @@ import {
 } from "../src/utils/vega-devices";
 import { VVD_PS_PROBE_TIMEOUT_MS } from "../src/utils/vega-process";
 import { ADB_DEVICES_TIMEOUT_MS, ENRICH_TIMEOUT_MS } from "../src/utils/adb";
+import { HARMONY_LIST_TIMEOUT_MS } from "../src/utils/harmony-devices";
 
 // Guards the timeout/backstop ordering: the backstop must sit ABOVE every branch's
 // FULL per-call worst case, or it stops being a last-resort and starts truncating a
@@ -38,6 +39,14 @@ describe("discovery timeout vs backstop invariant", () => {
     const androidWorstCase = ADB_DEVICES_TIMEOUT_MS + ENRICH_TIMEOUT_MS;
     expect(androidWorstCase).toBeLessThan(BRANCH_DEADLINE_MS);
     expect(BRANCH_DEADLINE_MS - androidWorstCase).toBeGreaterThanOrEqual(MIN_MARGIN_MS);
+  });
+
+  it("the HarmonyOS branch's full worst case stays comfortably under the branch deadline", () => {
+    // A single bounded `Emulator -list`. It must carry its own timeout: the
+    // wrapper's 30s default is itself above the deadline, so relying on it would
+    // let the backstop cut off a branch that was still working.
+    expect(HARMONY_LIST_TIMEOUT_MS).toBeLessThan(BRANCH_DEADLINE_MS);
+    expect(BRANCH_DEADLINE_MS - HARMONY_LIST_TIMEOUT_MS).toBeGreaterThanOrEqual(MIN_MARGIN_MS);
   });
 });
 

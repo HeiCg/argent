@@ -170,6 +170,8 @@ async function resolveVvdShadowAdbSerials<T extends { serial: string }>(
 //     entirely — see listVegaDevices — so the wedged-VVD case is just ~6s.)
 //   - Android: one bounded `adb devices` call (6s) + ~5s concurrent getprop
 //     enrichment = ~11s.
+//   - HarmonyOS: one `Emulator -list` under its own HARMONY_LIST_TIMEOUT_MS (6s);
+//     it reads a local directory, so the bound is headroom rather than a real cost.
 //   - iOS / AVD-list / Chromium self-bound by their own subprocess/socket timeouts
 //     (iOS `simctl` ~10s, AVD-list ~5s, Chromium <1s) — all comfortably under 25s.
 // The Vega binary resolution (`resolveVegaBinary`) runs first but is memoized and

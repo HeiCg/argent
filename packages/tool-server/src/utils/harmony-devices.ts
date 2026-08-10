@@ -42,10 +42,20 @@ export function parseHarmonyInstances(stdout: string): HarmonyInstance[] {
     .map((name) => ({ name }));
 }
 
+/**
+ * Bound for the `-list` call, well under `list-devices`' BRANCH_DEADLINE_MS —
+ * that backstop must stay above every branch's worst case, or it truncates a
+ * branch that would have completed and drops a real device from the list.
+ * `runHarmonyEmulator`'s 30s default is above the deadline, so this call must
+ * pass its own. `-list` only reads `~/.Huawei/Emulator/deployed` (measured at
+ * under 0.1s), making 6s pure headroom for a loaded machine.
+ */
+export const HARMONY_LIST_TIMEOUT_MS = 6_000;
+
 /** Emulator instances, or [] when DevEco Studio isn't installed. */
 export async function listHarmonyInstances(): Promise<HarmonyInstance[]> {
   if (!(await resolveHarmonyEmulator())) return [];
-  const result = await runHarmonyEmulator(["-list"]);
+  const result = await runHarmonyEmulator(["-list"], HARMONY_LIST_TIMEOUT_MS);
   if (emulatorFailure(result)) return [];
   return parseHarmonyInstances(result.stdout);
 }
