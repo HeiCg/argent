@@ -10,13 +10,16 @@ import { parseHarmonyLayout } from "./layout-parser";
 export const harmonyRequires: ToolDependency[] = ["hdc"];
 
 /**
- * Said when the dump has no window at all. `uitest` returns a tree with a bare
- * root while the display is asleep, and an agent that reads that as "the app
- * rendered nothing" will start debugging the app instead of waking the screen.
+ * A suspended display still dumps its windows — measured on a Mate 60 with
+ * `powerStatus=POWER_STATUS_SUSPEND`: two visible `com.ohos.sceneboard` windows,
+ * indistinguishable in the tree from a live screen. Nothing else in the result
+ * says the panel is off, and injected touches land nowhere while it is, so the
+ * hint is the only thing standing between an agent and a silent run of
+ * successful-looking taps.
  */
 const ASLEEP_HINT =
-  "The display is off, so there is nothing to describe and injected taps would land nowhere. " +
-  "Wake it with `button` (power) and describe again.";
+  "The display is off. This tree is what was last composited, and injected taps land nowhere " +
+  "until the panel is on. Wake it with `button` (power), then describe again.";
 
 const EMPTY_HINT =
   "The layout dump contains no windows. The foreground app may still be starting — " +
@@ -38,15 +41,12 @@ export async function describeHarmony(connectKey: string): Promise<DescribeTreeD
       width: display.width,
       height: display.height,
     });
-    if (tree.children.length === 0) {
-      return {
-        tree,
-        source: "harmony-uitest",
-        screen,
-        hint: display.screenOn ? EMPTY_HINT : ASLEEP_HINT,
-      };
-    }
-    return { tree, source: "harmony-uitest", screen };
+    const hint = !display.screenOn
+      ? ASLEEP_HINT
+      : tree.children.length === 0
+        ? EMPTY_HINT
+        : undefined;
+    return { tree, source: "harmony-uitest", screen, ...(hint ? { hint } : {}) };
   } finally {
     await rm(localPath, { force: true }).catch(() => {});
   }

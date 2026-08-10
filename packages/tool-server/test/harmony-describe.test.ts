@@ -1,0 +1,72 @@
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { harmonyDisplay, harmonyDumpLayout } from "../src/utils/harmony-uitest";
+import { describeHarmony } from "../src/tools/describe/platforms/harmony";
+
+vi.mock("../src/utils/harmony-uitest", () => ({
+  harmonyDisplay: vi.fn(),
+  harmonyDumpLayout: vi.fn(),
+}));
+
+const CONNECT_KEY = "025DEK236V035771";
+
+/** The two `com.ohos.sceneboard` windows a Mate 60 dumps on its lock screen. */
+function lockScreenDump() {
+  return {
+    attributes: { bounds: "[0,0][1216,2688]" },
+    children: [
+      {
+        attributes: {
+          type: "WindowScene",
+          bundleName: "com.ohos.sceneboard",
+          bounds: "[0,107][1216,2688]",
+        },
+        children: [{ attributes: { type: "Text", text: "04:39", bounds: "[300,900][900,1200]" } }],
+      },
+      {
+        attributes: {
+          type: "WindowScene",
+          bundleName: "com.ohos.sceneboard",
+          bounds: "[0,0][1216,188]",
+        },
+        children: [],
+      },
+    ],
+  };
+}
+
+beforeEach(() => {
+  vi.mocked(harmonyDumpLayout).mockReset();
+  vi.mocked(harmonyDisplay).mockReset();
+});
+
+describe("describeHarmony", () => {
+  it("warns that the panel is off even though the dump still lists windows", async () => {
+    // Measured on a suspended Mate 60: `powerStatus=POWER_STATUS_SUSPEND` still
+    // dumps both sceneboard windows, so the tree alone cannot be told apart
+    // from a live screen — and every tap injected against it is a silent no-op.
+    vi.mocked(harmonyDisplay).mockResolvedValue({ width: 1216, height: 2688, screenOn: false });
+    vi.mocked(harmonyDumpLayout).mockResolvedValue(lockScreenDump());
+
+    const result = await describeHarmony(CONNECT_KEY);
+
+    expect(result.tree.children.length).toBeGreaterThan(0);
+    expect(result.hint).toMatch(/display is off/);
+  });
+
+  it("says nothing extra when the screen is on and the dump has windows", async () => {
+    vi.mocked(harmonyDisplay).mockResolvedValue({ width: 1216, height: 2688, screenOn: true });
+    vi.mocked(harmonyDumpLayout).mockResolvedValue(lockScreenDump());
+
+    expect((await describeHarmony(CONNECT_KEY)).hint).toBeUndefined();
+  });
+
+  it("points at a still-starting app when the screen is on but no window dumped", async () => {
+    vi.mocked(harmonyDisplay).mockResolvedValue({ width: 1216, height: 2688, screenOn: true });
+    vi.mocked(harmonyDumpLayout).mockResolvedValue({
+      attributes: { bounds: "[0,0][1216,2688]" },
+      children: [],
+    });
+
+    expect((await describeHarmony(CONNECT_KEY)).hint).toMatch(/no windows/);
+  });
+});
