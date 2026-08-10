@@ -1,6 +1,7 @@
 import { FAILURE_CODES, withFailureSignal, type ToolDependency } from "@argent/registry";
 import { resolveAndroidBinary } from "./android-binary";
 import { resolveVegaBinary } from "./vega-cli";
+import { resolveHarmonyEmulator } from "./harmony-cli";
 import { commandOnPath } from "./command-on-path";
 
 /**
@@ -45,6 +46,8 @@ const INSTALL_HINTS: Record<ToolDependency, string> = {
     "`sim-remote` CLI not found on PATH. Install via the radon-cloud project (see its README) and run `sim-remote login` before invoking any ios-remote tool. Only required for remote iOS simulators.",
   "vega":
     "Vega SDK CLI not found. Install the Amazon Vega SDK and run `source ~/vega/env` so `vega` (or its `kepler` alias) is on PATH; the resolver also checks `~/vega/bin/vega`. Only required for Vega (Fire TV) devices.",
+  "harmony-emulator":
+    "HarmonyOS emulator manager not found. Install DevEco Studio; on a non-macOS host set `$DEVECO_STUDIO_HOME` to its install root. Only required to list or launch HarmonyOS emulators.",
 };
 
 async function probe(dep: ToolDependency): Promise<boolean> {
@@ -62,6 +65,11 @@ async function probe(dep: ToolDependency): Promise<boolean> {
   // `~/vega/env`, so resolve through the SDK-aware resolver rather than PATH alone.
   if (dep === "vega") {
     return (await resolveVegaBinary()) !== null;
+  }
+  // The emulator manager lives inside DevEco Studio rather than on PATH, so it
+  // resolves through the DevEco-aware resolver.
+  if (dep === "harmony-emulator") {
+    return (await resolveHarmonyEmulator()) !== null;
   }
   // `commandOnPath` probes existence without invoking the dep itself — a bare
   // `xcrun` call would fork the tool just to check existence, which is both

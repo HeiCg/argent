@@ -131,6 +131,12 @@ export function dispatchByPlatform<
       }
       return opts.vega.handler(services as unknown as VegaServices, params, device, invokeOptions);
     }
+    if (device.platform === "harmony") {
+      // No tool drives a HarmonyOS device yet, so there is no branch to call —
+      // but the check has to be explicit, because chromium is the fallthrough
+      // below and a harmony device would otherwise be handed to the CDP branch.
+      throw new NotImplementedOnPlatformError({ toolId: opts.toolId, platform: "harmony" });
+    }
     // chromium
     if (!opts.chromium) {
       throw new NotImplementedOnPlatformError({

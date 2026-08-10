@@ -35,7 +35,12 @@ import { ensureDep } from "../../utils/check-deps";
 import { linuxBootDiagnostics } from "../../utils/linux-preflight";
 import { listIosSimulators } from "../../utils/ios-devices";
 import { deviceSetForUdid, simctlPrefix } from "../../utils/ios-device-sets";
-import { classifyDevice, stripRemotePrefix } from "../../utils/device-info";
+import {
+  classifyDevice,
+  harmonyInstanceName,
+  stripRemotePrefix,
+  HARMONY_ID_PREFIX,
+} from "../../utils/device-info";
 import {
   simctlBoot as simRemoteBoot,
   simctlBootstatus as simRemoteBootstatus,
@@ -45,12 +50,18 @@ import {
 import { listVvdImages } from "../../utils/vega-sdk";
 import { startVvd, stopVvd, isVvdRunning, waitForVvdRunning } from "../../utils/vega-vvd";
 import { resolveRunningVvdSerial, listVegaDevices } from "../../utils/vega-devices";
+import {
+  emulatorFailure,
+  isChinaOnlyRestriction,
+  runHarmonyEmulator,
+} from "../../utils/harmony-cli";
+import { listHarmonyInstances } from "../../utils/harmony-devices";
 import { bootElectronApp, type ElectronBootResult } from "./boot-electron";
 
 const execFileAsync = promisify(execFile);
 
-// NOTE on mutual exclusion: `udid` / `avdName` / `vvdImage` / `electronAppPath`
-// are exactly-one — but zod's
+// NOTE on mutual exclusion: `udid` / `avdName` / `vvdImage` / `harmonyInstance`
+// / `electronAppPath` are exactly-one — but zod's
 // `.refine()` returns a ZodEffects that our Registry ToolDefinition type does
 // not accept (it requires a ZodObject so the JSON Schema generator can walk
 // `.shape`). The exactly-one check therefore lives inside `execute` and
@@ -62,19 +73,25 @@ const zodSchema = z.object({
     .string()
     .optional()
     .describe(
-      "iOS: simulator UDID to boot (from `list-devices`). Provide exactly one of `udid`, `avdName`, `vvdImage`, or `electronAppPath`."
+      "iOS: simulator UDID to boot (from `list-devices`). Provide exactly one of `udid`, `avdName`, `vvdImage`, `harmonyInstance`, or `electronAppPath`."
     ),
   avdName: z
     .string()
     .optional()
     .describe(
-      "Android: AVD name to launch a new emulator from (from `list-devices` → `avds[].name`). Provide exactly one of `udid`, `avdName`, `vvdImage`, or `electronAppPath`."
+      "Android: AVD name to launch a new emulator from (from `list-devices` → `avds[].name`). Provide exactly one of `udid`, `avdName`, `vvdImage`, `harmonyInstance`, or `electronAppPath`."
     ),
   vvdImage: z
     .string()
     .optional()
     .describe(
-      "Vega (Fire TV): VVD image to boot — the `vvdImage` of a Vega device from `list-devices` (e.g. `tv`). Starts the single SDK-managed Vega Virtual Device. Provide exactly one of `udid`, `avdName`, `vvdImage`, or `electronAppPath`."
+      "Vega (Fire TV): VVD image to boot — the `vvdImage` of a Vega device from `list-devices` (e.g. `tv`). Starts the single SDK-managed Vega Virtual Device. Provide exactly one of `udid`, `avdName`, `vvdImage`, `harmonyInstance`, or `electronAppPath`."
+    ),
+  harmonyInstance: z
+    .string()
+    .optional()
+    .describe(
+      "HarmonyOS: emulator instance to start — the `name` of a harmony device from `list-devices` (e.g. `Phone_1`); the `harmony-<name>` id that entry reports as its `udid` is accepted too. Provide exactly one of `udid`, `avdName`, `vvdImage`, `harmonyInstance`, or `electronAppPath`."
     ),
   bootTimeoutMs: z
     .number()
@@ -83,23 +100,25 @@ const zodSchema = z.object({
     .max(900_000)
     .optional()
     .describe(
-      "Android/Vega: overall budget for the boot sequence. Default 480000 (8 min) on Android, 120000 (2 min) on Vega. Clamped to [30s, 15min]. Ignored on iOS."
+      "Android/Vega/HarmonyOS: overall budget for the boot sequence. Default 480000 (8 min) on Android, 120000 (2 min) on Vega and HarmonyOS. Clamped to [30s, 15min]. Ignored on iOS."
     ),
   force: z
     .boolean()
     .optional()
-    .describe("Shut down and re-boot the device even if already running."),
+    .describe(
+      "Shut down and re-boot the device even if already running. iOS/Android/Vega only: HarmonyOS exposes no running state to act on, and an Electron launch always spawns a fresh process."
+    ),
   headless: z
     .boolean()
     .optional()
     .describe(
-      "iOS only: boot the simulator core WITHOUT opening the Simulator.app GUI window. The device still streams via simulator-server; used by Argent Lens. Set the `ARGENT_SIMULATOR_NO_WINDOW` env var (1/true/yes) to force this host-wide without passing the flag per call (the iOS analog of `ARGENT_EMULATOR_NO_WINDOW`). Ignored on Android/Vega/Electron, which have no equivalent GUI step."
+      "iOS only: boot the simulator core WITHOUT opening the Simulator.app GUI window. The device still streams via simulator-server; used by Argent Lens. Set the `ARGENT_SIMULATOR_NO_WINDOW` env var (1/true/yes) to force this host-wide without passing the flag per call (the iOS analog of `ARGENT_EMULATOR_NO_WINDOW`). Ignored on Android/Vega/HarmonyOS/Electron, which have no equivalent GUI step."
     ),
   electronAppPath: z
     .string()
     .optional()
     .describe(
-      "Electron: path to the Electron app to launch. Either a packaged .app bundle / executable, or a project directory whose package.json points the Electron binary at the entry script. Mutually exclusive with udid/avdName."
+      "Electron: path to the Electron app to launch. Either a packaged .app bundle / executable, or a project directory whose package.json points the Electron binary at the entry script. Provide exactly one of `udid`, `avdName`, `vvdImage`, `harmonyInstance`, or `electronAppPath`."
     ),
   electronPort: z
     .number()
@@ -125,11 +144,19 @@ type BootDeviceResult =
   | { platform: "ios-remote"; udid: string; booted: true }
   | { platform: "android"; serial: string; avdName: string; booted: true }
   | VegaBootResult
+  | HarmonyBootResult
   | ElectronBootResult
   | NativeDevtoolsInitFailedResult;
 
 function bootTarget(params: BootDeviceParams): string {
-  return params.udid ?? params.avdName ?? params.vvdImage ?? params.electronAppPath ?? "device";
+  return (
+    params.udid ??
+    params.avdName ??
+    params.vvdImage ??
+    params.harmonyInstance ??
+    params.electronAppPath ??
+    "device"
+  );
 }
 
 // Flags every boot-device launch should always pass. Two purposes:
@@ -1418,12 +1445,112 @@ function bootVega(params: {
   return promise;
 }
 
+// A HarmonyOS emulator exposes no serial that can be observed, so its id is
+// minted from the instance name — see `HARMONY_ID_PREFIX`.
+type HarmonyBootResult = {
+  platform: "harmony";
+  udid: string;
+  instanceName: string;
+  booted: true;
+};
+
+// Coalesce concurrent HarmonyOS boots (mirrors `inFlightVegaBoots`): two callers
+// must not both shell out `Emulator -start` for the same instance. Keyed on the
+// name alone — unlike Vega there is no `force` mode to keep apart.
+const inFlightHarmonyBoots = new Map<string, Promise<HarmonyBootResult>>();
+
+const HARMONY_BOOT_TIMEOUT_MS = 120_000;
+
+/**
+ * `Emulator -install` outside mainland China prints "…available only in the
+ * Chinese mainland" and downloads nothing, and no instance can be created
+ * without an image. The manager only ever reports the symptom of that — a
+ * missing instance, or a missing image — so name the cause ourselves.
+ */
+const HARMONY_IMAGE_RESTRICTION =
+  "Huawei serves HarmonyOS emulator images only within mainland China; outside it no image can " +
+  "be downloaded, so no instance can be created and none can be started. argent cannot supply " +
+  "the image; an instance has to be created in DevEco Studio on a host that can download one.";
+
+/**
+ * Said when the start failed and the manager lists no instances at all. Zero
+ * instances is equally what a host that simply has not created one yet looks
+ * like — including inside mainland China, where the download works — so this
+ * states what was observed and offers the restriction as a possible cause
+ * rather than asserting it the way {@link HARMONY_IMAGE_RESTRICTION} does.
+ */
+const HARMONY_NO_INSTANCES =
+  "The emulator manager lists no HarmonyOS instances at all; create one in DevEco Studio before " +
+  "starting it. If creating one fails for want of an image, note that Huawei serves HarmonyOS " +
+  "emulator images only within mainland China.";
+
+async function bootHarmonyImpl(params: {
+  instanceName: string;
+  bootTimeoutMs: number;
+}): Promise<HarmonyBootResult> {
+  await ensureDep("harmony-emulator");
+
+  // `-start` is the manager's launcher, not the emulator process itself (the
+  // manager has a separate `-stop <name>` verb). Whether it returns as soon as
+  // the instance is handed off or blocks until HarmonyOS is up could not be
+  // observed, so it gets the caller's whole boot budget instead of the 30 s
+  // default every other `runHarmonyEmulator` call takes.
+  const result = await runHarmonyEmulator(["-start", params.instanceName], params.bootTimeoutMs);
+  // The exit code is no verdict: `-start` on a missing instance exits 1 while
+  // the manager's other failures exit 0, so the diagnostic it printed is the
+  // only signal (see `harmony-cli.ts`).
+  const diagnostic = emulatorFailure(result);
+  if (diagnostic) {
+    const imageMissing =
+      isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image");
+    // A start that failed because no instance exists is the same wall one step
+    // earlier, so ask whether any exists at all. `-list` is read only here, on
+    // the failure path: its populated output shape could not be observed, so
+    // misreading it must never block a start that would otherwise have worked.
+    // `null` means the listing itself failed — unknown, so claim nothing.
+    const instances = imageMissing ? null : await listHarmonyInstances().catch(() => null);
+    // Only the manager's own words justify blaming the region; an empty instance
+    // list is merely consistent with it.
+    const cause = imageMissing
+      ? ` ${HARMONY_IMAGE_RESTRICTION}`
+      : instances?.length === 0
+        ? ` ${HARMONY_NO_INSTANCES}`
+        : "";
+    throw new Error(
+      cause
+        ? `Failed to start HarmonyOS emulator "${params.instanceName}".${cause} The manager reported: ${diagnostic}`
+        : `Failed to start HarmonyOS emulator "${params.instanceName}": ${diagnostic}`
+    );
+  }
+
+  return {
+    platform: "harmony",
+    udid: `${HARMONY_ID_PREFIX}${params.instanceName}`,
+    instanceName: params.instanceName,
+    booted: true,
+  };
+}
+
+function bootHarmony(params: {
+  instanceName: string;
+  bootTimeoutMs: number;
+}): Promise<HarmonyBootResult> {
+  const existing = inFlightHarmonyBoots.get(params.instanceName);
+  if (existing) return existing;
+  const promise = bootHarmonyImpl(params).finally(() => {
+    inFlightHarmonyBoots.delete(params.instanceName);
+  });
+  inFlightHarmonyBoots.set(params.instanceName, promise);
+  return promise;
+}
+
 const capability: ToolCapability = {
   apple: { simulator: true, device: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },
+  harmony: { emulator: true },
 };
 
 export function createBootDeviceTool(
@@ -1437,14 +1564,15 @@ export function createBootDeviceTool(
       failedMsg: ({ params, failureSignal }) =>
         `Failed to start ${bootTarget(params)}: ${failureSignal.error_code}`,
     },
-    description: `Start an iOS simulator, launch an Android emulator, start a Vega (Fire TV) Virtual Device, or spawn an Electron app and wait until it is ready to accept interactions.
-Pick the platform by which argument you pass: 'udid' for an iOS simulator from list-devices, 'avdName' for an Android AVD (a serial is assigned automatically), 'vvdImage' for a Vega VVD (the 'vvdImage' of a vega device from list-devices, e.g. 'tv'), or 'electronAppPath' for an Electron app (a CDP remote-debugging port is picked automatically, or pass 'electronPort' to fix one).
+    description: `Start an iOS simulator, launch an Android emulator, start a Vega (Fire TV) Virtual Device, start a HarmonyOS emulator, or spawn an Electron app and wait until it is ready to accept interactions.
+Pick the platform by which argument you pass: 'udid' for an iOS simulator from list-devices, 'avdName' for an Android AVD (a serial is assigned automatically), 'vvdImage' for a Vega VVD (the 'vvdImage' of a vega device from list-devices, e.g. 'tv'), 'harmonyInstance' for a HarmonyOS emulator instance (the 'name' of a harmony device from list-devices), or 'electronAppPath' for an Electron app (a CDP remote-debugging port is picked automatically, or pass 'electronPort' to fix one).
 Use at the start of a session once you have picked a target.
-Returns a tagged payload: { platform: 'ios', udid, booted } or { platform: 'android', serial, avdName, booted } or { platform: 'vega', serial, vvdImage, booted } or { platform: 'chromium', id, port, pid, booted } (an Electron app boots as a Chromium/CDP device).
-Android boots take 2–10 minutes depending on machine and cold/warm state; the tool transparently hot-boots from the AVD's default_boot snapshot when usable and falls back to cold boot otherwise. Vega starts the single SDK-managed VVD via the vega CLI (~10s) and returns once it reports running. If an Android/Electron boot stage fails, the tool terminates the device it spawned so the next retry starts clean.`,
+Returns a tagged payload: { platform: 'ios', udid, booted } or { platform: 'android', serial, avdName, booted } or { platform: 'vega', serial, vvdImage, booted } or { platform: 'harmony', udid, instanceName, booted } or { platform: 'chromium', id, port, pid, booted } (an Electron app boots as a Chromium/CDP device).
+Android boots take 2–10 minutes depending on machine and cold/warm state; the tool transparently hot-boots from the AVD's default_boot snapshot when usable and falls back to cold boot otherwise. Vega starts the single SDK-managed VVD via the vega CLI (~10s) and returns once it reports running. If an Android/Electron boot stage fails, the tool terminates the device it spawned so the next retry starts clean.
+HarmonyOS hands the instance to DevEco Studio's Emulator manager, which reports no readiness signal — the call returns once the manager accepts the start, not once the OS is up, and no interaction tool drives a HarmonyOS device yet. Huawei serves the emulator images only within mainland China, so on a host outside it no instance can exist to start.`,
     alwaysLoad: true,
     searchHint:
-      "boot start launch simulator emulator avd device session ios android vega vvd firetv cold hot",
+      "boot start launch simulator emulator avd device session ios android vega vvd firetv harmony harmonyos deveco cold hot",
     zodSchema,
     capability,
     services: () => ({}),
@@ -1452,11 +1580,12 @@ Android boots take 2–10 minutes depending on machine and cold/warm state; the 
       const hasUdid = Boolean(params.udid);
       const hasAvd = Boolean(params.avdName);
       const hasVega = Boolean(params.vvdImage);
+      const hasHarmony = Boolean(params.harmonyInstance);
       const hasElectron = Boolean(params.electronAppPath);
-      const provided = [hasUdid, hasAvd, hasVega, hasElectron].filter(Boolean).length;
+      const provided = [hasUdid, hasAvd, hasVega, hasHarmony, hasElectron].filter(Boolean).length;
       if (provided !== 1) {
         throw new FailureError(
-          "Provide exactly one of `udid` (iOS), `avdName` (Android), `vvdImage` (Vega VVD), or `electronAppPath` (Electron).",
+          "Provide exactly one of `udid` (iOS), `avdName` (Android), `vvdImage` (Vega VVD), `harmonyInstance` (HarmonyOS), or `electronAppPath` (Electron).",
           {
             error_code: FAILURE_CODES.BOOT_DEVICE_TARGET_SELECTION_INVALID,
             failure_stage: "boot_device_target_selection",
@@ -1466,8 +1595,19 @@ Android boots take 2–10 minutes depending on machine and cold/warm state; the 
         );
       }
       if (hasUdid) {
-        if (classifyDevice(params.udid!) === "ios-remote") {
+        const platform = classifyDevice(params.udid!);
+        if (platform === "ios-remote") {
           return bootIosRemote(params.udid!, registry, params.force);
+        }
+        // `list-devices` reports a HarmonyOS instance's id as `harmony-<name>`
+        // and the capability gate lets that id through, so route it to the
+        // emulator manager rather than to simctl, which would reject it as an
+        // unknown iOS udid.
+        if (platform === "harmony") {
+          return bootHarmony({
+            instanceName: harmonyInstanceName(params.udid!),
+            bootTimeoutMs: params.bootTimeoutMs ?? HARMONY_BOOT_TIMEOUT_MS,
+          });
         }
         return bootIos(params.udid!, registry, params.force, params.headless);
       }
@@ -1483,6 +1623,12 @@ Android boots take 2–10 minutes depending on machine and cold/warm state; the 
           vvdImage: params.vvdImage!,
           bootTimeoutMs: params.bootTimeoutMs ?? 120_000,
           force: params.force,
+        });
+      }
+      if (hasHarmony) {
+        return bootHarmony({
+          instanceName: harmonyInstanceName(params.harmonyInstance!),
+          bootTimeoutMs: params.bootTimeoutMs ?? HARMONY_BOOT_TIMEOUT_MS,
         });
       }
       return bootElectronApp({

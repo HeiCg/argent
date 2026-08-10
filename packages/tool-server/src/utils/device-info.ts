@@ -44,11 +44,31 @@ export const CHROMIUM_ID_PREFIX = "chromium-cdp-";
  */
 export const VEGA_SERIAL_PREFIX = "amazon-";
 
+/**
+ * HarmonyOS device-id prefix, applied by `list-devices` to an emulator instance
+ * name (`harmony-Phone_1`).
+ *
+ * Unlike the other platforms this is not a vendor-assigned serial shape: the
+ * `hdc` connect key of a running HarmonyOS emulator could not be observed, since
+ * Huawei restricts the emulator image download to mainland China and no instance
+ * can exist without one. Minting the id from the instance name — which the
+ * `Emulator` CLI does report — keeps classification exact and avoids encoding a
+ * guessed serial format, the same way `chromium-cdp-<port>` is argent's own id
+ * rather than something CDP hands out.
+ */
+export const HARMONY_ID_PREFIX = "harmony-";
+
+/** Strip the `harmony-` prefix, returning the bare emulator instance name. */
+export function harmonyInstanceName(udid: string): string {
+  return udid.startsWith(HARMONY_ID_PREFIX) ? udid.slice(HARMONY_ID_PREFIX.length) : udid;
+}
+
 /** Returns the platform a `udid` belongs to based on its shape. */
 export function classifyDevice(udid: string): Platform {
   if (udid.startsWith(REMOTE_PREFIX)) return "ios-remote";
   if (udid.startsWith(VEGA_SERIAL_PREFIX)) return "vega";
   if (udid.startsWith(CHROMIUM_ID_PREFIX)) return "chromium";
+  if (udid.startsWith(HARMONY_ID_PREFIX)) return "harmony";
   return IOS_UDID_SHAPE.test(udid) ? "ios" : "android";
 }
 
@@ -90,11 +110,13 @@ export function resolveDevice(udid: string): DeviceInfo {
       ? "simulator"
       : platform === "vega"
         ? "vvd"
-        : platform === "android"
-          ? isAndroidEmulatorSerial(udid)
-            ? "emulator"
-            : "device"
-          : "app";
+        : platform === "harmony"
+          ? "emulator"
+          : platform === "android"
+            ? isAndroidEmulatorSerial(udid)
+              ? "emulator"
+              : "device"
+            : "app";
   return { id: udid, platform, kind };
 }
 

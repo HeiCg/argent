@@ -44,6 +44,10 @@ export const BUTTONS_BY_PLATFORM: Record<Platform, ReadonlySet<Params["button"]>
   // `tv-remote` tool, and this tool's capability omits `vega` so a Vega device is
   // rejected before this map is consulted. Empty set keeps the record total.
   "vega": new Set([]),
+  // No tool drives a booted HarmonyOS device yet, and this tool's capability
+  // omits `harmony`, so a HarmonyOS device is rejected before this map is
+  // consulted. Empty set keeps the record total.
+  "harmony": new Set([]),
 };
 
 const capability: ToolCapability = {

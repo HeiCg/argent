@@ -144,7 +144,7 @@ export interface ToolContext extends InvokeToolOptions {
 
 // ── Device + Capability Types ──
 
-export type Platform = "ios" | "android" | "ios-remote" | "chromium" | "vega";
+export type Platform = "ios" | "android" | "ios-remote" | "chromium" | "vega" | "harmony";
 
 export type DeviceKind = "simulator" | "emulator" | "vvd" | "device" | "app" | "unknown";
 
@@ -193,6 +193,14 @@ export interface ToolCapability {
     vvd?: boolean;
     device?: boolean;
   };
+  /**
+   * HarmonyOS support. Emulator-only: the tool-server neither detects nor
+   * connects to physical HarmonyOS hardware, so there is no `device` flag to
+   * declare — adding one is deferred to a version where it can be tested.
+   */
+  harmony?: {
+    emulator?: boolean;
+  };
   /** Optional refiner. Returns true if this device is supported. */
   supports?: (device: DeviceInfo) => boolean;
 }
@@ -217,7 +225,13 @@ export interface ToolCapability {
  * On a missing binary, the HTTP layer returns 424 Failed Dependency with an
  * install hint the agent can surface verbatim.
  */
-export type ToolDependency = "adb" | "xcrun" | "emulator" | "sim-remote" | "vega";
+export type ToolDependency =
+  | "adb"
+  | "xcrun"
+  | "emulator"
+  | "sim-remote"
+  | "vega"
+  | "harmony-emulator";
 
 // ── Tool Types ──
 
