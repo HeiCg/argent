@@ -1434,7 +1434,7 @@ async function leadingLaunch(
   flow: FlowFile,
   stack: RunStackEntry[]
 ): Promise<{ app: Launch; flow: string } | null> {
-  const found = await scanLeadingLaunch(flow, stack);
+  const found = await scanLeadingLaunch(flow.steps, stack);
   return found === NO_EXECUTABLE_STEP ? null : found;
 }
 
@@ -1449,6 +1449,21 @@ async function leadingLaunch(
  * would skip and the prerequisite guard would wave through a run that destroys
  * the state it just asked the caller to establish.
  *
+ * A `repeat:` block with a `times` bound is descended into as if its body were
+ * pasted inline, because it IS: a literal count is defined as paste-equivalence
+ * (see RepeatSpec), so the first iteration's launch runs unconditionally at
+ * step 1 exactly as the pasted-out spelling would — the hoist must boot for it
+ * and the prerequisite guard must refuse it, or the block becomes a wrapper
+ * that turns a launch-first run invisible to both. The descent keeps the SAME
+ * stack: the block adds no file hop, so a `run:` inside the body resolves
+ * against the containing file, precisely as the executor expands it. And a body
+ * that contributes no executable step lets the scan continue with the steps
+ * AFTER the block, the way two inlined echoes would. An `until` drain gets no
+ * such transparency, deliberately: its guard is checked BEFORE each iteration,
+ * so an already-satisfied guard runs the body — launch included — zero times,
+ * and a launch that may never happen is no basis for booting an app or refusing
+ * a prerequisite. `when:` blocks stay opaque (give up) for the same reason.
+ *
  * The walk below IS the executor's, run ahead of time: the same `runStack`, each
  * hop resolved exactly as {@link execRunStep} resolves it — anchored at the
  * containing file's canonical directory, by concatenation so a `..` reaches the
@@ -1458,13 +1473,22 @@ async function leadingLaunch(
  * `null` too.
  */
 async function scanLeadingLaunch(
-  flow: FlowFile,
+  steps: FlowStep[],
   stack: RunStackEntry[]
 ): Promise<{ app: Launch; flow: string } | typeof NO_EXECUTABLE_STEP | null> {
   const top = stack[stack.length - 1]!;
-  for (const step of flow.steps) {
+  for (const step of steps) {
     if (step.kind === "echo") continue;
     if (step.kind === "launch") return { app: step.app, flow: top.display };
+    if (step.kind === "repeat" && step.spec.mode === "times") {
+      // Unconditional, so transparent: the block is its body pasted N times.
+      // Same stack — no file hop — and an all-echo body falls through to the
+      // steps after the block. An `until` drain skips this branch and keeps
+      // the give-up below: its body may legitimately run zero times.
+      const inner = await scanLeadingLaunch(step.steps, stack);
+      if (inner !== NO_EXECUTABLE_STEP) return inner;
+      continue;
+    }
     if (step.kind !== "run") return null;
     const spelled = path.dirname(top.canonical) + path.sep + step.flow;
     let nested: FlowFile;
@@ -1480,7 +1504,7 @@ async function scanLeadingLaunch(
     } catch {
       return null;
     }
-    const inner = await scanLeadingLaunch(nested, [
+    const inner = await scanLeadingLaunch(nested.steps, [
       ...stack,
       { canonical, display: runDisplayFor(step.flow, stack[0]!.display) },
     ]);
