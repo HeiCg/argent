@@ -1,8 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { DeviceInfo, Registry } from "@argent/registry";
 import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/contract";
 import { adbShell } from "../../src/utils/adb";
 import { fetchFlowTree } from "../../src/tools/flows/flow-tree";
+import { createRunFlowTool, type StepReport } from "../../src/tools/flows/flow-run";
+import { serializeFlow } from "../../src/tools/flows/flow-utils";
 import {
   detectDevLauncher,
   dismissDevLauncher,
@@ -166,6 +171,24 @@ function noServersTree(): DescribeNode {
       ),
     ]
   );
+}
+
+/**
+ * The fixtures above are written nested, which reads better; the Android adapter
+ * emits the same screen FLAT — every node a direct child of one synthetic root,
+ * with the ancestors surviving as leaves that keep their own frames and carry the
+ * hoisted `subtreeText` (measured on the device this was built against: 23 leaves,
+ * depth 1). The module reads the flattened list and the frames only, so both
+ * shapes must give the same answers; the cases below run against this one.
+ */
+function asProduced(tree: DescribeNode): DescribeNode {
+  const leaves: DescribeNode[] = [];
+  const walk = (n: DescribeNode): void => {
+    leaves.push({ ...n, children: [] });
+    for (const child of n.children) walk(child);
+  };
+  for (const child of tree.children) walk(child);
+  return { ...tree, children: leaves };
 }
 
 const emulator: DeviceInfo = { id: "emulator-5556", platform: "android", kind: "emulator" };
@@ -391,7 +414,12 @@ describe("picking the row for the run's own bundler", () => {
     expect(pickDevServerRow(both, phone, 8081, historyY(both))?.url).toBe("http://localhost:8081");
   });
 
-  it("uses loopback on an iOS simulator, which shares the host network stack", () => {
+  it("falls back to loopback off Android, the branch the gate never reaches", () => {
+    // Documents the helper's total behaviour, not a production path: the
+    // recovery is Android-only by construction (`isExpoDevBuild` answers false
+    // for every other platform), so the picker only ever runs with an Android
+    // device. An iOS simulator shares the host's network stack, which is what
+    // the fallback would mean if it were ever reached.
     const ios = node(
       "ROOT",
       "Screen",
@@ -609,5 +637,178 @@ describe("getting a launch past the chooser", () => {
       ok: true,
     });
     expect(calls.map((c) => c.tool)).toEqual(["gesture-tap"]);
+  });
+});
+
+describe("the shape the adapter really produces", () => {
+  it("reads a flattened chooser exactly like the nested fixture", () => {
+    const flat = asProduced(launcherTree());
+    expect(flat.children.every((n) => n.children.length === 0)).toBe(true);
+    expect(detectDevLauncher(flat)).toEqual({ historyY: 0.491 });
+    const picked = pickDevServerRow(flat, emulator, 8081, 0.491);
+    expect(picked?.url).toBe("http://10.0.2.2:8081");
+    expect(picked?.node.frame.y).toBe(0.307);
+    // The scroll container is a full-width leaf here, carrying every row's URL
+    // as hoisted text — the shape that made a history-only port match it.
+    expect(pickDevServerRow(flat, emulator, 8085, 0.491)).toBeNull();
+  });
+
+  it("keeps the address box out of the candidates once flattened", () => {
+    // Flattening drops the parent/child link between the input and the text it
+    // renders, so only the frames are left to tell them apart — which is why the
+    // exclusion is geometric.
+    const flat = asProduced(noServersTree());
+    expect(detectDevLauncher(flat)).toEqual({ historyY: 0.732 });
+    expect(pickDevServerRow(flat, emulator, 8081, 0.732)).toBeNull();
+  });
+});
+
+describe("when the bundler never serves the app", () => {
+  it("gives the chooser the full exit budget, then names the URL it opened", async () => {
+    // The tap lands, but the chooser is still there a minute later: the bundler at
+    // that address is not serving this app. The wait is generous because what
+    // follows a tap is a cold bundle, so only the deadline can tell the two apart.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+      vi.mocked(fetchFlowTree).mockResolvedValue({
+        tree: launcherTree(),
+        source: "android-devtools",
+      });
+      const registry = {
+        invokeTool: vi.fn(async () => ({ ok: true })),
+        getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+      } as unknown as Registry;
+
+      const pending = dismissDevLauncher(
+        { registry, device: emulator },
+        "xyz.blueskyweb.app",
+        8081
+      );
+      await vi.advanceTimersByTimeAsync(61_000);
+      const outcome = await pending;
+
+      expect(outcome).toMatchObject({ handled: true, ok: false });
+      expect(outcome).toHaveProperty(
+        "reason",
+        expect.stringContaining("opened http://10.0.2.2:8081 from the expo dev-client launcher")
+      );
+      expect(outcome).toHaveProperty("reason", expect.stringContaining("still showing 60s later"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("what the launch step reports", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "flow-dev-launcher-"));
+  });
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  /** A registry that answers everything a bare Android `launch` step asks for. */
+  function launchRegistry(): Registry {
+    return {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "list-devices" ? { devices: [] } : { ok: true }
+      ),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+      // The Android tree-source gate probes the devtools helper once.
+      resolveService: vi.fn(async () => ({ isReady: () => true })),
+    } as unknown as Registry;
+  }
+
+  async function runLaunchOnly(params: Record<string, unknown>): Promise<StepReport[]> {
+    const dir = path.join(tmpDir, ".argent", "flows");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "launch-only.yaml"),
+      serializeFlow({
+        executionPrerequisite: "",
+        steps: [{ kind: "launch", app: "com.example.dev" }],
+      }),
+      "utf8"
+    );
+    const result = await createRunFlowTool(launchRegistry()).execute(
+      {},
+      { name: "launch-only", project_root: tmpDir, device: emulator.id, ...params }
+    );
+    if (!("steps" in result))
+      throw new Error(`expected a run result, got ${JSON.stringify(result)}`);
+    return result.steps;
+  }
+
+  it("passes with a warning naming the server it opened", async () => {
+    vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+    let read = 0;
+    vi.mocked(fetchFlowTree).mockImplementation(async () => {
+      read += 1;
+      return {
+        tree: read === 1 ? launcherTree() : node("ROOT", "Screen", [0, 0, 1, 1], []),
+        source: "android-devtools",
+      };
+    });
+
+    // The step did pass — but not by starting where the flow assumes, which is
+    // the only place the run says so.
+    expect(await runLaunchOnly({ metroPort: 8082 })).toMatchObject([
+      {
+        kind: "launch",
+        status: "pass",
+        warning:
+          "app opened behind the expo dev-client launcher — dismissed it via http://10.0.2.2:8082",
+      },
+    ]);
+  });
+
+  it("errors with the port it wanted when the chooser lists no live row for it", async () => {
+    vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+    vi.mocked(fetchFlowTree).mockResolvedValue({
+      tree: launcherTree(),
+      source: "android-devtools",
+    });
+
+    const steps = await runLaunchOnly({ metroPort: 8085 });
+    expect(steps[0]).toMatchObject({ kind: "launch", status: "error" });
+    expect(steps[0].reason).toContain("lists no reachable server on port 8085");
+  });
+
+  it("takes 8081 when the caller names no port", async () => {
+    vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+    let read = 0;
+    vi.mocked(fetchFlowTree).mockImplementation(async () => {
+      read += 1;
+      return {
+        tree: read === 1 ? launcherTree() : node("ROOT", "Screen", [0, 0, 1, 1], []),
+        source: "android-devtools",
+      };
+    });
+
+    const steps = await runLaunchOnly({});
+    expect(steps[0].warning).toContain("http://10.0.2.2:8081");
+  });
+
+  it("says nothing extra when the app starts on its own screen", async () => {
+    vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+    vi.mocked(fetchFlowTree).mockResolvedValue({
+      tree: node(
+        "ROOT",
+        "Screen",
+        [0, 0, 1, 1],
+        [
+          node("StaticText", "Home", [0.1, 0.1, 0.2, 0.03]),
+          node("StaticText", "Following", [0.1, 0.2, 0.3, 0.03]),
+        ]
+      ),
+      source: "android-devtools",
+    });
+
+    const steps = await runLaunchOnly({ metroPort: 8082 });
+    expect(steps[0]).toMatchObject({ kind: "launch", status: "pass" });
+    expect(steps[0].warning).toBeUndefined();
   });
 });

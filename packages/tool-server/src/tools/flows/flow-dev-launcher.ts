@@ -83,7 +83,9 @@ const EXIT_POLL_MS = 500;
  * `localhost` means the emulator itself and only reaches Metro when an
  * `adb reverse` tunnel is up, so it ranks second. A physical Android device has
  * no alias and depends on that tunnel entirely, which puts `localhost` first.
- * iOS simulators share the host's network stack, so loopback is direct.
+ * The last branch is a fallback the gate never reaches — {@link isExpoDevBuild}
+ * answers false off Android — kept so the helper stays total; loopback is what it
+ * would mean on an iOS simulator, which shares the host's network stack.
  *
  * A LAN address is deliberately absent: it is the spelling most likely to be
  * stale (it changes with the network the machine is on, not with the app), and
