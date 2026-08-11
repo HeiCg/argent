@@ -246,10 +246,11 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // The manager dies while the connector is being looked for, which is the
     // real ordering: `Emulator -start` fails in milliseconds, the `hdc` lookup
     // is a filesystem probe.
-    resolveHdc.mockImplementation(async () => {
-      child.die("Failed to start emulator: this emulator instance is already running");
-      return null;
-    });
+    resolveHdc.mockResolvedValue(null);
+    setTimeout(
+      () => child.die("Failed to start emulator: this emulator instance is already running"),
+      5
+    );
 
     await expect(boot({})).rejects.toThrow(/already running/);
   });

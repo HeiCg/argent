@@ -1482,6 +1482,17 @@ const HARMONY_TARGET_POLL_MS = 2_000;
 const HARMONY_STOP_GRACE_MS = 30_000;
 
 /**
+ * How long the manager is watched for an immediate failure when there is no
+ * `hdc` to wait on a target with. A failing `-start` prints its diagnostic and
+ * exits at once, so this only has to outlast process startup — it is not a boot
+ * budget, and the connector-absent path must still fail fast.
+ */
+const HARMONY_NO_HDC_GRACE_MS = 3_000;
+
+/** Cadence for the grace above; short, since it is only outlasting a process start. */
+const HARMONY_EXIT_POLL_MS = 50;
+
+/**
  * `Emulator -install` outside mainland China prints "…available only in the
  * Chinese mainland" and downloads nothing, and no instance can be created
  * without an image. The manager only ever reports the symptom of that — a
@@ -1626,17 +1637,21 @@ async function startHarmonyEmulator(
  * one still booting, and would burn the whole budget before saying so.
  *
  * Exactly one *eligible* arrival, or none. Arrival alone does not identify
- * anything once a second device can produce one: a handset plugged in or
- * authorised inside the window, a row settling out of `Offline`, or a
- * concurrent `boot-device` for another instance (`inFlightHarmonyBoots` keys on
- * the instance, so those are not coalesced). Returning the wrong key is not a
- * failed boot — it is a drivable id, so every later tap and keystroke lands on
- * that device instead, which is the case for being strict here. USB arrivals
- * are excluded outright (a host-local emulator is not on a cable) and two
- * eligible arrivals are refused rather than guessed between, exactly as the
- * Android path refuses when more than one serial appears. There is no
- * `-avdName` equivalent to disambiguate with, so the caller gets the named
- * no-target degradation and `list-devices`.
+ * anything once a second device can produce one, and returning the wrong key is
+ * not a failed boot — it is a drivable id, so every later tap and keystroke
+ * lands on that device instead. So USB arrivals are excluded outright (a
+ * host-local emulator is not on a cable) and two eligible arrivals are refused
+ * rather than guessed between, as the Android path refuses when more than one
+ * serial appears. There is no `-avdName` equivalent to disambiguate with, so the
+ * caller gets the named no-target degradation and `list-devices`.
+ *
+ * What this does NOT cover: a second emulator registering during the window but
+ * outside it — started from DevEco Studio, or by a concurrent `boot-device` for
+ * another instance, which `inFlightHarmonyBoots` does not coalesce. Both are
+ * loopback TCP and land seconds apart, so each boot sees a single arrival and
+ * the cardinality check never fires. Nothing in `hdc` or the manager ties a key
+ * to an instance, so closing that needs a lock across every harmony boot on the
+ * host, which would head-of-line block them all on one slow start.
  */
 async function waitForHarmonyTarget(
   before: Set<string>,
@@ -1652,6 +1667,20 @@ async function waitForHarmonyTarget(
     const remaining = deadline - Date.now();
     if (remaining <= 0) return null;
     await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
+  }
+}
+
+/** Resolve when the manager has exited, or when `graceMs` has passed. */
+async function waitForHarmonyExit(
+  emulator: { exited: () => unknown },
+  graceMs: number
+): Promise<void> {
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    if (emulator.exited()) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return;
+    await new Promise((r) => setTimeout(r, Math.min(HARMONY_EXIT_POLL_MS, remaining)));
   }
 }
 
@@ -1758,11 +1787,21 @@ async function bootHarmonyImpl(params: {
     }
   };
 
-  // Without a connector there is nothing to watch, so the manager is asked once
-  // instead: otherwise a start that had already failed would be reported as
-  // `booted: true` under a note whose first clause — "the instance started" —
-  // nothing had checked.
-  if (!hdcAvailable) assertEmulatorAlive();
+  // Without a connector there is no target list to watch, but the manager can
+  // still be watched for a short grace: otherwise a start that fails — a missing
+  // image, an instance already running — is reported as `booted: true` under a
+  // note whose first clause, "the instance started", nothing has checked.
+  //
+  // Asking once is not enough. Nothing between the spawn and here does any I/O
+  // (`resolveHdc` is a warm memo by this point, primed by the pre-start
+  // snapshot), so a single check runs microtasks after the spawn, before the
+  // child could have exited. The grace is small and bounded because a failing
+  // `-start` prints and exits at once — this must not become the whole-budget
+  // wait the connector-absent path exists to avoid.
+  if (!hdcAvailable) {
+    await waitForHarmonyExit(emulator, HARMONY_NO_HDC_GRACE_MS);
+    assertEmulatorAlive();
+  }
 
   const connectKey = hdcAvailable
     ? await waitForHarmonyTarget(before, bootDeadline, assertEmulatorAlive)

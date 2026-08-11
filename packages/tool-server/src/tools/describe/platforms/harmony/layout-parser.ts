@@ -294,8 +294,28 @@ function deriveRole(type: string, attrs: Record<string, string>): string {
   }
 }
 
+/**
+ * Whether a node lies entirely outside the screen and takes nothing with it.
+ *
+ * A `List` keeps its scrolled-off rows in the dump with real off-screen bounds,
+ * and clipping those to the screen leaves a zero-area rect. Emitting it anyway
+ * puts a `[clickable]` line in front of the agent whose documented tap centre
+ * (`x + width/2`, `y + height/2`) is the status bar for a row above the fold and
+ * the nav bar for one below it. The Android trimmer prunes the same rows, by its
+ * own scroll-clip pass; harmony has no clip window to inherit, so the clipped
+ * rect is the signal. A node with surviving children is kept regardless: it is
+ * the child that would be lost, and a bounds-less parent's frame is their union.
+ */
+function isFullyOffScreen(frame: DescribeNode["frame"], children: DescribeNode[]): boolean {
+  // Zero AREA, not zero in both axes: a row scrolled above the fold clips to the
+  // full screen width and no height at all.
+  return children.length === 0 && frame.width * frame.height === 0;
+}
+
 function toDescribeNode(n: HarmonyNode, screenW: number, screenH: number): DescribeNode {
-  const children = n.children.map((c) => toDescribeNode(c, screenW, screenH));
+  const children = n.children
+    .map((c) => toDescribeNode(c, screenW, screenH))
+    .filter((c) => !isFullyOffScreen(c.frame, c.children));
   const b = n.pixelBounds;
   const frame = b ? normalizeFrame(b, screenW, screenH) : unionFrame(children);
   const out: DescribeNode = { role: n.role, frame, children };
@@ -378,7 +398,9 @@ export function parseHarmonyLayout(
   for (const child of root.children ?? []) {
     const attrs = child.attributes ?? {};
     const bundle = (attrs.bundleName ?? "").trim();
-    const built = build(child).map((n) => toDescribeNode(n, screen.width, screen.height));
+    const built = build(child)
+      .map((n) => toDescribeNode(n, screen.width, screen.height))
+      .filter((n) => !isFullyOffScreen(n.frame, n.children));
     if (built.length === 0) continue;
     if (!bundle) {
       windows.push(...built);

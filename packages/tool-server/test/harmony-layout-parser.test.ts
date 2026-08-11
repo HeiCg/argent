@@ -5,6 +5,7 @@ import {
   parseHarmonyLayout,
 } from "../src/tools/describe/platforms/harmony/layout-parser";
 import type { HarmonyLayoutNode } from "../src/utils/harmony-uitest";
+import type { DescribeNode } from "../src/tools/describe/contract";
 
 const SCREEN = { width: 1216, height: 2688 };
 
@@ -388,27 +389,28 @@ describe("parseHarmonyLayout", () => {
         SCREEN
       ).tree.children[0].children[0].children;
 
-    it("gives a row scrolled fully off the screen no area, on every edge", () => {
-      const [above, below, right] = rows([
+    it("drops a row scrolled fully off the screen, on every edge", () => {
+      // Clipping alone left these as zero-area `[clickable]` lines whose
+      // documented tap centre is the status bar or the nav bar.
+      const kept = rows([
         ["ABOVE", "[0,-400][1216,-260]"],
         ["BELOW", "[0,2888][1216,3028]"],
         ["RIGHT", "[1266,400][1456,540]"],
+        ["VISIBLE", "[0,1000][1216,1140]"],
       ]);
-      expect(above.frame.height).toBe(0);
-      expect(below.frame.height).toBe(0);
-      expect(right.frame.width).toBe(0);
+      expect(kept.map((r) => r.label)).toEqual(["VISIBLE"]);
     });
 
     it("keeps only the visible slice of a row straddling an edge", () => {
-      // 140px tall, 80px of it on screen — and it must NOT share a frame with
-      // the fully-off-screen row above it, which is what the old clamp produced.
-      const [above, straddle] = rows([
+      // 140px tall, 80px of it on screen. It must survive - it IS reachable -
+      // and must not share the fully-off-screen row's fate or its old frame.
+      const kept = rows([
         ["ABOVE", "[0,-400][1216,-260]"],
         ["STRADDLE", "[0,-60][1216,80]"],
       ]);
-      expect(straddle.frame.y).toBe(0);
-      expect(straddle.frame.height).toBeCloseTo(80 / 2688, 6);
-      expect(straddle.frame).not.toEqual(above.frame);
+      expect(kept.map((r) => r.label)).toEqual(["STRADDLE"]);
+      expect(kept[0].frame.y).toBe(0);
+      expect(kept[0].frame.height).toBeCloseTo(80 / 2688, 6);
     });
 
     it("never lets a frame run past the screen, so a tap centre stays on it", () => {
@@ -423,6 +425,50 @@ describe("parseHarmonyLayout", () => {
         expect(x + width, `${row.label}: x+width`).toBeLessThanOrEqual(1);
         expect(y + height, `${row.label}: y+height`).toBeLessThanOrEqual(1);
       }
+    });
+
+    it("drops an off-screen node sitting directly under a window", () => {
+      // Windows are assembled separately from the recursive walk, so the same
+      // pruning has to be applied there or it holds only below depth 1.
+      const tree = parseHarmonyLayout(
+        root([
+          node({ type: "root", bundleName: "com.app", bounds: "[0,0][1216,2688]" }, [
+            node({
+              type: "Button",
+              text: "GONE",
+              bounds: "[0,-400][1216,-260]",
+              clickable: "true",
+            }),
+            node({ type: "Button", text: "HERE", bounds: "[0,100][1216,240]", clickable: "true" }),
+          ]),
+        ]),
+        SCREEN
+      ).tree;
+      expect(tree.children[0].children.map((c) => c.label)).toEqual(["HERE"]);
+    });
+
+    it("does not drop a zero-size container that still holds a visible child", () => {
+      // A degenerate wrapper survives `build` because it has children; pruning
+      // it on its own frame would take the reachable child with it.
+      const tree = parseHarmonyLayout(
+        root([
+          node({ type: "root", bundleName: "com.app", bounds: "[0,0][1216,2688]" }, [
+            node({ type: "Dialog", bounds: "[0,0][0,0]" }, [
+              node({ type: "Text", text: "Inside", bounds: "[0,1000][1216,1140]" }),
+            ]),
+          ]),
+        ]),
+        SCREEN
+      ).tree;
+      // Assert the child survives ANYWHERE in the tree: pruning a zero-area
+      // ancestor takes its whole subtree with it, wherever it sits.
+      const labels: string[] = [];
+      const walk = (n: DescribeNode) => {
+        if (n.label) labels.push(n.label);
+        n.children.forEach(walk);
+      };
+      walk(tree);
+      expect(labels).toContain("Inside");
     });
 
     it("leaves a fully on-screen row exactly as measured", () => {
