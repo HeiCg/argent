@@ -716,6 +716,31 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
     expect(warning).toContain("unless the element LEAVES that tree within its longer timeout");
     expect(warning).not.toContain("the element reaches that tree");
+    // The remedy inverts with the condition for the same reason. A `hidden`
+    // verdict fires because the runner's tree still HAS the element, so
+    // "retarget at an id the full hierarchy definitely carries" points at the
+    // opposite of the criterion that would help.
+    expect(warning).toContain("this verdict says that tree still HAS the element");
+    expect(warning).toContain("narrow the selector until it matches only what you expect to leave");
+    expect(warning).not.toContain("retarget the DIRECTIVE at an `id` the full hierarchy carries");
+  });
+
+  it("Android: inverts the retarget remedy for `hidden` too", async () => {
+    // The clause is per platform AND per condition; Android names a
+    // `resource-id` where iOS names an `id`, and both invert the same way.
+    serveTree(androidRunnerTree(ANDROID_ROW), "android-devtools");
+    await startRecording("hiddenandroid");
+
+    const result = await recordWait(
+      "hiddenandroid",
+      { udid: ANDROID, condition: "hidden", selector: { identifier: "continue-row" } },
+      {}
+    );
+    const warning = warningOf(result, "hiddenandroid") ?? "";
+
+    expect(warning).toContain("this verdict says that tree still HAS the element");
+    expect(warning).toContain("retargeting at a `resource-id` it definitely carries");
+    expect(warning).not.toContain("retarget the DIRECTIVE at a `resource-id` the full hierarchy");
   });
 
   // Android: a testID'd label inside a testID'd clickable row — an everyday RN

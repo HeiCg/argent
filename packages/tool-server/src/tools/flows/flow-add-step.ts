@@ -138,7 +138,34 @@ const UNSUPPORTED_PLATFORM = {
  * full hierarchy has complete testID/resource-id coverage, so retargeting the
  * directive is both the fix and the thing that finishes that workflow.
  */
-function runnerSideReadClause(udid: unknown): string {
+/**
+ * The remedy half of the iOS/Android clause, which is not the same advice for
+ * every condition.
+ *
+ * On `visible`/`exists`/`text` a determinate verdict means the runner's tree
+ * does NOT have what the check wanted, so "retarget at an id the full hierarchy
+ * definitely carries" is exactly right. On `hidden` it means the opposite: the
+ * verdict fires because that tree still HAS the element, and steering the
+ * author to a stable id makes the directive match MORE surely — the criterion
+ * inverted. {@link awaitStillNeeds} already draws this distinction one clause
+ * earlier; the remedy has to draw it too.
+ */
+function retargetRemedy(idKind: string, condition: WaitCondition): string {
+  if (condition === "hidden") {
+    return (
+      `but this verdict says that tree still HAS the element, so retargeting at ${idKind} it ` +
+      "definitely carries is the wrong direction — either narrow the selector until it matches " +
+      "only what you expect to leave, or gate on something that does leave, and prove it with " +
+      "`flow-execute`; or keep the step raw"
+    );
+  }
+  return (
+    `so retarget the DIRECTIVE at ${idKind} the full hierarchy carries and prove it with ` +
+    "`flow-execute`, or keep the step raw"
+  );
+}
+
+function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
   const platform = platformOf(udid);
   if (platform === "ios") {
     return (
@@ -146,16 +173,14 @@ function runnerSideReadClause(udid: unknown): string {
       "`native-full-hierarchy` return the RAW view tree, matching `identifier`/`label`/" +
       "`className` exactly (neither takes a substring `text` or a `role`) and keeping the " +
       "hidden, transparent, scroll-clipped and unlabelled container views the runner drops — " +
-      "so retarget the DIRECTIVE at an `id` the full hierarchy carries and prove it with " +
-      "`flow-execute`, or keep the step raw"
+      retargetRemedy("an `id`", condition)
     );
   }
   if (platform === "android") {
     return (
       "No read-only tool exposes the runner's full hierarchy on Android — `describe` returns the " +
-      "trimmed tree the recorder read, not the runner's — so retarget the DIRECTIVE at a " +
-      "`resource-id` the full hierarchy carries and prove it with `flow-execute`, or keep the " +
-      "step raw"
+      "trimmed tree the recorder read, not the runner's — " +
+      retargetRemedy("a `resource-id`", condition)
     );
   }
   if (platform === "chromium") {
@@ -732,7 +757,7 @@ async function probeAgainstRunnerTree(
       " " +
       SPELLING_CLAUSE +
       " " +
-      `${treeDivergenceFor(args.udid)} ${runnerSideReadClause(args.udid)}`,
+      `${treeDivergenceFor(args.udid)} ${runnerSideReadClause(args.udid, condition as WaitCondition)}`,
   };
 }
 
