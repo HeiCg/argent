@@ -1,5 +1,5 @@
 import { execFile, spawn, type StdioOptions } from "node:child_process";
-import { openSync, closeSync } from "node:fs";
+import { openSync, closeSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -54,6 +54,7 @@ import { resolveRunningVvdSerial, listVegaDevices } from "../../utils/vega-devic
 import {
   emulatorFailure,
   isChinaOnlyRestriction,
+  resolveHarmonyEmulator,
   runHarmonyEmulator,
 } from "../../utils/harmony-cli";
 import { listHarmonyHdcTargets, listHarmonyInstances } from "../../utils/harmony-devices";
@@ -1474,12 +1475,11 @@ const HARMONY_BOOT_TIMEOUT_MS = 120_000;
 const HARMONY_TARGET_POLL_MS = 2_000;
 
 /**
- * How long a `-stop` gets to take the instance's target off `hdc`. A restart
- * that lands on the port it had before is indistinguishable from a target that
- * never left, so waiting for the old one to drop is what keeps the arrival
- * detectable; giving up early costs the connect key, not the boot.
+ * How long a `-stop` gets to actually bring the instance down before the
+ * restart proceeds anyway. Giving up early costs a start that reports the
+ * instance is still running, not a corrupted one.
  */
-const HARMONY_STOP_GRACE_MS = 15_000;
+const HARMONY_STOP_GRACE_MS = 30_000;
 
 /**
  * `Emulator -install` outside mainland China prints "…available only in the
@@ -1535,34 +1535,107 @@ async function connectedHarmonyKeys(): Promise<Set<string>> {
 }
 
 /**
+ * Start an instance, without waiting for it to finish.
+ *
+ * `Emulator -start` is not a launcher that hands off — it is the emulator's
+ * supervisor, and it runs for as long as the emulator does (measured: a
+ * `-start` awaited under a 15-minute budget returned only when that budget
+ * killed it, taking the running emulator with it). So it is spawned detached
+ * exactly as the Android emulator is, which also leaves the emulator up across
+ * a tool-server restart. Its output goes to a per-instance log so a start that
+ * dies early can still be classified by what the manager printed.
+ */
+async function startHarmonyEmulator(
+  instanceName: string
+): Promise<{ exited: () => { reason: string; output: string } | null }> {
+  const bin = await resolveHarmonyEmulator();
+  if (!bin) {
+    throw new Error(
+      "The HarmonyOS `Emulator` manager was not found. Install DevEco Studio, or set " +
+        "`$DEVECO_STUDIO_HOME` to its install root, then retry."
+    );
+  }
+  const logPath = join(tmpdir(), `argent-harmony-${instanceName.replace(/[^\w.-]/g, "_")}.log`);
+  const logFd = openSync(logPath, "w");
+  const child = spawn(bin, ["-start", instanceName], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+  });
+  child.unref();
+  // The child holds its own handle; close the parent's copy so a descriptor
+  // does not leak per boot.
+  try {
+    closeSync(logFd);
+  } catch {
+    // best-effort — the child keeps writing regardless
+  }
+
+  let exit: { reason: string; output: string } | null = null;
+  const record = (reason: string) => {
+    if (exit) return;
+    let output = "";
+    try {
+      output = readFileSync(logPath, "utf8");
+    } catch {
+      // no log to read — the reason alone has to carry it
+    }
+    exit = { reason, output };
+  };
+  child.on("exit", (code, signal) =>
+    record(signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`)
+  );
+  // `spawn` can fail asynchronously (ENOENT, EACCES). An unhandled `error`
+  // event would escape as an uncaught exception and take the tool-server with
+  // it, so it goes through the same latch.
+  child.on("error", (err) => record(`could not be spawned: ${err.message}`));
+
+  return { exited: () => exit };
+}
+
+/**
  * The connect key of the target that appears after a start, or null if none
  * does before `deadline`.
  *
  * Arrival, because nothing else joins the two: `Emulator` names instances and
  * never reports a port, `hdc` names connect keys and never mentions an
  * instance. It is also the one signal independent of how an emulator's key is
- * spelled — which, no image being obtainable here (see
- * {@link HARMONY_IMAGE_RESTRICTION}), has never been seen.
+ * spelled — measured as `127.0.0.1:5555`, which is neither the hardware-serial
+ * shape a phone has nor inside the range `-hdcPort` accepts.
+ *
+ * `checkAlive` is polled alongside, and throws if the emulator died: without it
+ * a start that failed after the spawn returned would be indistinguishable from
+ * one still booting, and would burn the whole budget before saying so.
  */
-async function waitForHarmonyTarget(before: Set<string>, deadline: number): Promise<string | null> {
+async function waitForHarmonyTarget(
+  before: Set<string>,
+  deadline: number,
+  checkAlive: () => void
+): Promise<string | null> {
   for (;;) {
     for (const key of await connectedHarmonyKeys()) {
       if (!before.has(key)) return key;
     }
+    checkAlive();
     const remaining = deadline - Date.now();
     if (remaining <= 0) return null;
     await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
   }
 }
 
-/** Wait until one of `previous` is gone, or until the grace period expires. */
-async function waitForHarmonyTargetLoss(previous: Set<string>, deadline: number): Promise<void> {
-  // Nothing to lose: an instance that never registered would just cost the
-  // restart a full grace period waiting for a departure that cannot happen.
-  if (previous.size === 0) return;
+/**
+ * Wait until the manager stops reporting the instance as running.
+ *
+ * `-stop` returns as soon as it has asked, not once the emulator is gone, and
+ * the guest's `hdc` endpoint dies well before the process does — so a restart
+ * that waited on the target dropping would call `-start` into "this emulator
+ * instance is already running" (measured). `isRunning` is the one signal that
+ * tracks the process itself. An unreadable listing answers nothing, so it keeps
+ * waiting rather than assuming the instance is gone.
+ */
+async function waitForHarmonyInstanceStopped(name: string, deadline: number): Promise<void> {
   for (;;) {
-    const now = await connectedHarmonyKeys();
-    if ([...previous].some((key) => !now.has(key))) return;
+    const instances = await listHarmonyInstances().catch(() => null);
+    if (instances && !instances.some((i) => i.name === name && i.running)) return;
     const remaining = deadline - Date.now();
     if (remaining <= 0) return;
     await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
@@ -1595,9 +1668,6 @@ async function bootHarmonyImpl(params: {
     };
   }
   if (alreadyRunning) {
-    // Snapshot before the stop, not after: what the restart has to be told
-    // apart from is the target the *running* instance holds.
-    const beforeStop = await connectedHarmonyKeys();
     const stopped = await runHarmonyEmulator(["-stop", params.instanceName]);
     const stopDiagnostic = emulatorFailure(stopped);
     if (stopDiagnostic) {
@@ -1605,8 +1675,8 @@ async function bootHarmonyImpl(params: {
         `Failed to stop HarmonyOS emulator "${params.instanceName}" before restarting it: ${stopDiagnostic}`
       );
     }
-    await waitForHarmonyTargetLoss(
-      beforeStop,
+    await waitForHarmonyInstanceStopped(
+      params.instanceName,
       Math.min(Date.now() + HARMONY_STOP_GRACE_MS, bootDeadline)
     );
   }
@@ -1616,44 +1686,44 @@ async function bootHarmonyImpl(params: {
   // rather than by any assumption about how an emulator's key is spelled.
   const before = await connectedHarmonyKeys();
 
-  // `-start` is the manager's launcher, not the emulator process itself (there
-  // is a separate `-stop <name>` verb), and whether it returns at hand-off or
-  // blocks until HarmonyOS is up could not be observed — so it gets what is
-  // left of the boot budget rather than the 30 s default. One budget spans both
-  // stages, as on Vega: a full value each would make the worst case twice what
-  // the caller asked for.
-  const result = await runHarmonyEmulator(
-    ["-start", params.instanceName],
-    // Floored at 1ms, not 0: `execFile`'s `timeout: 0` means *no* timeout, so an
-    // exhausted budget would turn into an unbounded call.
-    Math.max(1, bootDeadline - Date.now())
-  );
-  // The exit code is no verdict: `-start` on a missing instance exits 1 while
-  // the manager's other failures exit 0, so the diagnostic it printed is the
-  // only signal (see `harmony-cli.ts`).
-  const diagnostic = emulatorFailure(result);
-  if (diagnostic) {
-    const imageMissing =
-      isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image");
-    // Only the manager's own words justify blaming the region; an empty instance
-    // list is merely consistent with it.
-    const cause = imageMissing
-      ? ` ${HARMONY_IMAGE_RESTRICTION}`
-      : instances?.length === 0
-        ? ` ${HARMONY_NO_INSTANCES}`
-        : "";
-    throw new Error(
-      cause
-        ? `Failed to start HarmonyOS emulator "${params.instanceName}".${cause} The manager reported: ${diagnostic}`
-        : `Failed to start HarmonyOS emulator "${params.instanceName}": ${diagnostic}`
-    );
-  }
+  const emulator = await startHarmonyEmulator(params.instanceName);
 
   // Asked rather than waited out: with no connector there is no target list to
   // watch, so the wait would spend the whole budget concluding that nothing
   // registered — blaming the emulator for the connector's absence.
   const hdcAvailable = Boolean(await resolveHdc());
-  const connectKey = hdcAvailable ? await waitForHarmonyTarget(before, bootDeadline) : null;
+  const connectKey = hdcAvailable
+    ? await waitForHarmonyTarget(before, bootDeadline, () => {
+        const exit = emulator.exited();
+        if (!exit) return;
+        // The exit code is no verdict: `-start` on a missing instance exits 1
+        // while the manager's other failures exit 0, so the diagnostic it
+        // printed is the only signal (see `harmony-cli.ts`).
+        const diagnostic = emulatorFailure({ stdout: exit.output, stderr: "" });
+        if (!diagnostic) {
+          throw new Error(
+            `The HarmonyOS emulator manager exited (${exit.reason}) before "${params.instanceName}" ` +
+              `registered with \`hdc\`, so nothing is running to drive. It printed: ${
+                exit.output.trim() || "(nothing)"
+              }`
+          );
+        }
+        const imageMissing =
+          isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image");
+        // Only the manager's own words justify blaming the region; an empty
+        // instance list is merely consistent with it.
+        const cause = imageMissing
+          ? ` ${HARMONY_IMAGE_RESTRICTION}`
+          : instances?.length === 0
+            ? ` ${HARMONY_NO_INSTANCES}`
+            : "";
+        throw new Error(
+          cause
+            ? `Failed to start HarmonyOS emulator "${params.instanceName}".${cause} The manager reported: ${diagnostic}`
+            : `Failed to start HarmonyOS emulator "${params.instanceName}": ${diagnostic}`
+        );
+      })
+    : null;
 
   return {
     platform: "harmony",

@@ -146,6 +146,7 @@ const EMULATOR_FAILURE_MARKERS = [
   "Cannot find image",
   "is not found. Please create the device",
   "failed, emulator is not exists",
+  "this emulator instance is already running",
   "Device create fail",
   "Unable to start the emulator",
 ] as const;
