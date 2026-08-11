@@ -1405,6 +1405,21 @@ describe("argent flow run", () => {
     ]);
   });
 
+  // A signalled failure the server did NOT scope to this call: the run died,
+  // so it reads as one that did not finish, never as a rejection.
+  it("does not call a server error the signal leaves unclassified a rejection", async () => {
+    toolsClientMock.callTool.mockRejectedValue(
+      new ToolInvocationError("simulator boot failed", { errorKind: "subprocess" })
+    );
+
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:1");
+
+    expect(logs.join("\n").split("\n")).toEqual([
+      'Flow "checkout"',
+      "  ✗ did not finish (run error)",
+    ]);
+  });
+
   // Shapes the renderers cannot walk. Each one used to reach them anyway and
   // die where no verdict can be printed — a primitive throws on `in`, and a
   // non-array `steps` throws on the first iteration, both surfacing through
@@ -1806,9 +1821,9 @@ describe("argent flow run <dir>", () => {
     expect(JSON.parse(logs[0])).toMatchObject({ ok: false, failed: 1, skipped: 1 });
   });
 
-  // The batch pays twice for a report the renderers cannot walk: the throw
-  // lands past the try, so the flow gets no verdict AND the run ends with no
-  // batch summary and no tally — the whole ledger, not one line of it.
+  // The batch used to pay twice for a report the renderers cannot walk: the
+  // throw landed past the try, so the flow got no verdict AND the run ended
+  // with no batch summary and no tally — the whole ledger, not one line of it.
   it("treats a flow whose steps are not a list as one that produced no report", async () => {
     toolsClientMock.callTool.mockResolvedValueOnce({
       data: { flow: "a-login", ok: true, steps: 42 },
