@@ -97,6 +97,9 @@ describe("diffPngFiles", () => {
 
     const result = await diffPngFiles({ baselinePath, currentPath, outputDir: dir });
 
+    // Nothing was resampled and the aspect ratios differ, so there is no size
+    // to re-capture toward — the resize remedy must not appear here.
+    expect(result.summary).not.toContain("re-capture");
     expect(result).toMatchObject({
       totalPixels: 2,
       differentPixels: 0,
@@ -194,6 +197,9 @@ describe("diffPngFiles", () => {
     expect(result.summary).toContain("- status: changed");
     // …and the rescale is still disclosed, so the figures can be read correctly.
     expect(result.summary).toContain("- size_normalized:");
+    // The remedy belongs here most of all: these pixel differences may be the
+    // resampling artifacts, so the reader needs the way to rule that out.
+    expect(result.summary).toContain("re-capture one side at the other's printed size");
   });
 
   it("says nothing about normalization when the sizes already matched", async () => {

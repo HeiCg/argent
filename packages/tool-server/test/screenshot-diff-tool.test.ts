@@ -182,8 +182,11 @@ describe("screenshotDiffTool", () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-baseline-"));
     const currentPath = path.join(dir, "current.png");
     const capturedPath = path.join(dir, "captured.png");
-    await writePng(currentPath, 2, 2, { r: 0, g: 0, b: 0 });
-    await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+    // Deliberately different sizes, same aspect: the summary labels the two
+    // sides, so this is what proves the live capture landed in the baseline
+    // slot. Equal-sized fixtures pass just as well with the sides swapped.
+    await writePng(currentPath, 2, 4, { r: 0, g: 0, b: 0 });
+    await writePng(capturedPath, 4, 8, { r: 0, g: 0, b: 0 });
     const captureScreenshot = vi.fn(async () => ({
       url: "http://localhost/baseline.png",
       path: capturedPath,
@@ -196,10 +199,9 @@ describe("screenshotDiffTool", () => {
       captureScreenshot as never
     );
 
-    // Which side was captured has no other observable: both sides reach
-    // diffPngFiles as paths, and the diff artifacts are named after currentPath
-    // either way. The intermediate's name is the only thing that distinguishes
-    // capturing the baseline from capturing the current.
+    expect(result.summary).toContain("- size_normalized: baseline=4x8 current=2x4 compared_at=2x4");
+    // Named for its side so the directory says which one was live; the diff
+    // artifacts are named after currentPath either way.
     const liveCaptures = (await fs.readdir(dir)).filter((name) =>
       /^baseline-[a-f0-9]{8}\.live\.png$/.test(name)
     );
