@@ -196,8 +196,10 @@ describe("screenshotDiffTool", () => {
       captureScreenshot as never
     );
 
-    // The live side is the baseline here, so the intermediate must be named for
-    // it — `current-*` would collide with the saved side's own diff artifacts.
+    // Which side was captured has no other observable: both sides reach
+    // diffPngFiles as paths, and the diff artifacts are named after currentPath
+    // either way. The intermediate's name is the only thing that distinguishes
+    // capturing the baseline from capturing the current.
     const liveCaptures = (await fs.readdir(dir)).filter((name) =>
       /^baseline-[a-f0-9]{8}\.live\.png$/.test(name)
     );

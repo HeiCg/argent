@@ -250,7 +250,7 @@ Use full-resolution screenshots only when saving baseline/current PNG files for 
 { "udid": "<UDID>", "scale": 1.0, "includeImageInContext": false }
 ```
 
-Some Android emulators cannot stream a full-resolution frame and reject `scale: 1.0` with a `wrong data size` error. Retry at a lower `scale` there.
+Some Android emulators cannot stream a full-resolution frame and reject `scale: 1.0` with a `wrong data size` error. Omit `scale` there: these captures are destined for a comparison, and that is the size `screenshot-diff` captures its own live side at on those devices.
 
 For visual regression checks, before/after screenshot comparisons, and detailed `screenshot-diff` parameter guidance, use the `argent-screenshot-diff` skill. Keep this skill focused on device interaction mechanics and screenshot capture.
 

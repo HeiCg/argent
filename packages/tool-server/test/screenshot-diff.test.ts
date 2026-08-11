@@ -167,9 +167,13 @@ describe("diffPngFiles", () => {
     // naming a scale — the formatter never learns which side was captured live,
     // or whether either was, so every fixed scale it could name is wrong
     // somewhere — and name the knob, since the reader has to reach for it.
-    expect(result.summary.split("\n")).toContain(
+    const lines = result.summary.split("\n");
+    expect(lines).toContain(
       "  - to compare without resampling, re-capture one side at the other's printed size — `screenshot` takes a `scale`, and omitting it uses the tool-server's own setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default)"
     );
+    // Exactly one, because a prescription creeps back as a second bullet beside
+    // the pinned one rather than as an edit to it.
+    expect(lines.filter((line) => line.includes("re-capture"))).toHaveLength(1);
   });
 
   it("still reports a real difference as `changed` when sizes were normalized", async () => {
