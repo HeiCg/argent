@@ -561,9 +561,11 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
 
   const bundleId = appIdForPlatform(app, device.platform);
   if (!bundleId) {
+    // Name the key the author can add: an `ios-remote` launch entry is parse-rejected.
+    const launchKey = device.platform === "ios-remote" ? "ios" : device.platform;
     return {
       ok: false,
-      reason: `no app id declared for platform "${device.platform}" — add a launch entry for it`,
+      reason: `no app id declared for platform "${launchKey}" — add a launch entry for it`,
     };
   }
   // The previous app is terminating and the new one has not started, so a
