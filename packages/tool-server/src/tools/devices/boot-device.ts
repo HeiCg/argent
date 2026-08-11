@@ -1528,10 +1528,29 @@ const HARMONY_NO_HDC =
   "registered as and no interaction tool can reach it. Install DevEco Studio's device " +
   "connector (or put `hdc` on PATH), then call `list-devices`.";
 
+/** The targets `hdc` can drive right now. */
+async function connectedHarmonyTargets() {
+  const targets = await listHarmonyHdcTargets().catch(() => []);
+  return targets.filter((t) => t.state === "Connected");
+}
+
 /** The connect keys `hdc` can drive right now. */
 async function connectedHarmonyKeys(): Promise<Set<string>> {
-  const targets = await listHarmonyHdcTargets().catch(() => []);
-  return new Set(targets.filter((t) => t.state === "Connected").map((t) => t.connectKey));
+  return new Set((await connectedHarmonyTargets()).map((t) => t.connectKey));
+}
+
+/**
+ * Whether a target could be the emulator this host just started.
+ *
+ * An emulator runs on the host and `hdc` reaches it over TCP loopback
+ * (`127.0.0.1:5555`, measured), so a target the connector reports as `USB` is a
+ * cable-attached handset and cannot be it. Anything else — including a null
+ * connection, which is what a `hdc list targets` without `-v` yields — is left
+ * eligible rather than filtered out, so an image that registers in some shape
+ * not seen here still boots.
+ */
+function couldBeHarmonyEmulator(target: { connection: string | null }): boolean {
+  return target.connection !== "USB";
 }
 
 /**
@@ -1605,6 +1624,19 @@ async function startHarmonyEmulator(
  * `checkAlive` is polled alongside, and throws if the emulator died: without it
  * a start that failed after the spawn returned would be indistinguishable from
  * one still booting, and would burn the whole budget before saying so.
+ *
+ * Exactly one *eligible* arrival, or none. Arrival alone does not identify
+ * anything once a second device can produce one: a handset plugged in or
+ * authorised inside the window, a row settling out of `Offline`, or a
+ * concurrent `boot-device` for another instance (`inFlightHarmonyBoots` keys on
+ * the instance, so those are not coalesced). Returning the wrong key is not a
+ * failed boot — it is a drivable id, so every later tap and keystroke lands on
+ * that device instead, which is the case for being strict here. USB arrivals
+ * are excluded outright (a host-local emulator is not on a cable) and two
+ * eligible arrivals are refused rather than guessed between, exactly as the
+ * Android path refuses when more than one serial appears. There is no
+ * `-avdName` equivalent to disambiguate with, so the caller gets the named
+ * no-target degradation and `list-devices`.
  */
 async function waitForHarmonyTarget(
   before: Set<string>,
@@ -1612,9 +1644,10 @@ async function waitForHarmonyTarget(
   checkAlive: () => void
 ): Promise<string | null> {
   for (;;) {
-    for (const key of await connectedHarmonyKeys()) {
-      if (!before.has(key)) return key;
-    }
+    const arrived = (await connectedHarmonyTargets()).filter(
+      (t) => !before.has(t.connectKey) && couldBeHarmonyEmulator(t)
+    );
+    if (arrived.length === 1) return arrived[0]!.connectKey;
     checkAlive();
     const remaining = deadline - Date.now();
     if (remaining <= 0) return null;

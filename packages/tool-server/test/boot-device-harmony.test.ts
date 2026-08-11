@@ -72,8 +72,15 @@ function boot(params: Record<string, unknown>) {
   return createBootDeviceTool(registry).execute!({}, { harmonyInstance: INSTANCE, ...params });
 }
 
+/** A row of `hdc list targets -v`; `connection` is null without that flag. */
+interface HdcTargetRow {
+  connectKey: string;
+  connection: string | null;
+  state: string;
+}
+
 /** Successive `hdc list targets` results, the last one repeating forever. */
-function targets(...rounds: (typeof PHONE)[][]) {
+function targets(...rounds: HdcTargetRow[][]) {
   let call = 0;
   listHarmonyHdcTargets.mockImplementation(() =>
     Promise.resolve(rounds[Math.min(call++, rounds.length - 1)])
@@ -156,6 +163,56 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await vi.advanceTimersByTimeAsync(4_000);
 
     expect(((await pending) as { udid: string }).udid).toBe(`harmony-${EMULATOR_KEY}`);
+  });
+
+  it("does not adopt a cable-attached handset that arrives during the boot", async () => {
+    // A second HarmonyOS target reaches Connected inside the boot window - a
+    // phone plugged in or authorised mid-boot, or a still-settling row flipping
+    // from Offline - while the emulator itself never registers. Arrival alone
+    // cannot tell the two apart, so adopting the first new key hands back a
+    // device this call did not boot.
+    const OTHER = { connectKey: "BQR0223A14001199", connection: "USB", state: "Connected" };
+    targets([PHONE], [PHONE, OTHER]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).not.toBe(`harmony-${OTHER.connectKey}`);
+    expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(result.note).toBeTruthy();
+  });
+
+  it("still adopts an arrival whose connection column is absent", async () => {
+    // `hdc list targets` without `-v` prints the bare key, so `connection` is
+    // null. Treating that as ineligible would refuse a boot that worked, on any
+    // image or connector shape not seen here - so the USB exclusion has to fail
+    // open rather than allow-list a single spelling.
+    const UNTYPED = { connectKey: "127.0.0.1:5555", connection: null, state: "Connected" };
+    targets([PHONE], [PHONE, UNTYPED]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(((await pending) as { udid: string }).udid).toBe(`harmony-${EMULATOR_KEY}`);
+  });
+
+  it("refuses to guess when two targets it could have started both arrive", async () => {
+    // A concurrent `boot-device` for a different instance is not coalesced -
+    // `inFlightHarmonyBoots` keys on the instance name - so both emulators
+    // register inside this call's window and arrival no longer picks one out.
+    const OTHER_EMULATOR = { connectKey: "127.0.0.1:5557", connection: "TCP", state: "Connected" };
+    targets([PHONE], [PHONE, emulatorTarget, OTHER_EMULATOR]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(result.note).toBeTruthy();
   });
 
   it("names the instance and says why when nothing registers within the budget", async () => {
