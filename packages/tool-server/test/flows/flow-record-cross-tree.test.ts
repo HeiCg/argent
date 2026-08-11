@@ -191,6 +191,20 @@ async function startRecording(name: string): Promise<void> {
   );
 }
 
+/**
+ * Start a recording in "client" (remote) mode — the arm where the in-memory
+ * flow is authoritative and this host never owns the file. `flow-start-recording`
+ * picks the mode from the `project_root` file probe: a root that is NOT present
+ * on this host means the caller is remote.
+ */
+async function startRemoteRecording(name: string): Promise<void> {
+  await flowStartRecordingTool.execute(
+    {},
+    { name, project_root: tmpDir, executionPrerequisite: "on the form" },
+    { fileInputs: { project_root: { presentOnHost: false } } } as never
+  );
+}
+
 async function recordWait(
   name: string,
   wait: WaitArgs,
@@ -263,6 +277,16 @@ afterEach(async () => {
   vi.clearAllMocks();
 });
 
+/**
+ * Serve one runner-tree read.
+ *
+ * `source` is labelling only — it makes each fixture say which real adapter
+ * produced its tree, and nothing reads it: the probe never inspects
+ * `data.source`, and the platform arm of every clause is chosen from the UDID's
+ * shape alone. So a test passing "cdp-dom" is not exercising a Chromium tree
+ * SOURCE; it is exercising the Chromium tree SHAPE, which the fixture built by
+ * running the real `adaptChromiumTreeForFlows` over it.
+ */
 const serveTree = (tree: DescribeNode, source: DescribeTreeData["source"] = "native-devtools") => {
   fetchRunnerTree = async () => ({ tree, source });
 };
@@ -422,6 +446,46 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(await recordedSteps("blind")).toHaveLength(1);
   });
 
+  // The unmet warning tells the author they may delete the step, and that
+  // advice is mode-dependent: in host mode the recorder re-reads the file
+  // before each append, so a deletion sticks; against a remote client the
+  // in-memory copy is authoritative and the next append writes the step
+  // straight back. Every other test here records in host mode, so the remote
+  // half of that fork never ran.
+  it("records against a remote client, and still forks the delete advice", async () => {
+    await startRemoteRecording("remoteunmet");
+
+    const result = await recordWait(
+      "remoteunmet",
+      { condition: "visible", selector: { text: "Continue" } },
+      { registry: registryWhereWaitTimesOut() }
+    );
+
+    const warning = warningOf(result, "remoteunmet");
+    expect(warning).toContain("the wait itself never held");
+    expect(warning).toContain("after `flow-finish-recording`");
+    // The host never wrote a file in this mode, so the step lives in memory —
+    // and the verdict still has to travel with it.
+    expect(result.savedTo).not.toBe(null);
+  });
+
+  it("re-probes a wait recorded against a remote client too", async () => {
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await startRemoteRecording("remoteprobe");
+
+    const result = await recordWait("remoteprobe", {
+      condition: "visible",
+      selector: { text: "Continue" },
+    });
+
+    expect(warningOf(result, "remoteprobe")).toContain(
+      "does NOT hold against the tree the runner resolves"
+    );
+    // The probe reads the device the same way in either mode — persistence is
+    // where the two differ, not the verdict.
+    expect(fetchCount).toBeGreaterThan(0);
+  });
+
   it("does not call an unconfirmable `hidden` a condition that never held", async () => {
     await startRecording("blindhidden");
 
@@ -454,6 +518,36 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("UNKNOWN, not known-bad");
     expect(warning).not.toContain("the wait itself never held");
     expect(fetchCount).toBe(0);
+  });
+
+  // ── The probe's early-return guards ───────────────────────────────────────
+  //
+  // Each guard returns before the probe reads anything, so `fetchCount` is what
+  // proves it fired: a guard that stopped guarding would read the device and
+  // then compose a verdict from arguments it could not evaluate.
+  it.each([
+    ["a non-string condition", { condition: 7, selector: { text: "Continue" } }],
+    ["a null selector", { condition: "visible", selector: null }],
+    ["a non-object selector", { condition: "visible", selector: "Continue" }],
+    ["a non-string udid", { condition: "visible", selector: { text: "Continue" }, udid: 42 }],
+  ])("does not probe a wait carrying %s", async (label, badArgs) => {
+    const name = `guard${label.replace(/\W/g, "")}`;
+    await startRecording(name);
+    const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
+
+    const result = await tool.execute(
+      {},
+      {
+        name,
+        project_root: tmpDir,
+        command: "await-ui-element",
+        args: JSON.stringify({ udid: IOS, ...badArgs }),
+      }
+    );
+
+    expect(warningOf(result, name)).toBeUndefined();
+    expect(fetchCount).toBe(0);
+    expect(await recordedSteps(name)).toHaveLength(1);
   });
 
   // ── The probe is gated on the command ─────────────────────────────────────
@@ -803,6 +897,14 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // and the re-probe, so every platform's must say so.
     expect(warning).toContain("changed between the live wait and this re-probe");
     expect(warning).not.toContain("native-find-views");
+    // Pin Android's OWN divergence story, not merely that it differs from the
+    // others: "four distinct strings" is satisfied by four wrong ones, so
+    // swapping this arm for the iOS text passed. Android's story is the trim
+    // versus the full hierarchy — there is no view tree on this platform.
+    expect(warning).toContain("trimmed accessibility tree");
+    expect(warning).toContain("not-important views");
+    expect(warning).toContain("each holds elements the other drops");
+    expect(warning).not.toContain("full native view hierarchy");
     expect(await recordedSteps("android")).toHaveLength(1);
   });
 
@@ -897,8 +999,14 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // say so rather than leave four explanations standing that are all false.
     expect(warning).toContain("both trees hold both elements");
     expect(warning).toContain("a longer `await:` timeout cannot help");
-    // …and it must not claim the two sides judged the same element.
+    // …and it must not claim the two sides judged the same element. `text` has
+    // its own `awaitStillNeeds` arm for this: deleting it silently gives a
+    // `text` wait the `visible` clause, which names the wrong event.
+    expect(warning).toContain(
+      "unless the element THAT tree elects comes to match on it within its longer timeout"
+    );
     expect(warning).not.toContain("that element's text comes to match");
+    expect(warning).not.toContain("the element reaches that tree");
   });
 
   it("does not raise the multi-match cause on a condition that cannot have it", async () => {
@@ -1490,6 +1598,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).not.toContain("does NOT hold");
     // The step the device already executed survives.
     expect(await recordedSteps("cancel")).toHaveLength(1);
+    // ZERO reads. The caller's signal has to reach the POLL LOOP, not just the
+    // wait for it: `waitForCondition` tests it before its first fetch, so an
+    // already-cancelled call must never touch the device. Dropping `ctx.signal`
+    // from the probe signal leaves `settleWithin` to report the abort while the
+    // loop still issues its first read, which this number catches.
+    expect(fetchCount).toBe(0);
   });
 
   it("aborts mid-probe in band rather than as a tool failure", async () => {
