@@ -161,15 +161,19 @@ describe("diffPngFiles", () => {
       "- size_normalized: baseline=20x40 current=10x20 compared_at=10x20"
     );
     // The remedy is written blind: this formatter never learns which side was
-    // captured live, or whether either was, so it can only point at the sizes it
-    // just printed and name the knob. It must not prescribe a fixed scale — a
-    // full-resolution one is what some Android emulators reject with a "wrong
-    // data size" framebuffer mismatch, and it is also wrong whenever the live
-    // side did capture full-res. The pattern is looser than a single literal so
-    // a reworded copy of that advice cannot slip back in.
-    expect(result.summary).toContain("re-capture one side so both come out the size printed above");
-    expect(result.summary).toContain("ARGENT_SCREENSHOT_SCALE");
-    expect(result.summary).not.toMatch(/scale\b.{0,6}(?<![\d.])1(\.0)?\b|full[- ]?res/i);
+    // captured live, or whether either was. Every fixed scale it could name is
+    // wrong somewhere — a full-resolution one is what some Android emulators
+    // reject with a "wrong data size" framebuffer mismatch, and the fallback
+    // scale is wrong whenever the live side did capture full resolution — so it
+    // can only point at the sizes it just printed and name the knob. Matched on
+    // the remedy alone: the line above it legitimately describes resolution, and
+    // the ban is on prescribing one, not on the words.
+    const remedy = result.summary.split("\n").find((line) => line.includes("re-capture"));
+    expect(remedy).toContain("re-capture one side at the other's printed size");
+    expect(remedy).toContain("ARGENT_SCREENSHOT_SCALE");
+    expect(remedy).not.toMatch(
+      /full[- ]?res|native (resolution|size)|unscaled|1:1|100%|scale\b.{0,6}(?<![\d.])1(\.0)?\b/i
+    );
   });
 
   it("still reports a real difference as `changed` when sizes were normalized", async () => {
@@ -204,6 +208,9 @@ describe("diffPngFiles", () => {
     expect(result.sizeNormalization).toBeUndefined();
     expect(result.summary).not.toContain("size_normalized");
     expect(result.summary).toContain("- status: unchanged");
+    // The resize remedy rides with that block. Nothing was resampled here, so
+    // telling the reader to re-capture a side would send them after a no-op.
+    expect(result.summary).not.toContain("re-capture");
   });
 
   it("hard-fails same-aspect resolution differences when normalizeSizes is false", async () => {
