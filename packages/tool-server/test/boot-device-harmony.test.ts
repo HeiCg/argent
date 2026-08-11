@@ -239,6 +239,21 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect(result.note).toMatch(/`hdc` was not found/);
   });
 
+  it("does not claim the instance started when the manager already died and hdc is missing", async () => {
+    // With no connector the arrival wait is skipped, so nothing else ever
+    // consults the manager - and the note it would otherwise return opens with
+    // "The instance started", which at that point nothing had checked.
+    // The manager dies while the connector is being looked for, which is the
+    // real ordering: `Emulator -start` fails in milliseconds, the `hdc` lookup
+    // is a filesystem probe.
+    resolveHdc.mockImplementation(async () => {
+      child.die("Failed to start emulator: this emulator instance is already running");
+      return null;
+    });
+
+    await expect(boot({})).rejects.toThrow(/already running/);
+  });
+
   it("fails fast when the manager dies before the instance registers", async () => {
     targets([PHONE]);
     vi.useFakeTimers();

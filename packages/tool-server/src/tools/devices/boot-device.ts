@@ -1725,37 +1725,47 @@ async function bootHarmonyImpl(params: {
   // watch, so the wait would spend the whole budget concluding that nothing
   // registered — blaming the emulator for the connector's absence.
   const hdcAvailable = Boolean(await resolveHdc());
-  const connectKey = hdcAvailable
-    ? await waitForHarmonyTarget(before, bootDeadline, () => {
-        const exit = emulator.exited();
-        if (!exit) return;
-        // The exit code is no verdict: `-start` on a missing instance exits 1
-        // while the manager's other failures exit 0, so the diagnostic it
-        // printed is the only signal (see `harmony-cli.ts`).
-        const diagnostic = emulatorFailure({ stdout: exit.output, stderr: "" });
-        if (!diagnostic) {
-          throw new Error(
-            `The HarmonyOS emulator manager exited (${exit.reason}) before "${params.instanceName}" ` +
-              `registered with \`hdc\`, so nothing is running to drive. It printed: ${
-                exit.output.trim() || "(nothing)"
-              }`
-          );
-        }
-        const imageMissing =
-          isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image");
-        // Only the manager's own words justify blaming the region; an empty
-        // instance list is merely consistent with it.
-        const cause = imageMissing
-          ? ` ${HARMONY_IMAGE_RESTRICTION}`
-          : instances?.length === 0
-            ? ` ${HARMONY_NO_INSTANCES}`
-            : "";
+  const assertEmulatorAlive = () => {
+    {
+      const exit = emulator.exited();
+      if (!exit) return;
+      // The exit code is no verdict: `-start` on a missing instance exits 1
+      // while the manager's other failures exit 0, so the diagnostic it
+      // printed is the only signal (see `harmony-cli.ts`).
+      const diagnostic = emulatorFailure({ stdout: exit.output, stderr: "" });
+      if (!diagnostic) {
         throw new Error(
-          cause
-            ? `Failed to start HarmonyOS emulator "${params.instanceName}".${cause} The manager reported: ${diagnostic}`
-            : `Failed to start HarmonyOS emulator "${params.instanceName}": ${diagnostic}`
+          `The HarmonyOS emulator manager exited (${exit.reason}) before "${params.instanceName}" ` +
+            `registered with \`hdc\`, so nothing is running to drive. It printed: ${
+              exit.output.trim() || "(nothing)"
+            }`
         );
-      })
+      }
+      const imageMissing =
+        isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image");
+      // Only the manager's own words justify blaming the region; an empty
+      // instance list is merely consistent with it.
+      const cause = imageMissing
+        ? ` ${HARMONY_IMAGE_RESTRICTION}`
+        : instances?.length === 0
+          ? ` ${HARMONY_NO_INSTANCES}`
+          : "";
+      throw new Error(
+        cause
+          ? `Failed to start HarmonyOS emulator "${params.instanceName}".${cause} The manager reported: ${diagnostic}`
+          : `Failed to start HarmonyOS emulator "${params.instanceName}": ${diagnostic}`
+      );
+    }
+  };
+
+  // Without a connector there is nothing to watch, so the manager is asked once
+  // instead: otherwise a start that had already failed would be reported as
+  // `booted: true` under a note whose first clause — "the instance started" —
+  // nothing had checked.
+  if (!hdcAvailable) assertEmulatorAlive();
+
+  const connectKey = hdcAvailable
+    ? await waitForHarmonyTarget(before, bootDeadline, assertEmulatorAlive)
     : null;
 
   return {

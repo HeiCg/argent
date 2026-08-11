@@ -183,4 +183,24 @@ describe("keyboard text+key ordering", () => {
 
     expect(harmonyKeyEvent).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, HARMONY_ENTER_KEYID);
   });
+
+  it("harmony: sends each supported key its own measured keyID", async () => {
+    // Literal keyIDs, not the source table: `uitest` answers `No Error` to any
+    // number it is handed, so a swapped pair would invert the arrows on a real
+    // device and nothing else in the suite would notice. Each was watched
+    // against a text field on a HarmonyOS 6.0.1 handset.
+    const expected: Record<string, string> = {
+      "enter": "2054",
+      "backspace": "2055",
+      "space": "2050",
+      "arrow-left": "2014",
+      "arrow-right": "2015",
+    };
+
+    for (const [key, keyId] of Object.entries(expected)) {
+      vi.mocked(harmonyKeyEvent).mockClear();
+      await harmonyImpl.handler({}, { udid: HARMONY.id, key }, HARMONY);
+      expect(harmonyKeyEvent, key).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, keyId);
+    }
+  });
 });
