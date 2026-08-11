@@ -5,6 +5,7 @@ Read this file for selector warnings, raw coordinates, unavailable trees, swallo
 - [Coordinate fallback gate](#coordinate-fallback-gate)
 - [iOS selector recovery](#ios-selector-recovery)
 - [Other tree sources](#tree-source-recovery-on-android-chromium-and-vega)
+- [Expo dev-client chooser](#expo-dev-client-chooser)
 - [Strong transition gates](#strong-transition-gates)
 - [Obscured targets](#obscured-targets-and-persistent-overlays)
 - [Replay diagnosis](#diagnose-a-replay-failure)
@@ -77,6 +78,15 @@ While the required source is down, selector failures and raw-point capture are v
 | Vega     | Toolkit returns no page source   | Relaunch an app built with automation support          |
 
 On Android, healthy `describe` output does not prove the flow tree is available. It can fall back to legacy `uiautomator`, while the runner refuses that trimmed fallback.
+
+## Expo dev-client chooser
+
+An expo dev build can start on the `DEVELOPMENT SERVERS` chooser in place of the app. `launch:` does this recovery for you. The step opens the server on the `metroPort` of `flow-execute` and waits for the bundle. The step report then shows `app opened behind the expo dev-client launcher`.
+
+- When Metro is not on port 8081, set `metroPort`.
+- When more than one bundler is available, set `metroPort`.
+- Do not write a `when:` block to tap the chooser. A recorded row is a coordinate, and the sequence of the rows changes at each launch.
+- If the chooser has no live row for the port, the launch fails. Start Metro on that port, or correct `metroPort`.
 
 ## Strong transition gates
 
