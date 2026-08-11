@@ -82,14 +82,15 @@ export function harmonyDeviceId(connectKey: string): string {
  * The emulator instance name behind a `harmony-emulator-<name>` id.
  *
  * Exactly one prefix is stripped, so an instance genuinely named `emulator-x`
- * round-trips through `harmonyEmulatorId` unharmed.
+ * round-trips through `harmonyEmulatorId` unharmed. A connect-key id keeps its
+ * `harmony-` prefix rather than being read as an instance name, so handing a
+ * phone's id to `boot-device` fails on an instance that does not exist instead
+ * of silently starting whichever one happens to be named after a serial.
  */
 export function harmonyInstanceName(udid: string): string {
   return udid.startsWith(HARMONY_EMULATOR_ID_PREFIX)
     ? udid.slice(HARMONY_EMULATOR_ID_PREFIX.length)
-    : udid.startsWith(HARMONY_ID_PREFIX)
-      ? udid.slice(HARMONY_ID_PREFIX.length)
-      : udid;
+    : udid;
 }
 
 /** The `hdc` connect key behind a `harmony-<connectKey>` id. */
