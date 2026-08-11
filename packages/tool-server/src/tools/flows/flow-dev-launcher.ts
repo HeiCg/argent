@@ -216,6 +216,10 @@ export function pickDevServerRow(
   return null;
 }
 
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** What {@link dismissDevLauncher} did, for the launch step's report. */
 type DevLauncherOutcome =
   | { handled: false }
@@ -342,7 +346,27 @@ export async function dismissDevLauncher(
     };
   }
 
-  await invokeOnDevice(env, "gesture-tap", getDescribeTapPoint(target.node.frame));
+  // Re-check the signal before acting: the probe and the tree reads above take
+  // seconds, so a run cancelled during them would otherwise still tap.
+  if (signal?.aborted) return { handled: false };
+  try {
+    await invokeOnDevice(env, "gesture-tap", getDescribeTapPoint(target.node.frame));
+  } catch (err) {
+    // A rejection here must not leave the launch step: `runLaunch` and
+    // `execLeafStep`'s launch case both let a throw through, so it would abort
+    // the whole `flow-execute` call — losing every step collected so far and
+    // booking the failure as a tool failure rather than a step error. A
+    // cancellation makes the sub-tool itself reject, and that is the abort, not
+    // a failed dismissal (`runLaunch` re-checks the signal on return).
+    if (signal?.aborted) return { handled: false };
+    return {
+      handled: true,
+      ok: false,
+      reason:
+        `the expo dev-client launcher is showing and the tap that opens ${target.url} failed: ` +
+        `${errMsg(err)}`,
+    };
+  }
 
   const deadline = Date.now() + EXIT_TIMEOUT_MS;
   for (;;) {

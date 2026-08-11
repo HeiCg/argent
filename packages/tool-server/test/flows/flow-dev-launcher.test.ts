@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DeviceInfo } from "@argent/registry";
-import type { DescribeNode } from "../../src/tools/describe/contract";
+import type { DeviceInfo, Registry } from "@argent/registry";
+import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/contract";
 import { adbShell } from "../../src/utils/adb";
+import { fetchFlowTree } from "../../src/tools/flows/flow-tree";
 import {
   detectDevLauncher,
+  dismissDevLauncher,
   hasDrawnContent,
   isExpoDevBuild,
   pickDevServerRow,
@@ -14,8 +16,11 @@ vi.mock("../../src/utils/adb", async (importOriginal) => ({
   adbShell: vi.fn(),
 }));
 
+vi.mock("../../src/tools/flows/flow-tree", () => ({ fetchFlowTree: vi.fn() }));
+
 beforeEach(() => {
   vi.mocked(adbShell).mockReset();
+  vi.mocked(fetchFlowTree).mockReset();
 });
 
 // The fixture is the real tree an expo-dev-client chooser produced on an
@@ -447,5 +452,162 @@ Activity Resolver Table:
     // and nothing is probed — the recovery is Android-only by construction.
     await expect(isExpoDevBuild(sim, "xyz.blueskyweb.app")).resolves.toBe(false);
     expect(adbShell).not.toHaveBeenCalled();
+  });
+});
+
+describe("getting a launch past the chooser", () => {
+  // A dev build by the probe, so every case below reaches the tree reads.
+  const DEV_DUMP = 'Scheme: "expo-dev-launcher"';
+
+  /** Scripted tree reads: one entry per read, the last one repeating. */
+  function reads(...trees: DescribeNode[]): void {
+    let at = 0;
+    vi.mocked(fetchFlowTree).mockImplementation(async (): Promise<DescribeTreeData> => {
+      const tree = trees[Math.min(at, trees.length - 1)];
+      at += 1;
+      return { tree, source: "android-devtools" };
+    });
+  }
+
+  function env(
+    invoke: (tool: string, args: Record<string, unknown>) => unknown = () => ({ ok: true }),
+    signal?: AbortSignal
+  ) {
+    const calls: { tool: string; args: Record<string, unknown> }[] = [];
+    const registry = {
+      invokeTool: vi.fn(async (tool: string, args: Record<string, unknown>) => {
+        calls.push({ tool, args });
+        return invoke(tool, args);
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+    return { calls, actionEnv: { registry, device: emulator, signal } };
+  }
+
+  const splash = node("ROOT", "Screen", [0, 0, 1, 1], [node("Image", "", [0.4, 0.45, 0.2, 0.1])]);
+  const app = node(
+    "ROOT",
+    "Screen",
+    [0, 0, 1, 1],
+    [
+      node("StaticText", "Home", [0.1, 0.1, 0.2, 0.03]),
+      node("StaticText", "Following", [0.1, 0.2, 0.3, 0.03]),
+    ]
+  );
+
+  it("opens the run's own row and reports the URL once the chooser is gone", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(launcherTree(), app);
+    const { calls, actionEnv } = env();
+
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+      handled: true,
+      ok: true,
+      url: "http://10.0.2.2:8081",
+    });
+    // The centre of the live 8081 row (y 0.307, height 0.064) — not the other
+    // live bundler's row, and not the container's centre.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].tool).toBe("gesture-tap");
+    expect(calls[0].args).toMatchObject({ x: 0.5, udid: "emulator-5556" });
+    expect(calls[0].args.y).toBeCloseTo(0.339, 5);
+  });
+
+  it("waits out a splash the chooser has not drawn over yet", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    // The launch step reads ~2s after the relaunch; a cold dev client needs
+    // several seconds more. Without the wait the first read decides there is no
+    // chooser and the run proceeds against one.
+    reads(splash, launcherTree(), app);
+    const { calls, actionEnv } = env();
+
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toMatchObject({
+      handled: true,
+      ok: true,
+    });
+    expect(calls.map((c) => c.tool)).toEqual(["gesture-tap"]);
+  });
+
+  it("leaves a launch that is already showing the app alone", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(app);
+    const { calls, actionEnv } = env();
+
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+      handled: false,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("does not read the screen at all for a build that has no launcher", async () => {
+    vi.mocked(adbShell).mockResolvedValue('Scheme: "exp+bluesky"');
+    const { actionEnv } = env();
+
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+      handled: false,
+    });
+    expect(fetchFlowTree).not.toHaveBeenCalled();
+  });
+
+  it("reports the port it wanted when no live row offers it, and taps nothing", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(launcherTree());
+    const { calls, actionEnv } = env();
+
+    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8085);
+    expect(outcome).toMatchObject({ handled: true, ok: false });
+    expect(outcome).toHaveProperty(
+      "reason",
+      expect.stringContaining("lists no reachable server on port 8085")
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it("reports a failed tap as a launch failure instead of throwing out of the run", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(launcherTree());
+    const { actionEnv } = env((tool) => {
+      if (tool === "gesture-tap") throw new Error("device offline");
+      return { ok: true };
+    });
+
+    // A throw here would leave `flow-execute` itself, losing every step
+    // collected so far and booking the failure as a tool failure.
+    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081);
+    expect(outcome).toMatchObject({ handled: true, ok: false });
+    expect(outcome).toHaveProperty("reason", expect.stringContaining("device offline"));
+  });
+
+  it("does not tap when the run was cancelled during the probe", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(launcherTree());
+    const controller = new AbortController();
+    controller.abort();
+    const { calls, actionEnv } = env(() => ({ ok: true }), controller.signal);
+
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+      handled: false,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("keeps waiting when a read fails rather than deciding there is no chooser", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    // The launch's own tree-source gate has already vouched for the source, so a
+    // failure here is transient. The wait continues, and the chooser the next
+    // read does return is still dismissed.
+    let at = 0;
+    vi.mocked(fetchFlowTree).mockImplementation(async () => {
+      at += 1;
+      if (at === 1) throw new Error("hierarchy unavailable");
+      return { tree: at === 2 ? launcherTree() : app, source: "android-devtools" };
+    });
+    const { calls, actionEnv } = env();
+
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toMatchObject({
+      handled: true,
+      ok: true,
+    });
+    expect(calls.map((c) => c.tool)).toEqual(["gesture-tap"]);
   });
 });
