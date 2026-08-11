@@ -113,9 +113,10 @@ match. A flow that begins with a \`launch\` step runs its app from scratch; any
 other flow (a fragment) runs against the device's current state — handy while
 authoring one.
 
-A directory run prints only failing steps plus a final flow summary;
---recursive walks subdirectories too (dot-directories and node_modules are
-skipped). An invalid flow file fails alone and the batch continues; an infra
+A directory run prints each flow's failing steps and its outcome, then a final
+flow summary; --recursive walks subdirectories too (dot-directories and
+node_modules are skipped). A flow the server rejects up front — an invalid file,
+or a device it cannot resolve — fails alone and the batch continues; an infra
 error stops the batch and counts the remaining flows skipped.
 
 Runs require the auto-started local tool server;
@@ -1067,17 +1068,20 @@ async function exportAndResolveArtifacts(
 
 /**
  * Why a flow the server rejected never ran, for the batch's stdout ledger.
- * Only a code that names the flow file licenses "invalid flow": the rejection
- * arrives as `error_kind: "validation"` whatever caused it, and device
- * resolution rejects that way too (nothing booted, or several booted and no
- * --device/--platform). Blaming a batch of perfectly good YAML on a simulator
- * nobody started sends the reader to the wrong file, so anything else stays
- * neutral and leaves the reason to the stderr line beside it.
+ * `error_kind: "validation"` marks any rejection scoped to the one call, so it
+ * says nothing about the flow file — device resolution rejects that way too
+ * (nothing booted, or several booted and no --device/--platform), and blaming a
+ * batch of perfectly good YAML on a simulator nobody started sends the reader
+ * to the wrong file. Only a code whose subject IS the file licenses "invalid
+ * flow"; an unrecognized one stays neutral and leaves the reason to the stderr
+ * line beside it.
  */
 function rejectionVerdict(code: string | undefined): string {
   switch (code) {
     case FAILURE_CODES.FLOW_FILE_INVALID:
     case FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED:
+    case FAILURE_CODES.FLOW_NAME_INVALID:
+    case FAILURE_CODES.FLOW_E2E_HAS_PREREQUISITE:
       return "not run (invalid flow)";
     case FAILURE_CODES.FLOW_DEVICE_RESOLUTION:
       return "not run (no device resolved)";
@@ -1527,11 +1531,31 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
     report = resp.data as FlowReport;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
+    // The same stdout verdict a directory run gives every entry. Live step
+    // lines make the gap worse here: the last thing a redirected log holds is
+    // a passing step, so a run that died reads as one that passed and got cut
+    // off. The header is the flow's name, printed by the first step event or
+    // here when the run failed before any of them.
+    if (!args.json) {
+      if (liveSteps === 0) console.log(`Flow "${flowName}"`);
+      console.log(
+        `  ${STATUS_GLYPH.error} ` +
+          (err instanceof ToolInvocationError && err.errorKind === "validation"
+            ? rejectionVerdict(err.errorCode)
+            : "did not finish (run error)")
+      );
+    }
     return exitAfterFlush(1);
   }
 
-  if (!report || !("steps" in report)) {
+  // typeof guard: `in` throws on a primitive wire value, and that must
+  // classify as "no report", not as an uncaught crash.
+  if (!report || typeof report !== "object" || !("steps" in report)) {
     console.error(`"${flowName}" did not produce a run report.`);
+    if (!args.json) {
+      if (liveSteps === 0) console.log(`Flow "${flowName}"`);
+      console.log(`  ${STATUS_GLYPH.error} did not finish (no run report)`);
+    }
     return exitAfterFlush(2);
   }
 

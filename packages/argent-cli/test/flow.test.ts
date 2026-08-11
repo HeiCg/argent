@@ -1369,6 +1369,68 @@ describe("argent flow run", () => {
     expect(errs.join("\n")).toContain('"checkout" did not produce a run report');
   });
 
+  // Same ledger contract the directory run keeps: stdout alone says how the
+  // run ended. Live step lines make the gap worse here than in a batch — the
+  // last thing an archived log shows is a passing step, so a run that died
+  // reads as one that succeeded and got truncated.
+  it("gives a run that dies mid-stream a verdict under its step lines", async () => {
+    toolsClientMock.callTool.mockImplementationOnce(
+      async (
+        _tool: string,
+        _payload: unknown,
+        callOpts?: { onProgress?: (e: unknown) => void }
+      ) => {
+        callOpts?.onProgress?.({ index: 0, kind: "tap", status: "pass" });
+        throw new Error("tool-server unreachable");
+      }
+    );
+
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:1");
+
+    const lines = logs.join("\n").split("\n");
+    expect(lines[0]).toBe('Flow "checkout"');
+    expect(lines.at(-1)).toBe("  ✗ did not finish (run error)");
+  });
+
+  it("names the flow before the verdict when the run failed before any step", async () => {
+    toolsClientMock.callTool.mockRejectedValue(new Error("tool-server unreachable"));
+
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:1");
+
+    expect(logs.join("\n").split("\n")).toEqual([
+      'Flow "checkout"',
+      "  ✗ did not finish (run error)",
+    ]);
+  });
+
+  // A primitive `data` is the one no-report shape that reaches `in`, which
+  // throws on it — so without the typeof guard this exits through the CLI's
+  // top-level catch as a raw TypeError instead of the message below.
+  it("treats a primitive wire value as no report rather than crashing", async () => {
+    toolsClientMock.callTool.mockResolvedValue({ data: "flow-execute is not implemented" });
+
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:2");
+    expect(errs.join("\n")).toContain('"checkout" did not produce a run report');
+  });
+
+  it("gives a report-less run a verdict on stdout", async () => {
+    toolsClientMock.callTool.mockResolvedValue({
+      data: { flow: "checkout", notice: "prerequisite", executionPrerequisite: "logged in" },
+    });
+
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:2");
+
+    expect(logs.join("\n").split("\n")).toContain("  ✗ did not finish (no run report)");
+  });
+
+  it("keeps --json output a single JSON document when the run produces no report", async () => {
+    toolsClientMock.callTool.mockResolvedValue({ data: { flow: "checkout", notice: "prereq" } });
+
+    await expect(flow(["run", checkoutPath, "--json"], opts)).rejects.toThrow("process.exit:2");
+
+    expect(logs).toEqual([]);
+  });
+
   it("exits 2 on an unknown subcommand", async () => {
     await expect(flow(["frobnicate"], opts)).rejects.toThrow("process.exit:2");
     expect(errs.join("\n")).toContain('Unknown flow subcommand "frobnicate"');
@@ -1579,6 +1641,27 @@ describe("argent flow run <dir>", () => {
     for (const header of headers) {
       expect(lines[lines.indexOf(header) + 1]).toMatch(/^ {2}\S/);
     }
+    // A ledger nobody can read backwards: a ✗ appears only for the flow that
+    // earned one, so completeness above cannot be met by verdicting everything.
+    expect(lines.filter((l) => l.startsWith("  ✗ "))).toHaveLength(1);
+  });
+
+  // The batch continuing past a rejection is the point of the feature, so the
+  // entry that proves the verdict travels with the flow is a later one.
+  it("gives a rejected flow that is not the first its own verdict", async () => {
+    toolsClientMock.callTool
+      .mockResolvedValueOnce({ data: report({ flow: "a-login" }) })
+      .mockRejectedValueOnce(
+        new ToolInvocationError("flow file is not valid YAML", {
+          errorCode: "FLOW_FILE_INVALID",
+          errorKind: "validation",
+        })
+      );
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:1");
+
+    const lines = logs.join("\n").split("\n");
+    expect(lines[lines.indexOf("[2/2] b-checkout.yaml") + 1]).toBe("  ✗ not run (invalid flow)");
   });
 
   // `validation` is the wire signal for every rejection the server means for
@@ -1588,8 +1671,10 @@ describe("argent flow run <dir>", () => {
   it.each([
     ["FLOW_FILE_INVALID", "not run (invalid flow)"],
     ["FLOW_ENTRY_UNRECOGNIZED", "not run (invalid flow)"],
+    ["FLOW_NAME_INVALID", "not run (invalid flow)"],
+    ["FLOW_E2E_HAS_PREREQUISITE", "not run (invalid flow)"],
     ["FLOW_DEVICE_RESOLUTION", "not run (no device resolved)"],
-    ["HTTP_ZOD_VALIDATION_FAILED", "not run (rejected)"],
+    ["A_CODE_THIS_CLI_DOES_NOT_MAP", "not run (rejected)"],
   ])("renders a %s rejection as %j", async (errorCode, verdict) => {
     toolsClientMock.callTool
       .mockRejectedValueOnce(
@@ -1624,6 +1709,19 @@ describe("argent flow run <dir>", () => {
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:1");
 
     expect(logs.join("\n").split("\n")).toContain("  ✗ did not finish (no run report)");
+  });
+
+  // Every verdict is stdout prose, so --json must emit the aggregate alone —
+  // one `| jq` away from a parse error otherwise.
+  it("keeps --json a single document when a flow returns no report", async () => {
+    toolsClientMock.callTool.mockResolvedValueOnce({
+      data: { flow: "a-login", notice: "prerequisite" },
+    });
+
+    await expect(flow(["run", flowsDir, "--json"], opts)).rejects.toThrow("process.exit:1");
+
+    expect(logs).toHaveLength(1);
+    expect(JSON.parse(logs[0])).toMatchObject({ ok: false, failed: 1, skipped: 1 });
   });
 
   it("stops the batch on a server error the signal does not mark as validation", async () => {
