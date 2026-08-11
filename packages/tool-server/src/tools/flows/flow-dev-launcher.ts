@@ -1,6 +1,6 @@
 import type { DeviceInfo } from "@argent/registry";
 import { getDescribeTapPoint, type DescribeNode } from "../describe/contract";
-import { includesCI, isVisible, nodeText } from "../../utils/ui-tree-match";
+import { frameContains, includesCI, isVisible, nodeText } from "../../utils/ui-tree-match";
 import { adbShell, shellQuote } from "../../utils/adb";
 import { sleepOrAbort } from "../../utils/timing";
 import { fetchFlowTree } from "./flow-tree";
@@ -39,13 +39,25 @@ import { invokeOnDevice, type ActionEnv } from "./flow-actions";
 export const DEFAULT_METRO_PORT = 8081;
 
 /**
- * Both marks must be on screen for the chooser to be recognized. The heading
- * alone is ordinary enough wording for an app's own settings screen to carry;
- * pairing it with the launcher's "new server" affordance keeps a real app
- * screen from being mistaken for the chooser and tapped at.
+ * The chooser is recognized by its section heading plus ONE of the launcher's
+ * own marks. The heading alone is ordinary enough wording for an app's own
+ * settings screen to carry; pairing it keeps a real app screen from being
+ * mistaken for the chooser and tapped at.
+ *
+ * The marks are alternatives because the chooser has two faces. With a packager
+ * discovered it lists the rows under a "new server" affordance; with none
+ * discovered it replaces that whole list with an instruction card offering to
+ * fetch — so requiring the "new server" wording recognized only the face that
+ * already has what the run needs, and left the other one unhandled: the launch
+ * passed, and every later step read the chooser. That second face is the common
+ * one (it is what the client shows whenever it has not found a running
+ * packager), and it is exactly where the "no reachable server on port N"
+ * message has to come from. The build's own header subtitle is listed too: it is
+ * on both faces, so it still identifies the launcher if either affordance is
+ * reworded.
  */
 const SECTION_HEADING = "DEVELOPMENT SERVERS";
-const NEW_SERVER_AFFORDANCE = "New development server";
+const LAUNCHER_MARKS = ["Development Build", "New development server", "Fetch development servers"];
 
 /**
  * The chooser's second section. Its rows are a HISTORY — entries survive the
@@ -128,8 +140,37 @@ function tightestOwning(nodes: DescribeNode[], needle: string): DescribeNode | u
 export function detectDevLauncher(root: DescribeNode): { historyY: number } | null {
   const nodes = flatten(root).filter(isVisible);
   if (!tightestOwning(nodes, SECTION_HEADING)) return null;
-  if (!tightestOwning(nodes, NEW_SERVER_AFFORDANCE)) return null;
+  if (!LAUNCHER_MARKS.some((mark) => tightestOwning(nodes, mark))) return null;
   return { historyY: tightestOwning(nodes, HISTORY_HEADING)?.frame.y ?? 1 };
+}
+
+/**
+ * Candidate rows: what is on screen ABOVE the history boundary, minus the
+ * chooser's address box and the text inside it.
+ *
+ * The address box is a text INPUT the launcher prefills with a URL
+ * (`http://localhost:8081` on a client that has discovered nothing), paired with
+ * a `Connect` button. It is not an offer — it holds an address the client merely
+ * SUGGESTS, live or not — and a tap on it opens a keyboard rather than an app,
+ * after which the exit wait would spend its whole budget and then blame a
+ * bundler the run never opened. The no-servers face of the chooser is made
+ * mostly of that box, so recognizing that face (see {@link LAUNCHER_MARKS})
+ * means excluding it.
+ *
+ * By TAP POINT, not by the node's own role: the adapters give the input an empty
+ * label and render its URL as a text leaf inside it, so the node that matches an
+ * origin is the leaf, not the box. Excluding anything whose centre falls in a
+ * box states the rule that actually matters — we would be pressing the address
+ * box — and reads geometrically, the way every other flow container scope does
+ * (see `Selector.within`), which is all a flattened tree preserves.
+ */
+function candidateRows(nodes: DescribeNode[], historyY: number): DescribeNode[] {
+  const boxes = nodes.filter((n) => isVisible(n) && includesCI(n.role, "TextField"));
+  return nodes.filter((n) => {
+    if (!isVisible(n) || n.frame.y >= historyY) return false;
+    const point = getDescribeTapPoint(n.frame);
+    return !boxes.some((box) => frameContains(box.frame, point.x, point.y));
+  });
 }
 
 /**
@@ -148,7 +189,7 @@ export function pickDevServerRow(
   port: number,
   historyY: number
 ): { node: DescribeNode; url: string } | null {
-  const live = flatten(root).filter((n) => isVisible(n) && n.frame.y < historyY);
+  const live = candidateRows(flatten(root), historyY);
   for (const host of candidateHosts(device)) {
     const url = `http://${host}:${port}`;
     // A trailing-digit guard, so port 808 cannot open the row for 8081. Plain

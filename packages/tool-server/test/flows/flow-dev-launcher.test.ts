@@ -88,6 +88,70 @@ function launcherTree(): DescribeNode {
   );
 }
 
+// The chooser's OTHER face, captured the same way on the same build: what the
+// dev client draws when it has discovered no running packager. There is no
+// server list at all — an instruction card, an address box prefilled with a URL
+// and a fetch button stand in its place — and the history below it survives.
+// This is the state a run most needs help with, and the one the actionable "no
+// reachable server on port N" failure has to come from.
+function noServersTree(): DescribeNode {
+  return node(
+    "ROOT",
+    "Screen",
+    [0, 0, 1, 1],
+    [
+      node(
+        "ComposeView",
+        "",
+        [0, 0, 1, 1],
+        [
+          node("StaticText", "Bluesky", [0.214, 0.062, 0.152, 0.024]),
+          node("StaticText", "Development Build", [0.214, 0.091, 0.299, 0.021]),
+          node(
+            "ScrollView",
+            "",
+            [0.061, 0.193, 0.878, 0.655],
+            [
+              node("StaticText", "DEVELOPMENT SERVERS", [0.061, 0.193, 0.352, 0.02]),
+              node("StaticText", "INFO", [0.841, 0.173, 0.122, 0.059]),
+              node(
+                "StaticText",
+                "Start a local development server with:",
+                [0.102, 0.253, 0.519, 0.018]
+              ),
+              node("StaticText", "npx expo start", [0.143, 0.31, 0.298, 0.023]),
+              node(
+                "StaticText",
+                "Then, select the local server when it appears here.",
+                [0.102, 0.373, 0.692, 0.018]
+              ),
+              // The box carries no label of its own: the adapters render its URL
+              // as a text leaf inside it, which is what an origin match sees.
+              node(
+                "TextField",
+                "",
+                [0.143, 0.411, 0.715, 0.059],
+                [node("StaticText", "http://localhost:8081", [0.143, 0.431, 0.327, 0.02])]
+              ),
+              node("View", "Connect", [0.102, 0.481, 0.796, 0.06]),
+              node("StaticText", "Or", [0.102, 0.561, 0.796, 0.018]),
+              node("View", "Fetch development servers / Download", [0.102, 0.599, 0.796, 0.064]),
+              node("StaticText", "RECENTLY OPENED", [0.061, 0.732, 0.278, 0.02]),
+              node("StaticText", "RESET", [0.831, 0.713, 0.122, 0.059]),
+              node(
+                "View",
+                "Bluesky / http://10.0.2.2:8082 / Chevron",
+                [0.061, 0.772, 0.878, 0.087],
+                [chevron(0.803)]
+              ),
+            ]
+          ),
+        ]
+      ),
+    ]
+  );
+}
+
 const emulator: DeviceInfo = { id: "emulator-5556", platform: "android", kind: "emulator" };
 const phone: DeviceInfo = { id: "R5CT30", platform: "android", kind: "device" };
 const sim: DeviceInfo = { id: "A1E0DF35", platform: "ios", kind: "simulator" };
@@ -123,6 +187,13 @@ describe("expo dev-client launcher detection", () => {
     // floated up to the container would put every live row in the history and
     // leave nothing to open.
     expect(detectDevLauncher(launcherTree())).toEqual({ historyY: 0.491 });
+  });
+
+  it("recognizes the face the chooser shows with no packager discovered", () => {
+    // Requiring the "new server" affordance recognized only the face that
+    // already lists servers. On this one the launch reported a pass and every
+    // later step then resolved its selectors against the chooser.
+    expect(detectDevLauncher(noServersTree())).toEqual({ historyY: 0.732 });
   });
 
   it("does not fire on an app screen that merely mentions development servers", () => {
@@ -236,6 +307,19 @@ describe("picking the row for the run's own bundler", () => {
     expect(container.subtreeText).toContain("http://10.0.2.2:8085");
     expect(container.frame.y).toBeLessThan(historyY(tree));
     expect(pickDevServerRow(tree, emulator, 8085, historyY(tree))).toBeNull();
+  });
+
+  it("does not mistake the chooser's address box for a live row", () => {
+    const tree = noServersTree();
+    const box = tree.children[0].children[2].children[5];
+    const urlInBox = box.children[0];
+    // The URL leaf is above the history boundary and spells the run's own port,
+    // so what keeps it out is sitting inside the input. Tapping it opens a
+    // keyboard, and the run then fails blaming a bundler it never opened.
+    expect(box.role).toBe("TextField");
+    expect(urlInBox.label).toContain(":8081");
+    expect(urlInBox.frame.y).toBeLessThan(historyY(tree));
+    expect(pickDevServerRow(tree, emulator, 8081, historyY(tree))).toBeNull();
   });
 
   it("finds a row whose URL is rendered by a child leaf, not the card's own label", () => {
