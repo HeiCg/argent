@@ -1387,9 +1387,11 @@ describe("argent flow run", () => {
 
     await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:1");
 
-    const lines = logs.join("\n").split("\n");
-    expect(lines[0]).toBe('Flow "checkout"');
-    expect(lines.at(-1)).toBe("  ✗ did not finish (run error)");
+    expect(logs.join("\n").split("\n")).toEqual([
+      'Flow "checkout"',
+      expect.stringMatching(/^ {2}✓ {2}1 tap/),
+      "  ✗ did not finish (run error)",
+    ]);
   });
 
   it("names the flow before the verdict when the run failed before any step", async () => {
@@ -1420,13 +1422,68 @@ describe("argent flow run", () => {
 
     await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:2");
 
-    expect(logs.join("\n").split("\n")).toContain("  ✗ did not finish (no run report)");
+    expect(logs.join("\n").split("\n")).toEqual([
+      'Flow "checkout"',
+      "  ✗ did not finish (no run report)",
+    ]);
   });
 
-  it("keeps --json output a single JSON document when the run produces no report", async () => {
-    toolsClientMock.callTool.mockResolvedValue({ data: { flow: "checkout", notice: "prereq" } });
+  // A server that streamed steps and then answered with something that is not
+  // a report has already had the header printed for it by the first event.
+  it("does not repeat the header when a streamed run ends without a report", async () => {
+    toolsClientMock.callTool.mockImplementationOnce(
+      async (
+        _tool: string,
+        _payload: unknown,
+        callOpts?: { onProgress?: (e: unknown) => void }
+      ) => {
+        callOpts?.onProgress?.({ index: 0, kind: "tap", status: "pass" });
+        return { data: { flow: "checkout", notice: "prereq" } };
+      }
+    );
 
-    await expect(flow(["run", checkoutPath, "--json"], opts)).rejects.toThrow("process.exit:2");
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:2");
+
+    expect(logs.join("\n").split("\n")).toEqual([
+      'Flow "checkout"',
+      expect.stringMatching(/^ {2}✓ {2}1 tap/),
+      "  ✗ did not finish (no run report)",
+    ]);
+  });
+
+  // The wording tells the reader which file to open, so it comes from the
+  // failure code — `validation` marks any rejection scoped to one call, device
+  // resolution included, and cannot license a claim about the YAML.
+  it.each([
+    ["FLOW_FILE_INVALID", "not run (invalid flow)"],
+    ["FLOW_DEVICE_RESOLUTION", "not run (no device resolved)"],
+    ["A_CODE_THIS_CLI_DOES_NOT_MAP", "not run (rejected)"],
+  ])("renders a %s rejection of a single flow as %j", async (errorCode, verdict) => {
+    toolsClientMock.callTool.mockRejectedValue(
+      new ToolInvocationError("rejected", { errorCode, errorKind: "validation" })
+    );
+
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:1");
+
+    expect(logs.join("\n").split("\n")).toEqual(['Flow "checkout"', `  ✗ ${verdict}`]);
+  });
+
+  // The negative control the ledger needs: a verdict marks the runs that
+  // earned one, so completeness cannot be met by verdicting everything.
+  it("leaves a passing run's stdout free of any failure verdict", async () => {
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:0");
+
+    expect(logs.join("\n")).not.toContain("✗");
+  });
+
+  it.each([
+    ["produces no report", { data: { flow: "checkout", notice: "prereq" } }, "process.exit:2"],
+    ["is rejected", new ToolInvocationError("nope", { errorKind: "validation" }), "process.exit:1"],
+  ])("keeps --json a single document when the run %s", async (_case, outcome, exitCode) => {
+    if (outcome instanceof Error) toolsClientMock.callTool.mockRejectedValue(outcome);
+    else toolsClientMock.callTool.mockResolvedValue(outcome);
+
+    await expect(flow(["run", checkoutPath, "--json"], opts)).rejects.toThrow(exitCode);
 
     expect(logs).toEqual([]);
   });
