@@ -141,6 +141,23 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
     return { chromium: `${CHROMIUM_CDP_NAMESPACE}:${_payload}` };
   },
 
+  // Deliberately NO recoverable() here. The registry's self-heal disposes the
+  // recovering node before it retries, and this blueprint's dispose closes the
+  // LogFileWriter — which UNLINKS the session's captured console log from disk
+  // (log-file-writer.ts) — so a recovery pass would destroy the logs whether or
+  // not the retry then succeeds. It would also buy nothing: the one window
+  // where a call fails while this node and its ChromiumCdp dependency stay
+  // RUNNING is a tab switch, where CDPClient.reconnect() rejects in-flight
+  // requests with CONNECTION_CLOSED (late sends with NOT_CONNECTED) but
+  // re-points the SAME client object at the new tab — the cached node heals
+  // itself for the next call without any dispose. The failing call surfaces a
+  // classified error that debugger-status maps to a structured "reconnecting"
+  // result with retry-once guidance. A genuinely dead Chromium socket instead
+  // fires ChromiumCdp's own terminated event, whose teardown cascades into this
+  // dependent — the node leaves RUNNING and the next call re-resolves fresh.
+  // (Same log-preservation reasoning as debugger-log-registry's missing socket
+  // gate — see that tool's comment.)
+
   async factory(deps, payload, options) {
     const opts = options as ChromiumJsdFactoryOptions | undefined;
     const device = opts?.device;
