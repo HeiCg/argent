@@ -178,6 +178,34 @@ describe("screenshotDiffTool", () => {
     expect(result.diffPath).toBeTruthy();
   });
 
+  it("captures the baseline live against a saved current, naming that side's file", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-baseline-"));
+    const currentPath = path.join(dir, "current.png");
+    const capturedPath = path.join(dir, "captured.png");
+    await writePng(currentPath, 2, 2, { r: 0, g: 0, b: 0 });
+    await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+    const captureScreenshot = vi.fn(async () => ({
+      url: "http://localhost/baseline.png",
+      path: capturedPath,
+    }));
+
+    const result = await executeScreenshotDiffTool(
+      { simulatorServer: { apiUrl: "http://localhost:4949" } },
+      { currentPath, captureBaseline: true, udid: "ABC", outputDir: dir },
+      { artifacts: new ArtifactStore() },
+      captureScreenshot as never
+    );
+
+    // The live side is the baseline here, so the intermediate must be named for
+    // it — `current-*` would collide with the saved side's own diff artifacts.
+    const liveCaptures = (await fs.readdir(dir)).filter((name) =>
+      /^baseline-[a-f0-9]{8}\.live\.png$/.test(name)
+    );
+    expect(liveCaptures).toHaveLength(1);
+    expect(captureScreenshot).toHaveBeenCalledTimes(1);
+    expect(result.diffPath).toBeTruthy();
+  });
+
   it("propagates the error when both the full-res capture and the fallback fail", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-bothfail-"));
     const baselinePath = path.join(dir, "baseline.png");

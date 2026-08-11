@@ -160,19 +160,15 @@ describe("diffPngFiles", () => {
     expect(result.summary).toContain(
       "- size_normalized: baseline=20x40 current=10x20 compared_at=10x20"
     );
-    // The remedy is written blind: this formatter never learns which side was
-    // captured live, or whether either was. Every fixed scale it could name is
-    // wrong somewhere — a full-resolution one is what some Android emulators
-    // reject with a "wrong data size" framebuffer mismatch, and the fallback
-    // scale is wrong whenever the live side did capture full resolution — so it
-    // can only point at the sizes it just printed and name the knob. Matched on
-    // the remedy alone: the line above it legitimately describes resolution, and
-    // the ban is on prescribing one, not on the words.
-    const remedy = result.summary.split("\n").find((line) => line.includes("re-capture"));
-    expect(remedy).toContain("re-capture one side at the other's printed size");
-    expect(remedy).toContain("ARGENT_SCREENSHOT_SCALE");
-    expect(remedy).not.toMatch(
-      /full[- ]?res|native (resolution|size)|unscaled|1:1|100%|scale\b.{0,6}(?<![\d.])1(\.0)?\b/i
+    // Pinned whole, because what must not happen is a *prescription* being
+    // appended to an otherwise-correct sentence, and no pattern separates
+    // prescribing a resolution from mentioning one. The two constraints to
+    // preserve when editing this line: point at the printed sizes rather than
+    // naming a scale — the formatter never learns which side was captured live,
+    // or whether either was, so every fixed scale it could name is wrong
+    // somewhere — and name the knob, since the reader has to reach for it.
+    expect(result.summary.split("\n")).toContain(
+      "  - to compare without resampling, re-capture one side at the other's printed size — `screenshot` takes a `scale`, and omitting it uses the tool-server's own setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default)"
     );
   });
 
