@@ -1425,6 +1425,19 @@ describe("argent flow run", () => {
     ]);
   });
 
+  // The other side of that guard: an empty step list is what the server sends
+  // for a flow with no steps, so it has to stay a report. Reading it as one
+  // more unwalkable shape would fail a passing flow — and in a batch, stop it.
+  it("counts a report with no steps as a report", async () => {
+    toolsClientMock.callTool.mockResolvedValue({
+      data: report({ steps: [], passed: 0 }),
+    });
+
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:0");
+    expect(logs.join("\n")).toContain("PASS");
+    expect(logs.join("\n")).not.toContain("no run report");
+  });
+
   it("gives a report-less run a verdict on stdout", async () => {
     toolsClientMock.callTool.mockResolvedValue({
       data: { flow: "checkout", notice: "prerequisite", executionPrerequisite: "logged in" },
