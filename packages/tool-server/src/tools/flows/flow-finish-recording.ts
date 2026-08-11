@@ -276,6 +276,8 @@ export function summarizeStep(step: FlowStep, n: number): string {
       return `${n}. rotate: by ${step.by}°${step.selector ? ` on ${selectorLabel(step.selector)}` : ""}`;
     case "snapshot":
       return `${n}. snapshot: ${step.name}`;
+    case "idle":
+      return `${n}. await: screen idle`;
     case "tool":
     default:
       return `${n}. tool: ${step.name} ${renderToolArgs(step.args)}${delayLabel(step)}`;
