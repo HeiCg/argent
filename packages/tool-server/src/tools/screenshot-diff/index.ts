@@ -287,11 +287,12 @@ async function captureLiveInput(params: {
 }): Promise<string> {
   // Prefer a full-resolution capture for maximum diff fidelity. Some Android
   // emulator configurations cannot stream a full-res frame — the simulator-server
-  // rejects it with a "wrong data size" framebuffer mismatch — which previously
-  // made the entire baselinePath + captureCurrent flow unusable on Android. Fall
-  // back to the server's default scale, which captures reliably; same-aspect
-  // normalization in diffPngFiles keeps a scaled capture diff-compatible with a
-  // baseline saved at any scale. Full-res is preserved wherever it works (iOS).
+  // rejects it with a "wrong data size" framebuffer mismatch — so any failure
+  // retries at whatever getScreenshotScale() resolves (ARGENT_SCREENSHOT_SCALE,
+  // else 0.3); same-aspect normalization in diffPngFiles keeps a scaled capture
+  // diff-compatible with a baseline saved at any scale. Setting that env to 1.0
+  // leaves nothing to fall back to: the retry re-sends the request that just
+  // failed, so both attempts throw and the second error surfaces.
   let capture: Awaited<ReturnType<CaptureScreenshot>>;
   try {
     capture = await params.captureScreenshot(params.api, params.rotation, params.signal, 1.0);

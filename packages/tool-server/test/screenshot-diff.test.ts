@@ -160,14 +160,16 @@ describe("diffPngFiles", () => {
     expect(result.summary).toContain(
       "- size_normalized: baseline=20x40 current=10x20 compared_at=10x20"
     );
-    // The remedy has to name a scale the agent can reach: omitting `scale` puts
-    // `screenshot` on the same setting the live capture used, whatever
-    // ARGENT_SCREENSHOT_SCALE is. It must not send the reader at a full-resolution
-    // capture — some Android emulators reject one with a "wrong data size"
-    // framebuffer mismatch — so the pattern is looser than a single literal.
-    expect(result.summary).toContain("re-capture the saved image at the scale the other side used");
-    expect(result.summary).toContain("`screenshot` also picks when `scale` is omitted");
-    expect(result.summary).not.toMatch(/scale:\s*1(\.0)?\b/);
+    // The remedy is written blind: this formatter never learns which side was
+    // captured live, or whether either was, so it can only point at the sizes it
+    // just printed and name the knob. It must not prescribe a fixed scale — a
+    // full-resolution one is what some Android emulators reject with a "wrong
+    // data size" framebuffer mismatch, and it is also wrong whenever the live
+    // side did capture full-res. The pattern is looser than a single literal so
+    // a reworded copy of that advice cannot slip back in.
+    expect(result.summary).toContain("re-capture one side so both come out the size printed above");
+    expect(result.summary).toContain("ARGENT_SCREENSHOT_SCALE");
+    expect(result.summary).not.toMatch(/scale\b.{0,6}(?<![\d.])1(\.0)?\b|full[- ]?res/i);
   });
 
   it("still reports a real difference as `changed` when sizes were normalized", async () => {

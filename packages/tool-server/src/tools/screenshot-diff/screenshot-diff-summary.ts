@@ -49,7 +49,7 @@ export function formatScreenshotDiffSummary(result: ScreenshotDiffSummaryInput):
     lines.push(
       `- size_normalized: baseline=${formatSize(baseline)} current=${formatSize(current)} compared_at=${formatSize(comparedAt)}`,
       "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; any pixel or text differences below may include resampling artifacts, and the diff images are at compared_at rather than full size",
-      "  - to compare without resampling, re-capture the saved image at the scale the other side used — a live capture here uses the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default), which `screenshot` also picks when `scale` is omitted"
+      "  - to compare without resampling, re-capture one side so both come out the size printed above — `screenshot` takes a `scale`, and omitting it uses the tool-server's own setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default)"
     );
   }
 
