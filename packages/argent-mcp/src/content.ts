@@ -211,10 +211,15 @@ export type FlowStepResult = {
   status?: "pass" | "fail" | "skip" | "error";
   reason?: string;
   /**
-   * A step that PASSED but whose pass is weaker than it looks — currently a
-   * `hidden` check that held without its selector ever matching in a run that
-   * never established it. Rendered as a "⚠" so a permanently-green gate does
-   * not read as a clean tick.
+   * A step that PASSED but whose pass is weaker than it looks. Two sources
+   * today: `await: { idle: true }`, which never fails a run and says here what
+   * its green actually bought (see StepReport.warning in the tool-server's
+   * flow-run), and a `hidden` check that held without its selector ever
+   * matching in a run that never established it. Rendered as a "⚠" so a
+   * permanently-green gate does not read as a clean tick. Also carries the
+   * caveat older tool-servers put on a snapshot that adopted a missing
+   * baseline, which now fails the step instead. Live either way: dropping the
+   * field would silently delete the only thing the readiness check reports.
    */
   warning?: string;
   tool?: string;

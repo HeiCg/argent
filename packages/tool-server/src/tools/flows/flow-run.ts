@@ -43,6 +43,7 @@ import { sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
 import { isUnmetUiWaitResult, vacuousHiddenSelectors } from "../await-ui-element";
 import { establishedTerms, selectorIdentityTerms } from "./flow-selector-evidence";
+import { isDebuggerNotConnectedResult } from "../debugger/not-connected";
 import {
   resolveFlowDevice,
   bindDeviceArgs,
@@ -308,11 +309,17 @@ export interface StepReport {
   reason?: string;
   /**
    * The step passed, but the WAY it passed weakens it as proof. Rendered as a
-   * "⚠" suffix by the MCP client, which already understood this field.
-   * Currently only a `hidden` check that held without its selector ever
-   * matching, in a run that never established it: the condition genuinely held
-   * (so it is not a failure), but it is indistinguishable from a typo'd
-   * selector or the wrong screen, and it would keep holding forever.
+   * "⚠" suffix by the MCP client, and under the step line by the CLI. Raised by
+   * `await: { idle: true }`: the screen never settled at all (it waits, then
+   * goes ahead); something small on it never stopped, which is what a spinner
+   * looks like; it rendered no content to settle; too few reads came back with
+   * content for it to judge anything; or its captures never produced a
+   * comparable pair, leaving stillness proved on the UI tree alone without the
+   * presentation-layer motion the pixel half exists to catch. Raised too by a
+   * `hidden` check that held without its selector ever matching, in a run that
+   * never established it: the condition genuinely held (so it is not a
+   * failure), but it is indistinguishable from a typo'd selector or the wrong
+   * screen, and it would keep holding forever.
    */
   warning?: string;
   /** Underlying tool id for `tool` steps. */
@@ -1084,7 +1091,13 @@ reads "inside card inside list", each container's frame inside the next);
 (\`pinch: { on?, scale }\` — scale > 1 in, < 1 out; screen center when \`on\` is omitted); \`rotate\` is the
 two-finger rotation gesture (\`rotate: { on?, by }\` — degrees, + clockwise, within ±3000°; screen center
 when \`on\` is omitted; distinct from the \`rotate\` tool, which changes device orientation); \`await\` waits
-for a UI condition; \`wait\` pauses for a fixed number of milliseconds; \`assert\` checks one now; \`snapshot\`
+for a UI condition, and additionally takes the one condition that has no selector: \`idle: true\` waits
+until the screen has content and stops moving in BOTH the UI tree and the rendered pixels (it never
+fails a run — a screen that never settles passes carrying a \`warning\`, which is what makes it safe to
+persist; the one outcome that does stop the run is an \`error\` for a tree source that could not be read
+at all — a broken window rather than a verdict about the app, which leaves the run not-ok and skips
+every later step; it says nothing about WHICH screen settled — a dropped tap leaves the source screen
+perfectly idle — so pair it with the element check that names the destination); \`wait\` pauses for a fixed number of milliseconds; \`assert\` checks one now; \`snapshot\`
 diffs a screenshot — or, with \`cropOn: <selector>\`, one element's cropped region — against a stored
 baseline (a missing baseline fails the step — set updateBaselines to adopt the current screen; a
 cropped element whose size drifted fails on dimensions); \`echo\` annotates; \`run\` executes another flow
@@ -1724,6 +1737,10 @@ function stepTarget(step: FlowStep): string | undefined {
     case "await":
     case "assert":
       return conditionLabel(step, selectorLabel);
+    case "idle":
+      // The caller already prints the kind, and this step has no target beyond
+      // the screen itself: returning one would render as "idle screen idle".
+      return undefined;
     case "when":
       return step.condition.kind === "platform"
         ? `platform ${step.condition.platform}`
@@ -2285,6 +2302,7 @@ async function execLeafStep(
     case "type":
     case "await":
     case "assert":
+    case "idle":
     case "scroll-to":
     case "pinch":
     case "rotate": {
@@ -2298,10 +2316,14 @@ async function execLeafStep(
         if (r.aborted) return { ...base, status: "skip", reason: r.reason };
         // An INDETERMINATE outcome is not a verdict about the app: the check
         // could not run at all (an unreadable tree, no route reader, focus
-        // unconfirmed with nothing to read it from). Reporting it as `fail`
-        // makes CI read an environment problem as a regression and a QA
-        // author reset a pass streak over it. `error` keeps the run non-ok
-        // while saying plainly that the app was never judged.
+        // unconfirmed with nothing to read it from). It is `idle`'s only
+        // non-passing outcome — a screen that merely kept moving passes with a
+        // warning, and so does one that rendered nothing, so what is left there
+        // is a wait that could not run at all — and the selector conditions
+        // reach it the same way. Reporting it as `fail` makes CI read an
+        // environment problem as a regression and a QA author reset a pass
+        // streak over it. `error` keeps the run non-ok while saying plainly
+        // that the app was never judged.
         if (!r.ok && r.indeterminate) return { ...base, status: "error", reason: r.reason };
         return {
           ...base,
@@ -2418,6 +2440,23 @@ async function execLeafStep(
             status: nested.status,
             tool: step.name,
             reason: nested.reason,
+            result,
+            outputHint,
+            args,
+          };
+        }
+        if (isDebuggerNotConnectedResult(step.name, result)) {
+          // Keep `detail` in the report: it is the only place the underlying
+          // error text lives (device_mismatch's guidance points the agent at
+          // the logicalDeviceIds "listed in the detail message", and the
+          // metro_not_running `got:` fragment names what actually answered the
+          // port). The full structured result rides along like a passing
+          // step's would, so nothing the tool returned is dropped.
+          return {
+            ...base,
+            status: "fail",
+            tool: step.name,
+            reason: `debugger not connected (${result.reason}): ${result.detail} — ${result.guidance}`,
             result,
             outputHint,
             args,
