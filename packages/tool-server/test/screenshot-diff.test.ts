@@ -5,6 +5,18 @@ import { PNG } from "pngjs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-diff";
 
+// The two bullets under `size_normalized`, pinned whole: what must not happen is
+// a *prescription* being appended to an otherwise-correct sentence, and no
+// pattern separates prescribing a resolution from mentioning one. Constraints to
+// preserve when editing the remedy: point at the printed sizes rather than naming
+// a scale — the formatter never learns which side was captured live, or whether
+// either was, so every fixed scale it could name is wrong somewhere — and name
+// the knob, since the reader has to reach for it.
+const RESIZE_CAVEAT =
+  "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; any pixel or text differences below may include resampling artifacts, and the diff images are at compared_at rather than full size";
+const RESIZE_REMEDY =
+  "  - to compare without resampling, re-capture one side at the other's printed size — `screenshot` takes a `scale`, and omitting it uses the tool-server's own setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default)";
+
 const analyzeScreenshotTextChangesMock = vi.hoisted(() =>
   vi.fn(async () => ({
     status: "ok" as const,
@@ -163,17 +175,9 @@ describe("diffPngFiles", () => {
     expect(result.summary).toContain(
       "- size_normalized: baseline=20x40 current=10x20 compared_at=10x20"
     );
-    // Pinned whole, because what must not happen is a *prescription* being
-    // appended to an otherwise-correct sentence, and no pattern separates
-    // prescribing a resolution from mentioning one. The two constraints to
-    // preserve when editing this line: point at the printed sizes rather than
-    // naming a scale — the formatter never learns which side was captured live,
-    // or whether either was, so every fixed scale it could name is wrong
-    // somewhere — and name the knob, since the reader has to reach for it.
     const lines = result.summary.split("\n");
-    expect(lines).toContain(
-      "  - to compare without resampling, re-capture one side at the other's printed size — `screenshot` takes a `scale`, and omitting it uses the tool-server's own setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default)"
-    );
+    expect(lines).toContain(RESIZE_CAVEAT);
+    expect(lines).toContain(RESIZE_REMEDY);
     // Exactly one, because a prescription creeps back as a second bullet beside
     // the pinned one rather than as an edit to it.
     expect(lines.filter((line) => line.includes("re-capture"))).toHaveLength(1);
@@ -198,8 +202,12 @@ describe("diffPngFiles", () => {
     // …and the rescale is still disclosed, so the figures can be read correctly.
     expect(result.summary).toContain("- size_normalized:");
     // The remedy belongs here most of all: these pixel differences may be the
-    // resampling artifacts, so the reader needs the way to rule that out.
-    expect(result.summary).toContain("re-capture one side at the other's printed size");
+    // resampling artifacts, so the reader needs the way to rule that out. Pinned
+    // the same way as on the no-change path, since the block renders on both and
+    // a prescription can be added to either one alone.
+    const changedLines = result.summary.split("\n");
+    expect(changedLines).toContain(RESIZE_REMEDY);
+    expect(changedLines.filter((line) => line.includes("re-capture"))).toHaveLength(1);
   });
 
   it("says nothing about normalization when the sizes already matched", async () => {
