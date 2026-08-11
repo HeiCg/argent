@@ -132,7 +132,13 @@ describe("parseHdcTargets", () => {
   });
 
   it("reports a non-connected target's real state", () => {
-    expect(parseHdcTargets("127.0.0.1:5555\t\tTCP\tOffline\tlocalhost\n")[0].state).toBe("Offline");
+    // Verbatim from `hdc tconn 127.0.0.1:12399` against nothing listening: the
+    // target is registered and listed before any handshake succeeds. So a TCP
+    // row is the shape a booted emulator takes, and `Offline` is a state it can
+    // genuinely be found in — which is why the boot path waits for `Connected`
+    // rather than for the row to exist.
+    const row = parseHdcTargets("127.0.0.1:12399\t\tTCP\tOffline\tunknown...\n")[0];
+    expect(row).toEqual({ connectKey: "127.0.0.1:12399", connection: "TCP", state: "Offline" });
   });
 });
 

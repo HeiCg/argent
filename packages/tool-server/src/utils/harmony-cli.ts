@@ -27,9 +27,9 @@ const execFileAsync = promisify(execFile);
  * and leaves the verdict to `emulatorFailure`, which reads stdout. That keeps one
  * classification path instead of two that disagree.
  *
- * `hdc`, the HarmonyOS device connector, is deliberately absent: nothing here
- * talks to a booted device yet, so wrapping it would add an unused binary
- * dependency. It belongs with the interaction layer.
+ * `hdc`, the HarmonyOS device connector, lives in `harmony-hdc.ts`: this
+ * manager knows about instances, `hdc` knows about targets, and the two are
+ * separate binaries with separate failure vocabularies.
  */
 
 /** The manager prints this exact token for an empty list rather than no output. */

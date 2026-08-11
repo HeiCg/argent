@@ -1541,8 +1541,8 @@ async function connectedHarmonyKeys(): Promise<Set<string>> {
  * Arrival, because nothing else joins the two: `Emulator` names instances and
  * never reports a port, `hdc` names connect keys and never mentions an
  * instance. It is also the one signal independent of how an emulator's key is
- * spelled, which no image being obtainable here (see
- * {@link HARMONY_IMAGE_RESTRICTION}) has left unobserved.
+ * spelled — which, no image being obtainable here (see
+ * {@link HARMONY_IMAGE_RESTRICTION}), has never been seen.
  */
 async function waitForHarmonyTarget(before: Set<string>, deadline: number): Promise<string | null> {
   for (;;) {
