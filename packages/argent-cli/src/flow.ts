@@ -1101,9 +1101,10 @@ interface BatchFlowResult {
 /**
  * Run every discovered flow in `dir` sequentially. Reports failures only (no
  * live step lines), then a flow-level summary; a flow failing its steps — or
- * one the tool-server rejects as invalid (a bad YAML, an unparseable step) —
- * lets the batch continue, while an infra error (transport throw, unclassified
- * failure, non-report result) stops it and counts the remaining flows skipped.
+ * one the tool-server rejects up front (a bad YAML, an unparseable step, a
+ * device it cannot resolve) — lets the batch continue, while an infra error
+ * (transport throw, unclassified failure, non-report result) stops it and
+ * counts the remaining flows skipped.
  */
 async function runFlowDirectory(
   dir: string,
@@ -1129,7 +1130,7 @@ async function runFlowDirectory(
 
   const outputBase = args.output ? path.resolve(args.output) : undefined;
   const results: BatchFlowResult[] = [];
-  // A validation rejection is specific to one flow file, so the batch keeps
+  // A validation rejection is scoped to the one call, so the batch keeps
   // going. Anything else — transport death, or a failure the server didn't
   // classify (including one from a pre-signal server) — could make every
   // remaining flow burn a device run against the same wall, so stop.
