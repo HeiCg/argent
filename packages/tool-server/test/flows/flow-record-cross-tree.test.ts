@@ -153,11 +153,18 @@ function registryWhereWaitSucceeds(): Registry {
  * `{ success: false }` shape the tool returns instead of throwing.
  */
 function registryWhereWaitTimesOut(): Registry {
+  return registryWhereWaitFails("no element matched the selector");
+}
+
+/**
+ * A registry whose `await-ui-element` returns `{ success: false }` carrying
+ * `note` — the field that says WHY, and the only thing separating a condition
+ * judged false from one never evaluated at all.
+ */
+function registryWhereWaitFails(note: string): Registry {
   return {
     invokeTool: vi.fn(async (id: string) => {
-      if (id === "await-ui-element") {
-        return { success: false, elapsed: 1500, note: "no element matched the selector" };
-      }
+      if (id === "await-ui-element") return { success: false, elapsed: 1500, note };
       throw new Error(`Tool "${id}" not found`);
     }),
     getTool: vi.fn(() => undefined),
@@ -381,6 +388,67 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // Recording the step anyway is the pre-existing behaviour; only the
     // narration changes.
     expect(await recordedSteps("unmet")).toHaveLength(1);
+  });
+
+  // `success: false` is also how the tool reports that it never got to look at
+  // the screen — the tree source failed for the whole wait, or the caller
+  // cancelled. Neither observed anything, so neither may be narrated as the
+  // condition being false, and neither may prescribe deleting the step: the
+  // check can be perfectly good and the source merely down.
+  it("does not call an unreadable tree source a condition that never held", async () => {
+    await startRecording("blind");
+
+    const result = await recordWait(
+      "blind",
+      { condition: "visible", selector: { text: "Continue" } },
+      { registry: registryWhereWaitFails("last tree fetch failed: CDP not connected") }
+    );
+
+    const warning = warningOf(result, "blind");
+    expect(warning).toContain("without a readable UI tree");
+    expect(warning).toContain("UNKNOWN, not known-bad");
+    // The two claims the unmet text makes, and this one must not.
+    expect(warning).not.toContain("the wait itself never held");
+    expect(warning).not.toContain("re-record it once the condition can actually hold");
+    expect(warning).not.toContain("delete the step from the .yaml");
+    // Nor may it blame a tree divergence: nothing was compared on either side.
+    expect(warning).not.toContain("present in both");
+    expect(fetchCount).toBe(0);
+    expect(await recordedSteps("blind")).toHaveLength(1);
+  });
+
+  it("does not call an unconfirmable `hidden` a condition that never held", async () => {
+    await startRecording("blindhidden");
+
+    const result = await recordWait(
+      "blindhidden",
+      { condition: "hidden", selector: { text: "Continue" } },
+      {
+        registry: registryWhereWaitFails(
+          "could not confirm the element is hidden — the UI tree was empty or unreadable at timeout"
+        ),
+      }
+    );
+
+    const warning = warningOf(result, "blindhidden");
+    expect(warning).toContain("UNKNOWN, not known-bad");
+    expect(warning).not.toContain("the wait itself never held");
+  });
+
+  it("does not call a cancelled wait a condition that never held", async () => {
+    await startRecording("cancelledwait");
+
+    const result = await recordWait(
+      "cancelledwait",
+      { condition: "visible", selector: { text: "Continue" } },
+      { registry: registryWhereWaitFails("wait was cancelled before the condition was met") }
+    );
+
+    const warning = warningOf(result, "cancelledwait");
+    expect(warning).toContain("cancelled before its deadline");
+    expect(warning).toContain("UNKNOWN, not known-bad");
+    expect(warning).not.toContain("the wait itself never held");
+    expect(fetchCount).toBe(0);
   });
 
   // ── The probe is gated on the command ─────────────────────────────────────

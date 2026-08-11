@@ -49,6 +49,41 @@ export function isUnmetUiWaitResult(tool: string, result: unknown): boolean {
   );
 }
 
+// The two `success: false` notes that are NOT a verdict on the condition. Named
+// here, and used below where the notes are built, so a reader of the result can
+// tell them apart from a genuine miss without re-typing the prose.
+export const WAIT_CANCELLED_NOTE = "wait was cancelled before the condition was met";
+export const TREE_FETCH_FAILED_NOTE_PREFIX = "last tree fetch failed: ";
+const HIDDEN_UNREADABLE_NOTE =
+  "could not confirm the element is hidden — the UI tree was empty or unreadable at timeout";
+
+/**
+ * WHY an unmet wait came back `success: false`. {@link isUnmetUiWaitResult}
+ * answers "did this wait fail", which is all its callers need — `run-sequence`
+ * and `flow-run` stop the run on every cause alike. A caller that NARRATES the
+ * failure needs more, because only one of the three is a statement about the
+ * condition:
+ *
+ * - `unmet` — the tree was read and the condition was false there.
+ * - `unreadable` — the tree source never answered (or answered blind), so
+ *   nothing was ever observed. The condition may be perfectly satisfiable.
+ * - `cancelled` — the caller gave up before the deadline. Same: no verdict.
+ *
+ * Telling an author to re-record or delete a step on the strength of a cause
+ * that observed nothing sends them to rewrite something that may be fine.
+ */
+export type UnmetUiWaitCause = "unmet" | "unreadable" | "cancelled";
+
+export function unmetUiWaitCause(result: unknown): UnmetUiWaitCause {
+  const note = (result as { note?: unknown } | null)?.note;
+  if (typeof note !== "string") return "unmet";
+  if (note === WAIT_CANCELLED_NOTE) return "cancelled";
+  if (note.startsWith(TREE_FETCH_FAILED_NOTE_PREFIX) || note === HIDDEN_UNREADABLE_NOTE) {
+    return "unreadable";
+  }
+  return "unmet";
+}
+
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_POLL_INTERVAL_MS = 400;
 
@@ -189,7 +224,7 @@ function timeoutNote(
   fetchError: string | undefined,
   lastData: DescribeTreeData | null
 ): string {
-  if (fetchError) return `last tree fetch failed: ${fetchError}`;
+  if (fetchError) return `${TREE_FETCH_FAILED_NOTE_PREFIX}${fetchError}`;
   const matches = lastTree ? findAll(lastTree, params.selector) : [];
   let base: string;
   switch (params.condition) {
@@ -206,7 +241,7 @@ function timeoutNote(
     case "hidden":
       base = matches.some(isVisible)
         ? "an element matching the selector was still visible at timeout"
-        : "could not confirm the element is hidden — the UI tree was empty or unreadable at timeout";
+        : HIDDEN_UNREADABLE_NOTE;
       break;
     case "visible":
       base =
@@ -312,7 +347,7 @@ or before tapping an element that appears asynchronously.`,
       const cancelled = (): WaitResult => ({
         success: false,
         elapsed: Date.now() - start,
-        note: "wait was cancelled before the condition was met",
+        note: WAIT_CANCELLED_NOTE,
       });
 
       const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;

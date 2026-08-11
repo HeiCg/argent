@@ -15,7 +15,12 @@ import {
   type FlowStep,
   type RecordingSession,
 } from "./flow-utils";
-import { AWAIT_UI_ELEMENT_TOOL_ID, isUnmetUiWaitResult } from "../await-ui-element";
+import {
+  AWAIT_UI_ELEMENT_TOOL_ID,
+  isUnmetUiWaitResult,
+  unmetUiWaitCause,
+  type UnmetUiWaitCause,
+} from "../await-ui-element";
 import { probeWhenCondition, type DirectiveOutcome } from "./flow-actions";
 import { summarizeStep } from "./flow-finish-recording";
 import { invokeSubTool } from "../../utils/sub-invoke";
@@ -339,6 +344,40 @@ const UNMET_WAIT_WARNING =
   "The cross-tree re-probe was " +
   "skipped: it asks whether a check that PASSED would survive conversion to `await:`/`assert:`, " +
   "and this one did not pass";
+
+/**
+ * The same `success: false` that {@link UNMET_WAIT_WARNING} is written for,
+ * arrived at without ever reading the screen — the tree source failed for the
+ * whole wait, or the caller cancelled it. {@link unmetUiWaitCause} tells the
+ * two apart from a genuine miss.
+ *
+ * Neither may reuse the unmet text. It asserts "the wait itself never held" and
+ * prescribes re-recording or deleting the step; here nothing was observed, so
+ * the condition may be perfectly satisfiable and the step perfectly good.
+ * That is the same unknown-vs-known-bad distinction
+ * {@link probeAgainstRunnerTree} draws for an unreadable RUNNER tree, and for
+ * the same reason: do not send an author to rewrite a step on evidence nobody
+ * has.
+ */
+const UNREADABLE_WAIT_WARNING =
+  "recorded, but this wait ended without a readable UI tree, so nothing was ever compared — " +
+  "`await-ui-element` returns success:false for that too, and the step was written to the flow " +
+  "anyway. Whether the condition holds is UNKNOWN, not known-bad: read `toolResult.note` for the " +
+  "tree-source error, get that source back, and re-record the step to find out. Do not delete " +
+  "the step on this warning alone. The cross-tree re-probe was skipped: it asks whether a check " +
+  "that PASSED would survive conversion to `await:`/`assert:`, and this one never got an answer";
+
+const CANCELLED_WAIT_WARNING =
+  "recorded, but this wait was cancelled before its deadline, so the condition was never settled " +
+  "— `await-ui-element` reports a cancelled wait as success:false, and the step was written to " +
+  "the flow anyway. Whether it holds is UNKNOWN, not known-bad: re-record the step to find out. " +
+  "The cross-tree re-probe was skipped for the same reason";
+
+function unmetWaitWarningFor(cause: UnmetUiWaitCause): string {
+  if (cause === "unreadable") return UNREADABLE_WAIT_WARNING;
+  if (cause === "cancelled") return CANCELLED_WAIT_WARNING;
+  return UNMET_WAIT_WARNING;
+}
 
 function abortError(): Error {
   const err = new Error(
@@ -940,7 +979,7 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
         `Failed to add ${params.command} step to flow ${params.name}: ${failureSignal.error_code}`,
     },
     description: `Execute a tool call and record it as a step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). Use when recording a flow and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier (otherwise coordinates are kept with a warning); a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow; restart-app has no chromium support, so a chromium flow records as a fragment — add the \`launch: { chromium: <app path> }\` line to the YAML afterward, deleting the executionPrerequisite line if one was recorded: a flow that starts with a launch must not declare it).
-A recorded \`await-ui-element\` is re-probed against the tree the RUNNER resolves \`await:\`/\`assert:\` directives against, which is NOT the tree the live call read; when the condition does not hold there the step is still recorded and \`message\` carries a warning to read before converting — whether the conversion actually breaks depends on WHY the two disagree, since a screen that moved on between the live wait and the re-probe reads the same way. If that tree could not be read at all, the warning says so instead: the conversion is UNKNOWN, not known-bad. The probe judges the selector exactly as recorded, so write the conversion in the strict map spelling (\`{ visible: { text: Continue } }\`, copying the step's \`selector:\`) — the bare-string spelling (\`{ visible: Continue }\`) re-parses as a loose selector that resolves identifier-first and falls back to text, which is a different check. \`message\` also warns when the live wait never held — that tool reports an unmet condition by returning \`{ success: false }\` rather than failing, so the step is recorded and will stop the run at replay.
+A recorded \`await-ui-element\` is re-probed against the tree the RUNNER resolves \`await:\`/\`assert:\` directives against, which is NOT the tree the live call read; when the condition does not hold there the step is still recorded and \`message\` carries a warning to read before converting — whether the conversion actually breaks depends on WHY the two disagree, since a screen that moved on between the live wait and the re-probe reads the same way. If that tree could not be read at all, the warning says so instead: the conversion is UNKNOWN, not known-bad. The probe judges the selector exactly as recorded, so write the conversion in the strict map spelling (\`{ visible: { text: Continue } }\`, copying the step's \`selector:\`) — the bare-string spelling (\`{ visible: Continue }\`) re-parses as a loose selector that resolves identifier-first and falls back to text, which is a different check. \`message\` also warns when the live wait itself came back \`{ success: false }\` — that tool reports a failed wait by returning rather than throwing, so the step is recorded either way. That warning names the cause, because only one of them judges the condition: a genuine miss will stop the run at replay, while a wait whose tree source was unreadable, or one that was cancelled, observed nothing and leaves the condition UNKNOWN.
 Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded.
 If a step was recorded by mistake, edit the .yaml to remove it — against a remote client, only after \`flow-finish-recording\`: the in-memory copy is authoritative there, and every write serializes it over your edit.`,
     zodSchema,
@@ -977,12 +1016,14 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       // A recorded wait that HELD against the tree await-ui-element reads gets
       // asked the tree the runner resolves DIRECTIVES against too, so the author learns
       // now — rather than after polish — whether the conversion is safe. One
-      // that never held is a step failure at replay and is reported as such
-      // instead (see {@link UNMET_WAIT_WARNING}).
+      // that came back success:false is reported by CAUSE instead: a genuine
+      // miss is a step failure at replay (see {@link UNMET_WAIT_WARNING}),
+      // while an unreadable tree source or a cancellation observed nothing and
+      // must not be narrated as one (see {@link UNREADABLE_WAIT_WARNING}).
       let crossTreeWarning: string | undefined;
       if (params.command === AWAIT_UI_ELEMENT_TOOL_ID) {
         if (isUnmetUiWaitResult(params.command, toolResult)) {
-          crossTreeWarning = UNMET_WAIT_WARNING;
+          crossTreeWarning = unmetWaitWarningFor(unmetUiWaitCause(toolResult));
         } else {
           crossTreeWarning = (await probeAgainstRunnerTree(registry, ctx, args)).warning;
         }
