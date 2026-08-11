@@ -46,10 +46,10 @@ const services = { simulatorServer: {} } as never;
 /**
  * The `uitest uiInput keyEvent` name each HarmonyOS button must reach the device
  * as, spelled out rather than derived, so a swapped pair (home ↔ back) fails.
- * The loop below indexes this by every entry of `BUTTONS_BY_PLATFORM.harmony`,
- * which is what keeps the tool's `HARMONY_BUTTON_KEYS[...]!` assertion honest:
- * a button added to the accepted set without a key name to press turns this red
- * instead of injecting `undefined`.
+ * The loop below indexes this by every entry of `BUTTONS_BY_PLATFORM.harmony`
+ * and asserts the lookup HIT before comparing - without that, a button added to
+ * the accepted set with no key name would inject `undefined` and still match,
+ * since the expectation would be `undefined` too.
  */
 const HARMONY_KEY_NAMES: Record<string, string> = {
   home: "Home",
@@ -174,9 +174,11 @@ describe("button tool — per-platform validation", () => {
       await expect(buttonTool.execute(services, { udid: harmonyUdid, button })).resolves.toEqual({
         pressed: button,
       });
+      const expectedKey = HARMONY_KEY_NAMES[button];
+      expect(expectedKey, `no uitest key name for "${button}"`).toBeTypeOf("string");
       // The connect key, not the `harmony-` prefixed device id — `uitest` is
       // addressed by what `hdc list targets` reports.
-      expect(harmonyKeyEvent).toHaveBeenCalledWith(harmonyConnectKey, HARMONY_KEY_NAMES[button]);
+      expect(harmonyKeyEvent).toHaveBeenCalledWith(harmonyConnectKey, expectedKey);
       // hdc is preflighted so a missing connector fails with a 424 install hint.
       expect(ensureDep).toHaveBeenCalledWith("hdc");
       // Neither of the other backends is touched — in particular the press must

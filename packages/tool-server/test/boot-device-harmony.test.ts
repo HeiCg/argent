@@ -230,11 +230,15 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
   it("blames the missing connector instead of waiting out the budget for it", async () => {
     resolveHdc.mockResolvedValue(null);
+    vi.useFakeTimers();
 
-    const result = (await boot({})) as { udid: string; note?: string };
+    const pending = boot({});
+    // The arrival wait is skipped outright without `hdc`; what remains is the
+    // short grace that watches the manager for an immediate failure, so this
+    // advances past that rather than the boot budget.
+    await vi.advanceTimersByTimeAsync(4_000);
+    const result = (await pending) as { udid: string; note?: string };
 
-    // No fake timers and no advance: without `hdc` the wait is skipped
-    // outright, so a partial DevEco install fails fast and says which half.
     expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
     expect(result.note).toMatch(/`hdc` was not found/);
   });
