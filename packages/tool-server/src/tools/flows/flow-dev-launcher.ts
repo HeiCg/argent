@@ -155,10 +155,18 @@ export function pickDevServerRow(
     // substring matching is otherwise right: the row label wraps the URL in
     // decorations (a chevron, the project name) that vary by client version.
     const origin = new RegExp(`${url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9])`, "i");
-    // Tightest match wins: the row's text is repeated on every ancestor by the
-    // flow adapters' hoist, so the scroll container matches every URL too.
+    // OWN text only — the rule {@link tightestOwning} follows, and for a sharper
+    // reason here. The hoist repeats EVERY row's URL, the history's included, on
+    // the scroll container that wraps the whole list, and that container's top
+    // edge sits above the history boundary. Reading hoisted text would therefore
+    // match the container for a port only a remembered row carries, and the
+    // launch would tap the middle of the list — an arbitrary point — instead of
+    // reporting that no live row exists. Nothing is lost by ignoring the hoist:
+    // it is additive, so the leaf that renders the URL still carries it itself.
+    // Tightest match still wins, since a row card whose own label spells the URL
+    // also wraps the leaf that renders it.
     const row = live
-      .filter((n) => origin.test([nodeText(n), n.subtreeText].filter(Boolean).join(" ")))
+      .filter((n) => origin.test(nodeText(n)))
       .reduce<
         DescribeNode | undefined
       >((best, n) => (best === undefined || area(n) < area(best) ? n : best), undefined);
