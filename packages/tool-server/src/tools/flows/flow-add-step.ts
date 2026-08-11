@@ -533,12 +533,33 @@ const MAX_PROBE_REASON_CHARS = 200;
  */
 const PROBE_REASON_TAIL_CHARS = 60;
 
+function elisionMarker(dropped: number): string {
+  return `… (${dropped} more chars) …`;
+}
+
+/**
+ * {@link MAX_PROBE_REASON_CHARS} bounds what is EMITTED, not what is kept.
+ *
+ * Budgeting the kept content instead let the marker push the result past the
+ * cap — and, just over the boundary, past the input it was meant to shorten: a
+ * 201-character reason came out at 218, announcing "(1 more chars)".
+ *
+ * The marker's own width depends on the count it reports, which depends on how
+ * much the marker leaves room for. Size the head against the WIDEST the marker
+ * can be — `dropped` can never exceed the reason's own length, so that digit
+ * count bounds it — and the emitted string fits in one pass, with no loop and
+ * no chance of overshoot.
+ */
 function cappedReason(reason: string): string {
   if (reason.length <= MAX_PROBE_REASON_CHARS) return reason;
-  const head = reason.slice(0, MAX_PROBE_REASON_CHARS - PROBE_REASON_TAIL_CHARS);
-  const tail = reason.slice(reason.length - PROBE_REASON_TAIL_CHARS);
-  const dropped = reason.length - MAX_PROBE_REASON_CHARS;
-  return `${head}… (${dropped} more chars) …${tail}`;
+  const widestMarker = elisionMarker(reason.length).length;
+  const tailChars = Math.max(
+    0,
+    Math.min(PROBE_REASON_TAIL_CHARS, MAX_PROBE_REASON_CHARS - widestMarker)
+  );
+  const headChars = Math.max(0, MAX_PROBE_REASON_CHARS - widestMarker - tailChars);
+  const dropped = reason.length - headChars - tailChars;
+  return `${reason.slice(0, headChars)}${elisionMarker(dropped)}${reason.slice(reason.length - tailChars)}`;
 }
 
 /**

@@ -1224,13 +1224,44 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // Bound the ECHOED REASON, not the whole message: the fixed prose around it
     // is longer than this fixture, so `warning.length < wall.length` passes or
     // fails on how much explanation the message carries and says nothing about
-    // the cap. Pin the cap itself — 200 chars kept, split head/tail — so raising
-    // the constant fails here.
+    // the cap. Pin the cap itself — the EMITTED string, marker included — so
+    // raising the constant fails here.
     const echoed = echoedReasonOf(warning);
-    const [head, tail] = echoed.split(/… \(\d+ more chars\) …/);
-    expect(head).toHaveLength(140);
+    expect(echoed.length).toBeLessThanOrEqual(200);
+    const [, tail] = echoed.split(/… \(\d+ more chars\) …/);
     expect(tail).toHaveLength(60);
   });
+
+  // The cap bounds what is EMITTED, not what is kept. Budgeting the kept
+  // content instead let the marker push the result past the cap — and, just
+  // over the boundary, past the input it was meant to shorten: a 201-character
+  // reason came out at 218 announcing "(1 more chars)".
+  it("never emits a reason over the cap, or longer than the reason itself", async () => {
+    // `element matched text="Total" but its text was "<label>" (wanted to
+    // contain "$5.00")` is 76 characters around the label, so the label length
+    // sets the reason length exactly.
+    const FIXED = 76;
+    for (const reasonLength of [199, 200, 201, 205, 220, 260]) {
+      const label = `Total ${"z".repeat(reasonLength - FIXED - "Total ".length)}`;
+      serveTree(iosRunnerTree([iosLabel(label)]));
+      const name = `cap${reasonLength}`;
+      await startRecording(name);
+
+      const result = await recordWait(name, {
+        condition: "text",
+        selector: { text: "Total" },
+        expectedText: "$5.00",
+      });
+      const echoed = echoedReasonOf(warningOf(result, name) ?? "");
+
+      expect(echoed.length).toBeLessThanOrEqual(200);
+      expect(echoed.length).toBeLessThanOrEqual(reasonLength);
+      // Either it fit and is verbatim, or it was elided — never "elided and
+      // longer".
+      if (reasonLength <= 200) expect(echoed).not.toContain("more chars)");
+      else expect(echoed).toContain("more chars)");
+    }
+  }, 30_000);
 
   // The cap only ever ELIDES THE MIDDLE, because `waitForCondition` puts the
   // note recording that its final poll went dark at the END of the reason —
