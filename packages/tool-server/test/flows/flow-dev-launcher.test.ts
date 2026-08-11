@@ -1,11 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeviceInfo } from "@argent/registry";
 import type { DescribeNode } from "../../src/tools/describe/contract";
+import { adbShell } from "../../src/utils/adb";
 import {
   detectDevLauncher,
   hasDrawnContent,
+  isExpoDevBuild,
   pickDevServerRow,
 } from "../../src/tools/flows/flow-dev-launcher";
+
+vi.mock("../../src/utils/adb", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/utils/adb")>()),
+  adbShell: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.mocked(adbShell).mockReset();
+});
 
 // The fixture is the real tree an expo-dev-client chooser produced on an
 // Android emulator (Bluesky dev build, android-devtools source), frames
@@ -387,5 +398,54 @@ describe("picking the row for the run's own bundler", () => {
       ]
     );
     expect(pickDevServerRow(ios, sim, 8081, historyY(ios))?.url).toBe("http://localhost:8081");
+  });
+});
+
+describe("recognizing a build that can show the chooser", () => {
+  // Excerpts of the real `dumpsys package xyz.blueskyweb.app` from the emulator
+  // this was built against. RELEASE_DUMP is the same text minus what
+  // expo-dev-launcher's DEBUG-variant manifest contributes — which is all a
+  // release build of the same project differs by here — and it deliberately
+  // keeps the `exp+<slug>` scheme, since the config plugin writes that into the
+  // main manifest and every variant merges it.
+  const RELEASE_DUMP = `
+Activity Resolver Table:
+  Schemes:
+      exp+bluesky:
+        c17d440 xyz.blueskyweb.app/.MainActivity filter fd0a4be
+          Action: "android.intent.action.VIEW"
+          Scheme: "bluesky"
+          Scheme: "exp+bluesky"
+`;
+  const DEV_DUMP = `${RELEASE_DUMP}      expo-dev-launcher:
+        28d4cfc xyz.blueskyweb.app/expo.modules.devlauncher.compose.AuthActivity filter a86bf85
+          Action: "android.intent.action.VIEW"
+          Scheme: "expo-dev-launcher"
+`;
+
+  it("recognizes a dev build by the launcher its debug manifest installs", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    await expect(isExpoDevBuild(emulator, "xyz.blueskyweb.app")).resolves.toBe(true);
+  });
+
+  it("does not take a release build of the same project for a dev build", async () => {
+    // The `exp+bluesky` scheme is still there — reading THAT made every release
+    // build of any project with expo-dev-client in its dependencies wait out the
+    // appear window on every launch step, for a chooser it can never show.
+    expect(RELEASE_DUMP).toContain('Scheme: "exp+bluesky"');
+    vi.mocked(adbShell).mockResolvedValue(RELEASE_DUMP);
+    await expect(isExpoDevBuild(emulator, "xyz.blueskyweb.app")).resolves.toBe(false);
+  });
+
+  it("answers false when the package cannot be probed", async () => {
+    vi.mocked(adbShell).mockRejectedValue(new Error("device offline"));
+    await expect(isExpoDevBuild(emulator, "xyz.blueskyweb.app")).resolves.toBe(false);
+  });
+
+  it("never probes a platform whose launcher this is not", async () => {
+    // iOS reaches Metro at a stable localhost, so the chooser is a rarity there
+    // and nothing is probed — the recovery is Android-only by construction.
+    await expect(isExpoDevBuild(sim, "xyz.blueskyweb.app")).resolves.toBe(false);
+    expect(adbShell).not.toHaveBeenCalled();
   });
 });

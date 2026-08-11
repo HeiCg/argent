@@ -230,21 +230,32 @@ type DevLauncherOutcome =
  * catching it means waiting; making an ordinary app wait out that window on
  * every launch would be a tax it can never benefit from.
  *
- * A dev build is identified by the URL scheme expo registers for it,
- * `exp+<slug>` — the one the chooser's own rows open. On Android that is one
- * `dumpsys package` read. iOS would need the installed bundle's Info.plist and
- * is not probed: there the remembered server is a stable `localhost`, which is
- * why the chooser is a rarity there and an Android routine (see the module
- * comment). An unprobeable app answers false — the launch then behaves exactly
- * as it did before this module existed.
+ * A dev build is identified by the launcher itself: `expo-dev-launcher` declares
+ * its activities in a DEBUG-variant manifest, so the installed package mentions
+ * them only when the build can actually show a chooser. On Android that is one
+ * `dumpsys package` read.
+ *
+ * Deliberately NOT the `exp+<slug>` scheme the chooser's own rows open: the
+ * `expo-dev-client` config plugin writes that into the MAIN manifest, which
+ * merges into every variant, so a release build of any project that has
+ * `expo-dev-client` in its dependencies carries it too — and would pay the
+ * appear-wait on every launch step for a chooser it can never show.
+ *
+ * iOS would need the installed bundle's Info.plist and is not probed: there the
+ * remembered server is a stable `localhost`, which is why the chooser is a rarity
+ * there and an Android routine (see the module comment). An unprobeable app
+ * answers false — the launch then behaves exactly as it did before this module
+ * existed.
  */
-async function isExpoDevBuild(device: DeviceInfo, bundleId: string): Promise<boolean> {
+export async function isExpoDevBuild(device: DeviceInfo, bundleId: string): Promise<boolean> {
   if (device.platform !== "android") return false;
   try {
     const dump = await adbShell(device.id, `dumpsys package ${shellQuote(bundleId)}`, {
       timeoutMs: 10_000,
     });
-    return /Scheme:\s*"exp\+/i.test(dump);
+    // Either spelling the debug manifest contributes: a launcher activity's own
+    // class name, and the scheme its auth activity registers.
+    return /expo\.modules\.devlauncher|Scheme:\s*"expo-dev-launcher"/i.test(dump);
   } catch {
     return false;
   }
