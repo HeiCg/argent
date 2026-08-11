@@ -1067,20 +1067,19 @@ async function exportAndResolveArtifacts(
 }
 
 /**
- * Why a flow the server rejected never ran, for the batch's stdout ledger.
- * `error_kind: "validation"` marks any rejection scoped to the one call, so it
- * says nothing about the flow file — device resolution rejects that way too
- * (nothing booted, or several booted and no --device/--platform), and blaming a
- * batch of perfectly good YAML on a simulator nobody started sends the reader
- * to the wrong file. Only a code whose subject IS the file licenses "invalid
- * flow"; an unrecognized one stays neutral and leaves the reason to the stderr
- * line beside it.
+ * Why a flow the server rejected never ran, for the stdout ledger either
+ * runner keeps. `error_kind: "validation"` marks any rejection scoped to the
+ * one call, so it says nothing about the flow file — device resolution rejects
+ * that way too (nothing booted, or several booted and no --device/--platform),
+ * and blaming perfectly good YAML on a simulator nobody started sends the
+ * reader to the wrong file. Only a code whose subject IS the file licenses
+ * "invalid flow"; an unrecognized one stays neutral and leaves the reason to
+ * the stderr line beside it.
  */
 function rejectionVerdict(code: string | undefined): string {
   switch (code) {
     case FAILURE_CODES.FLOW_FILE_INVALID:
     case FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED:
-    case FAILURE_CODES.FLOW_NAME_INVALID:
     case FAILURE_CODES.FLOW_E2E_HAS_PREREQUISITE:
       return "not run (invalid flow)";
     case FAILURE_CODES.FLOW_DEVICE_RESOLUTION:
@@ -1088,6 +1087,16 @@ function rejectionVerdict(code: string | undefined): string {
     default:
       return "not run (rejected)";
   }
+}
+
+/**
+ * Whether a wire value is a report the renderers can walk. `data` is `unknown`
+ * and every renderer iterates `steps`, so a value carrying a non-array `steps`
+ * reaches `for (… of report.steps)` and throws where no verdict can be printed
+ * — it has to classify as "no report" here, like a primitive does.
+ */
+function isFlowReport(data: unknown): data is FlowReport {
+  return !!data && typeof data === "object" && Array.isArray((data as FlowReport).steps);
 }
 
 /** One flow's outcome in a directory run — also the --json aggregate entry. */
@@ -1099,8 +1108,9 @@ interface BatchFlowResult {
 }
 
 /**
- * Run every discovered flow in `dir` sequentially. Reports failures only (no
- * live step lines), then a flow-level summary; a flow failing its steps — or
+ * Run every discovered flow in `dir` sequentially. Prints each flow's failing
+ * steps and its outcome (no live step lines), then a flow-level summary; a
+ * flow failing its steps — or
  * one the tool-server rejects up front (a bad YAML, an unparseable step, a
  * device it cannot resolve) — lets the batch continue, while an infra error
  * (transport throw, unclassified failure, non-report result) stops it and
@@ -1149,10 +1159,7 @@ async function runFlowDirectory(
         "flow-execute",
         buildRunPayload(path.join(dir, rel), projectRoot, args)
       );
-      const data = resp.data as FlowReport;
-      // typeof guard: `in` throws on a primitive wire value, and that must
-      // classify as "no report", not as an infra throw.
-      if (data && typeof data === "object" && "steps" in data) report = data;
+      if (isFlowReport(resp.data)) report = resp.data;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(message);
@@ -1549,9 +1556,7 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
     return exitAfterFlush(1);
   }
 
-  // typeof guard: `in` throws on a primitive wire value, and that must
-  // classify as "no report", not as an uncaught crash.
-  if (!report || typeof report !== "object" || !("steps" in report)) {
+  if (!isFlowReport(report)) {
     console.error(`"${flowName}" did not produce a run report.`);
     if (!args.json) {
       if (liveSteps === 0) console.log(`Flow "${flowName}"`);

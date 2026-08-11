@@ -1405,14 +1405,24 @@ describe("argent flow run", () => {
     ]);
   });
 
-  // A primitive `data` is the one no-report shape that reaches `in`, which
-  // throws on it — so without the typeof guard this exits through the CLI's
-  // top-level catch as a raw TypeError instead of the message below.
-  it("treats a primitive wire value as no report rather than crashing", async () => {
-    toolsClientMock.callTool.mockResolvedValue({ data: "flow-execute is not implemented" });
+  // Shapes the renderers cannot walk. Each one used to reach them anyway and
+  // die where no verdict can be printed — a primitive throws on `in`, and a
+  // non-array `steps` throws on the first iteration, both surfacing through
+  // the CLI's top-level catch as a raw TypeError with stdout left empty.
+  it.each([
+    ["a primitive", "flow-execute is not implemented"],
+    ["a numeric steps", { flow: "checkout", ok: true, steps: 42 }],
+    ["a null steps", { flow: "checkout", ok: true, steps: null }],
+    ["an object steps", { flow: "checkout", ok: true, steps: {} }],
+  ])("treats %s wire value as no report rather than crashing", async (_case, data) => {
+    toolsClientMock.callTool.mockResolvedValue({ data });
 
     await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:2");
     expect(errs.join("\n")).toContain('"checkout" did not produce a run report');
+    expect(logs.join("\n").split("\n")).toEqual([
+      'Flow "checkout"',
+      "  ✗ did not finish (no run report)",
+    ]);
   });
 
   it("gives a report-less run a verdict on stdout", async () => {
@@ -1476,10 +1486,13 @@ describe("argent flow run", () => {
     expect(logs.join("\n")).not.toContain("✗");
   });
 
+  // A single run's --json is the report itself, so a run that produced none
+  // has nothing to print: stdout stays empty rather than gaining the prose
+  // verdict, which would be the one thing `| jq` cannot survive.
   it.each([
     ["produces no report", { data: { flow: "checkout", notice: "prereq" } }, "process.exit:2"],
     ["is rejected", new ToolInvocationError("nope", { errorKind: "validation" }), "process.exit:1"],
-  ])("keeps --json a single document when the run %s", async (_case, outcome, exitCode) => {
+  ])("prints no prose on stdout under --json when the run %s", async (_case, outcome, exitCode) => {
     if (outcome instanceof Error) toolsClientMock.callTool.mockRejectedValue(outcome);
     else toolsClientMock.callTool.mockResolvedValue(outcome);
 
@@ -1728,7 +1741,6 @@ describe("argent flow run <dir>", () => {
   it.each([
     ["FLOW_FILE_INVALID", "not run (invalid flow)"],
     ["FLOW_ENTRY_UNRECOGNIZED", "not run (invalid flow)"],
-    ["FLOW_NAME_INVALID", "not run (invalid flow)"],
     ["FLOW_E2E_HAS_PREREQUISITE", "not run (invalid flow)"],
     ["FLOW_DEVICE_RESOLUTION", "not run (no device resolved)"],
     ["A_CODE_THIS_CLI_DOES_NOT_MAP", "not run (rejected)"],
@@ -1779,6 +1791,23 @@ describe("argent flow run <dir>", () => {
 
     expect(logs).toHaveLength(1);
     expect(JSON.parse(logs[0])).toMatchObject({ ok: false, failed: 1, skipped: 1 });
+  });
+
+  // The batch pays twice for a report the renderers cannot walk: the throw
+  // lands past the try, so the flow gets no verdict AND the run ends with no
+  // batch summary and no tally — the whole ledger, not one line of it.
+  it("treats a flow whose steps are not a list as one that produced no report", async () => {
+    toolsClientMock.callTool.mockResolvedValueOnce({
+      data: { flow: "a-login", ok: true, steps: 42 },
+    });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:1");
+
+    const lines = logs.join("\n").split("\n");
+    expect(lines[lines.indexOf("[1/2] a-login.yaml") + 1]).toBe(
+      "  ✗ did not finish (no run report)"
+    );
+    expect(logs.join("\n")).toContain("FAIL — 2 flows: 0 passed, 1 failed, 1 skipped");
   });
 
   it("stops the batch on a server error the signal does not mark as validation", async () => {
