@@ -1306,24 +1306,49 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
   // ── Cancellation ─────────────────────────────────────────────────────────
 
-  it("throws AbortError when the run is cancelled during the re-probe", async () => {
+  it("keeps the step when the run is cancelled during the re-probe", async () => {
     // The live await-ui-element still "passes" (the mock ignores the signal), so
-    // the abort lands in the re-probe — strictly after the recorded tool ran.
-    // The probe must surface that as an abort and record nothing.
+    // the abort lands in the re-probe — strictly AFTER the recorded tool ran.
+    // Throwing there discards the record of a step that already happened, which
+    // is the thing `captureRunTarget` refuses to do from the same position.
     await startRecording("cancel");
     const controller = new AbortController();
     controller.abort();
 
-    await expect(
-      recordWait(
-        "cancel",
-        { condition: "visible", selector: { text: "Continue" } },
-        { signal: controller.signal }
-      )
-    ).rejects.toThrow(/aborted while re-probing/);
+    const result = await recordWait(
+      "cancel",
+      { condition: "visible", selector: { text: "Continue" } },
+      { signal: controller.signal }
+    );
 
-    // The abort fired before the append, so the flow still has no steps.
-    expect(await recordedSteps("cancel")).toHaveLength(0);
+    const warning = warningOf(result, "cancel");
+    expect(warning).toContain("re-probe against the tree the RUNNER reads was cancelled");
+    // Nothing was compared, so the verdict is unknown — not a divergence.
+    expect(warning).toContain("UNKNOWN, not known-bad");
+    expect(warning).not.toContain("does NOT hold");
+    // The step the device already executed survives.
+    expect(await recordedSteps("cancel")).toHaveLength(1);
+  });
+
+  it("aborts mid-probe in band rather than as a tool failure", async () => {
+    // The abort arrives while the probe is polling, not before it starts — the
+    // window the reproduction hits, and the one where a throw is both a lost
+    // step and an unclassified `REGISTRY_TOOL_EXECUTION_FAILED`.
+    const controller = new AbortController();
+    fetchRunnerTree = async () => {
+      controller.abort();
+      throw new Error("cancelled mid-read");
+    };
+    await startRecording("cancelmid");
+
+    const result = await recordWait(
+      "cancelmid",
+      { condition: "visible", selector: { text: "Continue" } },
+      { signal: controller.signal }
+    );
+
+    expect(warningOf(result, "cancelmid")).toContain("was cancelled before it answered");
+    expect(await recordedSteps("cancelmid")).toHaveLength(1);
   });
 
   // The clause tables carry no `ios-remote` arm, and this is why: a remote sim

@@ -452,13 +452,31 @@ function indeterminateReasonCaveat(udid: unknown): string {
   );
 }
 
-function abortError(): Error {
-  const err = new Error(
-    "flow-add-step aborted while re-probing the recorded wait against the runner's tree"
-  );
-  err.name = "AbortError";
-  return err;
-}
+/**
+ * A cancelled re-probe is reported, never thrown.
+ *
+ * The probe runs AFTER the wait ran on the device, which puts it under the
+ * doctrine {@link captureRunTarget} states for the same position: "Every
+ * refusal keeps the raw step rather than throwing — … a throw would discard the
+ * record of a step that already happened." Throwing here lost exactly that, in
+ * the window between the device action and the append.
+ *
+ * It was also out of band. `AbortError` is special-cased nowhere, so the
+ * registry attached the fallback signal and the caller saw
+ * REGISTRY_TOOL_EXECUTION_FAILED with `error_kind: "unknown"`, logged at error
+ * level and counted as `tool:fail`. Every other cancellation in the server is
+ * in band instead: `await-ui-element` returns `{ success: false, note: "wait
+ * was cancelled…" }`, and {@link ABORTED_OUTCOME} is scored as a skip rather
+ * than a step failure.
+ *
+ * A cancelled probe compared nothing, so like an unreadable runner tree it is
+ * UNKNOWN, never known-bad.
+ */
+const CANCELLED_PROBE_WARNING =
+  "recorded, but the re-probe against the tree the RUNNER reads was cancelled before it " +
+  "answered. The step itself ran and is written to the flow; only the verdict is missing, so " +
+  "whether it would convert to `await:`/`assert:` is UNKNOWN, not known-bad — record the wait " +
+  "again, uncancelled, before trusting the conversion";
 
 /**
  * Hard ceiling on the whole re-probe. `probeWhenCondition` polls on the assert
@@ -585,7 +603,7 @@ async function probeAgainstRunnerTree(
   // Whichever way it settled, this call is done with the loop — and on the
   // timeout path the loop is the thing still holding the device.
   giveUp.abort();
-  if (settled.type === "aborted") throw abortError();
+  if (settled.type === "aborted") return { warning: CANCELLED_PROBE_WARNING };
   // A read that outran the budget, and a probe that threw outright, are both
   // "the runner's tree did not answer" — indeterminate, never a verdict.
   const outcome: DirectiveOutcome =
@@ -600,7 +618,7 @@ async function probeAgainstRunnerTree(
               : `reading the runner's tree failed: ${settled.error}`,
         };
   if (outcome.ok) return {};
-  if (outcome.aborted) throw abortError();
+  if (outcome.aborted) return { warning: CANCELLED_PROBE_WARNING };
   if (outcome.indeterminate) {
     return {
       // Deliberately NOT joined with treeDivergenceFor/runnerSideReadClause.
