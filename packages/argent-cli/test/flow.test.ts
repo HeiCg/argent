@@ -1581,6 +1581,29 @@ describe("argent flow run <dir>", () => {
     }
   });
 
+  // `validation` is the wire signal for every rejection the server means for
+  // one call, not a statement about the YAML — device resolution rejects that
+  // way too, and a batch run with nothing booted would otherwise report every
+  // flow file as broken.
+  it.each([
+    ["FLOW_FILE_INVALID", "not run (invalid flow)"],
+    ["FLOW_ENTRY_UNRECOGNIZED", "not run (invalid flow)"],
+    ["FLOW_DEVICE_RESOLUTION", "not run (no device resolved)"],
+    ["HTTP_ZOD_VALIDATION_FAILED", "not run (rejected)"],
+  ])("renders a %s rejection as %j", async (errorCode, verdict) => {
+    toolsClientMock.callTool
+      .mockRejectedValueOnce(
+        new ToolInvocationError("rejected", { errorCode, errorKind: "validation" })
+      )
+      .mockResolvedValueOnce({ data: report({ flow: "b-checkout" }) });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:1");
+
+    const lines = logs.join("\n").split("\n");
+    expect(lines).toContain(`  ✗ ${verdict}`);
+    expect(lines.filter((l) => l.startsWith("  ✗ "))).toHaveLength(1);
+  });
+
   it("gives the flow that stopped the batch its own stdout verdict", async () => {
     toolsClientMock.callTool.mockRejectedValueOnce(
       new ToolInvocationError("simulator boot failed", { errorKind: "subprocess" })

@@ -2,7 +2,7 @@ import * as fsp from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { createHash } from "node:crypto";
 import * as path from "node:path";
-import { FLOW_NAME_PATTERN } from "@argent/registry";
+import { FAILURE_CODES, FLOW_NAME_PATTERN } from "@argent/registry";
 import {
   createToolsClient,
   getResolvedToolsUrl,
@@ -1065,6 +1065,27 @@ async function exportAndResolveArtifacts(
   resolveArtifactDisplayPaths(report);
 }
 
+/**
+ * Why a flow the server rejected never ran, for the batch's stdout ledger.
+ * Only a code that names the flow file licenses "invalid flow": the rejection
+ * arrives as `error_kind: "validation"` whatever caused it, and device
+ * resolution rejects that way too (nothing booted, or several booted and no
+ * --device/--platform). Blaming a batch of perfectly good YAML on a simulator
+ * nobody started sends the reader to the wrong file, so anything else stays
+ * neutral and leaves the reason to the stderr line beside it.
+ */
+function rejectionVerdict(code: string | undefined): string {
+  switch (code) {
+    case FAILURE_CODES.FLOW_FILE_INVALID:
+    case FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED:
+      return "not run (invalid flow)";
+    case FAILURE_CODES.FLOW_DEVICE_RESOLUTION:
+      return "not run (no device resolved)";
+    default:
+      return "not run (rejected)";
+  }
+}
+
 /** One flow's outcome in a directory run — also the --json aggregate entry. */
 interface BatchFlowResult {
   path: string;
@@ -1131,8 +1152,8 @@ async function runFlowDirectory(
       const message = err instanceof Error ? err.message : String(err);
       console.error(message);
       results.push({ path: rel, status: "fail", error: message });
-      const rejectedThisFlowOnly =
-        err instanceof ToolInvocationError && err.errorKind === "validation";
+      const toolErr = err instanceof ToolInvocationError ? err : undefined;
+      const rejectedThisFlowOnly = toolErr?.errorKind === "validation";
       // A verdict on stdout for every entry, next to the `[i/n]` header stdout
       // already carries. The detail above goes to stderr, so without this line
       // a redirected stdout log shows this flow's header followed by the next
@@ -1141,7 +1162,9 @@ async function runFlowDirectory(
       if (!args.json) {
         console.log(
           `  ${STATUS_GLYPH.error} ` +
-            (rejectedThisFlowOnly ? "not run (invalid flow)" : "did not finish (run error)")
+            (rejectedThisFlowOnly
+              ? rejectionVerdict(toolErr?.errorCode)
+              : "did not finish (run error)")
         );
       }
       if (!rejectedThisFlowOnly) stopped = true;
