@@ -119,7 +119,7 @@ const zodSchema = z
       .positive()
       .optional()
       .describe(
-        `Port of the Metro bundler this run's app must load from (default ${DEFAULT_METRO_PORT}). It applies only when a \`launch\` step lands on the expo-dev-client "DEVELOPMENT SERVERS" chooser. The runner then opens the listed server on this port and waits for the bundle. Without it the run stays on the chooser, and every later step reads that screen instead of the app. Set this to the port of the Metro YOU started when it is not the default, or when more than one bundler is up. The runner never guesses which bundler the flow wants.`
+        `ANDROID ONLY. Port of the Metro bundler this run's app must load from (default ${DEFAULT_METRO_PORT}). It applies only when a \`launch\` step lands on the expo-dev-client "DEVELOPMENT SERVERS" chooser, which is probed for on Android alone (an iOS dev build reaches Metro at a stable localhost, so it rarely shows the chooser; there this parameter does nothing). The runner then opens the listed server on this port and waits for the chooser to go away. Set this to the port of the Metro YOU started when it is not the default, or when more than one bundler is up: the runner never guesses which bundler the flow wants, so a chooser listing no live server on this port fails the launch step outright rather than opening another one.`
       ),
     updateBaselines: z
       .boolean()
@@ -200,8 +200,13 @@ export interface StepReport {
   reason?: string;
   /**
    * The step passed, but the WAY it passed weakens it as proof. Rendered as a
-   * "⚠" suffix by the MCP client, and under the step line by the CLI. Raised by
-   * `await: { idle: true }`: the screen never settled at all (it waits, then
+   * "⚠" suffix by the MCP client, and under the step line by the CLI.
+   *
+   * Raised by a `launch` that had to get past the expo-dev-client chooser: the
+   * app did start, but from a screen the flow does not describe, and only after
+   * the runner opened a bundler for it (see flow-dev-launcher.ts).
+   *
+   * Also raised by `await: { idle: true }`: the screen never settled at all (it waits, then
    * goes ahead); something small on it never stopped, which is what a spinner
    * looks like; it rendered no content to settle; too few reads came back with
    * content for it to judge anything; or its captures never produced a
@@ -944,9 +949,11 @@ export function createRunFlowTool(
     },
     description: `Run a saved flow from the .argent/flows/ directory, or an explicit boundary-managed flow_path.
 Steps run in order: \`launch\` starts an app from scratch (terminate + relaunch) and waits until it is
-ready. A dev build can start onto the expo-dev-client "DEVELOPMENT SERVERS" chooser in place of the app;
-the step then opens the server on \`metroPort\`, waits for the bundle, and reports that it did so, so that
-every later selector reads the app and not the chooser. \`tool\` calls dispatch through the registry; \`tap\`/\`long-press\`/\`type\` resolve a selector to an
+ready. On ANDROID, a dev build can start onto the expo-dev-client "DEVELOPMENT SERVERS" chooser in place
+of the app; the step then opens the server on \`metroPort\`, waits for the chooser to go away, and reports
+that it did so as a step warning, so that every later selector reads the app and not the chooser. The
+chooser leaves the screen when the bundler starts serving, which is not the same as the app being ready —
+gate the next step on something the app itself draws. \`tool\` calls dispatch through the registry; \`tap\`/\`long-press\`/\`type\` resolve a selector to an
 element and act on it (\`tap: { on, times: 2 }\` double-taps; \`long-press: { on, duration }\` presses and
 holds; \`tap\`/\`long-press\` alternatively take a raw normalized point — bare \`{ x, y }\` or \`on: { x, y }\`;
 any selector may scope its matches geometrically, the CSS combinators read off frames: \`within: <selector>\`

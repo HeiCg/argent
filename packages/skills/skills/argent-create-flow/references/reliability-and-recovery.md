@@ -81,12 +81,14 @@ On Android, healthy `describe` output does not prove the flow tree is available.
 
 ## Expo dev-client chooser
 
-An expo dev build can start on the `DEVELOPMENT SERVERS` chooser in place of the app. `launch:` does this recovery for you. The step opens the server on the `metroPort` of `flow-execute` and waits for the bundle. The step report then shows `app opened behind the expo dev-client launcher`.
+An expo dev build can start on the `DEVELOPMENT SERVERS` chooser in place of the app. On Android, `launch:` does this recovery for you. The step opens the server on the `metroPort` of `flow-execute`, then waits for the chooser to go away. The step passes with the warning `app opened behind the expo dev-client launcher`.
 
+- Android only. The runner probes for the chooser on Android alone, because an iOS dev build reaches Metro at a stable `localhost`. On iOS, `metroPort` does nothing, and a chooser stays on the screen for the remaining steps to read.
 - When Metro is not on port 8081, set `metroPort`.
 - When more than one bundler is available, set `metroPort`.
-- Do not write a `when:` block to tap the chooser. A recorded row is a coordinate, and the sequence of the rows changes at each launch.
-- If the chooser has no live row for the port, the launch fails. Start Metro on that port, or correct `metroPort`.
+- Do not write a `when:` block to tap the chooser. The launch dismisses the chooser before your step can run, so the step meets a different screen. The order of the rows also changes between launches.
+- If the chooser has no live row for the port, the launch fails. Start Metro on that port, or correct `metroPort`. This failure is about the bundler, not about the app.
+- The chooser goes away when the bundler starts to serve. The app is not ready at that moment. Gate the next step on an element the app itself draws.
 
 ## Strong transition gates
 
