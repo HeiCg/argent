@@ -29,6 +29,15 @@ import { hdcFileRecv, runHdcShell, shellQuote } from "./harmony-hdc";
  *   out-of-range coordinates are argent's to catch: `toDevicePoint` clamps into
  *   the display, which is what keeps a normalized 0-1 rounding error at the
  *   right edge from silently becoming a no-op tap.
+ *
+ * **Why not the simulator-server**, which is how iOS and Android reach a
+ * device: neither of its controllers has a counterpart here. An Android
+ * emulator is driven over the emulator's own gRPC console, and DevEco's
+ * `Emulator` 6.1.1.200 is stock `ohos-qemu` behind a Qt UI — no gRPC anywhere
+ * in the binary, no QEMU passthrough in its CLI, `hdc` the only host-side
+ * channel it ships. An Android phone is driven by a screen-sharing agent pushed
+ * over adb, which HarmonyOS has no equivalent of. What is left either way is
+ * `hdc`, reaching this same `uitest` one contact at a time, from Rust instead.
  */
 
 /** Where on-device artifacts are staged before being copied to the host. */

@@ -1448,12 +1448,9 @@ function bootVega(params: {
 }
 
 /**
- * `udid` is the id to drive next, and which of the platform's two id shapes it
- * carries depends on whether the instance reached `hdc`: the connect-key id
- * once it registered, the instance id (plus a `note`) when it did not. The
- * distinction matters because only the first is an id the interaction tools
- * accept — `-start` reports no port, and an instance name is nothing `hdc`
- * knows, so the key is learned by watching for the target that appears.
+ * `udid` is the id to drive next: the connect-key id once the instance reached
+ * `hdc`, the instance id plus a `note` when it did not. Only the first is an id
+ * the interaction tools accept.
  */
 type HarmonyBootResult = {
   platform: "harmony";
@@ -1470,20 +1467,17 @@ const inFlightHarmonyBoots = new Map<string, Promise<HarmonyBootResult>>();
 const HARMONY_BOOT_TIMEOUT_MS = 120_000;
 
 /**
- * Interval between `hdc list targets` polls while waiting for a started
- * instance to register. Each poll spawns `hdc` and round-trips its daemon, so
- * it sits an order of magnitude above the adb intervals in
- * {@link BOOT_POLL_INTERVALS_MS} — a HarmonyOS boot is minutes, and nothing is
- * gained by asking twice a second.
+ * Each poll spawns `hdc` and round-trips its daemon, an order of magnitude
+ * dearer than the adb polls in {@link BOOT_POLL_INTERVALS_MS} — and a boot this
+ * waits on is minutes long.
  */
 const HARMONY_TARGET_POLL_MS = 2_000;
 
 /**
- * How long a `-stop` gets to take the instance's target off `hdc` before the
- * restart proceeds anyway. It bounds only the pessimistic case: a restart that
- * lands on the port it had before is indistinguishable from the target that
+ * How long a `-stop` gets to take the instance's target off `hdc`. A restart
+ * that lands on the port it had before is indistinguishable from a target that
  * never left, so waiting for the old one to drop is what keeps the arrival
- * detectable. Proceeding after the grace costs the connect key, not the boot.
+ * detectable; giving up early costs the connect key, not the boot.
  */
 const HARMONY_STOP_GRACE_MS = 15_000;
 
@@ -1510,11 +1504,7 @@ const HARMONY_NO_INSTANCES =
   "starting it. If creating one fails for want of an image, note that Huawei serves HarmonyOS " +
   "emulator images only within mainland China.";
 
-/**
- * Said when the instance was already running, since argent then has no way to
- * name the target it registered as: the manager reports no port, and the two
- * discovery sources share no key to join on.
- */
+/** Said when the instance was already running, its target therefore unidentifiable. */
 const HARMONY_ALREADY_RUNNING =
   "The instance was already running, so argent did not restart it — and an instance argent did " +
   "not start cannot be matched to the `hdc` connect key it registered under. Take the connect " +
@@ -1522,11 +1512,9 @@ const HARMONY_ALREADY_RUNNING =
   "restart the instance and have its key resolved here.";
 
 /**
- * Said when the instance started but never showed up on `hdc` within the boot
- * budget. Not a failure: the manager did start it, and a HarmonyOS cold boot
- * can outlast a budget the caller chose — but the returned id is the instance,
- * which no interaction tool accepts, so say what to do instead of leaving the
- * caller to notice the id was the wrong shape.
+ * Said when the instance started but never reached `hdc` in time. Not a
+ * failure — the manager did start it, and a cold boot can outlast a budget the
+ * caller chose.
  */
 const HARMONY_NO_TARGET =
   "The instance started but had not registered with `hdc` before the boot budget ran out, so " +
@@ -1550,13 +1538,11 @@ async function connectedHarmonyKeys(): Promise<Set<string>> {
  * The connect key of the target that appears after a start, or null if none
  * does before `deadline`.
  *
- * Which target belongs to the instance is decided by arrival rather than by
- * anything either CLI reports: `Emulator` names instances and never mentions a
- * port, `hdc` names connect keys and never mentions an instance, and the two
- * have no field in common. Arrival is also the one signal that does not depend
- * on the key's shape, which — no emulator image being obtainable outside
- * mainland China (see {@link HARMONY_IMAGE_RESTRICTION}) — has never been
- * observed here.
+ * Arrival, because nothing else joins the two: `Emulator` names instances and
+ * never reports a port, `hdc` names connect keys and never mentions an
+ * instance. It is also the one signal independent of how an emulator's key is
+ * spelled, which no image being obtainable here (see
+ * {@link HARMONY_IMAGE_RESTRICTION}) has left unobserved.
  */
 async function waitForHarmonyTarget(before: Set<string>, deadline: number): Promise<string | null> {
   for (;;) {
@@ -1571,9 +1557,8 @@ async function waitForHarmonyTarget(before: Set<string>, deadline: number): Prom
 
 /** Wait until one of `previous` is gone, or until the grace period expires. */
 async function waitForHarmonyTargetLoss(previous: Set<string>, deadline: number): Promise<void> {
-  // An instance that never registered has no target to lose, and waiting out
-  // the whole grace for a departure that cannot happen would just delay the
-  // restart.
+  // Nothing to lose: an instance that never registered would just cost the
+  // restart a full grace period waiting for a departure that cannot happen.
   if (previous.size === 0) return;
   for (;;) {
     const now = await connectedHarmonyKeys();
@@ -1592,11 +1577,10 @@ async function bootHarmonyImpl(params: {
   await ensureDep("harmony-emulator");
   const bootDeadline = Date.now() + params.bootTimeoutMs;
 
-  // Read once, for two questions: whether this instance is already up, and — if
-  // the start then fails — whether the host has any instance at all. `null` is
-  // a listing that itself failed, and answers neither: an unreadable list must
-  // not block a start that would have worked, nor let one be blamed on a host
-  // with no instances when that was never established.
+  // Answers two questions: whether this instance is already up, and — if the
+  // start fails — whether the host has any at all. `null` is a listing that
+  // itself failed and answers neither, so it neither blocks a start nor lets
+  // one be blamed on a host with no instances.
   const instances = await listHarmonyInstances().catch(() => null);
   const alreadyRunning =
     instances?.some((i) => i.name === params.instanceName && i.running) ?? false;
@@ -1632,14 +1616,12 @@ async function bootHarmonyImpl(params: {
   // rather than by any assumption about how an emulator's key is spelled.
   const before = await connectedHarmonyKeys();
 
-  // `-start` is the manager's launcher, not the emulator process itself (the
-  // manager has a separate `-stop <name>` verb). Whether it returns as soon as
-  // the instance is handed off or blocks until HarmonyOS is up could not be
-  // observed, so it gets what is left of the caller's boot budget instead of
-  // the 30 s default every other `runHarmonyEmulator` call takes. One budget
-  // spans both stages, as on Vega: were the start and the wait each given the
-  // full value, the worst case before a boot gave up would be twice what the
-  // caller asked for.
+  // `-start` is the manager's launcher, not the emulator process itself (there
+  // is a separate `-stop <name>` verb), and whether it returns at hand-off or
+  // blocks until HarmonyOS is up could not be observed — so it gets what is
+  // left of the boot budget rather than the 30 s default. One budget spans both
+  // stages, as on Vega: a full value each would make the worst case twice what
+  // the caller asked for.
   const result = await runHarmonyEmulator(
     ["-start", params.instanceName],
     // Floored at 1ms, not 0: `execFile`'s `timeout: 0` means *no* timeout, so an
