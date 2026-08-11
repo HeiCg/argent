@@ -12,7 +12,6 @@ import {
   detectDevLauncher,
   dismissDevLauncher,
   hasDrawnContent,
-  isExpoDevBuild,
   pickDevServerRow,
 } from "../../src/tools/flows/flow-dev-launcher";
 
@@ -456,29 +455,60 @@ Activity Resolver Table:
           Scheme: "expo-dev-launcher"
 `;
 
-  it("recognizes a dev build by the launcher its debug manifest installs", async () => {
+  /** The probe is only observable through what the launch then does. */
+  function env(device: DeviceInfo) {
+    const registry = {
+      invokeTool: vi.fn(async () => ({ ok: true })),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+    return { registry, device };
+  }
+
+  it("waits for the chooser on a build whose debug manifest installs the launcher", async () => {
     vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
-    await expect(isExpoDevBuild(emulator, "xyz.blueskyweb.app")).resolves.toBe(true);
+    let read = 0;
+    vi.mocked(fetchFlowTree).mockImplementation(async () => {
+      read += 1;
+      return {
+        tree: read === 1 ? launcherTree() : node("ROOT", "Screen", [0, 0, 1, 1], []),
+        source: "android-devtools",
+      };
+    });
+
+    await expect(
+      dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081)
+    ).resolves.toMatchObject({ handled: true, ok: true });
+    expect(fetchFlowTree).toHaveBeenCalled();
   });
 
-  it("does not take a release build of the same project for a dev build", async () => {
+  it("costs a release build of the same project nothing", async () => {
     // The `exp+bluesky` scheme is still there — reading THAT made every release
     // build of any project with expo-dev-client in its dependencies wait out the
     // appear window on every launch step, for a chooser it can never show.
     expect(RELEASE_DUMP).toContain('Scheme: "exp+bluesky"');
     vi.mocked(adbShell).mockResolvedValue(RELEASE_DUMP);
-    await expect(isExpoDevBuild(emulator, "xyz.blueskyweb.app")).resolves.toBe(false);
+
+    await expect(dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+      handled: false,
+    });
+    expect(fetchFlowTree).not.toHaveBeenCalled();
   });
 
-  it("answers false when the package cannot be probed", async () => {
+  it("leaves a launch alone when the package cannot be probed", async () => {
     vi.mocked(adbShell).mockRejectedValue(new Error("device offline"));
-    await expect(isExpoDevBuild(emulator, "xyz.blueskyweb.app")).resolves.toBe(false);
+
+    await expect(dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+      handled: false,
+    });
+    expect(fetchFlowTree).not.toHaveBeenCalled();
   });
 
   it("never probes a platform whose launcher this is not", async () => {
     // iOS reaches Metro at a stable localhost, so the chooser is a rarity there
     // and nothing is probed — the recovery is Android-only by construction.
-    await expect(isExpoDevBuild(sim, "xyz.blueskyweb.app")).resolves.toBe(false);
+    await expect(dismissDevLauncher(env(sim), "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+      handled: false,
+    });
     expect(adbShell).not.toHaveBeenCalled();
   });
 });

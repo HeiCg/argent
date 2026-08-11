@@ -253,7 +253,7 @@ type DevLauncherOutcome =
  * answers false — the launch then behaves exactly as it did before this module
  * existed.
  */
-export async function isExpoDevBuild(device: DeviceInfo, bundleId: string): Promise<boolean> {
+async function isExpoDevBuild(device: DeviceInfo, bundleId: string): Promise<boolean> {
   if (device.platform !== "android") return false;
   try {
     const dump = await adbShell(device.id, `dumpsys package ${shellQuote(bundleId)}`, {
