@@ -51,7 +51,7 @@ import {
   stepRequiresDevice,
   type FlowPlatform,
 } from "./flow-device";
-import { nestedOrchestratorOutcome } from "./flow-nested-outcome";
+import { FLOW_EXECUTE_TOOL_ID, nestedOrchestratorOutcome } from "./flow-nested-outcome";
 import {
   runDirective,
   invokeOnDevice,
@@ -2245,6 +2245,21 @@ async function execLeafStep(
         step.args,
         state.deviceIsExplicit
       );
+      // A nested `flow-execute` is this same run one level down — same device,
+      // same app — so the bundler this run targets is the one it must target
+      // too. A `run:` fragment inherits `metroPort` by construction (it shares
+      // one ExecState), and the two composition forms must not disagree on which
+      // Metro a dev-client launch opens. Only a non-default port is passed on:
+      // the default is what the inner run would resolve anyway, so injecting it
+      // would only add noise to every nested step's reported args. An explicit
+      // value on the step still wins — there the author named a bundler for it.
+      if (
+        step.name === FLOW_EXECUTE_TOOL_ID &&
+        args.metroPort === undefined &&
+        state.metroPort !== DEFAULT_METRO_PORT
+      ) {
+        args.metroPort = state.metroPort;
+      }
       const outputHint = registry.getTool(step.name)?.outputHint;
       if (step.delayMs && !(await sleepOrAbort(step.delayMs, signal))) {
         return { ...base, status: "skip", tool: step.name, reason: "run aborted during delay" };
