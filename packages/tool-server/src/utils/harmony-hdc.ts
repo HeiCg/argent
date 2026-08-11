@@ -111,6 +111,14 @@ interface HdcRunResult {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+// `execFile`'s `timeout` sends `killSignal` once and never escalates, and the
+// default SIGTERM is exactly what an `hdc` client blocked on a wedged daemon can
+// ignore — leaving the parent waiting past the deadline, so every timeout below
+// would be advisory. Same reasoning and same shape as `ADB_KILL_SIGNAL`: `hdc` is
+// a single-process client of a persistent shared daemon, so reaping the direct
+// child is complete, and a group kill would wrongly take the daemon with it.
+const HDC_KILL_SIGNAL = "SIGKILL" as const;
+
 /**
  * Run `hdc` with the given argv. Returns the child's output whether it exited 0
  * or not — see the header: the exit code carries no signal, so classification is
@@ -124,6 +132,7 @@ export async function runHdc(
   try {
     const { stdout, stderr } = await execFileAsync(bin, args, {
       timeout: timeoutMs,
+      killSignal: HDC_KILL_SIGNAL,
       maxBuffer: 64 * 1024 * 1024,
     });
     return { stdout, stderr };

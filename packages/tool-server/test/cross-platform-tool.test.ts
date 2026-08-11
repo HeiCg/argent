@@ -198,7 +198,7 @@ describe("dispatchByPlatform", () => {
     >({
       toolId: "test",
       // Both kinds declared: a bare `harmony-<key>` resolves to kind 'device'
-      // and an `harmony-emulator-<name>` id to kind 'emulator', so declaring
+      // and a `harmony-emulator-<name>` id to kind 'emulator', so declaring
       // only one lets assertSupported reject the other before dispatch runs.
       capability: {
         ...capabilityBoth,

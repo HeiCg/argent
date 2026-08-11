@@ -33,11 +33,11 @@ const HARMONY_KEYCODES: Record<string, number> = {
 
 function resolveHarmonyKeycode(key: string): number {
   const lower = key.toLowerCase();
-  // Own-property check, and case-folded like every other backend: `key` is a
-  // free string, so a prototype key like "constructor" would otherwise pass the
-  // nullish guard with a garbage value and be interpolated into the remote shell
-  // line (`harmonyKeyEvent` builds `uiInput keyEvent ${key}`) instead of
-  // rejecting as an unknown key.
+  // Own-property check, and case-folded for parity with the other named-key
+  // backends: `key` is a free string, so a prototype key like "constructor"
+  // would otherwise pass the nullish guard with a garbage value and be
+  // interpolated into the remote shell line (`harmonyKeyEvent` builds
+  // `uiInput keyEvent ${key}`) instead of rejecting as an unknown key.
   const code = Object.hasOwn(HARMONY_KEYCODES, lower) ? HARMONY_KEYCODES[lower] : undefined;
   if (code === undefined) {
     throw new InvalidToolInputError(

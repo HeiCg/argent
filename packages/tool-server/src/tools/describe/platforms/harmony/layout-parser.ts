@@ -1,5 +1,6 @@
 import type { DescribeNode } from "../../contract";
 import type { HarmonyLayoutNode } from "../../../../utils/harmony-uitest";
+import { clipBoundsToScreen } from "../android/uiautomator-parser";
 
 /**
  * Turn a `uitest dumpLayout` tree into the shared describe tree.
@@ -189,7 +190,15 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
 
   // A wrapper whose only child covers exactly the same rect is a duplicate
   // layer: collapse to whichever of the two carries the label.
-  if (own.children.length === 1 && own.pixelBounds) {
+  //
+  // Only when the wrapper is genuinely a duplicate, though. ArkUI sets `.id()`
+  // and the state flags on the OUTER component, so a `Toggle` wrapping one
+  // full-bleed `Image` — or a `List` holding a single full-height row — is the
+  // node that knows it is checked, disabled or scrollable, and the child that
+  // fills its rect knows none of it. Collapsing those dropped the identifier an
+  // agent selects on and every flag but `clickable`, which reported a disabled
+  // button as a plain tappable one.
+  if (own.children.length === 1 && own.pixelBounds && !ownCarriesState(own)) {
     const only = own.children[0];
     if (only.pixelBounds && rectsEqual(only.pixelBounds, own.pixelBounds) && !own.label) {
       return [{ ...only, clickable: only.clickable || own.clickable }];
@@ -197,6 +206,27 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
   }
 
   return [own];
+}
+
+/**
+ * Whether a node knows something its same-rect child cannot: an identifier to
+ * select on, or any state flag other than `clickable` (which the collapse
+ * merges). `clickable` alone still marks a plain duplicate layer.
+ *
+ * `value` is deliberately absent: it is only ever set alongside a label, which
+ * the caller's `!own.label` already keeps out of the collapse.
+ */
+function ownCarriesState(n: HarmonyNode): boolean {
+  return Boolean(
+    n.identifier ||
+    n.longClickable ||
+    n.scrollable ||
+    n.checkable ||
+    n.checked ||
+    n.disabled ||
+    n.focused ||
+    n.selected
+  );
 }
 
 function blank(attrs: Record<string, string>, bounds: PixelRect | null): HarmonyNode {
@@ -267,16 +297,7 @@ function deriveRole(type: string, attrs: Record<string, string>): string {
 function toDescribeNode(n: HarmonyNode, screenW: number, screenH: number): DescribeNode {
   const children = n.children.map((c) => toDescribeNode(c, screenW, screenH));
   const b = n.pixelBounds;
-  const frame = b
-    ? {
-        // Clamp into [0,1]: ArkUI reports off-screen bounds for items scrolled
-        // past the edge of a List, and the describe frame contract is closed.
-        x: clamp01(b.x / screenW),
-        y: clamp01(b.y / screenH),
-        width: clamp01(b.w / screenW),
-        height: clamp01(b.h / screenH),
-      }
-    : unionFrame(children);
+  const frame = b ? normalizeFrame(b, screenW, screenH) : unionFrame(children);
   const out: DescribeNode = { role: n.role, frame, children };
   if (n.label) out.label = n.label;
   if (n.identifier) out.identifier = n.identifier;
@@ -292,9 +313,30 @@ function toDescribeNode(n: HarmonyNode, screenW: number, screenH: number): Descr
   return out;
 }
 
-function clamp01(v: number): number {
-  if (!Number.isFinite(v)) return 0;
-  return Math.max(0, Math.min(1, v));
+/**
+ * Clip a pixel rect to the screen, then normalise — the same discipline as the
+ * Android and Vega adapters.
+ *
+ * ArkUI reports off-screen bounds for rows scrolled past the edge of a List, so
+ * the order matters: normalising each component independently and clamping it
+ * into [0,1] turns a row at `[0,-400][1216,-260]` into `y=0, height=0.052` — a
+ * full-width tap target at the top of the screen, indistinguishable from the
+ * genuinely visible row straddling that edge. Clipping first leaves an entirely
+ * off-screen row with zero area, and keeps `x + width` inside the frame
+ * contract for one only partly off-screen.
+ */
+function normalizeFrame(
+  b: { x: number; y: number; w: number; h: number },
+  screenW: number,
+  screenH: number
+): DescribeNode["frame"] {
+  const clipped = clipBoundsToScreen(b, screenW, screenH);
+  return {
+    x: screenW > 0 ? clipped.x / screenW : 0,
+    y: screenH > 0 ? clipped.y / screenH : 0,
+    width: screenW > 0 ? clipped.w / screenW : 0,
+    height: screenH > 0 ? clipped.h / screenH : 0,
+  };
 }
 
 function unionFrame(children: DescribeNode[]): DescribeNode["frame"] {

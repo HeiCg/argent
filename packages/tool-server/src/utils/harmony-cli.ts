@@ -91,6 +91,9 @@ export interface HarmonyRunResult {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/** See `HDC_KILL_SIGNAL`: a SIGTERM the child may ignore leaves `timeout` unenforced. */
+const EMULATOR_KILL_SIGNAL = "SIGKILL" as const;
+
 export async function runHarmonyEmulator(
   args: string[],
   timeoutMs = DEFAULT_TIMEOUT_MS
@@ -105,6 +108,7 @@ export async function runHarmonyEmulator(
   try {
     const { stdout, stderr } = await execFileAsync(bin, args, {
       timeout: timeoutMs,
+      killSignal: EMULATOR_KILL_SIGNAL,
       maxBuffer: 8 * 1024 * 1024,
     });
     return { stdout, stderr };
