@@ -40,7 +40,9 @@ import {
   UnsupportedOperationError,
 } from "./utils/capability";
 import { resolveDevice } from "./utils/device-info";
+import { canonicalDeviceId } from "./utils/debugger/device-alias";
 import { refineTvPlatform } from "./utils/telemetry-platform";
+import { deriveInvalidParams } from "./utils/invalid-params";
 import type { Server as HttpServer } from "node:http";
 import {
   CHROMIUM_CDP_NAMESPACE,
@@ -164,10 +166,14 @@ function extractDeviceArg(data: unknown): string | null {
 }
 
 type InvocationMeta = { platform?: TelemetryPlatform } & AiTelemetryProps;
-// Only coarse platform context is retained for failure telemetry. The raw
-// device id (UDID / serial) is used transiently to infer platform and never
-// stored or forwarded.
-type HttpFailureMeta = { platform?: TelemetryPlatform } & AiTelemetryProps;
+// Only coarse context is retained for failure telemetry. The raw device id
+// (UDID / serial) is used transiently to infer platform and never stored or
+// forwarded; invalid_params carries schema-declared parameter NAMES only (see
+// deriveInvalidParams), never values or user-typed keys.
+type HttpFailureMeta = {
+  platform?: TelemetryPlatform;
+  invalid_params?: string[];
+} & AiTelemetryProps;
 
 // `refineTvPlatform` — splitting a TV target out of its coarse mobile platform
 // for telemetry from the warm runtime-kind cache — now lives in
@@ -177,7 +183,14 @@ type HttpFailureMeta = { platform?: TelemetryPlatform } & AiTelemetryProps;
 function inferPlatform(deviceId: string | null): TelemetryPlatform | null {
   if (!deviceId) return null;
   try {
-    return refineTvPlatform(resolveDevice(deviceId).platform, deviceId);
+    // Telemetry-only: rewrite a forwarded Metro logicalDeviceId back to the id
+    // the caller connected with (iOS UDID / Android serial) before classifying.
+    // Without this, tool:invoke/complete/fail on debugger tools that accept the
+    // forwarded id would report a different platform than debugger:tool_outcome
+    // for the same tool_invocation_id (the opaque hex handle shape-classifies
+    // as android). Unaliased ids pass through unchanged.
+    const canonical = canonicalDeviceId(deviceId) ?? deviceId;
+    return refineTvPlatform(resolveDevice(canonical).platform, canonical);
   } catch {
     return null;
   }
@@ -220,8 +233,9 @@ function extractInvocationMeta(
  * through the runtime-kind cache and refines to `tvos` / `android-tv` once that
  * cache is warm (coarse `ios` / `android` until then); only the `avdName`-only
  * fallback is unconditionally coarse.
+ * Exported for tests (the alias-consistency pin in http-platform-alias.test.ts).
  */
-function platformFromArgs(data: unknown): TelemetryPlatform | null {
+export function platformFromArgs(data: unknown): TelemetryPlatform | null {
   if (!data || typeof data !== "object") return null;
   const deviceArg = extractDeviceArg(data);
   if (deviceArg) return inferPlatform(deviceArg) ?? null;
@@ -668,7 +682,8 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
 
       const emitHttpFailure = (
         signal: FailureSignal,
-        parsedDataForMeta: unknown = req.body
+        parsedDataForMeta: unknown = req.body,
+        extraMeta?: Pick<HttpFailureMeta, "invalid_params">
       ): void => {
         if (!options?.recordFailure) return;
         const failedDeviceArg = extractDeviceArg(parsedDataForMeta);
@@ -677,6 +692,9 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           name,
           {
             ...(platform ? { platform } : {}),
+            ...(extraMeta?.invalid_params?.length
+              ? { invalid_params: extraMeta.invalid_params }
+              : {}),
             ...aiMeta,
           },
           signal,
@@ -737,6 +755,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       if (def.zodSchema) {
         const parseResult = def.zodSchema.safeParse(bodyArgs);
         if (!parseResult.success) {
+          const declared = new Set(Object.keys(def.zodSchema.shape ?? {}));
           emitHttpFailure(
             {
               error_code: FAILURE_CODES.HTTP_ZOD_VALIDATION_FAILED,
@@ -744,7 +763,8 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
               failure_area: "http",
               error_kind: "validation",
             },
-            req.body
+            req.body,
+            { invalid_params: deriveInvalidParams(parseResult.error, declared) }
           );
           // Not `parseResult.error.message`: that is the raw issue JSON, which
           // names the parameter the tool wanted and never the one the caller
