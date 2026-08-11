@@ -137,7 +137,7 @@ export function createScreenshotTool(registry: Registry): ToolDefinition<Params,
     },
     description: `Capture a screenshot of the device screen (iOS simulator, Android emulator, Apple TV simulator, Vega, HarmonyOS device, or Chromium app). Returns { image }; the MCP adapter renders it as a visible image unless the caller passed includeImageInContext: false.
 Use when you need a baseline image before an interaction or to inspect the current screen state after a delay.
-Fails if the simulator-server / emulator backend / Chromium CDP is not reachable for the given device.`,
+Fails if the simulator-server / emulator backend / Chromium CDP / \`hdc\` is not reachable for the given device.`,
     alwaysLoad: true,
     searchHint: "device simulator emulator chromium screen image capture baseline tvos apple tv",
     zodSchema,

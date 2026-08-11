@@ -160,6 +160,12 @@ On Vega (Fire TV), reads the on-device automation toolkit (\`getPageSource\`); e
 \`[focused]\`/\`[selected]\` so you can see where the D-pad cursor is, then move it with the \`tv-remote\` tool
 (Vega is remote-driven, not touch). If describe returns an empty tree on Vega, relaunch the foreground
 app (the toolkit attaches at launch) and try again.
+On HarmonyOS, runs the device's own \`uitest dumpLayout\` (\`source: "harmony-uitest"\`); each top-level
+child is a window labelled with the bundle that owns it, so an app plus the status bar reads as two
+named windows. A suspended display still dumps its last-composited windows, indistinguishable in the
+tree from a live screen, so the result carries a \`hint\` saying the panel is off — taps land nowhere
+until you wake it with \`button\` (power). An empty dump is hinted the same way, as an app that may
+still be starting.
 
 When a system dialog is visible, describe returns the dialog's interactive elements (buttons, text)
 with tap coordinates. When no dialog is present, it returns the foreground app's accessible elements.
@@ -183,7 +189,7 @@ since a TV UI has no tap coordinates. Move the highlight with \`tv-remote\` (up/
 back/menu/home), then call describe again to confirm where focus landed.`,
     alwaysLoad: true,
     searchHint:
-      "accessibility element tree ui hierarchy tap coordinates ios android chromium vega dom tv tvos apple tv android tv fire tv focus focusable remote dpad",
+      "accessibility element tree ui hierarchy tap coordinates ios android chromium vega harmony harmonyos dom tv tvos apple tv android tv fire tv focus focusable remote dpad",
     zodSchema,
     capability,
     services: (params): Record<string, ServiceRef> => {

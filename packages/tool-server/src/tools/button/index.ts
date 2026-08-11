@@ -83,7 +83,7 @@ export const buttonTool: ToolDefinition<Params, Result> = {
 Supported buttons depend on the platform: home, back, power, volumeUp, volumeDown, appSwitch, actionButton — buttons not present on the target platform (e.g. 'back' on iOS, 'actionButton' on Android, anything beyond home/back/power on HarmonyOS) are rejected with a clear error.
 Use when you need to trigger hardware button events.
 Returns { pressed: buttonName }.
-Fails if the device backend is not reachable — the simulator-server for iOS, or \`adb\` for Android (Android presses are injected with \`adb shell input keyevent\`).`,
+Fails if the device backend is not reachable — the simulator-server for iOS, \`adb\` for Android (presses are injected with \`adb shell input keyevent\`), or \`hdc\` for HarmonyOS.`,
   zodSchema,
   capability,
   // Android presses go over `adb shell input keyevent` (see execute), not the

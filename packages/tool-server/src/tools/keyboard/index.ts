@@ -39,7 +39,7 @@ const zodSchema = z.object({
     .number()
     .optional()
     .describe(
-      "Delay in ms between key presses (default 50). Ignored on Android phones/tablets (typed via `adb input text`, which has no per-key cadence), on Vega (text/keys injected in a single shot), and on TV targets (Apple TV / Android TV type the whole string at the daemon's own cadence)."
+      "Delay in ms between key presses (default 50). Ignored on Android phones/tablets (typed via `adb input text`, which has no per-key cadence), on HarmonyOS (`uitest uiInput text` types the whole string in one shot), on Vega (text/keys injected in a single shot), and on TV targets (Apple TV / Android TV type the whole string at the daemon's own cadence)."
     ),
 });
 
@@ -112,7 +112,7 @@ Provide text, key, or both — when both are given, the text is typed first and 
     zodSchema,
     capability,
     searchHint:
-      "type text keyboard input named key enter escape arrow tv vega fire tv search field hid leanback",
+      "type text keyboard input named key enter escape arrow tv vega fire tv harmony harmonyos search field hid leanback",
     // No eager service: each branch resolves its backend lazily (TV control,
     // simulator-server, CDP, or Vega adb), since distinguishing a TV target is
     // async and a tvOS udid must never resolve simulator-server.

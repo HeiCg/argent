@@ -40,14 +40,14 @@ const zodSchema = z.object({
     .string()
     .regex(BUNDLE_ID_PATTERN, "bundleId may only contain letters, digits, '.', '_' and '-'")
     .describe(
-      "App identifier. iOS: bundle id (e.g. com.apple.MobileSMS). Android: package name from build.gradle `applicationId` (e.g. com.android.settings). Chromium: arbitrary tag; the call is a no-op since the renderer is already running."
+      "App identifier. iOS: bundle id (e.g. com.apple.MobileSMS). Android: package name from build.gradle `applicationId` (e.g. com.android.settings). HarmonyOS: bundle name as listed by `bm dump -a` (e.g. com.huawei.hmos.calculator). Chromium: arbitrary tag; the call is a no-op since the renderer is already running."
     ),
   activity: z
     .string()
     .regex(ACTIVITY_PATTERN, "activity may only contain letters, digits, '.', '_', '-' and '/'")
     .optional()
     .describe(
-      "Android-only: fully-qualified Activity name (e.g. `.MainActivity` or `com.example/com.example.MainActivity`). If omitted on Android, the app's default launcher activity is used. Ignored on iOS / Chromium."
+      "Android-only: fully-qualified Activity name (e.g. `.MainActivity` or `com.example/com.example.MainActivity`). If omitted on Android, the app's default launcher activity is used. Ignored on iOS / Chromium / HarmonyOS (a HarmonyOS ability is resolved from the bundle's own `abilityInfos`)."
     ),
 });
 

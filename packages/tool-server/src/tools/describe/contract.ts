@@ -72,7 +72,8 @@ export const describeNodeSchema: z.ZodType<DescribeNode> = z.lazy(() =>
 // Where the tree came from. "ax-service" / "native-devtools" come from iOS;
 // "uiautomator" / "android-devtools" come from Android; "cdp-dom" is the
 // Chromium branch's DOM walk over Chrome DevTools Protocol; "vega-automation"
-// is the Vega on-device automation toolkit; "tv-focus" is the focus-driven view
+// is the Vega on-device automation toolkit; "harmony-uitest" is the HarmonyOS
+// device's own `uitest dumpLayout`; "tv-focus" is the focus-driven view
 // returned for a TV target (Apple TV / Android TV), which reports focused /
 // focusable elements rather than a tap-oriented tree. Agents that branch on
 // `source` (e.g. to decide whether to also call `native-find-views` for a

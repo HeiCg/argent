@@ -113,9 +113,9 @@ Use when stable before/after screenshots exist and the expected result is pixel-
 For live captures, set exactly one of captureBaseline or captureCurrent; use baselinePath + captureCurrent for the common visual-regression flow.
 Returns { summary, diffPath, contextDiffPath }. The summary uses normalized [0,1] screen locations matching describe coordinates; diffPath is the full-size diff image and contextDiffPath is a downscaled image for MCP/agent display.
 Ignores the fixed top status-bar band for both pixel and OCR text comparisons.
-Fails if the input sources are invalid, PNG files cannot be read, outputDir cannot be written, or the simulator-server / emulator backend is not reachable.`,
+Fails if the input sources are invalid, PNG files cannot be read, outputDir cannot be written, or the simulator-server / emulator backend, or \`hdc\` on HarmonyOS, is not reachable.`,
   searchHint:
-    "compare screenshots png diff visual UI changes UI regression visual regression screenshot diff changed regions text ocr live capture",
+    "compare screenshots png diff visual UI changes UI regression visual regression screenshot diff changed regions text ocr live capture harmony harmonyos",
   zodSchema,
   capability,
   fileInputs,

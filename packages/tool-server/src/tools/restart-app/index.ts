@@ -38,7 +38,7 @@ const zodSchema = z.object({
     .regex(ACTIVITY_PATTERN, "activity may only contain letters, digits, '.', '_', '-' and '/'")
     .optional()
     .describe(
-      "Android-only: relaunch a non-launcher Activity (e.g. `.SettingsActivity` or `com.example/com.example.SettingsActivity`). If omitted, the app's default launcher activity is used. Ignored on iOS."
+      "Android-only: relaunch a non-launcher Activity (e.g. `.SettingsActivity` or `com.example/com.example.SettingsActivity`). If omitted, the app's default launcher activity is used. Ignored on iOS / HarmonyOS."
     ),
 });
 
@@ -75,7 +75,7 @@ Use when you need a clean in-memory state without a full reinstall. Also refresh
 Returns { restarted, bundleId }. Fails if the app is not installed.`,
     alwaysLoad: true,
     searchHint:
-      "terminate relaunch restart reset app bundle id package simulator emulator vega tvos fire tv",
+      "terminate relaunch restart reset app bundle id package simulator emulator vega tvos fire tv harmony harmonyos",
     zodSchema,
     capability,
     // ios-remote declares an eager native-devtools service (its handler shares
