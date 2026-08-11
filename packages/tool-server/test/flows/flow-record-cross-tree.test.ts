@@ -42,7 +42,12 @@ import { adaptChromiumTreeForFlows } from "../../src/tools/flows/flow-chromium-t
 import { adaptVegaTreeForFlows } from "../../src/tools/flows/flow-vega-tree";
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
-import { __resetRecordingsForTesting, parseFlow } from "../../src/tools/flows/flow-utils";
+import { flowFinishRecordingTool } from "../../src/tools/flows/flow-finish-recording";
+import {
+  __resetRecordingsForTesting,
+  parseFlow,
+  serializeFlow,
+} from "../../src/tools/flows/flow-utils";
 import { n } from "./harness";
 
 const IOS = "00000000-0000-0000-0000-0000000000ab"; // iOS UDID shape
@@ -1391,6 +1396,74 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("could not be re-verified against the tree the RUNNER reads");
     expect(warning).toContain(advice);
     expect(warning).not.toContain("more chars)");
+  });
+
+  // ── The verdict has to reach the moment it is FOR ────────────────────────
+  //
+  // The probe answers a polish-time question, and polish begins after
+  // flow-finish-recording. A warning that lives only in one step's `message` is
+  // gone from every artifact by then.
+
+  it("carries each step's verdict into flow-finish-recording", async () => {
+    await startRecording("polish");
+
+    // Step 1 agrees — the runner's tree has the element, so no warning.
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("polish", { condition: "visible", selector: { text: "Continue" } });
+    // Step 2 diverges.
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("polish", { condition: "visible", selector: { text: "Continue" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "polish", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(2);
+    // The verdict is anchored to the step it judged, not to the recording.
+    expect(finished.summary[0]).not.toContain("warning:");
+    expect(finished.summary[1]).toContain("warning:");
+    expect(finished.summary[1]).toContain("does NOT hold against the tree the runner resolves");
+    // …and `message` says one exists, for a caller that reads only that.
+    expect(finished.message).toContain("1 step carries a cross-tree warning");
+  });
+
+  it("says nothing about warnings when every recorded wait agreed", async () => {
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await startRecording("clean");
+    await recordWait("clean", { condition: "visible", selector: { text: "Continue" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "clean", project_root: tmpDir }
+    );
+
+    expect(finished.message).toBe('Finished recording "clean" flow (1 steps)');
+    expect(finished.summary[0]).not.toContain("warning:");
+  });
+
+  it("drops a verdict whose step was hand-deleted mid-recording", async () => {
+    // Editing the .yaml mid-recording is documented, and host mode re-reads the
+    // file here. A verdict left anchored to a number the shortened flow reuses
+    // would convict whatever step inherited it.
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await startRecording("edited");
+    await recordWait("edited", { condition: "visible", selector: { text: "Continue" } });
+    await recordWait("edited", { condition: "visible", selector: { text: "Continue" } });
+
+    const file = path.join(tmpDir, ".argent", "flows", "edited.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = parsed.steps.slice(0, 1);
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "edited", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(1);
+    expect(finished.message).toContain("1 step carries a cross-tree warning");
+    expect(finished.summary[0]).toContain("warning:");
   });
 
   // ── Cancellation ─────────────────────────────────────────────────────────

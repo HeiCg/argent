@@ -1259,6 +1259,13 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
 
       const { savedTo, stepCount } = await appendStepToFlow(session, step);
 
+      // Keep the probe's verdict for `flow-finish-recording`. It is a
+      // polish-time answer, and polish starts after the recording closes — by
+      // which point this `message` is many tool results back.
+      if (crossTreeWarning) {
+        (session.stepWarnings ??= new Map()).set(stepCount, crossTreeWarning);
+      }
+
       return {
         message: `Step added to "${params.name}" flow${warning ? ` — ${warning}` : ""}`,
         toolResult,

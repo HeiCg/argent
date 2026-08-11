@@ -275,6 +275,17 @@ export interface RecordingSession {
   filePath: string;
   /** In-memory flow content — authoritative in "client" mode. */
   flow: FlowFile;
+  /**
+   * Cross-tree probe verdicts, by 1-based step number.
+   *
+   * The verdict is a POLISH-time decision, and polish begins after
+   * `flow-finish-recording` — but the warning is raised on one step's
+   * `message`, so without this it is gone from every artifact by the time it is
+   * actionable: on a 40-step recording, a warning raised at step 7 has long
+   * scrolled away. Accumulate it here and let the finish payload carry it to
+   * the step it belongs to.
+   */
+  stepWarnings?: Map<number, string>;
   /** Order of the last touch, for the LRU eviction backstop. See {@link touch}. */
   lastTouchedSeq: number;
 }

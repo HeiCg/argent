@@ -53,6 +53,44 @@ const zodSchema = z.object({
     ),
 });
 
+/**
+ * Fold each recorded step's cross-tree verdict into its own summary line.
+ *
+ * The probe raises that verdict on one step's `message`, but what it answers —
+ * "is this wait safe to convert to `await:`/`assert:`?" — is a POLISH-time
+ * question, and polish begins here. Without this, a warning raised at step 7 of
+ * a 40-step recording has scrolled out of reach by the time it is actionable,
+ * and no artifact carries it: the finish payload never mentioned it and
+ * `summarizeStep` renders the step as a bare `7. tool: await-ui-element {json}`.
+ *
+ * On its own line rather than appended to the step text: the verdict runs to
+ * paragraphs, and running it into the step line would bury the step it belongs
+ * to.
+ *
+ * A verdict whose step number no longer exists is DROPPED. Hand-editing the
+ * .yaml mid-recording is a documented workflow and host mode re-reads the file
+ * here, so a deleted step must not leave its verdict attached to whatever step
+ * inherited its number. How the remainder renumbered is unknowable from here,
+ * which is why the surplus goes rather than being re-anchored.
+ */
+function attachStepWarnings(
+  summary: string[],
+  warnings: Map<number, string> | undefined
+): string[] {
+  if (!warnings || warnings.size === 0) return summary;
+  return summary.map((line, i) => {
+    const warning = warnings.get(i + 1);
+    return warning ? `${line}\n   warning: ${warning}` : line;
+  });
+}
+
+function countWarned(steps: number, warnings: Map<number, string> | undefined): number {
+  if (!warnings) return 0;
+  let n = 0;
+  for (const step of warnings.keys()) if (step >= 1 && step <= steps) n += 1;
+  return n;
+}
+
 export const flowFinishRecordingTool: ToolDefinition<
   z.infer<typeof zodSchema>,
   {
@@ -79,6 +117,7 @@ export const flowFinishRecordingTool: ToolDefinition<
       `Failed to finish recording of flow ${params.name}: ${failureSignal.error_code}`,
   },
   description: `Finish recording the flow named by \`name\` + \`project_root\`, leaving recordings under any other key untouched. Returns { message, path, executionPrerequisite, steps, summary, flowFile, savedTo } - a summary of all recorded steps plus the final YAML. Use when you have added all desired steps and want to finalize the flow file. Fails if that flow has no recording in progress.
+A recorded \`await-ui-element\` that flow-add-step re-probed against the runner's tree carries that verdict on its own \`summary\` line, and \`message\` counts how many did. Read them before converting any wait to \`await:\`/\`assert:\` - that conversion is what the verdict is about, and this is where it becomes actionable.
 You can still edit the .yaml file directly afterwards to remove or reorder steps.`,
   zodSchema,
   services: () => ({}),
@@ -87,7 +126,7 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
     // Host mode's `await fs.readFile` is a yield, and an append that lands in it
     // would be on disk while the summary and step count reported here — taken
     // from the pre-append read — say otherwise.
-    const { filePath, flowFile, savedTo, flow, summary } = await withFlowFileLock(
+    const { filePath, flowFile, savedTo, flow, summary, warned } = await withFlowFileLock(
       params.project_root,
       params.name,
       async () => {
@@ -119,14 +158,23 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // there — `JSON.stringify` on a cyclic `args` anchor — is guarded in
         // {@link renderToolArgs}; keeping the order is what makes the next one
         // recoverable rather than fatal.
-        const summary = summarizeSteps(flow);
+        const summary = attachStepWarnings(summarizeSteps(flow), session.stepWarnings);
+        const warned = countWarned(summary.length, session.stepWarnings);
         clearRecordingSession(session);
-        return { filePath, flowFile, savedTo, flow, summary };
+        return { filePath, flowFile, savedTo, flow, summary, warned };
       }
     );
 
     return {
-      message: `Finished recording "${params.name}" flow (${flow.steps.length} steps)`,
+      // Name the count in `message` as well as the summary. The verdicts these
+      // carry are the reason to read the summary before converting anything,
+      // and a caller that only reads `message` would otherwise polish blind.
+      message:
+        `Finished recording "${params.name}" flow (${flow.steps.length} steps)` +
+        (warned > 0
+          ? ` — ${warned} ${warned === 1 ? "step carries" : "steps carry"} a cross-tree warning ` +
+            `about converting a recorded wait; read \`summary\` before converting`
+          : ""),
       path: filePath,
       executionPrerequisite: flow.executionPrerequisite,
       steps: flow.steps.length,
