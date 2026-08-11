@@ -160,14 +160,14 @@ describe("diffPngFiles", () => {
     expect(result.summary).toContain(
       "- size_normalized: baseline=20x40 current=10x20 compared_at=10x20"
     );
-    // The remedy must stay followable on the devices that produce this status
-    // most often. Some Android emulators reject a full-res single frame with a
-    // "wrong data size" framebuffer mismatch, so naming `scale: 1.0` as the
-    // thing to do sends the reader at the one capture that cannot work — and
-    // contradicts "the same scale as the current image" unless that image
-    // happened to be full-res.
-    expect(result.summary).toContain("re-capture the baseline at the current image's scale");
-    expect(result.summary).not.toContain("(screenshot with scale: 1.0)");
+    // The remedy has to name a scale the agent can reach: omitting `scale` puts
+    // `screenshot` on the same setting the live capture used, whatever
+    // ARGENT_SCREENSHOT_SCALE is. It must not send the reader at a full-resolution
+    // capture — some Android emulators reject one with a "wrong data size"
+    // framebuffer mismatch — so the pattern is looser than a single literal.
+    expect(result.summary).toContain("re-capture the saved image at the scale the other side used");
+    expect(result.summary).toContain("`screenshot` also picks when `scale` is omitted");
+    expect(result.summary).not.toMatch(/scale:\s*1(\.0)?\b/);
   });
 
   it("still reports a real difference as `changed` when sizes were normalized", async () => {

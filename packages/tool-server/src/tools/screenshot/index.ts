@@ -34,14 +34,15 @@ const zodSchema = z.object({
     .optional()
     .describe(
       "Scale factor (0.01-1.0). Defaults to ARGENT_SCREENSHOT_SCALE env var, or 0.3 if unset for iOS/Android. " +
-        "On Chromium the default is 1.0 (no downscale); pass <1 to opt in. Downscaling on Chromium requires the optional `sharp` dependency."
+        "On Chromium the default is 1.0 (no downscale); pass <1 to opt in. Downscaling on Chromium requires the optional `sharp` dependency. " +
+        "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; retry at a lower scale there."
     ),
   includeImageInContext: z
     .boolean()
     .optional()
     .default(true)
     .describe(
-      "Default true. Set false only when capturing a full-resolution PNG (scale: 1.0) to save as a baseline/current for screenshot-diff — the file is still written, but the image bytes are not attached to the agent context."
+      "Default true. Set false only when capturing a baseline/current PNG for screenshot-diff — the file is still written, but the image bytes are not attached to the agent context."
     ),
   downscaler: z
     .enum(["lanczos3", "box", "bilinear", "nearest"])

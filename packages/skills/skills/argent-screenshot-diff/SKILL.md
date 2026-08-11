@@ -27,6 +27,8 @@ Use normal downscaled `screenshot` calls for UI context and state checks. Use fu
 { "udid": "<UDID>", "scale": 1.0, "includeImageInContext": false }
 ```
 
+Some Android emulators cannot stream a full-resolution frame and reject `scale: 1.0` with a `wrong data size` error. Drop the `scale` there and capture at the tool-server's own setting — that is also what `screenshot-diff` falls back to for its live side, so the two sides match exactly and nothing is resampled.
+
 Capture the stable baseline before the relevant interaction or before editing whenever feasible. Compare it to the post-change or post-interaction screen after the app reloads, rebuilds, or reaches the state under test.
 
 ## 4. Parameters
@@ -41,7 +43,7 @@ Provide `udid` and exactly one input for the baseline side and exactly one input
 ## 5. Deterministic Flow
 
 1. Navigate to the known-good state.
-2. Capture a baseline PNG with `screenshot` using `scale: 1.0` and `includeImageInContext: false`; keep the returned `path`.
+2. Capture a baseline PNG with `screenshot` per the capture rules above and `includeImageInContext: false`; keep the returned `path`.
 3. Perform the interaction, apply the code change and navigate to the state under test.
 4. Call `screenshot-diff` with the saved `baselinePath`, `captureCurrent: true`, `udid`, and `outputDir`.
 5. Inspect the summary and artifact paths, then combine the diff with normal visual inspection and any structural/runtime evidence needed for the assertion.
