@@ -105,8 +105,16 @@ const UNSUPPORTED_PLATFORM = {
  * iOS, Android and Chromium, that no read-only tool does.
  *
  * Android's runner tree is the full accessibility hierarchy, and Android
- * `describe` returns the TRIMMED interactables tree the recorder already read —
- * strictly less than the runner resolves against.
+ * `describe` returns the TRIMMED interactables tree the recorder already read.
+ * Mostly less than the runner resolves against — but not STRICTLY less, and the
+ * exception is routine: the trim BORROWS a descendant's text into an
+ * unlabelled clickable's own label (an everyday `Pressable` over a `Text`
+ * renders as one node labelled "Network & internet / Mobile, Wi-Fi, hotspot"),
+ * where the flow adapter never borrows. That text reaches the runner only as
+ * `subtreeText`, which selector matching ignores, so a `text` selector on the
+ * borrowed label matches the recorder's tree and nothing in the runner's. The
+ * user-facing string below stays right either way — it says each holds elements
+ * the other drops.
  * Chromium's `describe` re-reads the same DOM the flow tree is built from, but
  * on a shorter walk and without the flow tree's projection, so it misses the
  * runner in BOTH directions (see {@link treeDivergenceFor}'s chromium arm): it
@@ -116,14 +124,21 @@ const UNSUPPORTED_PLATFORM = {
  * 12000. Calling it the full DOM, a superset of the runner's tree, is exactly
  * the reading that fails on a dense page: past 5000 nodes `describe` cannot
  * show the element at all. iOS overshoots where Android undershoots: the
- * Apple-only full-hierarchy readers see the raw UIView tree, which is a
- * superset of what
- * `queryFullHierarchyTree` projects (it drops hidden, transparent,
- * scroll-clipped and unlabelled container views), AND they match `identifier` /
- * `label` / `className` EXACTLY — a recorded selector's `text` is a
- * case-insensitive SUBSTRING of a label or value and its `role` a substring of
- * a derived role name, neither of which those tools accept. So they report
- * elements the runner never sees and miss substring matches it does make.
+ * Apple-only full-hierarchy readers see the raw UIView tree, which at equal
+ * depth is a superset of what `queryFullHierarchyTree` projects (it drops
+ * hidden, transparent, scroll-clipped and unlabelled container views), AND they
+ * match `identifier` / `label` / `className` EXACTLY — a recorded selector's
+ * `text` is a case-insensitive SUBSTRING of a label or value and its `role` a
+ * substring of a derived role name, neither of which those tools accept. So
+ * they report elements the runner never sees and miss substring matches it does
+ * make.
+ *
+ * "At equal depth" is load-bearing, and is the iOS analogue of the Chromium
+ * 5000/12000 asymmetry above: `native-full-hierarchy` defaults to `maxDepth: 8`
+ * where `queryFullHierarchyTree` asks for 40. So absent from
+ * `native-full-hierarchy` does NOT imply absent from the runner's tree for
+ * anything nested deeper than 8 levels — real RN scrollers sit well past that
+ * — and reading it as proof needs the depth raised first.
  *
  * Naming any of those three would point the author at the wrong tree under the
  * banner of the runner's — the exact steer this warning exists to prevent.

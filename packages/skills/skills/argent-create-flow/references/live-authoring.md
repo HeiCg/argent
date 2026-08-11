@@ -130,16 +130,27 @@ For every retained raw gesture, add an echo and a recorded result check.
 
 ### Live waits and checks
 
-Record `await-ui-element` through `flow-add-step`. An unmet condition is not an error: the tool returns normally, `message` reports the step was added, and the only sign of failure is `toolResult.success: false` with a `note`. **The step is in the flow file.** Read `toolResult.success` after every recorded check.
+Record `await-ui-element` through `flow-add-step`. A failed wait is not an error: the tool returns normally with `toolResult.success: false` and a `note`, and **the step is in the flow file.** Read `toolResult.success` after every recorded check. `message` also carries a warning naming the cause, and the cross-tree re-probe below is skipped, because it asks about a check that passed.
 
-When it is false, fix the selector or justified timeout, record the check again, and delete the failed step after `flow-finish-recording`. Do not leave both. A stale `hidden` whose selector matches nothing replays as a silent pass — the unfalsifiable gate that [Record absence in three steps](#record-absence-in-three-steps) exists to prevent. Never proceed as though the gate passed. See the `await-ui-element` section of `argent-device-interact` for the full live condition and selector reference.
+Three causes, and only the first judges the condition:
 
-The live tool and flow runner use different trees, and [neither contains the other](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree). A live wait can therefore pass while its converted directive cannot resolve. After a recorded wait passes, the recorder re-probes the same condition against the runner's tree and reports the result in `message`. Read which of the two warnings you got:
+- **The condition was read and was false.** Fix the selector or justified timeout, record the check again, and delete the failed step after `flow-finish-recording`. Do not leave both.
+- **The tree source was unreadable for the whole wait.** Nothing was observed, so the check may be fine. Restore the source and record it again. Do not delete it on this warning.
+- **The wait was cancelled.** Same: no verdict, so record it again.
 
-- **The condition does not hold there.** Converting to `await:`/`assert:` is what the warning is about. The message names the platform-specific cause. Where the trees genuinely differ, retarget the directive at something the runner tree carries, usually the `id`, and prove it by replay. Where the screen simply moved on between the live wait and the re-probe, the selector was never wrong; re-run the wait instead.
-- **That tree could not be read at all.** Nothing was compared, so the conversion is **unknown, not known-bad**. Re-probe once the tree source is back rather than rewriting a selector that may be fine.
+A stale `hidden` whose selector matches nothing replays as a silent pass — the unfalsifiable gate that [Record absence in three steps](#record-absence-in-three-steps) exists to prevent. Never proceed as though the gate passed. See the `await-ui-element` section of `argent-device-interact` for the full live condition and selector reference.
 
-Neither warning means the step was rejected. A raw `tool:` step replays against the tree it just passed, so treat the warning as a polish-time instruction. Replay every conversion regardless. Keep the raw tool only when its `pollIntervalMs` or `bundleId` is required. Live tools use `identifier`. Flow YAML uses `id`.
+A wait nested inside a recorded `run-sequence` gets no warning of any kind: that tool reports its own shape, which carries no `success` key. Read its `toolResult` yourself — a nested wait that never held still fails the whole step at replay.
+
+The live tool and flow runner use different trees, and [neither contains the other](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree). A live wait can therefore pass while its converted directive cannot resolve. After a recorded wait passes, the recorder re-probes the same condition against the runner's tree. `message` then reports one of three results:
+
+- **No warning.** The condition holds on both trees. Nothing to do.
+- **The condition does not hold there.** Converting to `await:`/`assert:` is what the warning is about. The message names the causes to rule out, in order. On a `text` check, first ask whether the selector matches more than one element: only one is inspected, and the two sides can pick different ones — narrow the selector until it resolves a single node. Otherwise, where the trees genuinely differ, retarget the directive at something the runner tree carries, usually the `id`, and prove it by replay; for `hidden` the reverse applies, because the verdict means that tree still has the element. Where the screen simply moved on between the live wait and the re-probe, the selector was never wrong; re-run the wait instead.
+- **That tree could not be read at all, or answered too slowly.** Nothing was compared, so the conversion is **unknown, not known-bad**. Restore the source, or re-record when the device is quieter, rather than rewriting a selector that may be fine.
+
+A warning never means the step was rejected. A raw `tool:` step replays against the tree it just passed, so treat the warning as a polish-time instruction — `flow-finish-recording` repeats every verdict on its own step's `summary` line, which is where you act on it. Replay every conversion regardless. Keep the raw tool only when its `pollIntervalMs` or `bundleId` is required.
+
+Live tools spell the field `identifier` and flow YAML spells it `id`. The parser accepts either, so copying a recorded `selector:` map through unchanged is correct; rename it to `id` only to match the style of the file.
 
 ### Wrong turns
 
@@ -160,7 +171,7 @@ Call `flow-finish-recording`, then read the saved YAML. Apply only meaning-prese
 | `tool: gesture-rotate`       | selector-based `rotate:` with `by = endAngle - startAngle`         |
 | sibling `tool: flow-execute` | recorder-captured `run:`                                           |
 
-When converting a wait, copy the step's recorded `selector:` map through unchanged — the strict map form, never the bare-string sugar, which re-parses as a loose id-first selector and is a different check. It is also the form the recorder's re-probe judged, so only the strict spelling inherits that answer. The comparator lives in the tool call rather than the YAML: a recorded `text` check with no `textMatch` converts to `contains:`, and only `textMatch: equals` converts to `equals:`.
+When converting a wait, copy the step's recorded `selector:` map through unchanged — the strict map form, never the bare-string sugar, which re-parses as a loose id-first selector and is a different check. It is also the form the recorder's re-probe judged, so only the strict spelling inherits that answer. Copying it verbatim keeps `identifier`, which the parser accepts; rename it to `id` only for style. The comparator lives in the tool call rather than the YAML: a recorded `text` check with no `textMatch` converts to `contains:`, and only `textMatch: equals` converts to `equals:`.
 
 Only these unrecorded insertions are allowed, at states observed live:
 

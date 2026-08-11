@@ -59,16 +59,16 @@ Use single quotes for anchored, case-sensitive regexes:
 
 Flow selectors and live discovery use different screen projections:
 
-| Platform | Runner tree                                               | `describe` / `await-ui-element` | Important difference                                                  |
-| -------- | --------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------- |
-| iOS      | native UIView hierarchy                                   | accessibility tree              | Each contains elements the other lacks; roles are derived differently |
-| Android  | full accessibility hierarchy                              | trimmed interactables           | Discovery can omit testID-only containers or merge nodes              |
-| Chromium | filtered DOM nodes with id, label, value, click, or focus | full DOM walk                   | The runner tree is a strict subset                                    |
-| Vega     | toolkit page source                                       | same source                     | Same elements, different shape                                        |
+| Platform | Runner tree                                               | `describe` / `await-ui-element` | Important difference                                                                  |
+| -------- | --------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------- |
+| iOS      | native UIView hierarchy                                   | accessibility tree              | Each contains elements the other lacks; roles are derived differently                 |
+| Android  | full accessibility hierarchy                              | trimmed interactables           | Discovery can omit testID-only containers or merge nodes                              |
+| Chromium | filtered DOM nodes with id, label, value, click, or focus | shorter DOM walk                | Each drops nodes the other keeps; `describe` stops at 5000 nodes, the runner at 12000 |
+| Vega     | toolkit page source                                       | same source                     | Same elements, different shape                                                        |
 
-On iOS and Android, an id absent from `describe` can still resolve in a flow. Prefer the stable id and verify it in a scratch fragment. On Chromium, an element absent from `describe` cannot resolve. Add a test id instead.
+On iOS and Android, an id absent from `describe` can still resolve in a flow. Prefer the stable id and verify it in a scratch fragment. On Chromium, absence from `describe` is not proof either: on a dense page its walk stops before the runner's does, and a password field reaches the runner named `[password]`. Verify the candidate in a scratch fragment there too, and add a test id when it does not resolve.
 
-Neither projection contains the other, so a live wait can pass against its tree while the converted directive cannot resolve. The recorder re-probes every passing `await-ui-element` against the runner tree and warns in `message` when the two disagree, or when that tree could not be read at all — see [Live waits and checks](live-authoring.md#live-waits-and-checks). Replay after conversion either way. Treat failure there as a polish blocker, not a recording failure.
+Outside Vega, neither projection contains the other, so a live wait can pass against its tree while the converted directive cannot resolve. On Vega the two hold the same elements, so a disagreement there means the screen changed rather than that the selector is wrong. The recorder re-probes every passing `await-ui-element` against the runner tree and warns in `message` when the two disagree, or when that tree could not be read at all — see [Live waits and checks](live-authoring.md#live-waits-and-checks). Replay after conversion either way. Treat failure there as a polish blocker, not a recording failure.
 
 **On iOS, never copy a `role` from `describe` into a flow selector.** The runner derives iOS roles from the UIView class name and `describe` from accessibility traits, so a React Native `Pressable` (class `RCTView`) is `AXGroup` to the runner and `AXButton` to `describe`. Select on `id`/`text`, or confirm the role against the runner's own tree.
 
