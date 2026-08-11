@@ -483,39 +483,6 @@ const SPELLING_CLAUSE =
   "bare-string conversion (`{ visible: Continue }`) re-parses as a LOOSE selector — " +
   "identifier first, text only as a fallback — which is a different check this probe never made.";
 
-/**
- * `await-ui-element` reports a condition that never came true by returning
- * `{ success: false }` rather than throwing, so the recorder's success path
- * records the step regardless — the same shape `run-sequence` and `flow-run`
- * read through {@link isUnmetUiWaitResult} to STOP a run at a wait that never
- * held. The recorder can't stop anything (the tool already ran), but it must
- * not narrate the step as fine: at replay this is a step FAILURE that ends the
- * run there.
- *
- * The cross-tree probe is skipped on this path, and saying so matters. That
- * probe asks whether a check that PASSED would survive conversion to an
- * `await:`/`assert:` directive; this one did not pass, so its answer would be
- * about a premise that never held — and the divergence remedy it appends
- * ("re-record with a selector present in both trees") would blame a tree
- * mismatch for an element that is on neither tree.
- */
-const UNMET_WAIT_WARNING =
-  "recorded, but the wait itself never held — `await-ui-element` reports an unmet condition by " +
-  "returning success:false instead of failing, so the step was written to the flow anyway. At " +
-  "replay an unmet wait FAILS the step and stops the run there, so re-record it once the " +
-  // "Delete it from the .yaml" is only unconditionally true in host mode,
-  // where the recorder re-reads the file before each append. Against a remote
-  // client the in-memory copy is authoritative and the next append writes the
-  // step straight back — silently, since nothing reports the restore. The tool
-  // description carries that caveat for mid-recording edits generally; a
-  // warning that tells you to make one has to carry it too.
-  "condition can actually hold, or delete the step from the .yaml — in host (local) mode, where " +
-  "the recorder re-reads the file before each append; against a remote client the in-memory copy " +
-  "is authoritative mid-recording, so delete it after `flow-finish-recording` instead. " +
-  "The cross-tree re-probe was " +
-  "skipped: it asks whether a check that PASSED would survive conversion to `await:`/`assert:`, " +
-  "and this one did not pass";
-
 function abortError(): Error {
   const err = new Error(
     "flow-add-step aborted while re-probing the recorded wait against the runner's tree"
@@ -1930,16 +1897,13 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
         };
       }
 
-      // The wait held against the accessibility tree. Ask the tree the runner
-      // resolves DIRECTIVES against too, so the author learns now — rather than
-      // after polish — whether the conversion is safe.
+      // The wait held against the accessibility tree — a wait that did not hold
+      // was refused above, so there is no unmet case left to answer for here.
+      // Ask the tree the runner resolves DIRECTIVES against too, so the author
+      // learns now — rather than after polish — whether the conversion is safe.
       let crossTreeWarning: string | undefined;
       if (params.command === AWAIT_UI_ELEMENT_TOOL_ID) {
-        if (isUnmetUiWaitResult(params.command, toolResult)) {
-          crossTreeWarning = UNMET_WAIT_WARNING;
-        } else {
-          crossTreeWarning = (await probeAgainstRunnerTree(registry, ctx, args)).warning;
-        }
+        crossTreeWarning = (await probeAgainstRunnerTree(registry, ctx, args)).warning;
       }
 
       const refusal = nestedRecordRefusal(
