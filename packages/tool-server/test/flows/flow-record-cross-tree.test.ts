@@ -1179,14 +1179,19 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const warning = warningOf(result, "slow");
 
     expect(warning).toContain("could not be re-verified against the tree the RUNNER reads");
-    expect(warning).toContain("did not answer within");
+    // The source answered, just too slowly — so the message must not describe
+    // it as absent, nor send the author to wait for a recovery that is not
+    // pending.
+    expect(warning).toContain("the source is slow, not down");
+    expect(warning).toContain("when the device is quieter");
+    expect(warning).not.toContain("once that tree source is back");
     // Never a verdict: nothing was compared, so the conversion is UNKNOWN.
     expect(warning).not.toContain("does NOT hold");
-    // The ceiling is 4s; anything near a full Chromium (10s) or Android
+    // The ceiling is 6s; anything near a full Chromium (10s) or Android
     // devtools (15s) read means the bound is not holding. The timeout below is
     // the only generous one in the file, and only because this test waits out
     // that ceiling on purpose.
-    expect(elapsed).toBeLessThan(6000);
+    expect(elapsed).toBeLessThan(8000);
     expect(await recordedSteps("slow")).toHaveLength(1);
     expect(fetchCount).toBe(1);
 
@@ -1199,6 +1204,34 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fetchCount).toBe(1);
   }, 15_000);
+
+  // The budget has to cover the branch the probe exists for. A determinate
+  // verdict costs TWO full reads — the loop checks its deadline only after a
+  // completed read, then fires one more back-to-back — so a ceiling sized for
+  // "the grace plus one in-flight read" gave the divergence warning half the
+  // per-read tolerance of the clean case, and silently substituted the
+  // indeterminate warning on a device that was only slow.
+  it("still reaches a determinate verdict when each read is slower than the grace window", async () => {
+    // 2.2s per read: over the 1s grace, so the loop takes exactly two reads and
+    // the total lands near 4.4s. The clean case tolerated a read this slow all
+    // along — it returns from the first one — while the determinate branch
+    // needed two and so lost the verdict at any ceiling under 4.4s.
+    fetchRunnerTree = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+      return { tree: iosRunnerTree([iosLabel("Proceed")]), source: "native-devtools" };
+    };
+    await startRecording("slowdeterminate");
+
+    const result = await recordWait("slowdeterminate", {
+      condition: "visible",
+      selector: { text: "Continue" },
+    });
+    const warning = warningOf(result, "slowdeterminate");
+
+    expect(fetchCount).toBe(2);
+    expect(warning).toContain("does NOT hold against the tree the runner resolves");
+    expect(warning).not.toContain("could not be re-verified");
+  }, 20_000);
 
   // A `text` reason quotes the matched element's rendered content, and on the
   // flow tree that content is HOISTED — a container carries every descendant's

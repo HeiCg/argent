@@ -499,9 +499,25 @@ const CANCELLED_PROBE_WARNING =
  * reported as indeterminate — "unknown", never "known-bad" — exactly like a
  * tree source that could not be read.
  *
- * The budget is the 1s grace plus enough slack for one in-flight read to land.
+ * Sized for the branch this probe EXISTS for, which is the expensive one. The
+ * loop checks its deadline only after a completed read and then fires one more
+ * back-to-back (`finalPoll`), so a determinate "does NOT hold" costs TWO full
+ * reads, not one — while the clean case returns from the first read that
+ * satisfies the condition. Budgeting "the grace plus one in-flight read" gave
+ * the determinate verdict half the per-read tolerance of the clean one, and the
+ * branch that lost is the one carrying the warning.
+ *
+ * So: the grace, plus room for BOTH reads. Below that the divergence warning is
+ * silently replaced by the indeterminate one on a device that was merely slow,
+ * which is why the timeout reason names slowness rather than an absent source
+ * (see {@link probeAgainstRunnerTree}). Android flow-tree reads have been
+ * measured at 3.4-7.4s on a host running several sessions at once, so no
+ * ceiling short of the RPC timeout makes that impossible — the point is to stop
+ * an ordinary slow read from costing the verdict.
  */
-const PROBE_BUDGET_MS = 4000;
+const PROBE_MAX_TREE_READ_MS = 2500;
+const PROBE_ASSERT_GRACE_MS = 1000; // DEFAULT_ASSERT_TIMEOUT_MS, the loop's own window
+const PROBE_BUDGET_MS = PROBE_ASSERT_GRACE_MS + 2 * PROBE_MAX_TREE_READ_MS;
 
 /**
  * Length cap on the probe's own reason before it is quoted back to the agent —
@@ -626,17 +642,21 @@ async function probeAgainstRunnerTree(
   giveUp.abort();
   if (settled.type === "aborted") return { warning: CANCELLED_PROBE_WARNING };
   // A read that outran the budget, and a probe that threw outright, are both
-  // "the runner's tree did not answer" — indeterminate, never a verdict.
+  // "the runner's tree did not answer" — indeterminate, never a verdict. They
+  // are not the same diagnosis, though: on a timeout the source ANSWERED, just
+  // too slowly for an interactive recorder, so the reason must not describe it
+  // as absent (the recovery below turns on this distinction).
+  const timedOut = settled.type === "timeout";
   const outcome: DirectiveOutcome =
     settled.type === "value"
       ? settled.value
       : {
           ok: false,
           indeterminate: true,
-          reason:
-            settled.type === "timeout"
-              ? `the runner's tree did not answer within ${PROBE_BUDGET_MS}ms`
-              : `reading the runner's tree failed: ${settled.error}`,
+          reason: timedOut
+            ? `the runner's tree was still being read ${PROBE_BUDGET_MS}ms in, which is longer ` +
+              `than the recorder waits — the source is slow, not down`
+            : `reading the runner's tree failed: ${settled.error}`,
         };
   if (outcome.ok) return {};
   if (outcome.aborted) return { warning: CANCELLED_PROBE_WARNING };
@@ -662,8 +682,17 @@ async function probeAgainstRunnerTree(
         `(${outcome.reason ?? "no reason given"}), so it passed against the tree ` +
         `\`${AWAIT_UI_ELEMENT_TOOL_ID}\` ` +
         `reads and nothing else. Whether it would convert to \`await:\`/\`assert:\` is UNKNOWN, ` +
-        `not known-bad — re-probe once that tree source is back before trusting the conversion` +
-        indeterminateReasonCaveat(args.udid),
+        `not known-bad — ` +
+        // A timeout and an outage need different next moves, and "once that
+        // tree source is back" is nonsense for a source that never left: it
+        // sends the author to wait for a recovery that already happened, on a
+        // device whose only problem is load.
+        (timedOut
+          ? `re-record this step when the device is quieter, or settle the conversion directly by ` +
+            `putting the directive in a flow and running \`flow-execute\`, which has no such ` +
+            `ceiling`
+          : `re-probe once that tree source is back before trusting the conversion` +
+            indeterminateReasonCaveat(args.udid)),
     };
   }
   // Determinate: the runner's tree really was read, and the condition really
