@@ -379,6 +379,42 @@ function unmetWaitWarningFor(cause: UnmetUiWaitCause): string {
   return UNMET_WAIT_WARNING;
 }
 
+/**
+ * The indeterminate reason is quoted VERBATIM, and on iOS what it quotes was
+ * written for a different caller. `queryFullHierarchyTree` auto-targets
+ * (`resolveNativeTargetApp(nativeApi, undefined)`), so with no injected app it
+ * throws the shared native-target error — whose recovery text ends "provide
+ * bundleId explicitly", advice aimed at `native-full-hierarchy` and the other
+ * tools that take one.
+ *
+ * `await-ui-element` does take a `bundleId`, which makes that advice look
+ * actionable here. It is not, and forwarding one would be WRONG rather than
+ * merely missing: this probe predicts what an `await:`/`assert:` DIRECTIVE
+ * would do, and no directive carries a bundleId — `fetchFlowTree` auto-targets
+ * on every replay (the raw `tool:` step is the documented escape hatch for a
+ * custom bundleId precisely because the directives have none). A probe told to
+ * target an app the runner will never target would answer a question nobody
+ * asks.
+ *
+ * So correct the quoted advice instead of honouring it. This is not an exotic
+ * state: `references/reliability-and-recovery.md` prescribes exactly this mode
+ * for `com.apple.*` system apps, which cannot load the instrumentation — there
+ * the answer is permanent, and "keep it raw" is the whole workflow rather than
+ * a fallback.
+ */
+function indeterminateReasonCaveat(udid: unknown): string {
+  if (platformOf(udid) !== "ios") return "";
+  return (
+    ". That reason may tell you to pass `bundleId` — it is quoted from the shared native-target " +
+    "error, and it does not apply here: the probe predicts an `await:`/`assert:` directive, and " +
+    "no directive takes a bundleId, so neither this probe nor the runner accepts one (the " +
+    "`bundleId` on this step reached the live wait only). What the runner's iOS tree needs is an " +
+    "app with argent's instrumentation loaded — relaunch it with `launch-app` or a flow `launch:` " +
+    "step. An app that cannot load it at all, such as a `com.apple.*` system app, can never be " +
+    "probed or converted: keep the check as a raw `tool:` step"
+  );
+}
+
 function abortError(): Error {
   const err = new Error(
     "flow-add-step aborted while re-probing the recorded wait against the runner's tree"
@@ -550,7 +586,8 @@ async function probeAgainstRunnerTree(
         `(${outcome.reason ?? "no reason given"}), so it passed against the tree ` +
         `\`${AWAIT_UI_ELEMENT_TOOL_ID}\` ` +
         `reads and nothing else. Whether it would convert to \`await:\`/\`assert:\` is UNKNOWN, ` +
-        `not known-bad — re-probe once that tree source is back before trusting the conversion`,
+        `not known-bad — re-probe once that tree source is back before trusting the conversion` +
+        indeterminateReasonCaveat(args.udid),
     };
   }
   // Determinate: the runner's tree really was read, and the condition really

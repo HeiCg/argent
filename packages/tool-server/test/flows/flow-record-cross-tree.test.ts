@@ -1011,6 +1011,66 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect(warning).toContain("the tree `await-ui-element` reads");
     expect(warning).not.toContain("accessibility tree");
+    // The bundleId caveat is iOS-only — nothing on Chromium resolves a target
+    // app, so raising the subject here would invent a knob that does not exist.
+    expect(warning).not.toContain("no directive takes a bundleId");
+  });
+
+  // On iOS the indeterminate reason is quoted from the shared native-target
+  // error, whose recovery ends "provide bundleId explicitly". `await-ui-element`
+  // takes a `bundleId`, so that reads as actionable — and it is not: the probe
+  // predicts a directive, and no directive carries one. Correct the quoted
+  // advice rather than leaving the author to act on it.
+  it("iOS: says the bundleId its quoted reason recommends cannot reach the probe", async () => {
+    fetchRunnerTree = async () => {
+      throw new Error(
+        "No native-devtools-connected apps are available for auto-targeting. " +
+          "Launch or restart the app first, provide bundleId explicitly, or use screenshot " +
+          "to inspect visible Home/system UI."
+      );
+    };
+    await startRecording("iosblind");
+
+    const result = await recordWait("iosblind", {
+      condition: "visible",
+      selector: { text: "General" },
+    });
+    const warning = warningOf(result, "iosblind");
+
+    // The quoted reason still arrives whole — its tail is the recovery.
+    expect(warning).toContain("provide bundleId explicitly");
+    // …followed by what actually applies here.
+    expect(warning).toContain("no directive takes a bundleId");
+    expect(warning).toContain("`launch-app`");
+    expect(warning).toContain("keep the check as a raw `tool:` step");
+  });
+
+  it("iOS: the caveat holds when the step DID carry a bundleId", async () => {
+    fetchRunnerTree = async () => {
+      throw new Error("no connected app; provide bundleId explicitly");
+    };
+    await startRecording("iosblindbundle");
+
+    const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
+    const result = await tool.execute(
+      {},
+      {
+        name: "iosblindbundle",
+        project_root: tmpDir,
+        command: "await-ui-element",
+        args: JSON.stringify({
+          udid: IOS,
+          bundleId: "com.apple.Preferences",
+          condition: "visible",
+          selector: { text: "General" },
+        }),
+      }
+    );
+
+    // Supplying one changes nothing, so the warning must not imply it might.
+    expect(warningOf(result, "iosblindbundle")).toContain(
+      "the `bundleId` on this step reached the live wait only"
+    );
   });
 
   // `probeWhenCondition` budgets its POLL LOOP at the 1s assert grace, but each
