@@ -820,6 +820,79 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(await recordedSteps("chromium")).toHaveLength(1);
   });
 
+  // A divergence that is not about MEMBERSHIP at all. Both trees hold both
+  // nodes; the two sides simply elect different ones, because `text` inspects a
+  // single winner and `firstInReadingOrder` breaks an exact (y, x) tie by
+  // encounter order — and the two enumerate in opposite orders (`findAll`
+  // pre-order, `flattenHoisting` post-order). The verdict is right and every
+  // other explanation in the message is wrong for it.
+  it("Chromium: names the multi-match cause when a `text` wait elects two different winners", async () => {
+    // A block-level wrapper and its text child on the SAME frame — the default
+    // for a labelled block element, and routine in React Native.
+    const TIE = { x: 0.007, y: 0.062, width: 0.98, height: 0.014 };
+    const recorderRow = n({
+      role: "div",
+      identifier: "row",
+      label: "Total",
+      frame: TIE,
+      children: [n({ role: "span", value: "Total: $5.00", frame: TIE })],
+    });
+    serveTree(chromiumRunnerTree([recorderRow]), "cdp-dom");
+    await startRecording("tie");
+
+    // Guard the premise this test exists for: the two enumeration orders really
+    // do hand back opposite winners from the same nodes.
+    const sel: Selector = { text: "Total" };
+    const recorderMatches = findAll(n({ role: "html", frame: FULL, children: [recorderRow] }), sel);
+    const runnerMatches = findAll(chromiumRunnerTree([recorderRow]), sel);
+    expect(recorderMatches).toHaveLength(2);
+    expect(runnerMatches).toHaveLength(2);
+    expect(recorderMatches[0].identifier).toBe("row"); // container first
+    expect(runnerMatches[0].value).toBe("Total: $5.00"); // child first
+
+    const result = await recordWait("tie", {
+      udid: CHROMIUM,
+      condition: "text",
+      selector: { text: "Total" },
+      expectedText: "Total",
+      textMatch: "equals",
+    });
+    const warning = warningOf(result, "tie");
+
+    // The cause, and the remedy no other clause offers.
+    expect(warning).toContain("selector matches more than one element");
+    expect(warning).toContain("elect DIFFERENT ones from the very same nodes");
+    expect(warning).toContain("narrow the selector until it resolves a single node");
+    // Membership and timing are both inapplicable here, and the message has to
+    // say so rather than leave four explanations standing that are all false.
+    expect(warning).toContain("both trees hold both elements");
+    expect(warning).toContain("a longer `await:` timeout cannot help");
+    // …and it must not claim the two sides judged the same element.
+    expect(warning).not.toContain("that element's text comes to match");
+  });
+
+  it("does not raise the multi-match cause on a condition that cannot have it", async () => {
+    // `exists`/`visible`/`hidden` quantify over every match, so enumeration
+    // order cannot change their answer — raising it there is noise.
+    serveTree(
+      chromiumRunnerTree([
+        n({ role: "div", identifier: "far", value: "Continue", frame: { ...ROW, height: 0 } }),
+      ]),
+      "cdp-dom"
+    );
+    await startRecording("notie");
+
+    const result = await recordWait("notie", {
+      udid: CHROMIUM,
+      condition: "exists",
+      selector: { identifier: "far" },
+    });
+    const warning = warningOf(result, "notie");
+
+    expect(warning).toContain("does NOT hold against the tree the runner resolves");
+    expect(warning).not.toContain("elect DIFFERENT ones");
+  });
+
   // Chromium, the OTHER direction: a node the runner KEEPS. `projectChromiumNode`
   // redacts a password leaf's name to `[password]`, so the element reaches the
   // runner (an `id` selector resolves it) while no text/label selector ever can.

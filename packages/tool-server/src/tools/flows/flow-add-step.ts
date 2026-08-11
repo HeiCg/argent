@@ -282,9 +282,46 @@ function treeDivergenceFor(udid: unknown): string {
  */
 function awaitStillNeeds(condition: WaitCondition): string {
   if (condition === "hidden") return "the element LEAVES that tree";
-  if (condition === "text") return "that element's text comes to match on that tree";
+  // Not "that element's": on `text` the two sides need not have judged the same
+  // element at all (see {@link TEXT_TIE_CLAUSE}), and naming it as shared
+  // presumes away the one cause a longer timeout cannot fix.
+  if (condition === "text") return "the element THAT tree elects comes to match on it";
   return "the element reaches that tree";
 }
+
+/**
+ * The cause neither tree story can explain, on the one condition that can have
+ * it: the selector matched several elements and the two sides elected different
+ * ones.
+ *
+ * `text` is alone in this. `exists`/`visible`/`hidden` quantify over every match
+ * (`length`, `some`, `!some`), so the order matches arrive in cannot change
+ * their answer. `text` inspects exactly one — `firstInReadingOrder` over the
+ * visible matches — and that helper breaks an EXACT (y, x) tie by encounter
+ * order. The two sides enumerate in opposite orders: `findAll` collects
+ * pre-order (a container before its children) and `flattenHoisting` emits
+ * post-order (children before their container). So a container and a text child
+ * sharing a frame — routine in React Native, and the default for a block-level
+ * DOM wrapper — hand the recorder the container and the runner the child.
+ *
+ * The verdict is still right (the conversion really does fail), but every other
+ * explanation is wrong for it: both trees hold both nodes, so nothing about
+ * MEMBERSHIP applies; nothing moved, so the screen-changed escape does not
+ * either; and the element the runner read already has its final text, so no
+ * longer timeout can rescue it. Worse, the remedy that does work — narrow the
+ * selector until it resolves one node — is the one thing the rest of the
+ * message never suggests.
+ */
+const TEXT_TIE_CLAUSE =
+  " Check FIRST whether the selector matches more than one element, because a `text` check reads " +
+  "only one of them — the first visible match in reading order — and the two sides can elect " +
+  "DIFFERENT ones from the very same nodes: an exact frame tie is settled by which node its tree " +
+  "listed first, and the recorder's lists a container before its children where the runner's " +
+  "lists children before their container. The reason above quotes whichever element the RUNNER " +
+  "elected, so compare it against the one you meant. If that is what happened, both trees hold " +
+  "both elements and neither the tree differences nor a changed screen below explains anything — " +
+  "narrow the selector until it resolves a single node, and note that a longer `await:` timeout " +
+  "cannot help, since the text it read is already final.";
 
 /**
  * Which SPELLING of the conversion the verdict is about.
@@ -619,7 +656,12 @@ async function probeAgainstRunnerTree(
       `does too unless ${awaitStillNeeds(condition as WaitCondition)} within its longer ` +
       `timeout; if the SCREEN simply moved on since the live wait, this verdict is no evidence ` +
       `against either — at replay the directive runs where that wait ran, not a moment after ` +
-      `it. ` +
+      `it.` +
+      // Ahead of the tree stories, not after them: when it applies it makes
+      // every one of them inapplicable, so an author who reads it last has
+      // already been sent to investigate membership and timing.
+      (condition === "text" ? TEXT_TIE_CLAUSE : "") +
+      " " +
       SPELLING_CLAUSE +
       " " +
       `${treeDivergenceFor(args.udid)} ${runnerSideReadClause(args.udid)}`,
