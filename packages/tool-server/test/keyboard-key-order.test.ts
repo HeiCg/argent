@@ -3,6 +3,7 @@ import type { DeviceInfo } from "@argent/registry";
 import { typeSimulatorServer } from "../src/tools/keyboard/simulator-server-keys";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
 import { vegaImpl } from "../src/tools/keyboard/platforms/vega";
+import { harmonyImpl } from "../src/tools/keyboard/platforms/harmony";
 
 vi.mock("../src/utils/vega-input", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/utils/vega-input")>();
@@ -13,11 +14,27 @@ vi.mock("../src/utils/vega-input", async (importOriginal) => {
   };
 });
 
+vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
+  harmonyTypeText: vi.fn(async () => {}),
+  harmonyKeyEvent: vi.fn(async () => {}),
+}));
+
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
+import { harmonyKeyEvent, harmonyTypeText } from "../src/utils/harmony-uitest";
 
 const IOS_SIM: DeviceInfo = { id: "TEST-UDID", platform: "ios", kind: "simulator" };
 const CHROMIUM: DeviceInfo = { id: "chromium-cdp-9222", platform: "chromium", kind: "app" };
 const VEGA: DeviceInfo = { id: "vega-serial", platform: "vega", kind: "vvd" };
+const HARMONY_CONNECT_KEY = "025DEK236V035771";
+const HARMONY: DeviceInfo = {
+  id: `harmony-${HARMONY_CONNECT_KEY}`,
+  platform: "harmony",
+  kind: "device",
+};
+
+/** `uitest uiInput keyEvent` keyID for `enter`, watched submitting a real field. */
+const HARMONY_ENTER_KEYID = "2054";
 
 const ENTER_HID_KEYCODE = 40;
 
@@ -118,5 +135,52 @@ describe("keyboard text+key ordering", () => {
     ).rejects.toThrow(/Unknown Vega key "bogus"/);
     expect(injectVegaText).not.toHaveBeenCalled();
     expect(injectVegaNamedKey).not.toHaveBeenCalled();
+  });
+
+  it("harmony: injects the named key after the text, addressed by connect key", async () => {
+    const order: string[] = [];
+    vi.mocked(harmonyTypeText)
+      .mockClear()
+      .mockImplementationOnce(async () => {
+        order.push("text");
+      });
+    vi.mocked(harmonyKeyEvent)
+      .mockClear()
+      .mockImplementationOnce(async () => {
+        order.push("key");
+      });
+
+    const result = await harmonyImpl.handler(
+      {},
+      { udid: HARMONY.id, text: "hi", key: "enter" },
+      HARMONY
+    );
+
+    expect(order).toEqual(["text", "key"]);
+    expect(harmonyTypeText).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, "hi");
+    // The keyID, not the key name — `uitest` names only Home/Back/Power and
+    // takes a raw number for everything else.
+    expect(harmonyKeyEvent).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, HARMONY_ENTER_KEYID);
+    // Two characters plus the key press.
+    expect(result.keys).toBe(3);
+  });
+
+  it("harmony: rejects an unknown key before typing any text", async () => {
+    vi.mocked(harmonyTypeText).mockClear();
+    vi.mocked(harmonyKeyEvent).mockClear();
+
+    await expect(
+      harmonyImpl.handler({}, { udid: HARMONY.id, text: "hi", key: "bogus" }, HARMONY)
+    ).rejects.toThrow(/'bogus' is not available on HarmonyOS/);
+    expect(harmonyTypeText).not.toHaveBeenCalled();
+    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("harmony: case-folds the named key, like every other backend", async () => {
+    vi.mocked(harmonyKeyEvent).mockClear();
+
+    await harmonyImpl.handler({}, { udid: HARMONY.id, key: "Enter" }, HARMONY);
+
+    expect(harmonyKeyEvent).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, HARMONY_ENTER_KEYID);
   });
 });

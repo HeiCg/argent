@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { dispatchByPlatform, type PlatformImpl } from "../src/utils/cross-platform-tool";
 import { __resetDepCacheForTests, __primeDepCacheForTests } from "../src/utils/check-deps";
-import { UnsupportedOperationError } from "../src/utils/capability";
+import { NotImplementedOnPlatformError, UnsupportedOperationError } from "../src/utils/capability";
 import type { ToolCapability } from "@argent/registry";
 
 const capabilityBoth: ToolCapability = {
@@ -197,15 +197,22 @@ describe("dispatchByPlatform", () => {
       string
     >({
       toolId: "test",
-      capability: { ...capabilityBoth, harmony: { emulator: true }, chromium: { app: true } },
+      // Both kinds declared: a bare `harmony-<key>` resolves to kind 'device'
+      // and an `harmony-emulator-<name>` id to kind 'emulator', so declaring
+      // only one lets assertSupported reject the other before dispatch runs.
+      capability: {
+        ...capabilityBoth,
+        harmony: { device: true, emulator: true },
+        chromium: { app: true },
+      },
       ios: { handler: vi.fn() },
       android: { handler: vi.fn() },
       chromium: { handler: chromiumHandler },
     });
 
-    await expect(execute({}, { udid: "harmony-Phone_1" })).rejects.toThrow(
-      /not implemented .*harmony|harmony/i
-    );
-    expect(chromiumHandler).not.toHaveBeenCalled();
+    for (const udid of ["harmony-Phone_1", "harmony-emulator-argent_phone"]) {
+      await expect(execute({}, { udid })).rejects.toBeInstanceOf(NotImplementedOnPlatformError);
+      expect(chromiumHandler).not.toHaveBeenCalled();
+    }
   });
 });

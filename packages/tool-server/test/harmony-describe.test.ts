@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { harmonyDisplay, harmonyDumpLayout } from "../src/utils/harmony-uitest";
 import { describeHarmony } from "../src/tools/describe/platforms/harmony";
+import { formatDescribeTree } from "../src/tools/describe/format-tree";
 
 vi.mock("../src/utils/harmony-uitest", () => ({
   harmonyDisplay: vi.fn(),
@@ -68,5 +69,21 @@ describe("describeHarmony", () => {
     });
 
     expect((await describeHarmony(CONNECT_KEY)).hint).toMatch(/no windows/);
+  });
+
+  // `uitest dumpLayout` is a real parent/child tree, so the flat renderer would
+  // keep only the windows and drop every element inside them. Rendering what
+  // describeHarmony actually returns pins the source string and the renderer
+  // condition together: changing either loses the clock line below.
+  it("renders through the nested formatter, so elements inside a window survive", async () => {
+    vi.mocked(harmonyDisplay).mockResolvedValue({ width: 1216, height: 2688, screenOn: true });
+    vi.mocked(harmonyDumpLayout).mockResolvedValue(lockScreenDump());
+
+    const { tree, source } = await describeHarmony(CONNECT_KEY);
+    const out = formatDescribeTree(tree, { source });
+
+    expect(out).toContain("Source: harmony-uitest");
+    expect(out).toContain("Mode: nested");
+    expect(out).toContain("04:39");
   });
 });

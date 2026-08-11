@@ -14,6 +14,13 @@ vi.mock("../src/utils/android-input", async (importOriginal) => ({
   injectAndroidKeycode: vi.fn(),
 }));
 
+// HarmonyOS presses go over `uitest uiInput keyEvent` on the device; neutralise
+// it for the same reason as the adb call above.
+vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
+  harmonyKeyEvent: vi.fn(),
+}));
+
 // The Android branch preflights adb via `ensureDep("adb")` before injecting.
 // Stub it (default: adb present, a no-op) so the happy-path tests don't depend
 // on adb being installed on the test host (CI runs on a plain ubuntu image);
@@ -27,11 +34,28 @@ import { buttonTool, BUTTONS_BY_PLATFORM } from "../src/tools/button";
 import { UnsupportedOperationError } from "../src/utils/capability";
 import { ANDROID_BUTTON_KEYCODES, injectAndroidKeycode } from "../src/utils/android-input";
 import { DependencyMissingError, ensureDep } from "../src/utils/check-deps";
+import { harmonyKeyEvent } from "../src/utils/harmony-uitest";
 import { sendCommand } from "../src/utils/simulator-client";
 
 const iosUdid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 const androidUdid = "emulator-5554";
+const harmonyConnectKey = "025DEK236V035771";
+const harmonyUdid = `harmony-${harmonyConnectKey}`;
 const services = { simulatorServer: {} } as never;
+
+/**
+ * The `uitest uiInput keyEvent` name each HarmonyOS button must reach the device
+ * as, spelled out rather than derived, so a swapped pair (home ↔ back) fails.
+ * The loop below indexes this by every entry of `BUTTONS_BY_PLATFORM.harmony`,
+ * which is what keeps the tool's `HARMONY_BUTTON_KEYS[...]!` assertion honest:
+ * a button added to the accepted set without a key name to press turns this red
+ * instead of injecting `undefined`.
+ */
+const HARMONY_KEY_NAMES: Record<string, string> = {
+  home: "Home",
+  back: "Back",
+  power: "Power",
+};
 
 describe("button tool — per-platform validation", () => {
   it("rejects `back` on iOS (no hardware back button) instead of a silent no-op", async () => {
@@ -130,6 +154,57 @@ describe("button tool — per-platform validation", () => {
       expect(injectAndroidKeycode).not.toHaveBeenCalled();
     }
   });
+
+  it("rejects `volumeUp` on HarmonyOS — `uitest` names only Home/Back/Power", async () => {
+    // `uitest uiInput keyEvent` answers `No Error` to any keyID it is handed, so
+    // an unnamed button would inject something unverified and still resolve
+    // `{ pressed }`. It has to be refused here or not at all.
+    await expect(
+      buttonTool.execute(services, { udid: harmonyUdid, button: "volumeUp" })
+    ).rejects.toBeInstanceOf(UnsupportedOperationError);
+    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("injects the matching key name for EVERY HarmonyOS button, over hdc only", async () => {
+    for (const button of BUTTONS_BY_PLATFORM.harmony) {
+      vi.mocked(harmonyKeyEvent).mockClear();
+      vi.mocked(sendCommand).mockClear();
+      vi.mocked(injectAndroidKeycode).mockClear();
+      vi.mocked(ensureDep).mockClear();
+      await expect(buttonTool.execute(services, { udid: harmonyUdid, button })).resolves.toEqual({
+        pressed: button,
+      });
+      // The connect key, not the `harmony-` prefixed device id — `uitest` is
+      // addressed by what `hdc list targets` reports.
+      expect(harmonyKeyEvent).toHaveBeenCalledWith(harmonyConnectKey, HARMONY_KEY_NAMES[button]);
+      // hdc is preflighted so a missing connector fails with a 424 install hint.
+      expect(ensureDep).toHaveBeenCalledWith("hdc");
+      // Neither of the other backends is touched — in particular the press must
+      // not fall through to the sim-server HID path, which no HarmonyOS device
+      // is behind.
+      expect(sendCommand).not.toHaveBeenCalled();
+      expect(injectAndroidKeycode).not.toHaveBeenCalled();
+    }
+  });
+
+  it("preflights hdc before injecting so a missing connector surfaces as 424, not 500", async () => {
+    vi.mocked(harmonyKeyEvent).mockClear();
+    vi.mocked(ensureDep).mockRejectedValueOnce(
+      new DependencyMissingError(["hdc"], "install the HarmonyOS command line tools")
+    );
+    await expect(
+      buttonTool.execute(services, { udid: harmonyUdid, button: "home" })
+    ).rejects.toBeInstanceOf(DependencyMissingError);
+    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an hdc transport failure as a throw, not a silent `{ pressed }`", async () => {
+    vi.mocked(ensureDep).mockResolvedValueOnce(undefined);
+    vi.mocked(harmonyKeyEvent).mockRejectedValueOnce(new Error("[Fail]Not match target found"));
+    await expect(
+      buttonTool.execute(services, { udid: harmonyUdid, button: "home" })
+    ).rejects.toThrow(/Not match target found/);
+  });
 });
 
 describe("button tool — service declaration", () => {
@@ -137,6 +212,12 @@ describe("button tool — service declaration", () => {
     // Android presses go over adb; declaring sim-server would needlessly resolve +
     // spawn it (up to a 30s ready-wait) and could throw before the adb path runs.
     expect(buttonTool.services({ udid: androidUdid, button: "back" })).toEqual({});
+  });
+
+  it("does not declare the simulator-server service for a HarmonyOS target", () => {
+    // Same reason as Android: the press goes over hdc, and no simulator-server
+    // controller exists for a HarmonyOS device to spawn one against.
+    expect(buttonTool.services({ udid: harmonyUdid, button: "home" })).toEqual({});
   });
 
   it("still declares the simulator-server service eagerly for an iOS target", () => {

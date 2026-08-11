@@ -1,8 +1,20 @@
 import { describe, it, expect, vi } from "vitest";
 import { Registry, FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
+
+// The harmony backend rejects an unknown key before injecting, so these tests
+// never reach the device — stub the transport anyway, so a regression that
+// dropped the guard fails on the assertion rather than shelling out to `hdc`.
+vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
+  harmonyTypeText: vi.fn(async () => {}),
+  harmonyKeyEvent: vi.fn(async () => {}),
+}));
+
 import { InvalidToolInputError } from "../src/utils/capability";
 import { typeSimulatorServer } from "../src/tools/keyboard/simulator-server-keys";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
+import { harmonyImpl } from "../src/tools/keyboard/platforms/harmony";
+import { harmonyKeyEvent, harmonyTypeText } from "../src/utils/harmony-uitest";
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
 import { injectAndroidNamedKey, injectAndroidText } from "../src/utils/android-input";
 
@@ -146,5 +158,23 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
       injectAndroidNamedKey("emulator-5554", "constructor"),
       FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED
     );
+  });
+
+  it("harmony: prototype-chain key name → 400 + KEYBOARD_KEY_UNSUPPORTED", async () => {
+    const harmonyDevice: DeviceInfo = { id: "harmony-KEY", platform: "harmony", kind: "device" };
+    // `String(keycode)` reaches `uiInput keyEvent ${key}` unquoted, so a
+    // prototype value would be interpolated into the remote shell line rather
+    // than pressing anything — and with `text` alongside it, the reject must
+    // still land before a single character is typed.
+    for (const key of ["constructor", "__proto__", "toString"]) {
+      vi.mocked(harmonyKeyEvent).mockClear();
+      vi.mocked(harmonyTypeText).mockClear();
+      await expectInvalidInput(
+        harmonyImpl.handler({}, { udid: harmonyDevice.id, text: "hi", key }, harmonyDevice),
+        FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED
+      );
+      expect(harmonyKeyEvent).not.toHaveBeenCalled();
+      expect(harmonyTypeText).not.toHaveBeenCalled();
+    }
   });
 });
