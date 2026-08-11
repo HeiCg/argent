@@ -1109,12 +1109,11 @@ interface BatchFlowResult {
 
 /**
  * Run every discovered flow in `dir` sequentially. Prints each flow's failing
- * steps and its outcome (no live step lines), then a flow-level summary; a
- * flow failing its steps — or
- * one the tool-server rejects up front (a bad YAML, an unparseable step, a
- * device it cannot resolve) — lets the batch continue, while an infra error
- * (transport throw, unclassified failure, non-report result) stops it and
- * counts the remaining flows skipped.
+ * steps and its outcome (no live step lines), then a flow-level summary; a flow
+ * failing its steps — or one the tool-server rejects up front (a bad YAML, an
+ * unparseable step, a device it cannot resolve) — lets the batch continue,
+ * while an infra error (transport throw, unclassified failure, non-report
+ * result) stops it and counts the remaining flows skipped.
  */
 async function runFlowDirectory(
   dir: string,
