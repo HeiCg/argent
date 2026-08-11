@@ -30,6 +30,9 @@ vi.mock("../src/utils/check-deps", async () => {
 });
 
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
+import { createDescribeTool } from "../src/tools/describe";
+import { assertSupported } from "../src/utils/capability";
+import { resolveDevice } from "../src/utils/device-info";
 
 const registry = {} as Registry;
 const INSTANCE = "Phone_1";
@@ -219,6 +222,27 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
     await expect(boot({})).rejects.toThrow(/is not found\. Please create the device/);
     await expect(boot({})).rejects.not.toThrow(/create one in DevEco Studio/);
+  });
+
+  it("returns an id the interaction tools accept, which the instance id is not", async () => {
+    targets([PHONE], [PHONE, emulatorTarget]);
+
+    const { udid } = (await boot({})) as { udid: string };
+
+    // The point of resolving the key at all: what boot-device hands back has to
+    // be drivable. Both halves matter — the instance id is rejected by the same
+    // gate, so a payload carrying it strands the caller.
+    const describe = createDescribeTool({} as Registry);
+    expect(() =>
+      assertSupported("describe", describe.capability, resolveDevice(udid))
+    ).not.toThrow();
+    expect(() =>
+      assertSupported(
+        "describe",
+        describe.capability,
+        resolveDevice(`harmony-emulator-${INSTANCE}`)
+      )
+    ).toThrow(/not supported on harmony emulator/);
   });
 
   it("starts the instance behind a harmony-emulator- udid", async () => {
