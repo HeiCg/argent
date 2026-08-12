@@ -88,7 +88,7 @@ An expo dev build starts on the `DEVELOPMENT SERVERS` chooser in place of the ap
 - When Metro is not on port 8081, set `metroPort`.
 - When more than one bundler is available, set `metroPort`.
 - Do not write a `when:` block to tap the chooser on Android. The launch dismisses the chooser before your step can run, so the step meets a different screen. The order of the rows also changes between launches. Where no launch does the recovery — iOS, or a `tool: restart-app` step — a `when:` block is the workaround.
-- Do not keep a recorded tap on a chooser row either. On Android the recorder leaves that tap out of the file and says so, because the launch performs it at replay. In a flow recorded before that, or on any other platform, delete the step by hand.
+- Do not keep a recorded tap on a chooser row either. The recorder leaves that tap out of the file and says so, but only where the launch performs it at replay: on Android, and only when the step before it is the recorded `launch:`. It keeps the tap after a `tool: restart-app` step, after a `run:` fragment, and on every other platform, because there the tap is what gets past the chooser. Delete such a step by hand only in a flow recorded before this, or where a launch does the recovery for it.
 - If the chooser has no live row for the port, the launch fails. Start Metro on that port, or correct `metroPort`. This failure is about the bundler, not about the app.
 - The chooser goes away when the bundler starts to serve. The app is not ready at that moment. Gate the next step on an element the app itself draws.
 
