@@ -64,19 +64,22 @@ export interface ActionEnv {
   device: DeviceInfo;
   signal?: AbortSignal;
   /**
-   * The app the most recent `launch` step started, once one has — including a
-   * launch inside a nested `run:`, which replaces it and is not restored
-   * afterwards, because that step's `restart-app` is what fronted the device.
-   * Undefined until the first launch runs, so a fragment that never launches
-   * (it is brought to its entry state out of band) has none; a fragment MAY
-   * still carry a launch step in a later position, and then it has one.
+   * Bundle id of the last successful native `launch:` in this RUN — nested
+   * `run:` flows share it (ExecState is per-run, so a nested launch updates the
+   * whole run's hint, matching "a nested e2e launch restarts its app").
+   * Undefined until a launch runs, so a fragment brought to its entry state out
+   * of band has none; a fragment MAY still carry a launch step in a later
+   * position, and then it has one. Cleared by `tool:` steps that can change the
+   * foreground app (launch-app, restart-app, open-url, button, reinstall-app).
    *
-   * The tree source uses it to explain a read it could not take: on iOS,
-   * auto-targeting resolves only out of the connected list, so an app that is
-   * not connected cannot be named by the very lookup whose failure needs
-   * explaining. This id comes from the flow file instead and survives that.
+   * iOS tree reads use it for the two things auto-targeting cannot do, both
+   * following from it resolving only out of the connected list: as an arbiter
+   * when auto-resolution's own probe times out, and to name the app whose
+   * disconnection needs explaining when that list is empty — see
+   * `queryFullHierarchyTree`. Never to override a resolution that answered, so
+   * foreground-likeness guards keep firing whenever the app answers at all.
    */
-  launchedBundleId?: string;
+  launchedNativeApp?: string;
 }
 
 /** Outcome of a selector directive: ok, or a machine-readable reason it failed. */
@@ -366,7 +369,7 @@ export async function settleTree(env: ActionEnv): Promise<DescribeNode | undefin
     if (env.signal?.aborted) return undefined;
     let tree: DescribeNode | undefined;
     try {
-      ({ tree } = await fetchFlowTree(env.registry, env.device, env.launchedBundleId));
+      ({ tree } = await fetchFlowTree(env.registry, env.device, env.launchedNativeApp));
     } catch (err) {
       // transient describe failure mid-navigation — retry until the deadline
       lastError = err instanceof Error ? err : new Error(String(err));
@@ -495,7 +498,7 @@ async function waitForFocus(
   for (;;) {
     if (env.signal?.aborted) return;
     try {
-      const { tree, source } = await fetchFlowTree(env.registry, env.device, env.launchedBundleId);
+      const { tree, source } = await fetchFlowTree(env.registry, env.device, env.launchedNativeApp);
       if (!FOCUS_REPORTING_SOURCES.has(source)) return;
       const target = flowSelectorToFrame(tree, into) ?? tappedFrame;
       if (collectFocused(tree, []).some((n) => framesOverlap(n.frame, target))) return;
@@ -882,7 +885,7 @@ async function runPinch(
  */
 async function fetchScreenAspect(env: ActionEnv): Promise<number | undefined> {
   try {
-    const { screen } = await fetchFlowTree(env.registry, env.device, env.launchedBundleId);
+    const { screen } = await fetchFlowTree(env.registry, env.device, env.launchedNativeApp);
     return screen && screen.width > 0 && screen.height > 0
       ? screen.width / screen.height
       : undefined;
@@ -1059,7 +1062,7 @@ async function waitForCondition(
   for (;;) {
     if (env.signal?.aborted) return ABORTED_OUTCOME;
     try {
-      const data = await fetchFlowTree(env.registry, env.device, env.launchedBundleId);
+      const data = await fetchFlowTree(env.registry, env.device, env.launchedNativeApp);
       lastMatches = flowFindAll(data.tree, step.selector);
       fetchError = undefined;
       everMatched ||= lastMatches.length > 0;
@@ -1420,7 +1423,11 @@ async function waitForIdle(
     // backend), so serializing them would double the round without buying
     // anything.
     const [read, frame] = await Promise.all([
-      settleWithin(fetchFlowTree(env.registry, env.device), roundBudget, env.signal).then((r) => {
+      settleWithin(
+        fetchFlowTree(env.registry, env.device, env.launchedNativeApp),
+        roundBudget,
+        env.signal
+      ).then((r) => {
         answeredReadMs = Date.now() - roundStartedAt;
         return r;
       }),

@@ -300,10 +300,15 @@ const POST_LAUNCH_SETTLE_MS = 1500;
  * the launch step reports the problem where it belongs, with the measured
  * reason the connection never came up.
  *
+ * The budget is 15 s because that connect is itself gated on the app's main
+ * thread, which a heavy first-ever cold start (Hermes first parse, asset decode
+ * on a loaded host) can pin for many seconds. It matches the getFullHierarchy
+ * RPC tier — both wait out the same class of stall.
+ *
  * Exported so the gate's own reason text can be pinned against this value
  * rather than a literal that drifts from it.
  */
-export const NATIVE_READY_TIMEOUT_MS = 8000;
+export const NATIVE_READY_TIMEOUT_MS = 15000;
 const NATIVE_READY_POLL_MS = 250;
 
 /**
@@ -316,6 +321,20 @@ const NATIVE_READY_POLL_MS = 250;
  * literal that drifts from either constant.
  */
 export const LAUNCH_TO_VERDICT_MS = POST_LAUNCH_SETTLE_MS + NATIVE_READY_TIMEOUT_MS;
+
+/**
+ * `tool:` steps that can change or relaunch the foreground app — running one
+ * invalidates {@link ActionEnv.launchedNativeApp}. `button` is included for
+ * its `home` case; distinguishing button kinds here would couple this list to
+ * that tool's arg schema for little gain.
+ */
+const FOREGROUND_CHANGING_TOOLS = new Set([
+  "launch-app",
+  "restart-app",
+  "reinstall-app",
+  "open-url",
+  "button",
+]);
 
 /**
  * Poll until native-devtools is connected for `bundleId`. Returns null once
@@ -612,11 +631,6 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
       reason: `no app id declared for platform "${device.platform}" — add a launch entry for it`,
     };
   }
-  // The app this run is about, for the tree source to name in the states where
-  // nothing is connected and auto-targeting therefore cannot. A later launch —
-  // including one inside a nested `run:` — replaces it, which is what the
-  // device shows: its `restart-app` is what fronted that app.
-  state.launchedBundleId = bundleId;
   try {
     await invokeOnDevice(env, "restart-app", { bundleId });
   } catch (err) {
@@ -631,6 +645,11 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
   // it, or a cancelled gate would read as a launch that verified readiness.
   if (signal?.aborted) return ABORTED_OUTCOME;
   if (gate) return { ok: false, reason: gate };
+  // Remember the launched app for the rest of the RUN (nested `run:` flows
+  // share this state, so a nested launch retargets the whole run — see
+  // ActionEnv.launchedNativeApp). iOS tree reads use it to explain a read they
+  // could not take, and to arbitrate a target auto-resolution stalled out on.
+  state.launchedNativeApp = bundleId;
   return { ok: true };
 }
 
@@ -2387,6 +2406,14 @@ async function execLeafStep(
         return { ...base, status: "skip", tool: step.name, reason: "run aborted during delay" };
       }
       try {
+        // These sub-tools can change (or relaunch) the foreground app, so the
+        // `launch:`-derived hint no longer names what is on screen. Cleared
+        // BEFORE invoking: a tool that throws mid-way may still have switched
+        // apps, and a stale hint is worse than no hint (tree reads fall back
+        // to plain auto-resolution, today's behavior).
+        if (FOREGROUND_CHANGING_TOOLS.has(step.name)) {
+          state.launchedNativeApp = undefined;
+        }
         const result = await invokeSubTool(registry, ctx, step.name, args);
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;

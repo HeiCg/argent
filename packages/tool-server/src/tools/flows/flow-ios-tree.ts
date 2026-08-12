@@ -1,4 +1,4 @@
-import type { DeviceInfo, Registry } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, type DeviceInfo, type Registry } from "@argent/registry";
 import {
   adviseOnUninjectedApp,
   isInjectableBundleId,
@@ -345,15 +345,16 @@ async function unreadableHierarchyReason(
  * `fetchFlowTree`), so the caller's retry loop either rides out a transient
  * failure or surfaces this message as the step's failure reason.
  *
- * `launchedBundleId` is the app the run's `launch` step started, when it had
- * one. Auto-targeting cannot name an app that is not connected, and those are
- * exactly the cases worth explaining, so this id is what the explanation is
- * measured for.
+ * `launchedNativeApp` is the app the run's `launch` step started, when it had
+ * one. It serves the two reads auto-targeting cannot, both following from it
+ * resolving only out of the connected list: with that list empty it names the
+ * app whose disconnection needs explaining, and when auto-resolution's own probe
+ * times out mid-stall it arbitrates the target.
  */
 export async function queryFullHierarchyTree(
   registry: Registry,
   device: DeviceInfo,
-  launchedBundleId?: string
+  launchedNativeApp?: string
 ): Promise<DescribeTreeData> {
   let nativeApi: NativeDevtoolsApi;
   try {
@@ -376,14 +377,38 @@ export async function queryFullHierarchyTree(
   // The empty list is tested directly rather than by catching and classifying
   // the throw: the failure code travels on a module-local symbol, so a
   // duplicate `@argent/registry` instance would read it as absent and silently
-  // fall back to the stock auto-target message. Auto-targeting's OTHER errors
-  // — ambiguous frontmost, a lone connected app that isn't foreground-like —
-  // arise only with a non-empty list, already name their own next step, and so
-  // propagate unwrapped from the call below.
-  if (launchedBundleId !== undefined && nativeApi.listConnectedBundleIds().length === 0) {
-    throw new Error(await unreadableHierarchyReason(nativeApi, launchedBundleId));
+  // fall back to the stock auto-target message.
+  if (launchedNativeApp !== undefined && nativeApi.listConnectedBundleIds().length === 0) {
+    throw new Error(await unreadableHierarchyReason(nativeApi, launchedNativeApp));
   }
-  const target = await resolveNativeTargetApp(nativeApi, undefined);
+  // Auto-targeting's remaining errors — ambiguous frontmost, a lone connected
+  // app that isn't foreground-like — already carry the actionable next step, so
+  // they propagate unwrapped, with one exception. Auto-resolution's
+  // `Application.getState` probe hops onto the app's MAIN thread; an app whose
+  // main thread is momentarily pinned (heavy cold start: first Hermes parse,
+  // Lottie decode) times that probe out even though it is exactly the app the
+  // flow launched and is about to read. When that happens — and ONLY on the
+  // timeout failure — fall back to the app this run's `launch:` started,
+  // provided its devtools connection is still up. A resolution that ANSWERS
+  // (including the deliberate "single app but backgrounded" error) is always
+  // preferred: the arbiter never overrides a guard that fired, it only rides out
+  // a probe the stall made unanswerable.
+  let target: { bundleId: string };
+  try {
+    target = await resolveNativeTargetApp(nativeApi, undefined);
+  } catch (err) {
+    const timedOut =
+      getFailureSignal(err)?.error_code === FAILURE_CODES.NATIVE_DEVTOOLS_RPC_TIMEOUT;
+    if (
+      timedOut &&
+      launchedNativeApp !== undefined &&
+      nativeApi.listConnectedBundleIds().includes(launchedNativeApp)
+    ) {
+      target = { bundleId: launchedNativeApp };
+    } else {
+      throw err;
+    }
+  }
 
   const rawResult = (await nativeApi.queryViewHierarchy(
     target.bundleId,

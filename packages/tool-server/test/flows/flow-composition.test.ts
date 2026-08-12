@@ -45,11 +45,11 @@ vi.mock("../../src/tools/devices/boot-electron", () => ({
   killChromiumByPort: vi.fn(),
 }));
 
-// Four tests here drive the launch gate's real 1.5 s settle + 8 s connect wait
+// Four tests here drive the launch gate's real 1.5 s settle + 15 s connect wait
 // in fake time, pumping a real event-loop turn between advances so the run's
 // disk I/O (it re-reads the flow off disk between steps) can settle. Every pump
 // is a real macrotask, so the cost is the number of pumps, not the fake
-// duration — and under full-suite parallel load ~40 of them per test outran
+// duration — and under full-suite parallel load dozens of them per test outran
 // vitest's 5 s default, failing tests that are not actually slow.
 //
 // Widening the advance is NOT the fix: the pumps are what let that I/O run, so
@@ -2716,8 +2716,8 @@ describe("flow composition (run:)", () => {
 
     // Leave setImmediate real: the run reads the flow off disk between sleeps,
     // and that I/O needs actual event-loop turns to settle. Pumping a real turn
-    // between advances lets the 1.5 s settle and the 8 s connect timeout elapse
-    // in fake time without the test spending ten real seconds on them.
+    // between advances lets the 1.5 s settle and the 15 s connect timeout elapse
+    // in fake time without the test spending those seconds in real time.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
       const pending = createRunFlowTool(registry).execute(
@@ -2794,7 +2794,7 @@ describe("flow composition (run:)", () => {
 
     // The `not.toContain` guards below compare rendered substrings, so they are
     // only meaningful while one figure is not a suffix of the other — with
-    // 8000/9500 they are distinct, but e.g. 500/1500 would make
+    // 15000/16500 they are distinct, but e.g. 500/1500 would make
     // `"1500 ms".includes("500 ms")` true and fail them for the wrong reason.
     // Pin the property those guards actually need, not merely the ordering.
     it("renders a launch-to-verdict spend the connect wait cannot be read into", () => {
