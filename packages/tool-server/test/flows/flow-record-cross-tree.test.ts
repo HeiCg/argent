@@ -483,13 +483,13 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(await recordedSteps("blind")).toHaveLength(1);
   });
 
-  // The unmet warning tells the author they may delete the step, and that
-  // advice is mode-dependent: in host mode the recorder re-reads the file
-  // before each append, so a deletion sticks; against a remote client the
-  // in-memory copy is authoritative and the next append writes the step
-  // straight back. Every other test here records in host mode, so the remote
-  // half of that fork never ran.
-  it("records against a remote client, and still forks the delete advice", async () => {
+  // The unmet warning tells the author to delete the failed step, and it must
+  // say when: after the finish, in both persistence modes. Against a remote
+  // client the in-memory copy is authoritative and the next append writes the
+  // step straight back; in host mode the re-read makes the edit part of the
+  // take and renumbers the steps the verdicts are anchored to. Every other
+  // test here records in host mode, so the remote arm never ran.
+  it("records against a remote client, and defers the delete to the finish", async () => {
     await startRemoteRecording("remoteunmet");
 
     const result = await recordWait(
@@ -500,7 +500,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     const warning = warningOf(result, "remoteunmet");
     expect(warning).toContain("the wait itself never held");
-    expect(warning).toContain("after `flow-finish-recording`");
+    expect(warning).toContain("after `flow-finish-recording` rather than mid-recording");
+    // The advice the create-flow skill forbids in two places, and which is what
+    // renumbers the steps a verdict is anchored to.
+    expect(warning).not.toContain("in host (local) mode, where the recorder re-reads");
     // The host never wrote a file in this mode, so the step lives in memory —
     // and the verdict still has to travel with it.
     expect(result.savedTo).not.toBe(null);

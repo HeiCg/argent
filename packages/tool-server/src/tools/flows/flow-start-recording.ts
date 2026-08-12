@@ -103,10 +103,12 @@ as the flow's \`launch\` step); for a reusable fragment, skip that and pass
 executionPrerequisite instead. Use flow-add-echo to add labels. Call
 flow-finish-recording when done.
 
-If a recorded step turns out to be wrong, you can edit the .yaml file directly
-to remove or reorder steps. Against a remote client, only after
-flow-finish-recording: the in-memory copy is authoritative there, and every
-write serializes it over your edit.`,
+If a recorded step turns out to be wrong, edit the .yaml file directly to
+remove or reorder steps - after flow-finish-recording, not during the
+recording. Against a remote client the in-memory copy is authoritative and
+every write serializes it over your edit; in host mode the recorder re-reads
+the file before each append, so a mid-recording edit renumbers the steps and
+costs the finish the cross-tree verdicts anchored to them.`,
   zodSchema,
   fileInputs,
   services: () => ({}),

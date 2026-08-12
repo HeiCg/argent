@@ -439,16 +439,18 @@ const UNMET_WAIT_WARNING =
   "recorded, but the wait itself never held — `await-ui-element` reports an unmet condition by " +
   "returning success:false instead of failing, so the step was written to the flow anyway. At " +
   "replay an unmet wait FAILS the step and stops the run there, so re-record it once the " +
-  // "Delete it from the .yaml" is only unconditionally true in host mode,
-  // where the recorder re-reads the file before each append. Against a remote
+  // Deleting AFTER the finish, which is the rule the create-flow skill states
+  // in two places and the one this warning used to contradict by authorising a
+  // host-mode delete mid-recording. Two reasons it may not: against a remote
   // client the in-memory copy is authoritative and the next append writes the
-  // step straight back — silently, since nothing reports the restore. The tool
-  // description carries that caveat for mid-recording edits generally; a
-  // warning that tells you to make one has to carry it too.
-  "condition can actually hold, or delete the step from the .yaml — in host (local) mode, where " +
-  "the recorder re-reads the file before each append; against a remote client the in-memory copy " +
-  "is authoritative mid-recording, so delete it after `flow-finish-recording` instead. " +
-  "The cross-tree re-probe was " +
+  // step straight back — silently, since nothing reports the restore; and in
+  // host mode the re-read makes the edit part of the take, renumbering the
+  // steps the finish's verdicts are anchored to, which drops them.
+  "condition can actually hold, and delete the failed step after `flow-finish-recording` rather " +
+  "than mid-recording: against a remote client the in-memory copy is authoritative and the next " +
+  "append writes the step straight back, and in host mode the recorder re-reads the file before " +
+  "each append, so an edit that renumbers the steps costs the finish the verdicts it would " +
+  "otherwise carry. The cross-tree re-probe was " +
   "skipped: it asks whether a check that PASSED would survive conversion to `await:`/`assert:`, " +
   "and this one did not pass";
 
@@ -1222,7 +1224,7 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     description: `Execute a tool call and record it as a step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). Use when recording a flow and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier (otherwise coordinates are kept with a warning); a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow; restart-app has no chromium support, so a chromium flow records as a fragment — add the \`launch: { chromium: <app path> }\` line to the YAML afterward, deleting the executionPrerequisite line if one was recorded: a flow that starts with a launch must not declare it).
 A recorded \`await-ui-element\` that PASSED is re-probed against the tree the RUNNER resolves \`await:\`/\`assert:\` directives against, which is NOT the tree the live call read; a wait that came back \`{ success: false }\` is not probed at all, and its warning says so; when the condition does not hold there the step is still recorded and \`message\` carries a warning to read before converting — whether the conversion actually breaks depends on WHY the two disagree, since a screen that moved on between the live wait and the re-probe reads the same way. If that tree could not be read at all, the warning says so instead: the conversion is UNKNOWN, not known-bad. The probe judges the selector exactly as recorded, so write the conversion in the strict map spelling (\`{ visible: { text: Continue } }\`, copying the step's \`selector:\`) — the bare-string spelling (\`{ visible: Continue }\`) re-parses as a loose selector that resolves identifier-first and falls back to text, which is a different check. \`message\` also warns when the live wait itself came back \`{ success: false }\` — that tool reports a failed wait by returning rather than throwing, so the step is recorded either way. That warning names the cause, because only one of them judges the condition: a genuine miss will stop the run at replay, while a wait whose tree source was unreadable, or one that was cancelled, observed nothing and leaves the condition UNKNOWN.
 Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded.
-If a step was recorded by mistake, edit the .yaml to remove it — against a remote client, only after \`flow-finish-recording\`: the in-memory copy is authoritative there, and every write serializes it over your edit.`,
+If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-recording\` rather than during the recording: against a remote client the in-memory copy is authoritative and every write serializes it over your edit, and in host mode a mid-recording edit renumbers the steps, which costs the finish the cross-tree verdicts anchored to them.`,
     zodSchema,
     services: () => ({}),
     async execute(_services, params, ctx) {
