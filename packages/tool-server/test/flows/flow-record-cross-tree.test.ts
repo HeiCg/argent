@@ -261,6 +261,34 @@ function warningOf(result: { message: string }, name: string): string | undefine
   return rest === "" ? undefined : rest.replace(/^ — /, "");
 }
 
+/**
+ * The verdicts a finished `summary` carries, keyed by the step number each one
+ * follows.
+ *
+ * A verdict is its own ARRAY ELEMENT, indented under its step: the finish has
+ * no bespoke MCP renderer, so the result is stringified with
+ * `JSON.stringify(value, null, 2)` and a newline folded into the step's own
+ * element would reach the agent escaped, inside one long string. This also
+ * pins the association a positional index would only assume.
+ */
+function verdictsIn(summary: string[]): Map<number, string> {
+  const prefix = "   warning: ";
+  const byStep = new Map<number, string>();
+  let step: number | undefined;
+  for (const line of summary) {
+    const numbered = /^(\d+)\. /.exec(line);
+    if (numbered) {
+      step = Number(numbered[1]);
+      continue;
+    }
+    // Anything that is not a step line must be a verdict for the step above it.
+    expect(line.startsWith(prefix)).toBe(true);
+    expect(step).toBeDefined();
+    byStep.set(step as number, line.slice(prefix.length));
+  }
+  return byStep;
+}
+
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "flow-cross-tree-"));
   __resetRecordingsForTesting();
@@ -1601,11 +1629,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "polish", project_root: tmpDir }
     );
 
-    expect(finished.summary).toHaveLength(2);
+    // Two step lines plus the one verdict line, each its own element.
+    expect(finished.summary).toHaveLength(3);
+    const verdicts = verdictsIn(finished.summary);
     // The verdict is anchored to the step it judged, not to the recording.
-    expect(finished.summary[0]).not.toContain("warning:");
-    expect(finished.summary[1]).toContain("warning:");
-    expect(finished.summary[1]).toContain("does NOT hold against the tree the runner resolves");
+    expect([...verdicts.keys()]).toEqual([2]);
+    expect(verdicts.get(2)).toContain("does NOT hold against the tree the runner resolves");
     // …and `message` says one exists, for a caller that reads only that.
     expect(finished.message).toContain("1 step carries a cross-tree warning");
   });
@@ -1642,7 +1671,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "neverheld", project_root: tmpDir }
     );
 
-    expect(finished.summary[0]).toContain("the wait itself never held");
+    expect(verdictsIn(finished.summary).get(1)).toContain("the wait itself never held");
     expect(finished.message).toContain("1 step recorded a wait that did not pass");
     expect(finished.message).not.toContain("cross-tree warning");
   });
@@ -1690,10 +1719,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "echolast", project_root: tmpDir }
     );
 
-    expect(finished.summary).toHaveLength(3);
-    expect(finished.summary[0]).toContain("warning:");
-    expect(finished.summary[1]).toContain("warning:");
-    expect(finished.summary[2]).not.toContain("warning:");
+    // Three steps and two verdicts, interleaved.
+    expect(finished.summary).toHaveLength(5);
+    expect([...verdictsIn(finished.summary).keys()]).toEqual([1, 2]);
+    expect(finished.summary[4]).toContain("3. echo:");
     // The plural arm of the count, and the only place it is asserted.
     expect(finished.message).toContain("2 steps carry a cross-tree warning");
   });
@@ -1791,6 +1820,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // Step 1 is now the "Sign in" wait, which was judged clean; the verdict that
     // was filed under 1 judged a step that is no longer in the file.
     expect(finished.summary[0]).toContain('"Sign in"');
+    expect(verdictsIn(finished.summary).size).toBe(0);
     for (const line of finished.summary) expect(line).not.toContain("warning:");
     expect(finished.message).toBe('Finished recording "deleted" flow (2 steps)');
   });
@@ -1819,9 +1849,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "kept", project_root: tmpDir }
     );
 
-    expect(finished.summary).toHaveLength(2);
-    expect(finished.summary[0]).toContain("warning:");
-    expect(finished.summary[1]).toContain("warning:");
+    expect([...verdictsIn(finished.summary).keys()]).toEqual([1, 2]);
     expect(finished.message).toContain("2 steps carry a cross-tree warning");
   });
 

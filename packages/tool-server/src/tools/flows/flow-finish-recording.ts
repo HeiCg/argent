@@ -67,7 +67,14 @@ const zodSchema = z.object({
  *
  * On its own line rather than appended to the step text: the verdict runs to
  * paragraphs, and running it into the step line would bury the step it belongs
- * to.
+ * to. That line is its own ARRAY ELEMENT, not a newline inside the step's:
+ * `flow-finish-recording` has no bespoke MCP renderer, so its result reaches
+ * the agent through `JSON.stringify(value, null, 2)` — where an embedded
+ * newline is escaped and the verdict arrives inside one long string, which is
+ * the opposite of what a separate line is for. One element per line is what
+ * that renderer actually prints on its own line. The indent and the `warning:`
+ * prefix keep it attached to the step above it, whose own line still opens with
+ * its number.
  *
  * Which verdicts survive to be folded in is {@link anchoredWarnings}' answer.
  */
@@ -76,9 +83,9 @@ function attachStepWarnings(
   warnings: Map<number, RecordedStepWarning>
 ): string[] {
   if (warnings.size === 0) return summary;
-  return summary.map((line, i) => {
+  return summary.flatMap((line, i) => {
     const recorded = warnings.get(i + 1);
-    return recorded ? `${line}\n   warning: ${recorded.warning}` : line;
+    return recorded ? [line, `   warning: ${recorded.warning}`] : [line];
   });
 }
 
@@ -184,7 +191,7 @@ export const flowFinishRecordingTool: ToolDefinition<
       `Failed to finish recording of flow ${params.name}: ${failureSignal.error_code}`,
   },
   description: `Finish recording the flow named by \`name\` + \`project_root\`, leaving recordings under any other key untouched. Returns { message, path, executionPrerequisite, steps, summary, flowFile, savedTo } - a summary of all recorded steps plus the final YAML. Use when you have added all desired steps and want to finalize the flow file. Fails if that flow has no recording in progress.
-Every warning flow-add-step raised on a recorded \`await-ui-element\` is repeated on that step's own \`summary\` line, and \`message\` counts them by kind. A step that carries a cross-tree warning was re-probed against the runner's tree: read it before converting that wait to \`await:\`/\`assert:\`, which is what the verdict is about and what this moment is for. A step that recorded a wait which did not pass was never probed at all - that wait failed live, and an unmet one stops the run at replay, so read those before replaying.
+Every warning flow-add-step raised on a recorded \`await-ui-element\` is repeated in \`summary\` as a \`warning:\` line of its own, right below the step it judges, and \`message\` counts them by kind. A step that carries a cross-tree warning was re-probed against the runner's tree: read it before converting that wait to \`await:\`/\`assert:\`, which is what the verdict is about and what this moment is for. A step that recorded a wait which did not pass was never probed at all - that wait failed live, and an unmet one stops the run at replay, so read those before replaying.
 You can still edit the .yaml file directly afterwards to remove or reorder steps.`,
   zodSchema,
   services: () => ({}),
