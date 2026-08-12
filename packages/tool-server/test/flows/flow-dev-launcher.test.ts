@@ -764,6 +764,79 @@ describe("getting a launch past the chooser", () => {
     expect(calls).toEqual([]);
   });
 
+  it("gives up on a screen that never draws anything", async () => {
+    // The appear wait exists for a cold dev client that has not painted yet.
+    // An app whose first screen is genuinely wordless never ends it, so the
+    // deadline does — and the launch then proceeds as if this module were not
+    // here, rather than holding the run open.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+      reads(splash);
+      const { calls, actionEnv } = env();
+
+      const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map());
+      await vi.advanceTimersByTimeAsync(13_000);
+
+      await expect(pending).resolves.toEqual({ handled: false });
+      expect(calls).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the appear wait the moment the run is cancelled", async () => {
+    // Cancelled while polling a splash: the wait must end on the abort, not on
+    // its own 12s deadline.
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(splash);
+    const controller = new AbortController();
+    const { calls, actionEnv } = env(() => ({ ok: true }), controller.signal);
+
+    const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map());
+    controller.abort();
+
+    await expect(pending).resolves.toEqual({ handled: false });
+    expect(calls).toEqual([]);
+  });
+
+  it("reports the server it opened when the run is cancelled during the exit wait", async () => {
+    // The chooser IS dismissed at this point, so the outcome is honest — and
+    // `runLaunch` re-checks the signal on return, which is what turns it into
+    // the run's skip rather than a pass that verified nothing.
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    // The chooser never leaves, so only the abort can end the exit wait.
+    reads(launcherTree());
+    const controller = new AbortController();
+    const { actionEnv } = env((tool) => {
+      if (tool === "gesture-tap") controller.abort();
+      return { ok: true };
+    }, controller.signal);
+
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({ handled: true, ok: true, url: "http://10.0.2.2:8081" });
+  });
+
+  it("treats a tap that rejects on a cancelled run as the abort, not a failed dismissal", async () => {
+    // Cancellation makes the sub-tool itself reject. Reporting that as "the tap
+    // failed" would book a cancelled run as a launch error naming the chooser.
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(launcherTree());
+    const controller = new AbortController();
+    const { actionEnv } = env((tool) => {
+      if (tool === "gesture-tap") {
+        controller.abort();
+        throw new Error("aborted");
+      }
+      return { ok: true };
+    }, controller.signal);
+
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({ handled: false });
+  });
+
   it("keeps waiting when a read fails rather than deciding there is no chooser", async () => {
     vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
     // The launch's own tree-source gate has already vouched for the source, so a
