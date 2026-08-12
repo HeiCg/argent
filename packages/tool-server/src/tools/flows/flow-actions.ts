@@ -248,11 +248,21 @@ const DEFAULT_ASSERT_TIMEOUT_MS = 1000;
 const CONDITION_DARK_TAIL_TOLERANCE_MS = POLL_INTERVAL_MS * 2;
 
 /**
- * Evaluate a `when:` block's UI guard — the same engine as `assert`, on the
- * same assert grace window: a skipped block must not add an await-sized dead
- * wait to every clean run. `ok` is "condition met"; `indeterminate`
- * distinguishes an unreadable tree (the caller errors — unknown is not false)
- * from a plainly unmet condition (the caller skips).
+ * Evaluate a UI condition on the assert grace window — the same engine as
+ * `assert`, and deliberately not an await-sized wait. `ok` is "condition met";
+ * `indeterminate` separates an unreadable tree, which is unknown rather than
+ * false, from a plainly unmet condition.
+ *
+ * Named for its first caller, the `when:` block guard, where the grace window
+ * is the whole point: a skipped block must not add a dead wait to every clean
+ * run, and the two outcomes map onto error (unknown) versus skip (unmet).
+ *
+ * The recorder's cross-tree re-probe (`probeAgainstRunnerTree` in
+ * flow-add-step.ts) is a second caller and neither errors nor skips — it always
+ * keeps the step and only chooses which warning to raise. It wants this
+ * function for a different reason: the window it predicts is an `assert:`
+ * conversion's, which is exactly the window this polls on. What it does NOT
+ * inherit is the guard's tolerance for a slow read; see PROBE_BUDGET_MS there.
  */
 export function probeWhenCondition(
   env: ActionEnv,
