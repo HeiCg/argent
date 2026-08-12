@@ -10,6 +10,7 @@ import { createRunFlowTool, type StepReport } from "../../src/tools/flows/flow-r
 import { serializeFlow, type FlowStep } from "../../src/tools/flows/flow-utils";
 import {
   detectDevLauncher,
+  devServerRowAt,
   dismissDevLauncher,
   hasDrawnContent,
   pickDevServerRow,
@@ -168,6 +169,57 @@ function noServersTree(): DescribeNode {
           ),
         ]
       ),
+    ]
+  );
+}
+
+/**
+ * The no-servers face a CURRENT client draws, captured through `fetchFlowTree`
+ * on an Expo SDK 57 dev build (`expo-dev-launcher` 57.0.11) with the app's data
+ * cleared. Flat, as the Android adapter emits: whole-screen containers, and each
+ * row's parts as separate leaves under an unlabelled card.
+ *
+ * The address box moved. On the older client it was an unlabelled `TextField`
+ * wrapping a `http://localhost:8081` text leaf ({@link noServersTree}); here its
+ * own label is the literal "http://" and there is no leaf inside it, so no
+ * origin is on screen above the history at all. Both shapes are safe and both
+ * are kept — the geometric exclusion has to survive the one that still spells a
+ * port, and this one is what a run meets today.
+ */
+function noServersToday(): DescribeNode {
+  return node(
+    "ROOT",
+    "Screen",
+    [0, 0, 1, 1],
+    [
+      node("Image", "App Icon", [0.058, 0.08, 0.107, 0.048]),
+      node("StaticText", "devbuild", [0.205, 0.082, 0.156, 0.021]),
+      node("StaticText", "Development Build", [0.205, 0.107, 0.282, 0.019]),
+      node("StaticText", "DEVELOPMENT SERVERS", [0.058, 0.198, 0.334, 0.017]),
+      node("StaticText", "INFO", [0.848, 0.18, 0.117, 0.052]),
+      node("StaticText", "Start a local development server with:", [0.097, 0.25, 0.49, 0.016]),
+      node("StaticText", "npx expo start", [0.136, 0.301, 0.285, 0.02]),
+      node(
+        "StaticText",
+        "Then, select the local server when it appears here.",
+        [0.097, 0.356, 0.652, 0.016]
+      ),
+      node("TextField", "http://", [0.136, 0.39, 0.728, 0.052]),
+      node("View", "Connect", [0.097, 0.452, 0.806, 0.054]),
+      node("StaticText", "Or", [0.097, 0.523, 0.806, 0.016]),
+      node("StaticText", "Fetch development servers", [0.136, 0.575, 0.5, 0.016]),
+      node("View", "Download", [0.815, 0.574, 0.049, 0.022]),
+      node("View", "", [0.097, 0.557, 0.806, 0.057]),
+      node("StaticText", "RECENTLY OPENED", [0.058, 0.675, 0.264, 0.017]),
+      node("StaticText", "RESET", [0.84, 0.657, 0.117, 0.052]),
+      node("StaticText", "devbuild", [0.166, 0.727, 0.156, 0.021]),
+      node("StaticText", "http://192.168.0.94:8093", [0.166, 0.753, 0.32, 0.016]),
+      node("View", "Chevron", [0.854, 0.737, 0.049, 0.022]),
+      node("Button", "", [0.058, 0.71, 0.883, 0.077]),
+      node("ScrollView", "", [0.058, 0.198, 0.883, 0.589]),
+      node("View", "Settings", [0.792, 0.918, 0.058, 0.026]),
+      node("ComposeView", "", [0, 0, 1, 1]),
+      node("FrameLayout", "", [0, 0, 1, 1]),
     ]
   );
 }
@@ -962,6 +1014,32 @@ describe("the shape the adapter really produces", () => {
     // The scroll container is a full-width leaf here, carrying every row's URL
     // as hoisted text — the shape that made a history-only port match it.
     expect(pickDevServerRow(flat, 8085, 0.491)).toBeNull();
+  });
+
+  it("offers nothing on the no-servers face a current client draws", () => {
+    // The box's own label is the bare scheme now, so the only origin on screen
+    // is a remembered row below the boundary. Nothing above it is offered, and
+    // the launch reports the port it wanted instead of pressing the box.
+    const tree = noServersToday();
+    const found = detectDevLauncher(tree);
+    expect(found).toEqual({ historyY: 0.675 });
+    expect(pickDevServerRow(tree, 8093, 0.675)).toBeNull();
+    expect(pickDevServerRow(tree, 8081, 0.675)).toBeNull();
+  });
+
+  it("records every tap on the no-servers face, having no row to claim", () => {
+    // The recorder's half of the same screen: with no live row, no tap on it
+    // belongs to the launch — including one on the remembered row, which the
+    // launch refuses to open.
+    const tree = noServersToday();
+    for (const point of [
+      { x: 0.5, y: 0.416 }, // the address box
+      { x: 0.5, y: 0.584 }, // "Fetch development servers"
+      { x: 0.5, y: 0.748 }, // the remembered row
+      { x: 0.82, y: 0.93 }, // the launcher's own tab bar
+    ]) {
+      expect(devServerRowAt(tree, point)).toBeNull();
+    }
   });
 
   it("keeps the address box out of the candidates once flattened", () => {
