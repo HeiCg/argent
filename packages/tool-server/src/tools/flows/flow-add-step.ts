@@ -584,9 +584,12 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       // blind, and unconditionally green, since a coordinate tap reads no tree.
       // It still ran live: the author has to get past the chooser to record
       // what comes next. Only straight after a recorded `launch:`, because that
-      // is the step whose recovery makes it redundant — after anything else
-      // (a fragment, or a raw restart-app that carries an activity) nothing at
-      // replay dismisses the chooser and this tap is the step that does.
+      // is the step whose recovery makes it redundant. A `run:` fragment's own
+      // launch DOES get the recovery — it runs on the same ExecState — but it
+      // spent that recovery on the chooser IT met, so a chooser on screen after
+      // the fragment is one nothing at replay dismisses. A raw `restart-app`
+      // carrying an activity gets no recovery at all. After either, this tap is
+      // the step that gets past the chooser, and is kept.
       // Decided by the append itself, against the flow it is about to extend:
       // this asks what the PREVIOUS step is, and only there is that read of the
       // file the append's own (see appendStepToFlow). Off the in-memory copy it
