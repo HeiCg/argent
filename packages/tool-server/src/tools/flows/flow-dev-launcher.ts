@@ -477,8 +477,8 @@ export async function dismissDevLauncher(
   const deadline = Date.now() + EXIT_TIMEOUT_MS;
   for (;;) {
     if (signal?.aborted) return { handled: true, ok: true, url: target.url };
-    const seen = await readExitTree();
-    if ("tree" in seen && !detectDevLauncher(seen.tree)) {
+    const exiting = await readExitTree();
+    if ("tree" in exiting && !detectDevLauncher(exiting.tree)) {
       return { handled: true, ok: true, url: target.url };
     }
     if (Date.now() >= deadline) {
@@ -486,9 +486,9 @@ export async function dismissDevLauncher(
         handled: true,
         ok: false,
         reason:
-          "unread" in seen
+          "unread" in exiting
             ? `opened ${target.url} from the expo dev-client launcher, but the screen could not be ` +
-              `read for ${EXIT_TIMEOUT_MS / 1000}s afterwards (${seen.unread}), so whether the ` +
+              `read for ${EXIT_TIMEOUT_MS / 1000}s afterwards (${exiting.unread}), so whether the ` +
               `chooser left is unknown.`
             : `opened ${target.url} from the expo dev-client launcher, but it was still showing ` +
               `${EXIT_TIMEOUT_MS / 1000}s later — the bundler at that address did not serve this app.`,
