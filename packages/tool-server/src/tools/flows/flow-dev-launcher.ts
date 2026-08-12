@@ -10,18 +10,13 @@ import { invokeOnDevice, type ActionEnv } from "./flow-actions";
  * The expo-dev-client launcher — the "DEVELOPMENT SERVERS" chooser a dev build
  * shows instead of the app — and how a `launch` step gets past it unattended.
  *
- * A dev client renders the chooser whenever it cold-starts with no bundle URL
- * and cannot silently reconnect to the server it opened last. A flow's `launch`
- * step cold-starts by construction (it terminates and relaunches, so a copy
- * left running by a prior run can't leak state in), so the only thing standing
- * between a run and the chooser is whether that remembered URL still resolves.
- *
- * That is why the chooser looks intermittent, and why it is worse on Android:
- * an iOS simulator reaches Metro at a stable `localhost:<port>`, while an
- * Android build's remembered URL rotates between the emulator's host-loopback
- * alias (`10.0.2.2`), `localhost` (only reachable through `adb reverse`) and
- * whatever LAN address the machine had when the build was last opened — each of
- * which goes stale independently of the app.
+ * A dev client renders the chooser whenever it cold-starts with no bundle URL,
+ * and a flow's `launch` step cold-starts by construction (it terminates and
+ * relaunches, so a copy left running by a prior run can't leak state in). So
+ * this is not an intermittent state a run might meet: on Android it is what
+ * every launch of a dev build meets, including the launch right after one that
+ * opened a server — the client lists that server again, live and remembered
+ * both, rather than reconnecting to it silently.
  *
  * Left alone the run does not fail cleanly: every selector resolves against the
  * chooser instead of the app, so the first directive fails on a screen that

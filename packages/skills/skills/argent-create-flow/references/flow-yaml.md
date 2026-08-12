@@ -190,7 +190,7 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 
 ## Snapshots and standalone runs
 
-`argent flow run <name> [--device <id>] [--platform ios|android|chromium|vega] [--update-baselines] [--output <dir>] [--json]` runs without an LLM and exits non-zero on failure.
+`argent flow run <name> [--device <id>] [--platform ios|android|chromium|vega] [--metro-port <port>] [--update-baselines] [--output <dir>] [--json]` runs without an LLM and exits non-zero on failure. `--metro-port` is the `metroPort` of `flow-execute`; see [the dev-client recovery](reliability-and-recovery.md#expo-dev-client-chooser).
 
 A screenshot is human evidence. A `snapshot:` is executable visual verification. A missing baseline or excessive mismatch fails. A `cropOn` size change also fails. Use snapshots for color, layout, size, spacing, typography, clipping, overflow, images, icons, or stable component appearance. Use full screen for global changes and `cropOn` for one component.
 

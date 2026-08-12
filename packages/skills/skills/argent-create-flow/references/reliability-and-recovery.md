@@ -81,12 +81,14 @@ On Android, healthy `describe` output does not prove the flow tree is available.
 
 ## Expo dev-client chooser
 
-An expo dev build can start on the `DEVELOPMENT SERVERS` chooser in place of the app. On Android, `launch:` does this recovery for you. The step opens the server on the `metroPort` of `flow-execute`, then waits for the chooser to go away. The step passes with the warning `app opened behind the expo dev-client launcher`.
+An expo dev build starts on the `DEVELOPMENT SERVERS` chooser in place of the app. A `launch:` step cold-starts the app, and a dev client that cold-starts shows the chooser, so expect it on every launch and on every pass. On Android, `launch:` does this recovery for you. The step opens the server on the `metroPort` of `flow-execute`, or `--metro-port` of `argent flow run`, then waits for the chooser to go away. The step passes with the warning `app opened behind the expo dev-client launcher`.
 
 - Android only. The runner probes for the chooser on Android alone, because an iOS dev build reaches Metro at a stable `localhost`. On iOS, `metroPort` does nothing, and a chooser stays on the screen for the remaining steps to read.
+- The recovery belongs to `launch:` alone. An Android app that needs a non-launcher activity has no `launch:` form and replays as `tool: restart-app`, which gets no recovery. There the chooser stays on the screen, as it does on iOS.
 - When Metro is not on port 8081, set `metroPort`.
 - When more than one bundler is available, set `metroPort`.
-- Do not write a `when:` block to tap the chooser. The launch dismisses the chooser before your step can run, so the step meets a different screen. The order of the rows also changes between launches.
+- Do not write a `when:` block to tap the chooser on Android. The launch dismisses the chooser before your step can run, so the step meets a different screen. The order of the rows also changes between launches. Where no launch does the recovery — iOS, or a `tool: restart-app` step — a `when:` block is the workaround.
+- Do not keep a recorded tap on a chooser row either. On Android the recorder leaves that tap out of the file and says so, because the launch performs it at replay. In a flow recorded before that, or on any other platform, delete the step by hand.
 - If the chooser has no live row for the port, the launch fails. Start Metro on that port, or correct `metroPort`. This failure is about the bundler, not about the app.
 - The chooser goes away when the bundler starts to serve. The app is not ready at that moment. Gate the next step on an element the app itself draws.
 
@@ -115,14 +117,14 @@ Keep a dismissal swipe only when the UI supports it. Pass it through the coordin
 
 Classify before editing:
 
-| Outcome            | Meaning                                        | Response                                                                                                                                                |
-| ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Hard failure       | A step fails and later steps skip              | Inspect that step and actual state                                                                                                                      |
-| Environment error  | The reason says the check could not run        | Repair the environment and rerun; it is no verdict about the app. A failed `launch:` is `errored` too but **is** a verdict — treat it as a hard failure |
-| Silent misfire     | The run passes but final state is wrong        | Restore the first wrong screen and record a stronger gate                                                                                               |
-| Partial divergence | An intermediate result disagrees with its echo | Find the first divergent transition                                                                                                                     |
-| Acceptance failure | Actions pass but a requested check fails       | Preserve the check and investigate behavior                                                                                                             |
-| Idle warning       | A readiness step passes without settling       | Read [which of the six warnings](flow-yaml.md#idle-readiness) it is, then gate the next action on a stable element                                      |
+| Outcome            | Meaning                                        | Response                                                                                                                                                                                                                              |
+| ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hard failure       | A step fails and later steps skip              | Inspect that step and actual state                                                                                                                                                                                                    |
+| Environment error  | The reason says the check could not run        | Repair the environment and rerun; it is no verdict about the app. A failed `launch:` is `errored` too and **is** a verdict — treat it as a hard failure, unless its reason names the expo dev-client chooser, which names the bundler |
+| Silent misfire     | The run passes but final state is wrong        | Restore the first wrong screen and record a stronger gate                                                                                                                                                                             |
+| Partial divergence | An intermediate result disagrees with its echo | Find the first divergent transition                                                                                                                                                                                                   |
+| Acceptance failure | Actions pass but a requested check fails       | Preserve the check and investigate behavior                                                                                                                                                                                           |
+| Idle warning       | A readiness step passes without settling       | Read [which of the six warnings](flow-yaml.md#idle-readiness) it is, then gate the next action on a stable element                                                                                                                    |
 
 Then:
 
