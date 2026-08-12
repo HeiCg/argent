@@ -359,7 +359,7 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
     // "Not that the two trees differ" is not the same as "the screen changed",
     // and on `text` the difference is reachable: the re-shape emits post-order
     // where `findAll` collects pre-order, so the two sides can elect different
-    // elements from identical nodes ({@link TEXT_TIE_CLAUSE}, which this same
+    // elements from identical nodes ({@link textTieClause}, which this same
     // message carries). Stating the screen as the only cause would contradict
     // it two sentences later.
     const cause =
@@ -387,7 +387,7 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
 function awaitStillNeeds(condition: WaitCondition): string {
   if (condition === "hidden") return "the element LEAVES that tree";
   // Not "that element's": on `text` the two sides need not have judged the same
-  // element at all (see {@link TEXT_TIE_CLAUSE}), and naming it as shared
+  // element at all (see {@link textTieClause}), and naming it as shared
   // presumes away the one cause a longer timeout cannot fix.
   if (condition === "text") return "the element THAT tree elects comes to match on it";
   return "the element reaches that tree";
@@ -402,11 +402,21 @@ function awaitStillNeeds(condition: WaitCondition): string {
  * (`length`, `some`, `!some`), so the order matches arrive in cannot change
  * their answer. `text` inspects exactly one — `firstInReadingOrder` over the
  * visible matches — and that helper breaks an EXACT (y, x) tie by encounter
- * order. The two sides enumerate in opposite orders: `findAll` collects
- * pre-order (a container before its children) and `flattenHoisting` emits
- * post-order (children before their container). So a container and a text child
- * sharing a frame — routine in React Native, and the default for a block-level
- * DOM wrapper — hand the recorder the container and the runner the child.
+ * order.
+ *
+ * WHY the two orders differ is per platform, and the usual answer is wrong on
+ * iOS. On Android, Chromium and Vega the recorder reads a NESTED tree and
+ * `findAll` collects it pre-order (a container before its children) while
+ * `flattenHoisting` emits post-order (children before their container) — so a
+ * container and a text child sharing a frame, routine in React Native and the
+ * default for a block-level DOM wrapper, hand the recorder the container and
+ * the runner the child. On iOS neither side has a container to list: the AX
+ * describe path emits every element as a leaf under one synthetic `AXGroup`
+ * (`adaptAXDescribeToDescribeResult`), and the flow tree flattens too. The tie
+ * is still reachable there — the two flat lists are built from different
+ * sources, the accessibility element order and the view-hierarchy walk — but an
+ * author told to look for a container over a child would be hunting a shape
+ * that platform's trees do not have.
  *
  * The verdict is still right (the conversion really does fail), but every other
  * explanation is wrong for it: both trees hold both nodes, so nothing about
@@ -416,16 +426,24 @@ function awaitStillNeeds(condition: WaitCondition): string {
  * selector until it resolves one node — is the one thing the rest of the
  * message never suggests.
  */
-const TEXT_TIE_CLAUSE =
-  " Check FIRST whether the selector matches more than one element, because a `text` check reads " +
-  "only one of them — the first visible match in reading order — and the two sides can elect " +
-  "DIFFERENT ones from the very same nodes: an exact frame tie is settled by which node its tree " +
-  "listed first, and the recorder's lists a container before its children where the runner's " +
-  "lists children before their container. The reason above quotes whichever element the RUNNER " +
-  "elected, so compare it against the one you meant. If that is what happened, both trees hold " +
-  "both elements and neither the tree differences nor a changed screen below explains anything — " +
-  "narrow the selector until it resolves a single node, and note that a longer `await:` timeout " +
-  "cannot help, since the text it read is already final.";
+function textTieClause(udid: unknown): string {
+  const order =
+    platformOf(udid) === "ios"
+      ? "and the two are flat lists built from different sources — the accessibility element " +
+        "order and the view-hierarchy walk — so neither order follows from the other"
+      : "and the recorder's lists a container before its children where the runner's lists " +
+        "children before their container";
+  return (
+    " Check FIRST whether the selector matches more than one element, because a `text` check " +
+    "reads only one of them — the first visible match in reading order — and the two sides can " +
+    "elect DIFFERENT ones from the very same nodes: an exact frame tie is settled by which node " +
+    `its tree listed first, ${order}. The reason above quotes whichever element the RUNNER ` +
+    "elected, so compare it against the one you meant. If that is what happened, both trees hold " +
+    "both elements and neither the tree differences nor a changed screen below explains " +
+    "anything — narrow the selector until it resolves a single node, and note that a longer " +
+    "`await:` timeout cannot help, since the text it read is already final."
+  );
+}
 
 /**
  * Which SPELLING of the conversion the verdict is about.
@@ -857,7 +875,7 @@ async function probeAgainstRunnerTree(
       // Ahead of the tree stories, not after them: when it applies it makes
       // every one of them inapplicable, so an author who reads it last has
       // already been sent to investigate membership and timing.
-      (condition === "text" ? TEXT_TIE_CLAUSE : "") +
+      (condition === "text" ? textTieClause(args.udid) : "") +
       " " +
       SPELLING_CLAUSE +
       " " +

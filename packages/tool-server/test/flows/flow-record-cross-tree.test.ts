@@ -1120,6 +1120,34 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     );
     expect(warning).not.toContain("that element's text comes to match");
     expect(warning).not.toContain("the element reaches that tree");
+    // The MECHANISM, which is the shape this fixture is built out of: a nested
+    // recorder tree read pre-order against a flattened runner tree read
+    // post-order. It holds on Chromium, Android and Vega — and not on iOS.
+    expect(warning).toContain("lists a container before its children");
+  });
+
+  it("iOS: explains the `text` tie without a container neither of its trees has", async () => {
+    // On iOS both sides are FLAT: `adaptAXDescribeToDescribeResult` emits every
+    // element as a leaf under one synthetic `AXGroup`, and the flow tree
+    // flattens too. The tie is still reachable — two flat lists built from
+    // different sources can order an exact frame tie differently — but the
+    // container-over-child story sends an author hunting a shape that does not
+    // exist on the platform. The clause is gated on `condition === "text"`
+    // alone, so nothing else keeps it off this arm.
+    serveTree(iosRunnerTree([iosLabel("Total: $5.00")]));
+    await startRecording("iostie");
+
+    const result = await recordWait("iostie", {
+      condition: "text",
+      selector: { text: "Total" },
+      expectedText: "Total",
+      textMatch: "equals",
+    });
+    const warning = warningOf(result, "iostie") ?? "";
+
+    expect(warning).toContain("elect DIFFERENT ones from the very same nodes");
+    expect(warning).toContain("flat lists built from different sources");
+    expect(warning).not.toContain("lists a container before its children");
   });
 
   it("does not raise the multi-match cause on a condition that cannot have it", async () => {
