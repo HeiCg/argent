@@ -936,6 +936,34 @@ describe("await-ui-element tool", () => {
     }
   );
 
+  // The tolerance itself, bracketed. Both cases have exactly one trusted read
+  // at t≈0 and nothing after it, so the dark tail IS `timeoutMs` and the only
+  // variable is how many poll intervals it spans. 1.3 intervals must stay a
+  // blip and 2.6 must not, which pins the multiple to 2 — the nearest tests
+  // before this ran at 1.2 and 30 intervals, so raising it to 20 changed
+  // nothing. Scheduler slip only ever LENGTHENS a measured tail, so it can
+  // only push the first case toward its 700ms of headroom and pushes the
+  // second further into the clear.
+  it.each([
+    { intervals: "1.3", timeoutMs: 1300, cause: "unmet" },
+    { intervals: "2.6", timeoutMs: 2600, cause: "unreadable" },
+  ])("calls a dark tail of $intervals poll intervals $cause", async ({ timeoutMs, cause }) => {
+    const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs,
+        pollIntervalMs: 1000,
+      }
+    );
+
+    expect(unmetUiWaitCause(result)).toBe(cause);
+  });
+
   it("calls a cancelled wait cancelled", async () => {
     const controller = new AbortController();
     controller.abort();
