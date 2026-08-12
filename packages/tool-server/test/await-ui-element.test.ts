@@ -1013,6 +1013,34 @@ describe("await-ui-element tool", () => {
     expect(unmetUiWaitCause(result)).toBe("cancelled");
   });
 
+  it("leaves `cause` off a wait that was met", async () => {
+    // "Set on every `success: false` return and never on a success" is half a
+    // contract, and only the first half was pinned. The second matters because
+    // the note fallback in `unmetUiWaitCause` reads `unmet` out of anything it
+    // does not recognise — so a stray `cause` on a passing wait would be a
+    // verdict against a check that held. Both success shapes: the plain one,
+    // and the `hidden` arm that returns a note of its own.
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "Header", frame: FRAME, traits: [] }]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const met = await tool.execute(
+      {},
+      { udid: IOS_UDID, condition: "visible", selector: { text: "Header" }, timeoutMs: 200 }
+    );
+    expect(met.success).toBe(true);
+    expect(met.cause).toBeUndefined();
+
+    const alreadyGone = await tool.execute(
+      {},
+      { udid: IOS_UDID, condition: "hidden", selector: { text: "Nope" }, timeoutMs: 200 }
+    );
+    expect(alreadyGone.success).toBe(true);
+    expect(alreadyGone.note).toMatch(/condition met immediately/i);
+    expect(alreadyGone.cause).toBeUndefined();
+  });
+
   it("defaults to unmet for a result carrying no cause at all", async () => {
     // The note fallback, for a result that crossed a boundary without the
     // field: `unmet` is what every caller acted on before the cause existed.
