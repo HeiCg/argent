@@ -321,6 +321,18 @@ export interface RecordingSession {
    * the step it belongs to.
    */
   stepWarnings?: Map<number, RecordedStepWarning>;
+  /**
+   * How many verdicts this recording raised and then DROPPED, because a hand
+   * edit moved the step each one judged (see {@link dropMovedWarnings}).
+   *
+   * Dropping is the right answer — a verdict on the wrong step is worse than
+   * none — but it is not the same news as never having raised one, and the
+   * finish payload is otherwise identical either way. An author who reads a
+   * clean `message` after two waits diverged has been told the opposite of
+   * what happened. Counted here because the verdicts themselves are gone by
+   * then: `stepWarnings.size` at the finish is what SURVIVED.
+   */
+  discardedWarnings?: number;
   /** Order of the last touch, for the LRU eviction backstop. See {@link touch}. */
   lastTouchedSeq: number;
 }
@@ -3344,7 +3356,9 @@ export async function appendStepToFlow(
       // `appendStep` adds exactly one step, so everything before the last one
       // is what the file already held — the recorder's previous view, unless a
       // hand edit landed in between.
-      dropMovedWarnings(session.stepWarnings, session.flow.steps.slice(0, -1), before);
+      session.discardedWarnings =
+        (session.discardedWarnings ?? 0) +
+        dropMovedWarnings(session.stepWarnings, session.flow.steps.slice(0, -1), before);
       // Count inside the lock, off the just-refreshed `session.flow`: a caller
       // reading `session.flow.steps.length` after this returns would be racing
       // a concurrent same-key append, which can reassign `session.flow` between

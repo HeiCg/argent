@@ -90,17 +90,26 @@ function attachStepWarnings(
 }
 
 /**
- * What `message` says about the warnings the summary carries, by KIND.
+ * What `message` says about the warnings the summary carries, by KIND — and
+ * about the ones it does NOT carry.
  *
- * The two are different news and only one is about conversion. A recorded wait
- * that came back `success: false` was never probed — its own warning says so —
- * and what it means is that the step failed live, which at replay stops the run
- * rather than raising a polish-time question. Counting it as a "cross-tree
- * warning about converting a recorded wait" states the opposite of the
- * actionable fact, and tells a caller who is not converting anything that the
- * summary can be skipped.
+ * The kinds are different news and only one is about conversion. A recorded
+ * wait that came back `success: false` was never probed — its own warning says
+ * so — and what it means is that the step failed live, which at replay stops
+ * the run rather than raising a polish-time question. Counting it as a
+ * "cross-tree warning about converting a recorded wait" states the opposite of
+ * the actionable fact, and tells a caller who is not converting anything that
+ * the summary can be skipped.
+ *
+ * `discarded` is the count {@link anchoredWarnings} and its append-time
+ * counterpart threw away. Dropping is the right answer — a verdict on the wrong
+ * step is worse than none — but reporting it as a pass is not: without this
+ * clause a recording in which every wait diverged and one step was hand-edited
+ * returns a payload byte-identical to one in which nothing was ever wrong. The
+ * drop is deliberate, so it is stated as a fact with a recovery, not as an
+ * error.
  */
-function warningHeadline(warnings: Map<number, RecordedStepWarning>): string {
+function warningHeadline(warnings: Map<number, RecordedStepWarning>, discarded: number): string {
   const counts = { conversion: 0, wait: 0 };
   for (const { kind } of warnings.values()) counts[kind] += 1;
   const clauses: string[] = [];
@@ -115,8 +124,18 @@ function warningHeadline(warnings: Map<number, RecordedStepWarning>): string {
       `${counts.wait} ${counts.wait === 1 ? "step" : "steps"} recorded a wait that did not pass`
     );
   }
-  if (clauses.length === 0) return "";
-  return ` — ${clauses.join(", and ")}; read \`summary\` before converting or replaying`;
+  const carried =
+    clauses.length === 0
+      ? ""
+      : ` — ${clauses.join(", and ")}; read \`summary\` before converting or replaying`;
+  if (discarded === 0) return carried;
+  const one = discarded === 1;
+  const drop =
+    `${discarded} ${one ? "warning" : "warnings"} raised during this recording ${one ? "is" : "are"} ` +
+    `NOT in \`summary\`: a hand edit to the .yaml moved the ${one ? "step it judged" : "steps they judged"}, ` +
+    `so which step ${one ? "it belongs" : "they belong"} to is no longer knowable — re-record ` +
+    `${one ? "that wait" : "those waits"} to see ${one ? "it" : "them"} again`;
+  return carried === "" ? ` — ${drop}` : `${carried}. ${drop}`;
 }
 
 /**
@@ -237,7 +256,13 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // recoverable rather than fatal.
         const anchored = anchoredWarnings(session, flow.steps);
         const summary = attachStepWarnings(summarizeSteps(flow), anchored);
-        const headline = warningHeadline(anchored);
+        // Everything raised, less what survived. The two terms are on different
+        // sides of the recording: `discardedWarnings` counts what the appends
+        // threw away as they went, `stepWarnings` what was still filed when the
+        // finish began.
+        const discarded =
+          (session.discardedWarnings ?? 0) + (session.stepWarnings?.size ?? 0) - anchored.size;
+        const headline = warningHeadline(anchored, discarded);
         clearRecordingSession(session);
         return { filePath, flowFile, savedTo, flow, summary, headline };
       }

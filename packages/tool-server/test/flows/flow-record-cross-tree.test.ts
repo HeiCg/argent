@@ -1853,8 +1853,14 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect(finished.summary).toHaveLength(2);
     for (const line of finished.summary) expect(line).not.toContain("warning:");
-    // …and `message` must not advertise what the summary no longer carries.
-    expect(finished.message).toBe('Finished recording "edited" flow (2 steps)');
+    // …and `message` must not advertise what the summary no longer carries —
+    // nor read like a recording in which nothing was ever wrong. The drop is
+    // the right call; reporting it as a pass is not.
+    expect(finished.message).toBe(
+      'Finished recording "edited" flow (2 steps) — 1 warning raised during this recording is ' +
+        "NOT in `summary`: a hand edit to the .yaml moved the step it judged, so which step it " +
+        "belongs to is no longer knowable — re-record that wait to see it again"
+    );
   });
 
   it("drops the verdict when a hand edit REORDERED the steps", async () => {
@@ -1884,7 +1890,9 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect(finished.summary).toHaveLength(3);
     for (const line of finished.summary) expect(line).not.toContain("warning:");
-    expect(finished.message).toBe('Finished recording "swapped" flow (3 steps)');
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
   });
 
   it("drops the verdict of a step deleted before the recording went on", async () => {
@@ -1918,7 +1926,9 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(finished.summary[0]).toContain('"Sign in"');
     expect(verdictsIn(finished.summary).size).toBe(0);
     for (const line of finished.summary) expect(line).not.toContain("warning:");
-    expect(finished.message).toBe('Finished recording "deleted" flow (2 steps)');
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
   });
 
   it("drops the verdict a hand edit moved onto an identical twin step", async () => {
@@ -1960,6 +1970,66 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(verdictsIn(finished.summary).size).toBe(0);
     expect(finished.summary[1]).toContain('"Continue"');
     for (const line of finished.summary) expect(line).not.toContain("warning:");
+  });
+
+  it("keeps a live verdict when a delete makes the next append reuse its number", async () => {
+    // TWO verdicts alive across the edit, which is what makes the reused key
+    // reachable: the file loses a step, so the next append comes back with a
+    // `stepCount` a verdict already holds. Overwriting it loses a warning on a
+    // step that is still in the flow and still diverges — and the headline then
+    // states a count that says so.
+    await startRecording("collide");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("collide", { condition: "visible", selector: { text: "Alpha" } });
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("collide", { condition: "visible", selector: { text: "Beta" } });
+
+    // Delete "Alpha": the file is one step long again, so the next append is
+    // step 2 — the number "Beta"'s verdict is filed under.
+    const file = path.join(tmpDir, ".argent", "flows", "collide.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = parsed.steps.slice(1);
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    const third = await recordWait("collide", {
+      condition: "visible",
+      selector: { text: "Gamma" },
+    });
+    expect(third.stepCount).toBe(2);
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "collide", project_root: tmpDir }
+    );
+
+    // "Beta" moved from 2 to 1, so its verdict cannot be reported against a
+    // number any more — but it must be COUNTED, not silently replaced by
+    // "Gamma"'s, which is what filing under a reused key did. Three verdicts
+    // were raised, one survives, and the two that did not are stated: "Alpha"'s
+    // went with the step the author deleted, "Beta"'s with the renumbering.
+    expect(finished.summary[0]).toContain('"Beta"');
+    expect([...verdictsIn(finished.summary).keys()]).toEqual([2]);
+    expect(finished.summary[2]).toContain('"Gamma"');
+    expect(finished.message).toContain("1 step carries a cross-tree warning");
+    expect(finished.message).toContain(
+      "2 warnings raised during this recording are NOT in `summary`"
+    );
+  });
+
+  it("says nothing about discarded verdicts when none were", async () => {
+    // The other side of the count: a clean recording's `message` must stay the
+    // bare line, or every finish grows a paragraph about an edit nobody made.
+    await startRecording("nodrop");
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("nodrop", { condition: "visible", selector: { text: "Continue" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "nodrop", project_root: tmpDir }
+    );
+
+    expect(finished.message).toBe('Finished recording "nodrop" flow (1 steps)');
   });
 
   it("keeps the verdicts a hand edit left in place", async () => {
