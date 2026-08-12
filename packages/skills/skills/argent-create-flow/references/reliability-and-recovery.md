@@ -81,7 +81,7 @@ On Android, healthy `describe` output does not prove the flow tree is available.
 
 ## Expo dev-client chooser
 
-An expo dev build starts on the `DEVELOPMENT SERVERS` chooser in place of the app. A `launch:` step cold-starts the app, and a dev client that cold-starts shows the chooser, so expect it on every launch and on every pass. On Android, `launch:` does this recovery for you. The step opens the server on the `metroPort` of `flow-execute`, or `--metro-port` of `argent flow run`, then waits for the chooser to go away. The step passes with the warning `app opened behind the expo dev-client launcher`.
+An expo dev build starts on the `DEVELOPMENT SERVERS` chooser in place of the app. A `launch:` step cold-starts the app, and a dev client that cold-starts shows the chooser, so expect it on every launch and on every pass. On Android, `launch:` does this recovery for you. The step opens the server on the `metroPort` of `flow-execute`, or `--metro-port` of `argent flow run`, then waits for the chooser to go away. The step passes with the warning `app opened behind the expo dev-client launcher — dismissed it via <url>`. Read the address: it names the bundler the run opened.
 
 - Android only. The runner probes for the chooser on Android alone, because an iOS dev build reaches Metro at a stable `localhost`. On iOS, `metroPort` does nothing, and a chooser stays on the screen for the remaining steps to read.
 - The recovery belongs to `launch:` alone. An Android app that needs a non-launcher activity has no `launch:` form and replays as `tool: restart-app`, which gets no recovery. There the chooser stays on the screen, as it does on iOS.
