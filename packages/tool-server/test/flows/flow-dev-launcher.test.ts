@@ -501,25 +501,51 @@ describe("picking the row for the run's own bundler", () => {
 });
 
 describe("recognizing a build that can show the chooser", () => {
-  // Excerpts of the real `dumpsys package xyz.blueskyweb.app` from the emulator
-  // this was built against. RELEASE_DUMP is the same text minus what
-  // expo-dev-launcher's DEBUG-variant manifest contributes — which is all a
-  // release build of the same project differs by here — and it deliberately
-  // keeps the `exp+<slug>` scheme, since the config plugin writes that into the
-  // main manifest and every variant merges it.
+  // Both dumps are `dumpsys package`, read off an emulator from the SAME Expo
+  // SDK 57 project built twice — debug and release — rather than one derived
+  // from the other by deleting lines. That is what makes them evidence: the
+  // release build really does keep the `exp+<slug>` scheme its config plugin
+  // wrote into the main manifest, and really does drop everything
+  // expo-dev-launcher contributes from its debug-variant one. Reading the
+  // scheme instead would call this release build a dev build.
+  const APP = "com.anonymous.devclientprobe";
   const RELEASE_DUMP = `
 Activity Resolver Table:
   Schemes:
-      exp+bluesky:
-        c17d440 xyz.blueskyweb.app/.MainActivity filter fd0a4be
+      exp+devclientprobe:
+        1a741a6 com.anonymous.devclientprobe/.MainActivity filter 5ffdf94
           Action: "android.intent.action.VIEW"
-          Scheme: "bluesky"
-          Scheme: "exp+bluesky"
+          Category: "android.intent.category.DEFAULT"
+          Category: "android.intent.category.BROWSABLE"
+          Scheme: "exp+devclientprobe"
+
+  Non-Data Actions:
+      android.intent.action.MAIN:
+        1a741a6 com.anonymous.devclientprobe/.MainActivity filter 69bb7e7
+          Action: "android.intent.action.MAIN"
+          Category: "android.intent.category.LAUNCHER"
 `;
-  const DEV_DUMP = `${RELEASE_DUMP}      expo-dev-launcher:
-        28d4cfc xyz.blueskyweb.app/expo.modules.devlauncher.compose.AuthActivity filter a86bf85
+  const DEV_DUMP = `
+Activity Resolver Table:
+  Schemes:
+      expo-dev-launcher:
+        20214db com.anonymous.devclientprobe/expo.modules.devlauncher.compose.AuthActivity filter 99fcb78
           Action: "android.intent.action.VIEW"
+          Category: "android.intent.category.DEFAULT"
+          Category: "android.intent.category.BROWSABLE"
           Scheme: "expo-dev-launcher"
+      exp+devclientprobe:
+        2de128c com.anonymous.devclientprobe/.MainActivity filter cb1e9ea
+          Action: "android.intent.action.VIEW"
+          Category: "android.intent.category.DEFAULT"
+          Category: "android.intent.category.BROWSABLE"
+          Scheme: "exp+devclientprobe"
+
+  Non-Data Actions:
+      android.intent.action.MAIN:
+        2de128c com.anonymous.devclientprobe/.MainActivity filter 67cbdd5
+          Action: "android.intent.action.MAIN"
+          Category: "android.intent.category.LAUNCHER"
 `;
 
   /** The probe is only observable through what the launch then does. */
@@ -542,22 +568,22 @@ Activity Resolver Table:
       };
     });
 
-    await expect(
-      dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081, new Map())
-    ).resolves.toMatchObject({ handled: true, ok: true });
+    await expect(dismissDevLauncher(env(emulator), APP, 8081, new Map())).resolves.toMatchObject({
+      handled: true,
+      ok: true,
+    });
     expect(fetchFlowTree).toHaveBeenCalled();
   });
 
   it("costs a release build of the same project nothing", async () => {
-    // The `exp+bluesky` scheme is still there — reading THAT made every release
+    // The `exp+<slug>` scheme is still there — reading THAT made every release
     // build of any project with expo-dev-client in its dependencies wait out the
     // appear window on every launch step, for a chooser it can never show.
-    expect(RELEASE_DUMP).toContain('Scheme: "exp+bluesky"');
+    expect(RELEASE_DUMP).toContain('Scheme: "exp+devclientprobe"');
+    expect(RELEASE_DUMP).not.toContain("expo.modules.devlauncher");
     vi.mocked(adbShell).mockResolvedValue(RELEASE_DUMP);
 
-    await expect(
-      dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081, new Map())
-    ).resolves.toEqual({
+    await expect(dismissDevLauncher(env(emulator), APP, 8081, new Map())).resolves.toEqual({
       handled: false,
     });
     expect(fetchFlowTree).not.toHaveBeenCalled();
@@ -566,9 +592,7 @@ Activity Resolver Table:
   it("leaves a launch alone when the package cannot be probed", async () => {
     vi.mocked(adbShell).mockRejectedValue(new Error("device offline"));
 
-    await expect(
-      dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081, new Map())
-    ).resolves.toEqual({
+    await expect(dismissDevLauncher(env(emulator), APP, 8081, new Map())).resolves.toEqual({
       handled: false,
     });
     expect(fetchFlowTree).not.toHaveBeenCalled();
@@ -577,9 +601,7 @@ Activity Resolver Table:
   it("never probes a platform whose launcher this is not", async () => {
     // iOS reaches Metro at a stable localhost, so the chooser is a rarity there
     // and nothing is probed — the recovery is Android-only by construction.
-    await expect(
-      dismissDevLauncher(env(sim), "xyz.blueskyweb.app", 8081, new Map())
-    ).resolves.toEqual({
+    await expect(dismissDevLauncher(env(sim), APP, 8081, new Map())).resolves.toEqual({
       handled: false,
     });
     expect(adbShell).not.toHaveBeenCalled();
