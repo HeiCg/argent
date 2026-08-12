@@ -964,6 +964,40 @@ describe("await-ui-element tool", () => {
     expect(unmetUiWaitCause(result)).toBe(cause);
   });
 
+  it("does not trust a final read that landed but was blind", async () => {
+    // The third term of the final-read test, and the only one no fixture
+    // produced: a fetch that SUCCEEDS and still cannot be judged. The screen is
+    // read once with the element on it, then goes blank — and an empty tree
+    // after a match is a transient blank frame, not evidence. `text` on a
+    // selector that matches with an expectedText that does not is the shape
+    // that keeps the wait running through it; `visible` would have resolved on
+    // the first read and `hidden` has its own guard for the same blank.
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "Spinner", frame: FRAME, traits: [] }]),
+      axResponse([]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "text",
+        selector: { text: "Spinner" },
+        expectedText: "done",
+        timeoutMs: 400,
+        pollIntervalMs: 20,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    // Every later fetch RETURNED, so there is no error to read the cause off —
+    // dropping the blind term makes this a trusted final read and the verdict
+    // becomes a confident `unmet` on a screen nobody could see.
+    expect(result.note ?? "").not.toMatch(/fetch failed|did not complete/i);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
   it("calls a cancelled wait cancelled", async () => {
     const controller = new AbortController();
     controller.abort();
