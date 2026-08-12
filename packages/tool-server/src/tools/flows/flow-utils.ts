@@ -3161,9 +3161,12 @@ export async function writeNewFlowFile(filePath: string, content: string): Promi
  * The file — not the session's in-memory `flow` — is the take in "host" mode:
  * {@link appendStep}
  * re-reads it before every append and `flow-finish-recording` reads it back for
- * its summary, so a hand-edit made mid-recording (a documented workflow) is
- * part of the take even though the in-memory copy only catches up on the next
- * append.
+ * its summary, so a hand-edit made mid-recording is part of the take even
+ * though the in-memory copy only catches up on the next append. Both recording
+ * tools now tell the agent to edit only AFTER the finish — that catching-up is
+ * what renumbers the steps the finish anchors its verdicts to — but the file
+ * still wins over the session either way, which is what this count has to
+ * report.
  *
  * Undefined rather than 0 on a failure, because the two are not the same
  * answer: a hand-edit can leave YAML that `parseFlow` rejects, and reporting
