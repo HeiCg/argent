@@ -120,7 +120,7 @@ const zodSchema = z
       .max(65535)
       .optional()
       .describe(
-        `ANDROID ONLY. Port of the Metro bundler this run's app must load from (default ${DEFAULT_METRO_PORT}). It applies only when a \`launch\` step lands on the expo-dev-client "DEVELOPMENT SERVERS" chooser, which is probed for on Android alone (an iOS dev build reaches Metro at a stable localhost, so it rarely shows the chooser; there this parameter does nothing). The runner then opens the listed server on this port and waits for the chooser to go away. Set this to the port of the Metro YOU started when it is not the default, or when more than one bundler is up: the runner never guesses which bundler the flow wants, so a chooser listing no live server on this port fails the launch step outright rather than opening another one.`
+        `ANDROID ONLY. Port of the Metro bundler this run's app must load from (default ${DEFAULT_METRO_PORT}). It applies only when a \`launch\` step lands on the expo-dev-client "DEVELOPMENT SERVERS" chooser. Set this to the port of the Metro YOU started when it is not the default, or when more than one bundler is up: the runner never guesses which bundler the flow wants, so a chooser listing no live server on this port fails the launch step outright rather than opening another one.`
       ),
     updateBaselines: z
       .boolean()
