@@ -178,13 +178,18 @@ function registryWhereWaitTimesOut(): Registry {
 
 /**
  * A registry whose `await-ui-element` returns `{ success: false }` carrying
- * `note` — the field that says WHY, and the only thing separating a condition
- * judged false from one never evaluated at all.
+ * `note`, and optionally the `cause` the real tool decides in its poll loop.
+ *
+ * Without `cause` this is the LEGACY shape — a result that crossed a boundary
+ * before the field existed — where the recorder has only the note to read. With
+ * it, the note may say anything: on `visible`/`exists`/`text` a wholly blind
+ * window produces prose byte-identical to a genuine miss, which is the whole
+ * reason the cause is carried on the result rather than parsed back out.
  */
-function registryWhereWaitFails(note: string): Registry {
+function registryWhereWaitFails(note: string, extra: { cause?: string } = {}): Registry {
   return {
     invokeTool: vi.fn(async (id: string) => {
-      if (id === "await-ui-element") return { success: false, elapsed: 1500, note };
+      if (id === "await-ui-element") return { success: false, elapsed: 1500, note, ...extra };
       throw new Error(`Tool "${id}" not found`);
     }),
     getTool: vi.fn(() => undefined),
@@ -496,6 +501,41 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).not.toContain("present in both");
     expect(fetchCount).toBe(0);
     expect(await recordedSteps("blind")).toHaveLength(1);
+  });
+
+  it("reads the cause off the RESULT, not off a note that reads like a miss", async () => {
+    // Every other recorder test here hands back `{ success, elapsed, note }`
+    // with no `cause`, which exercises only the note fallback in
+    // `unmetUiWaitCause`. The case the field exists for is the one the note
+    // cannot express: on `visible`/`exists`/`text` a wholly blind window
+    // produces prose byte-identical to a genuine miss, so this result is
+    // exactly what the tool returns when the tree source never answered — and
+    // the note alone would send the author to delete the step.
+    await startRecording("carried");
+
+    const result = await recordWait(
+      "carried",
+      { condition: "visible", selector: { text: "Continue" } },
+      {
+        registry: registryWhereWaitFails("no element matched the selector before timeout", {
+          cause: "unreadable",
+        }),
+      }
+    );
+
+    const warning = warningOf(result, "carried");
+    expect(warning).toContain("without a trustworthy read of the UI tree");
+    expect(warning).toContain("UNKNOWN, not known-bad");
+    expect(warning).not.toContain("the wait itself never held");
+    // The control: the SAME note with no cause is the legacy shape, and there
+    // `unmet` is the only answer available.
+    await startRecording("bare");
+    const bare = await recordWait(
+      "bare",
+      { condition: "visible", selector: { text: "Continue" } },
+      { registry: registryWhereWaitFails("no element matched the selector before timeout") }
+    );
+    expect(warningOf(bare, "bare")).toContain("the wait itself never held");
   });
 
   // The unmet warning tells the author to delete the failed step, and it must
