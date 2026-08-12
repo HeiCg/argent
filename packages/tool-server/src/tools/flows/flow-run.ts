@@ -473,7 +473,7 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
   // past it belongs to the launch: every later step resolves selectors against
   // whatever is on screen now, and none of them would fail in a way that names
   // the chooser. See flow-dev-launcher.ts.
-  const launcher = await dismissDevLauncher(env, bundleId, state.metroPort);
+  const launcher = await dismissDevLauncher(env, bundleId, state.metroPort, state.devBuilds);
   if (signal?.aborted) return ABORTED_OUTCOME;
   if (launcher.handled && !launcher.ok) return { ok: false, reason: launcher.reason };
   if (launcher.handled) {
@@ -807,6 +807,14 @@ interface ExecState extends Omit<ActionEnv, "device"> {
    * caller knows which bundler it started; {@link DEFAULT_METRO_PORT} otherwise.
    */
   metroPort: number;
+  /**
+   * Which (device, app) pairs this run has already probed for an expo dev
+   * build ({@link dismissDevLauncher}). One run's worth: what is installed
+   * cannot change under a run, and every `launch` step — including those in
+   * `when:` blocks and `run:` fragments, which share this state — would
+   * otherwise re-probe for an answer that cannot have moved.
+   */
+  devBuilds: Map<string, boolean>;
   updateBaselines: boolean;
   reports: StepReport[];
   stopped: boolean;
@@ -1126,6 +1134,7 @@ returns a notice with the prerequisite instead of running.`,
         viaUpload,
         baselineKey: baselineKeyFor(canonicalPath, flowName),
         metroPort: params.metroPort ?? DEFAULT_METRO_PORT,
+        devBuilds: new Map(),
         updateBaselines: Boolean(params.updateBaselines),
         reports: [],
         stopped: false,

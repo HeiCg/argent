@@ -526,7 +526,7 @@ Activity Resolver Table:
     });
 
     await expect(
-      dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081)
+      dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081, new Map())
     ).resolves.toMatchObject({ handled: true, ok: true });
     expect(fetchFlowTree).toHaveBeenCalled();
   });
@@ -538,7 +538,9 @@ Activity Resolver Table:
     expect(RELEASE_DUMP).toContain('Scheme: "exp+bluesky"');
     vi.mocked(adbShell).mockResolvedValue(RELEASE_DUMP);
 
-    await expect(dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+    await expect(
+      dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({
       handled: false,
     });
     expect(fetchFlowTree).not.toHaveBeenCalled();
@@ -547,7 +549,9 @@ Activity Resolver Table:
   it("leaves a launch alone when the package cannot be probed", async () => {
     vi.mocked(adbShell).mockRejectedValue(new Error("device offline"));
 
-    await expect(dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+    await expect(
+      dismissDevLauncher(env(emulator), "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({
       handled: false,
     });
     expect(fetchFlowTree).not.toHaveBeenCalled();
@@ -556,7 +560,9 @@ Activity Resolver Table:
   it("never probes a platform whose launcher this is not", async () => {
     // iOS reaches Metro at a stable localhost, so the chooser is a rarity there
     // and nothing is probed — the recovery is Android-only by construction.
-    await expect(dismissDevLauncher(env(sim), "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+    await expect(
+      dismissDevLauncher(env(sim), "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({
       handled: false,
     });
     expect(adbShell).not.toHaveBeenCalled();
@@ -608,7 +614,9 @@ describe("getting a launch past the chooser", () => {
     reads(launcherTree(), app);
     const { calls, actionEnv } = env();
 
-    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({
       handled: true,
       ok: true,
       url: "http://10.0.2.2:8081",
@@ -629,7 +637,9 @@ describe("getting a launch past the chooser", () => {
     reads(splash, launcherTree(), app);
     const { calls, actionEnv } = env();
 
-    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toMatchObject({
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toMatchObject({
       handled: true,
       ok: true,
     });
@@ -641,7 +651,9 @@ describe("getting a launch past the chooser", () => {
     reads(app);
     const { calls, actionEnv } = env();
 
-    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({
       handled: false,
     });
     expect(calls).toEqual([]);
@@ -651,7 +663,9 @@ describe("getting a launch past the chooser", () => {
     vi.mocked(adbShell).mockResolvedValue('Scheme: "exp+bluesky"');
     const { actionEnv } = env();
 
-    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({
       handled: false,
     });
     expect(fetchFlowTree).not.toHaveBeenCalled();
@@ -662,7 +676,7 @@ describe("getting a launch past the chooser", () => {
     reads(launcherTree());
     const { calls, actionEnv } = env();
 
-    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8085);
+    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8085, new Map());
     expect(outcome).toMatchObject({ handled: true, ok: false });
     expect(outcome).toHaveProperty(
       "reason",
@@ -681,7 +695,7 @@ describe("getting a launch past the chooser", () => {
 
     // A throw here would leave `flow-execute` itself, losing every step
     // collected so far and booking the failure as a tool failure.
-    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081);
+    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map());
     expect(outcome).toMatchObject({ handled: true, ok: false });
     expect(outcome).toHaveProperty("reason", expect.stringContaining("device offline"));
   });
@@ -693,10 +707,45 @@ describe("getting a launch past the chooser", () => {
     controller.abort();
     const { calls, actionEnv } = env(() => ({ ok: true }), controller.signal);
 
-    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toEqual({
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({
       handled: false,
     });
     expect(calls).toEqual([]);
+  });
+
+  it("probes a device and app once per run, however many launches it has", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(app);
+    const { actionEnv } = env();
+    const seen = new Map<string, boolean>();
+
+    await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, seen);
+    await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, seen);
+
+    expect(adbShell).toHaveBeenCalledTimes(1);
+    // A second app on the same device is its own question.
+    await dismissDevLauncher(actionEnv, "com.example.other", 8081, seen);
+    expect(adbShell).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-probes after a read that answered nothing about the app", async () => {
+    // A failed probe means "not a dev build" for that launch, but remembering
+    // it would switch the recovery off for the rest of the run.
+    vi.mocked(adbShell).mockRejectedValueOnce(new Error("device offline"));
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(app);
+    const { actionEnv } = env();
+    const seen = new Map<string, boolean>();
+
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, seen)).resolves.toEqual({
+      handled: false,
+    });
+    await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, seen);
+
+    expect(adbShell).toHaveBeenCalledTimes(2);
+    expect(fetchFlowTree).toHaveBeenCalled();
   });
 
   it("stops waiting on the probe when the run is cancelled mid-flight", async () => {
@@ -707,7 +756,7 @@ describe("getting a launch past the chooser", () => {
     vi.mocked(adbShell).mockImplementation(() => new Promise<string>(() => {}));
     const { calls, actionEnv } = env(() => ({ ok: true }), controller.signal);
 
-    const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081);
+    const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map());
     controller.abort();
 
     await expect(pending).resolves.toEqual({ handled: false });
@@ -728,7 +777,9 @@ describe("getting a launch past the chooser", () => {
     });
     const { calls, actionEnv } = env();
 
-    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081)).resolves.toMatchObject({
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toMatchObject({
       handled: true,
       ok: true,
     });
@@ -779,7 +830,8 @@ describe("when the bundler never serves the app", () => {
       const pending = dismissDevLauncher(
         { registry, device: emulator },
         "xyz.blueskyweb.app",
-        8081
+        8081,
+        new Map()
       );
       await vi.advanceTimersByTimeAsync(61_000);
       const outcome = await pending;

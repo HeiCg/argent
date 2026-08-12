@@ -282,15 +282,30 @@ type DevLauncherOutcome =
  * `settleWithin` because no AbortSignal reaches adb: a run cancelled while the
  * probe is out would otherwise wait out its whole timeout before noticing, and
  * this is the first thing a launch does after the tree-source gate.
+ *
+ * The answer is remembered per (device, app) in `seen`, which the RUN owns:
+ * what is installed cannot change under a run, but it certainly can between
+ * runs — a release build put over a dev one has to be probed again. So a flow
+ * with several `launch` steps, including those inside `when:` blocks and `run:`
+ * fragments, pays for one probe rather than one each.
+ *
+ * Only a probe that actually read the package is remembered. An error, a
+ * timeout or a cancellation answers "not a dev build" for THIS launch — the
+ * behaviour a launch had before this module existed — but says nothing about
+ * the app, and caching it would disable the recovery for the rest of the run.
  */
 const PROBE_TIMEOUT_MS = 10_000;
 
 async function isExpoDevBuild(
   device: DeviceInfo,
   bundleId: string,
-  signal: AbortSignal | undefined
+  signal: AbortSignal | undefined,
+  seen: Map<string, boolean>
 ): Promise<boolean> {
   if (device.platform !== "android") return false;
+  const key = `${device.id} ${bundleId}`;
+  const known = seen.get(key);
+  if (known !== undefined) return known;
   const probe = await settleWithin(
     adbShell(device.id, `dumpsys package ${shellQuote(bundleId)}`, {
       timeoutMs: PROBE_TIMEOUT_MS,
@@ -301,7 +316,9 @@ async function isExpoDevBuild(
   if (probe.type !== "value") return false;
   // Either spelling the debug manifest contributes: a launcher activity's own
   // class name, and the scheme its auth activity registers.
-  return /expo\.modules\.devlauncher|Scheme:\s*"expo-dev-launcher"/i.test(probe.value);
+  const isDevBuild = /expo\.modules\.devlauncher|Scheme:\s*"expo-dev-launcher"/i.test(probe.value);
+  seen.set(key, isDevBuild);
+  return isDevBuild;
 }
 
 /**
@@ -343,14 +360,19 @@ const APPEAR_POLL_MS = 500;
  * tree-source gate has already vouched for the source, so a failure here is
  * transient, and treating it as a chooser we could not dismiss would fail
  * launches that had nothing to do with one.
+ *
+ * `seen` is the run's dev-build answers, kept across its launch steps — see
+ * {@link isExpoDevBuild}. A caller with no run to speak for (a test, a one-off)
+ * can pass a fresh map and pay the probe.
  */
 export async function dismissDevLauncher(
   env: ActionEnv,
   bundleId: string,
-  port: number
+  port: number,
+  seen: Map<string, boolean>
 ): Promise<DevLauncherOutcome> {
   const { registry, device, signal } = env;
-  if (!(await isExpoDevBuild(device, bundleId, signal))) return { handled: false };
+  if (!(await isExpoDevBuild(device, bundleId, signal, seen))) return { handled: false };
 
   const readTree = async (): Promise<DescribeNode | null> => {
     try {
