@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Registry } from "@argent/registry";
+import { ArtifactStore, type Registry } from "@argent/registry";
 import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/contract";
 
 // The recorder must read the SAME tree source the runner resolves selectors
@@ -455,6 +455,50 @@ describe("flow-add-step on the expo dev-client chooser", () => {
     expect(result.message).toContain("Not recorded");
     expect(result.stepCount).toBe(2);
     expect(result.recorded).toBe("(not recorded) tap: (0.4995, 0.2745)");
+  });
+
+  it("declines against a remote recording without touching the client's disk", async () => {
+    // Client mode keeps the flow in memory and returns the YAML as a directive.
+    // The declined path has to answer through the same channel — the caller
+    // needs `savedTo` to stay a directive, or its next write would drop a step.
+    const clientRoot = path.join(os.tmpdir(), "not-on-this-host", "agent-project");
+    __resetRecordingsForTesting();
+    await flowStartRecordingTool.execute({}, { name: FLOW, project_root: clientRoot }, {
+      artifacts: new ArtifactStore(),
+      fileInputs: {
+        project_root: { clientPath: clientRoot, presentOnHost: false, viaUpload: false },
+      },
+    } as never);
+    const launch = createFlowAddStepTool(androidRegistry());
+    await launch.execute(
+      {},
+      {
+        name: FLOW,
+        project_root: clientRoot,
+        command: "restart-app",
+        args: JSON.stringify({ udid: ANDROID, bundleId: "com.anonymous.devclientprobe" }),
+      }
+    );
+    setTree(chooser(), "android-devtools");
+
+    const result = await createFlowAddStepTool(androidRegistry()).execute(
+      {},
+      {
+        name: FLOW,
+        project_root: clientRoot,
+        command: "gesture-tap",
+        args: JSON.stringify({ udid: ANDROID, x: 0.4995, y: 0.2745 }),
+      }
+    );
+
+    expect(result.message).toContain("Not recorded");
+    expect(result.stepCount).toBe(1);
+    const directive = result.savedTo as { path: string; content: string };
+    expect(directive.path).toContain(clientRoot);
+    expect(parseFlow(directive.content).steps).toEqual([
+      { kind: "launch", app: "com.anonymous.devclientprobe" },
+    ]);
+    await expect(fs.stat(clientRoot)).rejects.toThrow();
   });
 
   it("records an ordinary tap on the app the launch opened", async () => {

@@ -1286,6 +1286,31 @@ describe("what the launch step reports", () => {
     expect(steps[0].warning).toBeUndefined();
   });
 
+  it("skips a launch the run cancelled while it waited for the chooser", async () => {
+    // A cancelled wait answers "not handled" — the same answer an ordinary app
+    // gives — so without the runner's own re-check right after it, the launch
+    // would report a pass that verified nothing.
+    const controller = new AbortController();
+    vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+    vi.mocked(fetchFlowTree).mockImplementation(async () => {
+      controller.abort();
+      return {
+        tree: node("ROOT", "Screen", [0, 0, 1, 1], [node("Image", "", [0.4, 0.45, 0.2, 0.1])]),
+        source: "android-devtools",
+      };
+    });
+    await writeFlow("launch-only", [{ kind: "launch", app: "com.example.dev" }]);
+
+    const result = await createRunFlowTool(launchRegistry()).execute(
+      {},
+      { name: "launch-only", project_root: tmpDir, device: emulator.id },
+      { signal: controller.signal } as never
+    );
+
+    if (!("steps" in result)) throw new Error("expected a run result");
+    expect(result.steps[0]).toMatchObject({ kind: "launch", status: "skip" });
+  });
+
   /** Every launch in the run meets the chooser and opens the same row. */
   function chooserEveryLaunch(): void {
     vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
