@@ -24,6 +24,20 @@ let fetchCount: number;
 // the read itself to hang (rather than to throw or to return) replaces this.
 // Reset in beforeEach so no test leaks its implementation into the next.
 let fetchRunnerTree: () => Promise<DescribeTreeData>;
+// Forces `probeWhenCondition` to REJECT for the one test whose subject is that
+// arm. Every other test leaves it undefined and runs the real poll loop.
+let probeRejection: Error | undefined;
+vi.mock("../../src/tools/flows/flow-actions", async () => {
+  const actual = await vi.importActual<typeof import("../../src/tools/flows/flow-actions")>(
+    "../../src/tools/flows/flow-actions"
+  );
+  return {
+    ...actual,
+    probeWhenCondition: (...args: Parameters<typeof actual.probeWhenCondition>) =>
+      probeRejection ? Promise.reject(probeRejection) : actual.probeWhenCondition(...args),
+  };
+});
+
 vi.mock("../../src/tools/flows/flow-tree", () => ({
   fetchFlowTree: vi.fn((): Promise<DescribeTreeData> => {
     fetchCount += 1;
@@ -293,6 +307,7 @@ beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "flow-cross-tree-"));
   __resetRecordingsForTesting();
   fetchCount = 0;
+  probeRejection = undefined;
   fetchRunnerTree = async () => ({
     tree: iosRunnerTree([iosLabel("Continue")]),
     source: "native-devtools",
@@ -1430,11 +1445,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).not.toContain("once that tree source is back");
     // Never a verdict: nothing was compared, so the conversion is UNKNOWN.
     expect(warning).not.toContain("does NOT hold");
-    // The ceiling is 6s; anything near a full Chromium (10s) or Android
-    // devtools (15s) read means the bound is not holding. The timeout below is
-    // the only generous one in the file, and only because this test waits out
-    // that ceiling on purpose.
-    expect(elapsed).toBeLessThan(8000);
+    // The ceiling is 6s; the bound that matters is that this never costs a full
+    // Chromium (10s) or Android devtools (15s) read, so it is set just under
+    // the first of those rather than tight against the ceiling — the recorder
+    // waited out that ceiling on purpose here, and host load lands on top of
+    // it. The generous per-test timeout below is for the same reason.
+    expect(elapsed).toBeLessThan(9500);
     expect(await recordedSteps("slow")).toHaveLength(1);
     expect(fetchCount).toBe(1);
 
@@ -1455,12 +1471,17 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   // per-read tolerance of the clean case, and silently substituted the
   // indeterminate warning on a device that was only slow.
   it("still reaches a determinate verdict when each read is slower than the grace window", async () => {
-    // 2.2s per read: over the 1s grace, so the loop takes exactly two reads and
-    // the total lands near 4.4s. The clean case tolerated a read this slow all
+    // 1.9s per read: over the 1s grace, so the loop takes exactly two reads and
+    // the total lands near 3.8s. The clean case tolerated a read this slow all
     // along — it returns from the first one — while the determinate branch
-    // needed two and so lost the verdict at any ceiling under 4.4s.
+    // needs two, and any ceiling under that total loses the verdict.
+    //
+    // Both bounds this sits between are one-directional under load, which is
+    // what keeps it from flaking: host load only pushes the total UP, so it
+    // stays above the 3500ms ceiling this test exists to reject (grace + ONE
+    // read), while leaving 2.2s of headroom under the real 6000ms budget.
     fetchRunnerTree = async () => {
-      await new Promise((resolve) => setTimeout(resolve, 2200));
+      await new Promise((resolve) => setTimeout(resolve, 1900));
       return { tree: iosRunnerTree([iosLabel("Proceed")]), source: "native-devtools" };
     };
     await startRecording("slowdeterminate");
@@ -1564,11 +1585,83 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     });
     const warning = warningOf(result, "tail") ?? "";
 
-    expect(warning).toContain("does NOT hold against the tree the runner resolves");
+    // This tier holds only while the last trusted read lies within
+    // CONDITION_DARK_TAIL_TOLERANCE_MS (2 poll intervals, 600ms) of the loop's
+    // exit. Host load is the one thing that can stretch it past that, and the
+    // verdict then turns indeterminate — so say which premise broke.
+    expect(
+      warning,
+      "expected the blip tier: under host load the dark tail can exceed CONDITION_DARK_TAIL_TOLERANCE_MS, which turns this indeterminate"
+    ).toContain("does NOT hold against the tree the runner resolves");
     expect(warning).toContain("Lorem ipsum");
     expect(warning).toContain("more chars)");
     // The note the head-only cap threw away.
     expect(warning).toContain("native devtools went away");
+  });
+
+  it("reports a probe that threw outright as indeterminate, not as a verdict", async () => {
+    // The arm no tree fixture reaches: every "cannot be read" case here makes
+    // `fetchFlowTree` throw, and `waitForCondition` catches that into an
+    // indeterminate VALUE. This is the other half — the probe itself rejecting,
+    // which is what the `settled.type === "error"` branch exists for, and it
+    // must read as "the tree did not answer" rather than as a divergence.
+    probeRejection = new Error("probe blew up");
+    await startRecording("threw");
+
+    const result = await recordWait("threw", {
+      condition: "visible",
+      selector: { text: "Continue" },
+    });
+    const warning = warningOf(result, "threw") ?? "";
+
+    expect(warning).toContain("could not be re-verified against the tree the RUNNER reads");
+    expect(warning).toContain("reading the runner's tree failed: probe blew up");
+    expect(warning).toContain("UNKNOWN, not known-bad");
+    // A throw is an outage, not slowness: the two get different next moves.
+    expect(warning).toContain("re-probe once that tree source is back");
+    expect(warning).not.toContain("the source is slow, not down");
+    expect(warning).not.toContain("does NOT hold");
+    expect(await recordedSteps("threw")).toHaveLength(1);
+  });
+
+  it("raises no warning for a wait nested inside a recorded run-sequence", async () => {
+    // `flow-start-recording`'s description tells the author this, and nothing
+    // pinned it: the recorder keys every wait warning off the tool id, so a
+    // `run-sequence` — whose own result carries no `success` key — is neither
+    // probed nor reported on, however its nested wait ended. The author has to
+    // read `toolResult` themselves, so the claim has to stay true.
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "run-sequence") return { completed: 0, total: 2, steps: [] };
+        throw new Error(`Tool "${id}" not found`);
+      }),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    await startRecording("nested");
+
+    const tool = createFlowAddStepTool(registry);
+    const result = await tool.execute(
+      {},
+      {
+        name: "nested",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({
+          udid: IOS,
+          steps: [
+            {
+              tool: "await-ui-element",
+              args: { condition: "visible", selector: { text: "Nope" } },
+            },
+            { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+          ],
+        }),
+      }
+    );
+
+    expect(warningOf(result, "nested")).toBeUndefined();
+    expect(fetchCount).toBe(0);
+    expect(result.toolResult).toMatchObject({ completed: 0, total: 2 });
   });
 
   // Two boundary cases the "wall of text" fixture cannot reach.
