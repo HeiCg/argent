@@ -2294,6 +2294,18 @@ describe("flow composition (run:)", () => {
     );
   });
 
+  it("rejects a port number no bundler can listen on", () => {
+    // A typo'd 80811 is not a port. Caught by the schema, as every other port
+    // argument in the tool-server is, rather than surfacing after the dev-build
+    // probe and the appear wait as "lists no live server on port 80811".
+    const schema = createRunFlowTool(mockRegistry({})).zodSchema!;
+    const base = { name: "main", project_root: tmpDir };
+
+    expect(schema.safeParse({ ...base, metroPort: 80811 }).success).toBe(false);
+    expect(schema.safeParse({ ...base, metroPort: 0 }).success).toBe(false);
+    expect(schema.safeParse({ ...base, metroPort: 65535 }).success).toBe(true);
+  });
+
   it("keeps a port the nested step names for itself", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
