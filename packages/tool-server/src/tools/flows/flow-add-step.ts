@@ -1207,12 +1207,23 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       // miss is a step failure at replay (see {@link UNMET_WAIT_WARNING}),
       // while an unreadable tree source or a cancellation observed nothing and
       // must not be narrated as one (see {@link UNREADABLE_WAIT_WARNING}).
-      let crossTreeWarning: string | undefined;
+      //
+      // The two are filed under different kinds. Only the probe's answer is
+      // about converting the step, and `flow-finish-recording` headlines them
+      // separately: a caller told that a never-probed wait "carries a
+      // cross-tree warning about converting" has been handed the opposite of
+      // the actionable fact, and one that is not converting anything reads that
+      // as licence to skip the summary.
+      let waitWarning: { warning: string; kind: "conversion" | "wait" } | undefined;
       if (params.command === AWAIT_UI_ELEMENT_TOOL_ID) {
         if (isUnmetUiWaitResult(params.command, toolResult)) {
-          crossTreeWarning = unmetWaitWarningFor(unmetUiWaitCause(toolResult));
+          waitWarning = {
+            warning: unmetWaitWarningFor(unmetUiWaitCause(toolResult)),
+            kind: "wait",
+          };
         } else {
-          crossTreeWarning = (await probeAgainstRunnerTree(registry, ctx, args)).warning;
+          const probed = (await probeAgainstRunnerTree(registry, ctx, args)).warning;
+          if (probed) waitWarning = { warning: probed, kind: "conversion" };
         }
       }
 
@@ -1260,7 +1271,7 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       } else if (runTarget?.flow) {
         step = { kind: "run", flow: runTarget.flow };
       } else {
-        warning = crossTreeWarning ?? runTarget?.warning;
+        warning = waitWarning?.warning ?? runTarget?.warning;
         // The step ran live with the full args (incl. the device id), but the
         // recorded form drops the device id so the flow stays portable — the
         // runner injects whatever device it resolves at replay.
@@ -1280,9 +1291,9 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       // step's number and carrying the step itself, so a hand edit the recorder
       // appends over cannot hand the verdict to whatever inherits that number
       // (see {@link RecordedStepWarning}).
-      if (crossTreeWarning) {
+      if (waitWarning) {
         (session.stepWarnings ??= new Map()).set(stepCount, {
-          warning: crossTreeWarning,
+          ...waitWarning,
           step: stepAnchor(step),
         });
       }

@@ -13,6 +13,7 @@ import {
   type FlowStep,
   type FlowSavedTo,
   type FlowSelector,
+  type RecordedStepWarning,
   type RecordingSession,
 } from "./flow-utils";
 import type { TextMatchMode } from "../../utils/ui-tree-match";
@@ -70,12 +71,45 @@ const zodSchema = z.object({
  *
  * Which verdicts survive to be folded in is {@link anchoredWarnings}' answer.
  */
-function attachStepWarnings(summary: string[], warnings: Map<number, string>): string[] {
+function attachStepWarnings(
+  summary: string[],
+  warnings: Map<number, RecordedStepWarning>
+): string[] {
   if (warnings.size === 0) return summary;
   return summary.map((line, i) => {
-    const warning = warnings.get(i + 1);
-    return warning ? `${line}\n   warning: ${warning}` : line;
+    const recorded = warnings.get(i + 1);
+    return recorded ? `${line}\n   warning: ${recorded.warning}` : line;
   });
+}
+
+/**
+ * What `message` says about the warnings the summary carries, by KIND.
+ *
+ * The two are different news and only one is about conversion. A recorded wait
+ * that came back `success: false` was never probed — its own warning says so —
+ * and what it means is that the step failed live, which at replay stops the run
+ * rather than raising a polish-time question. Counting it as a "cross-tree
+ * warning about converting a recorded wait" states the opposite of the
+ * actionable fact, and tells a caller who is not converting anything that the
+ * summary can be skipped.
+ */
+function warningHeadline(warnings: Map<number, RecordedStepWarning>): string {
+  const counts = { conversion: 0, wait: 0 };
+  for (const { kind } of warnings.values()) counts[kind] += 1;
+  const clauses: string[] = [];
+  if (counts.conversion > 0) {
+    clauses.push(
+      `${counts.conversion} ${counts.conversion === 1 ? "step carries" : "steps carry"} a ` +
+        `cross-tree warning about converting a recorded wait`
+    );
+  }
+  if (counts.wait > 0) {
+    clauses.push(
+      `${counts.wait} ${counts.wait === 1 ? "step" : "steps"} recorded a wait that did not pass`
+    );
+  }
+  if (clauses.length === 0) return "";
+  return ` — ${clauses.join(", and ")}; read \`summary\` before converting or replaying`;
 }
 
 /**
@@ -109,14 +143,17 @@ function attachStepWarnings(summary: string[], warnings: Map<number, string>): s
  * genuinely identical steps are interchangeable to them — which is sound, since
  * a verdict quotes the condition and selector that are identical between them.
  */
-function anchoredWarnings(session: RecordingSession, steps: FlowStep[]): Map<number, string> {
-  const kept = new Map<number, string>();
+function anchoredWarnings(
+  session: RecordingSession,
+  steps: FlowStep[]
+): Map<number, RecordedStepWarning> {
+  const kept = new Map<number, RecordedStepWarning>();
   const recorded = session.flow.steps;
   if (recorded.length !== steps.length) return kept;
   if (!steps.every((step, i) => stepAnchor(step) === stepAnchor(recorded[i]))) return kept;
   for (const [n, verdict] of session.stepWarnings ?? []) {
     const step = steps[n - 1];
-    if (step !== undefined && stepAnchor(step) === verdict.step) kept.set(n, verdict.warning);
+    if (step !== undefined && stepAnchor(step) === verdict.step) kept.set(n, verdict);
   }
   return kept;
 }
@@ -147,7 +184,7 @@ export const flowFinishRecordingTool: ToolDefinition<
       `Failed to finish recording of flow ${params.name}: ${failureSignal.error_code}`,
   },
   description: `Finish recording the flow named by \`name\` + \`project_root\`, leaving recordings under any other key untouched. Returns { message, path, executionPrerequisite, steps, summary, flowFile, savedTo } - a summary of all recorded steps plus the final YAML. Use when you have added all desired steps and want to finalize the flow file. Fails if that flow has no recording in progress.
-A recorded \`await-ui-element\` that flow-add-step re-probed against the runner's tree carries that verdict on its own \`summary\` line, and \`message\` counts how many did. Read them before converting any wait to \`await:\`/\`assert:\` - that conversion is what the verdict is about, and this is where it becomes actionable.
+Every warning flow-add-step raised on a recorded \`await-ui-element\` is repeated on that step's own \`summary\` line, and \`message\` counts them by kind. A step that carries a cross-tree warning was re-probed against the runner's tree: read it before converting that wait to \`await:\`/\`assert:\`, which is what the verdict is about and what this moment is for. A step that recorded a wait which did not pass was never probed at all - that wait failed live, and an unmet one stops the run at replay, so read those before replaying.
 You can still edit the .yaml file directly afterwards to remove or reorder steps.`,
   zodSchema,
   services: () => ({}),
@@ -156,7 +193,7 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
     // Host mode's `await fs.readFile` is a yield, and an append that lands in it
     // would be on disk while the summary and step count reported here — taken
     // from the pre-append read — say otherwise.
-    const { filePath, flowFile, savedTo, flow, summary, warned } = await withFlowFileLock(
+    const { filePath, flowFile, savedTo, flow, summary, headline } = await withFlowFileLock(
       params.project_root,
       params.name,
       async () => {
@@ -190,22 +227,18 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // recoverable rather than fatal.
         const anchored = anchoredWarnings(session, flow.steps);
         const summary = attachStepWarnings(summarizeSteps(flow), anchored);
-        const warned = anchored.size;
+        const headline = warningHeadline(anchored);
         clearRecordingSession(session);
-        return { filePath, flowFile, savedTo, flow, summary, warned };
+        return { filePath, flowFile, savedTo, flow, summary, headline };
       }
     );
 
     return {
-      // Name the count in `message` as well as the summary. The verdicts these
-      // carry are the reason to read the summary before converting anything,
-      // and a caller that only reads `message` would otherwise polish blind.
-      message:
-        `Finished recording "${params.name}" flow (${flow.steps.length} steps)` +
-        (warned > 0
-          ? ` — ${warned} ${warned === 1 ? "step carries" : "steps carry"} a cross-tree warning ` +
-            `about converting a recorded wait; read \`summary\` before converting`
-          : ""),
+      // Name the counts in `message` as well as the summary. The warnings the
+      // summary carries are the reason to read it before converting or
+      // replaying anything, and a caller that only reads `message` would
+      // otherwise polish blind.
+      message: `Finished recording "${params.name}" flow (${flow.steps.length} steps)` + headline,
       path: filePath,
       executionPrerequisite: flow.executionPrerequisite,
       steps: flow.steps.length,

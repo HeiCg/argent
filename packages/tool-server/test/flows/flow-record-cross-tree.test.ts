@@ -1551,6 +1551,51 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(finished.summary[0]).not.toContain("warning:");
   });
 
+  it("does not headline a wait that never held as a conversion warning", async () => {
+    // The re-probe is skipped on any `success: false` — the warning says so
+    // itself. What it reports is a step that failed LIVE and stops the run at
+    // replay, which is the opposite of a polish-time question about converting,
+    // and a caller that reads only `message` and is not converting anything
+    // would take the old headline as licence to skip the summary.
+    await startRecording("neverheld");
+    await recordWait(
+      "neverheld",
+      { condition: "visible", selector: { text: "NoSuchThing" } },
+      { registry: registryWhereWaitTimesOut() }
+    );
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "neverheld", project_root: tmpDir }
+    );
+
+    expect(finished.summary[0]).toContain("the wait itself never held");
+    expect(finished.message).toContain("1 step recorded a wait that did not pass");
+    expect(finished.message).not.toContain("cross-tree warning");
+  });
+
+  it("counts a probed verdict and an unpassed wait separately", async () => {
+    await startRecording("mixed");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("mixed", { condition: "visible", selector: { text: "Continue" } });
+    await recordWait(
+      "mixed",
+      { condition: "visible", selector: { text: "NoSuchThing" } },
+      { registry: registryWhereWaitTimesOut() }
+    );
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "mixed", project_root: tmpDir }
+    );
+
+    expect(finished.message).toBe(
+      'Finished recording "mixed" flow (2 steps) — 1 step carries a cross-tree warning about ' +
+        "converting a recorded wait, and 1 step recorded a wait that did not pass; read " +
+        "`summary` before converting or replaying"
+    );
+  });
+
   it("keeps every verdict when the recording ends with an echo", async () => {
     // `flow-add-echo` appends through the same helper and files no verdict, so
     // a trailing echo used to leave the recording one step longer than the
