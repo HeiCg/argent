@@ -3207,42 +3207,26 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
 }
 
 /**
- * What {@link appendStepToFlow} would have answered for a step the recorder
- * DECLINED to record, minus the append: the flow as it stands.
- *
- * Under the same lock and the same liveness assertion, so declining a step is
- * still an operation on a live session — a caller whose recording was finished
- * or restarted underneath it hears about it either way, rather than reading a
- * count off a session nobody owns any more.
- */
-export async function reportFlowUnchanged(
-  session: RecordingSession,
-  declined: FlowStep
-): Promise<{ savedTo: FlowSavedTo; stepCount: number }> {
-  return withFlowLock(session.key, async () => {
-    assertSessionStillLive(session, declined);
-    session.lastTouchedSeq = touch();
-    return {
-      savedTo:
-        session.persist === "host"
-          ? session.filePath
-          : clientFileDirective(session.filePath, serializeFlow(session.flow)),
-      stepCount: session.flow.steps.length,
-    };
-  });
-}
-
-/**
  * Append a step to a recording and persist it. In "host" mode the file on disk
  * is re-read first (the original behavior — a manual edit made mid-recording is
  * honored); in "client" mode this process never sees the client's disk, so the
  * in-memory copy is authoritative and the updated YAML travels back in the
  * directive.
+ *
+ * `decline` lets a recorder drop the step instead: it is asked about the flow
+ * the append WOULD have extended, and answering true writes nothing and reports
+ * the flow as it stands (`appended: false`). Here rather than at the call site
+ * because a recorder decides by reading the flow — "is the step before this one
+ * a `launch`?" — and only under this lock, after the host-mode re-read, is that
+ * the same flow the append would touch. Outside it the answer comes off an
+ * in-memory copy a hand edit may already have outdated, and off a step count
+ * a concurrent same-key append can move.
  */
 export async function appendStepToFlow(
   session: RecordingSession,
-  step: FlowStep
-): Promise<{ savedTo: FlowSavedTo; stepCount: number }> {
+  step: FlowStep,
+  decline?: (flow: FlowFile) => boolean
+): Promise<{ savedTo: FlowSavedTo; stepCount: number; appended: boolean }> {
   // The session's OWN key, not a fresh resolution of it: the lock this append
   // takes and the identity {@link assertSessionStillLive} checks must be the
   // same one, or a key that moved under the session (a symlink repointed
@@ -3252,13 +3236,26 @@ export async function appendStepToFlow(
     assertSessionStillLive(session, step);
     session.lastTouchedSeq = touch();
     if (session.persist === "host") {
+      // Only when someone asks: the read costs a file open, and every caller
+      // that always records is answered by `appendStep`'s own read below.
+      if (decline) session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"));
+      if (decline?.(session.flow)) {
+        return { savedTo: session.filePath, stepCount: session.flow.steps.length, appended: false };
+      }
       const flowFile = await appendStep(session.filePath, step);
       session.flow = parseFlow(flowFile);
       // Count inside the lock, off the just-refreshed `session.flow`: a caller
       // reading `session.flow.steps.length` after this returns would be racing
       // a concurrent same-key append, which can reassign `session.flow` between
       // the release here and that read.
-      return { savedTo: session.filePath, stepCount: session.flow.steps.length };
+      return { savedTo: session.filePath, stepCount: session.flow.steps.length, appended: true };
+    }
+    if (decline?.(session.flow)) {
+      return {
+        savedTo: clientFileDirective(session.filePath, serializeFlow(session.flow)),
+        stepCount: session.flow.steps.length,
+        appended: false,
+      };
     }
     session.flow.steps.push(step);
     try {
@@ -3273,6 +3270,7 @@ export async function appendStepToFlow(
       return {
         savedTo: clientFileDirective(session.filePath, flowFile),
         stepCount: session.flow.steps.length,
+        appended: true,
       };
     } catch (err) {
       session.flow.steps.pop(); // keep the in-memory copy consistent: nothing recorded

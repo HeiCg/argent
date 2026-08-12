@@ -422,6 +422,41 @@ describe("flow-add-step on the expo dev-client chooser", () => {
     expect(result.stepCount).toBe(1);
   });
 
+  it("decides against the file, not a flow a hand edit has outdated", async () => {
+    // The tool's own description sends an author to the .yaml to remove a step
+    // recorded by mistake. Do that to the launch and the next chooser tap is no
+    // longer the launch's — nothing at replay opens the row for it.
+    await recordLaunch();
+    const file = path.join(tmpDir, ".argent", "flows", `${FLOW}.yaml`);
+    await fs.writeFile(file, "steps:\n  - echo: staged by hand\n", "utf8");
+    setTree(chooser(), "android-devtools");
+
+    const result = await record("gesture-tap", { x: 0.4995, y: 0.2745 });
+
+    expect(result.message).not.toContain("Not recorded");
+    expect(result.stepCount).toBe(2);
+    expect((await recordedSteps())[1]).toMatchObject({ kind: "tap" });
+  });
+
+  it("reports the count off the file when it declines", async () => {
+    // The declined path answers the same question the append would have, so the
+    // count has to come off the same flow — not the copy held in memory.
+    await recordLaunch();
+    const file = path.join(tmpDir, ".argent", "flows", `${FLOW}.yaml`);
+    await fs.writeFile(
+      file,
+      "steps:\n  - echo: staged by hand\n  - launch: com.anonymous.devclientprobe\n",
+      "utf8"
+    );
+    setTree(chooser(), "android-devtools");
+
+    const result = await record("gesture-tap", { x: 0.4995, y: 0.2745 });
+
+    expect(result.message).toContain("Not recorded");
+    expect(result.stepCount).toBe(2);
+    expect(result.recorded).toBe("(not recorded) tap: (0.4995, 0.2745)");
+  });
+
   it("records an ordinary tap on the app the launch opened", async () => {
     // The regression guard for the whole feature: once past the chooser, a tap
     // after a launch is an ordinary step.

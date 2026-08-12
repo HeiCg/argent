@@ -5,7 +5,7 @@ import { FAILURE_CODES, FailureError, type Registry, type ToolDefinition } from 
 import {
   requireRecordingSession,
   appendStepToFlow,
-  reportFlowUnchanged,
+  type FlowFile,
   parseFlow,
   assertSafeFlowName,
   classifyOnDiskSpelling,
@@ -574,11 +574,23 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       // is the step whose recovery makes it redundant — after anything else
       // (a fragment, or a raw restart-app that carries an activity) nothing at
       // replay dismisses the chooser and this tap is the step that does.
-      const openedByLaunch =
-        captured?.devServerRow !== undefined &&
-        session.flow.steps[session.flow.steps.length - 1]?.kind === "launch";
-      if (openedByLaunch) {
-        const unchanged = await reportFlowUnchanged(session, step);
+      // Decided by the append itself, against the flow it is about to extend:
+      // this asks what the PREVIOUS step is, and only there is that read of the
+      // file the append's own (see appendStepToFlow). Off the in-memory copy it
+      // would answer off a flow a hand edit — which this tool's own description
+      // invites — may already have outdated.
+      const declineDevServerRow =
+        captured?.devServerRow === undefined
+          ? undefined
+          : (flow: FlowFile): boolean => flow.steps[flow.steps.length - 1]?.kind === "launch";
+
+      const { savedTo, stepCount, appended } = await appendStepToFlow(
+        session,
+        step,
+        declineDevServerRow
+      );
+
+      if (!appended) {
         return {
           message:
             `Not recorded — that tap opens ${captured?.devServerRow} on the expo dev-client ` +
@@ -586,13 +598,11 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
             `\`metroPort\` to flow-execute when your Metro is not on ${DEFAULT_METRO_PORT}, so ` +
             `the launch opens the same server this recording used.`,
           toolResult,
-          stepCount: unchanged.stepCount,
-          recorded: `(not recorded) ${summarizeStep(step, unchanged.stepCount + 1).replace(/^\d+\.\s*/, "")}`,
-          savedTo: unchanged.savedTo,
+          stepCount,
+          recorded: `(not recorded) ${summarizeStep(step, stepCount + 1).replace(/^\d+\.\s*/, "")}`,
+          savedTo,
         };
       }
-
-      const { savedTo, stepCount } = await appendStepToFlow(session, step);
 
       return {
         message: `Step added to "${params.name}" flow${warning ? ` — ${warning}` : ""}`,
