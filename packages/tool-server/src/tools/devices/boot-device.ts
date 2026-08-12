@@ -1627,11 +1627,11 @@ async function startHarmonyEmulator(
  * does before `deadline`.
  *
  * Arrival, because nothing else joins the two: the `Emulator` manager reports a
- * configured `hw.hdc.port` but not the one a started instance registers under
- * (measured as `127.0.0.1:5555`, outside the range `-hdcPort` accepts), and
- * `hdc` names connect keys and never mentions an instance. It is also the one signal independent of how an emulator's key is
- * spelled — measured as `127.0.0.1:5555`, which is neither the hardware-serial
- * shape a phone has nor inside the range `-hdcPort` accepts.
+ * configured `hw.hdc.port` but not the one a started instance registers under,
+ * and `hdc` names connect keys and never mentions an instance. It is also the
+ * one signal independent of how an emulator's key is spelled — measured as
+ * `127.0.0.1:5555`, which is neither the hardware-serial shape a phone has nor
+ * inside the range `-hdcPort` accepts.
  *
  * `checkAlive` is polled alongside, and throws if the emulator died: without it
  * a start that failed after the spawn returned would be indistinguishable from
