@@ -1433,6 +1433,24 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       // step's number and carrying the step itself, so a hand edit the recorder
       // appends over cannot hand the verdict to whatever inherits that number
       // (see {@link RecordedStepWarning}).
+      //
+      // ONLY this warning is carried, which is a decision and not an oversight.
+      // The scroll-out-of-reach argument applies to any warning, but the finish
+      // summary already answers the other two by RENDERING what was written:
+      // every `captureTapSelector` refusal ends in kept coordinates, which
+      // reads as `N. tap: (x, y)` instead of `N. tap: {selector}`, and every
+      // `captureRunTarget` refusal keeps the raw step, which reads as
+      // `N. tool: flow-execute {…}` instead of `N. run: name.yaml`. An author
+      // polishing from the summary sees both without being told. The verdict
+      // has no such tell — a step that will break on conversion renders exactly
+      // like one that will not — which is what makes carrying it worth a field
+      // on the session.
+      //
+      // The one warning that is neither carried nor legible is
+      // {@link fallbackSourceWarning}: the selector WAS captured, so the step
+      // renders normally, and the replay risk it names is invisible by the time
+      // it matters. Carrying it needs a third `kind` and its own headline arm
+      // in flow-finish-recording; it is a gap, not this branch's subject.
       if (waitWarning) {
         (session.stepWarnings ??= new Map()).set(stepCount, {
           ...waitWarning,
