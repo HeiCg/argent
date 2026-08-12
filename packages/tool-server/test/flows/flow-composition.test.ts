@@ -43,6 +43,7 @@ vi.mock("../../src/tools/devices/boot-electron", () => ({
 }));
 
 const DEVICE = "00000000-0000-0000-0000-0000000000ab";
+const ANDROID = "emulator-5554";
 let tmpDir: string;
 
 /**
@@ -2265,12 +2266,33 @@ describe("flow composition (run:)", () => {
     const registry = mockRegistry({ name: {}, project_root: {}, device: {} });
     await createRunFlowTool(registry).execute(
       {},
-      { name: "main", project_root: tmpDir, device: DEVICE, metroPort: 8085 }
+      { name: "main", project_root: tmpDir, device: ANDROID, metroPort: 8085 }
     );
 
     expect(registry.invokeTool).toHaveBeenCalledWith(
       "flow-execute",
       expect.objectContaining({ metroPort: 8085 })
+    );
+  });
+
+  it("keeps the Metro port off a nested flow-execute on another platform", async () => {
+    // "ANDROID ONLY" is the parameter's own contract, and the nested run binds
+    // this same device — so off Android the inner launch never reads the port
+    // and would just report an argument it cannot use.
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "flow-execute", args: { name: "b-only" } }],
+    });
+
+    const registry = mockRegistry({ name: {}, project_root: {}, device: {} });
+    await createRunFlowTool(registry).execute(
+      {},
+      { name: "main", project_root: tmpDir, device: DEVICE, metroPort: 8085 }
+    );
+
+    expect(registry.invokeTool).toHaveBeenCalledWith(
+      "flow-execute",
+      expect.not.objectContaining({ metroPort: expect.anything() })
     );
   });
 

@@ -2296,8 +2296,12 @@ async function execLeafStep(
       // the default is what the inner run would resolve anyway, so injecting it
       // would only add noise to every nested step's reported args. An explicit
       // value on the step still wins — there the author named a bundler for it.
+      // Android only, which is all the parameter is for: the nested run binds
+      // this same device, and off Android its launch never reads the port, so
+      // forwarding it would only put an inert argument in the step's args.
       if (
         step.name === FLOW_EXECUTE_TOOL_ID &&
+        device?.platform === "android" &&
         args.metroPort === undefined &&
         state.metroPort !== DEFAULT_METRO_PORT
       ) {
