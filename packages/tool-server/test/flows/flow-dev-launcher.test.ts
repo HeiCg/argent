@@ -637,6 +637,21 @@ describe("getting a launch past the chooser", () => {
     return { calls, actionEnv: { registry, device: emulator, signal } };
   }
 
+  /**
+   * The probe cache a run holds after its first launch. Filled by running one
+   * against an ordinary screen rather than by writing the key out, so a test
+   * pins the module's behaviour and not its bookkeeping.
+   */
+  async function probedRun(app_: string): Promise<Map<string, boolean>> {
+    const seen = new Map<string, boolean>();
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(app);
+    await dismissDevLauncher(env().actionEnv, app_, 8081, seen);
+    vi.mocked(adbShell).mockReset();
+    vi.mocked(fetchFlowTree).mockReset();
+    return seen;
+  }
+
   const splash = node("ROOT", "Screen", [0, 0, 1, 1], [node("Image", "", [0.4, 0.45, 0.2, 0.1])]);
   const app = node(
     "ROOT",
@@ -739,19 +754,24 @@ describe("getting a launch past the chooser", () => {
     expect(outcome).toHaveProperty("reason", expect.stringContaining("device offline"));
   });
 
-  it("does not tap when the run was cancelled during the probe", async () => {
-    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
-    reads(launcherTree());
+  it("does not tap when the run is cancelled after the chooser was read", async () => {
+    // The deliberate re-check just before the tap. Aborting before the call
+    // instead lands inside the probe's own `settleWithin` and the tap is never
+    // approached, so the probe is pre-answered and the cancel arrives with the
+    // chooser already in hand — the case the re-check exists for.
     const controller = new AbortController();
-    controller.abort();
+    const seen = await probedRun("xyz.blueskyweb.app");
+    vi.mocked(fetchFlowTree).mockImplementation(async () => {
+      controller.abort();
+      return { tree: launcherTree(), source: "android-devtools" };
+    });
     const { calls, actionEnv } = env(() => ({ ok: true }), controller.signal);
 
-    await expect(
-      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
-    ).resolves.toEqual({
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, seen)).resolves.toEqual({
       handled: false,
     });
     expect(calls).toEqual([]);
+    expect(adbShell).not.toHaveBeenCalled();
   });
 
   it("probes a device and app once per run, however many launches it has", async () => {
@@ -826,17 +846,49 @@ describe("getting a launch past the chooser", () => {
 
   it("stops the appear wait the moment the run is cancelled", async () => {
     // Cancelled while polling a splash: the wait must end on the abort, not on
-    // its own 12s deadline.
-    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
-    reads(splash);
+    // its own 12s deadline. The probe is pre-answered and the cancel fires from
+    // the first read, so it lands in the appear loop's own sleep rather than
+    // inside the probe.
     const controller = new AbortController();
+    const seen = await probedRun("xyz.blueskyweb.app");
+    let read = 0;
+    vi.mocked(fetchFlowTree).mockImplementation(async () => {
+      read += 1;
+      controller.abort();
+      return { tree: splash, source: "android-devtools" };
+    });
     const { calls, actionEnv } = env(() => ({ ok: true }), controller.signal);
 
-    const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map());
-    controller.abort();
-
-    await expect(pending).resolves.toEqual({ handled: false });
+    await expect(dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, seen)).resolves.toEqual({
+      handled: false,
+    });
+    // One read, then the sleep the abort cut short — not the whole 12s of them.
+    expect(read).toBe(1);
     expect(calls).toEqual([]);
+  });
+
+  it("re-probes after a probe that timed out", async () => {
+    // The timeout shares the error path's "answer no, remember nothing", and
+    // only the error half was covered. A cached timeout would switch the
+    // recovery off for the rest of the run.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(adbShell).mockImplementationOnce(() => new Promise<string>(() => {}));
+      vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+      reads(app);
+      const { actionEnv } = env();
+      const seen = new Map<string, boolean>();
+
+      const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, seen);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await expect(pending).resolves.toEqual({ handled: false });
+      expect(seen.size).toBe(0);
+
+      await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, seen);
+      expect(adbShell).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports the server it opened when the run is cancelled during the exit wait", async () => {
