@@ -173,6 +173,60 @@ function noServersTree(): DescribeNode {
 }
 
 /**
+ * The chooser a CURRENT client draws, captured the same way on an Expo SDK 57
+ * dev build (`expo-dev-launcher` 57.0.11) with Metro on 8091. Since
+ * expo-dev-launcher 56 the Android client finds servers over mDNS and writes
+ * each row's URL from the resolved IPv4 of the advertising machine, so the host
+ * is a LAN address — not an alias, and not a name. That one difference from the
+ * fixtures above is the whole of what a run meets today, and the same server
+ * appears in BOTH sections once it has been opened once.
+ */
+function discoveredTree(): DescribeNode {
+  const serverRow = (y: number) =>
+    node(
+      "View",
+      "devclientprobe / http://192.168.0.94:8091 / Chevron",
+      [0.058, y, 0.883, 0.077],
+      [node("View", "Chevron", [0.854, y + 0.027, 0.049, 0.022])]
+    );
+  return node(
+    "ROOT",
+    "Screen",
+    [0, 0, 1, 1],
+    [
+      node(
+        "ComposeView",
+        "",
+        [0, 0, 1, 1],
+        [
+          node("Image", "App Icon", [0.058, 0.083, 0.107, 0.048]),
+          node("StaticText", "devclientprobe", [0.205, 0.085, 0.272, 0.021]),
+          node("StaticText", "Development Build", [0.205, 0.111, 0.282, 0.019]),
+          node("View", "User", [0.83, 0.081, 0.117, 0.052]),
+          node(
+            "ScrollView",
+            "",
+            [0.058, 0.201, 0.883, 0.328],
+            [
+              node("StaticText", "DEVELOPMENT SERVERS", [0.058, 0.201, 0.334, 0.017]),
+              node("StaticText", "INFO", [0.848, 0.184, 0.117, 0.052]),
+              serverRow(0.236),
+              node("View", "Plus / New development server", [0.058, 0.322, 0.883, 0.052]),
+              node("StaticText", "RECENTLY OPENED", [0.058, 0.418, 0.264, 0.017]),
+              node("StaticText", "RESET", [0.84, 0.4, 0.117, 0.052]),
+              serverRow(0.453),
+            ]
+          ),
+          node("View", "Home", [0.039, 0.909, 0.281, 0.065]),
+          node("View", "Updates", [0.359, 0.909, 0.281, 0.065]),
+          node("View", "Settings", [0.68, 0.909, 0.281, 0.065]),
+        ]
+      ),
+    ]
+  );
+}
+
+/**
  * The fixtures above are written nested, which reads better; the Android adapter
  * emits the same screen FLAT — every node a direct child of one synthetic root,
  * with the ancestors surviving as leaves that keep their own frames and carry the
@@ -191,7 +245,6 @@ function asProduced(tree: DescribeNode): DescribeNode {
 }
 
 const emulator: DeviceInfo = { id: "emulator-5556", platform: "android", kind: "emulator" };
-const phone: DeviceInfo = { id: "R5CT30", platform: "android", kind: "device" };
 const sim: DeviceInfo = { id: "A1E0DF35", platform: "ios", kind: "simulator" };
 
 /** The chooser's history heading y, for the picker cases below. */
@@ -309,7 +362,7 @@ describe("waiting for a cold start to become something", () => {
 describe("picking the row for the run's own bundler", () => {
   it("opens the live row on the requested port, not the other live bundler", () => {
     const tree = launcherTree();
-    const picked = pickDevServerRow(tree, emulator, 8081, historyY(tree));
+    const picked = pickDevServerRow(tree, 8081, historyY(tree));
     expect(picked?.url).toBe("http://10.0.2.2:8081");
     // The row itself, not the scroll container whose hoisted text repeats it.
     expect(picked?.node.label).toBe("http://10.0.2.2:8081 / Chevron");
@@ -318,7 +371,7 @@ describe("picking the row for the run's own bundler", () => {
 
   it("honors the caller's port when several bundlers are live", () => {
     const tree = launcherTree();
-    expect(pickDevServerRow(tree, emulator, 8082, historyY(tree))?.node.frame.y).toBe(0.233);
+    expect(pickDevServerRow(tree, 8082, historyY(tree))?.node.frame.y).toBe(0.233);
   });
 
   it("never falls back to a remembered row, even one carrying the right port", () => {
@@ -330,7 +383,7 @@ describe("picking the row for the run's own bundler", () => {
     // reject it is the boundary — not an absence the assertion below could pass
     // on by accident.
     expect(rememberedText(tree)).toContain("http://10.0.2.2:8085");
-    expect(pickDevServerRow(tree, emulator, 8085, historyY(tree))).toBeNull();
+    expect(pickDevServerRow(tree, 8085, historyY(tree))).toBeNull();
   });
 
   it("does not settle for the scrolling container that repeats every row's URL", () => {
@@ -344,7 +397,7 @@ describe("picking the row for the run's own bundler", () => {
     expect(container.role).toBe("ScrollView");
     expect(container.subtreeText).toContain("http://10.0.2.2:8085");
     expect(container.frame.y).toBeLessThan(historyY(tree));
-    expect(pickDevServerRow(tree, emulator, 8085, historyY(tree))).toBeNull();
+    expect(pickDevServerRow(tree, 8085, historyY(tree))).toBeNull();
   });
 
   it("does not mistake the chooser's address box for a live row", () => {
@@ -357,7 +410,7 @@ describe("picking the row for the run's own bundler", () => {
     expect(box.role).toBe("TextField");
     expect(urlInBox.label).toContain(":8081");
     expect(urlInBox.frame.y).toBeLessThan(historyY(tree));
-    expect(pickDevServerRow(tree, emulator, 8081, historyY(tree))).toBeNull();
+    expect(pickDevServerRow(tree, 8081, historyY(tree))).toBeNull();
   });
 
   it("finds a row whose URL is rendered by a child leaf, not the card's own label", () => {
@@ -379,7 +432,7 @@ describe("picking the row for the run's own bundler", () => {
         node("View", "Plus / New development server", [0.061, 0.382, 0.878, 0.059]),
       ]
     );
-    const picked = pickDevServerRow(rows, emulator, 8081, historyY(rows));
+    const picked = pickDevServerRow(rows, 8081, historyY(rows));
     expect(picked?.node.role).toBe("StaticText");
     expect(picked?.node.frame.y).toBe(0.245);
   });
@@ -389,47 +442,44 @@ describe("picking the row for the run's own bundler", () => {
     // matching alone would open the wrong bundler and run the flow against
     // someone else's bundle.
     const tree = launcherTree();
-    expect(pickDevServerRow(tree, emulator, 808, historyY(tree))).toBeNull();
+    expect(pickDevServerRow(tree, 808, historyY(tree))).toBeNull();
   });
 
-  it("prefers the emulator's host-loopback alias over localhost", () => {
-    const both = node(
+  it("opens the LAN row a discovered server is listed under", () => {
+    // The whole point of the picker on a current client. Nothing argent can
+    // compose matches this row, so a host list — any host list — finds nothing
+    // and every dev-client launch errors while the bundler it names is running.
+    const tree = discoveredTree();
+    const picked = pickDevServerRow(tree, 8091, historyY(tree));
+    expect(picked?.url).toBe("http://192.168.0.94:8091");
+    expect(picked?.node.frame.y).toBe(0.236);
+  });
+
+  it("still refuses the remembered copy of the very same server", () => {
+    // A client that has opened a server once lists it TWICE — live above, and
+    // remembered below. The remembered copy is not the offer: it survives the
+    // server that wrote it, so opening it can only reach a dead address.
+    const tree = discoveredTree();
+    expect(rememberedText(tree)).toContain("http://192.168.0.94:8091");
+    expect(pickDevServerRow(tree, 8091, historyY(tree))?.node.frame.y).toBe(0.236);
+    expect(pickDevServerRow(tree, 8092, historyY(tree))).toBeNull();
+  });
+
+  it("does not let a longer port answer for a shorter one", () => {
+    // The mirror of the 808/8081 case, and the one a host wildcard could break:
+    // with the host free to match anything, `…:18091` must not read as `:8091`
+    // with `…:1` absorbed into the host.
+    const tree = node(
       "ROOT",
       "Screen",
       [0, 0, 1, 1],
       [
         node("StaticText", "DEVELOPMENT SERVERS", [0.061, 0.193, 0.352, 0.02]),
-        node("View", "http://localhost:8081", [0.061, 0.233, 0.878, 0.064]),
-        node("View", "http://10.0.2.2:8081", [0.061, 0.307, 0.878, 0.064]),
+        node("View", "http://192.168.0.94:18091 / Chevron", [0.061, 0.233, 0.878, 0.064]),
         node("View", "Plus / New development server", [0.061, 0.382, 0.878, 0.059]),
       ]
     );
-    // On an emulator `localhost` is the emulator itself and only reaches Metro
-    // through an adb reverse tunnel; 10.0.2.2 is the host by construction.
-    expect(pickDevServerRow(both, emulator, 8081, historyY(both))?.url).toBe(
-      "http://10.0.2.2:8081"
-    );
-    // A physical device has no such alias — there the tunnel is the only route.
-    expect(pickDevServerRow(both, phone, 8081, historyY(both))?.url).toBe("http://localhost:8081");
-  });
-
-  it("falls back to loopback off Android, the branch the gate never reaches", () => {
-    // Documents the helper's total behaviour, not a production path: the
-    // recovery is Android-only by construction (`isExpoDevBuild` answers false
-    // for every other platform), so the picker only ever runs with an Android
-    // device. An iOS simulator shares the host's network stack, which is what
-    // the fallback would mean if it were ever reached.
-    const ios = node(
-      "ROOT",
-      "Screen",
-      [0, 0, 1, 1],
-      [
-        node("StaticText", "DEVELOPMENT SERVERS", [0.061, 0.193, 0.352, 0.02]),
-        node("View", "http://localhost:8081", [0.061, 0.233, 0.878, 0.064]),
-        node("View", "Plus / New development server", [0.061, 0.382, 0.878, 0.059]),
-      ]
-    );
-    expect(pickDevServerRow(ios, sim, 8081, historyY(ios))?.url).toBe("http://localhost:8081");
+    expect(pickDevServerRow(tree, 8091, historyY(tree))).toBeNull();
   });
 });
 
@@ -616,7 +666,7 @@ describe("getting a launch past the chooser", () => {
     expect(outcome).toMatchObject({ handled: true, ok: false });
     expect(outcome).toHaveProperty(
       "reason",
-      expect.stringContaining("lists no reachable server on port 8085")
+      expect.stringContaining("lists no live server on port 8085")
     );
     expect(calls).toEqual([]);
   });
@@ -675,12 +725,12 @@ describe("the shape the adapter really produces", () => {
     const flat = asProduced(launcherTree());
     expect(flat.children.every((n) => n.children.length === 0)).toBe(true);
     expect(detectDevLauncher(flat)).toEqual({ historyY: 0.491 });
-    const picked = pickDevServerRow(flat, emulator, 8081, 0.491);
+    const picked = pickDevServerRow(flat, 8081, 0.491);
     expect(picked?.url).toBe("http://10.0.2.2:8081");
     expect(picked?.node.frame.y).toBe(0.307);
     // The scroll container is a full-width leaf here, carrying every row's URL
     // as hoisted text — the shape that made a history-only port match it.
-    expect(pickDevServerRow(flat, emulator, 8085, 0.491)).toBeNull();
+    expect(pickDevServerRow(flat, 8085, 0.491)).toBeNull();
   });
 
   it("keeps the address box out of the candidates once flattened", () => {
@@ -689,7 +739,7 @@ describe("the shape the adapter really produces", () => {
     // exclusion is geometric.
     const flat = asProduced(noServersTree());
     expect(detectDevLauncher(flat)).toEqual({ historyY: 0.732 });
-    expect(pickDevServerRow(flat, emulator, 8081, 0.732)).toBeNull();
+    expect(pickDevServerRow(flat, 8081, 0.732)).toBeNull();
   });
 });
 
@@ -804,7 +854,7 @@ describe("what the launch step reports", () => {
 
     const steps = await runLaunchOnly({ metroPort: 8085 });
     expect(steps[0]).toMatchObject({ kind: "launch", status: "error" });
-    expect(steps[0].reason).toContain("lists no reachable server on port 8085");
+    expect(steps[0].reason).toContain("lists no live server on port 8085");
   });
 
   it("takes 8081 when the caller names no port", async () => {

@@ -30,9 +30,9 @@ import { invokeOnDevice, type ActionEnv } from "./flow-actions";
  *
  * The recovery is a tap on the row for the Metro server the RUN is targeting —
  * `metroPort`, which the caller passes because only it knows which bundler it
- * started. Nothing here guesses: with no matching row the launch reports what
- * it saw and which URL it wanted, rather than opening an arbitrary server and
- * running the flow against the wrong bundle.
+ * started. Nothing here guesses: with no live row on that port the launch
+ * reports what it saw and which port it wanted, rather than opening an
+ * arbitrary server and running the flow against the wrong bundle.
  */
 
 /** Metro's default port — the same default every other argent tool takes. */
@@ -75,31 +75,6 @@ const HISTORY_HEADING = "RECENTLY OPENED";
  */
 const EXIT_TIMEOUT_MS = 60_000;
 const EXIT_POLL_MS = 500;
-
-/**
- * Hosts that reach the tool-server's Metro FROM the device, best first.
- *
- * An Android emulator reaches its host machine at the `10.0.2.2` alias;
- * `localhost` means the emulator itself and only reaches Metro when an
- * `adb reverse` tunnel is up, so it ranks second. A physical Android device has
- * no alias and depends on that tunnel entirely, which puts `localhost` first.
- * The last branch is a fallback the gate never reaches — {@link isExpoDevBuild}
- * answers false off Android — kept so the helper stays total; loopback is what it
- * would mean on an iOS simulator, which shares the host's network stack.
- *
- * A LAN address is deliberately absent: it is the spelling most likely to be
- * stale (it changes with the network the machine is on, not with the app), and
- * preferring a reachable-by-construction host over one we would have to probe
- * keeps this a single tree read.
- */
-function candidateHosts(device: DeviceInfo): string[] {
-  if (device.platform === "android") {
-    return device.kind === "emulator"
-      ? ["10.0.2.2", "localhost", "127.0.0.1"]
-      : ["localhost", "127.0.0.1", "10.0.2.2"];
-  }
-  return ["localhost", "127.0.0.1"];
-}
 
 function flatten(root: DescribeNode): DescribeNode[] {
   const all: DescribeNode[] = [];
@@ -181,41 +156,47 @@ function candidateRows(nodes: DescribeNode[], historyY: number): DescribeNode[] 
  *
  * Only rows ABOVE the history heading are eligible — see {@link HISTORY_HEADING}
  * for why a remembered row carrying the same port is not the same offer. Among
- * those, hosts are tried in reachability order, and the match is on the whole
- * `http://<host>:<port>` origin: matching the port alone would happily open a
- * dead LAN address that shares it.
+ * those a row is identified by its PORT, on whatever host the CLIENT wrote into
+ * it.
+ *
+ * The host is not argent's to choose. The launcher composes each row's URL
+ * itself, and how it spells the host changed under us: through
+ * expo-dev-launcher 55 the Android client scanned a fixed port list and wrote
+ * the emulator's host-loopback alias (`10.0.2.2`) or `localhost`, while since
+ * 56 it discovers servers over mDNS and writes the resolved IPv4 of the
+ * advertising machine — a LAN address, which no alias can be spelled as.
+ * Matching an argent-composed origin therefore matched nothing at all on every
+ * current client. What makes a row the right one is not its host but that the
+ * client is offering it LIVE, on the port this run's bundler serves: the client
+ * only lists a server it just reached, over a host it reached that server on.
  */
 export function pickDevServerRow(
   root: DescribeNode,
-  device: DeviceInfo,
   port: number,
   historyY: number
 ): { node: DescribeNode; url: string } | null {
-  const live = candidateRows(flatten(root), historyY);
-  for (const host of candidateHosts(device)) {
-    const url = `http://${host}:${port}`;
-    // A trailing-digit guard, so port 808 cannot open the row for 8081. Plain
-    // substring matching is otherwise right: the row label wraps the URL in
-    // decorations (a chevron, the project name) that vary by client version.
-    const origin = new RegExp(`${url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9])`, "i");
-    // OWN text only — the rule {@link tightestOwning} follows, and for a sharper
-    // reason here. The hoist repeats EVERY row's URL, the history's included, on
-    // the scroll container that wraps the whole list, and that container's top
-    // edge sits above the history boundary. Reading hoisted text would therefore
-    // match the container for a port only a remembered row carries, and the
-    // launch would tap the middle of the list — an arbitrary point — instead of
-    // reporting that no live row exists. Nothing is lost by ignoring the hoist:
-    // it is additive, so the leaf that renders the URL still carries it itself.
-    // Tightest match still wins, since a row card whose own label spells the URL
-    // also wraps the leaf that renders it.
-    const row = live
-      .filter((n) => origin.test(nodeText(n)))
-      .reduce<
-        DescribeNode | undefined
-      >((best, n) => (best === undefined || area(n) < area(best) ? n : best), undefined);
-    if (row) return { node: row, url };
+  // A host of anything but separators, so a row for 18081 cannot answer for
+  // 8081, and a trailing-digit guard, so port 808 cannot open the row for 8081.
+  // Plain substring matching is otherwise right: the row label wraps the URL in
+  // decorations (a chevron, the project name) that vary by client version.
+  const origin = new RegExp(`http://[^\\s/:]+:${port}(?![0-9])`, "i");
+  // OWN text only — the rule {@link tightestOwning} follows, and for a sharper
+  // reason here. The hoist repeats EVERY row's URL, the history's included, on
+  // the scroll container that wraps the whole list, and that container's top
+  // edge sits above the history boundary. Reading hoisted text would therefore
+  // match the container for a port only a remembered row carries, and the
+  // launch would tap the middle of the list — an arbitrary point — instead of
+  // reporting that no live row exists. Nothing is lost by ignoring the hoist:
+  // it is additive, so the leaf that renders the URL still carries it itself.
+  // Tightest match still wins, since a row card whose own label spells the URL
+  // also wraps the leaf that renders it.
+  let best: { node: DescribeNode; url: string } | null = null;
+  for (const node of candidateRows(flatten(root), historyY)) {
+    const found = origin.exec(nodeText(node));
+    if (!found) continue;
+    if (best === null || area(node) < area(best.node)) best = { node, url: found[0] };
   }
-  return null;
+  return best;
 }
 
 function errMsg(err: unknown): string {
@@ -337,13 +318,13 @@ export async function dismissDevLauncher(
   }
   if (!root || !launcher) return { handled: false };
 
-  const target = pickDevServerRow(root, device, port, launcher.historyY);
+  const target = pickDevServerRow(root, port, launcher.historyY);
   if (!target) {
     return {
       handled: true,
       ok: false,
       reason:
-        `the expo dev-client launcher is showing and lists no reachable server on port ${port}. ` +
+        `the expo dev-client launcher is showing and lists no live server on port ${port}. ` +
         `Start Metro on that port, or pass \`metroPort\` for the bundler this run should use.`,
     };
   }
