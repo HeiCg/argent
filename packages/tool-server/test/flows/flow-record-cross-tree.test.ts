@@ -435,8 +435,16 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     );
 
     const warning = warningOf(result, "blind");
-    expect(warning).toContain("without a readable UI tree");
+    expect(warning).toContain("without a trustworthy read of the UI tree");
     expect(warning).toContain("UNKNOWN, not known-bad");
+    // The note carries an error only where a fetch threw; an empty or degraded
+    // tree produces none, and the warning must not send the author looking for
+    // one that is not there.
+    expect(warning).toContain("names the tree-source error where a fetch threw");
+    expect(warning).not.toContain("read `toolResult.note` for the tree-source error");
+    // Nor may it claim nothing was compared: a window that goes dark only at
+    // the end classifies here too, and its earlier reads did compare.
+    expect(warning).not.toContain("nothing was ever compared");
     // The two claims the unmet text makes, and this one must not.
     expect(warning).not.toContain("the wait itself never held");
     expect(warning).not.toContain("re-record it once the condition can actually hold");

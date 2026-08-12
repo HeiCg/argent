@@ -454,25 +454,34 @@ const UNMET_WAIT_WARNING =
 
 /**
  * The same `success: false` that {@link UNMET_WAIT_WARNING} is written for,
- * arrived at without ever reading the screen — the tree source failed for the
- * whole wait, or the caller cancelled it. {@link unmetUiWaitCause} tells the
- * two apart from a genuine miss.
+ * arrived at without a trustworthy read to judge the condition on — the tree
+ * source never answered, or answered blind, or went dark before the deadline;
+ * or the caller cancelled it. {@link unmetUiWaitCause} tells those apart from a
+ * genuine miss.
  *
  * Neither may reuse the unmet text. It asserts "the wait itself never held" and
- * prescribes re-recording or deleting the step; here nothing was observed, so
- * the condition may be perfectly satisfiable and the step perfectly good.
+ * prescribes re-recording or deleting the step; here the condition was not
+ * judged, so it may be perfectly satisfiable and the step perfectly good.
  * That is the same unknown-vs-known-bad distinction
  * {@link probeAgainstRunnerTree} draws for an unreadable RUNNER tree, and for
  * the same reason: do not send an author to rewrite a step on evidence nobody
  * has.
+ *
+ * What it must not do is overclaim in the other direction either. "Nothing was
+ * ever compared" is true of a wholly blind window and false of one that only
+ * went dark at the end; and the note carries a tree-source ERROR only when a
+ * fetch actually threw — an empty or degraded tree produces no error to read.
  */
 const UNREADABLE_WAIT_WARNING =
-  "recorded, but this wait ended without a readable UI tree, so nothing was ever compared — " +
-  "`await-ui-element` returns success:false for that too, and the step was written to the flow " +
-  "anyway. Whether the condition holds is UNKNOWN, not known-bad: read `toolResult.note` for the " +
-  "tree-source error, get that source back, and re-record the step to find out. Do not delete " +
-  "the step on this warning alone. The cross-tree re-probe was skipped: it asks whether a check " +
-  "that PASSED would survive conversion to `await:`/`assert:`, and this one never got an answer";
+  "recorded, but this wait reached its deadline without a trustworthy read of the UI tree, so " +
+  "the condition was never judged — `await-ui-element` returns success:false for that too, and " +
+  "the step was written to the flow anyway. Either no read in the window could be trusted, or " +
+  "the reads went dark before the end and what they saw no longer describes it. Whether the " +
+  "condition holds is UNKNOWN, not known-bad: `toolResult.note` names the tree-source error " +
+  "where a fetch threw, and describes what was seen where the tree was merely empty or " +
+  "degraded. Get that source back and re-record the step to find out. Do not delete the step on " +
+  "this warning alone. The cross-tree re-probe was skipped: it asks whether a check that PASSED " +
+  "would survive conversion to `await:`/`assert:`, and this one never got an answer";
 
 const CANCELLED_WAIT_WARNING =
   "recorded, but this wait was cancelled before its deadline, so the condition was never settled " +
