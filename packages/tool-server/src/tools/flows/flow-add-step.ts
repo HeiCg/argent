@@ -126,12 +126,16 @@ const UNSUPPORTED_PLATFORM = {
  * show the element at all. iOS overshoots where Android undershoots: the
  * Apple-only full-hierarchy readers see the raw UIView tree, which at equal
  * depth is a superset of what `queryFullHierarchyTree` projects (it drops
- * hidden, transparent, scroll-clipped and unlabelled container views), AND they
- * match `identifier` / `label` / `className` EXACTLY — a recorded selector's
- * `text` is a case-insensitive SUBSTRING of a label or value and its `role` a
- * substring of a derived role name, neither of which those tools accept. So
- * they report elements the runner never sees and miss substring matches it does
- * make.
+ * hidden, transparent, scroll-clipped and unlabelled container views), so they
+ * report elements the runner never sees. Neither can be ASKED the question a
+ * selector asks, either, and they fail it differently: `native-find-views`
+ * matches `identifier` / `label` / `className` EXACTLY, where a recorded
+ * selector's `text` is a case-insensitive SUBSTRING of a label or value and its
+ * `role` a substring of a derived role name — so it misses substring matches
+ * the runner does make. `native-full-hierarchy` takes no matcher at all: its
+ * schema is `udid, bundleId, fields, skipClasses, skipClassPrefixes, maxDepth`,
+ * so it dumps a tree to read rather than answering "does this selector
+ * resolve".
  *
  * "At equal depth" is load-bearing, and is the iOS analogue of the Chromium
  * 5000/12000 asymmetry above: `native-full-hierarchy` defaults to `maxDepth: 8`
@@ -185,9 +189,11 @@ function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
   if (platform === "ios") {
     return (
       "No read-only tool reports the runner's projection on iOS — `native-find-views` and " +
-      "`native-full-hierarchy` return the RAW view tree, matching `identifier`/`label`/" +
-      "`className` exactly (neither takes a substring `text` or a `role`) and keeping the " +
-      "hidden, transparent, scroll-clipped and unlabelled container views the runner drops — " +
+      "`native-full-hierarchy` return the RAW view tree, keeping the hidden, transparent, " +
+      "scroll-clipped and unlabelled container views the runner drops, and neither answers the " +
+      "question a selector asks: `native-find-views` matches `identifier`/`label`/`className` " +
+      "EXACTLY and takes no substring `text` or `role`, and `native-full-hierarchy` takes no " +
+      "matcher at all — it dumps the tree for you to read — " +
       retargetRemedy("an `id`", condition)
     );
   }

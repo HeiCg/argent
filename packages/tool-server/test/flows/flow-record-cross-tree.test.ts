@@ -832,6 +832,15 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain(
       "rule that out first. No read-only tool reports the runner's projection on iOS"
     );
+    // The two tools fail the question DIFFERENTLY, and pooling them names a
+    // query one of them cannot be asked: `native-full-hierarchy` takes no
+    // matcher at all (`udid, bundleId, fields, skipClasses, skipClassPrefixes,
+    // maxDepth`), so an author sent to "check the runner's side" there has
+    // nothing to run. Only `native-find-views` has the exact-match behaviour.
+    expect(warning).toContain(
+      "`native-find-views` matches `identifier`/`label`/`className` EXACTLY"
+    );
+    expect(warning).toContain("`native-full-hierarchy` takes no matcher at all");
     // Nor may it answer "re-record". The skill's own workflow for a testID the
     // trimmed tree hides is to gate on visible text and retarget the id at
     // polish — which is what PRODUCES this divergence — so sending the author
