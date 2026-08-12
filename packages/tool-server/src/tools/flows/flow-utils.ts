@@ -286,6 +286,18 @@ export interface RecordingSession {
    * the step it belongs to.
    */
   stepWarnings?: Map<number, string>;
+  /**
+   * Step count as of the last append, so {@link stepWarnings}' anchors can be
+   * checked against the file they were numbered for.
+   *
+   * Those anchors are positions, and a mid-recording hand edit moves positions.
+   * Host mode re-reads the file on every append, so deleting a step silently
+   * renumbers every step after it — and a verdict left on its old number would
+   * then convict whichever step inherited it. Comparing this against the
+   * finished flow's length is what detects that, since dropping only
+   * out-of-range numbers catches a truncation and nothing else.
+   */
+  stepsAppended?: number;
   /** Order of the last touch, for the LRU eviction backstop. See {@link touch}. */
   lastTouchedSeq: number;
 }

@@ -13,6 +13,7 @@ import {
   type FlowStep,
   type FlowSavedTo,
   type FlowSelector,
+  type RecordingSession,
 } from "./flow-utils";
 import type { TextMatchMode } from "../../utils/ui-tree-match";
 
@@ -67,11 +68,15 @@ const zodSchema = z.object({
  * paragraphs, and running it into the step line would bury the step it belongs
  * to.
  *
- * A verdict whose step number no longer exists is DROPPED. Hand-editing the
- * .yaml mid-recording is a documented workflow and host mode re-reads the file
- * here, so a deleted step must not leave its verdict attached to whatever step
- * inherited its number. How the remainder renumbered is unknowable from here,
- * which is why the surplus goes rather than being re-anchored.
+ * Every verdict is DROPPED when the finished flow is not the length the
+ * recorder appended. Hand-editing the .yaml mid-recording is a documented
+ * workflow and host mode re-reads the file on every append, so deleting a step
+ * renumbers each one after it — and these anchors are positions. Dropping only
+ * out-of-range numbers would catch a truncation and nothing else: delete step 2
+ * of 3 and the old step 3 arrives as step 2, wearing step 2's verdict. Which
+ * step moved where is unknowable from here, so a length mismatch discards the
+ * lot rather than convicting the wrong step, and {@link countWarned} reports 0
+ * so `message` does not advertise verdicts the summary no longer carries.
  */
 function attachStepWarnings(
   summary: string[],
@@ -82,6 +87,18 @@ function attachStepWarnings(
     const warning = warnings.get(i + 1);
     return warning ? `${line}\n   warning: ${warning}` : line;
   });
+}
+
+/**
+ * The verdicts still anchored to the steps they judged, or none when a
+ * mid-recording edit changed the flow's length (see {@link attachStepWarnings}).
+ */
+function anchoredWarnings(
+  session: RecordingSession,
+  steps: number
+): Map<number, string> | undefined {
+  if (session.stepWarnings === undefined) return undefined;
+  return session.stepsAppended === steps ? session.stepWarnings : undefined;
 }
 
 function countWarned(steps: number, warnings: Map<number, string> | undefined): number {
@@ -158,8 +175,9 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // there — `JSON.stringify` on a cyclic `args` anchor — is guarded in
         // {@link renderToolArgs}; keeping the order is what makes the next one
         // recoverable rather than fatal.
-        const summary = attachStepWarnings(summarizeSteps(flow), session.stepWarnings);
-        const warned = countWarned(summary.length, session.stepWarnings);
+        const anchored = anchoredWarnings(session, flow.steps.length);
+        const summary = attachStepWarnings(summarizeSteps(flow), anchored);
+        const warned = countWarned(summary.length, anchored);
         clearRecordingSession(session);
         return { filePath, flowFile, savedTo, flow, summary, warned };
       }

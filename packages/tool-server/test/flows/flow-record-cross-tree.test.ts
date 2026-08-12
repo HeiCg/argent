@@ -1550,18 +1550,27 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(finished.summary[0]).not.toContain("warning:");
   });
 
-  it("drops a verdict whose step was hand-deleted mid-recording", async () => {
+  it("drops every verdict when a hand edit renumbered the steps", async () => {
     // Editing the .yaml mid-recording is documented, and host mode re-reads the
-    // file here. A verdict left anchored to a number the shortened flow reuses
-    // would convict whatever step inherited it.
-    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    // file on every append — so deleting a step renumbers each one after it.
+    // These anchors are positions, so an innocent step can inherit the number a
+    // verdict was left on.
     await startRecording("edited");
+    // Step 1 agrees, so its probe returns on the first read and costs no grace
+    // window. Step 2 diverges and carries the verdict. Step 3 agrees.
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
     await recordWait("edited", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("edited", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
     await recordWait("edited", { condition: "visible", selector: { text: "Continue" } });
 
+    // Delete the MIDDLE step: the innocent third slides into position 2, the
+    // one the verdict is anchored to. Dropping only out-of-range numbers would
+    // convict it.
     const file = path.join(tmpDir, ".argent", "flows", "edited.yaml");
     const parsed = parseFlow(await fs.readFile(file, "utf8"));
-    parsed.steps = parsed.steps.slice(0, 1);
+    parsed.steps = [parsed.steps[0], parsed.steps[2]];
     await fs.writeFile(file, serializeFlow(parsed), "utf8");
 
     const finished = await flowFinishRecordingTool.execute(
@@ -1569,9 +1578,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "edited", project_root: tmpDir }
     );
 
-    expect(finished.summary).toHaveLength(1);
-    expect(finished.message).toContain("1 step carries a cross-tree warning");
-    expect(finished.summary[0]).toContain("warning:");
+    expect(finished.summary).toHaveLength(2);
+    for (const line of finished.summary) expect(line).not.toContain("warning:");
+    // …and `message` must not advertise what the summary no longer carries.
+    expect(finished.message).toBe('Finished recording "edited" flow (2 steps)');
   });
 
   // ── Cancellation ─────────────────────────────────────────────────────────
