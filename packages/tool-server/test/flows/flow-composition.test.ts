@@ -2294,6 +2294,32 @@ describe("flow composition (run:)", () => {
     );
   });
 
+  it("gives the run's Metro port to no other tool step", async () => {
+    // The injection is for the one tool that IS this run one level down. Every
+    // other `tool:` step would just receive an argument it never declared —
+    // noise in its reported args at best, a schema rejection at worst.
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "tool", name: "restart-app", args: { bundleId: "com.example.app" } },
+        { kind: "tool", name: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+      ],
+    });
+
+    const registry = mockRegistry({ udid: {}, bundleId: {}, x: {}, y: {} });
+    await createRunFlowTool(registry).execute(
+      {},
+      { name: "main", project_root: tmpDir, device: DEVICE, metroPort: 8085 }
+    );
+
+    for (const tool of ["restart-app", "gesture-tap"]) {
+      expect(registry.invokeTool).toHaveBeenCalledWith(
+        tool,
+        expect.not.objectContaining({ metroPort: expect.anything() })
+      );
+    }
+  });
+
   it("rejects a port number no bundler can listen on", () => {
     // A typo'd 80811 is not a port. Caught by the schema, as every other port
     // argument in the tool-server is, rather than surfacing after the dev-build
