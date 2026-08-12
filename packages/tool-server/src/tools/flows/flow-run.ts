@@ -2158,19 +2158,29 @@ async function execLeafStep(
       return { ...base, status: "pass", message: step.message };
 
     case "launch": {
-      const r = await runLaunch(state, step.app);
-      // A run cancelled mid-launch is a skip (matching the pre-step guard and
-      // the directives), never a step failure — the app did nothing wrong.
-      if (r.aborted) return { ...base, status: "skip", reason: r.reason };
-      return {
-        ...base,
-        status: r.ok ? "pass" : "error",
-        reason: r.reason,
-        // A launch that had to get past the dev-client chooser passed, but not
-        // by starting where the flow assumes — the same "how it passed" channel
-        // the directives use, and the only place the run says so.
-        ...(r.warning !== undefined ? { warning: r.warning } : {}),
-      };
+      // Same guard the directive arms carry, for the same reason: a launch that
+      // *throws* rather than reporting a failed outcome would abort the whole
+      // `flow-execute` call, losing every step collected so far and booking the
+      // failure as a tool failure. `runLaunch` and the recovery under it each
+      // catch their own throws today, so this holds a property that would
+      // otherwise rest on every one of them continuing to.
+      try {
+        const r = await runLaunch(state, step.app);
+        // A run cancelled mid-launch is a skip (matching the pre-step guard and
+        // the directives), never a step failure — the app did nothing wrong.
+        if (r.aborted) return { ...base, status: "skip", reason: r.reason };
+        return {
+          ...base,
+          status: r.ok ? "pass" : "error",
+          reason: r.reason,
+          // A launch that had to get past the dev-client chooser passed, but not
+          // by starting where the flow assumes — the same "how it passed" channel
+          // the directives use, and the only place the run says so.
+          ...(r.warning !== undefined ? { warning: r.warning } : {}),
+        };
+      } catch (err) {
+        return { ...base, status: "error", reason: errMsg(err) };
+      }
     }
 
     case "tap":

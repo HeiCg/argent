@@ -979,6 +979,23 @@ describe("what the launch step reports", () => {
     expect(steps[0].warning).toContain("http://10.0.2.2:8081");
   });
 
+  it("keeps a throwing launch inside the report instead of failing the call", async () => {
+    // Nothing under `runLaunch` throws today — every arm catches its own. The
+    // run's "never lose the collected report" property should not depend on
+    // that staying true of each of them.
+    vi.mocked(adbShell).mockImplementation(() => {
+      throw new Error("adb resolution exploded");
+    });
+    vi.mocked(fetchFlowTree).mockResolvedValue({
+      tree: node("ROOT", "Screen", [0, 0, 1, 1], []),
+      source: "android-devtools",
+    });
+
+    const steps = await runLaunchOnly({});
+    expect(steps[0]).toMatchObject({ kind: "launch", status: "error" });
+    expect(steps[0].reason).toContain("adb resolution exploded");
+  });
+
   it("says nothing extra when the app starts on its own screen", async () => {
     vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
     vi.mocked(fetchFlowTree).mockResolvedValue({
