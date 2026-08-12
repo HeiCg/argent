@@ -545,7 +545,10 @@ describe("flow-add-step", () => {
       "1. tool: screenshot {} (after 250ms)",
       "2. tap: (0.5, 0.3) ×2",
     ]);
-    // The finished summary and each step's `recorded` line are the same spelling.
+    // The finished summary and each step's `recorded` line are the same
+    // spelling. Comparing the whole array works only because neither step is an
+    // `await-ui-element`: a step carrying a cross-tree verdict adds a second,
+    // indented `warning:` line that no `recorded` line has a counterpart for.
     expect(finished.summary).toEqual([delayed.recorded, doubled.recorded]);
   });
 

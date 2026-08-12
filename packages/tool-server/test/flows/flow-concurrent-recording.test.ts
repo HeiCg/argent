@@ -1481,7 +1481,11 @@ describe("a finish that lands while a step is still running", () => {
     const onDisk = await readMarkers(root, "alpha");
     expect(markers(parseFlow(report.flowFile).steps)).toEqual(onDisk);
     expect(report.steps).toBe(onDisk.length);
-    expect(report.summary).toHaveLength(onDisk.length);
+    // One summary line per step is no longer a total invariant: a step carrying
+    // a cross-tree verdict gets a second, indented `warning:` line of its own.
+    // It holds here because these fixtures record echoes and taps, never an
+    // `await-ui-element` — so count the STEP lines rather than resting on that.
+    expect(report.summary.filter((line) => /^\d+\. /.test(line))).toHaveLength(onDisk.length);
     expect(report.path).toBe(flowPath(root, "alpha"));
     expect(report.savedTo).toBe(flowPath(root, "alpha"));
     expect(await getRecordingSession(root, "alpha")).toBeUndefined();
