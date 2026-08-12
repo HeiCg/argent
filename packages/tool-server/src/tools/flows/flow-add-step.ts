@@ -584,6 +584,15 @@ const CANCELLED_PROBE_WARNING =
  * measured at 3.4-7.4s on a host running several sessions at once, so no
  * ceiling short of the RPC timeout makes that impossible — the point is to stop
  * an ordinary slow read from costing the verdict.
+ *
+ * What bounds the OTHER end is not here: `flow-add-step` declares no
+ * `longRunning`, so the MCP adapter caps the whole call at its own
+ * `FETCH_TIMEOUT_MS` (30s) and retries the identical POST. A retry re-runs the
+ * recorded tool and appends a second step, since an aborted request still
+ * appends its first — so this budget is spent from that ceiling: a live wait
+ * within ~6s of it now crosses it. Raising the budget further trades verdicts
+ * on slow devices for duplicate steps on slow waits, which is the worse of the
+ * two.
  */
 const PROBE_MAX_TREE_READ_MS = 2500;
 const PROBE_ASSERT_GRACE_MS = 1000; // DEFAULT_ASSERT_TIMEOUT_MS, the loop's own window
