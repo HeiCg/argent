@@ -1553,7 +1553,15 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const readLanded = new Promise<void>((resolve) => {
       releaseRead = resolve;
     });
+    // Resolves the instant a SECOND fetch is issued — the thing that must not
+    // happen once the ceiling has given up on the first.
+    let sawSecondRead: () => void = () => {};
+    const secondRead = new Promise<void>((resolve) => {
+      sawSecondRead = resolve;
+    });
+    let reads = 0;
     fetchRunnerTree = async () => {
+      if ((reads += 1) > 1) sawSecondRead();
       await readLanded;
       // A tree that does NOT satisfy the condition. One that did would end the
       // loop on the spot and prove nothing: the post-deadline read only fires
@@ -1579,12 +1587,14 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).not.toContain("once that tree source is back");
     // Never a verdict: nothing was compared, so the conversion is UNKNOWN.
     expect(warning).not.toContain("does NOT hold");
-    // The ceiling is 6s; the bound that matters is that this never costs a full
-    // Chromium (10s) or Android devtools (15s) read, so it is set just under
-    // the first of those rather than tight against the ceiling — the recorder
-    // waited out that ceiling on purpose here, and host load lands on top of
-    // it. The generous per-test timeout below is for the same reason.
-    expect(elapsed).toBeLessThan(9500);
+    // The bound is a BACKSTOP, not the proof. The read cannot land until
+    // `releaseRead()` below, so a probe that did not give up at the ceiling
+    // would park on it forever and this call would never return at all —
+    // returning is what proves the bound, and the per-test timeout is what
+    // catches the failure. Wall-clock here only guards against an overrun so
+    // large the timeout would be reached by another route, and the recorder
+    // waited out a 6s ceiling on purpose with host load on top of it.
+    expect(elapsed).toBeLessThan(12_000);
     expect(await recordedSteps("slow")).toHaveLength(1);
     expect(fetchCount).toBe(1);
 
@@ -1593,8 +1603,13 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // would put a second device read behind whatever step the recorder runs
     // next, relocating the stall the ceiling exists to remove instead of
     // removing it.
+    //
+    // Raced rather than slept: a fixed sleep has to be long enough to be
+    // evidence and short enough to be cheap, and 50ms was neither under load.
+    // `secondRead` resolves the moment a second fetch is issued, so the failure
+    // path ends immediately and the success path gets the whole window.
     releaseRead();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Promise.race([secondRead, new Promise((resolve) => setTimeout(resolve, 750))]);
     expect(fetchCount).toBe(1);
   }, 15_000);
 

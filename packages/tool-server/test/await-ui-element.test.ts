@@ -777,8 +777,13 @@ describe("await-ui-element tool", () => {
     // `lastError` describes the LAST fetch alone, and `pollDescribeTree` clears
     // it on every success — so reading the cause off the note turns one bad
     // trailing read into "nothing was ever compared", for a step that will
-    // hard-fail at replay. The trusted read is barely one poll interval behind
-    // the deadline, well inside the blip tolerance.
+    // hard-fail at replay. The trusted read is one clamped sleep behind the
+    // deadline, well inside the blip tolerance.
+    //
+    // `pollIntervalMs` exceeds `timeoutMs` deliberately: the sleep is clamped
+    // to the deadline either way, so the shape is unchanged, but the tolerance
+    // it scales is now 4000ms against a ~600ms tail. At 500 the two were 1000
+    // and 600, and ~400ms of scheduler slip flipped the cause under load.
     const tool = createAwaitUiElementTool(makeMockRegistry({}));
 
     const result = await tool.execute(
@@ -788,7 +793,7 @@ describe("await-ui-element tool", () => {
         condition: "visible",
         selector: { text: "Nope" },
         timeoutMs: 600,
-        pollIntervalMs: 500,
+        pollIntervalMs: 2000,
       }
     );
 
@@ -813,7 +818,7 @@ describe("await-ui-element tool", () => {
         condition: "hidden",
         selector: { text: "Header" },
         timeoutMs: 600,
-        pollIntervalMs: 500,
+        pollIntervalMs: 2000,
       }
     );
 
