@@ -2777,6 +2777,21 @@ describe("summarizeStep rendering", () => {
     );
   });
 
+  it("renders a multi-field selector independently of its key order", () => {
+    // This render is also the step ANCHOR, and the anchor compares a selector
+    // the recorder built in memory — key order from the source object —
+    // against one that came back through `parseSelector`, whose key order is
+    // the zod schema's. Two spellings of the same selector rendering
+    // differently drops every verdict in the recording, with no hand edit
+    // involved and nothing in the payload to notice it. Unreachable today only
+    // because `deriveSelector` returns one field on every branch, so nothing
+    // else pins it.
+    const a = summarizeStep({ kind: "tap", selector: { identifier: "b", text: "Go" } }, 1);
+    const b = summarizeStep({ kind: "tap", selector: { text: "Go", identifier: "b" } }, 1);
+    expect(a).toBe(b);
+    expect(a).toBe('1. tap: {"id":"b","text":"Go"}');
+  });
+
   it("renders a long-press hold duration", () => {
     expect(
       summarizeStep({ kind: "long-press", selector: { text: "Row" }, duration: 1200 }, 3)

@@ -21,8 +21,25 @@ import type { TextMatchMode } from "../../utils/ui-tree-match";
 // Quote selectors in the step summary the way the flow FILE spells them
 // (`id`, bare string for loose, no internal `loose` flag) — the summary is what
 // gets read before hand-editing the YAML, so the spellings must agree.
+//
+// Key ORDER is normalised, which the file's own spelling does not fix. This
+// render is also the step ANCHOR ({@link stepAnchor}), and an anchor compares a
+// selector built in memory by the recorder — whose key order is the source
+// object's — against one that came back through `parseSelector`, whose key
+// order is the zod schema's. Two spellings of the same selector would then
+// render differently and every verdict in the recording would be dropped, with
+// no hand edit involved and nothing in the payload to notice it. That cannot
+// fire today only because `deriveSelector` returns a SINGLE-field selector on
+// every branch; sorting removes the dependency instead of resting on it. Order
+// is not part of what "the spellings must agree" is about — the summary already
+// renders schema order rather than the author's — so nothing else changes.
 function selectorLabel(sel: FlowSelector): string {
-  return JSON.stringify(selectorToYaml(sel));
+  const yaml = selectorToYaml(sel);
+  if (typeof yaml !== "object" || yaml === null) return JSON.stringify(yaml);
+  const sorted = Object.fromEntries(
+    Object.entries(yaml).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  );
+  return JSON.stringify(sorted);
 }
 
 // Render a text condition for the summary, one spelling for every step kind
@@ -351,10 +368,19 @@ function summarizeSteps(flow: FlowFile): string[] {
  * WHICH step this is, told apart from where it sits.
  *
  * The same renderer as the summary, on a fixed number so the identity does not
- * move with the position. A step read back from the file renders exactly as the
- * one the recorder appended — both sides of every comparison here are
- * `parseFlow` output, in client mode via one serialize/parse round trip — so
- * this differs only when the step itself does.
+ * move with the position, so a step read back from the file renders exactly as
+ * the one the recorder appended.
+ *
+ * Not because both sides are `parseFlow` output — that is true of only one of
+ * the three comparisons. `verdict.step` is rendered from the RAW in-memory step
+ * (`flow-add-step.ts`), and in client mode `session.flow.steps` are the raw
+ * pushed objects too, so two of them compare a raw step against a parsed one.
+ * What actually holds the anchor up is the stronger property that
+ * {@link summarizeStep} is STABLE across a serialize-then-parse round trip for
+ * every recorder-built step. Each field it reads has to survive that: the
+ * numbers `parseTapTimes` normalises, the `args` object `fromYamlStep` copies
+ * through, and the selector — see {@link selectorLabel}, where key order is
+ * normalised precisely because the round trip does not preserve it.
  */
 export function stepAnchor(step: FlowStep): string {
   return summarizeStep(step, 0);
