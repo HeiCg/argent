@@ -1343,7 +1343,15 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const warning = warningOf(result, "vega");
 
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
-    expect(warning).toContain("the SCREEN changed between the live wait and this re-probe");
+    // Anchored on the word this arm and the `text` arm differ by. The bare
+    // "the SCREEN changed between…" is a substring of BOTH strings, so forcing
+    // the `text` cause for every condition used to ship green — and it would
+    // offer a `visible` author an election tie that `visible` cannot have,
+    // since it quantifies over every match.
+    expect(warning).toContain(
+      "disagreement means the SCREEN changed between the live wait and this re-probe"
+    );
+    expect(warning).not.toContain("elected different elements");
     expect(warning).toContain("`describe` reads the same source the runner does");
     expect(warning).not.toContain("different projections of the screen");
     // Vega is where an absolute consequence is most plainly wrong: the arm
