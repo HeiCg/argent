@@ -581,6 +581,35 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(fetchCount).toBeGreaterThan(0);
   });
 
+  it("carries a verdict through a client-mode finish", async () => {
+    // Client mode is the arm where the anchor comparison is hardest. There is
+    // no file, so the finish serializes the in-memory flow and parses it back —
+    // and then compares those parsed steps against `session.flow.steps`, which
+    // are the RAW objects the recorder pushed. Every verdict in the recording
+    // rides on `summarizeStep` rendering both identically. No client-mode test
+    // reached the finish at all, so a normalization drift there would drop all
+    // of them silently and the suite would still be green.
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await startRemoteRecording("remotefinish");
+    await recordWait("remotefinish", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("remotefinish", { condition: "visible", selector: { text: "Continue" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "remotefinish", project_root: tmpDir }
+    );
+
+    // The diverging step keeps its verdict; the clean one gets none — the
+    // asymmetry an all-or-nothing drop would erase.
+    expect([...verdictsIn(finished.summary).keys()]).toEqual([1]);
+    expect(verdictsIn(finished.summary).get(1)).toContain("does NOT hold");
+    expect(finished.message).toContain("1 step carries a cross-tree warning");
+    expect(finished.message).not.toContain("NOT in `summary`");
+    // And the file still travels in the directive rather than to a host path.
+    expect(finished.savedTo).not.toBe(tmpDir);
+  });
+
   it("does not call an unconfirmable `hidden` a condition that never held", async () => {
     await startRecording("blindhidden");
 
