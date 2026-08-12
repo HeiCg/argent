@@ -1182,6 +1182,38 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(await recordedSteps("vega")).toHaveLength(1);
   });
 
+  it("Vega: admits the tie its own text clause names two sentences later", async () => {
+    // The tie mechanism is not a platform difference — it is the two
+    // enumeration orders, and Vega has them too (`flattenHoisting` emits
+    // post-order, `findAll` collects pre-order). So on `text` the screen is not
+    // the only cause, and saying it is contradicts the clause the same message
+    // carries.
+    const TIE = { x: 0.1, y: 0.1, width: 0.5, height: 0.05 };
+    const row = n({
+      identifier: "row",
+      label: "Total",
+      frame: TIE,
+      children: [n({ role: "text", label: "Total: $5.00", frame: TIE, children: [] })],
+    });
+    serveTree(vegaRunnerTree([row]), "vega-automation");
+    await startRecording("vegatie");
+
+    const result = await recordWait("vegatie", {
+      udid: VEGA,
+      condition: "text",
+      selector: { text: "Total" },
+      expectedText: "Total",
+      textMatch: "equals",
+    });
+    const warning = warningOf(result, "vegatie") ?? "";
+
+    expect(warning).toContain("elect DIFFERENT ones from the very same nodes");
+    expect(warning).toContain("either the SCREEN changed");
+    expect(warning).toContain("or the two sides elected different elements");
+    // The absolute belongs only to the conditions that cannot have a tie.
+    expect(warning).not.toContain("disagreement means the SCREEN changed");
+  });
+
   // Each platform's remedy must be its own. Pinning them only by "does this
   // string appear" lets a reworded clause collapse two platforms onto one
   // wording while every negative assertion above still passes.

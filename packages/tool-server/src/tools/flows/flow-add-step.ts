@@ -264,7 +264,7 @@ const SCREEN_MAY_HAVE_MOVED =
  * reachable, and a message that only ever describes the runner dropping
  * something sends an author to fix the wrong end.
  */
-function treeDivergenceFor(udid: unknown): string {
+function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
   const platform = platformOf(udid);
   if (platform === "ios") {
     return (
@@ -321,11 +321,23 @@ function treeDivergenceFor(udid: unknown): string {
     // `text` check MORE likely to hold. So "different projections of the
     // screen" would be plainly wrong here, and so would sending the author to
     // rewrite the selector.
+    //
+    // "Not that the two trees differ" is not the same as "the screen changed",
+    // and on `text` the difference is reachable: the re-shape emits post-order
+    // where `findAll` collects pre-order, so the two sides can elect different
+    // elements from identical nodes ({@link TEXT_TIE_CLAUSE}, which this same
+    // message carries). Stating the screen as the only cause would contradict
+    // it two sentences later.
+    const cause =
+      condition === "text"
+        ? "disagreement means either the SCREEN changed between the live wait and this re-probe " +
+          "or the two sides elected different elements, as above — not that the two trees differ."
+        : "disagreement means the SCREEN changed between the live wait and this re-probe, not " +
+          "that the two trees differ.";
     return (
       "Both read the same automation-toolkit page source, and the flow tree only re-shapes it — " +
       "it drops no element and its text hoist can only add matches — so on this platform a " +
-      "disagreement means the SCREEN changed between the live wait and this re-probe, not that " +
-      "the two trees differ."
+      cause
     );
   }
   return UNSUPPORTED_PLATFORM.divergence;
@@ -790,7 +802,8 @@ async function probeAgainstRunnerTree(
       " " +
       SPELLING_CLAUSE +
       " " +
-      `${treeDivergenceFor(args.udid)} ${runnerSideReadClause(args.udid, condition as WaitCondition)}`,
+      `${treeDivergenceFor(args.udid, condition as WaitCondition)} ` +
+      `${runnerSideReadClause(args.udid, condition as WaitCondition)}`,
   };
 }
 
