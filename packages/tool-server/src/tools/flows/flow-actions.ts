@@ -75,11 +75,16 @@ export interface DirectiveOutcome {
    * The condition could not be evaluated — unknown, not false: the window
    * never produced a trustworthy read (every fetch threw or returned a
    * blind/degraded tree), or a `hidden` check ended on a blind or failed
-   * read after the element had matched. Read by the `when:` guard probe,
-   * which must error rather than silently skip a block a broken tree source
-   * can't vouch for; a plain `assert` reports it as an ordinary failure. An
-   * `idle` step is the exception — it has no condition to fall back on, so the
-   * runner scores its indeterminate outcome `error` rather than `fail`.
+   * read after the element had matched.
+   *
+   * Every reader turns it into "unknown", and each has its own way to say so.
+   * The `when:` guard probe errors rather than silently skip a block a broken
+   * tree source can't vouch for. A plain `assert` reports it as an ordinary
+   * failure. An `idle` step has no condition to fall back on, so the runner
+   * scores it `error` rather than `fail`. And the recorder's cross-tree
+   * re-probe (`probeAgainstRunnerTree` in flow-add-step.ts) neither errors nor
+   * fails: the recorded step already ran on the device, so it keeps the step
+   * and composes a warning that says the conversion is UNKNOWN, not known-bad.
    */
   indeterminate?: boolean;
   /**
