@@ -43,6 +43,7 @@ import { adaptVegaTreeForFlows } from "../../src/tools/flows/flow-vega-tree";
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { flowFinishRecordingTool } from "../../src/tools/flows/flow-finish-recording";
+import { flowInsertEchoTool } from "../../src/tools/flows/flow-insert-echo";
 import {
   __resetRecordingsForTesting,
   parseFlow,
@@ -1548,6 +1549,35 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect(finished.message).toBe('Finished recording "clean" flow (1 steps)');
     expect(finished.summary[0]).not.toContain("warning:");
+  });
+
+  it("keeps every verdict when the recording ends with an echo", async () => {
+    // `flow-add-echo` appends through the same helper and files no verdict, so
+    // a trailing echo used to leave the recording one step longer than the
+    // count flow-add-step kept and drop every verdict it had — from `summary`
+    // and from `message` alike. Labelling a recording with echoes is what
+    // flow-start-recording's own description asks for, and an append after the
+    // warned steps moves none of them: their positions are still correct.
+    await startRecording("echolast");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("echolast", { condition: "visible", selector: { text: "Continue" } });
+    await recordWait("echolast", { condition: "visible", selector: { text: "Sign in" } });
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "echolast", project_root: tmpDir, message: "form submitted" }
+    );
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "echolast", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(3);
+    expect(finished.summary[0]).toContain("warning:");
+    expect(finished.summary[1]).toContain("warning:");
+    expect(finished.summary[2]).not.toContain("warning:");
+    // The plural arm of the count, and the only place it is asserted.
+    expect(finished.message).toContain("2 steps carry a cross-tree warning");
   });
 
   it("drops every verdict when a hand edit renumbered the steps", async () => {

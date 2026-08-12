@@ -68,15 +68,13 @@ const zodSchema = z.object({
  * paragraphs, and running it into the step line would bury the step it belongs
  * to.
  *
- * Every verdict is DROPPED when the finished flow is not the length the
- * recorder appended. Hand-editing the .yaml mid-recording is a documented
+ * Every verdict is DROPPED when the finished flow is no longer the file the
+ * recorder appended to. Hand-editing the .yaml mid-recording is a documented
  * workflow and host mode re-reads the file on every append, so deleting a step
- * renumbers each one after it — and these anchors are positions. Dropping only
- * out-of-range numbers would catch a truncation and nothing else: delete step 2
- * of 3 and the old step 3 arrives as step 2, wearing step 2's verdict. Which
- * step moved where is unknowable from here, so a length mismatch discards the
- * lot rather than convicting the wrong step, and {@link countWarned} reports 0
- * so `message` does not advertise verdicts the summary no longer carries.
+ * renumbers each one after it — and these anchors are positions. Which step
+ * moved where is unknowable from here, so an edit discards the lot rather than
+ * convicting the wrong step, and {@link countWarned} reports 0 so `message`
+ * does not advertise verdicts the summary no longer carries.
  */
 function attachStepWarnings(
   summary: string[],
@@ -91,14 +89,32 @@ function attachStepWarnings(
 
 /**
  * The verdicts still anchored to the steps they judged, or none when a
- * mid-recording edit changed the flow's length (see {@link attachStepWarnings}).
+ * mid-recording edit moved the steps out from under them (see
+ * {@link attachStepWarnings}).
+ *
+ * What the finished flow is compared against is the RECORDER's own view of it —
+ * `session.flow`, which `appendStepToFlow` refreshes on every append, from the
+ * re-read file in host mode and from the in-memory copy in client mode. So this
+ * asks the question the anchors actually depend on: do the steps still sit
+ * where the recorder last saw them?
+ *
+ * Comparing step CONTENT rather than a count of the appends THIS tool made is
+ * what keeps an ordinary append from reading as an edit. `flow-add-echo`
+ * appends through the same helper and files no verdict, so a recording that
+ * ends with one — which `flow-start-recording` invites, and which leaves every
+ * earlier step exactly where it was — used to arrive one step short of the
+ * count and lose every verdict it had.
  */
 function anchoredWarnings(
   session: RecordingSession,
-  steps: number
+  steps: FlowStep[]
 ): Map<number, string> | undefined {
   if (session.stepWarnings === undefined) return undefined;
-  return session.stepsAppended === steps ? session.stepWarnings : undefined;
+  const recorded = session.flow.steps;
+  if (recorded.length !== steps.length) return undefined;
+  return steps.every((step, i) => stepAnchor(step) === stepAnchor(recorded[i]))
+    ? session.stepWarnings
+    : undefined;
 }
 
 function countWarned(steps: number, warnings: Map<number, string> | undefined): number {
@@ -175,7 +191,7 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // there — `JSON.stringify` on a cyclic `args` anchor — is guarded in
         // {@link renderToolArgs}; keeping the order is what makes the next one
         // recoverable rather than fatal.
-        const anchored = anchoredWarnings(session, flow.steps.length);
+        const anchored = anchoredWarnings(session, flow.steps);
         const summary = attachStepWarnings(summarizeSteps(flow), anchored);
         const warned = countWarned(summary.length, anchored);
         clearRecordingSession(session);
@@ -262,6 +278,19 @@ function delayLabel(step: Extract<FlowStep, { kind: "tool" }>): string {
 /** One human-readable line per recorded step, in the flow file's own spellings. */
 function summarizeSteps(flow: FlowFile): string[] {
   return flow.steps.map((step, i) => summarizeStep(step, i + 1));
+}
+
+/**
+ * WHICH step this is, told apart from where it sits.
+ *
+ * The same renderer as the summary, on a fixed number so the identity does not
+ * move with the position. A step read back from the file renders exactly as the
+ * one the recorder appended — both sides of every comparison here are
+ * `parseFlow` output, in client mode via one serialize/parse round trip — so
+ * this differs only when the step itself does.
+ */
+function stepAnchor(step: FlowStep): string {
+  return summarizeStep(step, 0);
 }
 
 /**
