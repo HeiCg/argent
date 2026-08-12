@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { FAILURE_CODES, describeParamIssues, getFailureSignal } from "@argent/registry";
-import type { Registry, ToolContext } from "@argent/registry";
+import type { InvokeToolOptions, Registry, ToolContext } from "@argent/registry";
 
 /**
  * Dispatch a tool as a child of the current orchestrator invocation.
@@ -16,19 +16,26 @@ import type { Registry, ToolContext } from "@argent/registry";
  * to propagate this is a pass-through.
  *
  * The abort `signal` is forwarded on both paths so a client disconnect cancels a
- * sub-tool that would otherwise poll on to its own timeout.
+ * sub-tool that would otherwise poll on to its own timeout. `inRepeatFlowScope`
+ * rides both paths the same way — set explicitly via `overrides` by the flow
+ * runner's repeat-scoped dispatch, or inherited from ctx by any orchestrator in
+ * between — so a nested flow-execute learns it runs under a repeat at any
+ * nesting distance.
  */
 export async function invokeSubTool<T = unknown>(
   registry: Registry,
   ctx: ToolContext | undefined,
   toolId: string,
-  args: unknown
+  args: unknown,
+  overrides?: Pick<InvokeToolOptions, "inRepeatFlowScope">
 ): Promise<T> {
   const signal = ctx?.signal;
   const recordChildInvocation = ctx?.recordChildInvocation;
+  const inRepeatFlowScope = overrides?.inRepeatFlowScope ?? ctx?.inRepeatFlowScope;
+  const scopeOpt = inRepeatFlowScope ? { inRepeatFlowScope: true } : {};
   if (!recordChildInvocation) {
-    return signal
-      ? registry.invokeTool<T>(toolId, args, { signal })
+    return signal || inRepeatFlowScope
+      ? registry.invokeTool<T>(toolId, args, { ...(signal ? { signal } : {}), ...scopeOpt })
       : registry.invokeTool<T>(toolId, args);
   }
 
@@ -39,6 +46,7 @@ export async function invokeSubTool<T = unknown>(
       signal,
       toolInvocationId,
       recordChildInvocation,
+      ...scopeOpt,
     });
   } finally {
     release();
