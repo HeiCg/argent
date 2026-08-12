@@ -149,6 +149,11 @@ const NATIVE_DEVTOOLS_AGE_SLOP_MS = 3000;
  * How long a process may have been alive before its silence counts as evidence
  * it will never register — the dylib's dial and handshake after exec.
  *
+ * A heavy first-ever cold start on a loaded host delays that handshake well past
+ * 8s while the app is doing nothing wrong, so the budget is the 15s the
+ * `getFullHierarchy` RPC already allows — the figure this codebase uses for
+ * riding out one such stall, shared with the Android client's long-RPC tier.
+ *
  * This is the same quantity the flow launch gate waits out, and the two must
  * agree: below it the verdict is `connecting`, whose remedy is to wait; at it
  * the verdict is `unregistered`, whose remedy is a tool-server restart that
@@ -158,7 +163,7 @@ const NATIVE_DEVTOOLS_AGE_SLOP_MS = 3000;
  * is why `unregistered` carries a second-landing escape rather than a bare
  * instruction.
  */
-export const NATIVE_DEVTOOLS_CONNECT_BUDGET_MS = 8000;
+export const NATIVE_DEVTOOLS_CONNECT_BUDGET_MS = 15_000;
 
 /**
  * The agent-facing remedy for each measured state. `connected` is excluded at
@@ -639,6 +644,16 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         );
       }
       const id = nextRpcId++;
+      // The injected handlers hop onto the app's MAIN thread; a heavy cold
+      // start (first Hermes parse, asset decode) can pin it for several
+      // seconds, and the flow runner re-reads the hierarchy through exactly
+      // that window. Give the flows' workhorse read time to ride the stall out
+      // instead of failing the step — mirroring the Android devtools client's
+      // 5s default / 15s getHierarchy tiers. Everything else (including the
+      // per-read Application.getState probe and the interactive point queries)
+      // keeps the 5s ceiling so one-shot agent tools stay snappy on a wedged
+      // app.
+      const timeoutMs = method === "ViewHierarchy.getFullHierarchy" ? 15_000 : 5_000;
       return new Promise((resolve, reject) => {
         pendingRpc.set(id, { resolve, reject });
         conn.socket.write(
@@ -659,7 +674,7 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
               })
             );
           }
-        }, 5000);
+        }, timeoutMs);
       });
     }
 

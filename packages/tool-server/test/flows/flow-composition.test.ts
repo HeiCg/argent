@@ -45,15 +45,29 @@ vi.mock("../../src/tools/devices/boot-electron", () => ({
   killChromiumByPort: vi.fn(),
 }));
 
-// Four tests here drive the launch gate's real 1.5 s settle + 8 s connect wait
-// in fake time, pumping a real event-loop turn between advances so the run's
-// disk I/O can settle. Each pump is a real macrotask, so the cost is the pump
-// count, not the fake duration — under full-suite load ~40 per test outran
+// Five tests here drive the launch gate's real 1.5 s settle plus the whole
+// connect wait in fake time, pumping a real event-loop turn between advances so
+// the run's disk I/O can settle. Each pump is a real macrotask, so the cost is
+// the pump count, not the fake duration — under full-suite load it outruns
 // vitest's 5 s default. Widening the advance is NOT the fix: coarser steps
 // starve that I/O and take longer in real time (measured: 1 s steps took the
 // file from 46 s to 52 s). Budget the pumping, and prefer unit-testing the pure
 // message mapping over driving the whole runner once per case.
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
+
+/**
+ * Ceiling on those pumps. The loop has to cover the settle plus the entire
+ * connect wait in fake time — one 250 ms advance each — and still have turns
+ * spare for the real-async steps interleaved between them, which multiply as
+ * parallel workers contend for the disk.
+ *
+ * Derived from the connect budget rather than fixed, because running out is
+ * silent and mimics nothing else: the run never settles, the loop abandons it
+ * pending, and the test hangs on `await pending` until the timeout — so it reads
+ * as slowness, and no timeout value fixes it. A settled run leaves the loop
+ * immediately, so the headroom costs nothing.
+ */
+const PUMP_LIMIT = Math.ceil(NATIVE_READY_TIMEOUT_MS / 250) * 10;
 
 const DEVICE = "00000000-0000-0000-0000-0000000000ab";
 let tmpDir: string;
@@ -2486,7 +2500,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2531,7 +2545,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2730,7 +2744,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2863,7 +2877,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2912,7 +2926,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2948,8 +2962,43 @@ describe("device binding (portability)", () => {
     expect(out).toEqual({ foo: 1 });
   });
 
-  it("stripDeviceKeys removes udid / device_id / device", () => {
+  it("stripDeviceKeys removes udid / device_id / device, leaving other args untouched", () => {
     expect(stripDeviceKeys({ udid: "A", device_id: "B", device: "C", x: 1 })).toEqual({ x: 1 });
+  });
+
+  it("stripDeviceKeys KEEPS a `devices` scope, because dropping it changes the step's meaning", () => {
+    // A target is stripped so the flow points at no device. A scope is not:
+    // `stop-all-simulator-servers` with no `devices` is the machine-wide sweep,
+    // so stripping it would record a correctly scoped teardown as a bare step
+    // that reaps every device on the machine when hand-run from the YAML — the
+    // manual-execution strategy the create-flow skill documents. Replay rebinds
+    // it either way (see bindDeviceArgs below).
+    expect(stripDeviceKeys({ udid: "A", devices: ["D", "E"], x: 1 })).toEqual({
+      devices: ["D", "E"],
+      x: 1,
+    });
+  });
+
+  it("bindDeviceArgs keeps a recorded scope when the run resolved NO device", () => {
+    // A cleanup flow resolves no device when none is unambiguous. Dropping the
+    // recorded scope there would widen the teardown from the devices the
+    // recording named to every device on the machine — the one direction that
+    // costs another agent their session. There is no run target to override.
+    expect(
+      bindDeviceArgs(reg({ devices: {} }), "stop-all-simulator-servers", "", {
+        devices: ["RECORDED"],
+      })
+    ).toEqual({ devices: ["RECORDED"] });
+  });
+
+  it("bindDeviceArgs never forwards a scope to a tool that does not declare it", () => {
+    // The schema-blind strip's job: a `.strict()` schema would reject the call.
+    expect(
+      bindDeviceArgs(reg({ port: {} }), "stop-metro", "RESOLVED", {
+        devices: ["RECORDED"],
+        port: 8081,
+      })
+    ).toEqual({ port: 8081 });
   });
 
   it("rebinds a nested flow-execute onto the run device (issue #607)", () => {
@@ -2972,6 +3021,76 @@ describe("device binding (portability)", () => {
     // retarget an unrelated recorded step. It is also inert once `device` is
     // bound, because device resolution returns before it is ever read.
     expect(stripDeviceKeys({ platform: "android", x: 1 })).toEqual({ platform: "android", x: 1 });
+  });
+
+  it("injects devices: [resolvedId] for a tool that declares it in its schema", () => {
+    // stop-all-simulator-servers' `devices` is a scope, not a single-device
+    // target, but it names the recording host's device ids the same way `udid`
+    // does — so it gets the same schema-aware rebind, as a one-element list.
+    const out = bindDeviceArgs(reg({ devices: {} }), "stop-all-simulator-servers", "RESOLVED", {});
+    expect(out).toEqual({ devices: ["RESOLVED"] });
+  });
+
+  it("does not invent a devices key for a tool that doesn't declare it", () => {
+    const out = bindDeviceArgs(reg({ foo: {} }), "x", "RESOLVED", { foo: 1 });
+    expect(out).toEqual({ foo: 1 });
+    expect(out).not.toHaveProperty("devices");
+  });
+
+  it("replaces a stale recorded devices list when the caller NAMED the run device", () => {
+    // An explicit `device` is the caller saying which device this run is about,
+    // so retargeting the teardown at it is what they asked for — and a flow
+    // recorded on one host must not carry that host's ids forward.
+    const out = bindDeviceArgs(
+      reg({ devices: {} }),
+      "stop-all-simulator-servers",
+      "RESOLVED",
+      { devices: ["OLD-HOST-ID", "OTHER"] },
+      true
+    );
+    expect(out).toEqual({ devices: ["RESOLVED"] });
+  });
+
+  it("keeps a recorded scope when the run device was only auto-detected", () => {
+    // The destructive direction: the flow named one device, exactly one other
+    // happens to be booted, and replay would reap THAT one — a device nobody in
+    // this run ever named, quite possibly another agent's. This is the
+    // cross-agent teardown the `devices` scope exists to prevent, so the
+    // recorded ids stand; on another host they reap nothing and come back in
+    // `unmatched`, which is the safe direction and a legible one.
+    const out = bindDeviceArgs(reg({ devices: {} }), "stop-all-simulator-servers", "AUTO", {
+      devices: ["RECORDED-HOST"],
+    });
+    expect(out).toEqual({ devices: ["RECORDED-HOST"] });
+  });
+
+  it("still narrows an UNSCOPED recorded sweep onto an auto-detected device", () => {
+    // Nothing recorded means the step is the machine-wide sweep, so binding can
+    // only narrow it. That is why a cleanup flow resolves a device at all.
+    const out = bindDeviceArgs(reg({ devices: {} }), "stop-all-simulator-servers", "AUTO", {});
+    expect(out).toEqual({ devices: ["AUTO"] });
+  });
+
+  it("binds a scalar and a list device key together when a tool declares both", () => {
+    const out = bindDeviceArgs(
+      reg({ udid: {}, devices: {} }),
+      "hypothetical-tool",
+      "RESOLVED",
+      { udid: "STALE", devices: ["OLD"] },
+      true
+    );
+    expect(out).toEqual({ udid: "RESOLVED", devices: ["RESOLVED"] });
+  });
+
+  it("rebinds the TARGET but not the recorded SCOPE on an auto-detected device", () => {
+    // The two keys part company here: a stale `udid` must never survive (the
+    // step would drive the wrong device), while a stale `devices` must never be
+    // retargeted (the step would destroy the wrong device).
+    const out = bindDeviceArgs(reg({ udid: {}, devices: {} }), "hypothetical-tool", "AUTO", {
+      udid: "STALE",
+      devices: ["OLD"],
+    });
+    expect(out).toEqual({ udid: "AUTO", devices: ["OLD"] });
   });
 });
 

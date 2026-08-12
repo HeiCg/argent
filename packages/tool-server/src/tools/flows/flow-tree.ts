@@ -35,10 +35,10 @@ import type { DescribeTreeData } from "../describe/contract";
 export async function fetchFlowTree(
   registry: Registry,
   device: DeviceInfo,
-  launchedBundleId?: string
+  launchedNativeApp?: string
 ): Promise<DescribeTreeData> {
   if (device.platform === "ios") {
-    return queryFullHierarchyTree(registry, device, launchedBundleId);
+    return queryFullHierarchyTree(registry, device, launchedNativeApp);
   }
   if (device.platform === "android") {
     return queryAndroidFullHierarchy(registry, device);

@@ -298,17 +298,17 @@ describe("appConnectionState measures the running process", () => {
   // real `unregistered` verdicts — the tool-server escape is withheld until a
   // process is older than the budget, so upward creep withholds it for longer.
   it("stops calling a process connecting one second past the connect budget", async () => {
-    probe.psOutput = psLine("00:09", INJECTED_ENV);
+    probe.psOutput = psLine("00:16", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
   });
 
   it("stops calling a process connecting the instant the connect budget elapses", async () => {
-    // The 9 s fixture above leaves a whole second the budget could grow into
+    // The 16 s fixture above leaves a whole second the budget could grow into
     // unnoticed. A process exactly at the budget is the first whose silence
     // counts as evidence — `processAgeMs < BUDGET` is false at equality — so any
     // upward creep flips this one to `connecting`.
-    probe.psOutput = psLine("00:08", INJECTED_ENV);
+    probe.psOutput = psLine("00:15", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
   });
@@ -320,8 +320,8 @@ describe("appConnectionState measures the running process", () => {
   it("gives a dial the same budget the flow launch gate waits out", async () => {
     expect(NATIVE_READY_TIMEOUT_MS).toBe(NATIVE_DEVTOOLS_CONNECT_BUDGET_MS);
 
-    // A cold start still dialing at 7 s: inside both, so it waits.
-    probe.psOutput = psLine("00:07", INJECTED_ENV);
+    // A cold start still dialing at 14 s: inside both, so it waits.
+    probe.psOutput = psLine("00:14", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("connecting");
   });

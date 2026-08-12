@@ -1202,7 +1202,7 @@ describe("native-* tool descriptions document every precheck outcome", () => {
   // The descriptions must be plain literals (extract-tools.mjs reads them
   // statically), so the wording is copied eight ways and nothing but this pins
   // the copies together — which is how six of them kept telling the reader to
-  // wait "a second or two" after the connect budget was raised to 8 s and the
+  // wait "a second or two" after the connect budget outgrew it and the
   // other two were updated.
   it("agrees with the message on how long a connecting app is worth waiting for", () => {
     const surfaces: [string, string][] = [
