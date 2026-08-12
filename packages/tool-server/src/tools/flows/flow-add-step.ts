@@ -300,13 +300,33 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
     //     the RECORDER's tree that is short, and `describe` cannot show the
     //     element at all — which also made "`describe` returns the full DOM the
     //     recorder read" false exactly when it mattered.
+    //
+    // Both are reachable, but never at once, and which one it is follows from
+    // the CONDITION — the same distinction {@link retargetRemedy} draws. This
+    // probe runs only after the live wait PASSED, so on `visible`/`exists`/
+    // `text` the recorder demonstrably held a matching element and its own walk
+    // limit is ruled out; on `hidden` the wait passed on ABSENCE and this
+    // verdict says the runner's tree HAS the element, so the flow tree's drops
+    // cannot explain a node it kept. Offering both leaves the author to guess
+    // which half applies, and the half that does not is the expensive guess:
+    // a `visible` password divergence used to arrive with the dense-page
+    // walk-limit story attached.
+    if (condition === "hidden") {
+      return (
+        "Both read the same DOM but project it differently, and here it is the RECORDER that " +
+        "never saw the element: the live wait passed on absence, and this verdict says the " +
+        "runner's tree holds it — so nothing the flow tree DROPS can be the cause. What is " +
+        "left is the recorder's own limit: its walk stops at 5000 nodes where the flow tree's " +
+        "goes to 12000, so on a dense page the element is past the end of what it read." +
+        SCREEN_MAY_HAVE_MOVED
+      );
+    }
     return (
-      "Both read the same DOM but project it differently, and either side can be the one " +
-      "missing the element: the flow tree keeps only addressable nodes (id, label, value, " +
-      "clickable or focused) whose frame the walker did not clamp to zero area for being " +
-      "off-viewport, and it redacts a password field's name to `[password]` — while the " +
-      "recorder's walk stops at 5000 nodes where the flow tree's goes to 12000, so on a dense " +
-      "page it is the recorder that never saw the element." +
+      "Both read the same DOM but project it differently, and here it is the RUNNER's side to " +
+      "check: the live wait passed, so the recorder's tree did hold a matching element and its " +
+      "5000-node walk limit is not what went wrong. The flow tree keeps only addressable nodes " +
+      "(id, label, value, clickable or focused) whose frame the walker did not clamp to zero " +
+      "area for being off-viewport, and it redacts a password field's name to `[password]`." +
       SCREEN_MAY_HAVE_MOVED
     );
   }

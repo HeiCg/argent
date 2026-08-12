@@ -1006,6 +1006,11 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("clamp");
     expect(warning).toContain("off-viewport");
     expect(warning).toContain("`scroll-to` before the check rather than a different selector");
+    // And NOT the other direction, which this condition rules out: the live
+    // `exists` passed, so the recorder's tree held the node and its own walk
+    // limit cannot be why the runner's does not.
+    expect(warning).toContain("5000-node walk limit is not what went wrong");
+    expect(warning).not.toContain("past the end of what it read");
 
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
     // Capitalized, as its own sentence after the divergence sentence's period.
@@ -1047,6 +1052,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // …and not the two that point the other way.
     expect(warning).not.toContain("the fix there is a `scroll-to` before the check");
     expect(warning).not.toContain("only an `id`/`role` selector can match it");
+    // The divergence half inverts with it. On `hidden` the runner's tree KEPT
+    // the element, so the flow tree's own drops cannot be the cause and naming
+    // them sends the author to the one end that is provably fine.
+    expect(warning).toContain("it is the RECORDER that never saw the element");
+    expect(warning).toContain("past the end of what it read");
+    expect(warning).not.toContain("keeps only addressable nodes");
   });
 
   // A divergence that is not about MEMBERSHIP at all. Both trees hold both
