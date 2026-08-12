@@ -47,9 +47,13 @@ export const DEFAULT_METRO_PORT = 8081;
  * passed, and every later step read the chooser. That second face is the common
  * one (it is what the client shows whenever it has not found a running
  * packager), and it is exactly where the "no reachable server on port N"
- * message has to come from. The build's own header subtitle is listed too: it is
- * on both faces, so it still identifies the launcher if either affordance is
- * reworded.
+ * message has to come from. The third mark is the LAUNCHER's own header
+ * subtitle, not the app's branding: the client renders the literal
+ * "Development Build" under the app's name, above the branch that swaps the two
+ * faces, so it is on both. It is also all that is left while the client is
+ * fetching, where the card reads "Searching for development servers..." in
+ * place of the offer, and it is what still names the launcher if either
+ * affordance is reworded.
  */
 const SECTION_HEADING = "DEVELOPMENT SERVERS";
 const LAUNCHER_MARKS = ["Development Build", "New development server", "Fetch development servers"];
