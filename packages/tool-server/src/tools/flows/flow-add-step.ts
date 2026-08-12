@@ -339,9 +339,19 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
     );
   }
   if (platform === "android") {
+    // Not "the runner reads the full hierarchy including not-important views":
+    // both sides call the same `devtools.getHierarchy()` RPC and get the same
+    // dump. What differs is entirely host-side — which parser runs over it, and
+    // the node cap each asks for. The conclusion the author acts on is the same
+    // either way, but an author told the two READ different things looks for a
+    // second source that does not exist.
     return (
-      "The recorder reads the trimmed accessibility tree and the runner reads the full " +
-      "hierarchy including not-important views; each holds elements the other drops." +
+      "Both read the same `getHierarchy` dump from the android-devtools helper; this host then " +
+      "parses it two ways. `describe`'s interactables trim collapses a `testID`-only container " +
+      "into a passthrough and drops the node carrying the id, while borrowing a descendant's " +
+      "text into an unlabelled clickable's own label — where the flow adapter keeps every view " +
+      "with a `resource-id` or a label, and asks for 12000 nodes against the helper's 5000 " +
+      "default. So each holds elements the other drops." +
       SCREEN_MAY_HAVE_MOVED
     );
   }

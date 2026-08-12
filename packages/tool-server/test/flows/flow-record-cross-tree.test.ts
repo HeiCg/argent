@@ -963,12 +963,16 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).not.toContain("native-find-views");
     // Pin Android's OWN divergence story, not merely that it differs from the
     // others: "four distinct strings" is satisfied by four wrong ones, so
-    // swapping this arm for the iOS text passed. Android's story is the trim
-    // versus the full hierarchy — there is no view tree on this platform.
-    expect(warning).toContain("trimmed accessibility tree");
-    expect(warning).toContain("not-important views");
+    // swapping this arm for the iOS text passed. Android's story is one dump
+    // parsed two ways on this host — there is no view tree on this platform,
+    // and no second read either: `describeAndroid` and `flow-android-tree` both
+    // call `devtools.getHierarchy()`.
+    expect(warning).toContain("Both read the same `getHierarchy` dump");
+    expect(warning).toContain("this host then parses it two ways");
     expect(warning).toContain("each holds elements the other drops");
     expect(warning).not.toContain("full native view hierarchy");
+    // The claim that made it read as two sources.
+    expect(warning).not.toContain("the runner reads the full hierarchy");
     expect(await recordedSteps("android")).toHaveLength(1);
   });
 
