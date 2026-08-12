@@ -2841,7 +2841,8 @@ describe("summarizeStep rendering", () => {
   });
 
   it("renders the delay a quoted number really sleeps", () => {
-    // A quoted numeric is an ordinary slip in the hand-edit workflow, and it is
+    // A quoted numeric is an ordinary slip in the post-finish hand-edit
+    // workflow — the one both recording tools still point at — and it is
     // not inert: the runner's gate is truthiness, and setTimeout coerces the
     // string, so this waits two real seconds on every replay. A `typeof` check
     // rendered nothing at all for it.
