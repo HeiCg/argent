@@ -958,11 +958,7 @@ export function createRunFlowTool(
     },
     description: `Run a saved flow from the .argent/flows/ directory, or an explicit boundary-managed flow_path.
 Steps run in order: \`launch\` starts an app from scratch (terminate + relaunch) and waits until it is
-ready. On ANDROID, a dev build can start onto the expo-dev-client "DEVELOPMENT SERVERS" chooser in place
-of the app; the step then opens the server on \`metroPort\`, waits for the chooser to go away, and reports
-that it did so as a step warning, so that every later selector reads the app and not the chooser. The
-chooser leaves the screen when the bundler starts serving, which is not the same as the app being ready —
-gate the next step on something the app itself draws. \`tool\` calls dispatch through the registry; \`tap\`/\`long-press\`/\`type\` resolve a selector to an
+ready; \`tool\` calls dispatch through the registry; \`tap\`/\`long-press\`/\`type\` resolve a selector to an
 element and act on it (\`tap: { on, times: 2 }\` double-taps; \`long-press: { on, duration }\` presses and
 holds; \`tap\`/\`long-press\` alternatively take a raw normalized point — bare \`{ x, y }\` or \`on: { x, y }\`;
 any selector may scope its matches geometrically, the CSS combinators read off frames: \`within: <selector>\`
@@ -1002,7 +998,14 @@ launch — a nested e2e flow's own, or a mid-flow relaunch — boots a fresh ins
 an instance the run already owns for that same app is killed first (its exit awaited) so the
 replacement can't lose the race against its single-instance lock. Instances the runner still owns at
 run end are torn down then. A launch declaring no id for the run's platform is an error, not a cue to
-switch platforms. Every step hard-stops the flow on failure; later steps are reported as skipped.
+switch platforms. On ANDROID an expo dev build starts onto the expo-dev-client "DEVELOPMENT SERVERS"
+chooser in place of the app — on every cold start, and a launch cold-starts by construction — so the
+launch step opens the server listed on \`metroPort\`, waits for the chooser to go away, and reports that
+it did so as a step warning, keeping every later selector on the app rather than the chooser. When the
+chooser lists no live server on that port, or the one it opened never serves, the step ERRORS: that is
+a verdict about the bundler, not about the app. The chooser leaves the screen when the bundler starts
+serving, which is not the same as the app being ready — gate the next step on something the app itself
+draws. Every step hard-stops the flow on failure; later steps are reported as skipped.
 Returns a structured report ({ flow, device, executionPrerequisite, ok, aborted?, passed, failed,
 skipped, errored, steps }) — \`device\` is the device the run STARTED on; when launches moved it onto
 runner-booted instances, each names its instance in that step's reason and marks the move — \`run moved
