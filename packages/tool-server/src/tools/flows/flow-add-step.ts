@@ -710,6 +710,12 @@ async function probeAgainstRunnerTree(
   // Whichever way it settled, this call is done with the loop — and on the
   // timeout path the loop is the thing still holding the device.
   giveUp.abort();
+  // Every cancellation arrives HERE, and {@link ABORTED_OUTCOME} never does.
+  // `settleWithin` latches on `ctx.signal`, which is also the only signal that
+  // can reach the loop before this line: `giveUp` is aborted one statement
+  // above, after the await. So a cancelled probe always settles as `aborted`
+  // rather than returning an aborted outcome, and the value arm below has no
+  // `outcome.aborted` case to answer.
   if (settled.type === "aborted") return { warning: CANCELLED_PROBE_WARNING };
   // A read that outran the budget, and a probe that threw outright, are both
   // "the runner's tree did not answer" — indeterminate, never a verdict. They
@@ -729,7 +735,6 @@ async function probeAgainstRunnerTree(
             : `reading the runner's tree failed: ${settled.error}`,
         };
   if (outcome.ok) return {};
-  if (outcome.aborted) return { warning: CANCELLED_PROBE_WARNING };
   if (outcome.indeterminate) {
     return {
       // Deliberately NOT joined with treeDivergenceFor/runnerSideReadClause.
