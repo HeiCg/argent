@@ -1000,6 +1000,11 @@ describe("await-ui-element tool", () => {
     expect(result.success).toBe(false);
     expect(result.note).toMatch(/no element matched/i);
     expect(result.note ?? "").not.toMatch(/did not complete/i);
+    // …and the CAUSE the same run produces, which is the half this test drove
+    // and never checked. One read at t≈0, nothing after it, a 120ms window:
+    // the note describes a screen 120ms of darkness old, so `unmet` — the one
+    // cause that licenses deleting the step — is not available here.
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
   });
 
   it("aborts promptly even while a fetch is in flight", async () => {
