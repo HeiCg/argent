@@ -796,6 +796,31 @@ describe("await-ui-element tool", () => {
     expect(unmetUiWaitCause(result)).toBe("unmet");
   });
 
+  it("holds `hidden` to a stricter bar than the dark-tail tolerance", async () => {
+    // Same fixture and same timings as the test above, which comes back
+    // `unmet`: one trusted read, then a failing one barely a poll interval
+    // behind the deadline — well inside the blip tolerance. `hidden` is the one
+    // condition that must NOT accept that, because ABSENCE is the transition
+    // being waited on and an unjudgeable final read leaves gone-ness
+    // unconfirmable. The selector matches the first tree, so the wait is a real
+    // "still there" case rather than a selector that never hit anything.
+    const tool = createAwaitUiElementTool(makeMockRegistry({}));
+
+    const result = await tool.execute(
+      { chromium: makeChromiumApiThatDiesAfterOneRead() },
+      {
+        udid: CHROMIUM_ID,
+        condition: "hidden",
+        selector: { text: "Header" },
+        timeoutMs: 600,
+        pollIntervalMs: 500,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
   it("stops vouching for a verdict the reads went dark long before", async () => {
     // Same shape, but the trusted read lies many poll intervals behind the
     // deadline: consecutive reads went dark, so what they saw no longer
