@@ -264,7 +264,10 @@ One call does one typing action: pass text OR key, never both. \`clear\` rides a
       const { text, secrets } = resolveSecretPlaceholders(params.text);
       if (secrets.length === 0) return dispatch(services, params, options);
       try {
-        const result = await dispatch(services, { ...params, text }, options);
+        // `secretText` travels with the resolved value so a backend can keep the
+        // credential's LENGTH out of its failure messages too — `redactSecrets-
+        // FromError` substitutes the value string and cannot redact a count.
+        const result = await dispatch(services, { ...params, text, secretText: true }, options);
         // Echo the placeholder form, never the resolved value.
         return { ...result, typed: params.text };
       } catch (err) {
