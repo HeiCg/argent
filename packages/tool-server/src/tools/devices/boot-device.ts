@@ -103,7 +103,7 @@ const zodSchema = z.object({
     .max(900_000)
     .optional()
     .describe(
-      "Android/Vega/HarmonyOS: overall budget for the boot sequence. Default 480000 (8 min) on Android, 120000 (2 min) on Vega and HarmonyOS. Clamped to [30s, 15min]. Ignored on iOS."
+      "Android/Vega/HarmonyOS: overall budget for the boot sequence. Default 480000 (8 min) on Android, 120000 (2 min) on Vega, 180000 (3 min) on HarmonyOS, where with `force` it spans the shutdown as well as the boot. Clamped to [30s, 15min]. Ignored on iOS."
     ),
   force: z
     .boolean()
@@ -1465,7 +1465,14 @@ type HarmonyBootResult = {
 // must not both shell out `Emulator -start` for the same instance.
 const inFlightHarmonyBoots = new Map<string, Promise<HarmonyBootResult>>();
 
-const HARMONY_BOOT_TIMEOUT_MS = 120_000;
+/**
+ * Sized for a `force` restart, which spends one budget on a shutdown and a boot.
+ * The start reaches a connected target in 8-20s; the shutdown is the
+ * unpredictable half, since `-stop` returns as soon as it has asked and the
+ * instance then took anywhere from 9s to ~70s to actually go down across
+ * measured runs — and once had not gone down three minutes later.
+ */
+const HARMONY_BOOT_TIMEOUT_MS = 180_000;
 
 /**
  * Each poll spawns `hdc` and round-trips its daemon, an order of magnitude
@@ -1473,13 +1480,6 @@ const HARMONY_BOOT_TIMEOUT_MS = 120_000;
  * waits on is minutes long.
  */
 const HARMONY_TARGET_POLL_MS = 2_000;
-
-/**
- * How long a `-stop` gets to actually bring the instance down before the
- * restart proceeds anyway. Giving up early costs a start that reports the
- * instance is still running, not a corrupted one.
- */
-const HARMONY_STOP_GRACE_MS = 30_000;
 
 /**
  * How long the manager is watched for an immediate failure when there is no
@@ -1686,7 +1686,8 @@ async function waitForHarmonyExit(
 }
 
 /**
- * Wait until the manager stops reporting the instance as running.
+ * Wait until the manager stops reporting the instance as running, answering
+ * whether it did.
  *
  * `-stop` returns as soon as it has asked, not once the emulator is gone, and
  * the guest's `hdc` endpoint dies well before the process does — so a restart
@@ -1695,12 +1696,12 @@ async function waitForHarmonyExit(
  * tracks the process itself. An unreadable listing answers nothing, so it keeps
  * waiting rather than assuming the instance is gone.
  */
-async function waitForHarmonyInstanceStopped(name: string, deadline: number): Promise<void> {
+async function waitForHarmonyInstanceStopped(name: string, deadline: number): Promise<boolean> {
   for (;;) {
     const instances = await listHarmonyInstances().catch(() => null);
-    if (instances && !instances.some((i) => i.name === name && i.running)) return;
+    if (instances && !instances.some((i) => i.name === name && i.running)) return true;
     const remaining = deadline - Date.now();
-    if (remaining <= 0) return;
+    if (remaining <= 0) return false;
     await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
   }
 }
@@ -1738,10 +1739,17 @@ async function bootHarmonyImpl(params: {
         `Failed to stop HarmonyOS emulator "${params.instanceName}" before restarting it: ${stopDiagnostic}`
       );
     }
-    await waitForHarmonyInstanceStopped(
-      params.instanceName,
-      Math.min(Date.now() + HARMONY_STOP_GRACE_MS, bootDeadline)
-    );
+    // The whole remaining budget rather than a slice of it: an instance still up
+    // leaves nothing worth spending the rest on, since starting it can only
+    // report that it is already running.
+    if (!(await waitForHarmonyInstanceStopped(params.instanceName, bootDeadline))) {
+      throw new Error(
+        `HarmonyOS emulator "${params.instanceName}" was still running when the ` +
+          `${Math.round(params.bootTimeoutMs / 1_000)}s budget ran out after \`-stop\`, so ` +
+          "starting it now would only report that it is already running. Re-run with a larger " +
+          "bootTimeoutMs, or stop the instance from DevEco Studio."
+      );
+    }
   }
 
   // Snapshot immediately before the start, so every target that was already

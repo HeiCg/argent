@@ -328,20 +328,22 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
   it("restarts a running instance on force and resolves the key it comes back on", async () => {
     // `-stop` returns before the emulator is gone, so the restart waits on
-    // `isRunning`: reported running for one poll after the stop, then down. The
-    // snapshot is taken only once it is, which is what lets a restart that
-    // lands on the port it had before still read as an arrival.
+    // `isRunning` — and for the whole budget, since how long the instance then
+    // takes to go down is unpredictable (9s to ~70s measured). Reported running
+    // for 40s here, past any fixed grace. The snapshot is taken only once it is
+    // down, which is what lets a restart that lands on the port it had before
+    // still read as an arrival.
     let listed = 0;
     listHarmonyInstances.mockImplementation(() =>
       Promise.resolve([
-        { name: INSTANCE, deviceType: "Phone", osVersion: null, running: listed++ < 2 },
+        { name: INSTANCE, deviceType: "Phone", osVersion: null, running: listed++ < 21 },
       ])
     );
     targets([PHONE], [PHONE], [PHONE, emulatorTarget]);
     vi.useFakeTimers();
 
     const pending = boot({ force: true, bootTimeoutMs: 120_000 });
-    await vi.advanceTimersByTimeAsync(10_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     const result = (await pending) as { udid: string; note?: string };
 
     expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
@@ -364,6 +366,24 @@ describe("boot-device — HarmonyOS emulator path", () => {
     });
 
     await expect(boot({ force: true })).rejects.toThrow(/Failed to stop HarmonyOS emulator/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("does not start an instance the stop never brought down", async () => {
+    // One measured `-stop` had still not taken effect three minutes later, so
+    // the instance being down is never assumable — and one still up when the
+    // budget ends would make `-start` report only that it is already running.
+    listHarmonyInstances.mockResolvedValue([
+      { name: INSTANCE, deviceType: "Phone", osVersion: null, running: true },
+    ]);
+    vi.useFakeTimers();
+
+    const pending = boot({ force: true, bootTimeoutMs: 60_000 });
+    const settled = expect(pending).rejects.toThrow(/still running when the 60s budget ran out/);
+    await vi.advanceTimersByTimeAsync(61_000);
+    await settled;
+
+    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
