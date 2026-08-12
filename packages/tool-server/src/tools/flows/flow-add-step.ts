@@ -233,9 +233,17 @@ function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
     }
     return (
       settle +
-      "A zero-height frame in `describe` means off-viewport, and the fix there is a `scroll-to` " +
-      "before the check rather than a different selector; a password field reaches the runner " +
-      "under the name `[password]`, so only an `id`/`role` selector can match it"
+      // Not "a zero-height frame": `normRect` clamps each edge to the viewport
+      // independently, so a node scrolled above or below comes back zero-HEIGHT
+      // and one scrolled left or right comes back zero-WIDTH. Naming only the
+      // vertical case tells an author with a horizontally scrolled carousel
+      // that their normal-height node is on screen, and they skip the
+      // `scroll-to` that would fix it.
+      "A zero-area frame in `describe` means off-viewport — zero height for a node above or " +
+      "below the viewport, zero width for one left or right of it, since the walker clamps " +
+      "each edge on its own — and the fix there is a `scroll-to` before the check rather than " +
+      "a different selector; a password field reaches the runner under the name `[password]`, " +
+      "so only an `id`/`role` selector can match it"
     );
   }
   if (platform === "vega") {

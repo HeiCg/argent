@@ -1006,6 +1006,11 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("clamp");
     expect(warning).toContain("off-viewport");
     expect(warning).toContain("`scroll-to` before the check rather than a different selector");
+    // Both axes. `normRect` clamps each edge to the viewport on its own, so a
+    // node scrolled sideways comes back zero-WIDTH at full height — and an
+    // author told only about height reads a normal height as "on screen" and
+    // skips the scroll that would fix it.
+    expect(warning).toContain("zero width for one left or right of it");
     // And NOT the other direction, which this condition rules out: the live
     // `exists` passed, so the recorder's tree held the node and its own walk
     // limit cannot be why the runner's does not.
