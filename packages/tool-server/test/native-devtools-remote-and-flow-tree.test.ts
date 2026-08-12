@@ -1,11 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
 import type { NativeDevtoolsApi } from "../src/blueprints/native-devtools";
 
-// Two consumers of the measured state shipped with no coverage at all: the
-// full-hierarchy path flows resolve selectors against, and the ios-remote host's
-// own `inspectRunningApp`. Both decide what an agent is told to do next, and on
-// ios-remote the running/indeterminate split is the ONLY distinction available —
-// it drives `requiresRestart` and `describe`'s `should_restart`.
+// Two consumers of the measured state: the full-hierarchy path flows resolve
+// selectors against, and the ios-remote host's `inspectRunningApp`. Both decide
+// what an agent is told to do next, and on ios-remote the running/indeterminate
+// split is the ONLY distinction available — it drives `requiresRestart` and
+// `describe`'s `should_restart`.
 
 const remote = vi.hoisted(() => ({ stdout: "", calls: 0, fail: false }));
 
@@ -42,14 +42,13 @@ describe("remoteIosHost.inspectRunningApp", () => {
 
     const inspection = await remoteIosHost.inspectRunningApp(UDID, BUNDLE);
 
-    // `running` must come off the real row, not be assumed: assuming true makes
-    // every stopped remote app `indeterminate`, which the precheck and describe
-    // answer with a restart of an app that is not there, and assuming false
-    // makes every running one `not_running`.
+    // `running` must come off the real row: assuming true makes every stopped
+    // remote app `indeterminate`, answered with a restart of an app that is not
+    // there, and assuming false makes every running one `not_running`.
     expect(inspection.running).toBe(true);
-    // The app processes live on the orchestrator, so the local process table
-    // has nothing to say — a fabricated process here would be judged against
-    // this listener and reported as a definite verdict.
+    // App processes live on the orchestrator, so the local process table has
+    // nothing to say — a fabricated process here would be judged against this
+    // listener and reported as a definite verdict.
     expect(inspection.process).toBeNull();
     expect(remote.calls).toBe(1);
   });
@@ -65,15 +64,12 @@ describe("remoteIosHost.inspectRunningApp", () => {
 });
 
 describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
-  // The two accessors are derived from ONE connected set here, exactly as the
-  // real factory derives both from its `connections` map
-  // (`listConnectedBundleIds: () => [...connections.keys()]`, and
-  // `appConnectionState` returning `connected` iff `connections.has(id)`).
-  // Stubbing them independently lets a test assert a pairing the service cannot
-  // produce — a listed-but-unconnected app — and a diagnosis reached only that
-  // way is reached only by tests. Every unconnected state means an EMPTY
-  // connected set, so auto-targeting can never name the app whose state is the
-  // thing worth explaining; the id the flow launched is what makes it nameable.
+  // Both accessors come off ONE connected set, as the real factory derives them
+  // from its `connections` map. Stubbing them independently lets a test assert a
+  // pairing the service cannot produce — a listed-but-unconnected app — so a
+  // diagnosis reached only that way is reached only by tests. Every unconnected
+  // state means an EMPTY set, hence an app auto-targeting cannot name; the id the
+  // flow launched is what makes it nameable.
   function registryWith(connected: string[], overrides: Partial<NativeDevtoolsApi> = {}): Registry {
     // Instance-scoped in the real service, so one set per registry here.
     const advised = new Set<string>();
@@ -115,7 +111,7 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
   it("keeps the auto-target error when the run never launched an app", async () => {
     // A fragment brings the device to its entry state out of band, so there is
     // no launched id to measure and the auto-target error — which names its own
-    // next steps — is still the best answer available.
+    // next steps — is the best answer available.
     const registry = registryWith([]);
 
     await expect(queryFullHierarchyTree(registry, DEVICE)).rejects.toThrow(
@@ -148,10 +144,10 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
   });
 
   it("degrades a rejected measurement instead of leaking the subprocess error", async () => {
-    // The measurement re-applies the launchd env before it can answer anything,
-    // so a sim that goes away mid-run rejects here. The other consumers degrade
-    // to `indeterminate`; a raw `Command failed: xcrun simctl spawn …` carries
-    // none of the guidance the diagnosis does.
+    // The measurement re-applies the launchd env before it can answer, so a sim
+    // that goes away mid-run rejects here. The other consumers degrade to
+    // `indeterminate`; a raw `Command failed: xcrun simctl spawn …` carries none
+    // of the diagnosis's guidance.
     const registry = registryWith([], {
       appConnectionState: async () => {
         throw new Error("Command failed: xcrun simctl spawn UDID launchctl setenv");
@@ -166,13 +162,12 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
     );
   });
 
-  // A previous round deleted this branch believing it dead. It is not:
-  // `appConnectionState` re-reads the live connections map AFTER its env
-  // re-apply and process probe — several simctl round-trips past the empty list
-  // that routed the call here — precisely so a dial landing in that window is
-  // not reported as an app the service never registered. Without coverage the
-  // deletion can simply recur, and folding the case away leaves it throwing a
-  // sentence that names no app and no remedy.
+  // Reachable, though it reads as dead: `appConnectionState` re-reads the live
+  // connections map AFTER its env re-apply and process probe — several simctl
+  // round-trips past the empty list that routed the call here — precisely so a
+  // dial landing in that window is not reported as an app the service never
+  // registered. Folding the case away leaves it throwing a sentence that names
+  // no app and no remedy.
   it("says the connection arrived mid-read when the measurement finds it connected", async () => {
     const registry = registryWith([], { appConnectionState: async () => "connected" });
 
@@ -191,9 +186,9 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
 
   it("gives a system app the terminal reason instead of a measured remedy", async () => {
     // The launch gate lets a non-injectable app through so a coordinate-driven
-    // flow still runs; selector resolution is where the missing hierarchy
-    // actually bites, so this is where it has to be said — and said terminally,
-    // since every measured state's remedy is a retry of something.
+    // flow still runs; selector resolution is where the missing hierarchy bites,
+    // so this is where it is said — and said terminally, since every measured
+    // state's remedy is a retry of something.
     const registry = registryWith([]);
 
     await expect(queryFullHierarchyTree(registry, DEVICE, "com.apple.Preferences")).rejects.toThrow(
@@ -203,9 +198,6 @@ describe("queryFullHierarchyTree surfaces the measured diagnosis", () => {
       queryFullHierarchyTree(registry, DEVICE, "com.apple.Preferences")
     ).rejects.not.toThrow(/argent server stop|restart-app/);
     // The remedy has to name a step form that exists AND reads no tree.
-    // `tap: { x, y }` is the flow-native one; `tool: gesture-tap` is the raw
-    // escape hatch, and argent-create-flow makes the same recommendation — the
-    // two must not drift.
     await expect(queryFullHierarchyTree(registry, DEVICE, "com.apple.Preferences")).rejects.toThrow(
       /tap: \{ x: [\d.]+, y: [\d.]+ \}/
     );

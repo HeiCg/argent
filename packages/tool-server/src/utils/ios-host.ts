@@ -88,10 +88,10 @@ export interface RunningAppProcess {
   /** Time since exec. `ps -o etime` has whole-second resolution. */
   ageMs: number;
   /**
-   * The process's launch environment, as `ps` renders it: space-joined
-   * `KEY=VALUE` tokens appended to the argv. Callers pick tokens out of the blob
-   * rather than parsing it into pairs — a value containing a space is
-   * indistinguishable from the next token, and nothing we look for holds one.
+   * The launch environment as `ps` renders it: space-joined `KEY=VALUE` tokens
+   * appended to the argv. Callers pick tokens out of the blob rather than
+   * parsing it into pairs — a value containing a space is indistinguishable
+   * from the next token, and nothing we look for holds one.
    */
   env: string;
 }
@@ -99,9 +99,9 @@ export interface RunningAppProcess {
 export interface RunningAppInspection {
   running: boolean;
   /**
-   * The running process, or null when there is none to inspect: the app is not
-   * running, or this host cannot reach its app processes (ios-remote runs them
-   * on the orchestrator, out of reach of the local process table).
+   * Null when there is no process to inspect: the app is not running, or this
+   * host cannot reach its app processes (ios-remote runs them on the
+   * orchestrator, out of reach of the local process table).
    */
   process: RunningAppProcess | null;
 }
@@ -111,8 +111,8 @@ export interface RunningAppInspection {
  * place: the Argent bootstrap dylib inserted, pointed at that exact endpoint.
  *
  * A process carrying a *different* endpoint (an ephemeral TCP port from an
- * earlier tool-server run) is not injected for this one, and relaunching it into
- * the current launchd env is what re-points it.
+ * earlier tool-server run) is not injected for this one; relaunching it into
+ * the current launchd env re-points it.
  */
 export function processCarriesInjection(env: string, endpoint: IosEndpoint): boolean {
   const inserted = [...ARGENT_BOOTSTRAP_DYLIB_BASENAMES].some((name) => env.includes(name));
@@ -298,9 +298,8 @@ async function setupNativeDevtoolsEnvRemote(udid: string, endpoint: IosEndpoint)
  * Rows are `<pid>\t<status>\t<label>`. A null pid means the column did not
  * parse, not that the job has no process: launchd prints `-` there for a
  * registered job that is not running, but measured on iOS 18.6 a
- * `UIKitApplication` row is removed outright when the app exits (`-` shows up
- * only on daemon labels, which the label match discards). So callers get a null
- * pid from a row they could not read, and treat it as no evidence.
+ * `UIKitApplication` row is removed outright when the app exits. Callers treat
+ * a null pid as no evidence.
  */
 function parseUIKitApplicationJobs(stdout: string): Map<string, number | null> {
   const jobs = new Map<string, number | null>();
@@ -344,15 +343,12 @@ async function listRunningUIKitApplicationBundleIds(udid: string): Promise<Set<s
  * dylib loaded. Returns null when the process is gone or `ps` output doesn't
  * parse; callers treat that as "no evidence", never as "not injected".
  *
- * The no-evidence guarantee covers an unreadable *line*, not an unreadable
- * environment: `ps` suppresses the env of a SIP-protected platform binary while
- * still printing a well-formed argv, which would read as an uninjected process
- * rather than an unknown one. SIP protection is a property of host binaries —
- * every pid reaching here comes from a simulator's `launchctl list`, and a
- * simulator app is not one: measured on iOS 18.6, third-party apps and the
- * runtime's own `com.apple.*` bundles alike render their full environment.
- * Those bundles are separately rejected as non-injectable before any connection
- * state is measured, at every caller.
+ * That guarantee covers an unreadable *line*, not a suppressed environment:
+ * `ps` hides the env of a SIP-protected binary while still printing a
+ * well-formed argv, which would read as uninjected rather than unknown. Every
+ * pid reaching here comes from a simulator's `launchctl list`, and simulator
+ * apps are not SIP-protected — measured on iOS 18.6, third-party and
+ * `com.apple.*` bundles alike render their full environment.
  */
 async function readProcessLaunchState(pid: number): Promise<RunningAppProcess | null> {
   let stdout: string;
@@ -361,16 +357,16 @@ async function readProcessLaunchState(pid: number): Promise<RunningAppProcess | 
       encoding: "utf8",
       timeout: PS_PROBE_TIMEOUT_MS,
       // Matches the other `ps` probes (vega-process.ts). An environment can run
-      // to `kern.argmax` (1 MiB), which is exactly Node's default cap, so the
-      // default would ENOBUFS on a maximal one instead of reading it.
+      // to `kern.argmax` (1 MiB), exactly Node's default cap, so the default
+      // would ENOBUFS on a maximal one instead of reading it.
       maxBuffer: 16 * 1024 * 1024,
     }));
   } catch (err) {
-    // Log it, like the sibling probe in vega-process.ts: a broken probe (bad
+    // Logged, like the sibling probe in vega-process.ts: a broken probe (bad
     // `ps` flags, a host without it) degrades *every* app to "indeterminate",
-    // which is indistinguishable at the tool surface from a genuinely
-    // uninspectable one. A process that simply exited also lands here, so this
-    // is a note rather than a failure.
+    // indistinguishable at the tool surface from a genuinely uninspectable one.
+    // A process that simply exited also lands here, so this is a note, not a
+    // failure.
     process.stderr.write(`[ios-host] ps probe failed for pid ${pid}: ${String(err)}\n`);
     return null;
   }
@@ -487,10 +483,9 @@ export const remoteIosHost: IosHost = {
     const { stdout } = await simRemoteSpawn(udid, { args: ["launchctl", "list"] });
     return parseUIKitApplicationBundleIds(stdout);
   },
-  // The app processes live on the orchestrator, so the local process table has
-  // nothing to say about how they were launched. Report running-ness (the
-  // orchestrator's launchd does answer that) and leave the launch environment
-  // unknown, which keeps callers on their no-evidence path.
+  // App processes live on the orchestrator, so the local process table says
+  // nothing about how they were launched. Only running-ness is answerable; the
+  // null process keeps callers on their no-evidence path.
   async inspectRunningApp(udid, bundleId) {
     const { stdout } = await simRemoteSpawn(udid, { args: ["launchctl", "list"] });
     return { running: parseUIKitApplicationJobs(stdout).has(bundleId), process: null };

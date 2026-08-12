@@ -99,6 +99,7 @@ import {
   adviseOnUninjectedApp,
   buildAppStateMessage,
   INJECTION_FAILED_RECOVERY,
+  NATIVE_DEVTOOLS_CONNECT_BUDGET_MS,
   nativeDevtoolsBlueprint,
   type NativeDevtoolsApi,
 } from "../src/blueprints/native-devtools";
@@ -119,6 +120,15 @@ const INJECTED_ENV =
 
 /** How many remedy cycles an agent is modelled as obeying before we give up. */
 const REMEDY_CYCLES = 8;
+
+/**
+ * Ages a process that never dialed out of the connect budget, so it reads
+ * `unregistered` rather than `connecting`. Derived, because these scenarios
+ * only reach the terminal diagnosis from the far side of that budget — pinning
+ * a literal here would silently park them on `connecting` the next time it
+ * moves, and every assertion below would fail somewhere other than the change.
+ */
+const PAST_CONNECT_BUDGET_MS = NATIVE_DEVTOOLS_CONNECT_BUDGET_MS + 1_000;
 
 type Instance = Awaited<ReturnType<typeof nativeDevtoolsBlueprint.factory>>;
 
@@ -199,7 +209,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
           // process carries the same tokens and never dials.
           advance(2_000);
           world.execAt = Date.now();
-          advance(5_000);
+          advance(PAST_CONNECT_BUDGET_MS);
           continue;
         }
         if (prescribed === "service_stale") {
@@ -209,7 +219,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
           await instance.dispose();
           advance(3_000);
           instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
-          advance(5_000);
+          advance(PAST_CONNECT_BUDGET_MS);
           continue;
         }
         terminalAt = cycle;
@@ -243,11 +253,11 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
     try {
       const api = instance.api as NativeDevtoolsApi;
-      // Launched well after the listener bound, and past the connect grace: the
+      // Launched well after the listener bound, and past the connect budget: the
       // reading a genuinely stale service produces.
       advance(60_000);
       world.execAt = Date.now();
-      advance(10_000);
+      advance(PAST_CONNECT_BUDGET_MS);
 
       await expect(api.appConnectionState(BUNDLE)).resolves.toBe("unregistered");
       const advice = adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY);
@@ -384,7 +394,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
 
       // Apply restart-app: a fresh process, skipped by dyld exactly as before.
       world.execAt = Date.now();
-      advance(10_000);
+      advance(PAST_CONNECT_BUDGET_MS);
 
       const terminal = await tool.execute({}, params);
       expect(terminal.should_restart).toBeUndefined();
@@ -414,7 +424,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
       );
 
       world.execAt = Date.now();
-      advance(10_000);
+      advance(PAST_CONNECT_BUDGET_MS);
 
       await expect(queryFullHierarchyTree(registry, device, BUNDLE)).rejects.toThrow(
         /was told to relaunch, and the process now running is a different one/

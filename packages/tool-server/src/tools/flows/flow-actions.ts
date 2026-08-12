@@ -65,16 +65,15 @@ export interface ActionEnv {
   signal?: AbortSignal;
   /**
    * Bundle id of the last successful native `launch:` in this RUN — nested
-   * `run:` flows share it (ExecState is per-run, so a nested launch updates the
-   * whole run's hint, matching "a nested e2e launch restarts its app").
+   * `run:` flows share it (ExecState is per-run, so a nested launch updates
+   * the whole run's hint, matching "a nested e2e launch restarts its app").
    * Undefined until a launch runs, so a fragment brought to its entry state out
-   * of band has none; a fragment MAY still carry a launch step in a later
-   * position, and then it has one. Cleared by `tool:` steps that can change the
-   * foreground app (launch-app, restart-app, open-url, button, reinstall-app).
+   * of band has none. Cleared by `tool:` steps that can change the foreground
+   * app (launch-app, restart-app, open-url, button, reinstall-app).
    *
    * iOS tree reads use it for the two things auto-targeting cannot do, both
    * following from it resolving only out of the connected list: as an arbiter
-   * when auto-resolution's own probe times out, and to name the app whose
+   * when auto-resolution itself times out, and to name the app whose
    * disconnection needs explaining when that list is empty — see
    * `queryFullHierarchyTree`. Never to override a resolution that answered, so
    * foreground-likeness guards keep firing whenever the app answers at all.

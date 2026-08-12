@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as net from "node:net";
 import type { DeviceInfo } from "@argent/registry";
 
-// `restart_required` is derived from a measurement, not asserted: these cover
-// what the running process was actually launched with, and whether this
-// service's listener even existed at the time. That is the whole difference
-// between "restart-app fixes this" and "restarting the app is a loop".
+// `restart_required` is derived from a measurement: what the running process
+// was actually launched with, and whether this service's listener existed at the
+// time. That is the difference between "restart-app fixes this" and "restarting
+// the app is a loop".
 
 const probe = vi.hoisted(() => ({
   launchctlList: "",
@@ -19,6 +19,14 @@ const probe = vi.hoisted(() => ({
   psInvocation: null as { args: string[]; opts: Record<string, unknown> } | null,
   /** Set when `inspectRunningApp`'s own `launchctl list` should reject. */
   launchctlFails: false,
+  /**
+   * Fake-clock ms the next launchd env re-apply costs, charged once so the bill
+   * does not depend on how many round-trips it makes. Simulated device work is
+   * free by default, which is what leaves the ordering below unmeasurable.
+   */
+  envClockCostMs: 0,
+  /** Fake-clock instant the process exec'd, for a `ps` age read at probe time. */
+  psExecAt: null as number | null,
 }));
 
 vi.mock("@argent/native-devtools-ios", () => ({
@@ -55,6 +63,21 @@ vi.mock("node:child_process", async () => {
           });
           return;
         }
+        if (probe.psExecAt !== null) {
+          // `ps` reads the age at the instant it runs. A literal would carry the
+          // age the test *set*, which is exactly the reading whose timing is
+          // under test.
+          const execAt = probe.psExecAt;
+          // Consumed like `dialDuringPs`, so it cannot outlive its test and
+          // silently override a later `psOutput` fixture — this branch is
+          // checked first, so a leak would decide the age of every case after it.
+          probe.psExecAt = null;
+          callback(null, {
+            stdout: psLine(formatEtime(Date.now() - execAt), INJECTED_ENV),
+            stderr: "",
+          });
+          return;
+        }
         callback(null, { stdout: probe.psOutput, stderr: "" });
         return;
       }
@@ -68,6 +91,10 @@ vi.mock("node:child_process", async () => {
       }
       if (argv.includes("launchctl setenv") || argv.includes("launchctl getenv")) {
         probe.envOps += 1;
+        if (probe.envClockCostMs > 0) {
+          vi.setSystemTime(Date.now() + probe.envClockCostMs);
+          probe.envClockCostMs = 0;
+        }
         callback(null, { stdout: "", stderr: "" });
         return;
       }
@@ -80,7 +107,12 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-import { nativeDevtoolsBlueprint, type NativeDevtoolsApi } from "../src/blueprints/native-devtools";
+import {
+  nativeDevtoolsBlueprint,
+  NATIVE_DEVTOOLS_CONNECT_BUDGET_MS,
+  type NativeDevtoolsApi,
+} from "../src/blueprints/native-devtools";
+import { NATIVE_READY_TIMEOUT_MS } from "../src/tools/flows/flow-run";
 import { parsePsElapsedSeconds, processCarriesInjection } from "../src/utils/ios-host";
 
 const UDID = "AAAAAAAA-1111-2222-3333-444444444444";
@@ -98,6 +130,12 @@ function runningRow(pid: number | "-" = PID, bundleId = BUNDLE): string {
 /** `ps eww -p <pid> -o etime=,command=` output: age, argv, then the launch env. */
 function psLine(etime: string, env: string): string {
   return `${etime} /Devices/${UDID}/Bluesky.app/Bluesky ${env}\n`;
+}
+
+/** Render an age as `ps -o etime` does, to the whole second it resolves. */
+function formatEtime(ageMs: number): string {
+  const total = Math.floor(ageMs / 1000);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
 const INJECTED_ENV =
@@ -120,10 +158,10 @@ async function stateFor(options: {
 }
 
 describe("parsePsElapsedSeconds", () => {
-  // `ps -o etime` drops the leading units when they are zero, so a simulator
-  // app that has been up for a day renders in a shape the common case never
-  // exercises. Reading `01-02:03:04` as anything smaller would make an ancient
-  // process look younger than the listener and flip it to `unregistered`.
+  // `ps -o etime` drops leading units when they are zero, so a day-old app
+  // renders in a shape the common case never exercises. Reading `01-02:03:04` as
+  // anything smaller makes an ancient process look younger than the listener and
+  // flips it to `unregistered`.
   it.each([
     ["00:45", 45],
     ["12:30", 750],
@@ -162,8 +200,8 @@ describe("processCarriesInjection", () => {
 
   it("does not accept an endpoint that merely starts the same way", () => {
     // A whole-token match, not a substring one: `…-AAAAAAAA.sock.old` shares a
-    // prefix with our path but is another run's socket, and treating it as ours
-    // would call a genuinely relaunchable process unregistered.
+    // prefix with our path but is another run's socket, and taking it as ours
+    // calls a genuinely relaunchable process unregistered.
     const env =
       `NATIVE_DEVTOOLS_IOS_CDP_SOCKET=${SOCKET}.old ` +
       "DYLD_INSERT_LIBRARIES=/x/libArgentInjectionBootstrap.dylib";
@@ -187,6 +225,8 @@ describe("appConnectionState measures the running process", () => {
     probe.dialDuringPs = null;
     probe.psInvocation = null;
     probe.launchctlFails = false;
+    probe.envClockCostMs = 0;
+    probe.psExecAt = null;
   });
 
   afterEach(() => {
@@ -229,9 +269,9 @@ describe("appConnectionState measures the running process", () => {
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
   });
 
-  // Not `indeterminate`: the process was inspected, and it is injected against
-  // this endpoint. Collapsing the two loses the only remedy that works here —
-  // waiting — and substitutes one that resets the very age this verdict reads.
+  // Not `indeterminate`: the process WAS inspected, and is injected against this
+  // endpoint. Collapsing the two loses the only remedy that works — waiting —
+  // for one that resets the very age this verdict reads.
   it("reports connecting while a just-launched process is still dialing", async () => {
     probe.psOutput = psLine("00:01", INJECTED_ENV);
 
@@ -239,9 +279,9 @@ describe("appConnectionState measures the running process", () => {
   });
 
   // `connecting` and `indeterminate` are both "no verdict yet", so nothing else
-  // in this file separates them — without this pair, returning `indeterminate`
-  // from the grace branch passes, and with it the agent is told to relaunch a
-  // process whose relaunch is what put it here.
+  // here separates them: without this pair, returning `indeterminate` from the
+  // grace branch passes, and the agent is told to relaunch a process whose
+  // relaunch is what put it there.
   it("keeps connecting distinct from a process it genuinely could not read", async () => {
     probe.psFails = true;
 
@@ -253,25 +293,37 @@ describe("appConnectionState measures the running process", () => {
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("connecting");
   });
 
-  // Pins the grace from above. Every other injected fixture sits 10x clear of
-  // it, so the term could grow to any of them and stay green while swallowing
-  // real `unregistered` verdicts into "restart-app" — the escape hatch is only
-  // reached once a process is old enough to have finished dialing, so a grace
-  // that creeps upward silently withholds it for longer and longer.
-  it("stops calling a process connecting one second past the grace", async () => {
-    probe.psOutput = psLine("00:04", INJECTED_ENV);
+  // Pins the connect budget from above. Every other injected fixture sits clear
+  // of it, so the term could grow to any of them and stay green while swallowing
+  // real `unregistered` verdicts — the tool-server escape is withheld until a
+  // process is older than the budget, so upward creep withholds it for longer.
+  it("stops calling a process connecting one second past the connect budget", async () => {
+    probe.psOutput = psLine("00:16", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
   });
 
-  it("stops calling a process connecting the instant the grace elapses", async () => {
-    // The 4 s fixture above leaves a whole second the grace could grow into
-    // unnoticed. A process exactly at the grace is the first one whose silence
-    // counts as evidence — `processAgeMs < GRACE` is false at equality — so any
-    // upward creep flips this one to `connecting` and reads as green above.
-    probe.psOutput = psLine("00:03", INJECTED_ENV);
+  it("stops calling a process connecting the instant the connect budget elapses", async () => {
+    // The 16 s fixture above leaves a whole second the budget could grow into
+    // unnoticed. A process exactly at the budget is the first whose silence
+    // counts as evidence — `processAgeMs < BUDGET` is false at equality — so any
+    // upward creep flips this one to `connecting`.
+    probe.psOutput = psLine("00:15", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("unregistered");
+  });
+
+  // The budget is the window in which "wait and retry" is the answer. Shorter
+  // than the flow gate's, and an app the gate is still waiting out gets the
+  // tool-server restart from every other surface instead — the two answer one
+  // question and a literal in either place could drift from the other.
+  it("gives a dial the same budget the flow launch gate waits out", async () => {
+    expect(NATIVE_READY_TIMEOUT_MS).toBe(NATIVE_DEVTOOLS_CONNECT_BUDGET_MS);
+
+    // A cold start still dialing at 14 s: inside both, so it waits.
+    probe.psOutput = psLine("00:14", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("connecting");
   });
 
   it("reports indeterminate when the process table cannot be read", async () => {
@@ -281,36 +333,32 @@ describe("appConnectionState measures the running process", () => {
   });
 
   it("reports indeterminate when ps answers but its age column does not parse", async () => {
-    // `ps` exiting 0 with an unreadable etime is not the same as `ps` failing,
-    // and it must not become a *measurement*: substituting any age here (0
-    // being the tempting one) would let an uninspectable process be judged
-    // against the listener and reported as a definite `stale_process`. The env
-    // below carries no bootstrap dylib precisely so a fabricated age would show
-    // up as that stronger claim.
+    // `ps` exiting 0 with an unreadable etime must not become a *measurement*:
+    // substituting any age (0 being the tempting one) lets an uninspectable
+    // process be judged against the listener and reported as a definite
+    // `stale_process`. The env below carries no bootstrap dylib precisely so a
+    // fabricated age would show up as that stronger claim.
     probe.psOutput = psLine("not-an-etime", `NATIVE_DEVTOOLS_IOS_CDP_SOCKET=${SOCKET}`);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
   });
 
   it("reports indeterminate when the ps line has no column separator", async () => {
-    // Age and environment come out of one line split at its first whitespace,
-    // so a line without any carries no measurement. Splitting it regardless
-    // hands the age parser a truncated token it reads happily (`10:00` sliced
-    // to `10:0` → 600 s) and calls the remainder an environment — a definite
-    // `stale_process` conjured out of a line that said nothing. That the split
-    // point is the thing checked, rather than what either half turns out to
-    // hold, is what keeps the fabrication out.
+    // Age and environment come out of one line split at its first whitespace, so
+    // a line without any carries no measurement. Splitting regardless hands the
+    // age parser a truncated token it reads happily (`10:00` sliced to `10:0` →
+    // 600 s) and calls the remainder an environment — a definite `stale_process`
+    // conjured out of a line that said nothing.
     probe.psOutput = "10:00\n";
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("indeterminate");
   });
 
   // The 3 s grace is the difference between "one wasted restart-app" and
-  // "restart a tool-server that was never broken". The other cases sit 200x
-  // away from it on either side, so they pass whatever the term does — these
-  // two sit ON it. Without them, both dropping the grace and weakening `>=` to
-  // `>` leave the suite green while flipping a relaunchable process to
-  // `unregistered`, the one verdict this file exists to withhold.
+  // "restart a tool-server that was never broken". Every other case sits 200x
+  // clear of it and passes whatever the term does; these two sit ON it, so
+  // dropping the grace or weakening `>=` to `>` cannot stay green while flipping
+  // a relaunchable process to `unregistered`.
   it("still calls a process that started exactly at the grace boundary stale", async () => {
     // A 597 s-old process read against a 600 s-old listener: it was exec'd 3 s
     // AFTER the bind, i.e. the full grace and not a millisecond more. The
@@ -322,19 +370,59 @@ describe("appConnectionState measures the running process", () => {
 
   it("still calls a process launched a second after the listener stale", async () => {
     // 599 s old against the same 600 s listener: exec'd 1 s after the bind, so
-    // 2 s inside the grace rather than on its edge.
+    // 2 s inside the slop rather than on its edge.
     probe.psOutput = psLine("09:59", INJECTED_ENV);
 
     await expect(stateFor({ listenerAgeMs: 600_000 })).resolves.toBe("stale_process");
   });
 
+  // The pair above pins the slop only from BELOW — both want `stale_process`, so
+  // a grown term keeps them green. Every other injected fixture reads a 600 s
+  // listener against a process of seconds, a gap the slop could grow into
+  // undetected, swallowing `connecting` and `unregistered` alike into a verdict
+  // whose remedy is restart-app. That is the loop: right after the tool-server
+  // starts, a freshly launched app sits inside a grown slop, is told to relaunch,
+  // and the relaunched process is inside it again. The connect budget is pinned
+  // both ways already (the 00:08/00:09 pair from above, the gate equality below).
+  it("does not let the slop swallow a young process against a young listener", async () => {
+    // 1 s old against a 4.1 s listener: exec'd 3.1 s after the bind, just past
+    // the slop, and well inside the connect budget.
+    probe.psOutput = psLine("00:01", INJECTED_ENV);
+
+    await expect(stateFor({ listenerAgeMs: 4_100 })).resolves.toBe("connecting");
+  });
+
+  it("re-applies the launchd env before reading the process, not after", async () => {
+    // The two ages this verdict subtracts are read at different moments: `ps`
+    // takes the process's, `Date.now()` takes the listener's once the probe is
+    // back. Whatever is spent in between shortens the process against the
+    // listener by that much, and the env re-apply is several simctl round-trips
+    // — enough to spend the whole grace and report a relaunchable process as one
+    // no relaunch can help. Running it first leaves both readings past it.
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      // The factory stamps the listener as it binds and bills no clock after, so
+      // this is that instant.
+      const listeningSince = Date.now();
+      probe.psExecAt = listeningSince + 1_000;
+      vi.setSystemTime(listeningSince + 600_000);
+      probe.envClockCostMs = 4_000;
+
+      // Exec'd 1 s after the bind, so it dialed this listener and a relaunch is
+      // what re-dials it — whichever side of the re-apply `ps` is read on.
+      await expect((instance.api as NativeDevtoolsApi).appConnectionState(BUNDLE)).resolves.toBe(
+        "stale_process"
+      );
+    } finally {
+      await instance.dispose();
+    }
+  });
+
   it("re-applies the launchd env on every read, not just the first", async () => {
-    // The factory already latched `envSetup`, so a latching `ensureEnvReady()`
-    // here would be a silent no-op. `reverifyEnv` exists to bypass that latch:
-    // a simulator rebooted out of band has had DYLD_INSERT_LIBRARIES wiped
-    // while the latch still reads `true`, and this is the call that puts it
-    // back — so a process judged without it would be compared against an env no
-    // relaunch would actually get.
+    // The factory already latched `envSetup`, so `ensureEnvReady()` here would
+    // be a silent no-op. `reverifyEnv` bypasses that latch, which is what repairs
+    // a simulator rebooted out of band — without it a process is compared against
+    // an env no relaunch would actually get.
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
     try {
       const api = instance.api as NativeDevtoolsApi;
@@ -348,12 +436,11 @@ describe("appConnectionState measures the running process", () => {
     }
   });
 
-  // The entry `connections.has` snapshot is taken before `reverifyEnv` and a
-  // `launchctl list` — several simctl round-trips before the verdict. Judging on
-  // that snapshot reports a dial landing inside the window as an app the service
-  // never registered, i.e. sends the agent to restart a tool-server that had
-  // just succeeded. Every unconnected verdict rests on the snapshot, so the
-  // re-read has to sit above all of them.
+  // The entry `connections.has` snapshot predates `reverifyEnv` and a `launchctl
+  // list` — several simctl round-trips before the verdict — so a dial landing in
+  // that window reads as an app the service never registered, sending the agent
+  // to restart a tool-server that had just succeeded. Every unconnected verdict
+  // rests on the snapshot, so the re-read sits above all of them.
   it("re-reads the live connection map after the probe, not the entry snapshot", async () => {
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
     try {
@@ -376,12 +463,12 @@ describe("appConnectionState measures the running process", () => {
     }
   });
 
-  // The whole `unregistered` derivation rests on `ps` rendering the launch
-  // environment, which only the `e` flag does — and on `etime` being the FIRST
-  // column, since the age is parsed positionally off the leading token. Neither
-  // is observable in any state assertion: drop the `e` and every app reads
-  // `stale_process` (the restart loop, restored by one character); swap the
-  // columns and every app reads `indeterminate`.
+  // The `unregistered` derivation rests on `ps` rendering the launch
+  // environment, which only the `e` flag does, and on `etime` being the FIRST
+  // column, since the age is parsed positionally. Neither shows up in a state
+  // assertion: drop the `e` and every app reads `stale_process` — the restart
+  // loop restored by one character — and swapping the columns reads
+  // `indeterminate`.
   it("asks ps for the environment, with the age first", async () => {
     await stateFor({ listenerAgeMs: 600_000 });
 
@@ -390,8 +477,8 @@ describe("appConnectionState measures the running process", () => {
 
   // Advisory probe: its own short budget rather than the simctl one, and the
   // raised buffer its siblings use — an environment can run to kern.argmax
-  // (1 MiB), exactly Node's default cap, so the default would ENOBUFS on a
-  // maximal one and degrade a readable process to "no evidence".
+  // (1 MiB), exactly Node's default cap, so the default ENOBUFSes on a maximal
+  // one and degrades a readable process to "no evidence".
   it("bounds the ps probe and raises its buffer past a maximal environment", async () => {
     await stateFor({ listenerAgeMs: 600_000 });
 
@@ -430,8 +517,8 @@ describe("appConnectionState measures the running process", () => {
 
   // A null pid means the row did not parse, not that launchd reported no
   // process: measured on iOS 18.6, a UIKitApplication row is removed outright
-  // when the app exits rather than left with a `-`. So this is an unreadable
-  // row, and an unreadable row is no evidence — never a claim about the app.
+  // when the app exits rather than left with a `-`. An unreadable row is no
+  // evidence, never a claim about the app.
   it("reports indeterminate for a row whose pid column does not parse", async () => {
     probe.launchctlList = runningRow("-");
 

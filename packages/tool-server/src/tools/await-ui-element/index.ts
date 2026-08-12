@@ -153,7 +153,7 @@ export function evaluateMatches(params: Params, matches: DescribeNode[]): boolea
 // condition that resolves true on an empty tree) resolve positively off it. Two
 // ways an empty tree is untrustworthy:
 //   - the adapter flagged it as unreliable: iOS AX down, native injection
-//     pending, or a native hierarchy that could not be read at all (no app
+//     pending, or a native hierarchy that could not be read at all (nothing
 //     connected to auto-target, the service down, the query failing) →
 //     `describeIos` returns an empty tree plus a hint / should_restart instead
 //     of throwing. Android / Chromium never set these flags.

@@ -441,12 +441,10 @@ describe("await-ui-element tool", () => {
       expect(result.success).toBe(false);
     });
 
-    // The sharp end of describe's no-bundleId path. `isBlindRead` keys off
-    // `hint` / `should_restart`, so an empty tree carrying neither is taken as a
-    // trustworthy screen — and `hidden` is the one condition that resolves TRUE
-    // on an empty tree. With a live native-devtools service that has no
-    // connected app (a running app the service never registered), the read is
-    // unexplained, not empty, and this gate must not release off it.
+    // `isBlindRead` keys off `hint` / `should_restart`, so an empty tree
+    // carrying neither is taken as a trustworthy screen — and `hidden` is the
+    // one condition that resolves TRUE on an empty tree. With a live service and
+    // no connected app the read is unexplained, not empty.
     it("`hidden` refuses to resolve off an empty tree the hierarchy could not corroborate", async () => {
       const { api } = makeSequencedAXService([axResponse([])]);
       const nativeApi = {
@@ -475,18 +473,15 @@ describe("await-ui-element tool", () => {
 
       expect(result.success).toBe(false);
       expect(result.note).toMatch(/empty or unreadable/i);
-      // The instant-success note is the exact shape this guard exists to
-      // prevent — releasing a gated wait in milliseconds against an element
-      // that was never confirmed gone.
+      // The exact shape this guard prevents: a gated wait released in
+      // milliseconds against an element never confirmed gone.
       expect(result.note).not.toMatch(/condition met immediately/);
     });
 
     it("`hidden` can succeed for a role selector that would otherwise pin the root", async () => {
       const { api } = makeSequencedAXService([axResponse([])]);
-      // The hierarchy must be READ and empty, not merely unread: an empty AX
-      // tree the native source could not corroborate is a blind read, and
-      // `hidden` is withheld from those. Here the native source answers with
-      // zero elements, which is evidence the screen is empty.
+      // The hierarchy must be READ and empty, not merely unread. Here the
+      // native source answers with zero elements, which IS evidence.
       const nativeApi = {
         listConnectedBundleIds: () => ["com.example.app"],
         appConnectionState: async () => "connected" as const,

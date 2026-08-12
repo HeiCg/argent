@@ -1,6 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import * as path from "node:path";
 import { FailureError, FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   buildAppStateMessage,
@@ -28,6 +26,7 @@ vi.mock("../src/utils/check-deps", async (importOriginal) => {
   };
 });
 
+import { flowLaunchGateReason } from "../src/tools/flows/flow-run";
 import { nativeDevtoolsStatusTool } from "../src/tools/native-devtools/native-devtools-status";
 import { nativeDescribeScreenTool } from "../src/tools/native-devtools/native-describe-screen";
 import { nativeFindViewsTool } from "../src/tools/native-devtools/native-find-views";
@@ -274,11 +273,9 @@ describe("native-devtools-status tool", () => {
   });
 
   // The twin of the injectable path's escalation, on the branch that runs no env
-  // work of its own. Once `ensureEnvReady` has succeeded it latches, so the
-  // precheck below stops probing and reports nothing; a failure an injectable
-  // app's `reverifyEnv` recorded since then is the only witness left that the
-  // sim is gone, and the same sim state must not read as a dead sim on one
-  // bundle id and a raw `simctl spawn` throw on another.
+  // work of its own: once `ensureEnvReady` latches, a failure recorded since is
+  // the only witness left that the sim is gone — and one sim state must not read
+  // as a dead sim on one bundle id and a raw `simctl spawn` throw on another.
   it("surfaces a recorded env failure for a non-injectable app on a latched env", async () => {
     const { api } = makeNativeApi({
       envSetup: true,
@@ -598,9 +595,8 @@ describe("native-devtools tools — init_failed precheck", () => {
 });
 
 // A status asserted for every unconnected app would keep "call restart-app"
-// literally true forever, and an agent obeying it restarts indefinitely. The
-// status is derived from the running process, so each state has to reach the
-// agent as the action that actually applies to it.
+// literally true forever, and an agent obeying it restarts indefinitely. Each
+// measured state has to reach the agent as the action that actually applies.
 describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   function precheckWith(state: NativeDevtoolsAppState) {
     const { api } = makeNativeApi({ envSetup: true, appRunning: true, state });
@@ -613,19 +609,17 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result).toMatchObject({ status: "restart_required" });
     const message = (result as { message: string }).message;
     expect(message).toContain("restart-app");
-    // The escalation belongs to states we could not measure. Naming it here too
-    // would put "maybe restart the tool-server" in front of an agent whose app
-    // demonstrably just needs relaunching.
+    // The escalation belongs to states we could not measure; naming it here puts
+    // "restart the tool-server" in front of an app that just needs a relaunch.
     expect(message).not.toContain("argent server stop");
   });
 
   it("does not tell a stale_process it is uninjected — one route into it is injected", async () => {
     // `stale_process` is reached both by a process carrying no argent injection
-    // and by an injected one older than this service's listener. A message
-    // asserting "not injected" is false on the second — and the second is where
-    // the `unregistered` remedy lands an agent: restarting the tool-server
-    // rebinds the same socket path under a fresh `listeningSince`, leaving the
-    // untouched process injected against it yet older than it.
+    // and by an injected one older than this service's listener, so "not
+    // injected" is false on the second — which is where the `unregistered`
+    // remedy lands an agent: a tool-server restart rebinds the same socket path
+    // under a fresh `listeningSince`.
     const result = await precheckWith("stale_process");
 
     const message = (result as { message: string }).message;
@@ -654,16 +648,28 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   });
 
   it("refuses to call a still-connecting process a restart_required", async () => {
-    // The other self-perpetuating advice: exec is what starts the dial, so a
-    // relaunch discards the handshake in flight AND resets the age this verdict
-    // is read from — an agent obeying restart-app re-enters this window every
-    // time. It is also not `indeterminate`: the process WAS inspected, and it
-    // is injected against this endpoint.
+    // The other self-perpetuating advice: exec starts the dial, so a relaunch
+    // discards the handshake AND resets the age this verdict reads. Not
+    // `indeterminate` either — the process WAS inspected.
     const result = await precheckWith("connecting");
 
     expect(result).toMatchObject({ status: "connect_pending" });
     const message = (result as { message: string }).message;
-    expect(message).toContain("Wait a second or two");
+    expect(message).toContain("Wait a few seconds");
+    // The prohibition itself, not just the absence of the hyphenated tool name:
+    // "wait a few seconds, then relaunch the app and retry" satisfies every
+    // other assertion here while prescribing the one action that resets the age
+    // this verdict reads. The sibling `unregistered` case above pins its
+    // prohibition the same way.
+    //
+    // Matched with its colon, so it is the UNQUALIFIED form: this state is the
+    // one where not even a single relaunch is right — it discards a handshake
+    // that is already in flight — and "Do NOT restart the app more than once"
+    // permits exactly that while still containing the bare phrase.
+    expect(message).toContain("Do NOT restart the app:");
+    // And the reason, so the prohibition cannot be left standing without the
+    // fact that makes it true.
+    expect(message).toContain("a relaunch discards the one in progress");
     expect(message).not.toContain("restart-app");
     expect(message).not.toContain("could not be inspected");
   });
@@ -681,10 +687,9 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(message).toContain("do not keep restarting the app");
   });
 
-  // `argent server start` defaults to foreground (parseStartFlags: detach:false)
-  // and ends in a promise that never resolves, so the bare pair hangs whoever
-  // runs it. Every surface prescribing the tool-server restart must pass
-  // --detach or the remedy is a command the agent cannot return from.
+  // `argent server start` defaults to the foreground and never returns, so the
+  // bare pair hangs whoever runs it. Every surface prescribing the tool-server
+  // restart must pass --detach.
   it("prescribes a tool-server restart that actually returns", async () => {
     for (const state of ["unregistered", "indeterminate"] as const) {
       const message = (await precheckWith(state)) as { message: string };
@@ -692,10 +697,9 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     }
   });
 
-  // The one invariant the whole derivation exists for, at the tool that reports
-  // it. Any expression that admits `unregistered` or `connecting` — including
-  // the obvious `appRunning && !connected` — leaves the boolean saying "restart
-  // the app" beside a message saying a restart cannot help, and the description
+  // Any expression that admits `unregistered` or `connecting` — including the
+  // obvious `appRunning && !connected` — leaves the boolean saying "restart the
+  // app" beside a message saying a restart cannot help, and the description
   // tells agents to branch on the boolean.
   it("never asks for a restart of an app a restart provably cannot fix", async () => {
     for (const state of ["unregistered", "connecting"] as const) {
@@ -780,12 +784,10 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   });
 
   it("reads running-ness out of the state instead of a second device probe", async () => {
-    // `appConnectionState` already runs `launchctl list`, and it re-verifies the
-    // launchd env first — so a separate `isAppRunning` is both an extra simctl
-    // round-trip and a snapshot taken seconds apart from the one `state` came
-    // from, which is how `appRunning: true` could be reported beside
-    // `state: "not_running"`. Five of the six states settle running-ness on
-    // their own; only `indeterminate` may pay for its own probe.
+    // `appConnectionState` already runs `launchctl list`, and re-verifies the
+    // env first — so a separate `isAppRunning` is both an extra round-trip and a
+    // snapshot taken seconds apart, which is how `appRunning: true` could land
+    // beside `state: "not_running"`. Only `indeterminate` may pay for a probe.
     for (const state of [
       "connected",
       "not_running",
@@ -821,10 +823,9 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.requiresRestart).toBe(true);
   });
 
-  // The precheck's mapping only matters if it survives the trip out through a
-  // tool. Without this pin, collapsing the mapping back to a single status
-  // would leave every precheck-level test green while the agent silently gets
-  // restart-app guidance again.
+  // Without this pin, collapsing the mapping back to a single status leaves
+  // every precheck-level test green while the agent silently gets restart-app
+  // guidance again.
   it("carries service_stale out through every native-* tool", async () => {
     const tools = [
       nativeDescribeScreenTool,
@@ -862,9 +863,9 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   });
 
   // The booleans cannot say "one restart, then stop". `requiresRestart: true` is
-  // the whole of what an `indeterminate` app reports, and it is the only state a
-  // running app reaches on ios-remote — so without the prose, the tool whose job
-  // is to answer "is this ready?" hands back the restart loop and nothing else.
+  // the whole of what an `indeterminate` app reports, and the only state a
+  // running app reaches on ios-remote — so without the prose the tool hands back
+  // the restart loop and nothing else.
   it("hands back the loop escape for the states the booleans cannot express", async () => {
     for (const state of ["indeterminate", "stale_process", "not_running"] as const) {
       const { api } = makeNativeApi({ envSetup: true, appRunning: true, state });
@@ -901,10 +902,9 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(ok).not.toHaveProperty("message");
   });
 
-  // `requiresRestart` must never contradict `appRunning`: telling an agent to
-  // restart something the same payload says is not running is the self-
-  // contradiction deriving both from one measurement exists to prevent. Only
-  // `indeterminate` re-probes, so it is the only state that can produce the pair.
+  // Telling an agent to restart something the same payload says is not running
+  // is the contradiction deriving both from one measurement prevents. Only
+  // `indeterminate` re-probes, so only it can produce the pair.
   it("does not ask for a restart of an app the probe says is not running", async () => {
     const { api } = makeNativeApi({
       envSetup: true,
@@ -921,8 +921,7 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.requiresRestart).toBe(false);
     // `message` is the field the description tells agents to prefer, so it has
     // to agree too: the `indeterminate` text opens "Call restart-app then
-    // retry", which contradicts `appRunning: false` outright. The probe answered
-    // the question `indeterminate` left open, so the state resolves to it.
+    // retry", which contradicts `appRunning: false` outright.
     const withMessage = result as unknown as { state: string; message: string };
     expect(withMessage.state).toBe("not_running");
     expect(withMessage.message).toContain("launch-app");
@@ -930,11 +929,10 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   });
 
   // The dead-sim escalation has to fire on the FIRST failure, not the third.
-  // Re-running `precheckNativeDevtools` here would report nothing: reaching this
-  // point means it already drove `ensureEnvReady` to success at the top of the
-  // call, and that latches, so every later call short-circuits. Reading the
-  // failure `reverifyEnv` just recorded is what turns a shut-down simulator into
-  // structured guidance instead of a raw `Command failed: xcrun simctl spawn …`.
+  // Re-running the precheck would report nothing — `ensureEnvReady` succeeded at
+  // the top of the call and latches — so reading the failure `reverifyEnv` just
+  // recorded is what turns a shut-down simulator into structured guidance
+  // instead of a raw `Command failed: xcrun simctl spawn …`.
   it("surfaces init_failed on a dead sim before the service has given up", async () => {
     const { api } = makeNativeApi({ envSetup: true, state: "indeterminate" });
     api.getInitFailure = () => ({ attempts: 1, lastError: "Invalid device", givenUp: false });
@@ -952,13 +950,11 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.message).toContain("Invalid device");
   });
 
-  // `envSetup` and `nextLaunchWillBeInjected` are the two fields an agent reads
-  // to decide that launching is worth it. `isEnvSetup()` is a latch that never
-  // clears, so on its own it keeps answering yes for a simulator whose launchd
-  // env was wiped — and the agent relaunches into an uninjected process, reads
-  // "not connected", and relaunches again. The re-apply the measurement
-  // performs is what actually tests the env; a failure it recorded is the one
-  // thing that contradicts the latch.
+  // These are the two fields an agent reads to decide a launch is worth it, and
+  // `isEnvSetup()` is a latch that never clears — so on a simulator whose
+  // launchd env was wiped it keeps answering yes, and the agent relaunches into
+  // an uninjected process forever. A failure the measurement's re-apply recorded
+  // is the one thing that contradicts the latch.
   it("stops promising an injected launch once the env re-apply has failed", async () => {
     const { api } = makeNativeApi({ envSetup: true, appRunning: true, state: "stale_process" });
     api.getInitFailure = () => ({ attempts: 1, lastError: "Invalid device", givenUp: false });
@@ -986,11 +982,10 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.envSetup).toBe(false);
   });
 
-  // The failure is read in the catch, after the probe — not sampled before it.
   // A sim that dies mid-call is healthy at every earlier read: the entry
   // precheck saw a working service and `getInitFailure` was still null on the
-  // way in. Hoisting the read (or reusing the value the entry precheck already
-  // saw) reports the stale null and lets the raw subprocess error out.
+  // way in. Hoisting the read out of the catch reports that stale null and lets
+  // the raw subprocess error out.
   it("reads the recorded failure after the probe, not before it", async () => {
     const { api } = makeNativeApi({ envSetup: true, state: "indeterminate" });
     let died = false;
@@ -1012,10 +1007,9 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
     expect(result.message).toContain("sim gone");
   });
 
-  // The other half of that branch. With no recorded failure the env is healthy,
-  // so the probe's own error is the honest answer and must reach the caller —
-  // degrading it to some "everything is fine" shape would report a reading the
-  // tool never took.
+  // The other half of that branch: with no recorded failure the env is healthy,
+  // so the probe's own error is the honest answer. Degrading it would report a
+  // reading the tool never took.
   it("lets the probe's error out when the env recorded no failure", async () => {
     const { api } = makeNativeApi({ envSetup: true, state: "indeterminate" });
     api.getInitFailure = () => null;
@@ -1032,10 +1026,9 @@ describe("precheckNativeDevtools maps a measured state to its remedy", () => {
   });
 });
 
-// The runtime message is only half the guidance an agent sees: the tool
-// descriptions are what it reads before ever calling. A description that names
-// restart_required while staying silent about service_stale rebuilds the loop
-// in the more prominent place, whatever the message says.
+// Descriptions are what an agent reads before ever calling, so one that names
+// restart_required while staying silent about service_stale rebuilds the loop in
+// the more prominent place, whatever the runtime message says.
 describe("native-* tool descriptions document every precheck outcome", () => {
   const tools = [
     nativeDescribeScreenTool,
@@ -1055,10 +1048,9 @@ describe("native-* tool descriptions document every precheck outcome", () => {
       expect(tool.description, `${tool.id} must mention connect_pending`).toContain(
         "connect_pending"
       );
-      // The fourth member of NativeDevtoolsPrecheckBlock. Every one of these
-      // tools returns it verbatim, and it is the only status whose remedy is
-      // neither a restart nor a wait — an agent with no arm for it retries a
-      // simulator that needs re-booting.
+      // The fourth member of NativeDevtoolsPrecheckBlock, and the only status
+      // whose remedy is neither a restart nor a wait — an agent with no arm for
+      // it retries a simulator that needs re-booting.
       expect(tool.description, `${tool.id} must mention init_failed`).toContain("init_failed");
       expect(tool.description, `${tool.id} must name the tool-server remedy`).toContain(
         "argent server stop && argent server start --detach"
@@ -1067,11 +1059,9 @@ describe("native-* tool descriptions document every precheck outcome", () => {
   });
 
   // All six throw the identical terminal NATIVE_DEVTOOLS_NOT_INJECTABLE error
-  // for a com.apple.* bundle id, but only three said so — and this is the one
-  // outcome an agent can act on BEFORE spending a call, by picking a different
-  // approach off `tools/list`. Three tools describing the same precheck as
-  // having a terminal arm and three not is the shape that makes an agent
-  // believe the silent ones might work.
+  // for a com.apple.* bundle id, and it is the one outcome an agent can act on
+  // BEFORE spending a call, off `tools/list`. Half of them describing a terminal
+  // arm and half not is what makes an agent believe the silent ones might work.
   it("names the terminal system-app rejection on every tool that performs it", () => {
     for (const tool of tools) {
       expect(tool.description, `${tool.id} must name the system-app rejection`).toMatch(
@@ -1081,40 +1071,89 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     }
   });
 
+  /**
+   * The one `If state is <state>:` line out of the description.
+   *
+   * A whole-description `toContain` is not a pin on any of them: the guidance
+   * lines echo each other closely enough that deleting one outright leaves its
+   * assertions satisfied by a sibling — "do NOT restart the app again" appears
+   * verbatim in the `indeterminate` line too — and the field list and the
+   * `injectable: false` paragraph between them supply most of the remaining
+   * words, down to "describe" inside `native-describe-screen`.
+   */
+  function guidanceLine(state: NativeDevtoolsAppState): string {
+    const prefix = `If state is ${state}:`;
+    const line = nativeDevtoolsStatusTool
+      .description!.split("\n")
+      .find((l) => l.startsWith(prefix));
+    expect(line, `description has no "${prefix}" line`).toBeTypeOf("string");
+    return line!;
+  }
+
   it("tells native-devtools-status readers to wait out a connecting app", () => {
-    expect(nativeDevtoolsStatusTool.description).toContain("If state is connecting:");
-    expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app");
+    expect(guidanceLine("connecting")).toContain("do NOT restart the app");
   });
 
   it("tells native-devtools-status readers not to restart an unregistered app", () => {
-    expect(nativeDevtoolsStatusTool.description).toContain("unregistered");
-    expect(nativeDevtoolsStatusTool.description).toContain("do NOT restart the app again");
+    expect(guidanceLine("unregistered")).toContain("do NOT restart the app again");
+  });
+
+  // Every remedy in the set is individually correct and together they close into
+  // a ring: the tool-server restart this state prescribes rebinds the listener,
+  // so the same never-dialing process reads `stale_process` (it now predates the
+  // listener) -> restart-app -> `connecting` -> `unregistered` again, unbounded.
+  // Nothing measured separates the first landing from the second, so both
+  // surfaces have to hand the reader the test — as `not_running` and
+  // `indeterminate` already do. Without it this PR lengthens the loop it fixes.
+  it("gives an unregistered app a way out of the remedy cycle on its second landing", () => {
+    const message = buildAppStateMessage("com.example.app", "unregistered");
+    const line = guidanceLine("unregistered");
+
+    // Pinned as each surface's own conditional clause rather than a shared
+    // /already|again/: the description line opens "If state is unregistered: do
+    // NOT restart the app again", so a loose pattern matches the wrapper the
+    // escape sits in and survives the escape being deleted from it.
+    expect(message).toContain("If you have already restarted the tool-server for this app");
+    expect(line).toContain("If it reads unregistered again after that restart");
+
+    for (const [name, text] of [
+      ["message", message],
+      ["description", line],
+    ] as const) {
+      // Conditional, so "stop" is not the last word: a reader who has spent both
+      // remedies needs somewhere to go.
+      expect(text, `${name} names no terminal fallback`).toMatch(
+        /treat native devtools as unavailable/i
+      );
+      // A tool that reads the screen WITHOUT injection. Pointing back at a
+      // native-* tool re-enters the same precheck, which is the cycle again with
+      // an extra hop — and `native-describe-screen` contains "describe", so the
+      // tool name has to be matched on its own.
+      expect(text, `${name} names no injection-free reader`).toMatch(/\bscreenshot\b/);
+      expect(text, `${name} falls back to a tool behind the same precheck`).not.toMatch(
+        /native-(describe-screen|find-views|full-hierarchy|network-logs|view-at-point)/
+      );
+    }
   });
 
   // `indeterminate` gives the agent `requiresRestart: true` and nothing else, so
   // the description is where "restart once, then stop" has to be stated. It is
   // also the only unconnected state a running app reaches on a remote simulator.
   it("bounds the restart advice for a process it could not inspect", () => {
-    expect(nativeDevtoolsStatusTool.description).toContain("If state is indeterminate");
-    expect(nativeDevtoolsStatusTool.description).toContain(
-      "argent server stop && argent server start --detach"
-    );
+    // Over the whole description neither assertion says anything about this
+    // line: the prefix is all the first one needs, and the `unregistered` line
+    // supplies the command verbatim. So the bound this test is named for — the
+    // one stop-condition on the description side for the only unconnected state
+    // a running app reaches on ios-remote — could be deleted outright.
+    const line = guidanceLine("indeterminate");
+    expect(line).toContain("do NOT restart the app again");
+    expect(line).toContain("argent server stop && argent server start --detach");
   });
 
-  // The description is the contract for a value an agent will branch on. Rename
-  // a state in one place and the prose starts describing names the tool never
+  // Rename a state in one place and the prose describes names the tool never
   // emits — which no runtime assertion catches, because both sides still agree
-  // with themselves.
-  const deviceInteractSkill = (): string =>
-    readFileSync(
-      path.resolve(__dirname, "../../skills/skills/argent-device-interact/SKILL.md"),
-      "utf8"
-    );
-
-  // Exhaustive by construction: this record fails to compile if a state is
-  // added to the union without being listed, so a new state cannot ship
-  // undocumented the way `connecting` nearly did — a hand-written array
-  // silently omits, which is the same drift one level up.
+  // with themselves. Exhaustive by construction: a record fails to compile when
+  // a state joins the union unlisted, where a hand-written array silently omits.
   const ALL_STATES: Record<NativeDevtoolsAppState, true> = {
     connected: true,
     not_running: true,
@@ -1134,11 +1173,9 @@ describe("native-* tool descriptions document every precheck outcome", () => {
   });
 
   // `argent server start` defaults to the foreground and never returns, so an
-  // agent that runs it as written is gone. Every place that prescribes the
-  // restart has to carry `--detach` — and it has to be checked per occurrence:
-  // a surface holding two of them satisfies a whole-blob `toContain` with one
-  // still bare, which is how the SKILL.md copy and the second description arm
-  // could each be stripped on their own with the suite green.
+  // agent that runs it as written is gone. Checked per occurrence, not per blob:
+  // a surface holding two satisfies a whole-blob `toContain` with one still
+  // bare.
   it("never prescribes a tool-server restart the agent cannot return from", () => {
     const BARE_START = /argent server start(?! --detach)/;
     // A surface with no text at all would vacuously satisfy the check below.
@@ -1152,7 +1189,6 @@ describe("native-* tool descriptions document every precheck outcome", () => {
       ...(Object.keys(ALL_STATES) as NativeDevtoolsAppState[])
         .filter((s): s is Exclude<NativeDevtoolsAppState, "connected"> => s !== "connected")
         .map((s): [string, string] => [`${s} message`, buildAppStateMessage("com.example.app", s)]),
-      ["argent-device-interact SKILL.md", deviceInteractSkill()],
     ];
 
     for (const [name, text] of surfaces) {
@@ -1167,17 +1203,226 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     expect(nativeDevtoolsStatusTool.description).toContain("argent server start");
   });
 
+  // One agent reads the tool description AND the message the same call returns.
+  // The descriptions must be plain literals (extract-tools.mjs reads them
+  // statically), so the wording is copied eight ways and nothing but this pins
+  // the copies together — which is how six of them kept telling the reader to
+  // wait "a second or two" after the connect budget outgrew it and the
+  // other two were updated.
+  it("agrees with the message on how long a connecting app is worth waiting for", () => {
+    const surfaces: [string, string][] = [
+      ["connecting message", buildAppStateMessage("com.example.app", "connecting")],
+      ["native-devtools-status description", guidanceLine("connecting")],
+      ...tools.map((t): [string, string] => [`${t.id} description`, t.description!]),
+    ];
+    for (const [name, text] of surfaces) {
+      expect(text, `${name} has no wait guidance to check`).toMatch(/wait a few seconds/i);
+      // The wording the budget outgrew. Pinned as its own assertion so the
+      // failure names the drift rather than a missing phrase.
+      expect(text, `${name} still quotes the pre-budget wait`).not.toMatch(/second or two/i);
+    }
+    // The six carry their own phrasing of the prohibition, so they need their
+    // own pin — and it has to reject a qualified one for the same reason the
+    // message's does: the first relaunch is already the one that discards the
+    // handshake, so "do not restart it more than once" is wrong advice that
+    // still contains "do not restart it".
+    for (const tool of tools) {
+      expect(tool.description!, `${tool.id} qualifies the connecting prohibition`).toContain(
+        "do not restart it, wait"
+      );
+    }
+  });
+
+  // Same split surface, same hazard: round 2 gave `unregistered` a landing that
+  // terminates, and the six tool descriptions route `service_stale` — the status
+  // that state maps to — with their own copy of the remedy.
+  it("stops every service_stale surface from prescribing an unbounded tool-server restart", () => {
+    for (const tool of tools) {
+      const routing = tool
+        .description!.split("\n")
+        .find((l) => l.includes("If status is service_stale:"));
+      expect(routing, `${tool.id} does not route service_stale`).toBeTypeOf("string");
+      expect(
+        routing!,
+        `${tool.id} prescribes a tool-server restart with no second landing`
+      ).toMatch(/if the same status comes back|stop restarting/i);
+    }
+  });
+
+  /**
+   * The remedy prose an agent obeys to decide whether to STOP, pinned verbatim.
+   *
+   * Every other assertion in this file matches an opening clause, and that has
+   * repeatedly proved to constrain nothing: the claim can be negated by a
+   * sentence appended after the part that matched ("go ahead and relaunch … keep
+   * relaunching until it connects"), qualified inside it ("do NOT restart the app
+   * MORE THAN ONCE"), or scoped away ("restart the tool-server AGAIN and keep
+   * retrying until it clears") — each of which reopens the unbounded loop this
+   * whole change exists to close, with every pattern still green.
+   *
+   * A pattern cannot fix that, because the defect is always in the words it did
+   * not look at. So these strings are duplicated here on purpose, exactly as
+   * NON_INJECTABLE_RECOVERY is: rewording one has to fail, be re-read, and be
+   * re-approved rather than absorbed. Edit both together.
+   */
+  const CONNECTING_PROHIBITION =
+    "Do NOT restart the app: launching it is what starts the connection, so a relaunch " +
+    "discards the one in progress and returns you to this same state.";
+  const UNREGISTERED_ESCAPE =
+    "If you have already restarted the tool-server for this app and it reads this way again, " +
+    "stop: the process is loading argent's dylib but never dialing, which no further restart on " +
+    "either side fixes. Treat native devtools as unavailable — read the screen with describe or " +
+    "screenshot and drive it by coordinate.";
+  const INDETERMINATE_ESCALATION =
+    "If it is still not connected after that restart, the native-devtools service is stale rather " +
+    "than the app being uninjected — do not keep restarting the app; restart the tool-server " +
+    "(`argent server stop && argent server start --detach`) and retry.";
+
+  /**
+   * An instruction to retry without bound, in any of the ways these surfaces
+   * could phrase one.
+   *
+   * The pins below all constrain a SLICE of a surface — a named line, a clause
+   * between two markers, the final sentence — and every round of review has
+   * found the same defect in whatever slice was left over: a second guidance
+   * line for the same state, a clause appended past the last marker, a
+   * permitting sentence before the pinned tail. Pinning more slices only moves
+   * the gap, so this asks the one question that does not depend on where the
+   * text sits: does this surface, anywhere, tell an agent to keep going?
+   *
+   * A clause that FORBIDS one is the point of these messages, so it is the
+   * un-negated ones that fail.
+   */
+  const UNBOUNDED_RETRY =
+    /keep [\w-]+ing|more than once|again and again|a couple more|until (it|connected)\b|ignore the stop/i;
+  // Deliberately not a bare `stop`: "ignore the stop-conditions above and keep
+  // calling restart-app" contains the word while saying the opposite, so the
+  // escape hatch would have covered for the negation it exists to allow.
+  const FORBIDDEN =
+    /\bdo not\b|\bdo NOT\b|\bnever\b|\bcannot\b|\bno further\b|\bat most\b|\bstop (restarting|:)/i;
+
+  /** Split on sentence and clause boundaries, so polarity is judged locally. */
+  function clausesOf(text: string): string[] {
+    return text
+      .split(/(?<=[.;:])\s+|\s+—\s+|\n/)
+      .map((c) => c.trim())
+      .filter(Boolean);
+  }
+
+  it("never tells an agent to keep retrying, on any surface that carries a remedy", () => {
+    const surfaces: [string, string][] = [
+      ...(Object.keys(ALL_STATES) as NativeDevtoolsAppState[])
+        .filter((s): s is Exclude<NativeDevtoolsAppState, "connected"> => s !== "connected")
+        .flatMap((s): [string, string][] => [
+          [`${s} message`, buildAppStateMessage("com.example.app", s)],
+          // The flow gate rewrites every state for a reader who has just
+          // launched, so it is a second copy of the same remedies on a surface
+          // none of the verbatim pins reach.
+          [`${s} flow-gate reason`, flowLaunchGateReason("com.example.app", s)],
+        ]),
+      ["native-devtools-status description", nativeDevtoolsStatusTool.description!],
+      ...tools.map((t): [string, string] => [`${t.id} description`, t.description!]),
+    ];
+
+    for (const [name, text] of surfaces) {
+      for (const clause of clausesOf(text)) {
+        if (!UNBOUNDED_RETRY.test(clause)) continue;
+        expect(FORBIDDEN.test(clause), `${name} permits an unbounded retry: "${clause}"`).toBe(
+          true
+        );
+      }
+    }
+  });
+
+  it("gives each state exactly one guidance line to obey", () => {
+    // A verbatim `toBe` on the first matching line says nothing about a second
+    // one appended later, which an agent reads just as readily.
+    const lines = nativeDevtoolsStatusTool.description!.split("\n");
+    for (const state of Object.keys(ALL_STATES) as NativeDevtoolsAppState[]) {
+      const matches = lines.filter((l) => l.startsWith(`If state is ${state}:`));
+      expect(matches.length, `description routes ${state} ${matches.length} times`).toBeLessThan(2);
+    }
+  });
+
+  it("routes exactly the five precheck statuses on every native-* tool", () => {
+    // The clause pins below bound each slice by the next clause or the line's
+    // end, so a SIXTH clause is what would be unconstrained on all six at once.
+    for (const tool of tools) {
+      const count = tool.description!.match(/If status is /g)?.length ?? 0;
+      expect(count, `${tool.id} routes ${count} statuses`).toBe(5);
+    }
+  });
+
+  it.each([
+    ["connecting", CONNECTING_PROHIBITION],
+    ["unregistered", UNREGISTERED_ESCAPE],
+    ["indeterminate", INDETERMINATE_ESCALATION],
+    [
+      "not_running",
+      "If that launch fails rather than starting the app, the bundle id is not installed on this " +
+        "device — this state cannot tell the two apart; install it and no relaunch will be needed.",
+    ],
+    ["stale_process", "A fresh process picks up the current one: call restart-app then retry."],
+  ] as const)("ends the %s message on its stop-condition, verbatim", (state, tail) => {
+    // `endsWith`, not `toContain`: the failure mode is a permitting sentence
+    // AFTER the stop-condition, which any containment check reads straight past.
+    const message = buildAppStateMessage("com.example.app", state);
+    expect(message.trimEnd().endsWith(tail), `${state} message does not end on its remedy`).toBe(
+      true
+    );
+  });
+
+  it.each([
+    [
+      "connecting",
+      "If state is connecting: do NOT restart the app — launching it is what starts the connection, so a relaunch discards the one in progress and returns this same state. Wait a few seconds and repeat this call.",
+    ],
+    [
+      "unregistered",
+      "If state is unregistered: do NOT restart the app again — it already launched under the terms a restart would recreate. Restart the tool-server (`argent server stop && argent server start --detach`), then retry. If it reads unregistered again after that restart, stop: the process loads argent's dylib but never dials, and no further restart on either side changes it — treat native devtools as unavailable, then use `describe` or `screenshot` and drive by coordinate.",
+    ],
+    [
+      "indeterminate",
+      "If state is indeterminate: the process could not be inspected, so restart-app is worth one attempt. If this call still reports it after that restart, do NOT restart the app again — the service is stale rather than the app uninjected, so restart the tool-server (`argent server stop && argent server start --detach`) and retry. Remote simulators can never inspect the process, so this is the only unconnected state a running app reaches there.",
+    ],
+  ] as const)("routes %s in the description exactly as written", (state, line) => {
+    expect(guidanceLine(state)).toBe(line);
+  });
+
+  it.each([
+    [
+      "connect_pending",
+      "If status is connect_pending: the app is injected and still connecting — do not restart it, wait a few seconds and retry.",
+    ],
+    [
+      "service_stale",
+      "If status is service_stale: the app is already injected, so restarting it cannot help — restart the tool-server (`argent server stop && argent server start --detach`) and retry. If the same status comes back after that restart, stop restarting: follow the message, which names the terminal fallback.",
+    ],
+    [
+      "injection_failed",
+      "If status is injection_failed: the app was told to restart, did, and the fresh process still never connected — the dylib is being inserted but dyld is not loading it, so this is TERMINAL. Do NOT restart the app or the tool-server again; read the message for the likely cause and use the standard `describe` tool or `screenshot` instead.",
+    ],
+  ])("routes %s identically on all six native-* tools", (status, clause) => {
+    for (const tool of tools) {
+      const start = tool.description!.indexOf(`If status is ${status}:`);
+      expect(start, `${tool.id} does not route ${status}`).toBeGreaterThanOrEqual(0);
+      // The routing clauses share one line, and the last one has no clause after
+      // it — bound by the line's end too, or its pin would swallow the sentences
+      // below and no verbatim match could hold.
+      const rest = tool.description!.slice(start);
+      const next = rest.slice(1).search(/If status is |\n/);
+      expect(rest.slice(0, next === -1 ? undefined : next + 1).trim(), tool.id).toBe(clause);
+    }
+  });
+
   // Whether the dylib loads into an Apple system app is not settled — #453
-  // recorded `connected: false` on iOS 26.5, an E2E review `connected: true`
-  // with both dylibs mapped on 18.5 — and every surface below is read by the
-  // same agent. Hedging one and leaving its twin absolute is what misleads: the
-  // flow surfaces say "depends on the runtime" while a tool description said
-  // "can never". The DECISION (terminal, do not retry) is unchanged; only the
-  // certainty claimed for it has to agree across surfaces.
+  // recorded `connected: false` on iOS 26.5, an E2E run `connected: true` on
+  // 18.5 — and one agent reads every surface below, so hedging one while its
+  // twin says "can never" is what misleads. The DECISION (terminal, do not
+  // retry) is unchanged; only the certainty claimed for it has to agree.
   it("does not claim injection is impossible on any agent-facing surface", () => {
-    // `described` fails loudly on an absent description rather than letting the
-    // regex below pass over `undefined` — a surface with no text would satisfy
-    // a negative match vacuously.
+    // Fails loudly on an absent description rather than letting the regex below
+    // pass over `undefined`, which would satisfy a negative match vacuously.
     const described = (name: string, text: string | undefined): [string, string] => {
       expect(text, `${name} has no text, so this check would be vacuous`).toBeTypeOf("string");
       return [name, text!];
@@ -1186,7 +1431,6 @@ describe("native-* tool descriptions document every precheck outcome", () => {
       described("native-devtools-status description", nativeDevtoolsStatusTool.description),
       ...tools.map((t) => described(`${t.id} description`, t.description)),
       described("non-injectable recovery", NON_INJECTABLE_RECOVERY),
-      described("argent-device-interact SKILL.md", deviceInteractSkill()),
     ];
 
     for (const [name, text] of surfaces) {
@@ -1199,12 +1443,10 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     expect(nativeDevtoolsStatusTool.description).toMatch(/Do NOT restart\/retry/);
   });
 
-  // `not_running` is derived from the absence of a `UIKitApplication:<id>` row,
-  // and a bundle id that was never installed has no row either — so the state
-  // cannot tell "installed and stopped" from "not installed". Prescribing only
-  // launch-app makes it a loop of its own for the second case: `simctl launch`
-  // refuses, and the state's single remedy has already been spent. Naming the
-  // second reading is what gives that agent somewhere to go.
+  // `not_running` is the absence of a `UIKitApplication:<id>` row, which an
+  // uninstalled bundle id lacks too. Prescribing only launch-app makes it a loop
+  // of its own there: `simctl launch` refuses, and the state's single remedy is
+  // spent. Naming the second reading gives that agent somewhere to go.
   it("admits that not_running cannot see whether the app is installed", () => {
     const message = buildAppStateMessage("com.nonexistent.TotallyFake", "not_running");
 
@@ -1213,21 +1455,5 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     // The claim has to be scoped to this state's evidence, not asserted as a
     // measurement it never took.
     expect(message).toMatch(/cannot tell the two apart/);
-  });
-
-  // The skill doc is what an agent reads before it calls anything, and nothing
-  // else in either package reads its body — so the statuses it routes are
-  // pinned here or nowhere. Without this, reverting the doc to "call restart-app
-  // first if needed" restores exactly the unconditional-restart advice the
-  // measured statuses exist to replace, with every other test still green.
-  it("routes every precheck status in the device-interact skill", () => {
-    const skill = deviceInteractSkill();
-
-    for (const status of ["restart_required", "service_stale", "connect_pending", "init_failed"]) {
-      expect(skill, `SKILL.md must route ${status}`).toContain(`status: "${status}"`);
-    }
-    // The routing is only worth stating because the loop it replaces is the
-    // failure mode: a status that repeats is never answered by retrying.
-    expect(skill).toContain("Never keep retrying");
   });
 });

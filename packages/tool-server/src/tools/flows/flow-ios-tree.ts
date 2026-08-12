@@ -284,20 +284,17 @@ const FLOW_SELECTOR_RECOVERY = `${FLOW_COORDINATE_REMEDY}.`;
  * Why the app a flow launched serves no view hierarchy, for the case where
  * nothing at all is connected.
  *
- * An app the dylib cannot be relied on to load into is terminal for a selector
- * and must be said so: no relaunch and no tool-server restart changes whether it
- * loads, and the measured states would each offer one of those (the launchd env carrying the bootstrap dylib is
- * simulator-wide, so the process inherits the injection tokens the measurement
- * reads and can score as merely `unregistered`). Selector resolution is the
- * point at which that impossibility actually bites — the launch gate lets these
- * apps through precisely so a coordinate-driven flow still runs — so this is
- * where the flow author is told, with the remedy that exists at flow level.
+ * An app the dylib cannot be relied on to load into is terminal for a selector,
+ * yet every measured state offers a relaunch or a tool-server restart: the
+ * launchd env carrying the bootstrap dylib is simulator-wide, so such a process
+ * inherits the injection tokens the measurement reads and can score as merely
+ * `unregistered`. Selector resolution is where that impossibility bites — the
+ * launch gate lets these apps through so a coordinate-driven flow still runs —
+ * so it is said here, with the remedy that exists at flow level.
  *
- * Everything else is measured off the running process, and a rejection degrades
- * to the state that says exactly that, as the other consumers do: the call
- * re-applies the launchd env before it measures anything, so a sim that goes
- * away mid-run rejects here, and a raw simctl subprocess error carries none of
- * the guidance the diagnosis does.
+ * Everything else is measured off the running process; a rejection degrades as
+ * it does for the other consumers, since the call re-applies the launchd env
+ * before measuring and so rejects on a sim that went away mid-run.
  */
 async function unreadableHierarchyReason(
   nativeApi: NativeDevtoolsApi,
@@ -314,25 +311,21 @@ async function unreadableHierarchyReason(
   const state = await nativeApi.appConnectionState(bundleId).catch(() => "indeterminate" as const);
   if (state === "connected") {
     // Reachable: `appConnectionState` re-reads the live connections map after
-    // its env re-apply and process probe — several simctl round-trips after the
-    // empty list that sent us here — precisely so a dial landing in that window
-    // is not reported as an app the service never registered. So the connection
-    // arrived mid-read, and the only thing wrong with this attempt is that it
-    // was taken too early.
+    // its env re-apply and process probe, several simctl round-trips after the
+    // empty list that sent us here. So the connection arrived mid-read, and the
+    // only thing wrong with this attempt is that it was taken too early.
     return (
       `native devtools reported no connected app while this tree was being read, but ${bundleId} is ` +
       `connected now — the connection arrived mid-read. Retry: flows resolve selectors against the ` +
       `full view hierarchy native devtools serve.`
     );
   }
-  // The diagnosis already names the corrective action, and for `unregistered`
-  // that action is a tool-server restart — telling a flow author to relaunch
-  // there sends them round a loop the app cannot exit. The trailing sentence
-  // says what the message is FOR: every caller here was resolving a selector,
-  // and none of the measured remedies mentions why a tree read needed it.
+  // The diagnosis already names the corrective action — for `unregistered` a
+  // tool-server restart, where telling a flow author to relaunch would loop.
+  // The trailing sentence says why a tree read needed one at all.
   const advice = adviseOnUninjectedApp(nativeApi, bundleId, state, FLOW_SELECTOR_RECOVERY);
   // The terminal diagnosis carries the flow-level remedy already, so the
-  // "why a tree was needed" sentence would only restate what it just said.
+  // trailing sentence would only restate what it just said.
   if (advice.terminal) return advice.message;
   return `${advice.message} Flows resolve selectors against the full view hierarchy native devtools serve.`;
 }
@@ -345,7 +338,7 @@ async function unreadableHierarchyReason(
  * `fetchFlowTree`), so the caller's retry loop either rides out a transient
  * failure or surfaces this message as the step's failure reason.
  *
- * `launchedNativeApp` is the app the run's `launch` step started, when it had
+ * `launchedNativeApp` is the app this run's `launch:` step started, when it had
  * one. It serves the two reads auto-targeting cannot, both following from it
  * resolving only out of the connected list: with that list empty it names the
  * app whose disconnection needs explaining, and when auto-resolution's own probe
@@ -366,24 +359,21 @@ export async function queryFullHierarchyTree(
       { cause: err }
     );
   }
-  // Auto-targeting draws its candidates from `listConnectedBundleIds` — the
-  // same map `appConnectionState` reads to answer `connected` — so an empty
-  // list is exactly the set of states that explain a missing connection, and
-  // the error it raises there ("Launch or restart the app first") is the
-  // restart loop this measurement exists to break. A flow that launched an app
-  // knows which one, and that id does not come from the connections map, so it
+  // Auto-targeting draws its candidates from `listConnectedBundleIds`, the same
+  // map `appConnectionState` reads, so an empty list is exactly the set of
+  // states that explain a missing connection — and the error it raises there
+  // ("Launch or restart the app first") is the restart loop this measurement
+  // exists to break. The flow's launched id does not come from that map, so it
   // survives the disconnection auto-targeting could not describe.
   //
-  // The empty list is tested directly rather than by catching and classifying
-  // the throw: the failure code travels on a module-local symbol, so a
-  // duplicate `@argent/registry` instance would read it as absent and silently
-  // fall back to the stock auto-target message.
+  // Tested directly rather than by catching the throw: its failure code travels
+  // on a module-local symbol, so a duplicate `@argent/registry` instance would
+  // read it as absent and silently fall back to the stock message.
   if (launchedNativeApp !== undefined && nativeApi.listConnectedBundleIds().length === 0) {
     throw new Error(await unreadableHierarchyReason(nativeApi, launchedNativeApp));
   }
-  // Auto-targeting's remaining errors — ambiguous frontmost, a lone connected
-  // app that isn't foreground-like — already carry the actionable next step, so
-  // they propagate unwrapped, with one exception. Auto-resolution's
+  // resolveNativeTargetApp's remaining errors already carry the actionable next
+  // step, so they propagate unwrapped — with one exception. Auto-resolution's
   // `Application.getState` probe hops onto the app's MAIN thread; an app whose
   // main thread is momentarily pinned (heavy cold start: first Hermes parse,
   // Lottie decode) times that probe out even though it is exactly the app the

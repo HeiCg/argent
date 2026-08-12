@@ -29,18 +29,13 @@ type Result =
       appRunning: boolean;
       connected: boolean;
       requiresRestart: boolean;
-      /**
-       * Omitted for a non-injectable app: `injectable: false` is terminal on its
-       * own, and no connection diagnosis is run for a process that may never
-       * load the dylib.
-       */
+      /** Omitted for a non-injectable app: `injectable: false` is terminal on its own. */
       state?: NativeDevtoolsAppState;
       /**
-       * The remedy for `state`, omitted when connected (or non-injectable,
-       * where the description's terminal guidance applies). The booleans alone
-       * cannot say "stop restarting the app" — `requiresRestart: true` is the
-       * only signal an `indeterminate` app gives, and on ios-remote, where no
-       * process can be inspected, that is the only state a running app reaches.
+       * The remedy for `state`, omitted when connected or non-injectable. The
+       * booleans alone cannot say "stop restarting the app", which is all an
+       * `indeterminate` app needs — and the only state a running app reaches on
+       * ios-remote, where no process can be inspected.
        */
       message?: string;
       nextLaunchWillBeInjected: boolean;
@@ -77,8 +72,8 @@ Call this before using app-scoped native hierarchy tools or native-network-logs.
 If injectable is false: treat this as TERMINAL — injection cannot be relied on for this app, and no relaunch changes which way it goes. Do NOT restart/retry. Use the standard \`describe\` tool (its accessibility path reads the screen without injection) or \`screenshot\` (then interact by coordinate). Do not fall back to the native-devtools feature tools (native-describe-screen, native-find-views, native-full-hierarchy, native-network-logs, native-view-at-point, native-user-interactable-view-at-point) — they run the same injection precheck and fail with the same non-injectable error.
 If appRunning is false and nextLaunchWillBeInjected is true: use launch-app normally.
 If requiresRestart is true: call restart-app, then proceed with the native feature.
-If state is unregistered: do NOT restart the app again — it already launched under the terms a restart would recreate. Restart the tool-server (\`argent server stop && argent server start --detach\`), then retry.
-If state is connecting: do NOT restart the app — launching it is what starts the connection, so a relaunch discards the one in progress and returns this same state. Wait a second or two and repeat this call.
+If state is unregistered: do NOT restart the app again — it already launched under the terms a restart would recreate. Restart the tool-server (\`argent server stop && argent server start --detach\`), then retry. If it reads unregistered again after that restart, stop: the process loads argent's dylib but never dials, and no further restart on either side changes it — treat native devtools as unavailable, then use \`describe\` or \`screenshot\` and drive by coordinate.
+If state is connecting: do NOT restart the app — launching it is what starts the connection, so a relaunch discards the one in progress and returns this same state. Wait a few seconds and repeat this call.
 If state is indeterminate: the process could not be inspected, so restart-app is worth one attempt. If this call still reports it after that restart, do NOT restart the app again — the service is stale rather than the app uninjected, so restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. Remote simulators can never inspect the process, so this is the only unconnected state a running app reaches there.
 Returns { status: "init_failed", message, attempts } instead when the simulator's native-devtools environment failed to initialize.
 Returns { status: "injection_failed", message } instead once this app has been told to restart, has done so, and the fresh process still never connected — the dylib is being inserted but dyld is not loading it. This is a TERMINAL state: do NOT restart the app again, read the message for the likely cause and use \`describe\` or \`screenshot\` instead.
@@ -101,25 +96,21 @@ Fails if the simulator server is not running for the given UDID.`,
     // never make a system app injectable. Report a terminal state so agents
     // stop looping restart-app → retry: no restart is required and the next
     // launch will not be injected either. appRunning/connected are still
-    // measured and envSetup is derived exactly as it is below — unlike the
-    // injectable path, though, there is no point running the precheck's env
-    // init or reverifying the env for an app that may never inject, so the
-    // reading is whatever the last attempt left rather than a fresh one.
+    // measured and envSetup derived exactly as below, but no env init or
+    // re-verify runs for an app that may never inject — so that reading is
+    // whatever the last attempt left rather than a fresh one.
     if (!isInjectableBundleId(params.bundleId)) {
       let appRunning: boolean;
       try {
         appRunning = await api.isAppRunning(params.bundleId);
       } catch (err) {
         // The app-running probe (a simctl spawn) failed — typically a sim that
-        // is shut down or unreachable, exactly where env init fails too. Reach
-        // for the structured init_failed guidance (re-booting IS corrective for
-        // a dead sim) rather than a raw subprocess error. The recorded failure
-        // is the whole of that reach: the blueprint attempts the env once at
-        // construction, so by now either it succeeded — latching `envSetup`,
-        // which makes a precheck here a no-op — or it recorded the failure this
-        // reads. A sim that dies after that latch records nothing, since this
-        // branch deliberately runs no env work for an app that may never
-        // inject; there the probe's own error is all there is to report.
+        // is shut down or unreachable, exactly where env init fails too. Prefer
+        // the structured init_failed guidance (re-booting IS corrective for a
+        // dead sim) over a raw subprocess error. The recorded failure is all
+        // there is to consult: this branch runs no env work of its own, so a sim
+        // that died after the construction-time latch records nothing and the
+        // probe's own error is the honest answer.
         const failure = api.getInitFailure();
         if (failure) return buildInitFailedResult(params.udid, failure);
         throw err;
@@ -138,65 +129,51 @@ Fails if the simulator server is not running for the given UDID.`,
     if (blocked) return blocked;
 
     // Diagnoses the connection AND re-applies the launchd env on its way, so an
-    // out-of-band simulator reboot that wiped DYLD_INSERT_LIBRARIES is repaired
-    // here and the repair's outcome is recorded. The reported envSetup /
-    // nextLaunchWillBeInjected are read after it to reflect that outcome rather
-    // than a latch stamped before the call. Idempotent when correct.
+    // out-of-band reboot that wiped DYLD_INSERT_LIBRARIES is repaired here and
+    // the outcome recorded — which is why envSetup / nextLaunchWillBeInjected
+    // are read after it rather than off a latch stamped before. Idempotent when
+    // correct.
     const measured = await api
       .appConnectionState(params.bundleId)
       .catch(() => "indeterminate" as const);
     const connected = measured === "connected";
 
     // Running-ness comes out of the same measurement rather than a second
-    // `launchctl list`. Four of the six states describe a live process and
-    // `not_running` IS the absence of one, so five settle running-ness on their
-    // own. A separate probe costs an extra simctl round-trip and — because
-    // `appConnectionState` re-verifies the env first, putting seconds between
-    // the two snapshots — lets the two fields contradict each other, e.g.
-    // `appRunning: true` beside `state: "not_running"`. Only `indeterminate`
-    // is reported without an answer, so only it pays for its own probe. (Some
-    // routes into `indeterminate` did establish running-ness — an unreadable
-    // pid row, ios-remote — but the state cannot carry it, so the probe is the
-    // only way to get it back, and its answer settles the state below.)
+    // `launchctl list`: five of the six states settle it on their own, and a
+    // separate probe — taken seconds later, since `appConnectionState`
+    // re-verifies the env first — could contradict the state beside it
+    // (`appRunning: true` next to `state: "not_running"`). Only `indeterminate`
+    // carries no answer, so only it pays for a probe.
     let appRunning: boolean;
     let state = measured;
     if (state === "indeterminate") {
       try {
         appRunning = await api.isAppRunning(params.bundleId);
       } catch (err) {
-        // `indeterminate` is also where a failed measurement lands, and the
-        // commonest cause — a sim that shut down or went unreachable — is
-        // exactly what makes this probe fail too, so this is the one route to
-        // the probe where it has already failed once. Read the recorded failure
-        // directly: `appConnectionState`'s `reverifyEnv` has just recorded it
-        // and `initFailure` is cleared on any success, so a non-null one means
-        // the live env attempt failed, which with a failed running-ness probe
-        // beside it is a dead sim. Re-running the precheck here cannot see it —
-        // getting this far means the precheck above already drove
-        // `ensureEnvReady` to success, and that latches, so every later call is
-        // a no-op that reports nothing. Without this read the agent gets the raw
-        // subprocess error instead of the structured "re-boot the simulator"
-        // guidance; with a healthy env, that raw error IS the honest answer.
+        // A sim that shut down or went unreachable is both the commonest cause
+        // of `indeterminate` and what makes this probe fail, so read the failure
+        // `appConnectionState`'s `reverifyEnv` has just recorded — it is cleared
+        // on any success, so a non-null one beside a failed probe is a dead sim.
+        // Re-running the precheck cannot see it: `ensureEnvReady` succeeded
+        // above and latches, so every later call is a no-op that reports
+        // nothing. With a healthy env the raw error IS the honest answer.
         const failure = api.getInitFailure();
         if (failure) return buildInitFailedResult(params.udid, failure);
         throw err;
       }
-      // The probe answers the very thing `indeterminate` left open. If the app
-      // is gone, that IS `not_running`; leaving the state alone would pair
-      // `appRunning: false` with a message reading "Call restart-app then
-      // retry", the self-contradiction deriving these from one state prevents.
+      // The probe answers what `indeterminate` left open. If the app is gone
+      // that IS `not_running`; leaving the state alone would pair
+      // `appRunning: false` with a message reading "Call restart-app then retry".
       if (!appRunning) state = "not_running";
     } else {
       appRunning = state !== "not_running";
     }
-    // `isEnvSetup()` alone cannot answer this: it latches true on the first
-    // successful apply and is never cleared, so a simulator whose env has since
-    // been wiped keeps reporting a readiness it does not have. The re-apply
-    // above is what tests it, and it records a failure that any later success
-    // clears — so a recorded failure standing beside the latch is precisely the
-    // case where the launchd env is NOT in place, and telling an agent its next
-    // launch will be injected there sends it to relaunch into an uninjected
-    // process for as long as the sim stays broken.
+    // `isEnvSetup()` latches true on the first successful apply and is never
+    // cleared, so a simulator whose env has since been wiped keeps reporting a
+    // readiness it does not have. The re-apply above tests it and records a
+    // failure any later success clears — so a failure standing beside the latch
+    // is exactly the case where the launchd env is NOT in place, and reporting
+    // otherwise sends the agent relaunching into an uninjected process.
     const envSetup = api.isEnvSetup() && api.getInitFailure() === null;
 
     // The remedy for the settled state, and the record of the one hand-out that
@@ -213,23 +190,19 @@ Fails if the simulator server is not running for the given UDID.`,
       envSetup,
       appRunning,
       connected,
-      // Derived from the one state, so it can never disagree with it. An
-      // `unregistered` process is the case where a relaunch provably changes
-      // nothing and a `connecting` one the case where it destroys the handshake
-      // it would be waiting on; `not_running` needs a launch, not a restart of
-      // something that isn't there. That leaves the two states a fresh process
-      // actually fixes — `indeterminate` among them, since an uninspectable
-      // host (ios-remote) can support no finer reading. Both of those already
-      // carry a live process: the settling above rewrites an `indeterminate`
-      // whose probe found nothing to `not_running`, so an `appRunning` conjunct
-      // here could only restate what the state has said.
+      // Derived from the one state, so it can never disagree with it: a relaunch
+      // provably changes nothing for `unregistered`, destroys the handshake for
+      // `connecting`, and `not_running` needs a launch. That leaves the two a
+      // fresh process fixes — `indeterminate` among them, since an uninspectable
+      // host (ios-remote) supports no finer reading. Both already carry a live
+      // process (the settling above rewrote an empty `indeterminate` to
+      // `not_running`), so an `appRunning` conjunct would only restate the state.
       requiresRestart: state === "stale_process" || state === "indeterminate",
       state,
       // The booleans cannot express "one restart, then stop" — the shape
-      // `indeterminate` needs, and the only shape ios-remote can ever report
-      // for a running app. Carry the same prose every other consumer of this
-      // measurement carries, so the escape does not depend on the agent having
-      // read this tool's description.
+      // `indeterminate` needs, and the only one ios-remote can report for a
+      // running app. Carrying the same prose as every other consumer keeps that
+      // escape off the agent having read this tool's description.
       ...(advice === null ? {} : { message: advice.message }),
       nextLaunchWillBeInjected: envSetup,
       injectable: true,

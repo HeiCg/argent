@@ -102,11 +102,10 @@ Read the exact error and choose the action that matches it:
   the ax-service daemon could not start. Check that the simulator is booted. Use `screenshot` as a temporary fallback, or use `native-describe-screen` with an explicit `bundleId` if the app has native devtools injected.
 - `describe` returns an empty element list:
   the screen may be blank, loading, or showing content without accessibility labels. Use `screenshot` to see what is visible, then retry after the content has loaded.
-  If the reply carries a `hint` saying the native view hierarchy could not be read, the emptiness is **not** evidence the screen is blank — follow that hint (pass `bundleId`, or take the `screenshot`) instead of retrying on the assumption it will fill in.
 - `describe` succeeds but is not detailed enough for a React Native app:
   use `debugger-component-tree` next.
 - You need app-scoped inspection with full UIKit properties (`accessibilityIdentifier`, `viewClassName`):
-  use `native-describe-screen` with an explicit `bundleId`. This requires native devtools (dylib) injection. If it comes back with `status: "restart_required"`, follow the message (usually `restart-app`) and retry. If it comes back with `status: "service_stale"`, the app is already injected and pointed at the right endpoint — restarting it cannot change that, so restart the tool-server (`argent server stop && argent server start --detach`) instead. If it comes back with `status: "connect_pending"`, the app is injected and still connecting — wait a second or two and repeat the same call, since relaunching would discard the connection in progress. If it comes back with `status: "init_failed"`, the simulator's native-devtools environment could not be initialised — follow that message (re-boot the simulator) rather than retrying the tool. Never keep retrying `restart-app` against the same status.
+  use `native-describe-screen` with an explicit `bundleId`. This requires native devtools (dylib) injection.
 - You already have a candidate point and want to confirm what would actually receive touch:
   use `native-user-interactable-view-at-point`. Use `native-view-at-point` when you want the visually deepest view instead of the hit-test target.
 

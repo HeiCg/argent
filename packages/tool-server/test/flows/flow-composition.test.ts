@@ -45,19 +45,29 @@ vi.mock("../../src/tools/devices/boot-electron", () => ({
   killChromiumByPort: vi.fn(),
 }));
 
-// Four tests here drive the launch gate's real 1.5 s settle + 15 s connect wait
-// in fake time, pumping a real event-loop turn between advances so the run's
-// disk I/O (it re-reads the flow off disk between steps) can settle. Every pump
-// is a real macrotask, so the cost is the number of pumps, not the fake
-// duration — and under full-suite parallel load dozens of them per test outran
-// vitest's 5 s default, failing tests that are not actually slow.
-//
-// Widening the advance is NOT the fix: the pumps are what let that I/O run, so
-// coarser steps starve it and the run takes longer in real time, not less
-// (measured: 1 s steps took the file from 46 s to 52 s and failed more). Give
-// the pumping a budget instead, and prefer unit-testing pure message mapping
-// over driving the whole runner once per case.
-vi.setConfig({ testTimeout: 30_000 });
+// Five tests here drive the launch gate's real 1.5 s settle plus the whole
+// connect wait in fake time, pumping a real event-loop turn between advances so
+// the run's disk I/O can settle. Each pump is a real macrotask, so the cost is
+// the pump count, not the fake duration — under full-suite load it outruns
+// vitest's 5 s default. Widening the advance is NOT the fix: coarser steps
+// starve that I/O and take longer in real time (measured: 1 s steps took the
+// file from 46 s to 52 s). Budget the pumping, and prefer unit-testing the pure
+// message mapping over driving the whole runner once per case.
+vi.setConfig({ testTimeout: 60_000 });
+
+/**
+ * Ceiling on those pumps. The loop has to cover the settle plus the entire
+ * connect wait in fake time — one 250 ms advance each — and still have turns
+ * spare for the real-async steps interleaved between them, which multiply as
+ * parallel workers contend for the disk.
+ *
+ * Derived from the connect budget rather than fixed, because running out is
+ * silent and mimics nothing else: the run never settles, the loop abandons it
+ * pending, and the test hangs on `await pending` until the timeout — so it reads
+ * as slowness, and no timeout value fixes it. A settled run leaves the loop
+ * immediately, so the headroom costs nothing.
+ */
+const PUMP_LIMIT = Math.ceil(NATIVE_READY_TIMEOUT_MS / 250) * 10;
 
 const DEVICE = "00000000-0000-0000-0000-0000000000ab";
 let tmpDir: string;
@@ -2390,26 +2400,22 @@ describe("flow composition (run:)", () => {
 
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:error", "echo:skip"]);
     expect(result.steps[0].reason).toMatch(/could not connect to native devtools/i);
-    // Every reason names the bundle id itself, so the prefix must not — doubled,
-    // it reads as two separate failures reported back to back. Asserted on this
-    // shape and, below, on the measured and system-app ones, because the rule
-    // is only worth anything if it holds for all of them.
+    // Every reason names the bundle id, so the prefix must not — doubled, it
+    // reads as two separate failures. Asserted here and on the measured and
+    // system-app shapes below, since the rule is worth nothing partially held.
     expect(result.steps[0].reason?.match(/com\.acme\.app/g)).toHaveLength(1);
-    // The cause travels with the reason. Resolution fails for reasons the flow
-    // author can act on and cannot otherwise see — a socket already bound, a
-    // device of the wrong platform — and the step's reason is the only place
-    // any of them surfaces; without it they all read as one opaque failure.
+    // Resolution fails for reasons the flow author can act on and cannot
+    // otherwise see — a socket already bound, a device of the wrong platform —
+    // and the step's reason is the only place any of them surfaces.
     expect(result.steps[0].reason).toContain("native-devtools unavailable");
     expect(result.ok).toBe(false);
   });
 
-  // An Apple system app may not be able to load the dylib at all (a platform
-  // binary with library validation), so its hierarchy may never become
-  // readable. That is not a reason to fail the LAUNCH: the step's job is to
-  // start the app, it succeeded, and a flow that only ever taps by coordinate
-  // needs nothing else. A launch that fails there denies a coordinate-driven
-  // flow its first step while telling its author to drive by coordinate. The
-  // impossibility belongs where a selector actually needs the hierarchy.
+  // An Apple system app may never load the dylib (a platform binary with
+  // library validation), so its hierarchy may never become readable — which is
+  // not a reason to fail the LAUNCH. The step started the app, and a flow that
+  // taps by coordinate needs nothing else; the impossibility belongs where a
+  // selector actually needs the hierarchy.
   it("lets a system-app launch through so a coordinate-driven flow still runs", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2430,12 +2436,59 @@ describe("flow composition (run:)", () => {
     expect(result.ok).toBe(true);
   });
 
-  // The case above resolves connected, so the gate never reaches its verdict.
-  // This is the one that matters: a system app that never connects at all. The
-  // launch must STILL pass — the step started the app, and a coordinate flow
-  // needs nothing more — where every measured state would have failed it, and
-  // failed it with a remedy (relaunch, or restart the tool-server) that cannot
-  // apply to an app whose dylib may never load.
+  // A blocked precheck comes back RESOLVED, and returns before the terminate and
+  // the launch — so this is a step whose app was never started. The gate's
+  // remedies are all written for one that was: read as a launch, `not_running`
+  // becomes "it exited after launch", which sends the author after a crash that
+  // never happened and drops the message that named the real cause.
+  it("fails a launch whose restart-app was blocked before it started anything", async () => {
+    await writeFlow("main", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "launch", app: "com.acme.app" },
+        { kind: "tool", name: "gesture-tap", args: { x: 0.5, y: 0.35 } },
+      ],
+    });
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "list-devices") return { devices: [] };
+        if (id === "restart-app") {
+          return {
+            status: "init_failed",
+            attempts: 3,
+            message:
+              `Native devtools failed to initialize for ${DEVICE} after 3 attempts. ` +
+              `Last error: Native devtools dylib not found: /x/libArgentInjectionBootstrap.dylib. ` +
+              `Try shutting down and re-booting the simulator, or restart CoreSimulatorService.`,
+          };
+        }
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => undefined),
+      resolveService: vi.fn(async () => ({
+        isConnected: () => false,
+        listConnectedBundleIds: () => [],
+        // What the gate would measure for an app nothing launched.
+        appConnectionState: async () => "not_running" as const,
+      })),
+    } as unknown as Registry;
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "main", project_root: tmpDir, device: DEVICE }
+      )
+    );
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:error", "tool:skip"]);
+    expect(result.steps[0].reason).toContain("dylib not found");
+    expect(result.steps[0].reason).not.toContain("exited after launch");
+  });
+
+  // The connected case above never reaches the gate's verdict. This is the one
+  // that matters: a system app that never connects at all. The launch must STILL
+  // pass, where every measured state would have failed it — and failed it with a
+  // remedy that cannot apply to such an app.
   it("passes a system-app launch that never connects at all", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2469,7 +2522,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2485,10 +2538,9 @@ describe("flow composition (run:)", () => {
     }
   });
 
-  // The verdict is withheld BEFORE the state is measured. That measurement is
-  // several simctl round-trips the caller cannot interrupt, and no arm below
-  // would consult it for an app whose verdict is withheld either way — so
-  // running it would be pure latency on every system-app launch step.
+  // The verdict is withheld BEFORE the state is measured: that measurement is
+  // several uninterruptible simctl round-trips, and no arm consults it for such
+  // an app — pure latency on every system-app launch step.
   it("does not measure a state it will not report", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2517,7 +2569,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2530,10 +2582,9 @@ describe("flow composition (run:)", () => {
     }
   });
 
-  // The gate consults the service before it withholds its verdict, so a service
-  // that cannot resolve at all was the one remaining way a system-app launch
-  // could still fail — on a failure that, by the pass-through's own reasoning,
-  // is irrelevant to an app the service was never going to serve.
+  // The gate consults the service before withholding its verdict, so an
+  // unresolvable service was the one remaining way a system-app launch could
+  // fail — on a failure irrelevant to an app it was never going to serve.
   it("passes a system-app launch even when native-devtools cannot resolve", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2596,12 +2647,10 @@ describe("flow composition (run:)", () => {
   });
 
   // The other half of letting the launch through: a SELECTOR step against the
-  // same app has to say why it cannot resolve, and say it terminally. This is
-  // also the only end-to-end proof that the launched bundle id reaches the tree
-  // source — auto-targeting resolves out of the connected list, so with nothing
-  // connected it cannot name the app, and the flow author would get the stock
-  // "Launch or restart the app first" auto-target text, which is the restart
-  // loop this measurement exists to break.
+  // same app has to say why it cannot resolve, terminally. Also the only
+  // end-to-end proof that the launched bundle id reaches the tree source —
+  // without it the author gets the stock "Launch or restart the app first"
+  // auto-target text, the restart loop this measurement exists to break.
   it("gives a selector step against a system app the terminal reason, not the auto-target text", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2629,10 +2678,9 @@ describe("flow composition (run:)", () => {
   });
 
   // `assert`/`await` read the tree through `waitForCondition`; `tap`, `type`,
-  // `scroll-to` and `long-press` reach it through `settleTree`, a different
-  // call site with its own argument list. Pinning only the first left the id
-  // droppable at the second — the one every action directive uses — with the
-  // suite green, so the author of a tap would still get the auto-target text.
+  // `scroll-to` and `long-press` reach it through `settleTree`, a separate call
+  // site. Pinning only the first left the id droppable at the second — the one
+  // every action directive uses — with the suite green.
   it("threads the launched id to the settleTree read an action directive uses", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2654,9 +2702,9 @@ describe("flow composition (run:)", () => {
     expect(reason).not.toMatch(/Launch or restart the app first/);
   });
 
-  // The measured half of the message says what is wrong with the app; without
-  // this half nothing says what the read was FOR, and a flow author is told to
-  // restart a tool-server with no mention that a selector needed a hierarchy.
+  // The measured half says what is wrong with the app; without this half a flow
+  // author is told to restart a tool-server with no mention that a selector
+  // needed a hierarchy.
   it("says why the tree was being read, not just what is wrong with the app", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2691,10 +2739,9 @@ describe("flow composition (run:)", () => {
     expect(reason).toMatch(/Flows resolve selectors against the full view hierarchy/);
   });
 
-  // The gate's own measurement had no coverage at all: replacing the whole
-  // diagnosis with a literal left every flow test green. `unregistered` is the
-  // case that matters — the remedy inverts, and this gate is reached right
-  // after a launch, so a guessed "re-run to relaunch" is the loop one level up.
+  // Replacing the whole diagnosis with a literal left every flow test green.
+  // `unregistered` is the case that matters — the remedy inverts, and this gate
+  // runs right after a launch, so "re-run to relaunch" is the loop one level up.
   it("reports the measured reason when the connection times out", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2715,9 +2762,8 @@ describe("flow composition (run:)", () => {
     } as unknown as Registry;
 
     // Leave setImmediate real: the run reads the flow off disk between sleeps,
-    // and that I/O needs actual event-loop turns to settle. Pumping a real turn
-    // between advances lets the 1.5 s settle and the 15 s connect timeout elapse
-    // in fake time without the test spending those seconds in real time.
+    // and that I/O needs actual event-loop turns. Pumping one between advances
+    // elapses the 1.5 s settle and the whole connect wait in fake time.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
       const pending = createRunFlowTool(registry).execute(
@@ -2726,7 +2772,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2738,16 +2784,14 @@ describe("flow composition (run:)", () => {
       );
       expect(result.steps[0].reason).not.toMatch(/restart-app/);
       expect(result.steps[0].reason?.match(/com\.acme\.app/g)).toHaveLength(1);
-      // This gate is the one caller whose wait was bounded — it launched the app
-      // itself and then waited LAUNCH_TO_VERDICT_MS. A cold start slower than
-      // that reads identically to a genuinely unregistered app, so the measured
-      // "restarting cannot help" must not be the last word here.
+      // This gate is the one caller whose wait was bounded: a cold start slower
+      // than LAUNCH_TO_VERDICT_MS reads identically to a genuinely unregistered
+      // app, so "restarting cannot help" must not be the last word here.
       expect(result.steps[0].reason).toMatch(/cold start/i);
       expect(result.steps[0].reason).toMatch(/re-run the flow/i);
-      // The figure the author sizes that judgement against has to be the whole
-      // wait the step performed: the post-launch settle counts, because the
-      // connection is read off the live map and the poll checks it once before
-      // its first sleep. Quoting the poll alone understates it by the settle.
+      // The figure sizing that judgement is the whole wait the step performed:
+      // the poll reads the live map once before its first sleep, so the
+      // post-launch settle counts and quoting the poll alone understates it.
       expect(result.steps[0].reason).toContain(`${LAUNCH_TO_VERDICT_MS} ms`);
       expect(result.steps[0].reason).not.toContain(`${NATIVE_READY_TIMEOUT_MS} ms`);
     } finally {
@@ -2755,20 +2799,18 @@ describe("flow composition (run:)", () => {
     }
   });
 
-  // `buildAppStateMessage` is written for the native-* tool surface, whose
-  // reader has not launched anything — so "call launch-app (or restart-app)" is
-  // the missing step there and the step's own action here. Emitted verbatim,
-  // every state but `unregistered` handed the flow author back the relaunch the
-  // launch step had just performed, which re-runs into the identical state.
+  // `buildAppStateMessage` is written for a reader who has not launched
+  // anything, so "call launch-app (or restart-app)" is the missing step there
+  // and the step's own action here — emitted verbatim it hands the flow author
+  // back the relaunch that just ran, which re-runs into the identical state.
   //
-  // The mapping is exercised directly rather than by driving the runner once per
-  // state: it is a pure function of (bundleId, state), and each runner pass costs
-  // ~9 s of pumped fake time. The end-to-end test above proves the gate reaches
-  // this function at all; these prove what it says once there.
+  // Exercised directly rather than through the runner: it is a pure function of
+  // (bundleId, state), and each runner pass costs ~9 s of pumped fake time. The
+  // end-to-end test above proves the gate reaches it at all.
   describe("flowLaunchGateReason", () => {
     it.each([
-      // `not_running` is the sharpest: a relaunch is not merely redundant, it is
-      // what produced the state being reported, so the remedy must not be one.
+      // `not_running` is the sharpest: a relaunch is what produced the state
+      // being reported, so the remedy must not be one.
       ["not_running", /exited after launch/i],
       ["stale_process", /re-run the flow to launch again/i],
       ["indeterminate", /at most once more/i],
@@ -2780,7 +2822,7 @@ describe("flow composition (run:)", () => {
 
     // The one state whose tool-surface remedy IS the launch step's own action.
     // `launch-app` may still appear — the arm suggests starting it by hand to
-    // watch it die — but never as the prescribed retry the measured text gives.
+    // watch it die — but never as the prescribed retry.
     it("does not tell a crash-on-launch app to simply launch itself again", () => {
       const reason = flowLaunchGateReason("com.acme.app", "not_running");
 
@@ -2792,46 +2834,38 @@ describe("flow composition (run:)", () => {
       expect(reason).toMatch(/Re-running the flow repeats the same launch/);
     });
 
-    // The `not.toContain` guards below compare rendered substrings, so they are
-    // only meaningful while one figure is not a suffix of the other — with
-    // 15000/16500 they are distinct, but e.g. 500/1500 would make
-    // `"1500 ms".includes("500 ms")` true and fail them for the wrong reason.
-    // Pin the property those guards actually need, not merely the ordering.
+    // The `not.toContain` guards below compare rendered substrings, so they only
+    // mean anything while neither figure is a suffix of the other: 500/1500 would
+    // make `"1500 ms".includes("500 ms")` true and fail them for the wrong
+    // reason. Pin what those guards need, not merely the ordering.
     it("renders a launch-to-verdict spend the connect wait cannot be read into", () => {
       expect(LAUNCH_TO_VERDICT_MS).toBeGreaterThan(NATIVE_READY_TIMEOUT_MS);
       expect(`${LAUNCH_TO_VERDICT_MS} ms`).not.toContain(`${NATIVE_READY_TIMEOUT_MS} ms`);
     });
 
-    // `stale_process` has two producers, and one of them carries THIS endpoint —
-    // it predates the listener, not the launchd environment. Blaming the
-    // environment would contradict the measured text this wraps, which names
-    // both producers.
+    // `stale_process` has two producers, and one carries THIS endpoint — it
+    // predates the listener, not the launchd environment. Blaming the
+    // environment would contradict the measured text this wraps.
     it("does not blame the launchd environment for a stale process", () => {
       const reason = flowLaunchGateReason("com.acme.app", "stale_process");
 
       expect(reason).toMatch(/predates whatever the relaunch would have given it/);
-      // One producer of this state carries THIS endpoint and is merely older
-      // than the listener, so the environment is not at fault on a first
-      // landing. The message may name it only for a REPEAT, which rules that
-      // producer out. Two things make that true and both are asserted: the
-      // blame is conditional (not a statement about what was just measured),
-      // and it comes after the re-run that establishes the repeat.
+      // One producer carries THIS endpoint and is merely older than the
+      // listener, so the environment is not at fault on a first landing. The
+      // message may name it only for a REPEAT, which rules that producer out —
+      // so the blame must be conditional AND follow the re-run, both asserted.
       const blame = reason.indexOf("launchd environment");
       const rerun = reason.indexOf("re-run the flow");
       expect(rerun).toBeGreaterThanOrEqual(0);
       expect(blame === -1 || blame > rerun).toBe(true);
-      // Unconditional on purpose: guarding this with `if (blame !== -1)` let the
-      // whole repeat-landing clause be deleted with the suite green, which
-      // leaves a reader who lands here twice with "re-run the flow" and no
-      // escape, which is the restart loop in miniature. The wording is pinned too,
-      // because "It lands here twice, so …" states on a FIRST landing what only
-      // a second one supports.
+      // Unconditional on purpose: `if (blame !== -1)` let the whole
+      // repeat-landing clause be deleted with the suite green, leaving a reader
+      // who lands here twice with "re-run the flow" and no escape. The wording is
+      // pinned too — "It lands here twice, so …" states on a FIRST landing what
+      // only a second one supports.
       expect(reason).toMatch(/If it lands here twice, the simulator's launchd environment/);
     });
 
-    // The figure every arm quotes is the whole spend, not the connect wait —
-    // the bug the previous round fixed in `not_running` and left in the two
-    // arms nothing asserted it on.
     it.each(["not_running", "connecting", "unregistered"] as const)(
       "quotes the whole launch-to-verdict spend in the %s remedy",
       (state) => {
@@ -2845,7 +2879,7 @@ describe("flow composition (run:)", () => {
 
   // The connection can land between the final poll and the measurement. Without
   // the `connected` short-circuit, buildAppStateMessage falls off its switch and
-  // the healthy run dies with a literal "undefined" as its reason.
+  // a healthy run dies with a literal "undefined" as its reason.
   it("passes when the connection lands between the last poll and the measurement", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2873,7 +2907,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
@@ -2889,9 +2923,9 @@ describe("flow composition (run:)", () => {
     }
   });
 
-  // A rejected measurement must not propagate: `runLaunch` has no try/catch of
-  // its own, so it would escape `execute()` and the run would return no step
-  // reports at all instead of a structured failure.
+  // A rejected measurement must not propagate: `runLaunch` has no try/catch, so
+  // it would escape `execute()` and the run would return no step reports at all
+  // instead of a structured failure.
   it("keeps a rejected measurement inside the step report", async () => {
     await writeFlow("main", {
       executionPrerequisite: "",
@@ -2924,7 +2958,7 @@ describe("flow composition (run:)", () => {
       );
       let settled = false;
       void pending.then(() => (settled = true));
-      for (let i = 0; i < 200 && !settled; i++) {
+      for (let i = 0; i < PUMP_LIMIT && !settled; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await vi.advanceTimersByTimeAsync(250);
       }
