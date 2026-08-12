@@ -177,6 +177,16 @@ On a TV target (runtimeKind 'tv') only \`text\` applies — focus a text field f
 One call does one typing action: pass text OR key, never both. \`clear\` rides along with either, and the order within a call is always clear → text, or clear → key. To type and then press a key, send two \`keyboard\` steps in one \`run-sequence\` — { clear: true, text: "hello" } then { key: "enter" } — which also keeps it to a single round-trip.`,
     zodSchema,
     capability,
+    // One request can run a clear AND a text injection AND a named key, and the
+    // three are budgeted separately: on Android the clear is capped at 20s
+    // (ANDROID_CLEAR_BUDGET_MS) and the injections that follow it keep their own
+    // 15s caps each, so a `{ clear, text, key }` worst case sums past the MCP
+    // adapter's 30s per-request fetch timeout. Sizing the legs against 30s
+    // instead would mean threading one deadline through the text/key injectors
+    // the Android-TV blueprint shares; declaring the tool for what it is costs
+    // nothing and stops the client abandoning a request while adb is still
+    // typing on the device.
+    longRunning: true,
     searchHint:
       "type text keyboard input named key enter escape arrow tv vega fire tv search field hid leanback " +
       "clear erase empty field reset delete contents replace value select all backspace",
