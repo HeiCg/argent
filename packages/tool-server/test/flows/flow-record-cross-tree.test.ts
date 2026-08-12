@@ -953,6 +953,39 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(await recordedSteps("chromium")).toHaveLength(1);
   });
 
+  it("Chromium: inverts its own remedy for a `hidden` divergence", async () => {
+    // The chromium arm used to be one fixed string for every condition, so a
+    // `hidden` verdict — which means that tree still HAS the element — came
+    // with the two tips that make the directive match MORE surely.
+    serveTree(
+      chromiumRunnerTree([
+        n({
+          role: "div",
+          identifier: "still-here",
+          value: "Loading",
+          frame: { x: 0.1, y: 0.1, width: 0.5, height: 0.05 },
+        }),
+      ]),
+      "cdp-dom"
+    );
+    await startRecording("chromiumhidden");
+
+    const result = await recordWait("chromiumhidden", {
+      udid: CHROMIUM,
+      condition: "hidden",
+      selector: { identifier: "still-here" },
+    });
+    const warning = warningOf(result, "chromiumhidden") ?? "";
+
+    // The one piece of chromium advice that survives every cause.
+    expect(warning).toContain("settle it by running the conversion");
+    expect(warning).toContain("This verdict says that tree still HAS the element");
+    expect(warning).toContain("matches only what you expect to leave");
+    // …and not the two that point the other way.
+    expect(warning).not.toContain("the fix there is a `scroll-to` before the check");
+    expect(warning).not.toContain("only an `id`/`role` selector can match it");
+  });
+
   // A divergence that is not about MEMBERSHIP at all. Both trees hold both
   // nodes; the two sides simply elect different ones, because `text` inspects a
   // single winner and `firstInReadingOrder` breaks an exact (y, x) tie by

@@ -204,14 +204,32 @@ function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
     // `describe` can show a node the runner keeps under a different name (a
     // password field) and can omit one the runner has (past its 5000-node
     // walk). What always settles it is running the conversion.
-    return (
+    const settle =
       "No read-only tool exposes the runner's trimmed tree on Chromium — `describe` re-reads the " +
       "same DOM on a shorter walk, so it both lists nodes the runner drops and omits nodes the " +
       "runner keeps — so settle it by running the conversion: put the directive in a flow and " +
-      "`flow-execute` it. A zero-height frame in `describe` means off-viewport, and the fix " +
-      "there is a `scroll-to` before the check rather than a different selector; a password " +
-      "field reaches the runner under the name `[password]`, so only an `id`/`role` selector " +
-      "can match it"
+      "`flow-execute` it. ";
+    // Both chromium tips make the directive match MORE surely, which is the
+    // right direction only while the check wants the element THERE. On `hidden`
+    // the verdict fires because that tree still has it, so the same advice
+    // works against the author — the distinction the iOS/Android arms draw in
+    // {@link retargetRemedy}.
+    if (condition === "hidden") {
+      return (
+        settle +
+        "This verdict says that tree still HAS the element, so the usual chromium tips are the " +
+        "wrong direction here: a `scroll-to` before the check, or a switch to an `id`/`role` " +
+        "selector, only makes the directive match more surely. Absence from `describe` is not " +
+        "the element having left, either — on a dense page the recorder's walk stops at 5000 " +
+        "nodes where the runner's goes to 12000. Narrow the selector until it matches only what " +
+        "you expect to leave, or gate on something that does leave; or keep the step raw"
+      );
+    }
+    return (
+      settle +
+      "A zero-height frame in `describe` means off-viewport, and the fix there is a `scroll-to` " +
+      "before the check rather than a different selector; a password field reaches the runner " +
+      "under the name `[password]`, so only an `id`/`role` selector can match it"
     );
   }
   if (platform === "vega") {
