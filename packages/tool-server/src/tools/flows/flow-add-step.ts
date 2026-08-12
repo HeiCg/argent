@@ -667,14 +667,18 @@ const CANCELLED_PROBE_WARNING =
  * ceiling short of the RPC timeout makes that impossible — the point is to stop
  * an ordinary slow read from costing the verdict.
  *
- * What bounds the OTHER end is not here: `flow-add-step` declares no
- * `longRunning`, so the MCP adapter caps the whole call at its own
- * `FETCH_TIMEOUT_MS` (30s) and retries the identical POST. A retry re-runs the
- * recorded tool and appends a second step, since an aborted request still
- * appends its first — so this budget is spent from that ceiling: a live wait
- * within ~6s of it now crosses it. Raising the budget further trades verdicts
- * on slow devices for duplicate steps on slow waits, which is the worse of the
- * two.
+ * What bounds the OTHER end used to be a ceiling this tool alone opted out of.
+ * The MCP adapter caps a call at `FETCH_TIMEOUT_MS` (30s) unless its tool
+ * declares `longRunning`, and then retries the identical POST up to
+ * `MAX_RETRIES` (4) more times. Every retry re-runs the recorded tool and
+ * appends another step, since an aborted request still appends its first — so
+ * crossing the cap duplicated the step up to five times, not once. The three
+ * tools this one proxies are all `longRunning` (`await-ui-element`,
+ * `run-sequence`, `flow-run`), which made the asymmetry sharp: a
+ * `timeoutMs: 28000` wait ran fine standalone and duplicated once recorded.
+ * This budget was spent from that same ceiling, moving the crossing point down
+ * by up to 6s. `flow-add-step` now declares `longRunning` too, which removes
+ * the class rather than trading against it — see the tool definition below.
  */
 const PROBE_MAX_TREE_READ_MS = 2500;
 const PROBE_ASSERT_GRACE_MS = 1000; // DEFAULT_ASSERT_TIMEOUT_MS, the loop's own window
@@ -1296,6 +1300,17 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
 A recorded \`await-ui-element\` that PASSED is re-probed against the tree the RUNNER resolves \`await:\`/\`assert:\` directives against, which is NOT the tree the live call read; a wait that came back \`{ success: false }\` is not probed at all, and its warning says so; when the condition does not hold there the step is still recorded and \`message\` carries a warning to read before converting — whether the conversion actually breaks depends on WHY the two disagree, since a screen that moved on between the live wait and the re-probe reads the same way. If that tree could not be read at all, the warning says so instead: the conversion is UNKNOWN, not known-bad. The probe judges the selector exactly as recorded, so write the conversion in the strict map spelling (\`{ visible: { text: Continue } }\`, copying the step's \`selector:\`) — the bare-string spelling (\`{ visible: Continue }\`) re-parses as a loose selector that resolves identifier-first and falls back to text, which is a different check. \`message\` also warns when the live wait itself came back \`{ success: false }\` — that tool reports a failed wait by returning rather than throwing, so the step is recorded either way. That warning names the cause, because only one of them judges the condition: a genuine miss will stop the run at replay, while a wait whose tree source was unreadable, or one that was cancelled, observed nothing and leaves the condition UNKNOWN.
 Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded.
 If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-recording\` rather than during the recording: against a remote client the in-memory copy is authoritative and every write serializes it over your edit, and in host mode a mid-recording edit renumbers the steps, which costs the finish the cross-tree verdicts anchored to them.`,
+    // The recorded tool RUNS here, so this call is as long as whatever it
+    // wraps — and the three it most often wraps (`await-ui-element`,
+    // `run-sequence`, `flow-execute`) all declare this. Without it the MCP
+    // adapter capped the POST at 30s and retried the identical body up to four
+    // more times; every retry re-runs the recorded action on the device and
+    // appends another step, because an aborted request still appends its
+    // first. A `timeoutMs: 28000` wait therefore ran fine standalone and
+    // duplicated itself once recorded, and the re-probe's budget moved that
+    // crossing point down by up to another 6s. The server keeps its own idle
+    // timer warm for the call's duration on this same flag (see http.ts).
+    longRunning: true,
     zodSchema,
     services: () => ({}),
     async execute(_services, params, ctx) {

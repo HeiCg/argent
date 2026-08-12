@@ -2074,6 +2074,21 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     );
   });
 
+  it("is declared longRunning, so the probe's budget is not spent from a 30s cap", () => {
+    // The recorded tool runs inside this call, so it is as long as whatever it
+    // wraps — and the three it most often wraps all declare this. Without it
+    // the MCP adapter caps the POST at FETCH_TIMEOUT_MS and retries the
+    // identical body MAX_RETRIES more times; each retry re-runs the recorded
+    // action on the device and appends another step, since an aborted request
+    // still appends its first. The re-probe spends up to PROBE_BUDGET_MS from
+    // that same ceiling, so the flag is what keeps the budget from buying
+    // duplicate steps.
+    expect(createFlowAddStepTool(registryWhereWaitSucceeds()).longRunning).toBe(true);
+    // The tool it proxies most often, and the asymmetry that made this sharp:
+    // a wait that ran fine standalone duplicated itself once recorded.
+    expect(createAwaitUiElementTool(registryWhereWaitSucceeds()).longRunning).toBe(true);
+  });
+
   it("says nothing about discarded verdicts when none were", async () => {
     // The other side of the count: a clean recording's `message` must stay the
     // bare line, or every finish grows a paragraph about an edit nobody made.
