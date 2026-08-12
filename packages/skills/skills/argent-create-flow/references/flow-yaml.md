@@ -106,7 +106,9 @@ Use the launch map for cross-platform flows. A bare launch applies everywhere an
 - launch: { ios: com.acme.app, android: com.acme.app.android, chromium: ../../app }
 ```
 
-An Android app that needs a non-launcher activity has no `launch:` form. Record `restart-app` with `activity` and keep the flow as a fragment.
+On Android, a `launch:` of an expo dev build lands on the `DEVELOPMENT SERVERS` chooser in place of the app, on every cold start. The step opens the server listed on `metroPort` (`--metro-port` from the CLI, default 8081), waits for the chooser to go away, and passes with a warning. With no live row on that port it errors, and that reason is about the bundler. See [the recovery](reliability-and-recovery.md#expo-dev-client-chooser).
+
+An Android app that needs a non-launcher activity has no `launch:` form. Record `restart-app` with `activity` and keep the flow as a fragment. That step is not a `launch:`, so it opts the flow out of the dev-client recovery: the chooser stays on the screen for the following steps to read.
 
 In a `scroll-to` map, put the selector under `target:`. The map supports `up`, `down`, `left`, and `right` directions. The default is `down`; set it explicitly to reach a target above the viewport or along a horizontal carousel. If the target is already visible, the step is a safe no-op. `tap`, `type`, and `long-press` do not auto-scroll. Add `scroll-to` when the target can be off-screen. Use `within` for a nested scroller.
 
