@@ -2167,6 +2167,14 @@ async function execLeafStep(
       // failure as a tool failure. `runLaunch` and the recovery under it each
       // catch their own throws today, so this holds a property that would
       // otherwise rest on every one of them continuing to.
+      //
+      // A `FailureError` is re-thrown rather than flattened. The launch paths
+      // that raise one are all on the chromium branch (`resolveAppPath`, the
+      // Electron teardown, `resolveDevice`, `frontChromiumPage`), and it
+      // carries the taxonomy — code, stage, area — that `flow-execute` reports
+      // a tool failure by. Catching it here would silently retune how a
+      // chromium launch fails, which has nothing to do with an Android dev
+      // client.
       try {
         const r = await runLaunch(state, step.app);
         // A run cancelled mid-launch is a skip (matching the pre-step guard and
@@ -2182,6 +2190,7 @@ async function execLeafStep(
           ...(r.warning !== undefined ? { warning: r.warning } : {}),
         };
       } catch (err) {
+        if (err instanceof FailureError) throw err;
         return { ...base, status: "error", reason: errMsg(err) };
       }
     }

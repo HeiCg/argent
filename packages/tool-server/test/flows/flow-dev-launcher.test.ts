@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { DeviceInfo, Registry } from "@argent/registry";
+import { FAILURE_CODES, FailureError, type DeviceInfo, type Registry } from "@argent/registry";
 import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/contract";
 import { adbShell } from "../../src/utils/adb";
 import { fetchFlowTree } from "../../src/tools/flows/flow-tree";
@@ -1106,6 +1106,29 @@ describe("what the launch step reports", () => {
     const steps = await runLaunchOnly({});
     expect(steps[0]).toMatchObject({ kind: "launch", status: "error" });
     expect(steps[0].reason).toContain("adb resolution exploded");
+  });
+
+  it("lets a launch's FailureError out with its taxonomy", async () => {
+    // The guard above is for an Android dev client; it must not quietly change
+    // how a CHROMIUM launch fails. Those paths raise FailureError, and
+    // flattening one into a step reason would drop the code and stage a caller
+    // reads a tool failure by.
+    vi.mocked(adbShell).mockImplementation(() => {
+      throw new FailureError("electron app path does not exist", {
+        error_code: FAILURE_CODES.INVALID_INPUT,
+        failure_stage: "chromium_boot",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      });
+    });
+    vi.mocked(fetchFlowTree).mockResolvedValue({
+      tree: node("ROOT", "Screen", [0, 0, 1, 1], []),
+      source: "android-devtools",
+    });
+
+    await expect(runLaunchOnly({})).rejects.toMatchObject({
+      message: expect.stringContaining("electron app path does not exist"),
+    });
   });
 
   it("says nothing extra when the app starts on its own screen", async () => {
