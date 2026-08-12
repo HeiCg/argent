@@ -159,6 +159,7 @@ Options (run):
 
 Examples:
   argent flow run checkout --platform ios
+  argent flow run checkout --platform android --metro-port 8083
   argent flow run .argent/flows/checkout.yaml --output flow-artifacts --json
   argent flow run ~/shared-flows/checkout.yaml --device <UDID> --update-baselines
   argent flow run .argent/flows --recursive
