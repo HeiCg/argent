@@ -1989,6 +1989,42 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     );
   });
 
+  it("drops an untouched step's verdict when a LATER step was edited in place", async () => {
+    // Check 1's own behaviour, which nothing else reaches: deleting the
+    // whole-flow comparison left every test green, because the reorder case
+    // below is caught by check 2 alone. Here the warned step is step 1 and the
+    // edit is on step 2's args — same length, same order, step 1 untouched — so
+    // check 2 has nothing to say. Only the whole-flow comparison notices, and
+    // it drops EVERY verdict, which is the all-or-nothing rule the finish now
+    // has to report rather than hide.
+    await startRecording("inplace");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("inplace", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Sign in")]));
+    await recordWait("inplace", { condition: "visible", selector: { text: "Sign in" } });
+
+    const file = path.join(tmpDir, ".argent", "flows", "inplace.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    const second = parsed.steps[1];
+    if (second.kind !== "tool") throw new Error("fixture: expected a recorded tool step");
+    second.args = { ...second.args, timeoutMs: 1600 };
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "inplace", project_root: tmpDir }
+    );
+
+    // Step 1 never moved and its anchor still matches, so check 2 would have
+    // kept it.
+    expect(finished.summary).toHaveLength(2);
+    expect(finished.summary[0]).toContain('"Continue"');
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
+  });
+
   it("drops the verdict when a hand edit REORDERED the steps", async () => {
     // A reorder needs no second condition: the flow is still the length the
     // recorder appended, so nothing about the count says anything happened.

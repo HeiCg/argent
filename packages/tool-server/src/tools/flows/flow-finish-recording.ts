@@ -198,6 +198,14 @@ function anchoredWarnings(
   if (recorded.length !== steps.length) return kept;
   if (!steps.every((step, i) => stepAnchor(step) === stepAnchor(recorded[i]))) return kept;
   for (const [n, verdict] of session.stepWarnings ?? []) {
+    // `steps[n - 1]` is defined on every reachable path, and the guard below is
+    // a fail-safe rather than a branch under test. A surviving key is at most
+    // the flow length the append that filed it saw, `dropMovedWarnings` drops
+    // any key the file later shrank past, and the length check above requires
+    // the finished flow to be that same length. Kept because the alternative
+    // failure is worse than a dropped verdict: `stepAnchor(undefined)` throws
+    // inside the finish's critical section, which loses the whole recording
+    // instead of one warning.
     const step = steps[n - 1];
     if (step !== undefined && stepAnchor(step) === verdict.step) kept.set(n, verdict);
   }
