@@ -699,6 +699,22 @@ describe("getting a launch past the chooser", () => {
     expect(calls).toEqual([]);
   });
 
+  it("stops waiting on the probe when the run is cancelled mid-flight", async () => {
+    // No AbortSignal reaches adb, so a cancel that lands while `dumpsys` is out
+    // cannot kill it — but the launch must stop waiting on it all the same,
+    // rather than sitting on the probe's full 10s budget after the run ended.
+    const controller = new AbortController();
+    vi.mocked(adbShell).mockImplementation(() => new Promise<string>(() => {}));
+    const { calls, actionEnv } = env(() => ({ ok: true }), controller.signal);
+
+    const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081);
+    controller.abort();
+
+    await expect(pending).resolves.toEqual({ handled: false });
+    expect(fetchFlowTree).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
   it("keeps waiting when a read fails rather than deciding there is no chooser", async () => {
     vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
     // The launch's own tree-source gate has already vouched for the source, so a

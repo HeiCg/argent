@@ -2,7 +2,7 @@ import type { DeviceInfo } from "@argent/registry";
 import { getDescribeTapPoint, type DescribeNode } from "../describe/contract";
 import { frameContains, includesCI, isVisible, nodeText } from "../../utils/ui-tree-match";
 import { adbShell, shellQuote } from "../../utils/adb";
-import { sleepOrAbort } from "../../utils/timing";
+import { settleWithin, sleepOrAbort } from "../../utils/timing";
 import { fetchFlowTree } from "./flow-tree";
 import { invokeOnDevice, type ActionEnv } from "./flow-actions";
 
@@ -278,19 +278,30 @@ type DevLauncherOutcome =
  * there and an Android routine (see the module comment). An unprobeable app
  * answers false — the launch then behaves exactly as it did before this module
  * existed.
+ *
+ * `settleWithin` because no AbortSignal reaches adb: a run cancelled while the
+ * probe is out would otherwise wait out its whole timeout before noticing, and
+ * this is the first thing a launch does after the tree-source gate.
  */
-async function isExpoDevBuild(device: DeviceInfo, bundleId: string): Promise<boolean> {
+const PROBE_TIMEOUT_MS = 10_000;
+
+async function isExpoDevBuild(
+  device: DeviceInfo,
+  bundleId: string,
+  signal: AbortSignal | undefined
+): Promise<boolean> {
   if (device.platform !== "android") return false;
-  try {
-    const dump = await adbShell(device.id, `dumpsys package ${shellQuote(bundleId)}`, {
-      timeoutMs: 10_000,
-    });
-    // Either spelling the debug manifest contributes: a launcher activity's own
-    // class name, and the scheme its auth activity registers.
-    return /expo\.modules\.devlauncher|Scheme:\s*"expo-dev-launcher"/i.test(dump);
-  } catch {
-    return false;
-  }
+  const probe = await settleWithin(
+    adbShell(device.id, `dumpsys package ${shellQuote(bundleId)}`, {
+      timeoutMs: PROBE_TIMEOUT_MS,
+    }),
+    PROBE_TIMEOUT_MS,
+    signal
+  );
+  if (probe.type !== "value") return false;
+  // Either spelling the debug manifest contributes: a launcher activity's own
+  // class name, and the scheme its auth activity registers.
+  return /expo\.modules\.devlauncher|Scheme:\s*"expo-dev-launcher"/i.test(probe.value);
 }
 
 /**
@@ -339,7 +350,7 @@ export async function dismissDevLauncher(
   port: number
 ): Promise<DevLauncherOutcome> {
   const { registry, device, signal } = env;
-  if (!(await isExpoDevBuild(device, bundleId))) return { handled: false };
+  if (!(await isExpoDevBuild(device, bundleId, signal))) return { handled: false };
 
   const readTree = async (): Promise<DescribeNode | null> => {
     try {
