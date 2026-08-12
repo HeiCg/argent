@@ -2296,6 +2296,19 @@ describe("flow composition (run:)", () => {
     );
   });
 
+  it("reads the CLI's raw --metro-port token as a port", () => {
+    // `argent flow run --metro-port 8085` forwards the token as written, on
+    // purpose: this schema is the only thing that turns it into a number. A
+    // plain z.number() here would reject every CLI run that passes the flag
+    // while every other test stayed green.
+    const parsed = createRunFlowTool(mockRegistry()).zodSchema.parse({
+      name: "main",
+      project_root: tmpDir,
+      metroPort: "8085",
+    });
+    expect(parsed.metroPort).toBe(8085);
+  });
+
   it("leaves a nested flow-execute alone when the run took the default port", async () => {
     // The inner run resolves the same default itself, so injecting it would only
     // add noise to every nested step's reported args.
