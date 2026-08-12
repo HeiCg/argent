@@ -303,6 +303,23 @@ describe("expo dev-client launcher detection", () => {
     expect(detectDevLauncher(settings)).toBeNull();
   });
 
+  it("does not fire on an app screen that carries a mark but no heading", () => {
+    // The other direction of the same pairing. "Development Build" is ordinary
+    // wording for a real app's About screen, and a server URL beside it is
+    // ordinary for a debug menu — neither makes the screen the chooser, and
+    // taking it for one would tap at a screen the flow put there deliberately.
+    const about = node(
+      "ROOT",
+      "Screen",
+      [0, 0, 1, 1],
+      [
+        node("StaticText", "Development Build", [0.061, 0.193, 0.352, 0.02]),
+        node("StaticText", "Bundler: http://10.0.2.2:8081", [0.061, 0.233, 0.5, 0.02]),
+      ]
+    );
+    expect(detectDevLauncher(about)).toBeNull();
+  });
+
   it("treats a chooser with no history yet as all-live", () => {
     const fresh = node(
       "ROOT",
