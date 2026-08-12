@@ -104,16 +104,25 @@ const UNSUPPORTED_PLATFORM = {
  * The clause naming how to read the tree the RUNNER resolves against — or, on
  * iOS, Android and Chromium, that no read-only tool does.
  *
- * Android's runner tree is the full accessibility hierarchy, and Android
- * `describe` returns the TRIMMED interactables tree the recorder already read.
- * Mostly less than the runner resolves against — but not STRICTLY less, and the
- * exception is routine: the trim BORROWS a descendant's text into an
- * unlabelled clickable's own label (an everyday `Pressable` over a `Text`
- * renders as one node labelled "Network & internet / Mobile, Wi-Fi, hotspot"),
- * where the flow adapter never borrows. That text reaches the runner only as
- * `subtreeText`, which selector matching ignores, so a `text` selector on the
- * borrowed label matches the recorder's tree and nothing in the runner's. The
- * user-facing string below stays right either way — it says each holds elements
+ * Android's runner tree keeps every view with a `resource-id` or a label, and
+ * Android `describe` returns the TRIMMED interactables tree the recorder
+ * already read — the same dump, parsed differently on this host. Mostly less
+ * than the runner resolves against — but not STRICTLY less, and the exception
+ * is routine: the trim BORROWS a descendant's text into an unlabelled
+ * clickable's own label (an everyday `Pressable` over a `Text` renders as one
+ * node labelled "Network & internet / Mobile, Wi-Fi, hotspot"), where the flow
+ * adapter never borrows.
+ *
+ * What that costs is narrower than "the borrowed text is unreachable". Selector
+ * matching does ignore the hoisted `subtreeText` and reads a node's own
+ * label/value only — but the descendants keep their own labels on the runner's
+ * side, so a selector on ONE of them matches there. The divergence is a
+ * selector on the JOIN: the concatenation exists as some node's own label only
+ * on the recorder's side. `flow-tree-flatten` narrows it further, since an
+ * identified descendant SHIELDS — it contributes nothing upward — so the RN
+ * shape this warning most often comes out of, a `testID`'d view under an
+ * unlabelled clickable, produces no hoist to diverge over at all. The
+ * user-facing string below stays right either way: it says each holds elements
  * the other drops.
  * Chromium's `describe` re-reads the same DOM the flow tree is built from, but
  * on a shorter walk and without the flow tree's projection, so it misses the
