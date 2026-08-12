@@ -217,3 +217,138 @@ describe("flow-add-step tap selector capture", () => {
     expect(await recordedSteps()).toEqual([]);
   });
 });
+
+describe("flow-add-step on the expo dev-client chooser", () => {
+  // The chooser is what an Android dev build shows in place of the app, and an
+  // author recording one taps a server row to get past it. At replay the
+  // `launch` step performs that tap itself, so a recorded copy is a SECOND tap
+  // — fired blind into the app the recovery just opened, and green either way
+  // because a coordinate tap reads no tree. Before this was handled, a flow
+  // recorded on a dev build ran differently than it was recorded.
+  const ANDROID = "emulator-5554";
+
+  /** The chooser as an SDK 57 client draws it: one live row, on a LAN host. */
+  function chooser(): DescribeNode[] {
+    return [
+      n({ label: "devclientprobe", frame: { x: 0.205, y: 0.085, width: 0.272, height: 0.021 } }),
+      n({
+        label: "Development Build",
+        frame: { x: 0.205, y: 0.111, width: 0.282, height: 0.019 },
+      }),
+      n({
+        label: "DEVELOPMENT SERVERS",
+        frame: { x: 0.058, y: 0.201, width: 0.334, height: 0.017 },
+      }),
+      n({
+        label: "devclientprobe / http://192.168.0.94:8091 / Chevron",
+        frame: { x: 0.058, y: 0.236, width: 0.883, height: 0.077 },
+      }),
+      n({
+        label: "Plus / New development server",
+        frame: { x: 0.058, y: 0.322, width: 0.883, height: 0.052 },
+      }),
+    ];
+  }
+
+  function androidRegistry(): Registry {
+    return {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "gesture-tap") return { tapped: true };
+        if (id === "restart-app") return { restarted: true };
+        throw new Error(`Tool "${id}" not found`);
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+  }
+
+  async function record(command: string, args: Record<string, unknown>) {
+    return createFlowAddStepTool(androidRegistry()).execute(
+      {},
+      {
+        name: FLOW,
+        project_root: tmpDir,
+        command,
+        args: JSON.stringify({ udid: ANDROID, ...args }),
+      }
+    );
+  }
+
+  async function recordLaunch() {
+    return record("restart-app", { bundleId: "com.anonymous.devclientprobe" });
+  }
+
+  beforeEach(async () => {
+    __resetRecordingsForTesting();
+    // No executionPrerequisite: an e2e flow, whose first step is the launch
+    // that owns the chooser recovery at replay.
+    await flowStartRecordingTool.execute({}, { name: FLOW, project_root: tmpDir });
+  });
+
+  it("does not record the tap that opens a server row after a launch", async () => {
+    await recordLaunch();
+    setTree(chooser(), "android-devtools");
+
+    const result = await record("gesture-tap", { x: 0.4995, y: 0.2745 });
+
+    // Dispatched live all the same — the author still has to get past the
+    // chooser to record what comes next.
+    expect(result.toolResult).toEqual({ tapped: true });
+    expect(result.message).toContain("http://192.168.0.94:8091");
+    expect(result.message).toContain("metroPort");
+    expect(result.stepCount).toBe(1);
+    expect(await recordedSteps()).toEqual([
+      { kind: "launch", app: "com.anonymous.devclientprobe" },
+    ]);
+  });
+
+  it("records a tap on the chooser that opens no server", async () => {
+    // "New development server" is a real step: it opens a form, and nothing at
+    // replay does it for the author. Only the server rows are the launch's.
+    await recordLaunch();
+    setTree(chooser(), "android-devtools");
+
+    const result = await record("gesture-tap", { x: 0.4995, y: 0.348 });
+
+    expect(result.stepCount).toBe(2);
+    expect((await recordedSteps())[1]).toMatchObject({ kind: "tap" });
+  });
+
+  it("keeps the tap when no launch precedes it", async () => {
+    // A fragment, or a raw `restart-app` carrying an Android activity: nothing
+    // at replay dismisses the chooser, so this tap is the step that does.
+    setTree(chooser(), "android-devtools");
+
+    const result = await record("gesture-tap", { x: 0.4995, y: 0.2745 });
+
+    expect(result.stepCount).toBe(1);
+    expect(await recordedSteps()).toMatchObject([{ kind: "tap" }]);
+  });
+
+  it("keeps the tap off Android, where the chooser survives the launch", async () => {
+    // `dismissDevLauncher` probes on Android alone, so on an iOS dev build the
+    // chooser is still on screen at replay and the tap is what gets past it.
+    await createFlowAddStepTool(androidRegistry()).execute(
+      {},
+      {
+        name: FLOW,
+        project_root: tmpDir,
+        command: "restart-app",
+        args: JSON.stringify({ udid: DEVICE, bundleId: "com.anonymous.devclientprobe" }),
+      }
+    );
+    setTree(chooser(), "native-devtools");
+
+    const result = await createFlowAddStepTool(androidRegistry()).execute(
+      {},
+      {
+        name: FLOW,
+        project_root: tmpDir,
+        command: "gesture-tap",
+        args: JSON.stringify({ udid: DEVICE, x: 0.4995, y: 0.2745 }),
+      }
+    );
+
+    expect(result.stepCount).toBe(2);
+    expect((await recordedSteps())[1]).toMatchObject({ kind: "tap" });
+  });
+});

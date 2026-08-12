@@ -151,6 +151,20 @@ function candidateRows(nodes: DescribeNode[], historyY: number): DescribeNode[] 
 }
 
 /**
+ * `http://<host>:<port>` as a row spells it.
+ *
+ * The host matches anything but a separator, so a row for 18081 cannot answer
+ * for 8081, and the trailing-digit guard stops port 808 opening the row for
+ * 8081. Plain substring matching is otherwise right: the row label wraps the URL
+ * in decorations (a chevron, the project name) that vary by client version.
+ * `"any"` asks only "is this a server row at all", which is what the recorder
+ * needs — it is identifying the row under a tap, not choosing one.
+ */
+function originPattern(port: number | "any"): RegExp {
+  return new RegExp(`http://[^\\s/:]+:${port === "any" ? "\\d+" : port}(?![0-9])`, "i");
+}
+
+/**
  * The row that opens Metro on `port`, or null when the chooser lists no server
  * this run can use.
  *
@@ -175,11 +189,7 @@ export function pickDevServerRow(
   port: number,
   historyY: number
 ): { node: DescribeNode; url: string } | null {
-  // A host of anything but separators, so a row for 18081 cannot answer for
-  // 8081, and a trailing-digit guard, so port 808 cannot open the row for 8081.
-  // Plain substring matching is otherwise right: the row label wraps the URL in
-  // decorations (a chevron, the project name) that vary by client version.
-  const origin = new RegExp(`http://[^\\s/:]+:${port}(?![0-9])`, "i");
+  const origin = originPattern(port);
   // OWN text only — the rule {@link tightestOwning} follows, and for a sharper
   // reason here. The hoist repeats EVERY row's URL, the history's included, on
   // the scroll container that wraps the whole list, and that container's top
@@ -197,6 +207,41 @@ export function pickDevServerRow(
     if (best === null || area(node) < area(best.node)) best = { node, url: found[0] };
   }
   return best;
+}
+
+/**
+ * The dev-server row a tap at `point` opens, or null when the point is not on
+ * one — the same question {@link pickDevServerRow} answers, asked by the
+ * RECORDER about a tap that already happened.
+ *
+ * An author recording on a dev build meets the chooser and taps a server row to
+ * get past it. That tap belongs to the launch, not to the flow: at replay the
+ * `launch` step performs it (see the module comment), so a recorded copy fires
+ * a second one into the app the recovery just opened. It is the tightest live
+ * candidate under the point that decides, so the point has to be ON the row —
+ * the scroll container carries every row's hoisted text and covers the whole
+ * list, and reading that would swallow every tap on the chooser.
+ */
+export function devServerRowAt(root: DescribeNode, point: { x: number; y: number }): string | null {
+  const launcher = detectDevLauncher(root);
+  if (launcher === null) return null;
+  const rows = candidateRows(flatten(root), launcher.historyY);
+  const under = rows.filter((n) => frameContains(n.frame, point.x, point.y));
+  if (under.length === 0) return null;
+  const tapped = under.reduce((best, n) => (area(n) < area(best) ? n : best));
+  const origin = originPattern("any");
+  const own = origin.exec(nodeText(tapped));
+  if (own) return own[0];
+  // An unlabelled row card renders its URL on a leaf inside it, and that leaf
+  // sits to one side of the point the author tapped — so the card is what
+  // covers the tap, and the URL is one node in.
+  for (const node of rows) {
+    const inside = getDescribeTapPoint(node.frame);
+    if (node === tapped || !frameContains(tapped.frame, inside.x, inside.y)) continue;
+    const found = origin.exec(nodeText(node));
+    if (found) return found[0];
+  }
+  return null;
 }
 
 function errMsg(err: unknown): string {

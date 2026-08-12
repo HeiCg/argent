@@ -3207,6 +3207,32 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
 }
 
 /**
+ * What {@link appendStepToFlow} would have answered for a step the recorder
+ * DECLINED to record, minus the append: the flow as it stands.
+ *
+ * Under the same lock and the same liveness assertion, so declining a step is
+ * still an operation on a live session — a caller whose recording was finished
+ * or restarted underneath it hears about it either way, rather than reading a
+ * count off a session nobody owns any more.
+ */
+export async function reportFlowUnchanged(
+  session: RecordingSession,
+  declined: FlowStep
+): Promise<{ savedTo: FlowSavedTo; stepCount: number }> {
+  return withFlowLock(session.key, async () => {
+    assertSessionStillLive(session, declined);
+    session.lastTouchedSeq = touch();
+    return {
+      savedTo:
+        session.persist === "host"
+          ? session.filePath
+          : clientFileDirective(session.filePath, serializeFlow(session.flow)),
+      stepCount: session.flow.steps.length,
+    };
+  });
+}
+
+/**
  * Append a step to a recording and persist it. In "host" mode the file on disk
  * is re-read first (the original behavior — a manual edit made mid-recording is
  * honored); in "client" mode this process never sees the client's disk, so the

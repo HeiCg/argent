@@ -5,6 +5,7 @@ import { FAILURE_CODES, FailureError, type Registry, type ToolDefinition } from 
 import {
   requireRecordingSession,
   appendStepToFlow,
+  reportFlowUnchanged,
   parseFlow,
   assertSafeFlowName,
   classifyOnDiskSpelling,
@@ -19,7 +20,8 @@ import { invokeSubTool } from "../../utils/sub-invoke";
 import { resolveDevice } from "../../utils/device-info";
 import { stripDeviceKeys } from "./flow-device";
 import { fetchFlowTree } from "./flow-tree";
-import type { DescribeSource } from "../describe/contract";
+import type { DescribeNode, DescribeSource } from "../describe/contract";
+import { devServerRowAt, DEFAULT_METRO_PORT } from "./flow-dev-launcher";
 import {
   nodeAtPoint,
   deriveSelector,
@@ -86,41 +88,57 @@ async function captureTapSelector(
   registry: Registry,
   udid: string,
   point: { x: number; y: number }
-): Promise<{ selector?: Selector; warning?: string }> {
+): Promise<{ selector?: Selector; warning?: string; devServerRow?: string }> {
   try {
     const device = resolveDevice(udid);
     const { tree, source } = await fetchFlowTree(registry, device);
-    const node = nodeAtPoint(tree, point);
-    if (!node) return { warning: "no element found under the tap; kept coordinates (brittle)" };
-    const selector = deriveSelector(node);
-    if (!selector)
-      return { warning: "tapped element has no stable text/id; kept coordinates (brittle)" };
-    // Replay resolves through selectorToFrame, whose ranking (exact match →
-    // smallest frame → reading order) is free to elect a DIFFERENT element
-    // than the tapped one — e.g. the same label on an earlier row. Re-resolve
-    // now and require the winning frame to cover the tapped point; otherwise
-    // the recorded step would silently retarget, and coordinates are safer.
-    const resolved = selectorToFrame(tree, selector);
-    if (!resolved) {
-      // Defensive: a selector derived from a visible node matches that node
-      // under matchNode's semantics, so re-resolving the same tree should
-      // always find something. Keep the guard (and an accurate message) in
-      // case derivation and matching ever drift apart again.
-      return {
-        warning: `selector ${describeSelector(selector)} matches no element on this screen; kept coordinates (brittle)`,
-      };
-    }
-    if (!frameContains(resolved, point.x, point.y)) {
-      return {
-        warning: `selector ${describeSelector(selector)} resolves to a different element on this screen; kept coordinates (brittle)`,
-      };
-    }
-    return { selector, warning: fallbackSourceWarning(source, device.platform) };
+    // Off the same read, and only where a replay would undo it: the launch's
+    // chooser recovery is Android-only, so on every other platform the chooser
+    // is still on screen at replay and this tap is the step that gets past it.
+    const devServerRow =
+      device.platform === "android" ? (devServerRowAt(tree, point) ?? undefined) : undefined;
+    const derived = deriveTapStep(tree, source, device.platform, point);
+    return devServerRow === undefined ? derived : { ...derived, devServerRow };
   } catch (err) {
     return {
       warning: `selector capture failed (${err instanceof Error ? err.message : String(err)}); kept coordinates`,
     };
   }
+}
+
+/** {@link captureTapSelector}'s selector half, once the tree is in hand. */
+function deriveTapStep(
+  tree: DescribeNode,
+  source: DescribeSource,
+  platform: string,
+  point: { x: number; y: number }
+): { selector?: Selector; warning?: string } {
+  const node = nodeAtPoint(tree, point);
+  if (!node) return { warning: "no element found under the tap; kept coordinates (brittle)" };
+  const selector = deriveSelector(node);
+  if (!selector)
+    return { warning: "tapped element has no stable text/id; kept coordinates (brittle)" };
+  // Replay resolves through selectorToFrame, whose ranking (exact match →
+  // smallest frame → reading order) is free to elect a DIFFERENT element
+  // than the tapped one — e.g. the same label on an earlier row. Re-resolve
+  // now and require the winning frame to cover the tapped point; otherwise
+  // the recorded step would silently retarget, and coordinates are safer.
+  const resolved = selectorToFrame(tree, selector);
+  if (!resolved) {
+    // Defensive: a selector derived from a visible node matches that node
+    // under matchNode's semantics, so re-resolving the same tree should
+    // always find something. Keep the guard (and an accurate message) in
+    // case derivation and matching ever drift apart again.
+    return {
+      warning: `selector ${describeSelector(selector)} matches no element on this screen; kept coordinates (brittle)`,
+    };
+  }
+  if (!frameContains(resolved, point.x, point.y)) {
+    return {
+      warning: `selector ${describeSelector(selector)} resolves to a different element on this screen; kept coordinates (brittle)`,
+    };
+  }
+  return { selector, warning: fallbackSourceWarning(source, platform) };
 }
 
 // Replaying a fragment to set up state during recording is done by running it
@@ -480,7 +498,7 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
         typeof args.x === "number" &&
         typeof args.y === "number";
 
-      let captured: { selector?: Selector; warning?: string } | undefined;
+      let captured: Awaited<ReturnType<typeof captureTapSelector>> | undefined;
       if (isTap) {
         captured = await captureTapSelector(registry, args.udid as string, {
           x: args.x as number,
@@ -543,6 +561,34 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
           name: params.command,
           args: strippedArgs,
           delayMs: params.delayMs,
+        };
+      }
+
+      // A tap that opens a row on the expo-dev-client chooser is the LAUNCH's
+      // tap, not a step of the flow: at replay the `launch` this one follows
+      // opens that same row itself (see flow-dev-launcher.ts), so a recorded
+      // copy would fire a second tap into the app the recovery just opened —
+      // blind, and unconditionally green, since a coordinate tap reads no tree.
+      // It still ran live: the author has to get past the chooser to record
+      // what comes next. Only straight after a recorded `launch:`, because that
+      // is the step whose recovery makes it redundant — after anything else
+      // (a fragment, or a raw restart-app that carries an activity) nothing at
+      // replay dismisses the chooser and this tap is the step that does.
+      const openedByLaunch =
+        captured?.devServerRow !== undefined &&
+        session.flow.steps[session.flow.steps.length - 1]?.kind === "launch";
+      if (openedByLaunch) {
+        const unchanged = await reportFlowUnchanged(session, step);
+        return {
+          message:
+            `Not recorded — that tap opens ${captured?.devServerRow} on the expo dev-client ` +
+            `chooser, and the \`launch\` step already recorded opens it for you at replay. Pass ` +
+            `\`metroPort\` to flow-execute when your Metro is not on ${DEFAULT_METRO_PORT}, so ` +
+            `the launch opens the same server this recording used.`,
+          toolResult,
+          stepCount: unchanged.stepCount,
+          recorded: `(not recorded) ${summarizeStep(step, unchanged.stepCount + 1).replace(/^\d+\.\s*/, "")}`,
+          savedTo: unchanged.savedTo,
         };
       }
 
