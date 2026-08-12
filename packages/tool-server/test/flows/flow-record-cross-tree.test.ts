@@ -1898,6 +1898,34 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(finished.message).not.toContain("cross-tree warning");
   });
 
+  it("pluralizes both counts, and joins them", async () => {
+    // The conversion arm's plural is pinned by the trailing-echo test; the wait
+    // arm's was not, so forcing "step" unconditionally shipped green. Two of
+    // each also pins the join, which no single-kind fixture reaches.
+    await startRecording("plural");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("plural", { condition: "visible", selector: { text: "Continue" } });
+    await recordWait("plural", { condition: "visible", selector: { text: "Sign in" } });
+    for (const text of ["NoSuchThing", "NorThis"]) {
+      await recordWait(
+        "plural",
+        { condition: "visible", selector: { text } },
+        { registry: registryWhereWaitTimesOut() }
+      );
+    }
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "plural", project_root: tmpDir }
+    );
+
+    expect(finished.message).toBe(
+      'Finished recording "plural" flow (4 steps) — 2 steps carry a cross-tree warning about ' +
+        "converting a recorded wait, and 2 steps recorded a wait that did not pass; read " +
+        "`summary` before converting or replaying"
+    );
+  });
+
   it("counts a probed verdict and an unpassed wait separately", async () => {
     await startRecording("mixed");
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
