@@ -298,6 +298,9 @@ export const MAX_RUN_DEPTH = 20;
  */
 const POST_LAUNCH_SETTLE_MS = 1500;
 
+/** The one tool step that can change WHICH build a later `launch` starts. */
+const REINSTALL_APP_TOOL_ID = "reinstall-app";
+
 /**
  * Flows resolve selectors against the native UIView tree, served over the
  * native-devtools connection the injected dylib opens asynchronously after
@@ -810,10 +813,11 @@ interface ExecState extends Omit<ActionEnv, "device"> {
   metroPort: number;
   /**
    * Which (device, app) pairs this run has already probed for an expo dev
-   * build ({@link dismissDevLauncher}). One run's worth: what is installed
-   * cannot change under a run, and every `launch` step — including those in
-   * `when:` blocks and `run:` fragments, which share this state — would
-   * otherwise re-probe for an answer that cannot have moved.
+   * build ({@link dismissDevLauncher}). One run's worth: every `launch` step —
+   * including those in `when:` blocks and `run:` fragments, which share this
+   * state — would otherwise re-probe an answer that only an install moves.
+   * Emptied when the run itself installs something (see the `reinstall-app`
+   * arm of {@link execLeafStep}), which is the one thing that can move it.
    */
   devBuilds: Map<string, boolean>;
   updateBaselines: boolean;
@@ -2305,6 +2309,13 @@ async function execLeafStep(
       }
       try {
         const result = await invokeSubTool(registry, ctx, step.name, args);
+        // `reinstall-app` takes an arbitrary `appPath`, so a run can put a
+        // release build over a dev one between two `launch` steps — the one
+        // thing that moves what `devBuilds` remembers, and in that direction a
+        // remembered `false` would skip the chooser recovery on a build that
+        // shows the chooser. Dropped whole rather than by key: the step names a
+        // PATH, which says nothing about the app id the probe is keyed by.
+        if (step.name === REINSTALL_APP_TOOL_ID) state.devBuilds.clear();
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;
           return {

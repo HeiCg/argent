@@ -7,7 +7,7 @@ import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/co
 import { adbShell } from "../../src/utils/adb";
 import { fetchFlowTree } from "../../src/tools/flows/flow-tree";
 import { createRunFlowTool, type StepReport } from "../../src/tools/flows/flow-run";
-import { serializeFlow } from "../../src/tools/flows/flow-utils";
+import { serializeFlow, type FlowStep } from "../../src/tools/flows/flow-utils";
 import {
   detectDevLauncher,
   dismissDevLauncher,
@@ -1021,24 +1021,29 @@ describe("what the launch step reports", () => {
     } as unknown as Registry;
   }
 
-  async function runLaunchOnly(params: Record<string, unknown>): Promise<StepReport[]> {
+  async function writeFlow(name: string, steps: FlowStep[]): Promise<void> {
     const dir = path.join(tmpDir, ".argent", "flows");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
-      path.join(dir, "launch-only.yaml"),
-      serializeFlow({
-        executionPrerequisite: "",
-        steps: [{ kind: "launch", app: "com.example.dev" }],
-      }),
+      path.join(dir, `${name}.yaml`),
+      serializeFlow({ executionPrerequisite: "", steps }),
       "utf8"
     );
+  }
+
+  async function runFlow(name: string, params: Record<string, unknown>): Promise<StepReport[]> {
     const result = await createRunFlowTool(launchRegistry()).execute(
       {},
-      { name: "launch-only", project_root: tmpDir, device: emulator.id, ...params }
+      { name, project_root: tmpDir, device: emulator.id, ...params }
     );
     if (!("steps" in result))
       throw new Error(`expected a run result, got ${JSON.stringify(result)}`);
     return result.steps;
+  }
+
+  async function runLaunchOnly(params: Record<string, unknown>): Promise<StepReport[]> {
+    await writeFlow("launch-only", [{ kind: "launch", app: "com.example.dev" }]);
+    return runFlow("launch-only", params);
   }
 
   it("passes with a warning naming the server it opened", async () => {
@@ -1149,5 +1154,71 @@ describe("what the launch step reports", () => {
     const steps = await runLaunchOnly({ metroPort: 8082 });
     expect(steps[0]).toMatchObject({ kind: "launch", status: "pass" });
     expect(steps[0].warning).toBeUndefined();
+  });
+
+  /** Every launch in the run meets the chooser and opens the same row. */
+  function chooserEveryLaunch(): void {
+    vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+    let read = 0;
+    vi.mocked(fetchFlowTree).mockImplementation(async () => {
+      read += 1;
+      // Chooser, then gone, then chooser again for the next launch.
+      return {
+        tree: read % 2 === 1 ? launcherTree() : node("ROOT", "Screen", [0, 0, 1, 1], []),
+        source: "android-devtools",
+      };
+    });
+  }
+
+  it("carries the run's probe answer across its launches", async () => {
+    // The cache lives on the run's ExecState. Two launches, one probe — and the
+    // second launch still gets the recovery off the remembered answer.
+    chooserEveryLaunch();
+    await writeFlow("twice", [
+      { kind: "launch", app: "com.example.dev" },
+      { kind: "launch", app: "com.example.dev" },
+    ]);
+
+    const steps = await runFlow("twice", {});
+
+    expect(steps.map((s) => s.status)).toEqual(["pass", "pass"]);
+    expect(steps[1].warning).toContain("http://10.0.2.2:8081");
+    expect(adbShell).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries it into a `run:` fragment's launch as well", async () => {
+    // A fragment shares the parent's ExecState, so its launch reads the same
+    // cache and the same metroPort rather than resolving its own.
+    chooserEveryLaunch();
+    await writeFlow("frag", [{ kind: "launch", app: "com.example.dev" }]);
+    await writeFlow("outer", [
+      { kind: "launch", app: "com.example.dev" },
+      { kind: "run", flow: "frag.yaml" },
+    ]);
+
+    const steps = await runFlow("outer", { metroPort: 8082 });
+
+    expect(steps.every((s) => s.status === "pass")).toBe(true);
+    const launches = steps.filter((s) => s.kind === "launch");
+    expect(launches).toHaveLength(2);
+    expect(launches[1].warning).toContain("http://10.0.2.2:8082");
+    expect(adbShell).toHaveBeenCalledTimes(1);
+  });
+
+  it("probes again after the run installs a different build", async () => {
+    // `reinstall-app` takes an arbitrary appPath, so what is installed CAN move
+    // mid-run. A remembered answer would carry a release build's "no" onto the
+    // dev build that replaced it, and the second launch would skip the chooser.
+    chooserEveryLaunch();
+    await writeFlow("reinstall", [
+      { kind: "launch", app: "com.example.dev" },
+      { kind: "tool", name: "reinstall-app", args: { appPath: "/tmp/other.apk" } },
+      { kind: "launch", app: "com.example.dev" },
+    ]);
+
+    const steps = await runFlow("reinstall", {});
+
+    expect(steps.map((s) => s.status)).toEqual(["pass", "pass", "pass"]);
+    expect(adbShell).toHaveBeenCalledTimes(2);
   });
 });

@@ -313,11 +313,13 @@ type DevLauncherOutcome =
  * probe is out would otherwise wait out its whole timeout before noticing, and
  * this is the first thing a launch does after the tree-source gate.
  *
- * The answer is remembered per (device, app) in `seen`, which the RUN owns:
- * what is installed cannot change under a run, but it certainly can between
- * runs — a release build put over a dev one has to be probed again. So a flow
- * with several `launch` steps, including those inside `when:` blocks and `run:`
- * fragments, pays for one probe rather than one each.
+ * The answer is remembered per (device, app) in `seen`, which the RUN owns, so
+ * a flow with several `launch` steps — including those inside `when:` blocks
+ * and `run:` fragments — pays for one probe rather than one each. Only an
+ * install moves the answer, and a `tool: reinstall-app` step takes an arbitrary
+ * appPath, so a run can move it mid-flight: the runner empties the map there,
+ * or a release build's remembered "no" would carry onto the dev build that
+ * replaced it and switch this recovery off for the launch that needs it.
  *
  * Only a probe that actually read the package is remembered. An error, a
  * timeout or a cancellation answers "not a dev build" for THIS launch — the
