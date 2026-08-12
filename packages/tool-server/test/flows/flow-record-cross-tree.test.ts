@@ -1614,6 +1614,99 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(finished.message).toBe('Finished recording "edited" flow (2 steps)');
   });
 
+  it("drops the verdict when a hand edit REORDERED the steps", async () => {
+    // A reorder needs no second condition: the flow is still the length the
+    // recorder appended, so nothing about the count says anything happened.
+    await startRecording("swapped");
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("swapped", { condition: "visible", selector: { text: "Continue" } });
+    // Diverges — the verdict lands on step 2.
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("swapped", { condition: "hidden", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("swapped", { condition: "exists", selector: { text: "Continue" } });
+
+    // Hand-swap steps 2 and 3. The step that inherits number 2 is a check that
+    // agrees across both trees, and a verdict left on the number would convict
+    // it while the wait that really diverges reads clean.
+    const file = path.join(tmpDir, ".argent", "flows", "swapped.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = [parsed.steps[0], parsed.steps[2], parsed.steps[1]];
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "swapped", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(3);
+    for (const line of finished.summary) expect(line).not.toContain("warning:");
+    expect(finished.message).toBe('Finished recording "swapped" flow (3 steps)');
+  });
+
+  it("drops the verdict of a step deleted before the recording went on", async () => {
+    // The append after the edit re-reads the edited file, so the recorder's own
+    // view agrees with it and nothing about the file says an edit happened —
+    // while every key past the deletion now points one step too far.
+    await startRecording("deleted");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("deleted", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Sign in")]));
+    await recordWait("deleted", { condition: "visible", selector: { text: "Sign in" } });
+
+    // Delete the diverging step 1 — the remedy `UNMET_WAIT_WARNING` itself
+    // offers — then keep recording.
+    const file = path.join(tmpDir, ".argent", "flows", "deleted.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = parsed.steps.slice(1);
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Done")]));
+    await recordWait("deleted", { condition: "visible", selector: { text: "Done" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "deleted", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(2);
+    // Step 1 is now the "Sign in" wait, which was judged clean; the verdict that
+    // was filed under 1 judged a step that is no longer in the file.
+    expect(finished.summary[0]).toContain('"Sign in"');
+    for (const line of finished.summary) expect(line).not.toContain("warning:");
+    expect(finished.message).toBe('Finished recording "deleted" flow (2 steps)');
+  });
+
+  it("keeps the verdicts a hand edit left in place", async () => {
+    // The other half of the anchor rule: an edit that removes an UNwarned step
+    // must not cost the steps before it their verdicts, or the guard would be
+    // the length heuristic again under another name.
+    await startRecording("kept");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("kept", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("kept", { condition: "visible", selector: { text: "Continue" } });
+
+    // Delete the clean step 2, then record one more warned step.
+    const file = path.join(tmpDir, ".argent", "flows", "kept.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = parsed.steps.slice(0, 1);
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("kept", { condition: "visible", selector: { text: "Sign in" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "kept", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(2);
+    expect(finished.summary[0]).toContain("warning:");
+    expect(finished.summary[1]).toContain("warning:");
+    expect(finished.message).toContain("2 steps carry a cross-tree warning");
+  });
+
   // ── Cancellation ─────────────────────────────────────────────────────────
 
   it("keeps the step when the run is cancelled during the re-probe", async () => {

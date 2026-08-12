@@ -255,6 +255,27 @@ export async function classifyOnDiskSpelling(dir: string, base: string): Promise
  */
 export type FlowPersistMode = "host" | "client";
 
+/**
+ * One recorded step's warning, plus the anchor saying WHICH step it judged.
+ *
+ * The number it is filed under is a position, and a mid-recording hand edit
+ * moves positions. Comparing the finished flow against the recorder's own view
+ * catches an edit made after the last append, but not one the recorder appended
+ * over: host mode re-reads the file before each append, so deleting a step and
+ * then recording one more leaves the two views agreeing while every key past
+ * the deletion points one step too far. Carrying the judged step is what
+ * survives that — see `anchoredWarnings` in flow-finish-recording.ts.
+ */
+export interface RecordedStepWarning {
+  /** The warning text `flow-add-step` raised on that step's `message`. */
+  warning: string;
+  /**
+   * The judged step as `stepAnchor` renders it: its identity, independent of
+   * where it now sits.
+   */
+  step: string;
+}
+
 export interface RecordingSession {
   /** Flow name, as passed to every recording tool. */
   name: string;
@@ -285,7 +306,7 @@ export interface RecordingSession {
    * scrolled away. Accumulate it here and let the finish payload carry it to
    * the step it belongs to.
    */
-  stepWarnings?: Map<number, string>;
+  stepWarnings?: Map<number, RecordedStepWarning>;
   /** Order of the last touch, for the LRU eviction backstop. See {@link touch}. */
   lastTouchedSeq: number;
 }

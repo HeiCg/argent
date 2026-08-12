@@ -22,7 +22,7 @@ import {
   type UnmetUiWaitCause,
 } from "../await-ui-element";
 import { probeWhenCondition, type DirectiveOutcome } from "./flow-actions";
-import { summarizeStep } from "./flow-finish-recording";
+import { stepAnchor, summarizeStep } from "./flow-finish-recording";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { resolveDevice } from "../../utils/device-info";
 import { settleWithin } from "../../utils/timing";
@@ -1276,9 +1276,15 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
 
       // Keep the probe's verdict for `flow-finish-recording`. It is a
       // polish-time answer, and polish starts after the recording closes — by
-      // which point this `message` is many tool results back.
+      // which point this `message` is many tool results back. Filed under the
+      // step's number and carrying the step itself, so a hand edit the recorder
+      // appends over cannot hand the verdict to whatever inherits that number
+      // (see {@link RecordedStepWarning}).
       if (crossTreeWarning) {
-        (session.stepWarnings ??= new Map()).set(stepCount, crossTreeWarning);
+        (session.stepWarnings ??= new Map()).set(stepCount, {
+          warning: crossTreeWarning,
+          step: stepAnchor(step),
+        });
       }
 
       return {

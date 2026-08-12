@@ -68,19 +68,10 @@ const zodSchema = z.object({
  * paragraphs, and running it into the step line would bury the step it belongs
  * to.
  *
- * Every verdict is DROPPED when the finished flow is no longer the file the
- * recorder appended to. Hand-editing the .yaml mid-recording is a documented
- * workflow and host mode re-reads the file on every append, so deleting a step
- * renumbers each one after it — and these anchors are positions. Which step
- * moved where is unknowable from here, so an edit discards the lot rather than
- * convicting the wrong step, and {@link countWarned} reports 0 so `message`
- * does not advertise verdicts the summary no longer carries.
+ * Which verdicts survive to be folded in is {@link anchoredWarnings}' answer.
  */
-function attachStepWarnings(
-  summary: string[],
-  warnings: Map<number, string> | undefined
-): string[] {
-  if (!warnings || warnings.size === 0) return summary;
+function attachStepWarnings(summary: string[], warnings: Map<number, string>): string[] {
+  if (warnings.size === 0) return summary;
   return summary.map((line, i) => {
     const warning = warnings.get(i + 1);
     return warning ? `${line}\n   warning: ${warning}` : line;
@@ -88,40 +79,46 @@ function attachStepWarnings(
 }
 
 /**
- * The verdicts still anchored to the steps they judged, or none when a
- * mid-recording edit moved the steps out from under them (see
- * {@link attachStepWarnings}).
+ * The verdicts still anchored to the steps they judged.
  *
- * What the finished flow is compared against is the RECORDER's own view of it —
- * `session.flow`, which `appendStepToFlow` refreshes on every append, from the
- * re-read file in host mode and from the in-memory copy in client mode. So this
- * asks the question the anchors actually depend on: do the steps still sit
- * where the recorder last saw them?
+ * These anchors are POSITIONS, and hand-editing the .yaml mid-recording is a
+ * documented workflow that moves positions: host mode re-reads the file before
+ * each append, so a delete, a reorder or an in-place replacement renumbers the
+ * steps and a verdict left on its old number would convict whichever step
+ * inherited it — a false conviction on an innocent step, with the real risk
+ * reading clean, which is strictly worse than having no verdict at all. Two
+ * checks, because one edit can defeat either alone:
  *
- * Comparing step CONTENT rather than a count of the appends THIS tool made is
- * what keeps an ordinary append from reading as an edit. `flow-add-echo`
- * appends through the same helper and files no verdict, so a recording that
- * ends with one — which `flow-start-recording` invites, and which leaves every
- * earlier step exactly where it was — used to arrive one step short of the
- * count and lose every verdict it had.
+ * 1. The finished flow must still be the file the RECORDER saw —
+ *    `session.flow`, which `appendStepToFlow` refreshes on every append, from
+ *    the re-read file in host mode and from the in-memory copy in client mode.
+ *    An edit made after the last append fails here, and a swap of two steps
+ *    that render alike fails nothing else. Comparing step CONTENT rather than a
+ *    count of the appends this tool made is also what keeps an ordinary append
+ *    — a `flow-add-echo` label, which files no verdict — from reading as an
+ *    edit.
+ * 2. Each verdict's own step must still occupy its number. An edit the recorder
+ *    then appended over passes check 1, because that append re-read the edited
+ *    file into `session.flow`: delete step 1 of 3, record one more step, and
+ *    the two views agree while every key past the deletion points one step too
+ *    far.
+ *
+ * A verdict that fails check 2 is dropped rather than re-anchored: which step
+ * moved where is unknowable from here, and dropping is the only answer that
+ * cannot convict an innocent step. Both checks are content comparisons, so two
+ * genuinely identical steps are interchangeable to them — which is sound, since
+ * a verdict quotes the condition and selector that are identical between them.
  */
-function anchoredWarnings(
-  session: RecordingSession,
-  steps: FlowStep[]
-): Map<number, string> | undefined {
-  if (session.stepWarnings === undefined) return undefined;
+function anchoredWarnings(session: RecordingSession, steps: FlowStep[]): Map<number, string> {
+  const kept = new Map<number, string>();
   const recorded = session.flow.steps;
-  if (recorded.length !== steps.length) return undefined;
-  return steps.every((step, i) => stepAnchor(step) === stepAnchor(recorded[i]))
-    ? session.stepWarnings
-    : undefined;
-}
-
-function countWarned(steps: number, warnings: Map<number, string> | undefined): number {
-  if (!warnings) return 0;
-  let n = 0;
-  for (const step of warnings.keys()) if (step >= 1 && step <= steps) n += 1;
-  return n;
+  if (recorded.length !== steps.length) return kept;
+  if (!steps.every((step, i) => stepAnchor(step) === stepAnchor(recorded[i]))) return kept;
+  for (const [n, verdict] of session.stepWarnings ?? []) {
+    const step = steps[n - 1];
+    if (step !== undefined && stepAnchor(step) === verdict.step) kept.set(n, verdict.warning);
+  }
+  return kept;
 }
 
 export const flowFinishRecordingTool: ToolDefinition<
@@ -193,7 +190,7 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // recoverable rather than fatal.
         const anchored = anchoredWarnings(session, flow.steps);
         const summary = attachStepWarnings(summarizeSteps(flow), anchored);
-        const warned = countWarned(summary.length, anchored);
+        const warned = anchored.size;
         clearRecordingSession(session);
         return { filePath, flowFile, savedTo, flow, summary, warned };
       }
@@ -289,7 +286,7 @@ function summarizeSteps(flow: FlowFile): string[] {
  * `parseFlow` output, in client mode via one serialize/parse round trip — so
  * this differs only when the step itself does.
  */
-function stepAnchor(step: FlowStep): string {
+export function stepAnchor(step: FlowStep): string {
   return summarizeStep(step, 0);
 }
 
