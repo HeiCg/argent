@@ -74,11 +74,29 @@ const HIDDEN_UNREADABLE_NOTE =
  */
 export type UnmetUiWaitCause = "unmet" | "unreadable" | "cancelled";
 
+/**
+ * The cause this wait recorded, or the closest its `note` can be read for.
+ *
+ * The cause is carried on the RESULT ({@link WaitResult.cause}), decided where
+ * the evidence is — the loop knows which of its reads were trustworthy, which
+ * the prose cannot say. Deriving it from the note instead is wrong on the main
+ * path it matters for: `appendDiagnostics` decorates the note with the very
+ * hint that makes a read blind, and on `visible`/`exists`/`text` a wholly blind
+ * window produces prose byte-identical to a genuine miss, so three of the four
+ * conditions have no distinguishable note at all.
+ *
+ * The note fallback stays for a result that crossed a boundary without the
+ * field (an older tool-server behind a newer client, a hand-built fixture): it
+ * recognises the two notes it can, and defaults to `unmet` — the cause every
+ * caller acted on before this classification existed.
+ */
 export function unmetUiWaitCause(result: unknown): UnmetUiWaitCause {
+  const carried = (result as { cause?: unknown } | null)?.cause;
+  if (carried === "unmet" || carried === "unreadable" || carried === "cancelled") return carried;
   const note = (result as { note?: unknown } | null)?.note;
   if (typeof note !== "string") return "unmet";
   if (note === WAIT_CANCELLED_NOTE) return "cancelled";
-  if (note.startsWith(TREE_FETCH_FAILED_NOTE_PREFIX) || note === HIDDEN_UNREADABLE_NOTE) {
+  if (note.startsWith(TREE_FETCH_FAILED_NOTE_PREFIX) || note.startsWith(HIDDEN_UNREADABLE_NOTE)) {
     return "unreadable";
   }
   return "unmet";
@@ -164,6 +182,59 @@ interface WaitResult {
   success: boolean;
   elapsed: number;
   note?: string;
+  /**
+   * WHY an unmet wait failed, for the callers that narrate it. Set on every
+   * `success: false` return and never on a success. See
+   * {@link UnmetUiWaitCause} for what each value licenses, and
+   * {@link timeoutCause} for how the deadline arm decides between them.
+   */
+  cause?: UnmetUiWaitCause;
+}
+
+/**
+ * How far behind the loop's exit the last TRUSTED read may lie before "the
+ * condition was false" stops being honest, as a multiple of the poll interval.
+ *
+ * The same tolerance, for the same reason, as `CONDITION_DARK_TAIL_TOLERANCE_MS`
+ * in the flow runner's copy of this loop: one interval of sleep since the last
+ * clean read, plus an interval's worth of latency for the deadline poll to also
+ * come back dark. Longer than that means consecutive reads went dark, and a
+ * verdict narrated from the reads before the darkness describes a screen nobody
+ * saw at the deadline.
+ */
+const DARK_TAIL_TOLERANCE_INTERVALS = 2;
+
+/**
+ * WHY a wait that reached its deadline came back `success: false`.
+ *
+ * Only `unmet` is a statement about the condition, so it has to be earned:
+ * some read must have been trustworthy, and the reads must still describe the
+ * screen at the deadline. Three tiers, mirroring `waitForCondition`'s
+ * post-timeout verdict in flow-actions.ts — the same question asked of the same
+ * kind of loop:
+ *
+ * 1. No trusted read in the whole window: every poll returned a blind tree or
+ *    the fetch failed, so nothing ever evaluated the condition.
+ * 2. Trusted reads existed but the window went dark at the end. `hidden` is
+ *    held to a stricter bar: there the element LEAVING is the transition being
+ *    waited on, so any untrusted final read leaves gone-ness unconfirmable.
+ *    For the rest, a dark tail beyond {@link DARK_TAIL_TOLERANCE_INTERVALS}
+ *    means the trusted reads no longer describe the deadline.
+ * 3. A dark tail inside the tolerance — a genuine last-poll blip. The trusted
+ *    reads still describe the window, so a transient failure on the trailing
+ *    poll must not turn a real miss into "nothing was ever compared".
+ */
+function timeoutCause(
+  condition: Params["condition"],
+  lastTrustedReadAt: number | undefined,
+  lastReadTrusted: boolean,
+  pollIntervalMs: number
+): UnmetUiWaitCause {
+  if (lastTrustedReadAt === undefined) return "unreadable";
+  if (lastReadTrusted) return "unmet";
+  if (condition === "hidden") return "unreadable";
+  const darkTailMs = Date.now() - lastTrustedReadAt;
+  return darkTailMs > DARK_TAIL_TOLERANCE_INTERVALS * pollIntervalMs ? "unreadable" : "unmet";
 }
 
 const capability: ToolCapability = {
@@ -348,6 +419,7 @@ or before tapping an element that appears asynchronously.`,
         success: false,
         elapsed: Date.now() - start,
         note: WAIT_CANCELLED_NOTE,
+        cause: "cancelled",
       });
 
       const timeoutMs = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -358,18 +430,23 @@ or before tapping an element that appears asynchronously.`,
       // "the element was there and disappeared" from "the selector never matched
       // at all" — otherwise a typo'd selector is an instant false-positive.
       let everMatched = false;
+      // When the last read that could be trusted to have EVALUATED the
+      // condition landed. Still undefined at the deadline means no read in the
+      // window ever did — see {@link timeoutCause}.
+      let lastTrustedReadAt: number | undefined;
 
       const poll = await pollDescribeTree<WaitResult>({
         fetchTree: () => fetchTree(device, params, services, isTvOs, androidIsTv),
         timeoutMs,
         pollIntervalMs,
         signal,
-        onSample: (data) => {
+        onSample: (data, nowMs) => {
           const matches = findAll(data.tree, selector);
           if (matches.length > 0) everMatched = true;
           // Compute `blind` after `everMatched` so an empty tree that follows an
           // earlier match counts as a transient blank, not a confirmed read.
           const blind = isBlindRead(data, everMatched);
+          if (!blind) lastTrustedReadAt = nowMs;
           if (!blind && evaluateMatches(params, matches)) {
             const result: WaitResult = { success: true, elapsed: Date.now() - start };
             if (params.condition === "hidden" && !everMatched) {
@@ -386,10 +463,19 @@ or before tapping an element that appears asynchronously.`,
       if (poll.aborted) return cancelled();
       if (poll.result) return poll.result;
 
+      // The final read attempt: trusted only if it happened, returned, and
+      // returned something the condition could be judged on. `lastError` is
+      // cleared on every successful fetch, so it being set means the LAST fetch
+      // is the one that failed.
+      const lastReadTrusted =
+        poll.lastError === undefined &&
+        poll.lastData !== null &&
+        !isBlindRead(poll.lastData, everMatched);
       return {
         success: false,
         elapsed: Date.now() - start,
         note: timeoutNote(params, poll.lastData?.tree ?? null, poll.lastError, poll.lastData),
+        cause: timeoutCause(params.condition, lastTrustedReadAt, lastReadTrusted, pollIntervalMs),
       };
     },
   };

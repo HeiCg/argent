@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AXServiceApi, AXDescribeResponse } from "../src/blueprints/ax-service";
 import type { AndroidDevtoolsApi } from "../src/blueprints/android-devtools";
 import type { ChromiumCdpApi } from "../src/blueprints/chromium-cdp";
-import { createAwaitUiElementTool, evaluateMatches } from "../src/tools/await-ui-element";
+import {
+  createAwaitUiElementTool,
+  evaluateMatches,
+  unmetUiWaitCause,
+} from "../src/tools/await-ui-element";
 import { findAll } from "../src/utils/ui-tree-match";
 import type { DescribeNode } from "../src/tools/describe/contract";
 import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
@@ -662,6 +666,182 @@ describe("await-ui-element tool", () => {
 
     expect(result.success).toBe(false);
     expect(result.note).toMatch(/boot-device/i);
+  });
+
+  // ── The cause an unmet wait reports ──────────────────────────────────────
+  //
+  // Only one of the three causes judges the condition, and the callers that
+  // narrate a failed wait (`flow-add-step`) send an author to rewrite or delete
+  // a step on the strength of it. These drive the REAL tool and read the cause
+  // back through the REAL classifier, because the interesting cases are exactly
+  // the ones a hand-written note fixture cannot produce.
+
+  it("calls a wait that never got a readable tree unreadable, hint and all", async () => {
+    // The AX backend is down, so `describeIos` returns an empty tree plus a
+    // boot hint — which `appendDiagnostics` folds onto the note. Matching the
+    // undecorated note text is what this defeats: on the platform state the
+    // `unreadable` cause exists for, the note is ALWAYS decorated.
+    const tool = createAwaitUiElementTool(iosRegistry(makeFailingAXService()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "hidden",
+        selector: { text: "Spinner" },
+        timeoutMs: 40,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(result.note).toMatch(/could not confirm the element is hidden/i);
+    expect(result.note).toMatch(/boot-device/i); // decorated, so `===` cannot fire
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it.each(["visible", "exists", "text"] as const)(
+    "calls a blind `%s` wait unreadable, though its note reads like a genuine miss",
+    async (condition) => {
+      // On these three a wholly blind window produces prose byte-identical to a
+      // real miss, so no note can tell them apart — the cause has to come from
+      // the loop, which knows no read was ever trustworthy.
+      const tool = createAwaitUiElementTool(iosRegistry(makeFailingAXService()));
+
+      const result = await tool.execute(
+        {},
+        {
+          udid: IOS_UDID,
+          condition,
+          selector: { text: "Spinner" },
+          expectedText: condition === "text" ? "done" : undefined,
+          timeoutMs: 40,
+          pollIntervalMs: 10,
+        }
+      );
+
+      expect(result.note).toMatch(/no element matched the selector before timeout/i);
+      expect(unmetUiWaitCause(result)).toBe("unreadable");
+    }
+  );
+
+  it("calls a genuine miss on a readable tree unmet", async () => {
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "Header", frame: FRAME, traits: [] }]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 40,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(unmetUiWaitCause(result)).toBe("unmet");
+  });
+
+  // A Chromium session that serves one real tree and then goes down: the
+  // renderer throws, which reaches the loop as a fetch ERROR rather than as the
+  // empty-tree-plus-hint iOS degrades to.
+  function makeChromiumApiThatDiesAfterOneRead(): ChromiumCdpApi {
+    const tree = {
+      role: "html",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        {
+          role: "heading",
+          label: "Header",
+          frame: { x: 0.1, y: 0.1, width: 0.5, height: 0.05 },
+          children: [],
+        },
+      ],
+    };
+    let reads = 0;
+    return {
+      refreshViewport: async () => ({ width: 1024, height: 768 }),
+      cdp: {
+        send: async (method: string) => {
+          if (method !== "Runtime.evaluate") return {};
+          if (reads++ > 0) throw new Error("renderer detached");
+          return { result: { value: JSON.stringify({ tree, truncated: false }) } };
+        },
+      },
+    } as unknown as ChromiumCdpApi;
+  }
+
+  it("keeps a genuine miss unmet when only the final poll fails", async () => {
+    // `lastError` describes the LAST fetch alone, and `pollDescribeTree` clears
+    // it on every success — so reading the cause off the note turns one bad
+    // trailing read into "nothing was ever compared", for a step that will
+    // hard-fail at replay. The trusted read is barely one poll interval behind
+    // the deadline, well inside the blip tolerance.
+    const tool = createAwaitUiElementTool(makeMockRegistry({}));
+
+    const result = await tool.execute(
+      { chromium: makeChromiumApiThatDiesAfterOneRead() },
+      {
+        udid: CHROMIUM_ID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 600,
+        pollIntervalMs: 500,
+      }
+    );
+
+    expect(result.note).toMatch(/last tree fetch failed/i);
+    expect(unmetUiWaitCause(result)).toBe("unmet");
+  });
+
+  it("stops vouching for a verdict the reads went dark long before", async () => {
+    // Same shape, but the trusted read lies many poll intervals behind the
+    // deadline: consecutive reads went dark, so what they saw no longer
+    // describes the screen the wait gave up on.
+    const tool = createAwaitUiElementTool(makeMockRegistry({}));
+
+    const result = await tool.execute(
+      { chromium: makeChromiumApiThatDiesAfterOneRead() },
+      {
+        udid: CHROMIUM_ID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 600,
+        pollIntervalMs: 20,
+      }
+    );
+
+    expect(result.note).toMatch(/last tree fetch failed/i);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it("calls a cancelled wait cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { api } = makeSequencedAXService([axResponse([])]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      { udid: IOS_UDID, condition: "visible", selector: { text: "Nope" }, timeoutMs: 40 },
+      { signal: controller.signal } as never
+    );
+
+    expect(unmetUiWaitCause(result)).toBe("cancelled");
+  });
+
+  it("defaults to unmet for a result carrying no cause at all", async () => {
+    // The note fallback, for a result that crossed a boundary without the
+    // field: `unmet` is what every caller acted on before the cause existed.
+    expect(unmetUiWaitCause({ success: false, elapsed: 10 })).toBe("unmet");
+    expect(unmetUiWaitCause({ success: false, elapsed: 10, note: "no element matched" })).toBe(
+      "unmet"
+    );
+    expect(
+      unmetUiWaitCause({ success: false, elapsed: 10, note: "last tree fetch failed: boom" })
+    ).toBe("unreadable");
   });
 
   // ── Per-fetch deadline ───────────────────────────────────────────────────
