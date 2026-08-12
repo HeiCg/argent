@@ -1921,6 +1921,47 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(finished.message).toBe('Finished recording "deleted" flow (2 steps)');
   });
 
+  it("drops the verdict a hand edit moved onto an identical twin step", async () => {
+    // The case both content checks are blind to. A verdict is not a function of
+    // the step's content — the probe reads the live device at that step's
+    // moment — so the byte-identical wait can diverge at one position and agree
+    // at another. Renumber the two and the anchor cannot tell them apart: the
+    // step that will really break on conversion reads clean, and the one that
+    // converts fine carries the warning.
+    await startRecording("twins");
+    serveTree(iosRunnerTree([iosLabel("Ready marker")]));
+    await recordWait("twins", { condition: "visible", selector: { text: "Ready marker" } });
+    // Step 2 diverges: the runner's tree does not hold "Continue".
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("twins", { condition: "visible", selector: { text: "Continue" } });
+    // Step 3 is the byte-identical call against a tree that DOES hold it.
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("twins", { condition: "visible", selector: { text: "Continue" } });
+
+    const file = path.join(tmpDir, ".argent", "flows", "twins.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = parsed.steps.slice(1);
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    // …and record on, so the append re-reads the edited file and the recorder's
+    // view agrees with it again.
+    serveTree(iosRunnerTree([iosLabel("Ready marker")]));
+    await recordWait("twins", { condition: "visible", selector: { text: "Ready marker" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "twins", project_root: tmpDir }
+    );
+
+    // Step 1 is the wait that diverged; step 2 is the twin that passed the
+    // probe. A verdict on either is a lie — on step 2 it convicts the clean
+    // one, on step 1 it is right by accident and unprovable from here.
+    expect(finished.summary).toHaveLength(3);
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.summary[1]).toContain('"Continue"');
+    for (const line of finished.summary) expect(line).not.toContain("warning:");
+  });
+
   it("keeps the verdicts a hand edit left in place", async () => {
     // The other half of the anchor rule: an edit that removes an UNwarned step
     // must not cost the steps before it their verdicts, or the guard would be

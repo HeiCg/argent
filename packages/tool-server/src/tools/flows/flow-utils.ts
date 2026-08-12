@@ -260,11 +260,14 @@ export type FlowPersistMode = "host" | "client";
  *
  * The number it is filed under is a position, and a mid-recording hand edit
  * moves positions. Comparing the finished flow against the recorder's own view
- * catches an edit made after the last append, but not one the recorder appended
- * over: host mode re-reads the file before each append, so deleting a step and
+ * catches an edit made after the last append; carrying the judged step catches
+ * one that moved a step out from under its number — see `anchoredWarnings` in
+ * flow-finish-recording.ts. Neither catches an edit the recorder then appended
+ * OVER: host mode re-reads the file before each append, so deleting a step and
  * then recording one more leaves the two views agreeing while every key past
- * the deletion points one step too far. Carrying the judged step is what
- * survives that — see `anchoredWarnings` in flow-finish-recording.ts.
+ * the deletion points one step too far, and the anchor cannot tell two waits
+ * recorded with the same condition and selector apart. That one is settled at
+ * the append itself — see {@link dropMovedWarnings}.
  */
 export interface RecordedStepWarning {
   /** The warning text `flow-add-step` raised on that step's `message`. */
@@ -3250,11 +3253,77 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
 }
 
 /**
+ * Are the first `n` steps of these two views the same steps?
+ *
+ * Both sides are {@link parseFlow} output — the recorder's previous view came
+ * from parsing the file after the previous append, and `now` from parsing it
+ * after this one — so absent an edit the two parse byte-identical prefixes and
+ * a structural comparison is exact. That is what makes `JSON.stringify` safe
+ * here where it would not be against a raw in-memory step: no key-order or
+ * normalization difference can exist between two parses of the same bytes.
+ */
+function samePrefix(now: FlowStep[], before: FlowStep[], n: number): boolean {
+  if (now.length < n || before.length < n) return false;
+  for (let i = 0; i < n; i += 1) {
+    if (JSON.stringify(now[i]) !== JSON.stringify(before[i])) return false;
+  }
+  return true;
+}
+
+/**
+ * Drop the verdicts a mid-recording hand edit moved, at the one moment the move
+ * is visible.
+ *
+ * A verdict is anchored to a step NUMBER, and host mode re-reads the file
+ * before every append — so an edit becomes part of the take and `session.flow`
+ * catches up to it. After that the finish has nothing left to compare: the
+ * recorder's view and the file agree, and where the moved verdict lands on a
+ * step that renders like the one it judged (two waits recorded with the same
+ * condition and selector), its own anchor agrees too. The verdict is then
+ * reported against a step it never judged, while the step it did judge reads
+ * clean — the false conviction {@link RecordedStepWarning} exists to prevent.
+ *
+ * The append that ABSORBS the edit is where both views still exist, so the
+ * question is asked here. A verdict at number `n` survives exactly when the
+ * first `n` steps are untouched: that is what makes the step at `n` still the
+ * step that was at `n`. Anything else — a delete or an insert at or before it,
+ * a reorder that reaches it, an in-place replacement — moves it or changes it,
+ * and dropping is the only answer that cannot convict an innocent step.
+ *
+ * Verdicts BEHIND the edit keep theirs. An author who deletes a later step and
+ * records on must not lose the warnings on steps the edit never reached, or the
+ * anchor rule would be the length heuristic again under another name.
+ *
+ * Returns how many were dropped, so the finish can report a shortfall rather
+ * than a clean bill of health.
+ */
+function dropMovedWarnings(
+  warnings: Map<number, RecordedStepWarning> | undefined,
+  now: FlowStep[],
+  before: FlowStep[]
+): number {
+  if (!warnings) return 0;
+  let dropped = 0;
+  for (const n of [...warnings.keys()]) {
+    if (samePrefix(now, before, n)) continue;
+    warnings.delete(n);
+    dropped += 1;
+  }
+  return dropped;
+}
+
+/**
  * Append a step to a recording and persist it. In "host" mode the file on disk
  * is re-read first (the original behavior — a manual edit made mid-recording is
  * honored); in "client" mode this process never sees the client's disk, so the
  * in-memory copy is authoritative and the updated YAML travels back in the
  * directive.
+ *
+ * Honoring that edit is also the only chance anyone gets to NOTICE it, so the
+ * re-read is checked against the view it replaces — see
+ * {@link dropMovedWarnings}. Client mode has no such check because it has no
+ * such edit: this host never sees the client's file, and every write serializes
+ * the in-memory copy over whatever is there.
  */
 export async function appendStepToFlow(
   session: RecordingSession,
@@ -3269,8 +3338,13 @@ export async function appendStepToFlow(
     assertSessionStillLive(session, step);
     session.lastTouchedSeq = touch();
     if (session.persist === "host") {
+      const before = session.flow.steps;
       const flowFile = await appendStep(session.filePath, step);
       session.flow = parseFlow(flowFile);
+      // `appendStep` adds exactly one step, so everything before the last one
+      // is what the file already held — the recorder's previous view, unless a
+      // hand edit landed in between.
+      dropMovedWarnings(session.stepWarnings, session.flow.steps.slice(0, -1), before);
       // Count inside the lock, off the just-refreshed `session.flow`: a caller
       // reading `session.flow.steps.length` after this returns would be racing
       // a concurrent same-key append, which can reassign `session.flow` between

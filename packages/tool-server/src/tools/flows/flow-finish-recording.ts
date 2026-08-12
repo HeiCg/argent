@@ -122,13 +122,13 @@ function warningHeadline(warnings: Map<number, RecordedStepWarning>): string {
 /**
  * The verdicts still anchored to the steps they judged.
  *
- * These anchors are POSITIONS, and hand-editing the .yaml mid-recording is a
- * documented workflow that moves positions: host mode re-reads the file before
- * each append, so a delete, a reorder or an in-place replacement renumbers the
- * steps and a verdict left on its old number would convict whichever step
- * inherited it — a false conviction on an innocent step, with the real risk
- * reading clean, which is strictly worse than having no verdict at all. Two
- * checks, because one edit can defeat either alone:
+ * These anchors are POSITIONS, and hand-editing the .yaml mid-recording moves
+ * positions: host mode re-reads the file before each append, so a delete, a
+ * reorder or an in-place replacement renumbers the steps and a verdict left on
+ * its old number would convict whichever step inherited it — a false conviction
+ * on an innocent step, with the real risk reading clean, which is strictly
+ * worse than having no verdict at all. Two checks here, because one edit can
+ * defeat either alone:
  *
  * 1. The finished flow must still be the file the RECORDER saw —
  *    `session.flow`, which `appendStepToFlow` refreshes on every append, from
@@ -138,17 +138,20 @@ function warningHeadline(warnings: Map<number, RecordedStepWarning>): string {
  *    count of the appends this tool made is also what keeps an ordinary append
  *    — a `flow-add-echo` label, which files no verdict — from reading as an
  *    edit.
- * 2. Each verdict's own step must still occupy its number. An edit the recorder
- *    then appended over passes check 1, because that append re-read the edited
- *    file into `session.flow`: delete step 1 of 3, record one more step, and
- *    the two views agree while every key past the deletion points one step too
- *    far.
+ * 2. Each verdict's own step must still occupy its number.
  *
  * A verdict that fails check 2 is dropped rather than re-anchored: which step
  * moved where is unknowable from here, and dropping is the only answer that
- * cannot convict an innocent step. Both checks are content comparisons, so two
- * genuinely identical steps are interchangeable to them — which is sound, since
- * a verdict quotes the condition and selector that are identical between them.
+ * cannot convict an innocent step.
+ *
+ * An edit the recorder then appended OVER is not answerable here at all, and is
+ * not left to these checks: that append re-read the edited file into
+ * `session.flow`, so check 1 compares the edit against itself, and where the
+ * moved verdict lands on a step that renders like the one it judged, check 2
+ * agrees as well — both are content comparisons, and two genuinely identical
+ * steps are interchangeable to them. `appendStepToFlow` settles it at the one
+ * moment both views still exist; see `dropMovedWarnings` in flow-utils. What
+ * arrives here has already lost the verdicts that moved.
  */
 function anchoredWarnings(
   session: RecordingSession,
