@@ -1499,14 +1499,16 @@ async function leadingLaunch(
  * The walk below IS the executor's, run ahead of time: the same `runStack`, each
  * hop resolved exactly as {@link execRunStep} resolves it — anchored at the
  * containing file's canonical directory, by concatenation so a `..` reaches the
- * kernel uncollapsed — under the same cycle, depth, and on-disk-casing guards. A
- * chain the executor refuses never reaches its launch, so any hop it would error
- * on stays `null` (give up) here, never transparent. Anything unreadable is
- * `null` too.
+ * kernel uncollapsed — under the same cycle, depth, and on-disk-casing guards,
+ * plus, once a `times` body has been entered, the fragment-snapshot fence a
+ * `run:` load under a repeat scope refuses on. A chain the executor refuses
+ * never reaches its launch, so any hop it would error on stays `null` (give up)
+ * here, never transparent. Anything unreadable is `null` too.
  */
 async function scanLeadingLaunch(
   steps: FlowStep[],
-  stack: RunStackEntry[]
+  stack: RunStackEntry[],
+  inRepeat = false
 ): Promise<{ app: Launch; flow: string } | typeof NO_EXECUTABLE_STEP | null> {
   const top = stack[stack.length - 1]!;
   for (const step of steps) {
@@ -1517,7 +1519,7 @@ async function scanLeadingLaunch(
       // Same stack — no file hop — and an all-echo body falls through to the
       // steps after the block. An `until` drain skips this branch and keeps
       // the give-up below: its body may legitimately run zero times.
-      const inner = await scanLeadingLaunch(step.steps, stack);
+      const inner = await scanLeadingLaunch(step.steps, stack, true);
       if (inner !== NO_EXECUTABLE_STEP) return inner;
       continue;
     }
@@ -1536,10 +1538,14 @@ async function scanLeadingLaunch(
     } catch {
       return null;
     }
-    const inner = await scanLeadingLaunch(nested.steps, [
-      ...stack,
-      { canonical, display: runDisplayFor(step.flow, stack[0]!.display) },
-    ]);
+    // Mirror of execRunStep's fragment-snapshot fence: under a repeat scope
+    // the executor refuses this hop at load, so its launch never runs.
+    if (inRepeat && findFragmentSnapshot(nested.steps)) return null;
+    const inner = await scanLeadingLaunch(
+      nested.steps,
+      [...stack, { canonical, display: runDisplayFor(step.flow, stack[0]!.display) }],
+      inRepeat
+    );
     if (inner !== NO_EXECUTABLE_STEP) return inner;
   }
   return NO_EXECUTABLE_STEP;
