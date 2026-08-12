@@ -149,6 +149,13 @@ function deriveTapStep(
 const RUN_TARGET_COMMAND = "flow-execute";
 
 /**
+ * How `recorded` opens on the one path that runs the tool and records nothing.
+ * Read back by `completedMsg`, so the progress line and the result cannot
+ * disagree about whether a step was added.
+ */
+const NOT_RECORDED = "(not recorded)";
+
+/**
  * Rewrite a nested `flow-execute` target from `flow_path` to the equivalent
  * `name`, in place — or reject the call before anything runs.
  *
@@ -470,7 +477,13 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
       // Name the flow: recordings are concurrent, so several of these lines can
       // interleave in one log and "the recorded flow" would not identify which.
       startedMsg: ({ params }) => `Adding ${params.command} step to flow ${params.name}`,
-      completedMsg: ({ params }) => `Added ${params.command} step to flow ${params.name}`,
+      // Off the result, not the params: this call can succeed having recorded
+      // nothing (see the chooser branch below), and a line reading "Added"
+      // there contradicts the very result it announces.
+      completedMsg: ({ params, result }) =>
+        result.recorded.startsWith(NOT_RECORDED)
+          ? `Ran ${params.command} without adding a step to flow ${params.name}`
+          : `Added ${params.command} step to flow ${params.name}`,
       failedMsg: ({ params, failureSignal }) =>
         `Failed to add ${params.command} step to flow ${params.name}: ${failureSignal.error_code}`,
     },
@@ -599,7 +612,7 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
             `the launch opens the same server this recording used.`,
           toolResult,
           stepCount,
-          recorded: `(not recorded) ${summarizeStep(step, stepCount + 1).replace(/^\d+\.\s*/, "")}`,
+          recorded: `${NOT_RECORDED} ${summarizeStep(step, stepCount + 1).replace(/^\d+\.\s*/, "")}`,
           savedTo,
         };
       }
