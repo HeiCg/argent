@@ -380,9 +380,11 @@ It polls the same accessibility / DOM tree as \`describe\`
 (iOS AXRuntime, Android uiautomator, Chromium CDP, Vega automation toolkit) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
 
-Returns { success: boolean, elapsed: number } — success=false means the condition never held before the
-timeout (a \`note\` then explains what was seen). Use this after a tap/navigation to wait for the next screen,
-or before tapping an element that appears asynchronously.`,
+Returns { success: boolean, elapsed: number, note?, cause? } — success=false means the wait ended without the
+condition holding, which is not always a verdict on the condition: \`cause\` says which it was — \`unmet\` (the tree
+was read and the condition was false there), \`unreadable\` (no trustworthy read, so nothing was judged) or
+\`cancelled\` — and \`note\` describes what was seen. Only \`unmet\` licenses rewriting the check. Use this after a
+tap/navigation to wait for the next screen, or before tapping an element that appears asynchronously.`,
     alwaysLoad: true,
     searchHint:
       "wait await poll until visible hidden exists text appears disappears timeout element condition settle",
