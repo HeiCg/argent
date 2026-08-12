@@ -52,8 +52,8 @@ export function isUnmetUiWaitResult(tool: string, result: unknown): boolean {
 // The two `success: false` notes that are NOT a verdict on the condition. Named
 // here, and used below where the notes are built, so a reader of the result can
 // tell them apart from a genuine miss without re-typing the prose.
-export const WAIT_CANCELLED_NOTE = "wait was cancelled before the condition was met";
-export const TREE_FETCH_FAILED_NOTE_PREFIX = "last tree fetch failed: ";
+const WAIT_CANCELLED_NOTE = "wait was cancelled before the condition was met";
+const TREE_FETCH_FAILED_NOTE_PREFIX = "last tree fetch failed: ";
 const HIDDEN_UNREADABLE_NOTE =
   "could not confirm the element is hidden — the UI tree was empty or unreadable at timeout";
 
