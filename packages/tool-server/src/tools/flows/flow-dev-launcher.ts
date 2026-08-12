@@ -209,6 +209,37 @@ export function pickDevServerRow(
 }
 
 /**
+ * The card a row's URL leaf is drawn in — what an author presses to open it.
+ *
+ * A row renders its URL on one text leaf beside the project name and a chevron,
+ * so a press lands on the CARD far more often than on that leaf. The card is
+ * the tightest node the leaf sits inside. A node that also wraps the section
+ * heading is the LIST (or the screen behind it), not a row, and is skipped: a
+ * flat tree keeps no parent links, so without that test the outermost container
+ * — which covers everything — would answer for every row.
+ *
+ * With no card at all the leaf answers for itself. That under-claims a press on
+ * the rest of the row, which is the safe direction: a tap kept in the recording
+ * is a tap the author can delete, where one dropped is a step they have to
+ * notice is missing.
+ */
+function rowCardOf(
+  rows: DescribeNode[],
+  anchor: DescribeNode,
+  heading: DescribeNode
+): DescribeNode {
+  const inner = getDescribeTapPoint(anchor.frame);
+  const above = getDescribeTapPoint(heading.frame);
+  let card: DescribeNode | undefined;
+  for (const node of rows) {
+    if (node === anchor || !frameContains(node.frame, inner.x, inner.y)) continue;
+    if (frameContains(node.frame, above.x, above.y)) continue;
+    if (card === undefined || area(node) < area(card)) card = node;
+  }
+  return card ?? anchor;
+}
+
+/**
  * The dev-server row a tap at `point` opens, or null when the point is not on
  * one — the same question {@link pickDevServerRow} answers, asked by the
  * RECORDER about a tap that already happened.
@@ -216,29 +247,29 @@ export function pickDevServerRow(
  * An author recording on a dev build meets the chooser and taps a server row to
  * get past it. That tap belongs to the launch, not to the flow: at replay the
  * `launch` step performs it (see the module comment), so a recorded copy fires
- * a second one into the app the recovery just opened. It is the tightest live
- * candidate under the point that decides, so the point has to be ON the row —
- * the scroll container carries every row's hoisted text and covers the whole
- * list, and reading that would swallow every tap on the chooser.
+ * a second one into the app the recovery just opened.
+ *
+ * Asked ROW first, not node first. The flow tree is flat, so "the node under
+ * the point" is settled by frames alone, and the chooser is drawn on containers
+ * that cover the whole screen — a `ComposeView` and the window's content frame,
+ * each of them under every tap, each with a row's URL somewhere inside. Reading
+ * a URL out of whatever covers the point therefore answered "that opened a
+ * server row" for taps nowhere near one, dropping steps the author had
+ * performed. Placing each row's URL in its card instead bounds the answer to
+ * the row: a point outside every card opened no row.
  */
 export function devServerRowAt(root: DescribeNode, point: { x: number; y: number }): string | null {
   const launcher = detectDevLauncher(root);
   if (launcher === null) return null;
-  const rows = candidateRows(flatten(root), launcher.historyY);
-  const under = rows.filter((n) => frameContains(n.frame, point.x, point.y));
-  if (under.length === 0) return null;
-  const tapped = under.reduce((best, n) => (area(n) < area(best) ? n : best));
+  const nodes = flatten(root).filter(isVisible);
+  const heading = tightestOwning(nodes, SECTION_HEADING);
+  if (!heading) return null;
+  const rows = candidateRows(nodes, launcher.historyY);
   const origin = originPattern("any");
-  const own = origin.exec(nodeText(tapped));
-  if (own) return own[0];
-  // An unlabelled row card renders its URL on a leaf inside it, and that leaf
-  // sits to one side of the point the author tapped — so the card is what
-  // covers the tap, and the URL is one node in.
-  for (const node of rows) {
-    const inside = getDescribeTapPoint(node.frame);
-    if (node === tapped || !frameContains(tapped.frame, inside.x, inside.y)) continue;
-    const found = origin.exec(nodeText(node));
-    if (found) return found[0];
+  for (const anchor of rows) {
+    const found = origin.exec(nodeText(anchor));
+    if (!found) continue;
+    if (frameContains(rowCardOf(rows, anchor, heading).frame, point.x, point.y)) return found[0];
   }
   return null;
 }

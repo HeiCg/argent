@@ -28,6 +28,10 @@ function n(partial: Partial<DescribeNode> & { frame: DescribeNode["frame"] }): D
   return { role: "AXOther", children: [], ...partial };
 }
 
+function fr(x: number, y: number, width: number, height: number): DescribeNode["frame"] {
+  return { x, y, width, height };
+}
+
 function screen(children: DescribeNode[]): DescribeNode {
   return n({ role: "AXGroup", frame: { x: 0, y: 0, width: 1, height: 1 }, children });
 }
@@ -227,26 +231,83 @@ describe("flow-add-step on the expo dev-client chooser", () => {
   // recorded on a dev build ran differently than it was recorded.
   const ANDROID = "emulator-5554";
 
-  /** The chooser as an SDK 57 client draws it: one live row, on a LAN host. */
-  function chooser(): DescribeNode[] {
-    return [
-      n({ label: "devclientprobe", frame: { x: 0.205, y: 0.085, width: 0.272, height: 0.021 } }),
+  /**
+   * The chooser as an SDK 57 client draws it, captured off an emulator through
+   * `fetchFlowTree` — the source the recorder reads — and reproduced leaf for
+   * leaf.
+   *
+   * What matters here is the SHAPE, which a tidier fixture gets wrong in the
+   * two ways that hide bugs. The flow tree is FLAT: every leaf is a sibling, so
+   * containment is decided by frames alone, and three of those leaves are
+   * whole-screen containers (the `ComposeView` the client draws on, the
+   * window's content frame, its root layout) that sit under every tap on the
+   * screen. And a row is not one labelled leaf: the URL is its own text leaf
+   * beside the project name and a chevron, all of them inside an unlabelled
+   * `Button`. Row labels of the "name / url / Chevron" form belong to the
+   * trimmed agent-facing `describe`, which joins descendant text that way;
+   * `flow-android-tree` never produces them.
+   *
+   * `history` adds the RECENTLY OPENED section a client draws once it has
+   * opened a server — the state every recording after the first one meets.
+   */
+  function chooser(history = false): DescribeNode[] {
+    const rows = [
+      n({ role: "Image", label: "App Icon", frame: fr(0.058, 0.08, 0.107, 0.048) }),
+      n({ role: "StaticText", label: "devbuild", frame: fr(0.205, 0.082, 0.156, 0.021) }),
+      n({ role: "StaticText", label: "Development Build", frame: fr(0.205, 0.107, 0.282, 0.019) }),
+      n({ role: "View", label: "User", frame: fr(0.859, 0.091, 0.058, 0.026) }),
       n({
-        label: "Development Build",
-        frame: { x: 0.205, y: 0.111, width: 0.282, height: 0.019 },
-      }),
-      n({
+        role: "StaticText",
         label: "DEVELOPMENT SERVERS",
-        frame: { x: 0.058, y: 0.201, width: 0.334, height: 0.017 },
+        frame: fr(0.058, 0.198, 0.334, 0.017),
       }),
+      n({ role: "StaticText", label: "INFO", frame: fr(0.848, 0.18, 0.117, 0.052) }),
+      n({ role: "StaticText", label: "devbuild", frame: fr(0.166, 0.25, 0.156, 0.021) }),
       n({
-        label: "devclientprobe / http://192.168.0.94:8091 / Chevron",
-        frame: { x: 0.058, y: 0.236, width: 0.883, height: 0.077 },
+        role: "StaticText",
+        label: "http://192.168.0.94:8093",
+        frame: fr(0.166, 0.276, 0.32, 0.016),
       }),
+      n({ role: "View", label: "Chevron", frame: fr(0.854, 0.26, 0.049, 0.022) }),
+      // The row card: unlabelled, and what a press actually lands on.
+      n({ role: "Button", label: "", frame: fr(0.058, 0.233, 0.883, 0.077) }),
+      n({ role: "View", label: "Plus", frame: fr(0.097, 0.336, 0.039, 0.018) }),
       n({
-        label: "Plus / New development server",
-        frame: { x: 0.058, y: 0.322, width: 0.883, height: 0.052 },
+        role: "StaticText",
+        label: "New development server",
+        frame: fr(0.156, 0.337, 0.324, 0.016),
       }),
+      n({ role: "Button", label: "", frame: fr(0.058, 0.318, 0.883, 0.052) }),
+    ];
+    if (history) {
+      rows.push(
+        n({ role: "StaticText", label: "RECENTLY OPENED", frame: fr(0.058, 0.43, 0.278, 0.017) }),
+        n({ role: "StaticText", label: "devbuild", frame: fr(0.166, 0.474, 0.156, 0.021) }),
+        n({
+          role: "StaticText",
+          label: "http://192.168.0.94:8093",
+          frame: fr(0.166, 0.5, 0.32, 0.016),
+        }),
+        n({ role: "Button", label: "", frame: fr(0.058, 0.457, 0.883, 0.077) })
+      );
+    }
+    return [
+      ...rows,
+      n({ role: "ScrollView", label: "", frame: fr(0.058, 0.198, 0.883, history ? 0.44 : 0.217) }),
+      // The launcher's own tab bar, well below the list.
+      n({ role: "View", label: "Home", frame: fr(0.151, 0.918, 0.058, 0.026) }),
+      n({ role: "StaticText", label: "Home", frame: fr(0.141, 0.949, 0.079, 0.016) }),
+      n({ role: "View", label: "Settings", frame: fr(0.792, 0.918, 0.058, 0.026) }),
+      n({ role: "StaticText", label: "Settings", frame: fr(0.767, 0.949, 0.107, 0.016) }),
+      // The whole-screen containers, in the order the dump lists them.
+      n({ role: "ComposeView", label: "", frame: fr(0, 0, 1, 1) }),
+      n({
+        role: "FrameLayout",
+        label: "",
+        identifier: "android:id/content",
+        frame: fr(0, 0, 1, 1),
+      }),
+      n({ role: "LinearLayout", label: "", frame: fr(0, 0, 1, 1) }),
     ];
   }
 
@@ -293,12 +354,24 @@ describe("flow-add-step on the expo dev-client chooser", () => {
     // Dispatched live all the same — the author still has to get past the
     // chooser to record what comes next.
     expect(result.toolResult).toEqual({ tapped: true });
-    expect(result.message).toContain("http://192.168.0.94:8091");
+    expect(result.message).toContain("http://192.168.0.94:8093");
     expect(result.message).toContain("metroPort");
     expect(result.stepCount).toBe(1);
     expect(await recordedSteps()).toEqual([
       { kind: "launch", app: "com.anonymous.devclientprobe" },
     ]);
+  });
+
+  it("does not record a tap on the row's card, beside the URL it renders", async () => {
+    // The URL is one leaf on the row; an author presses the row. Both open the
+    // same server, so both belong to the launch.
+    await recordLaunch();
+    setTree(chooser(), "android-devtools");
+
+    const result = await record("gesture-tap", { x: 0.72, y: 0.245 });
+
+    expect(result.message).toContain("http://192.168.0.94:8093");
+    expect(result.stepCount).toBe(1);
   });
 
   it("records a tap on the chooser that opens no server", async () => {
@@ -311,6 +384,57 @@ describe("flow-add-step on the expo dev-client chooser", () => {
 
     expect(result.stepCount).toBe(2);
     expect((await recordedSteps())[1]).toMatchObject({ kind: "tap" });
+  });
+
+  // Everything below is on the chooser and opens NO server row. Each was
+  // silently dropped while the recorder answered "that opened a server row"
+  // off whatever whole-screen container covered the point, so the author's
+  // step vanished from the file and the message named a server they had not
+  // touched. The chooser is the first screen of every dev-build recording, so
+  // this sat on the hot path.
+  it.each([
+    ["the launcher's own Settings tab, half a screen below the list", { x: 0.82, y: 0.93 }, true],
+    ["the empty gap between the header and the list", { x: 0.5, y: 0.16 }, false],
+    ["a remembered row, which the launch refuses to open at replay", { x: 0.5, y: 0.5 }, true],
+    ["the INFO affordance", { x: 0.9, y: 0.2 }, false],
+    ["the DEVELOPMENT SERVERS heading itself", { x: 0.2, y: 0.205 }, false],
+  ])("records a tap on %s", async (_what, point, history) => {
+    await recordLaunch();
+    setTree(chooser(history), "android-devtools");
+
+    const result = await record("gesture-tap", point);
+
+    expect(result.message).not.toContain("Not recorded");
+    expect(result.stepCount).toBe(2);
+    expect((await recordedSteps())[1]).toMatchObject({ kind: "tap" });
+  });
+
+  it("still declines the live row once the chooser has a history section", async () => {
+    // The remembered rows carry the run's own port too, on a host that may have
+    // stopped answering — so the boundary between the two sections is what
+    // decides, not the port.
+    await recordLaunch();
+    setTree(chooser(true), "android-devtools");
+
+    const result = await record("gesture-tap", { x: 0.4995, y: 0.2745 });
+
+    expect(result.message).toContain("http://192.168.0.94:8093");
+    expect(result.stepCount).toBe(1);
+  });
+
+  it("records an ordinary tap on the app the launch opened", async () => {
+    // The regression guard for the whole feature: once past the chooser, a tap
+    // after a launch is an ordinary step.
+    await recordLaunch();
+    setTree(
+      [n({ role: "Button", label: "Sign in", frame: fr(0.3, 0.5, 0.4, 0.06) })],
+      "android-devtools"
+    );
+
+    const result = await record("gesture-tap", { x: 0.5, y: 0.52 });
+
+    expect(result.stepCount).toBe(2);
+    expect((await recordedSteps())[1]).toEqual({ kind: "tap", selector: { text: "Sign in" } });
   });
 
   it("keeps the tap when no launch precedes it", async () => {
