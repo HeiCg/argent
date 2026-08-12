@@ -297,7 +297,7 @@ describe("flow report rendering", () => {
   });
 
   it("renderFailedSteps prints a passing step's warning, which renderSummary counts", () => {
-    // `await: { idle: true }` only ever warns on a step that PASSED, and the
+    // Both warning sources only ever warn on a step that PASSED, and the
     // summary counts warnings whatever the status — so a directory run used to
     // report "1 warning" with the text nowhere on screen.
     const report = mkReport([
@@ -307,6 +307,26 @@ describe("flow report rendering", () => {
     expect(renderFailedSteps(report)).toEqual([
       "  ⚠  2 idle",
       "       ⚠ the screen never held still",
+    ]);
+    expect(renderSummary(report)).toContain("1 warning");
+  });
+
+  it("renderFailedSteps prints a passing launch's dev-client warning", () => {
+    // The other source: a `launch:` that met the expo dev-client chooser passes,
+    // and the warning is the only place the run says the app did not start where
+    // the flow assumes.
+    const report = mkReport([
+      {
+        index: 0,
+        kind: "launch",
+        status: "pass",
+        warning:
+          "app opened behind the expo dev client launcher — dismissed it via http://192.168.0.94:8093",
+      },
+    ]);
+    expect(renderFailedSteps(report)).toEqual([
+      "  ⚠  1 launch",
+      "       ⚠ app opened behind the expo dev client launcher — dismissed it via http://192.168.0.94:8093",
     ]);
     expect(renderSummary(report)).toContain("1 warning");
   });

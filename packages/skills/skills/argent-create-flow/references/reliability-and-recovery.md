@@ -125,6 +125,7 @@ Classify before editing:
 | Partial divergence | An intermediate result disagrees with its echo | Find the first divergent transition                                                                                                                                                                                                   |
 | Acceptance failure | Actions pass but a requested check fails       | Preserve the check and investigate behavior                                                                                                                                                                                           |
 | Idle warning       | A readiness step passes without settling       | Read [which of the six warnings](flow-yaml.md#idle-readiness) it is, then gate the next action on a stable element                                                                                                                    |
+| Launch warning     | A `launch:` passes from behind the chooser     | The app started, but the runner opened the bundler named in the warning to get there. Confirm it is the bundler the run wants, and disclose the dismissal                                                                             |
 
 Then:
 

@@ -358,10 +358,11 @@ export function renderArtifactLines(report: FlowReport): string[] {
  * under-lines, numbered by walking the full step list so the numbers match a
  * single-mode rerun of the same flow.
  *
- * A PASSING step carrying a warning needs attention too. `await: { idle: true }`
- * only ever warns on a step that passed, and renderSummary counts every warning
- * whatever its status — so skipping those here printed "1 warning" with the
- * text nowhere on screen, which is the whole of what the step reports.
+ * A PASSING step carrying a warning needs attention too. Both sources warn only
+ * on a step that passed — `await: { idle: true }`, and a `launch:` that had to
+ * get past the expo dev-client chooser — and renderSummary counts every warning
+ * whatever its status, so skipping those here printed "1 warning" with the text
+ * nowhere on screen, which is the whole of what the step reports.
  */
 export function renderFailedSteps(report: FlowReport): string[] {
   const lines: string[] = [];
