@@ -817,6 +817,100 @@ describe("await-ui-element tool", () => {
     expect(unmetUiWaitCause(result)).toBe("unreadable");
   });
 
+  // An AX service that answers once and then stops answering: every later
+  // describe() hangs forever. Distinct from `makeChromiumApiThatDiesAfterOneRead`
+  // above, whose second read THROWS — the one variant that sets `lastError`.
+  // A source that simply goes silent (a blocked renderer, a wedged AX service,
+  // an Android `getHierarchy` RPC sitting on its 15s bound) leaves the loop
+  // holding a tree it read before the silence, with no error to mark it stale.
+  function makeAXServiceThatHangsAfterOneRead(): AXServiceApi {
+    let reads = 0;
+    return {
+      degraded: false,
+      describe: () =>
+        reads++ === 0
+          ? Promise.resolve(axResponse([{ label: "Header", frame: FRAME, traits: [] }]))
+          : new Promise(() => {}),
+      alertCheck: async () => false,
+      ping: async () => true,
+    };
+  }
+
+  it("calls a wait unreadable when the tree source went silent for most of the window", async () => {
+    // The screen was read once, at t≈0, and never again — so the note quotes a
+    // tree the wait stopped having any evidence for long before its deadline.
+    // Narrating that as `unmet` sends the recorder's author to delete a step
+    // over a condition nothing ever re-checked.
+    const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 300,
+        pollIntervalMs: 20,
+      }
+    );
+
+    // No fetch threw, so there is no error in the note to read the cause off —
+    // it reads exactly like a miss on a tree that was there the whole time.
+    expect(result.note).toMatch(/no element matched/i);
+    expect(result.note ?? "").not.toMatch(/fetch failed|did not complete/i);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it("holds a silent source to the same bar on `hidden`", async () => {
+    // `hidden` resolves on ABSENCE, so a window that went dark cannot confirm
+    // the element left — the note says it was still visible, and that reading
+    // is 300ms stale.
+    const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "hidden",
+        selector: { text: "Header" },
+        timeoutMs: 300,
+        pollIntervalMs: 20,
+      }
+    );
+
+    expect(result.note).toMatch(/still visible at timeout/i);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it.each(["visible", "hidden"] as const)(
+    "keeps `%s` unmet when only the deadline poll straddles, with the reads still fresh",
+    async (condition) => {
+      // The over-correction guard. `pollIntervalMs` exceeds `timeoutMs`, so the
+      // sleep is clamped to the deadline and the poll after it is issued with
+      // ~0ms of budget — it CANNOT complete, on any device. Treating that
+      // routine straddle as an untrusted final read would make every timeout
+      // here `unreadable`, `hidden` most of all. What keeps it honest is the
+      // tail: one trusted read, one interval back.
+      const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+      const result = await tool.execute(
+        {},
+        {
+          udid: IOS_UDID,
+          // `hidden` needs a selector that MATCHED, or it resolves true on the
+          // first read; `visible` needs one that did not.
+          condition,
+          selector: { text: condition === "hidden" ? "Header" : "Nope" },
+          timeoutMs: 600,
+          pollIntervalMs: 2000,
+        }
+      );
+
+      expect(result.success).toBe(false);
+      expect(unmetUiWaitCause(result)).toBe("unmet");
+    }
+  );
+
   it("calls a cancelled wait cancelled", async () => {
     const controller = new AbortController();
     controller.abort();

@@ -205,6 +205,17 @@ interface WaitResult {
 const DARK_TAIL_TOLERANCE_INTERVALS = 2;
 
 /**
+ * How the loop's LAST fetch attempt ended, which is not a two-way question.
+ *
+ * - `trusted` — it settled, returned a tree, and the tree could be judged on.
+ * - `untrusted` — it settled, and what came back cannot be judged: the fetch
+ *   threw, or the tree was blind.
+ * - `unsettled` — it never came back. The newest data is then the read BEFORE
+ *   it, whose age is the only evidence there is.
+ */
+type FinalRead = "trusted" | "untrusted" | "unsettled";
+
+/**
  * WHY a wait that reached its deadline came back `success: false`.
  *
  * Only `unmet` is a statement about the condition, so it has to be earned:
@@ -217,22 +228,33 @@ const DARK_TAIL_TOLERANCE_INTERVALS = 2;
  *    the fetch failed, so nothing ever evaluated the condition.
  * 2. Trusted reads existed but the window went dark at the end. `hidden` is
  *    held to a stricter bar: there the element LEAVING is the transition being
- *    waited on, so any untrusted final read leaves gone-ness unconfirmable.
- *    For the rest, a dark tail beyond {@link DARK_TAIL_TOLERANCE_INTERVALS}
- *    means the trusted reads no longer describe the deadline.
+ *    waited on, so a final read that ANSWERED unjudgeably leaves gone-ness
+ *    unconfirmable. For the rest, a dark tail beyond
+ *    {@link DARK_TAIL_TOLERANCE_INTERVALS} means the trusted reads no longer
+ *    describe the deadline.
  * 3. A dark tail inside the tolerance — a genuine last-poll blip. The trusted
  *    reads still describe the window, so a transient failure on the trailing
  *    poll must not turn a real miss into "nothing was ever compared".
+ *
+ * An `unsettled` final attempt takes the dark-tail measure on EVERY condition,
+ * `hidden` included, because that attempt is not evidence either way and the
+ * loop makes one on almost every timeout: the poll sleep is clamped to the
+ * deadline, so the iteration after it is issued with ~0ms of budget and
+ * straddles it. Holding `hidden` to the strict bar on that would make every
+ * ordinary `hidden` timeout `unreadable`. What separates the routine straddle
+ * from a source that stopped answering is exactly how far back the last
+ * trusted read lies — one poll interval in the first case, most of the window
+ * in the second.
  */
 function timeoutCause(
   condition: Params["condition"],
   lastTrustedReadAt: number | undefined,
-  lastReadTrusted: boolean,
+  finalRead: FinalRead,
   pollIntervalMs: number
 ): UnmetUiWaitCause {
   if (lastTrustedReadAt === undefined) return "unreadable";
-  if (lastReadTrusted) return "unmet";
-  if (condition === "hidden") return "unreadable";
+  if (finalRead === "trusted") return "unmet";
+  if (finalRead === "untrusted" && condition === "hidden") return "unreadable";
   const darkTailMs = Date.now() - lastTrustedReadAt;
   return darkTailMs > DARK_TAIL_TOLERANCE_INTERVALS * pollIntervalMs ? "unreadable" : "unmet";
 }
@@ -465,19 +487,27 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       if (poll.aborted) return cancelled();
       if (poll.result) return poll.result;
 
-      // The final read attempt: trusted only if it happened, returned, and
-      // returned something the condition could be judged on. `lastError` is
-      // cleared on every successful fetch, so it being set means the LAST fetch
-      // is the one that failed.
-      const lastReadTrusted =
-        poll.lastError === undefined &&
-        poll.lastData !== null &&
-        !isBlindRead(poll.lastData, everMatched);
+      // The final read attempt: trusted only if it settled, returned, and
+      // returned something the condition could be judged on. `lastError` alone
+      // cannot say — it is cleared on every successful fetch, so it being set
+      // means the LAST fetch is the one that failed, but the converse does not
+      // hold: the loop leaves it unset for an attempt it abandoned at the
+      // deadline after an earlier read had landed, precisely so the note can
+      // still be built from that older tree. Reading the absence of an error as
+      // "the last read landed" is what let a source that went silent mid-wait
+      // be narrated as a verdict on the condition.
+      const finalRead: FinalRead = !poll.lastAttemptSettled
+        ? "unsettled"
+        : poll.lastError === undefined &&
+            poll.lastData !== null &&
+            !isBlindRead(poll.lastData, everMatched)
+          ? "trusted"
+          : "untrusted";
       return {
         success: false,
         elapsed: Date.now() - start,
         note: timeoutNote(params, poll.lastData?.tree ?? null, poll.lastError, poll.lastData),
-        cause: timeoutCause(params.condition, lastTrustedReadAt, lastReadTrusted, pollIntervalMs),
+        cause: timeoutCause(params.condition, lastTrustedReadAt, finalRead, pollIntervalMs),
       };
     },
   };
