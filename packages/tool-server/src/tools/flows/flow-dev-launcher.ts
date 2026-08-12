@@ -284,6 +284,9 @@ type DevLauncherOutcome =
   | { handled: true; ok: true; url: string }
   | { handled: true; ok: false; reason: string };
 
+/** How long the `dumpsys package` read has to answer. */
+const PROBE_TIMEOUT_MS = 10_000;
+
 /**
  * Is this app an expo dev build — one that can show the chooser at all?
  *
@@ -326,8 +329,6 @@ type DevLauncherOutcome =
  * behaviour a launch had before this module existed — but says nothing about
  * the app, and caching it would disable the recovery for the rest of the run.
  */
-const PROBE_TIMEOUT_MS = 10_000;
-
 async function isExpoDevBuild(
   device: DeviceInfo,
   bundleId: string,
