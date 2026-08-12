@@ -210,6 +210,10 @@ export type FlowStepResult = {
    * steps). Pre-depth tool-servers send none and the report renders flat.
    */
   depth?: number;
+  // The wire also carries `structural` on a repeat block's marker lines;
+  // deliberately absent here — this renderer numbers raw report entries (the
+  // treatment `echo` already gets), a divergence from the CLI's numbering that
+  // the tool-server's StepReport.structural docstring owns.
   /**
    * Snapshot-step artifacts keyed by role (baseline/current/diff). Untrusted
    * wire data: a non-handle value renders as text or is skipped.
