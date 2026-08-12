@@ -846,6 +846,45 @@ describe("when the bundler never serves the app", () => {
       vi.useRealTimers();
     }
   });
+
+  it("names the unreadable screen rather than the bundler it opened", async () => {
+    // The retry is for a TRANSIENT read failure mid-bundle. When every read
+    // fails the wait still burns its whole budget, and blaming "the bundler at
+    // that address" then points at the one subsystem that was never observed.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+      let read = 0;
+      vi.mocked(fetchFlowTree).mockImplementation(async () => {
+        read += 1;
+        if (read === 1) return { tree: launcherTree(), source: "android-devtools" };
+        throw new Error("android devtools helper is not reachable");
+      });
+      const registry = {
+        invokeTool: vi.fn(async () => ({ ok: true })),
+        getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+      } as unknown as Registry;
+
+      const pending = dismissDevLauncher(
+        { registry, device: emulator },
+        "xyz.blueskyweb.app",
+        8081,
+        new Map()
+      );
+      await vi.advanceTimersByTimeAsync(61_000);
+      const outcome = await pending;
+
+      expect(outcome).toMatchObject({ handled: true, ok: false });
+      expect(outcome).toHaveProperty(
+        "reason",
+        expect.stringContaining("android devtools helper is not reachable")
+      );
+      expect(outcome).toHaveProperty("reason", expect.stringContaining("could not be read"));
+      expect(outcome).not.toHaveProperty("reason", expect.stringContaining("did not serve"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("what the launch step reports", () => {

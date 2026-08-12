@@ -429,22 +429,36 @@ export async function dismissDevLauncher(
     };
   }
 
+  // A read that fails mid-bundle is transient and the loop retries it, but the
+  // error is carried to the deadline: a wait that never once saw the screen has
+  // observed nothing about the bundler, and saying it did names the wrong
+  // subsystem for a tree source that is simply down.
+  const readExitTree = async (): Promise<{ tree: DescribeNode } | { unread: string }> => {
+    try {
+      return { tree: (await fetchFlowTree(registry, device)).tree };
+    } catch (err) {
+      return { unread: errMsg(err) };
+    }
+  };
+
   const deadline = Date.now() + EXIT_TIMEOUT_MS;
   for (;;) {
     if (signal?.aborted) return { handled: true, ok: true, url: target.url };
-    try {
-      const next = (await fetchFlowTree(registry, device)).tree;
-      if (!detectDevLauncher(next)) return { handled: true, ok: true, url: target.url };
-    } catch {
-      // Transient read failure mid-bundle — retry until the deadline.
+    const seen = await readExitTree();
+    if ("tree" in seen && !detectDevLauncher(seen.tree)) {
+      return { handled: true, ok: true, url: target.url };
     }
     if (Date.now() >= deadline) {
       return {
         handled: true,
         ok: false,
         reason:
-          `opened ${target.url} from the expo dev-client launcher, but it was still showing ` +
-          `${EXIT_TIMEOUT_MS / 1000}s later — the bundler at that address did not serve this app.`,
+          "unread" in seen
+            ? `opened ${target.url} from the expo dev-client launcher, but the screen could not be ` +
+              `read for ${EXIT_TIMEOUT_MS / 1000}s afterwards (${seen.unread}), so whether the ` +
+              `chooser left is unknown.`
+            : `opened ${target.url} from the expo dev-client launcher, but it was still showing ` +
+              `${EXIT_TIMEOUT_MS / 1000}s later — the bundler at that address did not serve this app.`,
       };
     }
     if (!(await sleepOrAbort(EXIT_POLL_MS, signal))) {
