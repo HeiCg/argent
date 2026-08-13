@@ -2076,6 +2076,31 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
     if (s.warning) console.log(renderUnderStepLine(s, liveIndex, `⚠ ${s.warning}`));
   };
 
+  /**
+   * Write the reporter files for a run that produced no report at all — a flow
+   * the tool-server REJECTED (bad YAML, an unknown step key), a transport
+   * error, or a non-report result.
+   *
+   * Returning through `exitAfterFlush` without this left CI worse off than a
+   * wrong file: the publisher picks up whichever `junit.xml` sits at that path,
+   * which is the PREVIOUS run's, so a red build reports the last green one's
+   * results. The directory path already synthesises a suite for exactly this
+   * (`rejectedFlowReport`, whose comment calls a `failures="0"` file for a run
+   * that exited 1 "the one thing a CI artifact must never do"); the two paths
+   * simply disagreed.
+   */
+  const reportRejection = async (message: string): Promise<void> => {
+    await writeReporterFiles(
+      [
+        {
+          report: rejectedFlowReport(flowPath),
+          meta: { platform: args.platform, flowFile: flowPath, incompleteMessage: message },
+        },
+      ],
+      args.reporter
+    );
+  };
+
   let report: FlowReport;
   try {
     const resp = await callTool(
@@ -2091,11 +2116,15 @@ export async function flow(argv: string[], options: FlowCommandOptions): Promise
     // --output copies are fetched, below.
     report = resp.data as FlowReport;
   } catch (err) {
-    return fail(err instanceof Error ? err.message : String(err), 1, err);
+    const message = err instanceof Error ? err.message : String(err);
+    await reportRejection(message);
+    return fail(message, 1, err);
   }
 
   if (!report || typeof report !== "object" || !("steps" in report)) {
-    return fail(`"${flowName}" did not produce a run report.`, 2);
+    const message = `"${flowName}" did not produce a run report.`;
+    await reportRejection(message);
+    return fail(message, 2);
   }
 
   try {
