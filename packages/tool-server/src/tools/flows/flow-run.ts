@@ -2025,17 +2025,29 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
     // blockSteps, so no nesting hides a step: under `true` a device is resolved
     // and `!state.device` is false; under `false` this guard's own
     // stepRequiresDevice conjunct fails. The expansion below stays regardless.
+    //
+    // Unreachable, yet still the FOURTH failure-emission site, going through the
+    // same two calls as the other three: the tool description promises that
+    // "the ONE step a run can fail on also carries `failure`", and a site that
+    // pushed `status: "error"` with no `durationMs` and no failure object would
+    // break that promise the day the two decisions do diverge.
     if (!state.device && stepRequiresDevice(state.registry, step)) {
-      state.stopped = true;
-      pushReport(state, {
+      const startedAt = Date.now();
+      const ordinal = displayOrdinal(state);
+      const report: LeafOutcome = {
         index,
         kind: step.kind,
         status: "error",
         flow: scopeFlow(scope),
         target: stepTarget(step),
         ...depthOf(scope),
+        durationMs: 0,
         reason: `step needs a device but the flow was resolved as device-free — pass an explicit device`,
-      });
+        evidence: { code: "step-kind-unsupported" },
+      };
+      state.stopped = true;
+      await attachFailureDiagnostics(state, report, { startedAt, ordinal });
+      pushReport(state, report);
       const inner = blockSteps(step);
       if (inner) reportBlockSkipped(state, inner, childScope(scope));
       continue;
