@@ -274,12 +274,13 @@ export function buildAppStateMessage(
  * and made no difference.
  *
  * Reached only from `unregistered` after a `stale_process` hand-out for the same
- * bundle, and the pair is what makes the opening claim safe. Which side of the
- * listener a process falls on is fixed at its exec — `listeningSince` and the
- * endpoint do not move within a service instance, and the two states sit on
- * opposite sides of the same comparison — so one bundle reading `stale_process`
- * and then `unregistered` cannot be one process observed twice. The relaunch
- * happened; the process being measured is its result.
+ * bundle, and the pid change in between is what makes the opening claim safe.
+ * `ps -o etime` is whole-second, so the stale/unregistered boundary alone cannot
+ * separate a relaunch from one process re-read across a second boundary — but a
+ * pid is stable for a process's lifetime and changes exactly when it is
+ * replaced. The `stale_process` hand-out records the pid it was addressed to,
+ * and `unregistered` is only treated as terminal once the inspected pid differs,
+ * so the process being measured genuinely is the relaunch's result.
  *
  * `connectedPeers` localises what is left. `DYLD_INSERT_LIBRARIES` is set
  * simulator-wide and this service holds one listener, so any other app connected
@@ -289,11 +290,10 @@ export function buildAppStateMessage(
  * process table can show the insertion but never the load.
  */
 function buildInjectionFailedDiagnosis(bundleId: string, connectedPeers: string[]): string {
-  const peers = connectedPeers.filter((peer) => peer !== bundleId);
   const localisation =
-    peers.length > 0
-      ? `Other apps on this simulator are connected (${peers.join(", ")}), so the launchd environment, the dylib and this service's listener all work — the fault is specific to this app's binary: check that it is a simulator build for this platform and that it does not enforce library validation. `
-      : `No app on this simulator has connected to this tool-server, so a dylib dyld never loads and a listener nothing can reach still read the same. Re-boot the simulator (boot-device with force=true) and confirm argent's native binaries are installed. A tool-server restart is worth at most one attempt: it leaves this app older than the new listener, which is the restart-app prompt again, and landing back here after that relaunch means a second, freshly bound listener saw nothing either. `;
+    connectedPeers.length > 0
+      ? `Other apps on this simulator are connected (${connectedPeers.join(", ")}), so the launchd environment, the dylib and this service's listener all work — the fault is specific to this app's binary: check that it is a simulator build for this platform and that it does not enforce library validation. `
+      : `No app on this simulator has connected to this tool-server, so a dylib dyld never loads and a listener nothing can reach still read the same. Re-boot the simulator (boot-device with force=true) and confirm argent's native binaries are installed. A tool-server restart does not help here either: it leaves this app older than the new listener, which reads as the restart-app prompt again, and a second, freshly bound listener would see nothing too. `;
 
   return (
     `${bundleId} was told to relaunch, and the process now running is a different one, so the relaunch happened — and it still never connected. ` +
@@ -344,10 +344,11 @@ interface NativeDevtoolsUninjectedAdvice {
  * all.
  *
  * `indeterminate` also prescribes a relaunch, and it deliberately does NOT
- * record one: only `stale_process` flipping to `unregistered` proves the process
- * was replaced. `indeterminate` says the process could not be read at all, so an
- * `unregistered` after it may be the same process finally becoming readable —
- * and the terminal diagnosis opens by asserting a relaunch took place.
+ * record one: only a pid change between the `stale_process` hand-out and a later
+ * `unregistered` reading proves the process was replaced. `indeterminate` says
+ * the process could not be read at all, so an `unregistered` after it may be the
+ * same process finally becoming readable — and the terminal diagnosis opens by
+ * asserting a relaunch took place.
  *
  * `terminalRecovery` is the caller's own dead-end guidance, appended only when
  * the advice turns terminal — see {@link INJECTION_FAILED_RECOVERY} for the
@@ -574,16 +575,18 @@ export interface NativeDevtoolsApi {
    */
   appConnectionState(bundleId: string): Promise<NativeDevtoolsAppState>;
   /**
-   * Record that `bundleId` has been handed `stale_process`'s relaunch remedy, so
-   * a later reading can tell whether the process it is looking at is the result
-   * of one. Prefer {@link adviseOnUninjectedApp}, which pairs this with the
-   * reading that consumes it.
+   * Record that `bundleId` has been handed `stale_process`'s relaunch remedy,
+   * keyed by the pid of the process it was handed to, so a later reading can
+   * tell whether the process it is looking at is the result of that relaunch.
+   * Prefer {@link adviseOnUninjectedApp}, which pairs this with the reading that
+   * consumes it.
    */
   noteRelaunchAdvice(bundleId: string): void;
   /**
-   * Whether the relaunch remedy has been prescribed for `bundleId` since it last
-   * connected. Connecting clears it: the remedy worked, and the next failure is
-   * a fresh problem rather than the continuation of an old one.
+   * Whether a relaunch demonstrably happened since the remedy was prescribed:
+   * the pid the remedy was addressed at differs from the pid last inspected.
+   * Connecting clears the record: the remedy worked, and the next failure is a
+   * fresh problem rather than the continuation of an old one.
    */
   wasAdvisedToRelaunch(bundleId: string): boolean;
   /**
@@ -732,10 +735,17 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
     let inFlight: Promise<void> | null = null;
 
     const activatedBundleIds = new Set<string>();
-    // Bundles handed the relaunch remedy with no connection since. Bounded by
-    // the set of apps ever advised on this simulator, and each entry is dropped
-    // the moment that app completes its handshake.
-    const relaunchAdvised = new Set<string>();
+    // Bundles handed the relaunch remedy with no connection since, keyed by the
+    // pid of the process that was handed it. A relaunch is proven by a pid
+    // change at the later reading, not by the stale→unregistered flip alone:
+    // `ps -o etime` is whole-second, so one unchanged process can read both
+    // states as its quantised age crosses the slop band. The record is bounded
+    // by the set of apps ever advised on this simulator, and each entry is
+    // dropped the moment that app completes its handshake.
+    const relaunchAdvised = new Map<string, number | null>();
+    // The pid of the process `appConnectionState` last inspected for a bundle —
+    // the current process when `adviseOnUninjectedApp` runs right after it.
+    const lastSeenPid = new Map<string, number | null>();
     const events = new TypedEventEmitter<ServiceEvents>();
 
     // Concurrency guard: a single ensureEnv attempt
@@ -1029,6 +1039,10 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         if (!inspection.running) return "not_running";
         if (inspection.process === null) return "indeterminate";
 
+        // The current process for this bundle, so a later `unregistered` reading
+        // can tell a genuinely replaced process from the same one re-read.
+        lastSeenPid.set(bundleId, inspection.process.pid);
+
         if (!processCarriesInjection(inspection.process.env, endpoint)) return "stale_process";
 
         // Injected, but against which listener? A process older than this
@@ -1047,9 +1061,14 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
       },
 
       noteRelaunchAdvice: (bundleId) => {
-        relaunchAdvised.add(bundleId);
+        // Snapshot the pid the hand-out was addressed at. A later `unregistered`
+        // reading is only evidence of a relaunch if the pid has since changed.
+        relaunchAdvised.set(bundleId, lastSeenPid.get(bundleId) ?? null);
       },
-      wasAdvisedToRelaunch: (bundleId) => relaunchAdvised.has(bundleId),
+      wasAdvisedToRelaunch: (bundleId) => {
+        if (!relaunchAdvised.has(bundleId)) return false;
+        return relaunchAdvised.get(bundleId) !== (lastSeenPid.get(bundleId) ?? null);
+      },
 
       activateNetworkInspection(bundleId) {
         activatedBundleIds.add(bundleId);
@@ -1137,6 +1156,7 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         connections.clear();
         activatedBundleIds.clear();
         relaunchAdvised.clear();
+        lastSeenPid.clear();
         server.close();
         if (transport === "unix") {
           try {

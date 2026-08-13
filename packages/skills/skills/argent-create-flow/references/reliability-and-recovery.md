@@ -43,7 +43,7 @@ The full iOS flow tree exists only for an app launched by Argent with instrument
 
 1. If Metro, Expo, Xcode, an icon, or a prior process launched the app, call `restart-app`. Restore the source screen and retry capture. `launch-app` can only foreground the existing process.
 2. Tap capture does **not** wait for that connection. It makes one tree read and turns any failure straight into the kept-coordinates warning. A recording-time `restart-app` returns before the devtools connection opens, so the first tap after a restart can warn transiently. Re-record that tap once before escalating; only a warning that survives the retry is evidence of a real fault.
-3. If the warning survives, call `native-devtools-status` with the same UDID and bundle id. If `requiresRestart` is true, restart once and check again.
+3. If the warning survives, call `native-devtools-status` with the same UDID and bundle id. If `requiresRestart` is true, restart once and check again. If it returns `status: "injection_failed"`, the app's dylib is inserted but dyld never loads it — no app restart or tool-server restart fixes it, so skip step 4 and report an instrumentation blocker (or drive by coordinate, per the fallback above).
 4. If an injectable app remains disconnected, call `stop-all-simulator-servers` once, **scoped to `devices: [<this simulator's UDID>]`**. One tool-server serves every agent on this Argent install, so an unscoped call tears down their devices too. This does not change app or account data. Then restart and check status again.
 5. If it still fails, report an instrumentation blocker. Do not replace selectors with coordinates in a QA flow.
 

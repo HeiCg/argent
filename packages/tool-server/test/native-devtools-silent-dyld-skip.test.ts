@@ -32,6 +32,8 @@ const world = vi.hoisted(() => ({
   env: "",
   /** Bundle ids `launchctl list` reports a UIKitApplication row for. */
   running: [] as string[],
+  /** The pid `launchctl list` reports for the current process. A relaunch moves it. */
+  pid: 4242,
 }));
 
 vi.mock("@argent/native-devtools-ios", () => ({
@@ -79,7 +81,7 @@ vi.mock("node:child_process", async () => {
       if (argv.includes("launchctl list")) {
         callback(null, {
           stdout: world.running
-            .map((id) => `4242\t0\tUIKitApplication:${id}[dffa][rb-legacy]\n`)
+            .map((id) => `${world.pid}\t0\tUIKitApplication:${id}[dffa][rb-legacy]\n`)
             .join(""),
           stderr: "",
         });
@@ -159,6 +161,7 @@ beforeEach(() => {
   world.execAt = Date.now() - 600_000;
   world.env = INJECTED_ENV;
   world.running = [BUNDLE];
+  world.pid = 4242;
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 });
 
@@ -209,6 +212,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
           // process carries the same tokens and never dials.
           advance(2_000);
           world.execAt = Date.now();
+          world.pid += 1;
           advance(PAST_CONNECT_BUDGET_MS);
           continue;
         }
@@ -296,9 +300,20 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
 
   it("turns terminal only for the bundle whose relaunch was prescribed", async () => {
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    advance(10_000);
     try {
       const api = instance.api as NativeDevtoolsApi;
+      // A stale process hands out the relaunch remedy and records its pid.
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("stale_process");
       adviseOnUninjectedApp(api, BUNDLE, "stale_process", INJECTION_FAILED_RECOVERY);
+
+      // The relaunch: a fresh process (a new pid) that dyld skips exactly as
+      // before, so it reads unregistered.
+      advance(2_000);
+      world.execAt = Date.now();
+      world.pid += 1;
+      advance(PAST_CONNECT_BUDGET_MS);
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("unregistered");
 
       expect(
         adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY).terminal
@@ -340,18 +355,25 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
     // app's binary".
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
     let socket: net.Socket | undefined;
+    advance(10_000);
     try {
       const api = instance.api as NativeDevtoolsApi;
       socket = await connectApp(api, "com.example.peer");
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("stale_process");
       adviseOnUninjectedApp(api, BUNDLE, "stale_process", INJECTION_FAILED_RECOVERY);
+
+      // Relaunch into a fresh pid that still never registers.
+      advance(2_000);
+      world.execAt = Date.now();
+      world.pid += 1;
+      advance(PAST_CONNECT_BUDGET_MS);
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("unregistered");
 
       const advice = adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY);
 
       expect(advice.terminal).toBe(true);
       expect(advice.message).toContain("com.example.peer");
       expect(advice.message).toContain("specific to this app's binary");
-      // The app being diagnosed is not evidence about itself.
-      expect(advice.message).not.toContain(`(${BUNDLE})`);
     } finally {
       socket?.destroy();
       await instance.dispose();
@@ -360,9 +382,17 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
 
   it("names the tool-server as still in scope when nothing has connected", async () => {
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    advance(10_000);
     try {
       const api = instance.api as NativeDevtoolsApi;
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("stale_process");
       adviseOnUninjectedApp(api, BUNDLE, "stale_process", INJECTION_FAILED_RECOVERY);
+
+      advance(2_000);
+      world.execAt = Date.now();
+      world.pid += 1;
+      advance(PAST_CONNECT_BUDGET_MS);
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("unregistered");
 
       const advice = adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY);
 
@@ -394,6 +424,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
 
       // Apply restart-app: a fresh process, skipped by dyld exactly as before.
       world.execAt = Date.now();
+      world.pid += 1;
       advance(PAST_CONNECT_BUDGET_MS);
 
       const terminal = await tool.execute({}, params);
@@ -424,6 +455,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
       );
 
       world.execAt = Date.now();
+      world.pid += 1;
       advance(PAST_CONNECT_BUDGET_MS);
 
       await expect(queryFullHierarchyTree(registry, device, BUNDLE)).rejects.toThrow(
@@ -432,6 +464,35 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
       await expect(queryFullHierarchyTree(registry, device, BUNDLE)).rejects.toThrow(
         /takes a point directly and reads no tree/
       );
+    } finally {
+      await instance.dispose();
+    }
+  });
+
+  it("does not read one process's whole-second quantisation flip as a relaunch", async () => {
+    // `ps -o etime` is whole-second, so a process exec'd 2-3 s after the
+    // listener bound sits inside the slop band where the stale/unregistered
+    // comparison depends on the sub-second phase. One process observed twice —
+    // with no relaunch in between — reads stale_process and then unregistered,
+    // and the pid-based record must keep that from reading as a relaunch.
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      const api = instance.api as NativeDevtoolsApi;
+      // exec 2.5 s after the listener bound → Δ ∈ (2000, 3000) slop band.
+      advance(2_500);
+      world.execAt = Date.now();
+      // Age to exactly 15 000 ms (r = 0): reads stale_process.
+      advance(15_000);
+      expect(await api.appConnectionState(BUNDLE)).toBe("stale_process");
+      adviseOnUninjectedApp(api, BUNDLE, "stale_process", INJECTION_FAILED_RECOVERY);
+
+      // The same process, 700 ms later (r = 700): the quantised age crosses the
+      // band and the identical pid now reads unregistered. No relaunch happened.
+      advance(700);
+      expect(await api.appConnectionState(BUNDLE)).toBe("unregistered");
+      const advice = adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY);
+
+      expect(advice.terminal, "a single un-relaunched process must not read terminal").toBe(false);
     } finally {
       await instance.dispose();
     }

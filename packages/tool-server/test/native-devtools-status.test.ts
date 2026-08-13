@@ -1048,10 +1048,14 @@ describe("native-* tool descriptions document every precheck outcome", () => {
       expect(tool.description, `${tool.id} must mention connect_pending`).toContain(
         "connect_pending"
       );
-      // The fourth member of NativeDevtoolsPrecheckBlock, and the only status
-      // whose remedy is neither a restart nor a wait — an agent with no arm for
-      // it retries a simulator that needs re-booting.
+      // `init_failed` and `injection_failed` are the two members whose remedy is
+      // neither a restart nor a wait — an agent with no arm for the first
+      // retries a simulator that needs re-booting, and one with no arm for the
+      // second keeps restarting an app whose dylib dyld never loads.
       expect(tool.description, `${tool.id} must mention init_failed`).toContain("init_failed");
+      expect(tool.description, `${tool.id} must mention injection_failed`).toContain(
+        "injection_failed"
+      );
       expect(tool.description, `${tool.id} must name the tool-server remedy`).toContain(
         "argent server stop && argent server start --detach"
       );
@@ -1400,7 +1404,7 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     ],
     [
       "injection_failed",
-      "If status is injection_failed: the app was told to restart, did, and the fresh process still never connected — the dylib is being inserted but dyld is not loading it, so this is TERMINAL. Do NOT restart the app or the tool-server again; read the message for the likely cause and use the standard `describe` tool or `screenshot` instead.",
+      "If status is injection_failed: the app was told to restart, did, and the fresh process still never connected — the dylib is being inserted but dyld is not loading it, so this is TERMINAL. Do NOT restart the app again and do NOT restart the tool-server; read the message for the likely cause and use the standard `describe` tool or `screenshot` instead.",
     ],
   ])("routes %s identically on all six native-* tools", (status, clause) => {
     for (const tool of tools) {
