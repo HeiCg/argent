@@ -22,13 +22,16 @@ import {
   appIdForPlatform,
   assertSafeFlowName,
   assertValidProjectRoot,
+  blockSteps,
   chromiumLaunchSpec,
   classifyOnDiskSpelling,
   describeSelector,
   describeTextExpectation,
   getFlowPath,
+  isBlockStep,
   parseFlow,
   runTargetName,
+  type BlockStep,
   type FlowFile,
   type FlowSelector,
   type FlowStep,
@@ -227,8 +230,8 @@ export interface StepReport {
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
   /**
-   * Nesting depth for display: omitted at top level, +1 inside each block
-   * directive's expanded steps (a `when:` block's guarded steps, a `run:`
+   * Nesting depth for display: omitted at top level, +1 inside each nesting
+   * step's expanded steps (a `when:` block's guarded steps, a `run:`
    * fragment's steps). Renderers indent by it without knowing which directives
    * nest — the report is a flat list with no block-end marker, so depth cannot
    * be reconstructed downstream.
@@ -863,23 +866,30 @@ function displayFlowName(params: { name?: string; flow_path?: string }): string 
   return params.name || stem || params.flow_path || "(unspecified)";
 }
 
-/** Yield every parsed step, recursing into `when:` blocks (the parser's only nesting). */
+/**
+ * Yield every parsed step, recursing into a block directive's children through
+ * {@link blockSteps} rather than testing one kind: this is the sole feeder of
+ * {@link assertUploadSelfContained}, so a block absent from the recursion would
+ * carry an uploaded flow's nested `run:`/`snapshot` past the preflight and let
+ * an unrunnable flow report green.
+ */
 function* walkSteps(steps: FlowStep[]): Generator<FlowStep> {
   for (const step of steps) {
     yield step;
-    if (step.kind === "when") yield* walkSteps(step.steps);
+    const inner = blockSteps(step);
+    if (inner) yield* walkSteps(inner);
   }
 }
 
 /**
  * Reject an uploaded root flow that is not self-contained — one with a `run:`
- * or `snapshot` step (even inside a `when:` block) — before anything executes:
- * a mid-run or guard-gated error could execute half the flow first, or first
- * surface in CI. Both step kinds anchor at the flow file's real directory,
- * which an uploaded flow does not have: a run: step's referenced files stayed
- * on the client, and snapshot baselines live beside the flow's file — against
- * a per-call temp materialization a plain snapshot can only fail (no baseline)
- * and updateBaselines writes PNGs no later run can find.
+ * or `snapshot` step (at any depth inside a block directive) — before anything
+ * executes: a mid-run or guard-gated error could execute half the flow first,
+ * or first surface in CI. Both step kinds anchor at the flow file's real
+ * directory, which an uploaded flow does not have: a run: step's referenced
+ * files stayed on the client, and snapshot baselines live beside the flow's
+ * file — against a per-call temp materialization a plain snapshot can only fail
+ * (no baseline) and updateBaselines writes PNGs no later run can find.
  */
 function assertUploadSelfContained(flow: FlowFile): void {
   for (const step of walkSteps(flow.steps)) {
@@ -1606,8 +1616,22 @@ function stepTarget(step: FlowStep): string | undefined {
       // The as-written path, so a report line shows exactly what the flow
       // references (`run ../shared/login.yaml`), not just the attribution stem.
       return step.flow;
-    default:
+    case "echo":
+    case "tool":
+      // Each carries its subject in a report field of its own (`message`,
+      // `tool`) that renderers print in the target's place.
       return undefined;
+    case "launch":
+      // A launch's app id may be per-platform (`appIdForPlatform`), and a step
+      // alone does not know the run device.
+      return undefined;
+    case "wait":
+      return undefined;
+    default: {
+      const unclassified: never = step;
+      void unclassified;
+      return undefined;
+    }
   }
 }
 
@@ -1690,7 +1714,7 @@ function scopeFlowDir(scope: StepScope): string {
   return path.dirname(scope.runStack[scope.runStack.length - 1]!.canonical);
 }
 
-/** The scope a block directive's children execute in — one level deeper. */
+/** The scope a nesting step's children execute in — one level deeper. */
 function childScope(
   scope: StepScope,
   overrides: Partial<Omit<StepScope, "depth">> = {}
@@ -1699,8 +1723,8 @@ function childScope(
 }
 
 /**
- * The depth stamp for a report — omitted at top level, so a flow with no block
- * directives produces a report byte-identical to the pre-depth shape.
+ * The depth stamp for a report — omitted at top level, so a flow with no
+ * nesting steps produces a report byte-identical to the pre-depth shape.
  */
 function depthOf(scope: StepScope): Pick<StepReport, "depth"> {
   return scope.depth ? { depth: scope.depth } : {};
@@ -1723,14 +1747,20 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
         // line rather than vanishing — matching reportBlockSkipped.
         ...(step.kind === "echo" ? { message: step.message } : {}),
       });
-      // A when block's literal steps are known — expand them so the report
+      // A block directive's literal steps are known — expand them so the report
       // keeps one line per authored step no matter where the stop landed.
-      if (step.kind === "when") reportBlockSkipped(state, step.steps, childScope(scope));
+      const inner = blockSteps(step);
+      if (inner) reportBlockSkipped(state, inner, childScope(scope));
       continue;
     }
     // The flow was resolved as needing no device, yet a step that acts on one
     // reached execution — the two decisions disagree. Report it as this step's
     // error and stop, rather than letting it fail obscurely further in.
+    // They cannot disagree today, nor for a future block directive whichever way
+    // stepRequiresDevice classifies it — flowRequiresDevice recurses through
+    // blockSteps, so no nesting hides a step: under `true` a device is resolved
+    // and `!state.device` is false; under `false` this guard's own
+    // stepRequiresDevice conjunct fails. The expansion below stays regardless.
     if (!state.device && stepRequiresDevice(state.registry, step)) {
       state.stopped = true;
       pushReport(state, {
@@ -1742,7 +1772,8 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
         ...depthOf(scope),
         reason: `step needs a device but the flow was resolved as device-free — pass an explicit device`,
       });
-      if (step.kind === "when") reportBlockSkipped(state, step.steps, childScope(scope));
+      const inner = blockSteps(step);
+      if (inner) reportBlockSkipped(state, inner, childScope(scope));
       continue;
     }
     if (state.signal?.aborted) {
@@ -1757,9 +1788,8 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
         ...depthOf(scope),
         ...(step.kind === "echo" ? { message: step.message } : {}),
       });
-      if (step.kind === "when") {
-        reportBlockSkipped(state, step.steps, childScope(scope), "run aborted");
-      }
+      const inner = blockSteps(step);
+      if (inner) reportBlockSkipped(state, inner, childScope(scope), "run aborted");
       continue;
     }
 
@@ -1767,8 +1797,8 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
       await execRunStep(state, step, scope);
       continue;
     }
-    if (step.kind === "when") {
-      await execWhenStep(state, step, scope);
+    if (isBlockStep(step)) {
+      await execBlockStep(state, step, scope);
       continue;
     }
 
@@ -1785,12 +1815,12 @@ function describeWhenCondition(cond: WhenCondition): string {
 }
 
 /**
- * Report every step of a `when:` block that will not run as skipped — so a
- * run where the block was skipped (unmet guard, errored guard, hard stop, or
- * cancellation) produces the same report shape (one line per authored step,
- * at the same depth) as a run where it entered, and reports stay comparable
- * run-to-run. Nested when blocks expand (their literal steps are known); a
- * `run:` composition stays one line, matching how post-hard-stop skips report
+ * Report every step of a block directive that will not run as skipped — so a
+ * run where the block was skipped (a `when:` guard unmet or errored, a hard
+ * stop, a cancellation) produces the same report shape (one line per authored
+ * step, at the same depth) as a run where it entered, and reports stay
+ * comparable run-to-run. Nested blocks expand (their literal steps are known);
+ * a `run:` composition stays one line, matching how post-hard-stop skips report
  * a fragment that was never loaded. `scope` is the scope the steps would have
  * executed in — already the block's child scope, not the marker's.
  */
@@ -1811,7 +1841,29 @@ function reportBlockSkipped(
       ...depthOf(scope),
       ...(step.kind === "echo" ? { message: step.message } : {}),
     });
-    if (step.kind === "when") reportBlockSkipped(state, step.steps, childScope(scope), reason);
+    const inner = blockSteps(step);
+    if (inner) reportBlockSkipped(state, inner, childScope(scope), reason);
+  }
+}
+
+/**
+ * Dispatch a block directive to its executor. The `never` default arm is the
+ * run-time site a kind registered in BLOCK_DIRECTIVE_KEYS cannot miss: an
+ * unhandled registered kind fails tsc here instead of returning silently and
+ * leaving the block out of the report entirely, not even its own marker.
+ * Preventing execLeafStep's "unsupported step kind" error is the isBlockStep
+ * gate's doing, not this arm's - a registered kind never reaches the leaf
+ * switch. Binds `step.kind` rather than `step` - while the registry has one
+ * entry BlockStep is not a union, so only the discriminant narrows to `never`.
+ */
+async function execBlockStep(state: ExecState, step: BlockStep, scope: StepScope): Promise<void> {
+  switch (step.kind) {
+    case "when":
+      return execWhenStep(state, step, scope);
+    default: {
+      const unhandled: never = step.kind;
+      void unhandled;
+    }
   }
 }
 
