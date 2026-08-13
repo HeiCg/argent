@@ -129,8 +129,12 @@ function projectAndroidNode(
   // containment over emitted leaves, and an id-less RN ScrollView / Compose
   // LazyColumn (a scrollable bare ViewGroup / View) would otherwise yield no
   // candidate - the nudge would silently skip on Android while the same app
-  // nudges on iOS. Scaffolding is dropped but still walked, so a testID nested
-  // under it survives.
+  // nudges on iOS. The same leaf also scopes plain search rounds: scroll-to
+  // fingerprints the scroll containers under its gesture anchor for
+  // end-of-scroll, so without it that scope falls back to the whole screen and
+  // a header spinner masks the end (see anchorScrollFrames in flow-actions).
+  // Scaffolding is dropped but still walked, so a testID nested under it
+  // survives.
   if (!skip && (identifier || label || hasSemanticRole || isFocused || isScrollable)) {
     frame = rect ? normalizeRect(rect, screenW, screenH) : null;
     if (frame) {
