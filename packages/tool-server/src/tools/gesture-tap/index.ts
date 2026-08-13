@@ -4,7 +4,12 @@ import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/si
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";
 import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
-import { harmonyDisplay, harmonyTouch, toDevicePoint } from "../../utils/harmony-uitest";
+import {
+  assertHarmonyScreenAwake,
+  harmonyDisplay,
+  harmonyTouch,
+  toDevicePoint,
+} from "../../utils/harmony-uitest";
 import { ensureDep } from "../../utils/check-deps";
 import { sendCommand } from "../../utils/simulator-client";
 
@@ -106,6 +111,9 @@ async function tapHarmony(
   clickCount: number
 ): Promise<void> {
   const display = await harmonyDisplay(connectKey);
+  // A tap against a suspended panel reports `No Error` and lands nowhere —
+  // refuse it rather than report { tapped: true } for a touch that did nothing.
+  assertHarmonyScreenAwake(display, "tap");
   const point = toDevicePoint(x, y, display);
   if (clickCount === 2) {
     await harmonyTouch(connectKey, "doubleClick", point);

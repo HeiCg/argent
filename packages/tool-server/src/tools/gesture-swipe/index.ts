@@ -2,7 +2,12 @@ import { z } from "zod";
 import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
-import { harmonySwipeNormalized } from "../../utils/harmony-uitest";
+import {
+  assertHarmonyScreenAwake,
+  harmonyDisplay,
+  harmonySwipe,
+  toDevicePoint,
+} from "../../utils/harmony-uitest";
 import { ensureDep } from "../../utils/check-deps";
 import { sendCommand } from "../../utils/simulator-client";
 
@@ -25,7 +30,9 @@ const zodSchema = z.object({
   durationMs: z
     .number()
     .optional()
-    .describe("Total gesture duration in milliseconds (default 300)"),
+    .describe(
+      "Total gesture duration in milliseconds (default 300). On HarmonyOS this is converted to a `uitest` velocity and clamped to the 200–40000 range the binary accepts, so a very slow or very fast request lands at the nearest velocity `uitest` will take rather than the exact duration asked for."
+    ),
   settle: z
     .boolean()
     .optional()
@@ -87,13 +94,15 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
     // there is no per-frame Move train to emit here.
     if (device.platform === "harmony") {
       await ensureDep("hdc");
-      await harmonySwipeNormalized(
-        harmonyConnectKey(device.id),
-        { x: params.fromX, y: params.fromY },
-        { x: params.toX, y: params.toY },
-        duration,
-        settle
-      );
+      const connectKey = harmonyConnectKey(device.id);
+      const display = await harmonyDisplay(connectKey);
+      // A swipe against a suspended panel reports `No Error` and lands nowhere.
+      assertHarmonyScreenAwake(display, "swipe");
+      const fromPx = toDevicePoint(params.fromX, params.fromY, display);
+      const toPx = toDevicePoint(params.toX, params.toY, display);
+      const distance = Math.hypot(toPx.x - fromPx.x, toPx.y - fromPx.y);
+      const seconds = Math.max(duration, 1) / 1000;
+      await harmonySwipe(connectKey, settle ? "swipe" : "fling", fromPx, toPx, distance / seconds);
       return { swiped: true, timestampMs };
     }
     const api = services.simulatorServer as SimulatorServerApi;

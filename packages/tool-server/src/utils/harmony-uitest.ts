@@ -46,6 +46,35 @@ const REMOTE_TMP = "/data/local/tmp";
 const UITEST_TIMEOUT_MS = 20_000;
 
 /**
+ * `uitest` does not tolerate overlapping invocations: a second call on the
+ * same device blocks until the first finishes, and if that takes past the
+ * timeout the loser is SIGKILLed with the internal status sentinel in its
+ * error. Measured: two concurrent `dumpLayout`s → one 20s failure; three →
+ * two. So calls on one connect key are serialised here — queued behind each
+ * other rather than raced — which turns an opaque 20s kill into the second
+ * call simply starting once the first is done. Keyed per device so a phone
+ * and an emulator, or two devices, still run in parallel; the map entry is
+ * dropped once the queue drains so it cannot grow unboundedly.
+ */
+const uitestQueues = new Map<string, Promise<void>>();
+
+function enqueueUitest<T>(connectKey: string, run: () => Promise<T>): Promise<T> {
+  const prior = uitestQueues.get(connectKey) ?? Promise.resolve();
+  const result = prior.then(run);
+  // The queue tracks only the settlement signal, not the value, so a rejection
+  // never propagates into the next caller's chain.
+  const drained = result.then(
+    () => undefined,
+    () => undefined
+  );
+  uitestQueues.set(connectKey, drained);
+  void drained.finally(() => {
+    if (uitestQueues.get(connectKey) === drained) uitestQueues.delete(connectKey);
+  });
+  return result;
+}
+
+/**
  * `uitest` prints its multi-line usage block after every failure. Only the
  * leading line names the actual problem, so surface that and drop the rest —
  * pasting 12 lines of usage into an agent's context buries the diagnostic.
@@ -61,7 +90,9 @@ async function runUitest(
   args: string,
   timeoutMs = UITEST_TIMEOUT_MS
 ): Promise<string> {
-  const { stdout, exitCode } = await runHdcShell(connectKey, `uitest ${args}`, timeoutMs);
+  const { stdout, exitCode } = await enqueueUitest(connectKey, () =>
+    runHdcShell(connectKey, `uitest ${args}`, timeoutMs)
+  );
   if (exitCode !== 0) {
     throw new FailureError(`uitest ${args} failed on ${connectKey}: ${uitestDiagnostic(stdout)}`, {
       error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
@@ -132,6 +163,30 @@ export function toDevicePoint(
   return { x: clamp(x, display.width), y: clamp(y, display.height) };
 }
 
+/**
+ * Refuse an input injection against a suspended panel.
+ *
+ * `uitest uiInput` reports `No Error` whether or not the touch landed, and
+ * against a screen that is OFF or SUSPEND it lands nowhere — measured: a tap
+ * on the WLAN row of Settings with `powerStatus=POWER_STATUS_OFF` returned
+ * success and changed nothing. `describe` is honest about this same state
+ * (its asleep hint); the input tools must be too, or a screen timeout mid-
+ * session turns every later gesture into a silent no-op that reports success.
+ */
+export function assertHarmonyScreenAwake(display: HarmonyDisplay, action: string): void {
+  if (display.screenOn) return;
+  throw new FailureError(
+    `Cannot ${action} on a HarmonyOS device whose display is off: injected input lands nowhere ` +
+      `while the panel is suspended. Wake it with \`button\` (power), then retry.`,
+    {
+      error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
+      failure_stage: "harmony_screen_off",
+      failure_area: "tool_server",
+      error_kind: "validation",
+    }
+  );
+}
+
 type HarmonyTouchCommand = "click" | "doubleClick" | "longClick";
 
 export async function harmonyTouch(
@@ -151,25 +206,12 @@ type HarmonySwipeCommand = "swipe" | "drag" | "fling";
 const HARMONY_VELOCITY_MIN = 200;
 const HARMONY_VELOCITY_MAX = 40_000;
 
-async function harmonySwipe(
-  connectKey: string,
-  command: HarmonySwipeCommand,
-  from: { x: number; y: number },
-  to: { x: number; y: number },
-  velocity: number
-): Promise<void> {
-  const v = Math.max(HARMONY_VELOCITY_MIN, Math.min(HARMONY_VELOCITY_MAX, Math.round(velocity)));
-  await runUitest(connectKey, `uiInput ${command} ${from.x} ${from.y} ${to.x} ${to.y} ${v}`);
-}
-
 /**
- * Swipe between two normalized points over `durationMs`.
- *
  * `uitest` takes a **velocity**, not a duration, so the duration argent's tools
- * speak is converted here: velocity = pixels travelled / seconds. Doing it the
- * other way — passing a fixed velocity — would make a short swipe and a
- * screen-length one take wildly different times, and the callers that pace a
- * scroll loop against `durationMs` would be pacing against nothing.
+ * speak is converted by the caller: velocity = pixels travelled / seconds.
+ * Doing it the other way — passing a fixed velocity — would make a short swipe
+ * and a screen-length one take wildly different times, and the callers that
+ * pace a scroll loop against `durationMs` would be pacing against nothing.
  *
  * `settle` picks the verb rather than reshaping the path. `uitest` exposes both
  * `swipe` (a drag that ends where it ends) and `fling` (which hands the scroller
@@ -178,19 +220,15 @@ async function harmonySwipe(
  * between the two commands; the resulting difference in coast distance was not
  * measured here.
  */
-export async function harmonySwipeNormalized(
+export async function harmonySwipe(
   connectKey: string,
+  command: HarmonySwipeCommand,
   from: { x: number; y: number },
   to: { x: number; y: number },
-  durationMs: number,
-  settle: boolean
+  velocity: number
 ): Promise<void> {
-  const display = await harmonyDisplay(connectKey);
-  const fromPx = toDevicePoint(from.x, from.y, display);
-  const toPx = toDevicePoint(to.x, to.y, display);
-  const distance = Math.hypot(toPx.x - fromPx.x, toPx.y - fromPx.y);
-  const seconds = Math.max(durationMs, 1) / 1000;
-  await harmonySwipe(connectKey, settle ? "swipe" : "fling", fromPx, toPx, distance / seconds);
+  const v = Math.max(HARMONY_VELOCITY_MIN, Math.min(HARMONY_VELOCITY_MAX, Math.round(velocity)));
+  await runUitest(connectKey, `uiInput ${command} ${from.x} ${from.y} ${to.x} ${to.y} ${v}`);
 }
 
 export async function harmonyKeyEvent(connectKey: string, key: string): Promise<void> {

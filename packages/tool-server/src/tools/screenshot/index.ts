@@ -3,7 +3,12 @@ import { promisify } from "node:util";
 import * as os from "node:os";
 import * as path from "node:path";
 import { z } from "zod";
-import type { Registry, ToolCapability, ToolDefinition } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  type Registry,
+  type ToolCapability,
+  type ToolDefinition,
+} from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
@@ -13,7 +18,7 @@ import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { captureHarmonyScreenshotPng } from "../../utils/harmony-screen";
 import { ensureDep } from "../../utils/check-deps";
-import { UnsupportedOperationError } from "../../utils/capability";
+import { InvalidToolInputError } from "../../utils/capability";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 
 const execFileAsync = promisify(execFile);
@@ -186,10 +191,15 @@ Fails if the simulator-server / emulator backend / Chromium CDP / \`hdc\` is not
       // back over hdc; there is no simulator-server controller for the platform.
       if (device.platform === "harmony") {
         if (params.rotation) {
-          throw new UnsupportedOperationError(
-            "screenshot",
-            device,
-            "rotation is not supported on HarmonyOS: `uitest screenCap` captures the display in its current orientation and has no override. Rotate the device itself, or drop the rotation parameter."
+          // A per-ARGUMENT refusal, not a per-tool one: screenshot works on
+          // every harmony device — only this parameter has no effect. Same
+          // class the keyboard backend uses for an unsupported key.
+          throw new InvalidToolInputError(
+            "rotation is not supported on HarmonyOS: `uitest screenCap` captures the display in its current orientation and has no override. Rotate the device itself, or drop the rotation parameter.",
+            {
+              error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+              failure_stage: "harmony_screenshot_rotation",
+            }
           );
         }
         await ensureDep("hdc");

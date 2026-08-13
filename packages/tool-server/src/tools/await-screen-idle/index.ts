@@ -69,6 +69,8 @@ interface IdleResult {
   waitedMs: number;
   /** Number of tree reads taken. */
   polls: number;
+  /** Why a false `settled` is not a screen that stayed busy — e.g. the device went away. */
+  note?: string;
 }
 
 const capability: ToolCapability = {
@@ -187,7 +189,19 @@ still before the timeout. Use after a launch/navigation to wait for the UI to re
         },
       });
 
-      return { settled: poll.result === true, waitedMs: poll.elapsedMs, polls: poll.polls };
+      return {
+        settled: poll.result === true,
+        waitedMs: poll.elapsedMs,
+        polls: poll.polls,
+        // A device that goes away mid-wait must not read as a screen that never
+        // settled: the two are opposite diagnoses (one is the target's fault,
+        // the other the app's), and on HarmonyOS each read is several `hdc`
+        // round trips to a device that can drop out. `await-ui-element` folds
+        // the same `lastError` into its note.
+        ...(poll.result !== true && poll.lastError
+          ? { note: `last tree fetch failed: ${poll.lastError}` }
+          : {}),
+      };
     },
   };
 }

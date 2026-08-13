@@ -84,6 +84,71 @@ describe("resolveHarmonyEntry", () => {
     );
   });
 
+  it("resolves a short mainAbility to a fully-qualified abilityInfos entry (Photos direction)", async () => {
+    // Photos spells the pair the other way around from Calculator: `mainAbility`
+    // is the short name and the ability declares itself fully qualified. The
+    // match must run in BOTH directions — drop the `n.endsWith` arm and this
+    // bundle falls back to the bare `MainAbility`, which `aa start -a` rejects
+    // with `10104001 The specified ability does not exist`.
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        JSON.stringify({
+          mainEntry: "phone",
+          hapModuleInfos: [
+            {
+              name: "phone",
+              mainAbility: "MainAbility",
+              abilityInfos: [{ name: "com.huawei.hmos.photos.MainAbility" }],
+            },
+          ],
+        })
+      )
+    );
+    expect(await resolveHarmonyEntry("dev", "com.huawei.hmos.photos")).toEqual({
+      mainAbility: "com.huawei.hmos.photos.MainAbility",
+      module: "phone",
+    });
+  });
+
+  it("prefers an exact abilityInfos match over a suffix that would also match", async () => {
+    // Both entries match `MainAbility` under the suffix rule, but the bundle
+    // declares one of them verbatim — and the verbatim declaration is the
+    // spelling `aa start -a` accepts. Checking the suffix rule first would pick
+    // the qualified entry (listed first here so the wrong precedence bites).
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        JSON.stringify({
+          mainEntry: "phone",
+          hapModuleInfos: [
+            {
+              name: "phone",
+              mainAbility: "MainAbility",
+              abilityInfos: [{ name: "com.example.fake.MainAbility" }, { name: "MainAbility" }],
+            },
+          ],
+        })
+      )
+    );
+    expect((await resolveHarmonyEntry("dev", "x")).mainAbility).toBe("MainAbility");
+  });
+
+  it("matches only on a dot boundary — `Ability` does not match `MainAbility`", async () => {
+    // Without the boundary, `MainAbility`.endsWith(`Ability`) would rewrite the
+    // ability to a name the bundle never declared. No entry matches, so the
+    // fallback passes `mainAbility` through unchanged.
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        JSON.stringify({
+          mainEntry: "phone",
+          hapModuleInfos: [
+            { name: "phone", mainAbility: "Ability", abilityInfos: [{ name: "MainAbility" }] },
+          ],
+        })
+      )
+    );
+    expect((await resolveHarmonyEntry("dev", "x")).mainAbility).toBe("Ability");
+  });
+
   it("picks the module named by mainEntry, not the first one listed", async () => {
     runHdcShell.mockResolvedValueOnce(
       ok(

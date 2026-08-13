@@ -18,6 +18,9 @@ vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
   harmonyTypeText: vi.fn(async () => {}),
   harmonyKeyEvent: vi.fn(async () => {}),
+  // The screen-awake guard reads the display first; stub it ON so these tests
+  // exercise the key path, not the panel check.
+  harmonyDisplay: vi.fn(async () => ({ width: 1216, height: 2688, screenOn: true })),
 }));
 
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";

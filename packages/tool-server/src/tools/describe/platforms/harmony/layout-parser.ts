@@ -22,11 +22,14 @@ import { clipBoundsToScreen } from "../android/uiautomator-parser";
  * - **Windows are top-level children**, each carrying `bundleName` /
  *   `abilityName`, so which app owns which subtree is knowable and worth
  *   surfacing.
- * - **`UIExtensionComponent` subtrees are opaque.** System extension UI — the
- *   "open with" app selector, share sheets — renders in another process, and
- *   the dump contains the node with no children. Silently emitting an empty
- *   container would tell an agent the screen is empty when it is covered by a
- *   dialog it cannot see, so these are labelled.
+ * - **`UIExtensionComponent` subtrees are USUALLY opaque — but not always.**
+ *   System extension UI (the "open with" app selector, share sheets) renders in
+ *   another process and the dump carries the node with no children; those are
+ *   labelled so the emptiness reads as a fact. But on HarmonyOS 6.1.1 the same
+ *   node can arrive with the FULL subtree — the HUAWEI ID login sheet carries
+ *   its TextInput and both Buttons (45 nodes measured), and those targets are
+ *   live (their geometry taps). Children win: a subtree that exists is parsed
+ *   normally, and only a genuinely childless one is labelled opaque.
  */
 
 /** Bounds arrive as `[left,top][right,bottom]`, in device pixels. */
@@ -77,9 +80,10 @@ const LAYOUT_CONTAINERS = new Set([
 const DECORATIONS = new Set(["Divider", "ScrollBar", "metaballNode"]);
 
 /**
- * Renders in another process, so the dump carries the node and none of its
- * content. Kept, and labelled, so the emptiness is visible as a fact rather
- * than as an absence.
+ * Renders in another process, so the dump USUALLY carries the node and none of
+ * its content. A childless one is kept and labelled, so the emptiness is
+ * visible as a fact rather than as an absence. One that arrives WITH children
+ * (measured on HarmonyOS 6.1.1) is parsed normally — see the header.
  */
 const OPAQUE_EXTENSION = "UIExtensionComponent";
 
@@ -150,7 +154,12 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
 
   if (DECORATIONS.has(type)) return [];
 
-  if (type === OPAQUE_EXTENSION) {
+  // Only a genuinely childless extension is opaque. One carrying a subtree is
+  // real, live UI (its Buttons tap), so it falls through and is parsed like
+  // anything else — replacing it with the placeholder would discard the only
+  // controls that dismiss the sheet, and `uitest screenCap` does not capture
+  // the surface either, so the agent would have nothing.
+  if (type === OPAQUE_EXTENSION && children.length === 0) {
     return [
       {
         ...blank(attrs, bounds),
@@ -391,9 +400,14 @@ export function parseHarmonyLayout(
       ? { width: rootBounds.w, height: rootBounds.h }
       : fallback;
 
-  // Each top-level child is a window. Label it with the app that owns it so a
+  // Each top-level child is a window. Tag it with the app that owns it so a
   // tree spanning an app plus the status bar (always a separate `sceneboard`
-  // window) is readable rather than two anonymous stacks.
+  // window) is readable rather than two anonymous stacks. The bundle goes in
+  // `identifier`, NOT `label`: the shared matcher treats `label` as the
+  // element's visible text, and a full-screen node "named" `com.huawei.hmos.*`
+  // is a phantom text node — it ties with the app's real title in reading
+  // order (poisoning a `text` wait for the app's own name), and it makes
+  // `exists: {text: "sceneboard"}` true on every screen.
   const windows: DescribeNode[] = [];
   for (const child of root.children ?? []) {
     const attrs = child.attributes ?? {};
@@ -408,7 +422,7 @@ export function parseHarmonyLayout(
     }
     windows.push({
       role: "Window",
-      label: bundle,
+      identifier: bundle,
       frame: unionFrame(built),
       children: built,
     });

@@ -154,9 +154,13 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
   it("only counts a target once it is Connected", async () => {
     // A killed emulator leaves its row behind as `Offline` — measured — so a
-    // row existing is not the same as a device there is any point driving.
-    const offline = { ...emulatorTarget, state: "Offline" };
-    targets([PHONE], [PHONE, offline], [PHONE, emulatorTarget]);
+    // row existing is not the same as a device there is any point driving. The
+    // Offline row and the later Connected one are given DIFFERENT keys on
+    // purpose: sharing one key would pass whether the code waited for
+    // `Connected` or adopted the `Offline` row on the earlier poll, which is
+    // exactly the drift this test exists to catch.
+    const offlineOther = { connectKey: "127.0.0.1:5559", connection: "TCP", state: "Offline" };
+    targets([PHONE], [PHONE, offlineOther], [PHONE, emulatorTarget]);
     vi.useFakeTimers();
 
     const pending = boot({});
@@ -212,7 +216,11 @@ describe("boot-device — HarmonyOS emulator path", () => {
     const result = (await pending) as { udid: string; note?: string };
 
     expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
-    expect(result.note).toBeTruthy();
+    // Truthy is not enough: the note this branch returns must be the
+    // two-arrival refusal, not the generic "had not registered before the boot
+    // budget ran out" one — both targets DID register, and argent declined to
+    // choose. Pointing the caller at `bootTimeoutMs` would misdiagnose it.
+    expect(result.note).toMatch(/two|both|more than one|could not tell which/i);
   });
 
   it("names the instance and says why when nothing registers within the budget", async () => {
@@ -304,13 +312,16 @@ describe("boot-device — HarmonyOS emulator path", () => {
     vi.useFakeTimers();
 
     const pending = boot({ bootTimeoutMs: 900_000 });
-    const settled = expect(pending).rejects.toThrow(
-      /is not found\. Please create the device(?!.*create one in DevEco Studio)/s
-    );
+    // A negative LOOKAHEAD anchored on `is not found…` would not catch the
+    // no-instances sentence prepended BEFORE the anchor, so this asserts the
+    // absence directly.
+    const settled = expect(pending).rejects.toThrow(/is not found\. Please create the device/);
     await vi.advanceTimersByTimeAsync(1_000);
     child.die(`"${INSTANCE}" is not found. Please create the device(folder): /x`, 1);
     await vi.advanceTimersByTimeAsync(3_000);
     await settled;
+    const msg = await pending.catch((e: unknown) => (e as Error).message);
+    expect(msg).not.toContain("create one in DevEco Studio");
   });
 
   it("leaves a running instance alone and says how to reach it", async () => {

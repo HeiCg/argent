@@ -33,10 +33,23 @@ describe("runHdc timeout enforcement", () => {
     // without `killSignal`: still running 6s after a 1s timeout.
     const started = Date.now();
 
-    await expect(runHdc(["list", "targets"], 800)).rejects.toThrow();
+    // The rejection must name the TIMEOUT, not the dependency: an instant
+    // `HARMONY_HDC_NOT_FOUND` also satisfies `rejects.toThrow()` and the <6s
+    // bound while never having spawned the wedged child at all — so the error
+    // text is pinned to the kill, and the lower bound to the timeout having
+    // actually been waited out.
+    const err = await runHdc(["list", "targets"], 800).then(
+      () => {
+        throw new Error("expected a rejection, got a resolution");
+      },
+      (e: unknown) => e as Error
+    );
 
+    const elapsed = Date.now() - started;
+    expect(err.message).not.toMatch(/not found|not installed/i);
+    expect(elapsed).toBeGreaterThanOrEqual(700); // the 800ms timeout, less timer slack
     // Far below the stub's own 30s sleep: the assertion is that the deadline is
     // enforced at all, not its precise latency on a loaded CI box.
-    expect(Date.now() - started).toBeLessThan(6_000);
+    expect(elapsed).toBeLessThan(6_000);
   }, 20_000);
 });

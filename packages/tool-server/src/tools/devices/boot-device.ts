@@ -1533,6 +1533,17 @@ const HARMONY_NO_TARGET =
   "`bootTimeoutMs`, or call `list-devices` once it finishes booting and drive the `kind: " +
   '"device"` entry that appears.';
 
+/**
+ * Said when more than one eligible target registered inside the boot window, so
+ * arrival cannot pick the instance out. Distinct from {@link HARMONY_NO_TARGET}:
+ * the budget is not the problem — both targets DID register — and pointing the
+ * caller at `bootTimeoutMs` would misdiagnose a refusal to guess.
+ */
+const HARMONY_AMBIGUOUS_TARGET =
+  "More than one `hdc` target registered while the instance was booting, so argent could not " +
+  "tell which is the instance it started and did not guess. Call `list-devices` and drive the " +
+  '`kind: "device"` entry for the instance, or stop the other emulator and re-run.';
+
 /** Said when the instance started but the connector that would reach it is missing. */
 const HARMONY_NO_HDC =
   "The instance started, but `hdc` was not found, so argent cannot tell which target it " +
@@ -1545,9 +1556,20 @@ async function connectedHarmonyTargets() {
   return targets.filter((t) => t.state === "Connected");
 }
 
-/** The connect keys `hdc` can drive right now. */
-async function connectedHarmonyKeys(): Promise<Set<string>> {
-  return new Set((await connectedHarmonyTargets()).map((t) => t.connectKey));
+/**
+ * Every connect key `hdc` lists, in ANY state.
+ *
+ * The pre-start snapshot must be taken against all rows, not only `Connected`
+ * ones: a target that is listed but `Offline` when the snapshot is taken reads
+ * as an arrival the moment it reconnects — and `Offline` is what a still-
+ * booting instance shows, what a stopped one leaves behind, and what any
+ * connection blip produces (a row was observed flipping back to `Connected`
+ * unattended when its guest rebooted mid-session). Adopting that reconnection
+ * hands back a device this call did not start.
+ */
+async function knownHarmonyKeys(): Promise<Set<string>> {
+  const targets = await listHarmonyHdcTargets().catch(() => []);
+  return new Set(targets.map((t) => t.connectKey));
 }
 
 /**
@@ -1658,15 +1680,19 @@ async function waitForHarmonyTarget(
   before: Set<string>,
   deadline: number,
   checkAlive: () => void
-): Promise<string | null> {
+): Promise<{ key: string | null; ambiguous: boolean }> {
+  let ambiguous = false;
   for (;;) {
     const arrived = (await connectedHarmonyTargets()).filter(
       (t) => !before.has(t.connectKey) && couldBeHarmonyEmulator(t)
     );
-    if (arrived.length === 1) return arrived[0]!.connectKey;
+    if (arrived.length === 1) return { key: arrived[0]!.connectKey, ambiguous: false };
+    // Two eligible fresh arrivals at once is a refusal to guess, not a slow
+    // boot — remember it so the caller can say so instead of blaming the budget.
+    if (arrived.length > 1) ambiguous = true;
     checkAlive();
     const remaining = deadline - Date.now();
-    if (remaining <= 0) return null;
+    if (remaining <= 0) return { key: null, ambiguous };
     await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
   }
 }
@@ -1752,10 +1778,13 @@ async function bootHarmonyImpl(params: {
     }
   }
 
-  // Snapshot immediately before the start, so every target that was already
-  // being driven — another emulator, a phone on USB — is excluded by identity
-  // rather than by any assumption about how an emulator's key is spelled.
-  const before = await connectedHarmonyKeys();
+  // Snapshot immediately before the start, against EVERY row `hdc` lists —
+  // Connected or not — so a target that was already known (another emulator, a
+  // phone on USB, a stale Offline row) is excluded by identity rather than by
+  // any assumption about how an emulator's key is spelled. Only a target that
+  // registers FRESH after the start can be the instance just booted; a row that
+  // was already listed and merely reconnects is not an arrival.
+  const before = await knownHarmonyKeys();
 
   const emulator = await startHarmonyEmulator(params.instanceName);
 
@@ -1812,16 +1841,25 @@ async function bootHarmonyImpl(params: {
     assertEmulatorAlive();
   }
 
-  const connectKey = hdcAvailable
+  const outcome = hdcAvailable
     ? await waitForHarmonyTarget(before, bootDeadline, assertEmulatorAlive)
-    : null;
+    : { key: null, ambiguous: false };
+  const connectKey = outcome.key;
 
   return {
     platform: "harmony",
     udid: connectKey ? harmonyDeviceId(connectKey) : harmonyEmulatorId(params.instanceName),
     instanceName: params.instanceName,
     booted: true,
-    ...(connectKey ? {} : { note: hdcAvailable ? HARMONY_NO_TARGET : HARMONY_NO_HDC }),
+    ...(connectKey
+      ? {}
+      : {
+          note: !hdcAvailable
+            ? HARMONY_NO_HDC
+            : outcome.ambiguous
+              ? HARMONY_AMBIGUOUS_TARGET
+              : HARMONY_NO_TARGET,
+        }),
   };
 }
 

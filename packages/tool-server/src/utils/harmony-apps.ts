@@ -1,4 +1,4 @@
-import { FAILURE_CODES, FailureError } from "@argent/registry";
+import { FAILURE_CODES, FailureError, getFailureSignal } from "@argent/registry";
 import { runHdcShell, shellQuote } from "./harmony-hdc";
 
 /**
@@ -38,17 +38,20 @@ interface HarmonyBundleEntry {
  * The subtlety, and the reason this is not a one-line read of `mainAbility`:
  * **`aa start -a` does not accept `mainAbility`.** It accepts the `name` of the
  * matching entry in `abilityInfos`, and the two are spelled differently from
- * bundle to bundle. Measured on HarmonyOS 6.0.1:
+ * bundle to bundle. Measured on HarmonyOS 6.0.1 and a 6.1.1 emulator:
  *
  *   bundle       mainAbility                                 abilityInfos name
  *   calculator   com.huawei.hmos.calculator.CalculatorAbility CalculatorAbility
  *   settings     com.huawei.hmos.settings.MainAbility         (identical)
  *   notepad      MainAbility                                  (identical)
+ *   photos       MainAbility                                  com.huawei.hmos.photos.MainAbility
  *
  * Passing `mainAbility` verbatim launches Settings and fails on Calculator with
  * `10104001 The specified ability does not exist`; passing the bare final
- * segment does the reverse. So `mainAbility` is used to *identify* the entry and
- * the entry's own `name` is what gets passed.
+ * segment does the reverse. Photos spells them the other way around — a short
+ * `mainAbility` against a fully-qualified entry — so the match has to run in
+ * BOTH directions, not just the Calculator one. `mainAbility` is used to
+ * *identify* the entry and the entry's own `name` is what gets passed.
  *
  * `mainAbility` is what identifies it, rather than the first entry of
  * `abilityInfos`: a bundle can declare a dozen abilities (Settings declares
@@ -98,12 +101,20 @@ export async function resolveHarmonyEntry(
   }
   const modules = Array.isArray(parsed.hapModuleInfos) ? parsed.hapModuleInfos : [];
   const mainEntry = typeof parsed.mainEntry === "string" ? parsed.mainEntry : null;
+  // `bm` serialises the `mainAbility` key on EVERY bundle, so an empty string —
+  // not an absent key — is how a bundle with no launcher entry reports itself
+  // (14 of the 73 bundles installed on a 6.1.1 emulator, every service bundle
+  // among them). Treat "" as missing on BOTH selection arms: accepting it sends
+  // `aa start -a ''`, which `aa` reads as an implicit start, answers with
+  // `10103101 Failed to find a matching application for implicit launch`, and
+  // leaves a modal "No options to open with" dialog on the device — the exact
+  // failure this module's lookup exists to prevent, with a worse message.
+  const hasMain = (m: (typeof modules)[number]): boolean =>
+    typeof m.mainAbility === "string" && m.mainAbility.length > 0;
   // `mainEntry` names the module that owns the launcher entry; fall back to the
   // first module that declares a mainAbility for bundles that omit it.
-  const chosen =
-    modules.find((m) => m.name === mainEntry && typeof m.mainAbility === "string") ??
-    modules.find((m) => typeof m.mainAbility === "string");
-  if (!chosen || typeof chosen.mainAbility !== "string" || typeof chosen.name !== "string") {
+  const chosen = modules.find((m) => m.name === mainEntry && hasMain(m)) ?? modules.find(hasMain);
+  if (!chosen || typeof chosen.name !== "string" || typeof chosen.mainAbility !== "string") {
     throw new FailureError(
       `App '${bundleId}' on HarmonyOS device '${connectKey}' declares no launchable main ability, ` +
         `so there is nothing to start. It may be a service or extension rather than an app.`,
@@ -121,40 +132,19 @@ export async function resolveHarmonyEntry(
   };
 }
 
-/**
- * The spelling of the main ability that `aa start -a` accepts — see the note on
- * `resolveHarmonyEntry`.
- *
- * Falls back to `mainAbility` itself when no declared ability matches: two of
- * the three bundles measured spell them identically, so it is the right guess,
- * and `aa`'s own `10104001` names the problem precisely if it turns out wrong.
- */
-function startableAbilityName(
-  abilityInfos: Array<{ name?: unknown }> | undefined,
-  mainAbility: string
-): string {
-  const names = (Array.isArray(abilityInfos) ? abilityInfos : [])
-    .map((a) => a?.name)
-    .filter((n): n is string => typeof n === "string" && n.length > 0);
-  if (names.includes(mainAbility)) return mainAbility;
-  return names.find((n) => mainAbility.endsWith(`.${n}`)) ?? mainAbility;
-}
-
-/** Bring an app to the foreground, resolving its entry ability first. */
-export async function launchHarmonyApp(connectKey: string, bundleId: string): Promise<void> {
-  const entry = await resolveHarmonyEntry(connectKey, bundleId);
-  const { stdout } = await runHdcShell(
-    connectKey,
-    `aa start -b ${shellQuote(bundleId)} -a ${shellQuote(entry.mainAbility)} -m ${shellQuote(entry.module)}`
-  );
-  assertAbilityStarted(stdout, connectKey, bundleId);
-}
+/** Stop a running app. See {@link terminateHarmonyApp} for why this is separate. */
+const AA_NOT_RUNNING_MARKER = "not running";
 
 /**
  * Stop every process of an app.
  *
  * `aa force-stop` takes the bundle name and, unlike `aa start`, needs no ability
  * — there is nothing to resolve.
+ *
+ * Throws when the stop was refused for any reason other than the app not
+ * running: `restart-app` exists to guarantee a fresh process, and reporting
+ * `restarted: true` for an app that is still running with its old state is the
+ * one outcome it must not produce.
  */
 export async function terminateHarmonyApp(connectKey: string, bundleId: string): Promise<void> {
   const { stdout } = await runHdcShell(connectKey, `aa force-stop ${shellQuote(bundleId)}`);
@@ -169,6 +159,58 @@ export async function terminateHarmonyApp(connectKey: string, bundleId: string):
       }
     );
   }
+}
+
+/**
+ * The one `aa force-stop` failure that is not a failure: stopping an app that
+ * is not running. A restart of an app that was never launched must still
+ * launch it — that is a start, not an error — so `restart-app` narrows its
+ * tolerance to this exact diagnostic rather than swallowing every refusal.
+ */
+export function isHarmonyAppNotRunning(error: unknown): boolean {
+  return (
+    error instanceof FailureError &&
+    getFailureSignal(error)?.failure_stage === "harmony_force_stop" &&
+    error.message.includes(AA_NOT_RUNNING_MARKER)
+  );
+}
+
+/**
+ * The spelling of the main ability that `aa start -a` accepts — see the note on
+ * `resolveHarmonyEntry`.
+ *
+ * The match runs in BOTH directions on a dot boundary, because the two
+ * spellings occur both ways on real bundles: Calculator's `mainAbility` is
+ * fully qualified where its `abilityInfos` entry is short, and Photos' is the
+ * reverse (short `mainAbility`, fully-qualified entry). Exact match first, then
+ * either side being the other's final dot-segment. The boundary stops `Ability`
+ * matching `MainAbility`.
+ *
+ * Falls back to `mainAbility` itself when no declared ability matches: the
+ * common case spells them identically, so it is the right guess, and `aa`'s own
+ * `10104001` names the problem precisely if it turns out wrong.
+ */
+function startableAbilityName(
+  abilityInfos: Array<{ name?: unknown }> | undefined,
+  mainAbility: string
+): string {
+  const names = (Array.isArray(abilityInfos) ? abilityInfos : [])
+    .map((a) => a?.name)
+    .filter((n): n is string => typeof n === "string" && n.length > 0);
+  if (names.includes(mainAbility)) return mainAbility;
+  return (
+    names.find((n) => mainAbility.endsWith(`.${n}`) || n.endsWith(`.${mainAbility}`)) ?? mainAbility
+  );
+}
+
+/** Bring an app to the foreground, resolving its entry ability first. */
+export async function launchHarmonyApp(connectKey: string, bundleId: string): Promise<void> {
+  const entry = await resolveHarmonyEntry(connectKey, bundleId);
+  const { stdout } = await runHdcShell(
+    connectKey,
+    `aa start -b ${shellQuote(bundleId)} -a ${shellQuote(entry.mainAbility)} -m ${shellQuote(entry.module)}`
+  );
+  assertAbilityStarted(stdout, connectKey, bundleId);
 }
 
 /**

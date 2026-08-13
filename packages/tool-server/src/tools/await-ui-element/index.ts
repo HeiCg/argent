@@ -350,6 +350,12 @@ or before tapping an element that appears asynchronously.`,
               result.note =
                 "condition met immediately — the selector never matched any element, " +
                 "so it may have already been hidden before the wait, or the selector is wrong";
+            } else if (data.hint) {
+              // A successful wait against a degraded read still owes the agent the
+              // caveat: on HarmonyOS the tree is the last-composited frame while
+              // the panel is off, so a `visible` that resolved here is followed by
+              // a tap that lands nowhere unless the screen is woken first.
+              result.note = data.hint;
             }
             return { done: true, result };
           }

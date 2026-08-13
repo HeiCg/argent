@@ -8,6 +8,9 @@ vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
   harmonyTypeText: vi.fn(async () => {}),
   harmonyKeyEvent: vi.fn(async () => {}),
+  // The screen-awake guard reads the display first; stub it ON so these tests
+  // reach the validation they exercise.
+  harmonyDisplay: vi.fn(async () => ({ width: 1216, height: 2688, screenOn: true })),
 }));
 
 import { InvalidToolInputError } from "../src/utils/capability";
@@ -176,5 +179,28 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
       expect(harmonyKeyEvent).not.toHaveBeenCalled();
       expect(harmonyTypeText).not.toHaveBeenCalled();
     }
+  });
+
+  it("harmony: newline in text → 400 + KEYBOARD_CHARACTER_UNSUPPORTED", async () => {
+    const harmonyDevice: DeviceInfo = { id: "harmony-KEY", platform: "harmony", kind: "device" };
+    // `uitest uiInput text` validates almost nothing and answers `No Error`
+    // whether or not anything landed, so a newline must be rejected up front —
+    // every sibling backend (android above, vega) already is.
+    vi.mocked(harmonyTypeText).mockClear();
+    await expectInvalidInput(
+      harmonyImpl.handler({}, { udid: harmonyDevice.id, text: "a\nb" }, harmonyDevice),
+      FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED
+    );
+    expect(harmonyTypeText).not.toHaveBeenCalled();
+  });
+
+  it("harmony: a control character in text → 400 + KEYBOARD_CHARACTER_UNSUPPORTED", async () => {
+    const harmonyDevice: DeviceInfo = { id: "harmony-KEY", platform: "harmony", kind: "device" };
+    vi.mocked(harmonyTypeText).mockClear();
+    await expectInvalidInput(
+      harmonyImpl.handler({}, { udid: harmonyDevice.id, text: "a\x07b" }, harmonyDevice),
+      FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED
+    );
+    expect(harmonyTypeText).not.toHaveBeenCalled();
   });
 });

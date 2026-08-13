@@ -13,7 +13,7 @@ import type {
 } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
-import { UnsupportedOperationError } from "../../utils/capability";
+import { InvalidToolInputError } from "../../utils/capability";
 import { captureHarmonyScreenshotPng } from "../../utils/harmony-screen";
 import { ensureDep } from "../../utils/check-deps";
 import { httpScreenshot } from "../../utils/simulator-client";
@@ -237,11 +237,15 @@ function liveCapture(
       if (params.rotation) {
         // Inside the capture rather than up front: for a static two-path diff
         // rotation is inert on every platform, and rejecting it there would
-        // make HarmonyOS the one platform an unused argument fails.
-        throw new UnsupportedOperationError(
-          "screenshot-diff",
-          device,
-          "rotation is not supported for a live HarmonyOS capture: `uitest screenCap` captures the display in its current orientation and has no override. Rotate the device itself, or drop the rotation parameter."
+        // make HarmonyOS the one platform an unused argument fails. A
+        // per-ARGUMENT refusal (same class as the keyboard key guard), not a
+        // per-tool one — screenshot-diff works on every harmony device.
+        throw new InvalidToolInputError(
+          "rotation is not supported for a live HarmonyOS capture: `uitest screenCap` captures the display in its current orientation and has no override. Rotate the device itself, or drop the rotation parameter.",
+          {
+            error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+            failure_stage: "harmony_screenshot_diff_rotation",
+          }
         );
       }
       await ensureDep("hdc");

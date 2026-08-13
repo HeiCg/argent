@@ -62,7 +62,7 @@ describe("harmonyLabel", () => {
 });
 
 describe("parseHarmonyLayout", () => {
-  it("labels each window with the app that owns it", () => {
+  it("tags each window with the app that owns it, as an identifier not a label", () => {
     const tree = parseHarmonyLayout(
       root([
         node({ type: "root", bundleName: "com.app", bounds: "[0,107][1216,2688]" }, [
@@ -74,8 +74,13 @@ describe("parseHarmonyLayout", () => {
     expect(tree.children).toHaveLength(1);
     expect(tree.children[0].role).toBe("Window");
     // A tree spanning an app and the status bar (always a separate sceneboard
-    // window) is unreadable if both are anonymous stacks.
-    expect(tree.children[0].label).toBe("com.app");
+    // window) is unreadable if both are anonymous stacks. The bundle rides as
+    // `identifier`, NOT `label`: the shared matcher reads `label` as visible
+    // text, and a full-screen node "named" `com.app` would poison every text
+    // wait (`exists: {text:"app"}` true on every screen, a `text` wait for the
+    // app's own name matching the window instead of its title).
+    expect(tree.children[0].identifier).toBe("com.app");
+    expect(tree.children[0].label).toBeUndefined();
   });
 
   it("walks through ArkUI layout scaffolding instead of emitting it", () => {
@@ -354,6 +359,84 @@ describe("parseHarmonyLayout", () => {
     const overlay = tree.children[0].children[0];
     expect(overlay.role).toBe("SystemOverlay");
     expect(overlay.label).toMatch(/another process/);
+  });
+
+  it("parses a UIExtensionComponent's own subtree when the dump carries one", () => {
+    // On HarmonyOS 6.1.1 the same node arrives WITH the full subtree — the
+    // HUAWEI ID login sheet carries its TextInput and both Buttons (45 nodes
+    // measured), and those targets are live (their geometry taps). Replacing it
+    // with the placeholder discards the only controls that dismiss the sheet,
+    // and `uitest screenCap` does not capture the surface either.
+    const tree = parseHarmonyLayout(
+      root([
+        node(
+          {
+            type: "WindowScene",
+            bundleName: "com.huawei.hmos.settings",
+            bounds: "[0,0][1216,2688]",
+          },
+          [
+            node({ type: "UIExtensionComponent", bounds: "[0,0][1216,2688]" }, [
+              node({ type: "Text", text: "HUAWEI ID", bounds: "[400,200][860,280]" }),
+              node({ type: "TextInput", hint: "Phone number", bounds: "[200,400][1060,520]" }),
+              node({
+                type: "Button",
+                text: "Back",
+                clickable: "true",
+                bounds: "[56,164][196,304]",
+              }),
+              node({
+                type: "Button",
+                text: "Log in/Register",
+                clickable: "true",
+                bounds: "[200,2400][1060,2520]",
+              }),
+            ]),
+          ]
+        ),
+      ]),
+      SCREEN
+    ).tree;
+    const text = JSON.stringify(tree);
+    expect(text).toContain("HUAWEI ID");
+    expect(text).toContain("Back");
+    expect(text).toContain("Log in/Register");
+    // The subtree's own back Button is a real, tappable target — not swallowed
+    // into a placeholder that says the screen is opaque.
+    const back = tree.children[0].children[0].children.find((c) => c.label === "Back");
+    expect(back).toMatchObject({ role: "Button", clickable: true });
+  });
+
+  it("does not let a window's bundle id read as visible text on the screen", () => {
+    // Regression for the matcher poisoning: with the bundle on `label`, every
+    // screen matched `exists: {text:"sceneboard"}` and a `text` wait for the
+    // app's own name tied with its real title in reading order and lost.
+    const tree = parseHarmonyLayout(
+      root([
+        node(
+          {
+            type: "WindowScene",
+            bundleName: "com.huawei.hmos.settings",
+            bounds: "[0,0][1216,2688]",
+          },
+          [node({ type: "Text", text: "Settings", bounds: "[40,120][500,200]" })]
+        ),
+        node(
+          { type: "WindowScene", bundleName: "com.ohos.sceneboard", bounds: "[0,0][1216,120]" },
+          [node({ type: "Text", text: "12:30", bounds: "[1100,20][1220,100]" })]
+        ),
+      ]),
+      SCREEN
+    ).tree;
+    const labels: string[] = [];
+    const walk = (n: DescribeNode): void => {
+      if (n.label) labels.push(n.label);
+      n.children.forEach(walk);
+    };
+    tree.children.forEach(walk);
+    expect(labels).toContain("Settings");
+    expect(labels).not.toContain("com.huawei.hmos.settings");
+    expect(labels).not.toContain("com.ohos.sceneboard");
   });
 
   it("takes the screen size from the dump's own root, not the caller's", () => {
