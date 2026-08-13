@@ -740,8 +740,8 @@ export type FlowFile = {
  * nested block. The fifth is the upload preflight's walk, where a block it
  * cannot see hides a nested `run:`/`snapshot` from validation. The last two,
  * `flowRequiresDevice` and `flowScopesDevice` (flow-device.ts), read children to
- * resolve the flow's device decisions from a block's body — dead while `when`
- * is the only block kind, and the guard against a later one.
+ * resolve the flow's device decisions from a block's body — dead while every
+ * block kind classifies device-requiring, and the guard against a later one.
  *
  * Those sites used to ask `kind === "when"` directly, so a second block
  * directive would have had to remember every one of them and a forgotten site
