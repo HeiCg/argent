@@ -33,6 +33,14 @@ const CASES = {
       summary: '1. tool: screenshot {"scale":0.2} (after 500ms)',
       target: undefined,
     },
+    {
+      // A delayMs above setTimeout's 2³¹−1 ceiling sleeps a clamped tick, so
+      // the summary describes no delay. Reachable only from a hand-edited file
+      // (delayMs is copied unvalidated), hence the cast.
+      step: { kind: "tool", name: "screenshot", args: {}, delayMs: 3e9 as number },
+      summary: "1. tool: screenshot {}",
+      target: undefined,
+    },
   ],
   "echo": [
     {
@@ -130,6 +138,13 @@ const CASES = {
       summary: '1. type: {"id":"email"} ← "a@b.c"',
       target: "into id=email",
     },
+    {
+      // The text is JSON-quoted, so embedded quotes and control characters
+      // stay unambiguous in the one-line summary.
+      step: { kind: "type", into: { identifier: "bio" }, text: 'say "hi"\none' },
+      summary: '1. type: {"id":"bio"} ← "say \\"hi\\"\\none"',
+      target: "into id=bio",
+    },
   ],
   "await": [
     {
@@ -174,10 +189,21 @@ const CASES = {
     },
     {
       // The report omits the default direction; the summary spells it, because
-      // it is the line read against the YAML, which always carries one.
+      // it is the line read against the YAML, where the direction is either
+      // explicit or the bare-string sugar's implicit `down`.
       step: { kind: "scroll-to", target: { text: "Footer" }, direction: "down" },
       summary: '1. scroll-to: {"text":"Footer"} (down)',
       target: '"Footer"',
+    },
+    {
+      step: {
+        kind: "scroll-to",
+        target: { text: "Footer" },
+        direction: "down",
+        within: { identifier: "list" },
+      },
+      summary: '1. scroll-to: {"text":"Footer"} (down) within {"id":"list"}',
+      target: '"Footer" within (id=list)',
     },
   ],
   "pinch": [
@@ -200,8 +226,13 @@ const CASES = {
     { step: { kind: "snapshot", name: "home" }, summary: "1. snapshot: home", target: '"home"' },
     {
       step: { kind: "snapshot", name: "home", cropOn: { identifier: "card" } },
-      summary: "1. snapshot: home",
+      summary: '1. snapshot: home cropOn {"id":"card"}',
       target: '"home" cropOn id=card',
+    },
+    {
+      step: { kind: "snapshot", name: "home", maxMismatch: 2.5 },
+      summary: "1. snapshot: home maxMismatch 2.5",
+      target: '"home"',
     },
   ],
 } satisfies Record<FlowStep["kind"], readonly Case[]>;

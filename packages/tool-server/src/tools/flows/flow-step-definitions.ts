@@ -142,8 +142,9 @@ function delayLabel(step: Extract<FlowStep, { kind: "tool" }>): string {
   const ms = Number(step.delayMs);
   // What `setTimeout` will actually wait. It floors anything under 1ms — and
   // anything non-numeric, which coerces to NaN — to an immediate tick, so there
-  // is no delay to describe; an out-of-range value is clamped the same way.
-  return Number.isFinite(ms) && ms >= 1 ? ` (after ${ms}ms)` : "";
+  // is no delay to describe; anything above its 2³¹−1 ceiling is clamped to the
+  // same tick, so there is nothing to describe either.
+  return Number.isFinite(ms) && ms >= 1 && ms <= 2 ** 31 - 1 ? ` (after ${ms}ms)` : "";
 }
 
 // ── Step definitions ──
@@ -250,7 +251,7 @@ const FLOW_STEP_DEFINITIONS: {
   "tap": POINT_GESTURE_STEP,
   "long-press": POINT_GESTURE_STEP,
   "type": {
-    summary: (step) => `${yamlSelectorLabel(step.into)} ← "${step.text}"`,
+    summary: (step) => `${yamlSelectorLabel(step.into)} ← ${JSON.stringify(step.text)}`,
     target: (step) => `into ${selectorLabel(step.into)}`,
   },
   "await": UI_CONDITION_STEP,
@@ -267,10 +268,13 @@ const FLOW_STEP_DEFINITIONS: {
     target: () => undefined,
   },
   "scroll-to": {
-    summary: (step) => `${yamlSelectorLabel(step.target)} (${step.direction})`,
+    summary: (step) =>
+      `${yamlSelectorLabel(step.target)} (${step.direction})` +
+      (step.within ? ` within ${yamlSelectorLabel(step.within)}` : ""),
     target: (step) => {
       const dir = step.direction !== "down" ? ` (${step.direction})` : "";
-      return `${selectorLabel(step.target)}${dir}`;
+      const within = step.within ? ` within (${selectorLabel(step.within)})` : "";
+      return `${selectorLabel(step.target)}${dir}${within}`;
     },
   },
   "pinch": {
@@ -290,7 +294,10 @@ const FLOW_STEP_DEFINITIONS: {
     },
   },
   "snapshot": {
-    summary: (step) => step.name,
+    summary: (step) =>
+      step.name +
+      (step.cropOn ? ` cropOn ${yamlSelectorLabel(step.cropOn)}` : "") +
+      (step.maxMismatch !== undefined ? ` maxMismatch ${step.maxMismatch}` : ""),
     target: (step) =>
       step.cropOn ? `"${step.name}" cropOn ${selectorLabel(step.cropOn)}` : `"${step.name}"`,
   },
