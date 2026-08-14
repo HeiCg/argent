@@ -84,6 +84,62 @@ describe("parseHarmonyLayout", () => {
     expect(tree.children[0].label).toBeUndefined();
   });
 
+  // `role` is half of what an agent selects on (`await-ui-element {role}`, the
+  // flow matchers), and it is derived from a type name the app author chose —
+  // so a mapping quietly reverting to the `type || "Group"` default is invisible
+  // in a rendered tree yet breaks every selector aimed at it. One row per arm.
+  it.each([
+    ["Text", "StaticText"],
+    ["Span", "StaticText"],
+    ["TextClock", "StaticText"],
+    ["TextInput", "TextField"],
+    ["TextArea", "TextField"],
+    ["SearchField", "TextField"],
+    ["Search", "TextField"],
+    ["Image", "Image"],
+    ["SymbolGlyph", "Image"],
+    ["Checkbox", "Checkbox"],
+    ["Slider", "Slider"],
+    ["List", "ScrollView"],
+    ["Grid", "ScrollView"],
+    ["Scroll", "ScrollView"],
+    ["WaterFlow", "ScrollView"],
+    ["ListItem", "Cell"],
+    ["GridItem", "Cell"],
+    ["Swiper", "Pager"],
+    ["Dialog", "Dialog"],
+    ["Button", "Button"],
+    // Unmapped: the author's own component name beats a generic label.
+    ["CustomWidget", "CustomWidget"],
+  ])("maps the ArkUI %s onto %s", (type, role) => {
+    const tree = parseHarmonyLayout(
+      root([
+        node({ type: "root", bundleName: "com.app", bounds: "[0,0][1216,2688]" }, [
+          node({ type, text: "x", bounds: "[10,10][210,110]" }),
+        ]),
+      ]),
+      SCREEN
+    ).tree;
+    expect(flatten(tree)).toEqual(["Screen", "Window", role]);
+  });
+
+  it("reads a Toggle's role off what it can actually do", () => {
+    // The one arm that is not a lookup: the same ArkUI component is a switch or
+    // a plain button depending on `checkable`, and only the switch has a state
+    // an agent can assert.
+    const build = (checkable: string) =>
+      parseHarmonyLayout(
+        root([
+          node({ type: "root", bundleName: "com.app", bounds: "[0,0][1216,2688]" }, [
+            node({ type: "Toggle", checkable, text: "Wi-Fi", bounds: "[10,10][210,110]" }),
+          ]),
+        ]),
+        SCREEN
+      ).tree;
+    expect(flatten(build("true"))).toEqual(["Screen", "Window", "Switch"]);
+    expect(flatten(build("false"))).toEqual(["Screen", "Window", "Button"]);
+  });
+
   it("walks through ArkUI layout scaffolding instead of emitting it", () => {
     const tree = parseHarmonyLayout(
       root([

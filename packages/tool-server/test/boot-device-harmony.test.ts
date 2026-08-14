@@ -1121,6 +1121,50 @@ describe("boot-device — HarmonyOS emulator path", () => {
     ).toThrow(/not supported on harmony emulator/);
   });
 
+  it("coalesces two concurrent boots of one instance into a single start", async () => {
+    // `Emulator -start` twice for one instance is two managers racing over the
+    // same instance directory; the second reports "already running" and the
+    // caller that asked first can no longer tell whose emulator it got.
+    targets([PHONE], [PHONE, emulatorTarget]);
+
+    const [a, b] = await Promise.all([boot({}), boot({})]);
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(a).toEqual(b);
+  });
+
+  it("does not let a `force` boot join a plain one that would skip the restart", async () => {
+    // The restart is the whole point of `force`: joined to a plain boot, the
+    // caller is handed a payload for an instance that was never restarted — and
+    // on this platform that also means no connect key was resolved, since only
+    // a boot argent performed can be matched to the key it registers under.
+    let listed = 0;
+    listHarmonyInstances.mockImplementation(() =>
+      Promise.resolve([
+        {
+          name: INSTANCE,
+          deviceType: "Phone",
+          osVersion: null,
+          // Running for both boots' opening check, down once the restart's
+          // stop-wait starts polling.
+          running: listed++ < 2,
+          display: PANEL,
+        },
+      ])
+    );
+    targets([PHONE, staleEmulatorTarget], [PHONE, staleEmulatorTarget], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = Promise.all([boot({}), boot({ force: true })]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const [plain, forced] = (await pending) as { udid: string; note?: string }[];
+
+    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
+    expect(plain.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(plain.note).toMatch(/already running/);
+    expect(forced.udid).toBe(`harmony-${EMULATOR_KEY}`);
+  });
+
   it("starts the instance behind a harmony-emulator- udid", async () => {
     targets([PHONE], [PHONE, emulatorTarget]);
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   hdcFileRecv as realHdcFileRecv,
   runHdcShell as realRunHdcShell,
@@ -107,6 +108,68 @@ describe("the per-device uitest queue", () => {
     await settle();
     expect(events).toEqual(["start:dev-a", "start:dev-a"]);
 
+    await releaseOne();
+    await expect(next).resolves.toBeUndefined();
+  });
+
+  it("keeps serializing when a call joins a queue whose head has already finished", async () => {
+    // The map entry is dropped when the queue drains, and only then: the tail is
+    // replaced on every enqueue, so a settled call deleting the entry
+    // unconditionally would hand the next arrival an empty queue while the call
+    // behind it is still on the device — two `uitest` processes at once, which
+    // is the one thing the queue exists to prevent.
+    const first = harmonyScreenCap("dev-a", "/tmp/a.png");
+    await settle();
+    const second = harmonyScreenCap("dev-a", "/tmp/b.png");
+    await settle();
+
+    await releaseOne(); // `first` settles; `second` is now the one on the device
+    expect(events).toEqual(["start:dev-a", "end:dev-a", "start:dev-a"]);
+
+    const third = harmonyScreenCap("dev-a", "/tmp/c.png");
+    await settle();
+    expect(events).toEqual(["start:dev-a", "end:dev-a", "start:dev-a"]);
+
+    await releaseOne();
+    await releaseOne();
+    await Promise.all([first, second, third]);
+  });
+
+  it("reports a `uitest` that ran and failed, without its usage block", async () => {
+    // `uitest` exits non-zero for every on-device refusal there is — the harmony
+    // tap, swipe, keyboard, screenshot and describe paths all reach the device
+    // through this one check. Reading its status as success reports a tap that
+    // never landed. It prints 12 lines of usage after the diagnostic, so only
+    // the leading line is surfaced; the rest buries it in the agent's context.
+    runHdcShell.mockResolvedValueOnce({
+      stdout: "error: no such file or directory\nusage: uitest screenCap -p <path>\n  -p path",
+      exitCode: 1,
+    });
+
+    const err = await harmonyScreenCap("dev-a", "/tmp/a.png").then(
+      () => null,
+      (e: unknown) => e as Error
+    );
+
+    expect(getFailureSignal(err)).toMatchObject({
+      error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
+      failure_command: "hdc",
+    });
+    expect(err?.message).toContain("error: no such file or directory");
+    expect(err?.message).not.toContain("usage:");
+  });
+
+  it("lets the next call through after a `uitest` that exited non-zero", async () => {
+    // The failure is thrown outside the queue, so the queued unit resolves — but
+    // only if the throw really is outside it. Moved inside, every later call on
+    // that device would chain onto a rejection with nothing to release it.
+    runHdcShell.mockResolvedValueOnce({ stdout: "error: device is asleep", exitCode: 1 });
+
+    await expect(harmonyScreenCap("dev-a", "/tmp/a.png")).rejects.toThrow(/device is asleep/);
+
+    const next = harmonyScreenCap("dev-a", "/tmp/b.png");
+    await settle();
+    expect(events).toEqual(["start:dev-a"]);
     await releaseOne();
     await expect(next).resolves.toBeUndefined();
   });
