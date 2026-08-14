@@ -19,6 +19,8 @@ vi.setConfig({ testTimeout: 20_000 });
 const ANDROID_DEVICE = "emulator-5554";
 /** Mirrors `flow-actions`'s own constant — the budget the early exit dodges. */
 const TYPE_FOCUS_TIMEOUT_MS = 3000;
+/** Mirrors `flow-actions` again: the tap→poll gap the focus window opens after. */
+const TYPE_FOCUS_SETTLE_MS = 500;
 let tmpDir: string;
 
 interface Call {
@@ -1049,16 +1051,18 @@ describe("type directive — clear dispatch", () => {
       steps: [{ kind: "type", into: { identifier: "email" }, text: "new@example.com" }],
     });
 
-    const started = Date.now();
     const result = asRun(await run(registry));
-    const elapsed = Date.now() - started;
 
     expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
     // Reads 1-2 are the pre-tap settle; read 3 is the focus wait's first and
-    // only look. A poll to the deadline would take ~10 more.
+    // only look. A poll to the deadline would take ~10 more, so the count IS
+    // the early exit — exactly, and at any machine speed.
+    //
+    // Deliberately not a wall-clock bound as well. `elapsed < 3000` measured
+    // the whole step — temp dir, device resolution, the 500ms settle, two
+    // keyboard dispatches — so it read the machine rather than the exit, and
+    // failed at 3066ms and 3388ms on a loaded host with the count still at 3.
     expect(reads).toBe(3);
-    // The 500ms settle still applies; the 3000ms focus timeout must not.
-    expect(elapsed).toBeLessThan(TYPE_FOCUS_TIMEOUT_MS);
     expect(keyboardArgs(calls)).toEqual([{ text: "new@example.com" }, { key: "enter" }]);
   });
 
@@ -1696,5 +1700,423 @@ describe("type directive — report rendering", () => {
     const result = asRun(await run(registry));
     expect(result.steps[0]!.target).toContain("clear first");
     expect(result.steps[1]!.target).not.toContain("clear first");
+  });
+});
+
+/**
+ * A rich-text composer holding the named paragraph BESIDE content the selector
+ * never named. `sibling` decides how that content reaches the tree: an
+ * identified node — or a password field — SHIELDS its own text out of every
+ * ancestor's `subtreeText` (`flow-tree-flatten`), so the editor's hoist is
+ * indistinguishable from one holding the paragraph alone, while a clear on it
+ * (select-all over the host) destroys everything inside.
+ */
+const composerWithSiblingXml = (sibling: "identified" | "password" | "anonymous" | "none") =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" focused="true" package="com.acme.app" bounds="[40,200][1040,500]">
+      <node index="0" class="android.widget.TextView" text="Draft body here" package="com.acme.app" bounds="[45,210][1035,250]" />
+      ${
+        sibling === "identified"
+          ? '<node index="1" class="android.widget.TextView" resource-id="signature" text="Wire funds to IBAN PL61" package="com.acme.app" bounds="[45,300][1035,340]" />'
+          : sibling === "password"
+            ? '<node index="1" class="android.widget.EditText" password="true" text="hunter2" package="com.acme.app" bounds="[45,300][1035,340]" />'
+            : sibling === "anonymous"
+              ? '<node index="1" class="android.widget.TextView" text="Wire funds to IBAN PL61" package="com.acme.app" bounds="[45,300][1035,340]" />'
+              : ""
+      }
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
+ * The element the tap landed on stops being findable — it unmounted as a
+ * consequence of the tap (a tap-to-edit row, a conditional render, a
+ * virtualized list) — while a DIFFERENT element answering the same selector
+ * holds focus. `mounted` is the control.
+ */
+const unmountingRowXml = (mounted: boolean) =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    ${
+      mounted
+        ? '<node index="0" class="android.widget.EditText" resource-id="a" content-desc="Email" text="target-value" focused="true" package="com.acme.app" bounds="[40,200][1040,280]" />'
+        : ""
+    }
+    <node index="1" class="android.widget.EditText" resource-id="other" content-desc="Email address" text="DRAFT-DO-NOT-ERASE" ${mounted ? "" : 'focused="true" '}package="com.acme.app" bounds="[40,600][1040,680]" />
+  </node>
+</hierarchy>`;
+
+/**
+ * A testID wrapper over one field, where a SECOND field answering to the same
+ * resource-id appears inside the wrapper on focus and takes it. `present`
+ * decides whether the namesake is there yet.
+ *
+ * On Android the collision needs no coincidence: `identifier` is the raw
+ * resource-id, which names the layout slot, so every row inflated from one
+ * layout carries the same one.
+ */
+const lateNamesakeXml = (present: boolean) =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" resource-id="email-wrapper" package="com.acme.app" bounds="[40,180][1040,${present ? "460" : "300"}]">
+      <node index="0" class="android.widget.EditText" resource-id="row_input" content-desc="Row" text="old.remembered.login" clickable="true" package="com.acme.app" bounds="[40,200][1040,280]" />
+      ${
+        present
+          ? '<node index="1" class="android.widget.EditText" resource-id="row_input" content-desc="Row" text="KEEP-ME" clickable="true" focused="true" package="com.acme.app" bounds="[40,340][1040,420]" />'
+          : ""
+      }
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
+ * A 44px row that GROWS on focus — the validation or helper line the gate's own
+ * comments cite — swallowing a field that sat below it and was never a tap
+ * candidate. `sameName` decides whether that field shares the decoy's
+ * accessible name, which is the only channel the two halves of the gate are
+ * joined by.
+ */
+const growingRowXml = (grown: boolean, sameName: boolean) =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" resource-id="row" package="com.acme.app" bounds="[40,200][1040,${grown ? "480" : "288"}]">
+      <node index="0" class="android.widget.EditText" content-desc="Email" text="decoy@corp.example" clickable="true" package="com.acme.app" bounds="[40,204][1040,284]" />
+      <node index="1" class="android.widget.EditText" content-desc="${sameName ? "Email" : "Nickname"}" text="old@corp.example" clickable="true" ${grown ? 'focused="true" ' : ""}package="com.acme.app" bounds="[40,320][1040,400]" />
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
+ * An amount row split unevenly, so its centre falls on the DECOY. The victim
+ * reformats its value on focus — a currency input dropping its separators, a
+ * phone or card mask — renaming itself OUT of the namesake set and leaving the
+ * decoy as the unique pre-tap match. The victim holds focus in both post-tap
+ * stages, so the rename is the only difference between them:
+ *
+ *   - "pre-tap"  — before the gesture: nothing focused, the two names distinct;
+ *   - "renamed"  — focused and reformatted (the defect);
+ *   - "kept"     — focused with its own name intact (the control).
+ *
+ * Anonymous fields, so `sameElement` falls through to the label, and the label
+ * of a field with no content-desc IS its value.
+ */
+const reformattingRowXml = (stage: "pre-tap" | "renamed" | "kept") =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" resource-id="row" package="com.acme.app" bounds="[40,200][1040,280]">
+      <node index="0" class="android.widget.EditText" content-desc="${stage === "renamed" ? "1234.5" : "1,234.50"}" clickable="true" ${stage === "pre-tap" ? "" : 'focused="true" '}package="com.acme.app" bounds="[40,200][390,280]" />
+      <node index="1" class="android.widget.EditText" content-desc="1234.5" clickable="true" package="com.acme.app" bounds="[400,200][1040,280]" />
+    </node>
+  </node>
+</hierarchy>`;
+
+describe("type directive — the clear gate's two-tree joins", () => {
+  it("refuses to clear an editing host that also holds IDENTIFIED content", async () => {
+    // The shield is what makes it possible: an identified descendant keeps its
+    // text out of every ancestor's hoist, so an editor holding the named
+    // paragraph PLUS a signature block compares equal to one holding the
+    // paragraph alone — and the clear is a select-all over the whole host.
+    // Reproduced on Chrome 151 against this branch: the step passed, the editor
+    // was rewritten and the signature went with it.
+    for (const sibling of ["identified", "password"] as const) {
+      const calls: Call[] = [];
+      const registry = mockRegistry(calls, () => ({ xml: composerWithSiblingXml(sibling) }));
+
+      await writeFlow("f", {
+        executionPrerequisite: "",
+        steps: [
+          { kind: "type", into: { text: "Draft body here" }, text: "REWRITTEN", clear: true },
+        ],
+      });
+
+      const result = asRun(await run(registry));
+      expect(
+        result.steps.map((s) => s.status),
+        sibling
+      ).toEqual(["fail"]);
+      expect(result.steps[0]!.reason).toContain("refusing to clear");
+      expect(keyboardArgs(calls)).toEqual([]);
+    }
+  });
+
+  it("still clears the editing host whose whole content IS what was named", async () => {
+    // The shape the guard exists for — `<div contenteditable><p>…</p></div>`,
+    // what Quill / ProseMirror / Lexical render on a single-paragraph document.
+    // Nothing else is inside it, so nothing else can be lost.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: composerWithSiblingXml("none") }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { text: "Draft body here" }, text: "REWRITTEN", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([{ clear: true, text: "REWRITTEN" }, { key: "enter" }]);
+  });
+
+  it("refuses when the tapped element unmounts and a namesake holds focus", async () => {
+    // `trackTarget`'s last resort re-runs the SELECTOR, which has no relation
+    // to the element the step touched — while the identity arm in the focus
+    // wait trusts what comes back absolutely, ahead of both arms that check a
+    // node against `tapCandidates`. Reproduced on Chrome 151: the tapped row
+    // removed on mousedown, a second field answering the same selector focused
+    // beside it, and its draft emptied with a pass reported.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      // The two pre-tap settle reads see the row, so the step's frame
+      // resolution lands on it — which is what makes the tap point meaningful —
+      // and everything after the tap does not.
+      return { xml: unmountingRowXml(reads <= 2) };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { text: "Email" }, text: "replaced-by-clear", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("still clears when that row stays mounted", async () => {
+    // The control: only the unmount differs, and the same selector, tap and
+    // focus produce the clear the step asked for.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: unmountingRowXml(true) }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { text: "Email" }, text: "replaced-by-clear", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([
+      { clear: true, text: "replaced-by-clear" },
+      { key: "enter" },
+    ]);
+  });
+
+  it("refuses a namesake the TAP ITSELF creates inside the container", async () => {
+    // `tap.inside` is frozen before the tap, so the ambiguity check could not
+    // see an element that appears on focus — the wrapper-grows-on-focus shape
+    // (Downshift, HeadlessUI, a React Native autocomplete). Reproduced on
+    // Chrome 151: the appended field was emptied and rewritten, with a pass
+    // reported on the wrapper.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: lateNamesakeXml(reads > 2) };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email-wrapper" }, text: "REWRITTEN", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("refuses a container that GROWS onto a field the tap never reached", async () => {
+    // Candidates are frozen to the pre-tap box while containment is judged
+    // against the current one, so a row growing on focus swallows a field that
+    // was never a tap candidate — and the name is the only thing joining the
+    // two halves. Reproduced on Chrome 151: the field below the row was
+    // emptied and rewritten with a pass reported on the row.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: growingRowXml(reads > 2, true) };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "row" }, text: "new@corp.example", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("refuses a focused field that RENAMED itself out of the namesake set", async () => {
+    // A field that reformats its value on focus renames itself out of the set,
+    // leaving a sibling as the unique pre-tap match — and that sibling is under
+    // the tap, so the row's own mis-target passed. This is exactly the
+    // currency/amount mis-target the docs say is refused.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: reformattingRowXml(reads > 2 ? "renamed" : "pre-tap") };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "row" }, text: "9999", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("refuses the same row with no rename at all", async () => {
+    // The control for the arm above: the same field takes focus, but keeps its
+    // own name — so it is its own unique match, it is not under the tap, and
+    // the row's second control is what refuses. Only the rename differs.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: reformattingRowXml(reads > 2 ? "kept" : "pre-tap") };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "row" }, text: "9999", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+});
+
+describe("type directive — the focus window's own edges", () => {
+  it("does not call a slow-but-answering tree source an outage", async () => {
+    // Every poll is given whatever is left of the window as its read budget, so
+    // a read started too late is abandoned mid-flight — and booking that as
+    // darkness reports "the device's tree source is down" for a source that
+    // answered every time it was asked. Worse, whether the last read starts far
+    // enough before the deadline to cross the tolerance depends on how the read
+    // time divides into the window, so the verdict was not monotonic in
+    // latency: measured on Chrome 151, the same page failed as an outage at
+    // ~250ms per read while passing at 0ms, 150ms, 300ms and 400ms.
+    //
+    // 1400ms per read is the same shape at this file's poll interval: the first
+    // read fits the window, the second cannot, and the truncation it would have
+    // booked is over the tolerance.
+    const calls: Call[] = [];
+    const registry = mockRegistry(
+      calls,
+      () =>
+        new Promise<{ xml: string }>((resolve) => {
+          setTimeout(() => resolve({ xml: noFocusXml() }), 1400);
+        })
+    );
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    // "No read ever saw focus" is the documented residual the clear goes
+    // through on; a tree that ANSWERED must not be reported as one that did not.
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([
+      { clear: true, text: "new@example.com" },
+      { key: "enter" },
+    ]);
+  });
+
+  it("starts no tree read past the focus deadline", async () => {
+    // Nothing bounded the window from above: the tests assert timing lower
+    // bounds only, so letting a whole extra read start past the deadline — an
+    // android-devtools `getHierarchy` or a CDP DOM walk, a real fraction of the
+    // window — was invisible, while every refusal message still narrated the
+    // wait as 3000ms. Two guards hold the property now (the deadline check and
+    // the affordability check beside it); this pins the property.
+    const calls: Call[] = [];
+    const readsAt: number[] = [];
+    let tapAt = 0;
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: Record<string, unknown>) => {
+        calls.push({ id, args });
+        if (id === "gesture-tap") tapAt = Date.now();
+        if (id === "list-devices") return { devices: [] };
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+      resolveService: vi.fn(async () => ({
+        getHierarchy: vi.fn(async () => {
+          readsAt.push(Date.now());
+          return { xml: noFocusXml() };
+        }),
+        getScreenSize: vi.fn(async () => ({ width: 1080, height: 1920 })),
+      })),
+    } as unknown as Registry;
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    asRun(await run(registry));
+    // The window opens once the post-tap settle has elapsed; no read may start
+    // after it closes.
+    const windowClosesAt = tapAt + TYPE_FOCUS_SETTLE_MS + TYPE_FOCUS_TIMEOUT_MS;
+    expect(readsAt.filter((t) => t > windowClosesAt)).toEqual([]);
+    // …and it really did poll to the end, so the bound above is not vacuous.
+    expect(readsAt.filter((t) => t > tapAt).length).toBeGreaterThan(2);
+  });
+
+  it("reports a genuine gesture-tap error as an error, not as a cancelled run", async () => {
+    // `dispatchOrAbort` maps a rejection to the aborted skip only when the run
+    // was actually cancelled. The tap is newly routed through it, and nothing
+    // covered the other direction for the tap: a real transport failure has to
+    // stay a step failure, or a broken device reads as a run the caller stopped.
+    const calls: Call[] = [];
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: Record<string, unknown>) => {
+        calls.push({ id, args });
+        if (id === "list-devices") return { devices: [] };
+        if (id === "gesture-tap") throw new Error("adb: device offline");
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+      resolveService: vi.fn(async () => ({
+        getHierarchy: vi.fn(async () => ({ xml: fieldXml("old.remembered.login") })),
+        getScreenSize: vi.fn(async () => ({ width: 1080, height: 1920 })),
+      })),
+    } as unknown as Registry;
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["error"]);
+    expect(result.steps[0]!.reason).toContain("device offline");
+    expect(keyboardArgs(calls)).toEqual([]);
   });
 });

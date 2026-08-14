@@ -74,6 +74,21 @@ describe("create-flow selector-scope docs", () => {
       expect(() => parseFlow(`steps:\n  - ${snippet}\n`), snippet).not.toThrow();
     }
   });
+
+  it("keeps every inline `type:` example parsable, `clear` ones included", () => {
+    // The guard above slices one section, and every `clear` example sits after
+    // `## Directives` — so the directive's own examples, the ones an author
+    // copies, were unguarded. These are inline code spans in prose rather than
+    // list items, so they are matched as spans.
+    const reference = readFileSync(FLOW_YAML, "utf8");
+    const snippets = [...reference.matchAll(/`(type: \{[^`]*\})`/g)].map((m) => m[1]!);
+    // A floor, not a count: the point is that new examples are covered too.
+    expect(snippets.length).toBeGreaterThanOrEqual(2);
+    expect(snippets.filter((s) => s.includes("clear")).length).toBeGreaterThanOrEqual(2);
+    for (const snippet of snippets) {
+      expect(() => parseFlow(`steps:\n  - ${snippet}\n`), snippet).not.toThrow();
+    }
+  });
 });
 
 // The `idle` account moved out of SKILL.md into the flow-yaml reference, so

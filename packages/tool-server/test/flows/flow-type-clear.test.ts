@@ -30,6 +30,19 @@ describe("flow `type` — clear parsing", () => {
     expect(() => parseType(`      into: search`)).toThrow(/non-empty text/);
   });
 
+  it("rejects a bare-scalar `type`, naming BOTH shapes the body can take", () => {
+    // Reached by extrapolating the scalar form `tap`, `long-press`, `scroll-to`
+    // and `snapshot` accept. Nothing exercised it, so the message could name
+    // either shape alone and stay green — and pointing an author at one of two
+    // valid shapes is its own dead end.
+    for (const body of [`steps:\n  - type: search\n`, `steps:\n  - type: 5\n`]) {
+      expect(() => parseFlow(body), body).toThrow(/\{ into, text \} or \{ into, clear: true \}/);
+      // …and the diagnostic locates the step, rather than rendering the body
+      // it could not read.
+      expect(() => parseFlow(body), body).toThrow(/\{"type":/);
+    }
+  });
+
   it("still rejects an empty text when clear is absent", () => {
     expect(() => parseType(`      into: search\n      text: ""`)).toThrow(/non-empty text/);
   });

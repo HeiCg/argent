@@ -142,6 +142,20 @@ elementProto.getBoundingClientRect = function (this: Record<string, unknown>) {
   const r = this.__rect as Rect;
   return { left: r.x, top: r.y, right: r.x + r.w, bottom: r.y + r.h, width: r.w, height: r.h };
 };
+// `contains` lives on Node.prototype in a renderer, and the walker reads it
+// through the captured accessor to ask whether a subtree it is about to prune
+// holds the caret. Light DOM only, like the real one: a shadow boundary is not
+// crossed.
+(MockNode.prototype as unknown as Record<string, unknown>).contains = function (
+  this: Record<string, unknown>,
+  other: unknown
+): boolean {
+  if (this === other) return true;
+  for (const child of (this.children as MockElement[] | undefined) ?? []) {
+    if ((child as unknown as { contains: (n: unknown) => boolean }).contains(other)) return true;
+  }
+  return false;
+};
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Opts = {
@@ -1083,7 +1097,10 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
       >;
       form.shadowRoot = el({ tag: "input", rect: BOX });
       const { tree } = run([form as unknown as MockElement]);
-      expect(findById(tree, "clobbering-form")).toBeDefined();
+      // `.not.toBeNull()`, not `.toBeDefined()`: `findById` returns null on a
+      // miss, which `toBeDefined()` accepts — so the assertion held whether or
+      // not the form survived the walk.
+      expect(findById(tree, "clobbering-form")).not.toBeNull();
     } finally {
       Object.defineProperty(MockElement.prototype, "shadowRoot", descriptor);
     }
@@ -1118,7 +1135,15 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     // confirmed. Both shadow fixtures beside this one put the activeElement one
     // level up, where the difference cannot show.
     const shadowInput = el({ tag: "input", attrs: { id: "nested-input" }, rect: BOX });
-    const shadowWrapper = el({ rect: { x: 0, y: 0, w: 400, h: 400 }, children: [shadowInput] });
+    // The wrapper carries an id, so the structural collapse cannot promote it
+    // away. Without one it was an anonymous single-child box, the flag ended up
+    // at depth 0 of the shadow results, and a NON-recursive `carriesFocus` read
+    // it just as well — the fixture named the recursion without reaching it.
+    const shadowWrapper = el({
+      attrs: { id: "shadow-wrapper" },
+      rect: { x: 0, y: 0, w: 400, h: 400 },
+      children: [shadowInput],
+    });
     const host = el({
       attrs: { id: "the-host" },
       rect: { x: 0, y: 0, w: 400, h: 400 },
@@ -1150,6 +1175,90 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
 
     const { tree } = run([host], { activeElement: host });
     expect(findById(tree, "the-host")!.focused).toBe(true);
+  });
+
+  it("keeps an INVISIBLE element that holds the caret, and its box", () => {
+    // The field that is invisible by design is very often the one holding the
+    // secret: the capture input under rendered OTP/PIN boxes, a
+    // barcode-scanner sink, a styled file input. Pruning it before focus was
+    // considered left the tree with no focus flag anywhere, which the flow's
+    // focus wait reads as "nothing is focused" — the one non-confirmed outcome
+    // it dispatches a destructive clear on. Measured on Chrome 151: an
+    // opacity:0 capture input holding an OTP was emptied and rewritten with the
+    // step reporting a pass, while the same page at opacity:1 refused.
+    const capture = el({
+      tag: "input",
+      attrs: { id: "capture" },
+      style: { opacity: "0" },
+      rect: { x: 40, y: 40, w: 400, h: 60 },
+    });
+
+    const { tree } = run([capture], { activeElement: capture });
+    const node = findById(tree, "capture")!;
+    expect(node.focused).toBe(true);
+    // Its real box, not a collapsed one — that box is where the keystrokes are
+    // going, and every overlap test in the focus wait reads it.
+    const frame = node.frame as { width: number; height: number };
+    expect(frame.width).toBeCloseTo(400 / W, 6);
+    expect(frame.height).toBeCloseTo(60 / H, 6);
+  });
+
+  it("keeps an invisible WRAPPER that contains the caret's element", () => {
+    // The prune cuts the whole subtree, so the ancestor is where an
+    // opacity:0 capture field is usually lost — the input itself is opaque and
+    // the wrapper is what hides it.
+    const inner = el({ tag: "input", attrs: { id: "inner" }, rect: { x: 0, y: 0, w: 200, h: 30 } });
+    const wrapper = el({
+      attrs: { id: "veil" },
+      style: { opacity: "0" },
+      rect: { x: 0, y: 0, w: 200, h: 30 },
+      children: [inner],
+    });
+
+    const { tree } = run([wrapper], { activeElement: inner });
+    expect(findById(tree, "inner")!.focused).toBe(true);
+  });
+
+  it("still prunes an invisible subtree when the caret is elsewhere", () => {
+    // The carve-out is for the caret and nothing else. `document.body` is the
+    // default activeElement when nothing is focused and it contains the whole
+    // page, so treating it as a holder would resurrect every hidden subtree.
+    const ghost = el({ attrs: { id: "ghost" }, style: { opacity: "0" }, rect: BOX });
+    const real = el({
+      attrs: { id: "real" },
+      text: "visible",
+      rect: { x: 0, y: 200, w: 200, h: 30 },
+    });
+
+    const { tree } = run([ghost, real]);
+    expect(findById(tree, "ghost")).toBeNull();
+    expect(findById(tree, "real")).not.toBeNull();
+  });
+
+  it("never resurrects a display:none subtree that claims the caret", () => {
+    // An element in a display:none subtree cannot hold focus — the browser
+    // blurs it — so a root naming one as its activeElement is describing a page
+    // that cannot exist. Honouring the claim would undo a prune the walker has
+    // always made.
+    const gone = el({ attrs: { id: "gone" }, style: { display: "none" }, rect: BOX });
+
+    const { tree } = run([gone], { activeElement: gone });
+    expect(findById(tree, "gone")).toBeNull();
+  });
+
+  it("keeps a box-less focused element with no children and no own text", () => {
+    // The zero-frame drop is the third sibling of the two structural collapses,
+    // which both consult `focusedSelf`. Same class of drop, same consequence: a
+    // focused node vanishing is the "nothing is focused" tree a destructive
+    // clear goes through on.
+    const empty = el({
+      attrs: { id: "empty-editor" },
+      style: { display: "contents" },
+      rect: ZERO,
+    });
+
+    const { tree } = run([empty], { activeElement: empty });
+    expect(findById(tree, "empty-editor")!.focused).toBe(true);
   });
 
   it("a <form name=activeElement> cannot decide which element reports focus", () => {
@@ -1325,7 +1434,13 @@ describe("a <textarea>'s contents through the flow tree", () => {
         rect: { x: 0, y: 220, w: 120, h: 30 },
       }),
     ]);
-    expect(selectorToNode(tree, { text: "Save" })?.identifier).toBeUndefined();
+    // The resolver must MATCH, and match the draft: `?.identifier` alone reads
+    // as undefined when nothing resolved at all, so it passed on a resolver
+    // that found neither element.
+    const picked = selectorToNode(tree, { text: "Save" });
+    expect(picked).toBeTruthy();
+    expect(picked!.identifier).toBeUndefined();
+    expect(picked!.label).toBe("Save");
   });
 
   it("keeps a labelled composer's draft out of a page-wide visible check", () => {
@@ -1396,6 +1511,10 @@ describe("a <textarea>'s contents through the flow tree", () => {
     ]);
     const ta = findAll(tree, { identifier: "ta" })[0]!;
     const inp = findAll(tree, { identifier: "inp" })[0]!;
+    // Pin the string, not just the agreement: `toBe` between two empty labels
+    // passes as `"" === ""` if BOTH regressed, which is the likelier failure —
+    // one change to the shared normalizer moves them together.
+    expect(assertText(ta)).toBe("line one\nline two");
     expect(assertText(ta)).toBe(assertText(inp));
   });
 });
