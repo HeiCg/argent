@@ -249,9 +249,10 @@ const labelAboveFieldXml = () =>
  * WebView clears the target by `pad` px on every side. The containment
  * epsilon's slack is per-EDGE, so a symmetric pad well under it made an
  * ENCLOSING node satisfy "sits inside the target" and take the clear — a pass
- * on a field the step never touched. Comparing extents instead is what pins the
- * value: at FRAME_CONTAINMENT_EPSILON = 0.005 on a 1080x1920 screen, a pad of
- * 4px already widens the frame past the tolerance.
+ * on a field the step never touched. Comparing extents is what refuses it, and
+ * comparing them EXACTLY is what refuses it at every pad: a trap one pixel
+ * larger on each edge destroyed a draft on Chrome 151, and it is the same
+ * geometry as `overhangingChildXml`, so no tolerance can separate the two.
  */
 const enclosingByPadXml = (pad: number) =>
   `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
@@ -305,12 +306,12 @@ const evenSplitRowXml = (focusOn: "left" | "right") =>
 </hierarchy>`;
 
 /**
- * The admitting side of the containment epsilon, which `enclosingByPadXml`
- * never reaches: the focused input inside the wrapper OVERHANGS it by `pad` px
- * on every side, the way a focus ring or a border rounds out of an integer
- * bounds pair. The slack exists for exactly this, so a 1-3px overhang must
- * still confirm — with the epsilon at 0 the everyday wrapper clear starts
- * refusing.
+ * The other end of `enclosingByPadXml`, and — once the ancestry is flattened
+ * away — the same geometry: the focused input inside the wrapper OVERHANGS it
+ * by `pad` px on every side, the way a focus ring or a border rounds out of an
+ * integer bounds pair. A tolerance admitting it admits a focus trap laid over
+ * the field by the same margin, so `pad: 0` (the input filling its wrapper, the
+ * everyday shape) is the admitting case and every overhang refuses.
  */
 const overhangingChildXml = (pad: number) =>
   `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
@@ -1058,13 +1059,42 @@ describe("type directive — clear at a container's seam", () => {
     expect(keyboardArgs(calls)).toEqual([{ clear: true, text: "Jones" }, { key: "enter" }]);
   });
 
-  it.each([1, 2])(
-    "still clears when the focused input overhangs its wrapper by %ipx",
+  it("still clears when the focused input fills its wrapper exactly", async () => {
+    // The admitting side of containment, and the everyday shape: a testID
+    // wrapper whose input spans it. Equal frames are no bigger, so the size
+    // test passes them while refusing every overhang below.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: overhangingChildXml(0) }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "type",
+          into: { identifier: "email-wrapper" },
+          text: "new@example.com",
+          clear: true,
+        },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([
+      { clear: true, text: "new@example.com" },
+      { key: "enter" },
+    ]);
+  });
+
+  it.each([1, 2, 3])(
+    "refuses to clear when the focused node overhangs its wrapper by %ipx",
     async (pad) => {
-      // The admitting side of the containment epsilon, which the enclosing-pad
-      // cases never reach. A border or focus ring rounding out of an integer
-      // bounds pair is what the slack exists for; at 0 the everyday wrapper
-      // clear starts refusing.
+      // The other half of the enclosing-pad sweep, and the same geometry: a
+      // node overhanging on every side is a node ENCLOSING the target, whether
+      // the tree calls it the wrapper's input or a focus trap laid over it.
+      // Any tolerance that admits this admits a 1px trap over the field, which
+      // destroyed a draft on Chrome 151 — so the size test is exact and this
+      // side refuses from one pixel up.
       const calls: Call[] = [];
       const registry = mockRegistry(calls, () => ({ xml: overhangingChildXml(pad) }));
 
@@ -1081,38 +1111,11 @@ describe("type directive — clear at a container's seam", () => {
       });
 
       const result = asRun(await run(registry));
-      expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
-      expect(keyboardArgs(calls)).toEqual([
-        { clear: true, text: "new@example.com" },
-        { key: "enter" },
-      ]);
+      expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+      expect(result.steps[0]!.reason).toContain("refusing to clear");
+      expect(keyboardArgs(calls)).toEqual([]);
     }
   );
-
-  it("refuses once the overhang widens the focused input past the tolerance", async () => {
-    // The other side of the same boundary, one pixel along: a 3px overhang is
-    // 6px of extra WIDTH, and 6/1080 clears FRAME_CONTAINMENT_EPSILON. Pinning
-    // both sides is what fixes the value — the enclosing-pad cases above only
-    // ever start at 4px, which is already past it.
-    const calls: Call[] = [];
-    const registry = mockRegistry(calls, () => ({ xml: overhangingChildXml(3) }));
-
-    await writeFlow("f", {
-      executionPrerequisite: "",
-      steps: [
-        {
-          kind: "type",
-          into: { identifier: "email-wrapper" },
-          text: "new@example.com",
-          clear: true,
-        },
-      ],
-    });
-
-    const result = asRun(await run(registry));
-    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
-    expect(keyboardArgs(calls)).toEqual([]);
-  });
 });
 
 describe("type directive — the tree moving between the tap and the focus poll", () => {

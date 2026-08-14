@@ -755,13 +755,23 @@ function frameWithin(inner: DescribeFrame, outer: DescribeFrame): boolean {
  * enclosing its target by 4px on every side on a 1080x1920 screen passed
  * containment and took the clear.
  *
- * Comparing extents catches a symmetric pad at half the per-edge threshold,
- * while still admitting the overhang the epsilon exists for (a child a border's
- * width wider than the box it sits in).
+ * No epsilon of its own, for the reason {@link frameCoversTap} has none: any
+ * slack here is slack a symmetric pad hides inside. A focus trap laid over the
+ * field, larger by ONE pixel on every edge, is the same geometry as a child
+ * overhanging its wrapper by a border's width — one tolerance cannot admit the
+ * second and refuse the first, and the flow trees carry no ancestry to tell
+ * them apart with (`flattenHoisting` returns leaves under one root on every
+ * platform). Reproduced on Chrome 151 at a 1px pad: a `focusin` trap holding
+ * `DRAFT-do-not-erase` over an `<input>` passed the step, and the draft was
+ * emptied and rewritten while the named input kept its old value.
+ *
+ * So the size test is exact, and the cost is a `clear` refused when the focused
+ * child is genuinely a hair wider than the box the selector named. That
+ * direction is safe: the step fails and says so. Equal frames still pass, which
+ * is the everyday wrapper-around-input shape.
  */
 function frameNoLargerThan(inner: DescribeFrame, outer: DescribeFrame): boolean {
-  const e = FRAME_CONTAINMENT_EPSILON;
-  return inner.width <= outer.width + e && inner.height <= outer.height + e;
+  return inner.width <= outer.width && inner.height <= outer.height;
 }
 
 /**
