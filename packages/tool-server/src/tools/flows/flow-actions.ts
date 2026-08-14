@@ -955,13 +955,29 @@ function focusedFromInside(
     // itself never counts — the everyday React Native shape is a `Pressable`
     // wrapping a `TextInput`, so the container is clickable by construction.
     //
-    // "Nothing under the point is a control" is only a statement about the
-    // SCREEN where the source reports controls at all: the iOS full-hierarchy
-    // adapter never sets `clickable` (`flow-ios-tree`), so there it would be a
-    // statement about the adapter and would wave every sibling through. One
-    // control anywhere inside the box is the evidence that the flag is being
-    // emitted; without it this stays the refusal it is today.
-    if (!tap.inside.some((before) => before.clickable)) return false;
+    // ONE control, and the one that reports focus. "Nothing under the tap is a
+    // control" is not on its own evidence that focus followed the gesture:
+    // `underTap` holds only what COVERS the point, so any gap between two
+    // children — a flex `gap`, `space-between`, a margin, a divider the adapter
+    // does not emit — empties it and passes the test below vacuously, leaving
+    // the clear to whichever sibling happened to hold focus already. Reproduced
+    // on Chrome 151: a row of two inputs with a 30px gap, its centre falling
+    // between them and the LEFT input focused before the step, passed and
+    // rewrote that left input; an OTP row of six boxes with a 12px gap did the
+    // same four boxes away from the tap point. Closing the gap so the boxes
+    // touch sends the clear to the box under the tap, which is correct.
+    //
+    // Requiring the container's one control is also what `references/
+    // flow-yaml.md` already promises, and it keeps the sibling refusals the doc
+    // lists (a currency/amount row, one cell of an OTP row) refusing however the
+    // row is spaced.
+    //
+    // Counting controls at all is only possible on a SCREEN where the source
+    // reports them: the iOS full-hierarchy adapter never sets `clickable`
+    // (`flow-ios-tree`), so there this arm never admits anything and the shape
+    // it exists to fix still falls through to the refusal below.
+    const controls = tap.inside.filter((before) => before !== tap.tapped && before.clickable);
+    if (controls.length !== 1 || controls[0] !== named[0]) return false;
     return tap.underTap.every((before) => before === tap.tapped || !before.clickable);
   });
 }
