@@ -173,6 +173,113 @@ const twoInputRowXml = () =>
 </hierarchy>`;
 
 /**
+ * `twoInputRowXml`'s other half — the row split EVENLY, so its centre is the
+ * seam between the two children.
+ *
+ * The uneven fixture only ever exercises the discriminating side of the
+ * tap-point test. An inclusive containment test admits BOTH halves at a seam
+ * and so discriminates nothing: the clear then empties whichever half holds
+ * focus and reports a pass on the row. The OS routes a tap at the seam to the
+ * RIGHT child (left/top inclusive, right/bottom exclusive, in `Rect.contains`,
+ * `CGRectContainsPoint` and `elementFromPoint` alike), so `focusOn: "left"` is
+ * the destructive case and `focusOn: "right"` is the honest one. Even splits
+ * are the common case: six OTP boxes on a 1080px screen land on exact 180px
+ * boundaries. Reproduced on Chrome 42 and on Android API 36.
+ */
+const evenSplitRowXml = (focusOn: "left" | "right") =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" resource-id="name-row" package="com.acme.app" bounds="[40,200][1040,280]">
+      <node index="0" class="android.widget.EditText" resource-id="first" content-desc="First name" text="do not erase me" ${focusOn === "left" ? 'focused="true" ' : ""}package="com.acme.app" bounds="[40,200][540,280]" />
+      <node index="1" class="android.widget.EditText" resource-id="last" content-desc="Last name" text="Smith" ${focusOn === "right" ? 'focused="true" ' : ""}package="com.acme.app" bounds="[540,200][1040,280]" />
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
+ * The admitting side of the containment epsilon, which `enclosingByPadXml`
+ * never reaches: the focused input inside the wrapper OVERHANGS it by `pad` px
+ * on every side, the way a focus ring or a border rounds out of an integer
+ * bounds pair. The slack exists for exactly this, so a 1-3px overhang must
+ * still confirm — with the epsilon at 0 the everyday wrapper clear starts
+ * refusing.
+ */
+const overhangingChildXml = (pad: number) =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" resource-id="email-wrapper" package="com.acme.app" bounds="[40,200][1040,280]">
+      <node index="0" class="android.widget.EditText" resource-id="email" content-desc="Email" text="old.remembered.login" focused="true" package="com.acme.app" bounds="[${40 - pad},${200 - pad}][${1040 + pad},${280 + pad}]" />
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
+ * An overlay that covers the tap point ITSELF, rather than sitting clear of it
+ * like `overlayFocusXml`. Geometry cannot tell "the tap hit the overlay" from
+ * "the overlay appeared BECAUSE of the tap" — only whether it was there when
+ * the gesture was dispatched can, which is what `present` varies.
+ */
+const centreOverlayXml = (present: boolean) =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.widget.EditText" resource-id="email" content-desc="Username or email address" text="old.remembered.login" package="com.acme.app" bounds="[40,200][1040,600]" />
+    ${present ? '<node index="1" class="android.widget.EditText" resource-id="mention" content-desc="Mention" text="do not erase me" focused="true" package="com.acme.app" bounds="[240,350][840,450]" />' : ""}
+  </node>
+</hierarchy>`;
+
+/**
+ * `wrapperFocusXml` with the wrapper GROWN downwards, as an autocomplete does
+ * when it renders its listbox inside itself on focus. Only the box changes; the
+ * input stays where the tap hit it.
+ */
+const grownWrapperXml = () =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" resource-id="email-wrapper" package="com.acme.app" bounds="[40,180][1040,900]">
+      <node index="0" class="android.widget.EditText" resource-id="email" content-desc="Username or email address" text="old.remembered.login" focused="true" package="com.acme.app" bounds="[40,200][1040,280]" />
+      <node index="1" class="android.widget.TextView" text="Suggestion one" package="com.acme.app" bounds="[40,300][1040,400]" />
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
+ * A typeahead list that opens on focus, one of whose suggestions repeats the
+ * field's own value. `{ text: "Paris" }` matches the field exactly before the
+ * tap and matches BOTH afterwards — and the chip is smaller, so a re-run of the
+ * selector hands it the match.
+ */
+const typeaheadXml = (withSuggestion: boolean) =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.widget.EditText" resource-id="q" content-desc="City" text="Paris" focused="true" package="com.acme.app" bounds="[40,200][1040,280]" />
+    ${withSuggestion ? '<node index="1" class="android.widget.TextView" text="Paris" package="com.acme.app" bounds="[40,320][300,380]" />' : ""}
+  </node>
+</hierarchy>`;
+
+/**
+ * A rich-text composer: the editable node carries the focus and no name of its
+ * own, and the only text belongs to the block child inside it — what Quill,
+ * ProseMirror and Lexical all render. Every selector that can name the content
+ * therefore resolves to a DESCENDANT of the focused node. With `extraLine` the
+ * editor shows more than the selector named, which is the negative control.
+ */
+const richTextEditorXml = (extraLine: boolean) =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" focused="true" package="com.acme.app" bounds="[40,200][1040,400]">
+      <node index="0" class="android.widget.TextView" text="Draft body here" package="com.acme.app" bounds="[45,210][1035,250]" />
+      ${extraLine ? '<node index="1" class="android.widget.TextView" text="and a second paragraph" package="com.acme.app" bounds="[45,260][1035,300]" />' : ""}
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
  * The role test's over-match: Material's `TextInputLayout` is the non-editable
  * WRAPPER that carries the app's `resource-id`, and `deriveUiAutomatorRole`
  * matches `textinput` on the short class name, so it derives `TextField`.
@@ -714,6 +821,312 @@ describe("type directive — clear dispatch", () => {
     asRun(await run(registry));
 
     expect(reads).toBe(withoutClear);
+  });
+});
+
+describe("type directive — clear at a container's seam", () => {
+  it("refuses when an EVENLY split row's focused half is not the one the tap hit", async () => {
+    // The uneven `twoInputRowXml` only exercises the discriminating side of the
+    // tap-point test. At a seam an inclusive containment test admits both
+    // halves and decides nothing, so the clear went to whichever half held
+    // focus and the step reported a pass on the row. Reproduced on Chrome 42
+    // and Android API 36 before the half-open test.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: evenSplitRowXml("left") }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "name-row" }, text: "Jones", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("still clears the EVENLY split row's half the tap did hit", async () => {
+    // The control that keeps the fix from being a blanket refusal: the same
+    // fixture with focus on the right of the seam, which is where the OS routes
+    // a tap landing exactly on it.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: evenSplitRowXml("right") }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "name-row" }, text: "Jones", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([{ clear: true, text: "Jones" }, { key: "enter" }]);
+  });
+
+  it.each([1, 2])(
+    "still clears when the focused input overhangs its wrapper by %ipx",
+    async (pad) => {
+      // The admitting side of the containment epsilon, which the enclosing-pad
+      // cases never reach. A border or focus ring rounding out of an integer
+      // bounds pair is what the slack exists for; at 0 the everyday wrapper
+      // clear starts refusing.
+      const calls: Call[] = [];
+      const registry = mockRegistry(calls, () => ({ xml: overhangingChildXml(pad) }));
+
+      await writeFlow("f", {
+        executionPrerequisite: "",
+        steps: [
+          {
+            kind: "type",
+            into: { identifier: "email-wrapper" },
+            text: "new@example.com",
+            clear: true,
+          },
+        ],
+      });
+
+      const result = asRun(await run(registry));
+      expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+      expect(keyboardArgs(calls)).toEqual([
+        { clear: true, text: "new@example.com" },
+        { key: "enter" },
+      ]);
+    }
+  );
+
+  it("refuses once the overhang widens the focused input past the tolerance", async () => {
+    // The other side of the same boundary, one pixel along: a 3px overhang is
+    // 6px of extra WIDTH, and 6/1080 clears FRAME_CONTAINMENT_EPSILON. Pinning
+    // both sides is what fixes the value — the enclosing-pad cases above only
+    // ever start at 4px, which is already past it.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: overhangingChildXml(3) }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "type",
+          into: { identifier: "email-wrapper" },
+          text: "new@example.com",
+          clear: true,
+        },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+});
+
+describe("type directive — the tree moving between the tap and the focus poll", () => {
+  it("still clears when the named container GROWS after the tap", async () => {
+    // Every other fixture holds the tree constant across polls, which is the
+    // blind spot that let this through: recomputing the tap point from the
+    // target's current frame follows a container that grows, and an
+    // autocomplete wrapper rendering its listbox inside itself on focus drops
+    // the recomputed centre out of the input and into the option list. The
+    // clear was then refused blaming an overlay that is not on the page.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      // Settling needs two identical reads, so the growth lands only once the
+      // tap has been dispatched against the small wrapper.
+      return { xml: reads <= 2 ? wrapperFocusXml() : grownWrapperXml() };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "type",
+          into: { identifier: "email-wrapper" },
+          text: "new@example.com",
+          clear: true,
+        },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([
+      { clear: true, text: "new@example.com" },
+      { key: "enter" },
+    ]);
+  });
+
+  it("refuses when an overlay appears over the tap point AFTER the tap", async () => {
+    // An overlay covering the tap point used to confirm on the argument that
+    // the tap must have hit it. That holds only for one already on screen when
+    // the gesture went out. An @-mention list, an inline picker or a formatting
+    // bar rendered in RESPONSE to the tap was hit by nothing, and taking focus
+    // was enough to make it swallow the clear while the composer kept its draft
+    // and the step passed on the composer. Reproduced on Chrome 42.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: centreOverlayXml(reads > 2) };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("still clears through an overlay that was ALREADY over the tap point", async () => {
+    // The control, and the case the old rationale was right about: the tap
+    // really did land on the overlay, so focus reaching its field is the honest
+    // consequence of the gesture. Only the timing separates it from the run
+    // above.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: centreOverlayXml(true) }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([
+      { clear: true, text: "new@example.com" },
+      { key: "enter" },
+    ]);
+  });
+
+  it("still clears when the selector re-resolves to a BETTER-ranked node after the tap", async () => {
+    // `tappedFrame` only covered a round where the selector fails to resolve at
+    // all. A typeahead suggestion repeating the field's own value resolves
+    // instead of it — an exact text match on a smaller frame — so the focus
+    // check tested an element the step never touched and refused, reporting
+    // that focus never reached the target while focus was exactly where the
+    // flow had put it.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: typeaheadXml(reads > 2) };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { text: "Paris" }, text: "Berlin", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([{ clear: true, text: "Berlin" }, { key: "enter" }]);
+  });
+
+  it("keeps polling past an intermediate overlap read instead of refusing on it", async () => {
+    // `requireEvidence` has a well-covered perf half — a plain `type` exits on
+    // the first overlapping read — and an unpinned safety half. A `clear` must
+    // NOT take that exit: the overlay here is gone by the third read and the
+    // real focus is inside the wrapper, so refusing on the intermediate verdict
+    // would fail a step that is about to be confirmable.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: reads <= 3 ? overlayFocusXml() : wrapperFocusXml() };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "type",
+          into: { identifier: "email-wrapper" },
+          text: "new@example.com",
+          clear: true,
+        },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([
+      { clear: true, text: "new@example.com" },
+      { key: "enter" },
+    ]);
+  });
+});
+
+describe("type directive — what a refusal is allowed to say", () => {
+  it.each([
+    ["focus reported elsewhere", unfocusedXml, "email"],
+    ["a focused node enclosing the target", enclosingFocusXml, "email"],
+    ["a focused overlay over the target", overlayFocusXml, "email"],
+  ])("keeps the focused element's own text out of the reason (%s)", async (_name, xml, into) => {
+    // The reason is written to the run report on disk and echoed to the agent,
+    // and a focused node's label can BE the field's value — a password
+    // manager's suggestion, a recovery phrase, the draft the step refused to
+    // destroy. Every fixture here carries that text on the focused node, so a
+    // reason that quoted it would fail this.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: xml() }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: into }, text: "x", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(result.steps[0]!.reason).not.toContain("do not erase me");
+  });
+});
+
+describe("type directive — a rich-text composer", () => {
+  it("clears an editor whose only text sits in a child node", async () => {
+    // Quill / ProseMirror / Lexical render the content in a block child, and
+    // the editable node itself carries no id, no name and no own text — so
+    // every selector that can name the content resolves to a descendant of the
+    // focused node. That read as "encloses" and was refused with advice (point
+    // the selector at the input itself) that nothing on the page can satisfy.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: richTextEditorXml(false) }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { text: "Draft body here" }, text: "REPLACED", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([{ clear: true, text: "REPLACED" }, { key: "enter" }]);
+  });
+
+  it("refuses when the enclosing focused node shows more than the selector named", async () => {
+    // The control that keeps the editor arm off the shapes "encloses" exists
+    // for: a focused WebView wrapping a form, or a focus trap on a textarea,
+    // both show text of their own beyond the target's, exactly like this second
+    // paragraph the step never named.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: richTextEditorXml(true) }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { text: "Draft body here" }, text: "REPLACED", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
   });
 });
 

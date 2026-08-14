@@ -507,6 +507,21 @@ describe("DESCRIBE_DOM_SCRIPT — a <textarea>'s own text is not its value", () 
     expect(findById(tree, "t3")!.value).toBeUndefined();
   });
 
+  it("reports a MULTI-LINE value once, not once raw and once normalized", () => {
+    // The walker normalizes a textarea's own text; `accessibleName` returned
+    // the same value RAW. For any value holding a newline or a run of spaces
+    // the two strings differ, so both were emitted — the raw one as the label,
+    // the normalized one as the value — and the flow's text matching
+    // concatenated them, so an `equals` assert on the field's real contents
+    // matched neither spelling. That assert is what the skill prescribes as the
+    // proof a clear landed. The single-line case above cannot see this.
+    const { tree } = run([
+      textareaEl({ value: "line one\nline two", attrs: { id: "t4" }, rect: BOX }),
+    ]);
+    expect(findById(tree, "t4")!.label).toBe("line one line two");
+    expect(findById(tree, "t4")!.value).toBeUndefined();
+  });
+
   it("still emits an ordinary element's own text as its value", () => {
     // The control: only <textarea> has this split between markup text and value.
     const { tree } = run([el({ tag: "p", text: "paragraph-text" })]);
@@ -1050,6 +1065,30 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     const focused = focusedNodes(tree);
     expect(focused).toHaveLength(1);
     expect(focused[0]!.role).toBe("div");
+  });
+
+  it("suppresses the host when the flag is NESTED inside its shadow subtree", () => {
+    // `carriesFocus` recurses because the ordinary web-component shape puts the
+    // focused control below the root's own children — `<my-editor>` → a wrapper
+    // `<div>` → the `<input>`. A non-recursive check sees no flag among the
+    // root's direct children, keeps the host flagged, and the tree then
+    // double-reports host and inner: the flow's focus wait reads the host as an
+    // ENCLOSING focused node and refuses the clear the inner element would have
+    // confirmed. Both shadow fixtures beside this one put the activeElement one
+    // level up, where the difference cannot show.
+    const shadowInput = el({ tag: "input", attrs: { id: "nested-input" }, rect: BOX });
+    const shadowWrapper = el({ rect: { x: 0, y: 0, w: 400, h: 400 }, children: [shadowInput] });
+    const host = el({
+      attrs: { id: "the-host" },
+      rect: { x: 0, y: 0, w: 400, h: 400 },
+      shadow: [shadowWrapper],
+      shadowActive: shadowInput,
+    });
+
+    const { tree } = run([host], { activeElement: host });
+    expect(findById(tree, "nested-input")!.focused).toBe(true);
+    expect(findById(tree, "the-host")!.focused).toBeUndefined();
+    expect(focusedNodes(tree)).toHaveLength(1);
   });
 
   it("keeps the HOST flagged when its shadow subtree never carried the flag out", () => {
