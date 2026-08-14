@@ -177,6 +177,12 @@ export function parseHdcTargets(stdout: string): HarmonyHdcTarget[] {
     const trimmed = line.trim();
     if (trimmed.length === 0 || trimmed.startsWith(HDC_EMPTY_SENTINEL)) continue;
     if (trimmed.startsWith("[")) continue;
+    // Prose, not a row. `hdc` prints some diagnostics with no `[Fail]` prefix
+    // and still exits 0 — `Connect server failed` is three words, i.e. the
+    // shape of a `-v` row, and became a target named `Connect`. The delimiter
+    // is what the two never share: a row is tab-separated, or a lone connect
+    // key when `-v` is absent.
+    if (!trimmed.includes("\t") && /\s/.test(trimmed)) continue;
     const cols = trimmed.split(/\s+/);
     if (cols.length === 1) {
       // `hdc list targets` without `-v` prints the bare connect key.
@@ -203,7 +209,7 @@ export async function listHarmonyHdcTargets(): Promise<HarmonyHdcTarget[]> {
  * The same listing, refusing rather than answering `[]` when `hdc` could not
  * produce one.
  *
- * `hdc` exits 0 whatever happens, so its `[Fail]` line is the only thing
+ * `hdc` exits 0 whatever happens, so what it printed is the only thing
  * separating "nothing is connected" from "the device table could not be read".
  * A caller polling for a change can treat those alike; one establishing a
  * BASELINE to compare against cannot, since an empty baseline quietly means
@@ -213,10 +219,32 @@ export async function listHarmonyHdcTargetsStrict(): Promise<HarmonyHdcTarget[]>
   return listTargets(true);
 }
 
+/**
+ * What `hdc` said instead of listing targets, or null if it listed any.
+ *
+ * `[Fail]` does not cover it. Measured on hdc 3.2.0d, a client that cannot
+ * reach its server writes a bare `Connect server failed` to STDERR, leaves
+ * stdout empty and exits 0 — so both the prefix and the status miss it, and the
+ * empty stdout parses to a clean, entirely wrong "no devices are connected".
+ * Device-level errors carry the prefix; this fails at the connector, below it.
+ *
+ * Any parsed row means a listing really was printed, and nothing here
+ * second-guesses it — a diagnostic alongside real targets is not a refusal.
+ */
+function hdcDiagnostic(result: { stdout: string; stderr: string }): string | null {
+  if (parseHdcTargets(result.stdout).length > 0) return null;
+  return (
+    `${result.stdout}\n${result.stderr}`
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l.length > 0 && !l.startsWith("[") && /\s/.test(l) && !l.includes("\t")) ?? null
+  );
+}
+
 async function listTargets(strict: boolean): Promise<HarmonyHdcTarget[]> {
   if (!(await resolveHdc())) return [];
   const result = await runHdc(["list", "targets", "-v"], HDC_LIST_TIMEOUT_MS);
-  const failure = hdcFailure(result);
+  const failure = hdcFailure(result) ?? hdcDiagnostic(result);
   if (failure) {
     if (strict) throw new Error(failure);
     return [];
