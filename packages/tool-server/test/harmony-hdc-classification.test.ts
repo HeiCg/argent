@@ -21,6 +21,7 @@ writeFileSync(
 case "$(cat ${modeFile})" in
   connect-fail) echo "Connect server failed" >&2 ;;
   transfer-ok) echo "FileTransfer finish, Size:6, File count = 1, time:10ms rate:0.60kB/s" ;;
+  truncated) echo "DumpLayout saved to:/data/local/tmp/dump.json" ;;
   silent) ;;
 esac
 exit 0
@@ -92,5 +93,16 @@ describe("runHdcShell without an exit status", () => {
     const err = await rejection(runHdcShell("127.0.0.1:5555", "uitest dumpLayout"));
     expect(err.message).toMatch(/returned no exit status/);
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.HARMONY_SHELL_NO_STATUS);
+  });
+
+  it("does not quote a cut-off command's own output back as hdc's verdict", async () => {
+    // `uitest`'s success line is prose by every test {@link hdcProse} applies —
+    // spaces, no tab, no prefix. Output that arrived without the sentinel is a
+    // command that ran and was truncated, which is the opposite repair from a
+    // connector that never reached the device.
+    hdcBehaves("truncated");
+    const err = await rejection(runHdcShell("127.0.0.1:5555", "uitest dumpLayout"));
+    expect(err.message).toMatch(/returned no exit status/);
+    expect(err.message).not.toContain("DumpLayout saved to");
   });
 });

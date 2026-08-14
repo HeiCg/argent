@@ -238,11 +238,15 @@ export async function runHdcShell(
   if (idx === -1) {
     // The device dropped the trailing echo — the command was killed on-device, or
     // the transport truncated. Either way the status is unknown, and reporting a
-    // fabricated 0 here would turn a dead command into a silent success. An
-    // unprefixed connector diagnostic lands here too, since it leaves stdout
-    // empty; it is quoted rather than guessed at, because the two causes below
-    // are both wrong for it.
-    const prose = hdcProse(result);
+    // fabricated 0 here would turn a dead command into a silent success.
+    //
+    // A connector that never reached the device lands here too, and needs the
+    // opposite repair, so the two are told apart by what came back: any output
+    // at all means the command ran and was cut off, while an empty stdout is a
+    // call that produced nothing — the shape an unprefixed `hdc` diagnostic has
+    // (see {@link hdcProse}). Reading a truncated command's own output as that
+    // diagnostic would quote the app back at the caller as hdc's verdict.
+    const prose = result.stdout.trim().length === 0 ? hdcProse(result) : null;
     throw new FailureError(
       prose
         ? `hdc could not run \`${command}\` on HarmonyOS device '${connectKey}': ${prose}`
