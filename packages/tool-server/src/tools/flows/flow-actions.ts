@@ -644,13 +644,28 @@ export async function waitForFrame(
   env: ActionEnv,
   selector: FlowSelector
 ): Promise<DescribeFrame | "aborted" | undefined> {
+  const resolved = await waitForFrameAndTree(env, selector);
+  return typeof resolved === "object" ? resolved.frame : resolved;
+}
+
+/**
+ * {@link waitForFrame}, keeping the settled tree the frame came out of.
+ *
+ * `runType` needs it: the tree as it stood when the tap was dispatched is the
+ * only record of what the tap could have hit, and every focus verdict after the
+ * tap is read against it (see {@link nodesUnderTap}).
+ */
+async function waitForFrameAndTree(
+  env: ActionEnv,
+  selector: FlowSelector
+): Promise<{ frame: DescribeFrame; tree: DescribeNode } | "aborted" | undefined> {
   const deadline = Date.now() + DEFAULT_ACTION_TIMEOUT_MS;
   for (;;) {
     if (env.signal?.aborted) return "aborted";
     const tree = await settleTree(env);
     if (tree) {
       const frame = flowSelectorToFrame(tree, selector);
-      if (frame) return frame;
+      if (frame) return { frame, tree };
     } else if (env.signal?.aborted) {
       return "aborted"; // settleTree bailed on the abort, not on a blank read
     }
@@ -819,19 +834,76 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
  * `AXStaticText`. The first two refused a legitimate wrapper clear, the last
  * two admitted the overlay the test exists to catch.
  *
- * Residual: an overlay that covers the tap point itself still confirms. That is
- * the case where the TAP hit the overlay, so focus reaching the overlay's field
- * is the honest consequence of the gesture, and no reading of the geometry can
- * separate it from the input inside the container.
+ * An overlay covering the tap point confirms only if it was ALREADY under that
+ * point when the tap was dispatched — `underTap`, read from the settled tree
+ * the frame was resolved against. Geometry alone cannot separate "the tap hit
+ * the overlay" from "the overlay appeared BECAUSE of the tap", and the second
+ * is an everyday shape: an @-mention list, an inline emoji or date picker, a
+ * formatting bar with its own input. Nothing hit those, so focus landing in one
+ * is not the honest consequence of the gesture — reproduced on Chrome 42, where
+ * a popover opened by the composer's own `focus` handler took the clear while
+ * the composer kept its draft, and the step reported a pass on the composer.
+ * The same page with the popover already open still confirms, and so does the
+ * same page with no popover at all.
  */
-function focusedFromInside(target: DescribeNode, focused: DescribeNode[]): boolean {
+function focusedFromInside(
+  target: DescribeNode,
+  focused: DescribeNode[],
+  underTap: DescribeNode[]
+): boolean {
   const tap = getDescribeTapPoint(target.frame);
   return focused.some(
     (n) =>
       frameWithin(n.frame, target.frame) &&
       frameNoLargerThan(n.frame, target.frame) &&
-      frameCoversTap(n.frame, tap.x, tap.y)
+      frameCoversTap(n.frame, tap.x, tap.y) &&
+      underTap.some((before) => sameElement(before, n))
   );
+}
+
+/**
+ * Do two nodes read from two DIFFERENT tree reads stand for the same element?
+ *
+ * Object identity cannot answer it — each read builds a fresh tree — and the
+ * frame cannot either, because the whole reason to ask is that the element may
+ * have moved (keyboard avoidance) or the box around it grown. What is left is
+ * the element's name: its role plus its identifier, both of which an id/testID
+ * pins across reads and neither of which focus changes.
+ *
+ * With no identifier on either side there is no stable name, so the label
+ * settles it. That is weaker — a field that reformats its value on focus (a
+ * currency input dropping its separators) changes its label and stops matching
+ * itself — which is why the label is consulted only when the identifier is
+ * absent on both sides, the case where the alternative is matching every
+ * anonymous node of the same role against every other.
+ */
+function sameElement(a: DescribeNode, b: DescribeNode): boolean {
+  if (a.role !== b.role || a.identifier !== b.identifier) return false;
+  return a.identifier !== undefined || a.label === b.label;
+}
+
+/**
+ * The elements that sat inside `tappedFrame` and under the point the focusing
+ * tap was dispatched at, in the settled tree that frame was resolved from —
+ * i.e. what the tap could possibly have hit. {@link focusedFromInside} matches
+ * a focus-flagged node against this list, which is how an overlay drawn in
+ * RESPONSE to the tap is told apart from one the tap landed on.
+ */
+function nodesUnderTap(preTap: DescribeNode, tappedFrame: DescribeFrame): DescribeNode[] {
+  const tap = getDescribeTapPoint(tappedFrame);
+  const acc: DescribeNode[] = [];
+  const walk = (node: DescribeNode): void => {
+    if (
+      frameWithin(node.frame, tappedFrame) &&
+      frameCoversTap(node.frame, tap.x, tap.y) &&
+      isVisible(node)
+    ) {
+      acc.push(node);
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(preTap);
+  return acc;
 }
 
 /**
@@ -925,9 +997,11 @@ async function waitForFocus(
   env: ActionEnv,
   into: FlowSelector,
   tappedFrame: DescribeFrame,
+  preTapTree: DescribeNode,
   requireEvidence: boolean
 ): Promise<FocusOutcome> {
   const deadline = Date.now() + TYPE_FOCUS_TIMEOUT_MS;
+  const underTap = nodesUnderTap(preTapTree, tappedFrame);
   // Did the MOST RECENT successful read see focus on anything? Deliberately the
   // latest look and not "any look, ever": the question the caller is about to
   // act on is whether something else holds focus NOW, and a sticky flag answers
@@ -966,7 +1040,7 @@ async function waitForFocus(
       // verdict a race — an app that blurs on the focusing tap reports focus
       // for however many rounds precede the blur.
       if (focused.some((n) => n === targetNode)) return "confirmed";
-      if (targetNode && focusedFromInside(targetNode, focused)) return "confirmed";
+      if (targetNode && focusedFromInside(targetNode, focused, underTap)) return "confirmed";
       lastRead =
         focused.length === 0
           ? "no-focus"
@@ -1640,11 +1714,12 @@ async function runType(
   env: ActionEnv,
   step: { into: FlowSelector; text?: string; clear?: boolean; submit?: boolean }
 ): Promise<DirectiveOutcome> {
-  const frame = await waitForFrame(env, step.into);
-  if (frame === "aborted") return ABORTED_OUTCOME;
-  if (!frame) {
+  const resolved = await waitForFrameAndTree(env, step.into);
+  if (resolved === "aborted") return ABORTED_OUTCOME;
+  if (!resolved) {
     return { ok: false, reason: offscreenHint(step.into) };
   }
+  const { frame, tree: preTapTree } = resolved;
   // Wrapped like the two keyboard dispatches below, so all three of this step's
   // device calls classify a cancelled run the same way. Leaving the focus tap
   // bare made one step report `error` or `skip` depending on which dispatch
@@ -1660,7 +1735,7 @@ async function runType(
   if (!(await sleepOrAbort(TYPE_FOCUS_SETTLE_MS, env.signal))) {
     return ABORTED_OUTCOME;
   }
-  const focus = await waitForFocus(env, step.into, frame, step.clear === true);
+  const focus = await waitForFocus(env, step.into, frame, preTapTree, step.clear === true);
   // waitForFocus returns on abort as well as on focus/timeout — re-check before
   // every keyboard dispatch (the keyboard tool has no abort handling of its
   // own), so a cancelled run can never type into, or submit, whatever the app
