@@ -4,7 +4,7 @@ import {
   resolveHarmonyEmulator,
   runHarmonyEmulator,
 } from "./harmony-cli";
-import { HDC_EMPTY_SENTINEL, hdcFailure, resolveHdc, runHdc } from "./harmony-hdc";
+import { HDC_EMPTY_SENTINEL, hdcFailure, hdcProse, resolveHdc, runHdc } from "./harmony-hdc";
 
 /**
  * Discovery for the HarmonyOS platform, from the two sources that know about a
@@ -222,23 +222,14 @@ export async function listHarmonyHdcTargetsStrict(): Promise<HarmonyHdcTarget[]>
 /**
  * What `hdc` said instead of listing targets, or null if it listed any.
  *
- * `[Fail]` does not cover it. Measured on hdc 3.2.0d, a client that cannot
- * reach its server writes a bare `Connect server failed` to STDERR, leaves
- * stdout empty and exits 0 — so both the prefix and the status miss it, and the
- * empty stdout parses to a clean, entirely wrong "no devices are connected".
- * Device-level errors carry the prefix; this fails at the connector, below it.
- *
- * Any parsed row means a listing really was printed, and nothing here
+ * A parsed row means a listing really was printed, and nothing here
  * second-guesses it — a diagnostic alongside real targets is not a refusal.
+ * That is the only part specific to listing; what counts as a diagnostic at all
+ * is {@link hdcProse}, which every hdc caller needs.
  */
 function hdcDiagnostic(result: { stdout: string; stderr: string }): string | null {
   if (parseHdcTargets(result.stdout).length > 0) return null;
-  return (
-    `${result.stdout}\n${result.stderr}`
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .find((l) => l.length > 0 && !l.startsWith("[") && /\s/.test(l) && !l.includes("\t")) ?? null
-  );
+  return hdcProse(result);
 }
 
 async function listTargets(strict: boolean): Promise<HarmonyHdcTarget[]> {

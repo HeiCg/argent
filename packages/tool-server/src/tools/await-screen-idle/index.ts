@@ -141,8 +141,9 @@ Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (de
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
 ${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls }, and a note when settled=false because the tree
 read itself failed — that note is what separates a device that went away from a screen that never went still. A note on
-settled=true instead means the tree may not be the live screen: a suspended HarmonyOS panel settles instantly on its last
-composited frame, and taps land nowhere until it is woken.
+settled=true instead means the tree it settled on is not the whole live screen: a suspended HarmonyOS panel settles
+instantly on its last composited frame and taps land nowhere until it is woken, and a Chromium page past the walker's
+node budget settles on a partial tree. Read the note before acting on what settled.
 Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
@@ -209,12 +210,13 @@ Use after a launch/navigation to wait for the UI to render before screenshotting
         ...(poll.result !== true && poll.lastError
           ? { note: `last tree fetch failed: ${poll.lastError}` }
           : {}),
-        // A settled screen still owes the caveat when the tree it settled on may
-        // not be the live one — a suspended HarmonyOS panel keeps dumping its
+        // A settled screen still owes the caveat when the tree it settled on is
+        // not the whole live one — a suspended HarmonyOS panel keeps dumping its
         // last composited frame, which is maximally still and so settles at
-        // once. `await-ui-element` reports the same hint on the same sources for
-        // the same reason; without it the two wait tools disagree about a screen
-        // they both just read.
+        // once, and a truncated Chromium tree stops changing because the rest of
+        // the page was never walked. `await-ui-element` reports the same hint on
+        // the same sources for the same reason; without it the two wait tools
+        // disagree about a screen they both just read.
         ...(poll.result === true &&
         poll.lastData?.hint &&
         READ_CAVEAT_SOURCES.has(poll.lastData.source)

@@ -26,6 +26,7 @@ function assertTypeableHarmonyText(text: string): void {
       {
         error_code: FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED,
         failure_stage: "harmony_keyboard_validate_text",
+        error_kind: "unsupported",
       }
     );
   }
@@ -39,6 +40,7 @@ function assertTypeableHarmonyText(text: string): void {
       {
         error_code: FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED,
         failure_stage: "harmony_keyboard_validate_text",
+        error_kind: "unsupported",
       }
     );
   }
@@ -85,6 +87,7 @@ function resolveHarmonyKeycode(key: string): number {
       {
         error_code: FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED,
         failure_stage: "harmony_keyboard_resolve_key",
+        error_kind: "unsupported",
       }
     );
   }

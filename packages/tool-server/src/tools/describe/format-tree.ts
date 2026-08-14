@@ -205,7 +205,12 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
     );
   } else {
     header.push(
-      "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space."
+      // HarmonyOS drives touch through `uitest uiInput`, which has no multi-touch
+      // verb — `gesture-pinch` has no harmony backend and refuses the device, so
+      // naming it here would send the agent at a tool it cannot reach.
+      opts.source === "harmony-uitest"
+        ? "Pass them straight to gesture-tap / gesture-swipe, which expect this same space."
+        : "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space."
     );
     header.push(
       "To tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2."

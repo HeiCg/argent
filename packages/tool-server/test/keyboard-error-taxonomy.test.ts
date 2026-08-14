@@ -238,4 +238,23 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
     expect(harmonyDisplay).not.toHaveBeenCalled();
     expect(harmonyKeyEvent).not.toHaveBeenCalled();
   });
+
+  it("harmony: every unsupported-input rejection carries the shared `unsupported` kind", async () => {
+    const harmonyDevice: DeviceInfo = { id: "harmony-KEY", platform: "harmony", kind: "device" };
+    // The android twin tags all three of these `unsupported`
+    // (utils/android-input.ts), and telemetry groups by kind before code — so a
+    // harmony rejection without one lands in the untyped bucket and the same
+    // failure reads as two different things depending on the platform.
+    for (const params of [{ text: "a\nb" }, { text: "a\x07b" }, { key: "tab" }]) {
+      const err = await harmonyImpl
+        .handler({}, { udid: harmonyDevice.id, ...params }, harmonyDevice)
+        .then(
+          () => {
+            throw new Error("expected the call to reject, but it resolved");
+          },
+          (e: unknown) => e
+        );
+      expect(getFailureSignal(err)?.error_kind).toBe("unsupported");
+    }
+  });
 });

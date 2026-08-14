@@ -227,7 +227,7 @@ Use after launch/navigation and before a raw tap, when an early-painted element 
 { "udid": "<UDID>", "timeoutMs": 3000, "minStableMs": 250 }
 ```
 
-On local iOS, Android, Chromium, and HarmonyOS, the tool waits for a non-empty `describe` tree to stop changing. Continue only when `settled: true`, and read the `note` if one came with it — a `settled: true` carrying one means the tree may not be the live screen (a suspended HarmonyOS panel settles at once on its last frame, and taps land nowhere until `button` wakes it). Pair it with a destination-specific `await-ui-element`; stillness does not identify a screen.
+On local iOS, Android, Chromium, and HarmonyOS, the tool waits for a non-empty `describe` tree to stop changing. Continue only when `settled: true`, and read the `note` if one came with it — a `settled: true` carrying one means the tree it settled on is not the whole live screen (a suspended HarmonyOS panel settles at once on its last frame, and taps land nowhere until `button` wakes it; a Chromium page past the walker's node budget settles on a partial tree). Pair it with a destination-specific `await-ui-element`; stillness does not identify a screen.
 
 Use it only for live diagnosis. Do not record it or put it in `run-sequence`. Flows use `await: { idle: true }`, which also compares pixels. This live tool can return during a presentation-layer animation.
 

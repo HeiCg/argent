@@ -112,6 +112,33 @@ describe("DevEco Studio binary resolution", () => {
     expect(await resolveHdc()).toBe(hdc);
   });
 
+  describe("on Windows, where the install ships .exe binaries", () => {
+    // `$DEVECO_STUDIO_HOME` is the ONLY way to point at a non-macOS install, so
+    // a candidate built without the extension misses every root and HarmonyOS
+    // is unreachable on the platform its own not-found hint sends users to.
+    beforeEach(() => setPlatform("win32"));
+
+    it("finds hdc.exe", async () => {
+      const root = join(tmpRoot, "DevEco Studio");
+      const hdc = `${join(root, HDC_RELATIVE)}.exe`;
+      await writeExecutable(hdc);
+      process.env.DEVECO_STUDIO_HOME = root;
+
+      const { resolveHdc } = await loadResolvers();
+      expect(await resolveHdc()).toBe(hdc);
+    });
+
+    it("finds Emulator.exe", async () => {
+      const root = join(tmpRoot, "DevEco Studio");
+      const emulator = `${join(root, EMULATOR_RELATIVE)}.exe`;
+      await writeExecutable(emulator);
+      process.env.DEVECO_STUDIO_HOME = root;
+
+      const { resolveHarmonyEmulator } = await loadResolvers();
+      expect(await resolveHarmonyEmulator()).toBe(emulator);
+    });
+  });
+
   describe("$DEVECO_STUDIO_HOME pointing at a root with no DevEco install", () => {
     // A set-but-wrong variable must not be able to hide a working default
     // install: it is tried first, then the default, exactly as `androidRoots()`

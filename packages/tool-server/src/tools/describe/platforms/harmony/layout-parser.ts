@@ -9,9 +9,16 @@ import { clipBoundsToScreen } from "../android/uiautomator-parser";
  * uiautomator dump — `[x1,y1][x2,y2]` bounds, `clickable`/`checkable` flags, a
  * `type` that plays the part of Android's `class` — so this mirrors the Android
  * trimmer's structure. It is markedly shorter for one measured reason: `uitest`
- * already merges the window stack and drops invisible nodes before writing, so
- * the scroll-clip pruning the Android side needs has nothing to prune (176
- * nodes for a full Settings screen, none of them `visible: false`).
+ * already merges the window stack and emits what is on screen, so a full
+ * Settings list is 177 nodes and its one `visible: false` node is a zero-area
+ * `ListItem`.
+ *
+ * What is deliberately NOT mirrored is the Android side's scroll clip. A `List`
+ * rect is not a clip rect here: scroll that same Settings screen and its
+ * "Log in to HUAWEI ID" row sits at y=164-308 while the `List` it belongs to
+ * starts at y=332, still rendered (screenshot-checked) under the collapsing
+ * title. Pruning by the scrolling ancestor's rect would drop six such nodes on
+ * one scroll, every one of them visible and tappable.
  *
  * What it must handle that Android's does not:
  *
@@ -95,15 +102,6 @@ function isScrollable(attrs: Record<string, string>): boolean {
 }
 
 /**
- * The screen-reader-meaningful label.
- *
- * `description` (ArkUI's `accessibilityText`) wins over `text` for the same
- * reason `content-desc` does on Android: when both are set they describe
- * different things, and the contract carries the typed content separately as
- * `value`. `hint` is the placeholder of an empty field, which is the only label
- * such a field has.
- */
-/**
  * One attribute as trimmed text.
  *
  * The dump is `JSON.parse`d and asserted to be all-strings, which is measured
@@ -115,6 +113,15 @@ function attrText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/**
+ * The screen-reader-meaningful label.
+ *
+ * `description` (ArkUI's `accessibilityText`) wins over `text` for the same
+ * reason `content-desc` does on Android: when both are set they describe
+ * different things, and the contract carries the typed content separately as
+ * `value`. `hint` is the placeholder of an empty field, which is the only label
+ * such a field has.
+ */
 export function harmonyLabel(attrs: Record<string, string>): string {
   const description = attrText(attrs.description);
   if (description) return description;

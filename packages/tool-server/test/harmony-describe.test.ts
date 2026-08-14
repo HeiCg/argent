@@ -86,4 +86,18 @@ describe("describeHarmony", () => {
     expect(out).toContain("Mode: nested");
     expect(out).toContain("04:39");
   });
+
+  it("does not offer the agent a gesture this platform has no backend for", async () => {
+    // `gesture-pinch` declares no `harmony` capability, so it refuses the device
+    // — a header naming it costs the agent a round trip into a 400 with nothing
+    // to fall back to. The two it does name must stay named.
+    vi.mocked(harmonyDisplay).mockResolvedValue({ width: 1216, height: 2688, screenOn: true });
+    vi.mocked(harmonyDumpLayout).mockResolvedValue(lockScreenDump());
+
+    const { tree, source } = await describeHarmony(CONNECT_KEY);
+    const out = formatDescribeTree(tree, { source });
+
+    expect(out).not.toContain("gesture-pinch");
+    expect(out).toContain("gesture-tap / gesture-swipe");
+  });
 });

@@ -22,8 +22,12 @@ const execFileAsync = promisify(execFile);
  *
  * Two consequences drive this module:
  *
- * 1. Transport failures are classified from the `[Fail]` prefix, never the exit
+ * 1. Transport failures are classified from what was printed, never the exit
  *    code, so `runHdc` returns output rather than rejecting on a non-zero exit.
+ *    Device-level errors carry a `[Fail]` prefix; a client that cannot reach its
+ *    own server does not, so both `hdcFailure` and `hdcProse` are needed to
+ *    cover the two, and a command with a positive success line is read off that
+ *    instead of off the absence of either.
  * 2. The remote command's own exit status never reaches the host — `hdc shell`
  *    reports the status of the *connection*, not of what ran. `runHdcShell`
  *    therefore appends an `echo` of `$?` and parses it back off stdout, which is
@@ -150,6 +154,30 @@ export function hdcFailure(result: HdcRunResult): string | null {
 }
 
 /**
+ * A diagnostic `hdc` printed without the `[Fail]` prefix, or null.
+ *
+ * The prefix does not cover everything. Measured on hdc 3.2.0d, a client that
+ * cannot reach its server writes a bare `Connect server failed` to STDERR,
+ * leaves stdout empty and exits 0 — so the prefix, the streams and the status
+ * all miss it, and every caller reading only {@link hdcFailure} takes the empty
+ * stdout at face value. Device-level errors carry the prefix; this one fails at
+ * the connector, below it.
+ *
+ * Prose is told from output by its delimiters: `hdc`'s own tabular output is
+ * tab-separated, and a bare connect key is one word. Neither is a line that
+ * holds a space and no tab. Callers whose command has a positive success signal
+ * should check that first — this only says what was printed instead.
+ */
+export function hdcProse(result: HdcRunResult): string | null {
+  return (
+    `${result.stdout}\n${result.stderr}`
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l.length > 0 && !l.startsWith("[") && /\s/.test(l) && !l.includes("\t")) ?? null
+  );
+}
+
+/**
  * Escape a string for interpolation into the single remote command line that
  * `hdc shell` hands to the device's `/bin/sh`.
  *
@@ -210,10 +238,16 @@ export async function runHdcShell(
   if (idx === -1) {
     // The device dropped the trailing echo — the command was killed on-device, or
     // the transport truncated. Either way the status is unknown, and reporting a
-    // fabricated 0 here would turn a dead command into a silent success.
+    // fabricated 0 here would turn a dead command into a silent success. An
+    // unprefixed connector diagnostic lands here too, since it leaves stdout
+    // empty; it is quoted rather than guessed at, because the two causes below
+    // are both wrong for it.
+    const prose = hdcProse(result);
     throw new FailureError(
-      `HarmonyOS device '${connectKey}' returned no exit status for \`${command}\`. ` +
-        `The command was terminated on the device or the hdc connection dropped mid-call.`,
+      prose
+        ? `hdc could not run \`${command}\` on HarmonyOS device '${connectKey}': ${prose}`
+        : `HarmonyOS device '${connectKey}' returned no exit status for \`${command}\`. ` +
+            `The command was terminated on the device or the hdc connection dropped mid-call.`,
       {
         error_code: FAILURE_CODES.HARMONY_SHELL_NO_STATUS,
         failure_stage: "harmony_hdc_shell",
@@ -230,6 +264,18 @@ export async function runHdcShell(
   };
 }
 
+/**
+ * What a completed transfer prints, measured on hdc 3.2.0d:
+ *
+ *   FileTransfer finish, Size:6, File count = 1, time:10ms rate:0.60kB/s
+ *
+ * Matched positively, because the absence of `[Fail]` does not mean the file
+ * arrived: a client that cannot reach its server prints bare prose to stderr,
+ * leaves stdout empty and exits 0 (see {@link hdcProse}), which read as success
+ * hands the caller a path with nothing at it.
+ */
+const HDC_TRANSFER_OK = "FileTransfer finish";
+
 /** Copy a file off the device. Throws with hdc's own diagnostic if it did not arrive. */
 export async function hdcFileRecv(
   connectKey: string,
@@ -238,7 +284,11 @@ export async function hdcFileRecv(
   timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<void> {
   const result = await runHdc(["-t", connectKey, "file", "recv", remotePath, localPath], timeoutMs);
-  const failure = hdcFailure(result);
+  const failure = result.stdout.includes(HDC_TRANSFER_OK)
+    ? null
+    : (hdcFailure(result) ??
+      hdcProse(result) ??
+      "hdc reported neither a transfer nor a diagnostic");
   if (failure) {
     throw new FailureError(
       `Failed to copy '${remotePath}' off HarmonyOS device '${connectKey}': ${failure}`,

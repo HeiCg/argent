@@ -3,7 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { Registry } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, type Registry } from "@argent/registry";
 
 const runHarmonyEmulator = vi.fn();
 const resolveHarmonyEmulator = vi.fn();
@@ -848,6 +848,46 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
     await expect(boot({ force: true })).rejects.toThrow(/Failed to stop HarmonyOS emulator/);
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("classifies its refusals the way every other platform in this tool does", async () => {
+    // Android and Vega throw `FailureError` with a granular code from this same
+    // file; a bare `Error` buckets as REGISTRY_TOOL_EXECUTION_FAILED, which puts
+    // "the manager is not installed" and "this instance would not stop" in one
+    // undifferentiated row — and drops the binary that failed with them.
+    listHarmonyInstances.mockResolvedValue([
+      { name: INSTANCE, deviceType: "Phone", osVersion: null, running: true },
+    ]);
+    runHarmonyEmulator.mockResolvedValue({
+      stdout: `"${INSTANCE}" failed, emulator is not exists`,
+      stderr: "",
+    });
+    const stopFailure = await boot({ force: true }).then(
+      () => null,
+      (e: unknown) => e
+    );
+    expect(getFailureSignal(stopFailure)).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_STOP_FAILED,
+      failure_command: "deveco_emulator",
+    });
+
+    vi.clearAllMocks();
+    ensureDep.mockResolvedValue(undefined);
+    resolveHdc.mockResolvedValue("/Applications/DevEco-Studio.app/.../hdc");
+    listHarmonyInstances.mockResolvedValue([
+      { name: INSTANCE, deviceType: "Phone", osVersion: null, running: false },
+    ]);
+    listHarmonyHdcTargets.mockResolvedValue([]);
+    listHarmonyHdcTargetsStrict.mockResolvedValue([]);
+    resolveHarmonyEmulator.mockResolvedValue(null);
+    const missingBinary = await boot({}).then(
+      () => null,
+      (e: unknown) => e
+    );
+    expect(getFailureSignal(missingBinary)).toMatchObject({
+      error_code: FAILURE_CODES.HARMONY_EMULATOR_NOT_FOUND,
+      error_kind: "dependency_missing",
+    });
   });
 
   it("does not start an instance the stop never brought down", async () => {

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { access, constants as fsConstants } from "node:fs/promises";
 import { join } from "node:path";
+import { FAILURE_CODES, FailureError } from "@argent/registry";
 import { formatSubprocessFailure } from "./subprocess-error";
 
 const execFileAsync = promisify(execFile);
@@ -24,8 +25,9 @@ const execFileAsync = promisify(execFile);
  * So a failure is usually exit 0, but not always — `-start` is the outlier. Since
  * the code is unreliable in both directions, `runHarmonyEmulator` deliberately
  * does NOT reject on a non-zero exit: it returns the child's output either way
- * and leaves the verdict to `emulatorFailure`, which reads stdout. That keeps one
- * classification path instead of two that disagree.
+ * and leaves the verdict to `emulatorFailure`, which reads what was printed on
+ * either stream. That keeps one classification path instead of two that
+ * disagree.
  *
  * `hdc`, the HarmonyOS device connector, lives in `harmony-hdc.ts`: this
  * manager knows about instances, `hdc` knows about targets, and the two are
@@ -87,11 +89,20 @@ async function isExecutable(p: string): Promise<boolean> {
  */
 export async function resolveDevecoBinary(relative: string): Promise<string | null> {
   for (const root of devecoRoots()) {
-    const candidate = join(root, relative);
+    const candidate = join(root, relative) + BIN_EXT;
     if (await isExecutable(candidate)) return candidate;
   }
   return null;
 }
+
+// A Windows DevEco install ships `hdc.exe` and `Emulator.exe`. These candidates
+// are literal paths handed to `access()`, not PATH lookups, so nothing resolves
+// the extension for them the way `where` does for `commandOnPath` — without it
+// every root misses and `$DEVECO_STUDIO_HOME`, the only way to point at a
+// non-macOS install, can never resolve. Same reasoning and same shape as
+// `android-binary.ts`' `BIN_EXT`. Empty on POSIX, where the binaries are
+// extensionless.
+const BIN_EXT = process.platform === "win32" ? ".exe" : "";
 
 // Mirrors android-binary.ts / vega-cli.ts: memoize briefly so a burst of tool
 // calls pays one lookup, but a *negative* result expires — a user who installs
@@ -137,7 +148,15 @@ export async function runHarmonyEmulator(
   timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<HarmonyRunResult> {
   const bin = await resolveHarmonyEmulator();
-  if (!bin) throw new Error(EMULATOR_NOT_FOUND);
+  if (!bin) {
+    throw new FailureError(EMULATOR_NOT_FOUND, {
+      error_code: FAILURE_CODES.HARMONY_EMULATOR_NOT_FOUND,
+      failure_stage: "harmony_emulator_resolve_binary",
+      failure_area: "tool_server",
+      error_kind: "dependency_missing",
+      failure_command: "deveco_emulator",
+    });
+  }
   try {
     const { stdout, stderr } = await execFileAsync(bin, args, {
       timeout: timeoutMs,
@@ -157,7 +176,17 @@ export async function runHarmonyEmulator(
     }
     // Spawn failure or timeout SIGKILL: no diagnostic to classify, so surface it
     // the way every other subprocess wrapper here does.
-    throw new Error(formatSubprocessFailure("Emulator", args, err), { cause: err });
+    throw new FailureError(
+      formatSubprocessFailure("Emulator", args, err),
+      {
+        error_code: FAILURE_CODES.HARMONY_EMULATOR_COMMAND_FAILED,
+        failure_stage: "harmony_emulator_run",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+        failure_command: "deveco_emulator",
+      },
+      { cause: err instanceof Error ? err : new Error(String(err)) }
+    );
   }
 }
 

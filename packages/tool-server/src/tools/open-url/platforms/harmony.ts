@@ -25,9 +25,10 @@ import { httpDeepLinkNote } from "../deep-link-note";
  */
 const HARMONY_OPEN_CAVEAT =
   "On HarmonyOS specifically, `aa start -U` reports success whenever the system accepts the URI, " +
-  "so `opened: true` does not mean an app opened it: a web URL with no browser registered stays " +
-  "on the current screen, and a scheme the system hands to its app selector (measured with `tel:` " +
-  'and `mailto:`) leaves a modal "No options to open with" dialog covering the screen. Confirm ' +
+  "so `opened: true` does not mean an app opened it: a web URL can leave the foreground app on " +
+  "screen unchanged, and a scheme the system hands to its app selector (measured with `tel:` and " +
+  '`mailto:`) leaves a chooser covering the screen — one listing handlers, or a modal "No options ' +
+  'to open with" when none claims it. Confirm ' +
   "with describe or screenshot, and dismiss any chooser, before treating the link as followed.";
 
 export const harmonyImpl: PlatformImpl<OpenUrlServices, OpenUrlParams, OpenUrlResult> = {
