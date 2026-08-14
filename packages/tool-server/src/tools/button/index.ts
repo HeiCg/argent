@@ -40,7 +40,7 @@ export const BUTTONS_BY_PLATFORM: Record<Platform, ReadonlySet<Params["button"]>
 };
 
 const capability: ToolCapability = {
-  apple: { simulator: true, device: true },
+  apple: { simulator: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
 };

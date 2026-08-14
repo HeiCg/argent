@@ -70,7 +70,7 @@ type RunSequenceResult = {
 // Gates only the *outer* invocation: every step resolves its own platform from
 // `params.udid` and is gated separately in `execute`.
 const capability: ToolCapability = {
-  apple: { simulator: true, device: true },
+  apple: { simulator: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },

@@ -244,7 +244,7 @@ function timeoutCause(
 }
 
 const capability: ToolCapability = {
-  apple: { simulator: true, device: true },
+  apple: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },

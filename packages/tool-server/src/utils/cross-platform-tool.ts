@@ -41,12 +41,23 @@ export function dispatchByPlatform<
   ChromiumServices = Record<string, unknown>,
   VegaServices = unknown,
   IosRemoteServices = IosServices,
+  IosDeviceServices = IosServices,
 >(opts: {
   toolId: string;
   capability: ToolCapability;
   ios: PlatformImpl<IosServices, Params, Result>;
   android: PlatformImpl<AndroidServices, Params, Result>;
   iosRemote?: PlatformImpl<IosRemoteServices, Params, Result>;
+  /**
+   * Physical iOS device branch (`platform: "ios"`, `kind: "device"`). Optional
+   * so simulator-only tools compile unchanged. It is checked BEFORE the plain
+   * `ios` branch: a physical device must never fall through to the simulator
+   * handler, whose services (simulator-server, simctl) do not exist for
+   * hardware. Declared-but-unwired (capability says `apple: { device: true }`
+   * with no branch here) throws `NotImplementedOnPlatformError` (501) so the
+   * gap is a loud contributor hint, not a simulator-path misroute.
+   */
+  iosDevice?: PlatformImpl<IosDeviceServices, Params, Result>;
   chromium?: PlatformImpl<ChromiumServices, Params, Result>;
   vega?: PlatformImpl<VegaServices, Params, Result>;
 }): (
@@ -57,6 +68,24 @@ export function dispatchByPlatform<
   return async (services, params, invokeOptions) => {
     const device = resolveDevice(params.udid);
     assertSupported(opts.toolId, opts.capability, device);
+    if (device.platform === "ios" && device.kind === "device") {
+      if (!opts.iosDevice) {
+        throw new NotImplementedOnPlatformError({
+          toolId: opts.toolId,
+          platform: "ios",
+          hint: "Physical iOS devices need a dedicated branch: add an iosDevice PlatformImpl to dispatchByPlatform().",
+        });
+      }
+      if (opts.iosDevice.requires?.length) {
+        await ensureDeps(opts.iosDevice.requires);
+      }
+      return opts.iosDevice.handler(
+        services as unknown as IosDeviceServices,
+        params,
+        device,
+        invokeOptions
+      );
+    }
     if (device.platform === "ios") {
       if (opts.ios.requires?.length) {
         await ensureDeps(opts.ios.requires);

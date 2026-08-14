@@ -34,9 +34,14 @@ describe("profiler-stack-query / profiler-combined-report Android capability", (
         expect(() => assertSupported(tool.id, tool.capability, androidUnknown)).not.toThrow();
       });
 
-      it("is still supported on Apple simulator + device", () => {
+      it("is still supported on Apple simulator, not yet on physical devices", () => {
         expect(() => assertSupported(tool.id, tool.capability, iosSim)).not.toThrow();
-        expect(() => assertSupported(tool.id, tool.capability, iosDevice)).not.toThrow();
+        // Physical iOS declares no profiler support yet: `apple.device` is
+        // gated by the ratchet in ios-physical-device-classification.test.ts
+        // until a real hardware profiling path lands (xctrace --device).
+        expect(() => assertSupported(tool.id, tool.capability, iosDevice)).toThrow(
+          /not supported/
+        );
       });
     });
   }

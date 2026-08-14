@@ -9,6 +9,22 @@ const IOS_UDID_SHAPE =
   /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$/;
 
 /**
+ * Physical iOS device UDID format (A12/2018 hardware and newer): 8 hex digits,
+ * a dash, then 16 hex digits (e.g. `00008110-000978540290401E`). Distinct from
+ * both the simulator UUID shape and every known Android serial form, so it is
+ * safe to classify by shape on the hot path. Legacy 40-hex UDIDs (pre-A12
+ * hardware) are ambiguous with Android serials and deliberately unsupported —
+ * those devices cannot run iOS 17, the floor for the CoreDevice (`devicectl`)
+ * tooling this backend is built on.
+ */
+const IOS_PHYSICAL_UDID_SHAPE = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$/;
+
+/** True when `udid` has the modern physical-iPhone/iPad shape (see above). */
+export function isIosPhysicalUdid(udid: string): boolean {
+  return IOS_PHYSICAL_UDID_SHAPE.test(udid);
+}
+
+/**
  * Prefix on device ids that route through `sim-remote` to a remote iOS
  * simulator. The UUID after it has the same shape as a local iOS UDID, so the
  * prefix is the only thing telling the two apart.
@@ -37,7 +53,7 @@ export function classifyDevice(udid: string): Platform {
   if (udid.startsWith(REMOTE_PREFIX)) return "ios-remote";
   if (udid.startsWith(VEGA_SERIAL_PREFIX)) return "vega";
   if (udid.startsWith(CHROMIUM_ID_PREFIX)) return "chromium";
-  return IOS_UDID_SHAPE.test(udid) ? "ios" : "android";
+  return IOS_UDID_SHAPE.test(udid) || IOS_PHYSICAL_UDID_SHAPE.test(udid) ? "ios" : "android";
 }
 
 /**
@@ -54,8 +70,9 @@ export function isAndroidEmulatorSerial(serial: string): boolean {
 }
 
 /**
- * Kind is defaulted by shape; platform impls can enrich the result with
- * name/state/sdkLevel from simctl/adb/sim-remote.
+ * Kind is defaulted by shape (a physical-iOS-shaped UDID gets 'device');
+ * platform impls can enrich the result with name/state/sdkLevel from
+ * simctl/adb/sim-remote.
  *
  * Vega is VVD-only: the tool-server neither connects to nor detects physical
  * Fire TV hardware, so every `amazon-` serial resolves to kind `vvd` and never
@@ -64,15 +81,19 @@ export function isAndroidEmulatorSerial(serial: string): boolean {
 export function resolveDevice(udid: string): DeviceInfo {
   const platform = classifyDevice(udid);
   const kind: DeviceKind =
-    platform === "ios" || platform === "ios-remote"
-      ? "simulator"
-      : platform === "vega"
-        ? "vvd"
-        : platform === "android"
-          ? isAndroidEmulatorSerial(udid)
-            ? "emulator"
-            : "device"
-          : "app";
+    platform === "ios"
+      ? isIosPhysicalUdid(udid)
+        ? "device"
+        : "simulator"
+      : platform === "ios-remote"
+        ? "simulator"
+        : platform === "vega"
+          ? "vvd"
+          : platform === "android"
+            ? isAndroidEmulatorSerial(udid)
+              ? "emulator"
+              : "device"
+            : "app";
   return { id: udid, platform, kind };
 }
 
