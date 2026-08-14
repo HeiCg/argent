@@ -1186,11 +1186,26 @@ function holdsUnnamedContent(
  * same namesakes on the strength of a tie-break. With no target node there is
  * nothing to confirm against, which for a `clear` is a refusal and for a plain
  * `type` is the best-effort path it was already on.
+ *
+ * The fallback has to stay ON the tap point for the same reason. Unlike the
+ * identity arm it carries no relation to the element the step touched — it is
+ * whatever the selector matches NOW — while `waitForFocus`'s identity arm
+ * trusts what comes back absolutely, ahead of the two arms that check a node
+ * against {@link tapCandidates}. When the tapped element stops being findable
+ * (it unmounted as a consequence of the tap: a tap-to-edit row, a conditional
+ * render, a virtualized list) and a DIFFERENT element answering the same
+ * selector holds focus, that element was confirmed and cleared. Reproduced on
+ * Chrome 151 — `aria-label="Email"` removed on `mousedown`, `aria-label="Email
+ * address"` focused beside it, and the second field's draft was emptied and
+ * rewritten with a pass reported; the same page with the row left mounted
+ * refused. A re-render in place — the case the fallback exists for — still
+ * covers the point the tap was dispatched at, so it is unaffected.
  */
 function trackTarget(
   tree: DescribeNode,
   tapped: DescribeNode,
-  selector: FlowSelector
+  selector: FlowSelector,
+  tap: { x: number; y: number }
 ): DescribeNode | undefined {
   const named: DescribeNode[] = [];
   const walk = (node: DescribeNode): void => {
@@ -1199,7 +1214,9 @@ function trackTarget(
   };
   walk(tree);
   if (named.length > 1) return undefined;
-  return named[0] ?? flowSelectorToNode(tree, selector);
+  if (named[0]) return named[0];
+  const bySelector = flowSelectorToNode(tree, selector);
+  return bySelector && frameCoversTap(bySelector.frame, tap.x, tap.y) ? bySelector : undefined;
 }
 
 /**
@@ -1219,6 +1236,8 @@ interface TapCandidates {
   inside: DescribeNode[];
   /** Those of {@link inside} the tap point itself landed on. A subset, by identity. */
   underTap: DescribeNode[];
+  /** Where the tap was dispatched — the centre of {@link tapped}'s frame. */
+  point: { x: number; y: number };
 }
 
 function tapCandidates(preTap: DescribeNode, tapped: DescribeNode): TapCandidates {
@@ -1233,7 +1252,7 @@ function tapCandidates(preTap: DescribeNode, tapped: DescribeNode): TapCandidate
     for (const child of node.children) walk(child);
   };
   walk(preTap);
-  return { tapped, inside, underTap };
+  return { tapped, inside, underTap, point: tap };
 }
 
 /**
@@ -1444,7 +1463,7 @@ async function waitForFocus(
       // evidence. `tappedFrame` still covers a round where neither the element
       // nor the selector resolves, but only the refusal classification below
       // can use it — with no node there is nothing to confirm against.
-      const targetNode = trackTarget(tree, tapped, into);
+      const targetNode = trackTarget(tree, tapped, into, candidates.point);
       const target = targetNode?.frame ?? tappedFrame;
       const focused = collectFocused(tree, []);
       // Classified from the MOST RECENT successful read, never from "any read,
