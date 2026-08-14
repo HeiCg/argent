@@ -173,9 +173,9 @@ with tap coordinates. When no dialog is present, it returns the foreground app's
 
 Returns \`{ description, source }\` where \`description\` is a text rendering of the UI tree — one
 line per element with its role, label/value/id, interactivity flags, and frame. Frame coordinates
-are normalized [0,1] fractions of the screen / window width/height (not pixels) — the same space the
-gesture tools take. The response header names the ones this device accepts, which on a platform
-without multi-touch is fewer than the full set.
+are normalized [0,1] fractions of the screen / window width/height (not pixels) — the space every
+gesture tool takes. Which gestures a device accepts differs by platform, so the response header names
+them for the device you called.
 
 To tap an element use the centre of its frame: \`tap_x = frame.x + frame.width / 2\`,
 \`tap_y = frame.y + frame.height / 2\`. The same formula appears in the response header so it
