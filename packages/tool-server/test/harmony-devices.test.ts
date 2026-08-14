@@ -34,6 +34,8 @@ const EMULATOR_ONE_INSTANCE = `[
         "deviceName": "argent_probe",
         "deviceType": "Phone",
         "hw.hdc.port": "10000",
+        "hw.lcd.single.height": "2856",
+        "hw.lcd.single.width": "1320",
         "isRunning": "false",
         "name": "argent_probe",
         "os.apiVersion": "24",
@@ -71,15 +73,38 @@ describe("parseHarmonyInstances", () => {
     expect(parseHarmonyInstances(EMULATOR_NO_INSTANCES)).toEqual([]);
   });
 
-  it("reads name, form factor, OS version and running state", () => {
+  it("reads name, form factor, OS version, running state and panel", () => {
     expect(parseHarmonyInstances(EMULATOR_ONE_INSTANCE)).toEqual([
       {
         name: "argent_probe",
         deviceType: "Phone",
         osVersion: "HarmonyOS 6.1.1(24)",
         running: false,
+        display: { width: 1320, height: 2856 },
       },
     ]);
+  });
+
+  it("reads the panel as numbers, from the strings the manager emits", () => {
+    // `boot-device` compares this against the `render resolution` the booted
+    // guest reports — measured identical on a 6.1.1 phone image — to tell its own
+    // instance from another device that reconnected beside it. Left as the
+    // manager's strings it would never equal anything.
+    const [one] = parseHarmonyInstances(EMULATOR_ONE_INSTANCE);
+    expect(one.display).toEqual({ width: 1320, height: 2856 });
+  });
+
+  it("reports no panel rather than a broken one when the config does not describe a single LCD", () => {
+    // A multi-display profile keys its LCDs differently, so the keys can be
+    // absent on a perfectly good instance. `boot-device` skips the panel check
+    // entirely for a null, which is why a partial or zero reading must not
+    // masquerade as a measurement.
+    const partial = `[{ "name": "n", "isRunning": "false", "hw.lcd.single.width": "1320" }]`;
+    const zeroed = `[{ "name": "n", "isRunning": "false", "hw.lcd.single.width": "0", "hw.lcd.single.height": "2856" }]`;
+    const absent = `[{ "name": "n", "isRunning": "false" }]`;
+    for (const raw of [partial, zeroed, absent]) {
+      expect(parseHarmonyInstances(raw)[0].display).toBeNull();
+    }
   });
 
   it("reads isRunning as the string it actually is, not a JSON boolean", () => {

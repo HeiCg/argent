@@ -12,6 +12,8 @@ const listHarmonyHdcTargets = vi.fn();
 const resolveHdc = vi.fn();
 const ensureDep = vi.fn();
 const spawnMock = vi.fn();
+const harmonyDisplay = vi.fn();
+const harmonyDumpLayout = vi.fn();
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -37,6 +39,16 @@ vi.mock("../src/utils/harmony-hdc", async () => {
   );
   return { ...actual, resolveHdc: (...a: unknown[]) => resolveHdc(...a) };
 });
+vi.mock("../src/utils/harmony-uitest", async () => {
+  const actual = await vi.importActual<typeof import("../src/utils/harmony-uitest")>(
+    "../src/utils/harmony-uitest"
+  );
+  return {
+    ...actual,
+    harmonyDisplay: (...a: unknown[]) => harmonyDisplay(...a),
+    harmonyDumpLayout: (...a: unknown[]) => harmonyDumpLayout(...a),
+  };
+});
 vi.mock("../src/utils/check-deps", async () => {
   const actual =
     await vi.importActual<typeof import("../src/utils/check-deps")>("../src/utils/check-deps");
@@ -55,6 +67,15 @@ const PHONE = { connectKey: "025DEK236V035771", connection: "USB", state: "Conne
 /** What a booted emulator registers as, measured on a HarmonyOS 6.1.1 phone image. */
 const EMULATOR_KEY = "127.0.0.1:5555";
 const emulatorTarget = { connectKey: EMULATOR_KEY, connection: "TCP", state: "Connected" };
+/**
+ * The row a stopped instance leaves behind. Measured: `-stop` takes the guest
+ * down but never removes the row, so `127.0.0.1:5555  TCP  Offline  localhost`
+ * survives in `hdc list targets -v` until the daemon is killed — and a restart
+ * comes back on that same port.
+ */
+const staleEmulatorTarget = { connectKey: EMULATOR_KEY, connection: "TCP", state: "Offline" };
+/** `hw.lcd.single.width`/`height` of the phone image, echoed by the guest's `render resolution`. */
+const PANEL = { width: 1320, height: 2856 };
 const logPath = join(tmpdir(), `argent-harmony-${INSTANCE}.log`);
 
 /** Stands in for the detached `Emulator -start`, which normally never exits. */
@@ -97,8 +118,18 @@ beforeEach(() => {
   resolveHdc.mockResolvedValue("/Applications/DevEco-Studio.app/.../hdc");
   runHarmonyEmulator.mockResolvedValue({ stdout: "", stderr: "" });
   listHarmonyInstances.mockResolvedValue([
-    { name: INSTANCE, deviceType: "Phone", osVersion: "HarmonyOS 6.1.1(24)", running: false },
+    {
+      name: INSTANCE,
+      deviceType: "Phone",
+      osVersion: "HarmonyOS 6.1.1(24)",
+      running: false,
+      display: PANEL,
+    },
   ]);
+  // Every target answers with the instance's own panel unless a case says
+  // otherwise, and every guest is driveable as soon as it is Connected.
+  harmonyDisplay.mockResolvedValue({ ...PANEL, screenOn: true });
+  harmonyDumpLayout.mockResolvedValue({ attributes: {} });
   targets([PHONE]);
 });
 
@@ -169,6 +200,99 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect(((await pending) as { udid: string }).udid).toBe(`harmony-${EMULATOR_KEY}`);
   });
 
+  it("resolves the key an instance comes back on, though its row never left the listing", async () => {
+    // The second boot of any instance this `hdc` daemon has already seen. Its
+    // row is still listed — `Offline`, left there by the previous `-stop` — and
+    // it re-registers on the same port, so a snapshot that kept every listed key
+    // could never see it arrive: measured on the device as a full budget spent
+    // and `harmony-emulator-argent_phone` handed back, an id no interaction tool
+    // accepts, under a note blaming a boot that had in fact finished in seconds.
+    targets([PHONE, staleEmulatorTarget], [PHONE, staleEmulatorTarget], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(6_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(result.note).toBeUndefined();
+  });
+
+  it("declines a fresh arrival whose panel is another device's", async () => {
+    // `Offline` is also what a connection blip leaves behind, so a foreign
+    // device reconnecting is an arrival by state alone. The instance's
+    // configured panel is what separates the two: a wearable answers 466x466
+    // where this phone image answers 1320x2856.
+    const WEARABLE = { connectKey: "127.0.0.1:5561", connection: "TCP", state: "Connected" };
+    harmonyDisplay.mockImplementation((key: string) =>
+      Promise.resolve(
+        key === WEARABLE.connectKey
+          ? { width: 466, height: 466, screenOn: true }
+          : { ...PANEL, screenOn: true }
+      )
+    );
+    targets([PHONE], [PHONE, WEARABLE], [PHONE, WEARABLE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(6_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(result.note).toBeUndefined();
+  });
+
+  it("matches the instance's panel whichever way round the guest composites it", async () => {
+    // The manager reports the panel as configured, the guest as currently
+    // oriented, so a landscape instance would read as a different device if the
+    // axes were compared pairwise.
+    harmonyDisplay.mockResolvedValue({ width: PANEL.height, height: PANEL.width, screenOn: true });
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(6_000);
+
+    expect(((await pending) as { udid: string }).udid).toBe(`harmony-${EMULATOR_KEY}`);
+  });
+
+  it("says a target was seen and declined rather than that none registered", async () => {
+    // The panel filter's own failure mode. Blaming the budget would be the
+    // wrong advice twice over: something did register, and a longer one cannot
+    // change what it answered.
+    const WEARABLE = { connectKey: "127.0.0.1:5561", connection: "TCP", state: "Connected" };
+    harmonyDisplay.mockResolvedValue({ width: 466, height: 466, screenOn: true });
+    targets([PHONE], [PHONE, WEARABLE]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(result.note).toMatch(/not the panel this instance is configured with/);
+    expect(result.note).not.toMatch(/bootTimeoutMs/);
+  });
+
+  it("leaves a target that cannot be probed yet pending rather than rejecting it", async () => {
+    // A row reaches `Connected` before its render service answers. Treating an
+    // unreadable probe as a mismatch would reject the instance permanently for
+    // being early.
+    let probes = 0;
+    harmonyDisplay.mockImplementation(() =>
+      probes++ < 2
+        ? Promise.reject(new Error("[Fail][E001005] Device not found or connected"))
+        : Promise.resolve({ ...PANEL, screenOn: true })
+    );
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(((await pending) as { udid: string }).udid).toBe(`harmony-${EMULATOR_KEY}`);
+  });
+
   it("does not adopt a cable-attached handset that arrives during the boot", async () => {
     // A second HarmonyOS target reaches Connected inside the boot window - a
     // phone plugged in or authorised mid-boot, or a still-settling row flipping
@@ -221,6 +345,77 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // budget ran out" one — both targets DID register, and argent declined to
     // choose. Pointing the caller at `bootTimeoutMs` would misdiagnose it.
     expect(result.note).toMatch(/two|both|more than one|could not tell which/i);
+  });
+
+  it("refuses at once rather than spending the budget on a decision already made", async () => {
+    // The refusal is settled the moment both are seen. Polling on would bill the
+    // caller the whole 3-minute default for it — and would turn the refusal into
+    // a guess if one of the two dropped out and left the other alone.
+    const OTHER_EMULATOR = { connectKey: "127.0.0.1:5557", connection: "TCP", state: "Connected" };
+    targets([PHONE], [PHONE, emulatorTarget, OTHER_EMULATOR]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 180_000 });
+    // Two polls' worth, three orders of magnitude short of the budget.
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(result.note).toMatch(/More than one/);
+  });
+
+  it("keeps refusing after one of the two ambiguous targets drops away", async () => {
+    // A still-settling emulator is the likelier of the two to flap, so the
+    // survivor is the likelier to be the other device. Once both have been seen
+    // the answer cannot be un-made by one leaving.
+    const OTHER_EMULATOR = { connectKey: "127.0.0.1:5557", connection: "TCP", state: "Connected" };
+    targets([PHONE], [PHONE, emulatorTarget, OTHER_EMULATOR], [PHONE, OTHER_EMULATOR]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(result.note).toMatch(/More than one/);
+  });
+
+  it("waits for the guest to answer `uitest`, not merely for `hdc` to reach it", async () => {
+    // A target reports `Connected` as soon as the daemon is reachable; the
+    // window service comes up after it, and until it does every interaction tool
+    // fails against an id that looks drivable.
+    let probes = 0;
+    harmonyDumpLayout.mockImplementation(() =>
+      probes++ < 3
+        ? Promise.reject(new Error("DumpLayout failed:Get window nodes failed"))
+        : Promise.resolve({ attributes: {} })
+    );
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 60_000 });
+    await vi.advanceTimersByTimeAsync(20_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(probes).toBeGreaterThan(3);
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(result.note).toBeUndefined();
+  });
+
+  it("still hands back the key when the guest never answers, and says so", async () => {
+    // The key is the right id either way, so an unresponsive guest is a caveat
+    // rather than a failure — but a silent one would put the caller's first
+    // interaction failure down to the wrong cause.
+    harmonyDumpLayout.mockRejectedValue(new Error("DumpLayout failed:Get window nodes failed"));
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(result.note).toMatch(/still not answering `uitest`/);
   });
 
   it("names the instance and says why when nothing registers within the budget", async () => {
@@ -341,16 +536,26 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // `-stop` returns before the emulator is gone, so the restart waits on
     // `isRunning` — and for the whole budget, since how long the instance then
     // takes to go down is unpredictable (9s to ~70s measured). Reported running
-    // for 40s here, past any fixed grace. The snapshot is taken only once it is
-    // down, which is what lets a restart that lands on the port it had before
-    // still read as an arrival.
+    // for 40s here, past any fixed grace.
+    //
+    // The stopped instance is modelled as an `Offline` ROW rather than an absent
+    // one, because that is what a device does: `-stop` takes the guest down and
+    // leaves `127.0.0.1:5555  TCP  Offline` behind. A fixture where the key
+    // vanishes and reappears cannot fail, since the key is then fresh whatever
+    // the snapshot kept.
     let listed = 0;
     listHarmonyInstances.mockImplementation(() =>
       Promise.resolve([
-        { name: INSTANCE, deviceType: "Phone", osVersion: null, running: listed++ < 21 },
+        {
+          name: INSTANCE,
+          deviceType: "Phone",
+          osVersion: null,
+          running: listed++ < 21,
+          display: PANEL,
+        },
       ])
     );
-    targets([PHONE], [PHONE], [PHONE, emulatorTarget]);
+    targets([PHONE, staleEmulatorTarget], [PHONE, staleEmulatorTarget], [PHONE, emulatorTarget]);
     vi.useFakeTimers();
 
     const pending = boot({ force: true, bootTimeoutMs: 120_000 });

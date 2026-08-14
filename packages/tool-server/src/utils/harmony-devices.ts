@@ -33,11 +33,25 @@ interface HarmonyInstance {
   /** e.g. `HarmonyOS 6.1.1(24)`. */
   osVersion: string | null;
   running: boolean;
+  /**
+   * The panel the instance is configured with, or null when its config does not
+   * describe one in this shape — a multi-display profile keys its LCDs
+   * differently, and nothing here should assume otherwise.
+   *
+   * Load-bearing beyond metadata: these are the same numbers the booted guest
+   * then reports as its `render resolution` (measured 1320x2856 on a HarmonyOS
+   * 6.1.1 phone image, matching `hw.lcd.single.width`/`height` exactly), which
+   * is the only join there is between an instance and the `hdc` connect key it
+   * registers under. `boot-device` uses it to tell its own instance from
+   * another device that reconnected beside it.
+   */
+  display: { width: number; height: number } | null;
 }
 
 /**
  * One `Emulator -list -details` record. Every value is a string, including the
- * booleans — `isRunning` is `"true"`/`"false"`, never a JSON boolean, the same
+ * booleans and the numbers — `isRunning` is `"true"`/`"false"` and
+ * `hw.lcd.single.width` is `"1320"`, never a JSON boolean or number, the same
  * quirk `-imageList` has with `downloaded`.
  */
 interface RawInstance {
@@ -46,9 +60,18 @@ interface RawInstance {
   "deviceType"?: unknown;
   "isRunning"?: unknown;
   "os.osVersion"?: unknown;
+  "hw.lcd.single.width"?: unknown;
+  "hw.lcd.single.height"?: unknown;
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
+
+/** A positive pixel count from the manager's all-strings JSON, or null. */
+const px = (v: unknown): number | null => {
+  if (typeof v !== "string") return null;
+  const n = Number.parseInt(v, 10);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
 
 /**
  * Instances from `Emulator -list -details`.
@@ -82,11 +105,14 @@ export function parseHarmonyInstances(stdout: string): HarmonyInstance[] {
   for (const entry of raw as RawInstance[]) {
     const name = str(entry?.name) ?? str(entry?.deviceName);
     if (!name) continue;
+    const width = px(entry?.["hw.lcd.single.width"]);
+    const height = px(entry?.["hw.lcd.single.height"]);
     out.push({
       name,
       deviceType: str(entry?.deviceType),
       osVersion: str(entry?.["os.osVersion"]),
       running: entry?.isRunning === "true",
+      display: width && height ? { width, height } : null,
     });
   }
   return out;

@@ -94,12 +94,14 @@ describe("list-devices HarmonyOS branch", () => {
         deviceType: "Foldable",
         osVersion: "HarmonyOS 6.1.1(24)",
         running: false,
+        display: null,
       },
       {
         name: "running_emu",
         deviceType: "Phone",
         osVersion: "HarmonyOS 6.1.1(24)",
         running: true,
+        display: null,
       },
     ]);
 
@@ -145,12 +147,14 @@ describe("list-devices HarmonyOS branch", () => {
         deviceType: "Phone",
         osVersion: "HarmonyOS 6.1.1(24)",
         running: false,
+        display: null,
       },
       {
         name: "booted_emu",
         deviceType: "Phone",
         osVersion: "HarmonyOS 6.1.1(24)",
         running: true,
+        display: null,
       },
     ]);
 
