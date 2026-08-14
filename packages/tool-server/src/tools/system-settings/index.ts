@@ -88,7 +88,7 @@ export const systemSettingsTool: ToolDefinition<Params, SystemSettingsResult> = 
     failedMsg: ({ params, failureSignal }) =>
       `Failed to set ${params.setting} to ${params.value}: ${failureSignal.error_code}`,
   },
-  description: `Change a device-wide system setting directly, without navigating the system Settings UI. Use during test setup to put the device in a specific state — dark mode, a larger text size, airplane mode, location off — before or while exercising an app.
+  description: `Set a device-wide system setting directly, without navigating the system Settings UI. Use when a test needs the device in a specific state — dark mode, a larger text size, airplane mode, location off — before or while exercising an app.
 Settings and their values:
 - \`appearance\`: \`light\` | \`dark\` — the system color theme.
 - \`text-size\`: one of the 12 Dynamic Type categories from \`extra-small\` to \`accessibility-extra-extra-extra-large\` (\`large\` is the default).
