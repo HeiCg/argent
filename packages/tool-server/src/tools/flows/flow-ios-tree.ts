@@ -8,6 +8,7 @@ import {
   type NativeDevtoolsApi,
 } from "../../blueprints/native-devtools";
 import { chooseFrontmostConnectedApp, resolveNativeTargetApp } from "../../utils/native-target-app";
+import { describeIosDevice } from "../describe/platforms/ios-device";
 import type { FlowTreeTarget } from "./flow-actions";
 import { flattenHoisting, type FlatNode } from "./flow-tree-flatten";
 import {
@@ -528,4 +529,23 @@ export async function queryFullHierarchyTree(
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Physical-device flow tree: the XCUITest runner's accessibility snapshot.
+ *
+ * DYLD injection (and with it `ViewHierarchy.getFullHierarchy`) does not exist
+ * on hardware, so flows resolve selectors against the same runner tree the
+ * agent-facing `describe` uses. XCTest nodes carry `accessibilityIdentifier`
+ * (React Native `testID`), so testID selectors still work — with one semantic
+ * caveat vs simulators: the AX tree collapses an `accessible` container into
+ * one leaf, so a testID container's children are not independently
+ * addressable the way the raw UIView hierarchy allows. Flows that need that
+ * granularity should target labels/text or run on a simulator.
+ */
+export async function queryIosDeviceFlowTree(
+  registry: Registry,
+  device: DeviceInfo
+): Promise<DescribeTreeData> {
+  return describeIosDevice(registry, device);
 }

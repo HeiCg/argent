@@ -412,6 +412,16 @@ describe("statusBarMaskFraction", () => {
     ).resolves.toBe(0);
   });
 
+  it("masks the band on a physical iPhone without asking the simulator probe", async () => {
+    // A physical device's UDID lives outside simctl's namespace, so the tvOS
+    // probe would answer from the wrong list — and a phone/tablet always
+    // paints a status bar anyway.
+    await expect(
+      statusBarMaskFraction({ platform: "ios", kind: "device", id: "00008120-000E6D0C0ABBA01E" })
+    ).resolves.toBe(0.06);
+    expect(isTvOsSimulator).not.toHaveBeenCalled();
+  });
+
   it.each(["chromium", "vega"] as const)("masks nothing on %s", async (platform) => {
     await expect(
       statusBarMaskFraction({ platform, kind: "unknown", id: "some-device" })
@@ -823,5 +833,15 @@ describe("capturePixelsWithin", () => {
     expect(pixelCaptureTimeoutMs({ platform: "ios", kind: "simulator", id: "tv-udid" }, true)).toBe(
       FIRST_PIXEL_CAPTURE_TIMEOUT_MS
     );
+    // A physical iPhone captures through the on-device runner — an on-device
+    // PNG encode plus a usbmux transfer, slower than a warm stream on every
+    // capture, so it keeps its own wider ceiling throughout.
+    const physical = {
+      platform: "ios",
+      kind: "device",
+      id: "00008120-000E6D0C0ABBA01E",
+    } as DeviceInfo;
+    expect(pixelCaptureTimeoutMs(physical, true)).toBe(4_000);
+    expect(pixelCaptureTimeoutMs(physical, false)).toBe(4_000);
   });
 });

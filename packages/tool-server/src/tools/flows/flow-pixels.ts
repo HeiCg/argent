@@ -1,14 +1,24 @@
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { promisify } from "node:util";
 import { PNG } from "pngjs";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
+import {
+  iosDeviceRunnerRef,
+  type IosDeviceRunnerApi,
+} from "../../blueprints/ios-device-runner";
 import { isAndroidTv } from "../../utils/adb";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { FIRST_FRAME_WAIT_MS, httpScreenshot } from "../../utils/simulator-client";
 import { settleWithin } from "../../utils/timing";
-import { tvScreenshot } from "../screenshot";
+import { tvScreenshot, tvTargetLongSide } from "../screenshot";
 import type { ActionEnv } from "./flow-actions";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * A decoded capture, used only to detect motion between two reads. Never an
@@ -150,6 +160,10 @@ export async function statusBarMaskFraction(device: ActionEnv["device"]): Promis
   }
   if (device.platform === "ios-remote") return STATUS_BAR_MASK_FRACTION;
   if (device.platform !== "ios") return 0;
+  // A physical iPhone/iPad always paints a status bar, and its UDID shape is
+  // not a simulator UUID — the simctl probe below would answer from the wrong
+  // namespace, so it is not asked.
+  if (device.kind === "device") return STATUS_BAR_MASK_FRACTION;
   return (await isTvOsSimulator(device.id)) ? 0 : STATUS_BAR_MASK_FRACTION;
 }
 
@@ -171,7 +185,17 @@ export const PIXEL_CAPTURE_TIMEOUT_MS = 2_000;
  * simulator shells out too, but is not distinguishable from an iOS one without
  * an async runtime probe, so it keeps the wider ceiling it will not use.
  */
+/**
+ * A physical iPhone's capture is an on-device PNG encode of the full screen
+ * plus a usbmux round trip of those bytes — around a second warm, with real
+ * variance. A ceiling, like the others: unspent budget costs nothing.
+ */
+const IOS_DEVICE_PIXEL_CAPTURE_TIMEOUT_MS = 4_000;
+
 export function pixelCaptureTimeoutMs(device: ActionEnv["device"], firstCapture: boolean): number {
+  if (device.platform === "ios" && device.kind === "device") {
+    return IOS_DEVICE_PIXEL_CAPTURE_TIMEOUT_MS;
+  }
   const warmFromTheStart = device.platform === "chromium" || device.platform === "vega";
   return firstCapture && !warmFromTheStart
     ? FIRST_PIXEL_CAPTURE_TIMEOUT_MS
@@ -270,6 +294,9 @@ async function captureFile(env: ActionEnv, budgetMs: number): Promise<string> {
   if (env.device.platform === "vega") {
     return captureVegaScreenshotPng({ scale: CAPTURE_SCALE });
   }
+  if (env.device.platform === "ios" && env.device.kind === "device") {
+    return captureIosDeviceFile(env, budgetMs);
+  }
   // Shape alone cannot tell tvOS from iOS — both are 8-4-4-4-12 UUIDs tagged
   // `platform: "ios"` — so ask the runtime, which is memoized per UDID.
   if (env.device.platform === "ios" && (await isTvOsSimulator(env.device.id))) {
@@ -292,6 +319,38 @@ async function captureFile(env: ActionEnv, budgetMs: number): Promise<string> {
   // file.
   const { path } = await httpScreenshot(api, undefined, undefined, CAPTURE_SCALE);
   return path;
+}
+
+/**
+ * Physical-iOS capture for the settle: straight to the on-device XCUITest
+ * runner's inline screenshot. The `screenshot` tool's devicectl-first probe is
+ * deliberately skipped here — a settle captures at poll cadence, and on Xcodes
+ * without `devicectl device screenshot` that probe is a failing subprocess per
+ * poll. Mid-flow the runner is already resident (the launch gate resolved it),
+ * so the runner hop is both the warm path and the cheap one. The full-
+ * resolution PNG is downscaled with `sips` like the tvOS route, so only the
+ * quarter-scale frame is ever decoded on this process's event loop.
+ */
+async function captureIosDeviceFile(env: ActionEnv, budgetMs: number): Promise<string> {
+  const ref = iosDeviceRunnerRef(env.device);
+  const runner = (await env.registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
+  const data = (await runner.run(
+    { command: "screenshot" },
+    { readOnly: true, timeoutMs: budgetMs }
+  )) as { imageBase64?: string };
+  if (!data.imageBase64) throw new Error("runner screenshot returned no image data");
+  const file = path.join(
+    os.tmpdir(),
+    `argent-ios-device-settle-${env.device.id.slice(0, 8)}-${process.hrtime.bigint()}.png`
+  );
+  await fs.writeFile(file, Buffer.from(data.imageBase64, "base64"));
+  await execFileAsync("sips", ["-Z", String(await tvTargetLongSide(file, CAPTURE_SCALE)), file], {
+    signal: captureAbortSignal(env, budgetMs),
+  }).catch(() => {
+    // Best-effort downscale — a full-resolution compare still answers,
+    // it just costs a bigger decode this round.
+  });
+  return file;
 }
 
 /**
