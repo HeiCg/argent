@@ -198,6 +198,12 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
       FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED
     );
     expect(harmonyTypeText).not.toHaveBeenCalled();
+    // The newline shares its failure code with every other un-typeable
+    // character, so the code alone cannot tell whether its own branch still
+    // exists — and that branch is there only for the recovery it names.
+    await expect(
+      harmonyImpl.handler({}, { udid: harmonyDevice.id, text: "a\nb" }, harmonyDevice)
+    ).rejects.toThrow(/Submit with `key: "enter"` after typing instead/);
     // Decided without asking the device: see the unsupported-key case below.
     expect(harmonyDisplay).not.toHaveBeenCalled();
   });

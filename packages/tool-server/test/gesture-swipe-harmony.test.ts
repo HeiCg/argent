@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getFailureSignal } from "@argent/registry";
 
 // Only the hdc transport is faked. Everything between the tool and the wire -
 // the render-service parse, the normalized-to-pixel conversion, the duration-to-
@@ -128,6 +129,36 @@ describe("gesture-swipe on HarmonyOS", () => {
     // loop and push a Down/Move/Up train at a `services.simulatorServer` no
     // HarmonyOS device is behind, while still resolving `{ swiped: true }`.
     expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it("refuses to swipe while the display is suspended, injecting nothing", async () => {
+    // `uitest uiInput` answers `No Error` and exits 0 against a suspended panel
+    // (measured), so without the guard the swipe resolves `{swiped: true}` for a
+    // gesture that landed nowhere — and a scroll-until-found loop runs to its
+    // limit against a screen that never moved. Driven through the real
+    // `powerStatus` parse rather than a stubbed struct, since that string is the
+    // only thing standing between the two outcomes.
+    runHdcShell.mockImplementation(async (_connectKey, command) =>
+      command.startsWith("hidumper")
+        ? {
+            stdout: `render resolution=${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}\npowerStatus=POWER_STATUS_SUSPEND`,
+            exitCode: 0,
+          }
+        : { stdout: "No Error", exitCode: 0 }
+    );
+
+    const err = await gestureSwipeTool.execute(services, base).then(
+      () => {
+        throw new Error("expected the swipe to reject, but it resolved");
+      },
+      (e: unknown) => e
+    );
+
+    expect(getFailureSignal(err)?.failure_stage).toBe("harmony_screen_off");
+    expect((err as Error).message).toMatch(/Wake it with `button` \(power\)/);
+    expect(runHdcShell.mock.calls.filter(([, c]) => c.startsWith("uitest uiInput"))).toHaveLength(
+      0
+    );
   });
 
   it("does not declare the simulator-server service for a HarmonyOS target", () => {

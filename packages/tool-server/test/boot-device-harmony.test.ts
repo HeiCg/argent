@@ -421,7 +421,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     const result = (await pending) as { udid: string; note?: string };
 
     expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
-    expect(result.note).toMatch(/still not answering `uitest`/);
+    expect(result.note).toMatch(/had not answered `uitest`/);
   });
 
   it("ignores a second emulator that was connected and driveable before the start", async () => {
@@ -509,6 +509,78 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect(err.message).toMatch(/disk image corrupted/);
     expect(err.message).toMatch(/`127\.0\.0\.1:5555`\) was still coming up/);
     expect(err.message).not.toMatch(/before "Phone_1" registered/);
+  });
+
+  it("removes the readiness probe's dump when the wait ends by throwing", async () => {
+    // The other exit from that wait. Cleanup hung on the return paths instead of
+    // a `finally` leaves a full `uitest dumpLayout` JSON per dead boot, on the
+    // path where boots are most likely to be retried.
+    const probes: string[] = [];
+    harmonyDumpLayout.mockImplementation((_key: unknown, path: string) => {
+      probes.push(path);
+      writeFileSync(path, "{}");
+      child.die("error: the emulator instance quit unexpectedly (disk image corrupted)");
+      return Promise.reject(new Error("DumpLayout failed:Get window nodes failed"));
+    });
+    targets([PHONE], [PHONE, emulatorTarget]);
+
+    await expect(boot({ bootTimeoutMs: 30_000 })).rejects.toThrow(/disk image corrupted/);
+
+    expect(probes).toHaveLength(1);
+    expect(existsSync(probes[0]!)).toBe(false);
+  });
+
+  it("does not start a readiness probe there is no budget left to read", async () => {
+    // An instance with no configured panel is confirmed on arrival alone, so the
+    // key can resolve at the deadline itself with nothing left for the readiness
+    // wait. A probe launched then answers to nobody and holds this device's
+    // `uitest` queue for its own timeout — which the retry the note asks for
+    // would queue behind.
+    listHarmonyInstances.mockResolvedValue([
+      { name: INSTANCE, deviceType: "Phone", osVersion: null, running: false, display: null },
+    ]);
+    // Each listing costs a third of the budget, so the arrival lands on the poll
+    // that exhausts it.
+    const rounds = [[PHONE], [PHONE], [PHONE, emulatorTarget]];
+    let call = 0;
+    const next = () =>
+      new Promise((resolve) =>
+        setTimeout(() => resolve(rounds[Math.min(call++, rounds.length - 1)]), 10_000)
+      );
+    listHarmonyHdcTargets.mockImplementation(next);
+    listHarmonyHdcTargetsStrict.mockImplementation(next);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(harmonyDumpLayout).not.toHaveBeenCalled();
+    // Both caveats, and neither claiming the guest was asked anything.
+    expect(result.note).toMatch(/had not answered `uitest`/);
+    expect(result.note).toMatch(/no panel on record/);
+  });
+
+  it("names the declined target, not the unreadable one, when it saw both", async () => {
+    // A target that answered someone else's panel is a firmer diagnosis than one
+    // that answered nothing, so it is the one worth reporting — and the note it
+    // selects is the only place the difference reaches the caller.
+    const unprobeable = { connectKey: "127.0.0.1:5557", connection: "TCP", state: "Connected" };
+    harmonyDisplay.mockImplementation((key: string) =>
+      key === unprobeable.connectKey
+        ? Promise.reject(new Error("hidumper: no answer"))
+        : Promise.resolve({ width: 466, height: 466, screenOn: true })
+    );
+    targets([PHONE], [PHONE, emulatorTarget, unprobeable]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { note?: string };
+
+    expect(result.note).toMatch(/is not the panel/);
+    expect(result.note).not.toMatch(/never reported a display/);
   });
 
   it("says the key rests on arrival alone when the instance has no panel to check it against", async () => {
@@ -608,7 +680,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
     expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
     expect(result.note).toMatch(/no panel on record for this instance/);
-    expect(result.note).toMatch(/still not answering `uitest`/);
+    expect(result.note).toMatch(/had not answered `uitest`/);
   });
 
   it("names the instance and says why when nothing registers within the budget", async () => {
@@ -855,6 +927,137 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // the failure, however few calls it made getting there.
     expect(await elapsed).toBeLessThanOrEqual(30_000);
     expect(((await pending) as { note?: string }).note).toMatch(/registered/);
+  });
+
+  // Every one of these lookups is `i.name === params.instanceName` against a
+  // listing that, in every other fixture here, holds exactly one instance — so
+  // the name match itself is a free variable. A developer machine with a phone
+  // and a tablet profile is the ordinary case, not an exotic one.
+  describe("with more than one instance on the host", () => {
+    /** `other` first, so a lookup that takes `instances[0]` takes the wrong one. */
+    const instances = (mine: { running: boolean }, other: { running: boolean }) => [
+      {
+        name: "Tablet_9",
+        deviceType: "Tablet",
+        osVersion: null,
+        running: other.running,
+        display: { width: 2200, height: 1400 },
+      },
+      {
+        name: INSTANCE,
+        deviceType: "Phone",
+        osVersion: null,
+        running: mine.running,
+        display: PANEL,
+      },
+    ];
+
+    it("checks the panel of the instance it was asked for, not the first listed", async () => {
+      listHarmonyInstances.mockResolvedValue(instances({ running: false }, { running: false }));
+      targets([PHONE], [PHONE, emulatorTarget]);
+
+      const result = (await boot({})) as { udid: string; note?: string };
+
+      // The arrival answers PANEL. Read against the tablet's profile it is a
+      // stranger, and the boot hands back an id no interaction tool accepts.
+      expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+      expect(result.note).toBeUndefined();
+    });
+
+    it("does not treat another instance being up as this one already running", async () => {
+      listHarmonyInstances.mockResolvedValue(instances({ running: false }, { running: true }));
+      targets([PHONE], [PHONE, emulatorTarget]);
+
+      const result = (await boot({})) as { udid: string; note?: string };
+
+      // Without the name match this returns `booted: true` on the tablet's
+      // account and never starts anything.
+      expect(spawnMock).toHaveBeenCalledWith(
+        expect.any(String),
+        ["-start", INSTANCE],
+        expect.any(Object)
+      );
+      expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+      expect(result.note).toBeUndefined();
+    });
+
+    it("waits out only its own instance's shutdown, not another's", async () => {
+      // The tablet stays up throughout. A stop-wait that asks "is anything
+      // running" instead of "is this running" never sees the restart complete
+      // and spends the whole budget on a peer it was never asked about.
+      let listed = 0;
+      listHarmonyInstances.mockImplementation(() =>
+        Promise.resolve(instances({ running: listed++ < 1 }, { running: true }))
+      );
+      targets([PHONE, staleEmulatorTarget], [PHONE, emulatorTarget]);
+      vi.useFakeTimers();
+
+      const pending = boot({ force: true, bootTimeoutMs: 60_000 });
+      await vi.advanceTimersByTimeAsync(20_000);
+      const result = (await pending) as { udid: string; note?: string };
+
+      expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+      expect(result.note).toBeUndefined();
+    });
+  });
+
+  it("refuses a target that matches the panel on one axis only", async () => {
+    // The comparison is min/min and max/max so a landscape guest still matches
+    // its portrait config. Comparing one axis would let any device sharing a
+    // width — 1320x2400 against this 1320x2856 — be adopted as the instance
+    // argent started, after which every tap lands on someone else's screen.
+    harmonyDisplay.mockResolvedValue({ width: PANEL.width, height: 2400, screenOn: true });
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(result.note).toMatch(/is not the panel/);
+  });
+
+  it("keeps waiting through a stop-wait listing that could not be read", async () => {
+    // "An unreadable listing answers nothing, so it keeps waiting rather than
+    // assuming the instance is gone" — read as `stopped` instead, one transient
+    // `Emulator -list` failure sends `-start` at a live instance, which answers
+    // only that it is already running.
+    let listed = 0;
+    listHarmonyInstances.mockImplementation(() => {
+      listed += 1;
+      if (listed === 1)
+        return Promise.resolve([
+          { name: INSTANCE, deviceType: "Phone", osVersion: null, running: true, display: PANEL },
+        ]);
+      return Promise.reject(new Error("Emulator -list failed"));
+    });
+    vi.useFakeTimers();
+
+    const pending = boot({ force: true, bootTimeoutMs: 30_000 });
+    const settled = expect(pending).rejects.toThrow(/still running when the 30s budget ran out/);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await settled;
+
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a manager that could not be spawned instead of taking the server down", async () => {
+    // `spawn` fails asynchronously for ENOENT/EACCES. An unhandled `error` event
+    // is an uncaughtException, which this process routes to crashShutdown — so
+    // one unlaunchable emulator would stop every other device's session too.
+    // The Android arm has its own file pinning exactly this.
+    spawnMock.mockImplementation(() => {
+      queueMicrotask(() => child.emit("error", new Error("spawn Emulator ENOENT")));
+      return child;
+    });
+    targets([PHONE]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    const settled = expect(pending).rejects.toThrow(/could not be spawned: spawn Emulator ENOENT/);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await settled;
   });
 
   it("returns an id the interaction tools accept, which the instance id is not", async () => {

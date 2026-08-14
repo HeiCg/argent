@@ -219,6 +219,76 @@ describe("parseHarmonyLayout", () => {
       expect(target.children).toHaveLength(0);
     });
 
+    it("reads a non-checkable Toggle as the button it behaves like", () => {
+      // ArkUI's `Toggle` covers switches AND push-style buttons; only the
+      // checkable ones are switches. Reporting both as `Switch` puts a plain
+      // button beyond `await-ui-element {role:"Button"}`, and tells the agent a
+      // control has an on/off state it does not have.
+      const B = "[0,0][200,100]";
+      const asSwitch = wrap(
+        { type: "Toggle", checkable: "true", clickable: "true", id: "wifi", bounds: B },
+        { type: "Text", text: "Wi-Fi", bounds: B }
+      );
+      const asButton = wrap(
+        { type: "Toggle", checkable: "false", clickable: "true", id: "play", bounds: B },
+        { type: "Text", text: "Play", bounds: B }
+      );
+
+      expect(asSwitch.role).toBe("Switch");
+      expect(asButton.role).toBe("Button");
+    });
+
+    it("keeps a wrapper that carries the only label in the pair", () => {
+      // ArkUI labels the outer component and leaves the child a bare graphic —
+      // `Button().accessibilityText("Submit")` over a full-bleed `Image`.
+      // Collapsing onto the child drops the label entirely, so `describe` shows
+      // an unnamed image and `await-ui-element {text:"Submit"}` can never match.
+      const B = "[0,0][200,100]";
+      const target = wrap(
+        { type: "Button", clickable: "true", description: "Submit", bounds: B },
+        { type: "Image", bounds: B }
+      );
+
+      expect(target.label).toBe("Submit");
+      expect(target.role).toBe("Button");
+    });
+
+    it("does not collapse a multi-child wrapper onto its first child", () => {
+      // A full-bleed background as child[0] is idiomatic ArkUI. Collapsing on it
+      // returns the background alone and every sibling — here both price and
+      // caption — disappears from the tree the agent reads.
+      const B = "[0,0][400,200]";
+      const tree = parseHarmonyLayout(
+        root([
+          node({ type: "root", bundleName: "com.app", bounds: "[0,0][1216,2688]" }, [
+            node({ type: "Stack", clickable: "true", bounds: B }, [
+              node({ type: "Image", bounds: B }),
+              node({ type: "Text", text: "Buy now", bounds: "[10,10][200,60]" }),
+              node({ type: "Text", text: "$4.99", bounds: "[10,70][200,120]" }),
+            ]),
+          ]),
+        ]),
+        SCREEN
+      ).tree;
+
+      expect(findAll(tree, { text: "Buy now" })).toHaveLength(1);
+      expect(findAll(tree, { text: "$4.99" })).toHaveLength(1);
+    });
+
+    it("does not collapse onto a child that merely shares an origin", () => {
+      // Same x/y, a tenth of the area: an icon pinned to the top-left of its
+      // row. Collapsing moves the reported frame — and with it the tap centre
+      // the description tells the agent to compute — from (200,100) to (20,20).
+      const target = wrap(
+        { type: "Stack", clickable: "true", bounds: "[0,0][400,200]" },
+        { type: "Image", bounds: "[0,0][40,40]" }
+      );
+
+      expect(target.role).toBe("Stack");
+      expect(target.children).toHaveLength(1);
+      expect(target.children[0].role).toBe("Image");
+    });
+
     it("keeps a wrapper that carries the identifier an agent selects on", () => {
       const B = "[0,0][200,100]";
       const target = wrap(

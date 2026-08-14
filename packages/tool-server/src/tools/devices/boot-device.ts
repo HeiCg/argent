@@ -1606,7 +1606,7 @@ const HARMONY_UNCONFIRMED_TARGET =
  * tool retried by hand may well work — so this is a caveat, not a failure.
  */
 const HARMONY_NOT_DRIVABLE =
-  "The instance registered with `hdc` but was still not answering `uitest` when the boot budget " +
+  "The instance registered with `hdc` but had not answered `uitest` before the boot budget " +
   "ran out, so `describe`, `screenshot` and the gesture tools may fail for a little longer. " +
   "Retry the first interaction, or give the boot longer with `bootTimeoutMs`.";
 
@@ -1950,6 +1950,13 @@ async function waitForHarmonyDrivable(
   let inFlight: Promise<unknown> | null = null;
   try {
     for (;;) {
+      // Asked before it is spawned, not only before it is awaited: a target
+      // confirmed on arrival alone (no panel to check it against) can resolve at
+      // the deadline itself, and a probe started then is one nothing will ever
+      // read — holding this device's `uitest` queue for its own timeout, which
+      // is exactly what the retry the caller is about to be told to make would
+      // then wait behind.
+      if (Date.now() >= deadline) return false;
       inFlight = harmonyDumpLayout(connectKey, probePath).then(
         () => true,
         () => false

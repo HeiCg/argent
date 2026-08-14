@@ -24,7 +24,7 @@ vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
 }));
 
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
-import { harmonyKeyEvent, harmonyTypeText } from "../src/utils/harmony-uitest";
+import { harmonyDisplay, harmonyKeyEvent, harmonyTypeText } from "../src/utils/harmony-uitest";
 
 const IOS_SIM: DeviceInfo = { id: "TEST-UDID", platform: "ios", kind: "simulator" };
 const CHROMIUM: DeviceInfo = { id: "chromium-cdp-9222", platform: "chromium", kind: "app" };
@@ -175,6 +175,26 @@ describe("keyboard text+key ordering", () => {
     await expect(
       harmonyImpl.handler({}, { udid: HARMONY.id, text: "hi", key: "bogus" }, HARMONY)
     ).rejects.toThrow(/'bogus' is not available on HarmonyOS/);
+    expect(harmonyTypeText).not.toHaveBeenCalled();
+    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("harmony: refuses to type while the display is suspended, injecting nothing", async () => {
+    // `uitest uiInput text` answers `No Error` and exits 0 against a suspended
+    // panel, so without the guard the call resolves `{ typed: "hi", keys: 2 }`
+    // for characters that reached no field — the same refusal `gesture-tap`,
+    // `gesture-swipe` and `button` make off this display read.
+    vi.mocked(harmonyTypeText).mockClear();
+    vi.mocked(harmonyKeyEvent).mockClear();
+    vi.mocked(harmonyDisplay).mockResolvedValueOnce({
+      width: 1216,
+      height: 2688,
+      screenOn: false,
+    });
+
+    await expect(
+      harmonyImpl.handler({}, { udid: HARMONY.id, text: "hi", key: "enter" }, HARMONY)
+    ).rejects.toThrow(/display is off/);
     expect(harmonyTypeText).not.toHaveBeenCalled();
     expect(harmonyKeyEvent).not.toHaveBeenCalled();
   });

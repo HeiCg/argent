@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getFailureSignal } from "@argent/registry";
 
 // Only the two transport calls are stubbed; `toDevicePoint` stays real so the
 // asserted pixel values are the ones a device would actually be handed.
@@ -101,6 +102,28 @@ describe("gesture-tap on HarmonyOS", () => {
     // argent's own, and passing it through reaches no device at all.
     expect(harmonyDisplay).toHaveBeenCalledWith(CONNECT_KEY);
     expect(vi.mocked(harmonyTouch).mock.calls[0][0]).toBe(CONNECT_KEY);
+  });
+
+  it("refuses to tap while the display is suspended, injecting nothing", async () => {
+    // `uitest uiInput click` answers `No Error` and exits 0 against a suspended
+    // panel (measured), so without this guard the tap resolves `{tapped: true}`
+    // for input that landed nowhere — and the agent goes on to assert against a
+    // screen it believes it just touched. `button` pins the same refusal for
+    // its own presses; the two must not drift apart.
+    vi.mocked(harmonyDisplay).mockResolvedValue({ ...DISPLAY, screenOn: false });
+
+    const err = await gestureTapTool
+      .execute(noServices, { udid: HARMONY_UDID, x: 0.5, y: 0.5 })
+      .then(
+        () => {
+          throw new Error("expected the tap to reject, but it resolved");
+        },
+        (e: unknown) => e
+      );
+
+    expect(getFailureSignal(err)?.failure_stage).toBe("harmony_screen_off");
+    expect((err as Error).message).toMatch(/Wake it with `button` \(power\)/);
+    expect(harmonyTouch).not.toHaveBeenCalled();
   });
 });
 
