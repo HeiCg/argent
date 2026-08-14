@@ -667,7 +667,7 @@ export async function waitForFrame(
  * node came out of.
  *
  * `runType` needs both: the tree as it stood when the tap was dispatched is the
- * only record of what the tap could have hit (see {@link nodesUnderTap}), and
+ * only record of what the tap could have hit (see {@link tapCandidates}), and
  * the node is the element the step went on to tap — which is not always what
  * the same selector resolves to a moment later (see {@link trackTarget}).
  */
@@ -820,7 +820,7 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
  * what the tree flags?
  *
  * The node has to sit inside the target's box, be no bigger than it, AND be one
- * of the elements the tap could have hit ({@link nodesUnderTap}). Containment
+ * of the elements the tap could have hit ({@link tapCandidates}). Containment
  * alone has no discriminator at all: a container that
  * holds more than one input is the everyday row (an `amount-row` over currency
  * and amount, an OTP row that forces focus to the first empty box wherever you
@@ -872,14 +872,32 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
 function focusedFromInside(
   target: DescribeNode,
   focused: DescribeNode[],
-  underTap: DescribeNode[]
+  tap: TapCandidates
 ): boolean {
-  return focused.some(
-    (n) =>
-      frameWithin(n.frame, target.frame) &&
-      frameNoLargerThan(n.frame, target.frame) &&
-      underTap.some((before) => sameElement(before, n))
-  );
+  return focused.some((n) => {
+    if (!frameWithin(n.frame, target.frame) || !frameNoLargerThan(n.frame, target.frame)) {
+      return false;
+    }
+    // {@link sameElement} compares NAMES, and a name stands for an identity only
+    // while it picks out ONE element. Inside a container it routinely picks out
+    // several — which is the very shape this gate exists to refuse, so accepting
+    // "the focused node is A namesake of something under the tap" hands the
+    // clear to whichever namesake happens to hold focus. Reproduced on Chrome
+    // 151: an amount-row whose two anonymous inputs both read "Amount", tap on
+    // the right one, focus forced to the left one, and the LEFT field was
+    // emptied and rewritten with a pass reported on the row. The same page with
+    // the second input named "Currency" refused. An OTP row does it too, and on
+    // Android it needs no coincidence at all — `identifier` is the raw
+    // resource-id, which names the layout slot, so every row inflated from one
+    // layout carries the same one.
+    //
+    // So the name has to resolve, in the tree the tap was dispatched from, to
+    // exactly one candidate — and THAT candidate is what must have been under
+    // the tap. Ambiguity is not evidence, and refusing is the safe direction.
+    const named = tap.inside.filter((before) => sameElement(before, n));
+    if (named.length !== 1) return false;
+    return tap.underTap.includes(named[0]);
+  });
 }
 
 /**
@@ -990,27 +1008,35 @@ function trackTarget(
 }
 
 /**
- * The elements that sat inside `tappedFrame` and under the point the focusing
- * tap was dispatched at, in the settled tree that frame was resolved from —
- * i.e. what the tap could possibly have hit. {@link focusedFromInside} matches
- * a focus-flagged node against this list, which is how an overlay drawn in
- * RESPONSE to the tap is told apart from one the tap landed on.
+ * What a focusing tap on `tappedFrame` could have reached, read ONCE from the
+ * settled tree that frame was resolved from. {@link focusedFromInside} matches
+ * a focus-flagged node against these, which is how an overlay drawn in RESPONSE
+ * to the tap is told apart from one the tap landed on.
  */
-function nodesUnderTap(preTap: DescribeNode, tappedFrame: DescribeFrame): DescribeNode[] {
+interface TapCandidates {
+  /**
+   * Everything that sat inside `tappedFrame` before the tap. The scope the
+   * focused node's NAME has to be unambiguous in: two of these answering to one
+   * name is exactly the row `focusedFromInside` refuses.
+   */
+  inside: DescribeNode[];
+  /** Those of {@link inside} the tap point itself landed on. A subset, by identity. */
+  underTap: DescribeNode[];
+}
+
+function tapCandidates(preTap: DescribeNode, tappedFrame: DescribeFrame): TapCandidates {
   const tap = getDescribeTapPoint(tappedFrame);
-  const acc: DescribeNode[] = [];
+  const inside: DescribeNode[] = [];
+  const underTap: DescribeNode[] = [];
   const walk = (node: DescribeNode): void => {
-    if (
-      frameWithin(node.frame, tappedFrame) &&
-      frameCoversTap(node.frame, tap.x, tap.y) &&
-      isVisible(node)
-    ) {
-      acc.push(node);
+    if (frameWithin(node.frame, tappedFrame) && isVisible(node)) {
+      inside.push(node);
+      if (frameCoversTap(node.frame, tap.x, tap.y)) underTap.push(node);
     }
     for (const child of node.children) walk(child);
   };
   walk(preTap);
-  return acc;
+  return { inside, underTap };
 }
 
 /**
@@ -1118,7 +1144,7 @@ async function waitForFocus(
 ): Promise<FocusOutcome> {
   const deadline = Date.now() + TYPE_FOCUS_TIMEOUT_MS;
   const tappedFrame = tapped.frame;
-  const underTap = nodesUnderTap(preTapTree, tappedFrame);
+  const candidates = tapCandidates(preTapTree, tappedFrame);
   // Did the MOST RECENT successful read see focus on anything? Deliberately the
   // latest look and not "any look, ever": the question the caller is about to
   // act on is whether something else holds focus NOW, and a sticky flag answers
@@ -1157,7 +1183,7 @@ async function waitForFocus(
       // verdict a race — an app that blurs on the focusing tap reports focus
       // for however many rounds precede the blur.
       if (focused.some((n) => n === targetNode)) return "confirmed";
-      if (targetNode && focusedFromInside(targetNode, focused, underTap)) return "confirmed";
+      if (targetNode && focusedFromInside(targetNode, focused, candidates)) return "confirmed";
       if (targetNode && focusedOwnsTargetText(targetNode, focused)) return "confirmed";
       lastRead =
         focused.length === 0
