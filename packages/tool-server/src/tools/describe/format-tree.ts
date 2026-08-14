@@ -146,7 +146,11 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
     opts.source === "uiautomator" ||
     opts.source === "android-devtools" ||
     opts.source === "cdp-dom" ||
-    opts.source === "vega-automation"
+    opts.source === "vega-automation" ||
+    // Physical iOS: the XCUITest runner reports a real parent/child element
+    // tree (Application > Window > … with parentIndex links), not ax-service's
+    // flat leaf list — nested rendering keeps that structure visible.
+    opts.source === "xcuitest-runner"
       ? "nested"
       : "flat";
   const isVega = opts.source === "vega-automation";

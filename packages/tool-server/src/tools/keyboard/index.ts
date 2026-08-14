@@ -10,6 +10,7 @@ import {
 } from "../../utils/secrets";
 import type { KeyboardParams, KeyboardResult } from "./types";
 import { makeIosImpl, makeIosRemoteImpl } from "./platforms/ios";
+import { makeIosDeviceImpl } from "./platforms/ios-device";
 import { makeAndroidImpl } from "./platforms/android";
 import { makeChromiumImpl } from "./platforms/chromium";
 import { vegaImpl } from "./platforms/vega";
@@ -87,6 +88,7 @@ export function createKeyboardTool(registry: Registry): ToolDefinition<Params, K
     toolId: "keyboard",
     capability,
     ios: makeIosImpl(registry),
+    iosDevice: makeIosDeviceImpl(registry),
     iosRemote: makeIosRemoteImpl(registry),
     android: makeAndroidImpl(registry),
     chromium: makeChromiumImpl(registry),

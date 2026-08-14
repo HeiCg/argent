@@ -1,0 +1,149 @@
+import type { IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
+
+/**
+ * Typed helpers over the Argent runner's wire commands (see
+ * packages/ios-device-runner/PROTOCOL.md). Every interaction/snapshot command
+ * carries `appBundleId` — the runner refuses app commands without an explicit
+ * target (see app-session.ts for how the current app is tracked).
+ *
+ * Coordinates on the wire are absolute POINTS in the app's interaction
+ * viewport; Argent tools speak normalized 0-1, so callers convert through
+ * `getViewport`.
+ */
+
+export interface RunnerViewport {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface ViewportData {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+const viewportCache = new Map<string, RunnerViewport>();
+
+/** Interaction viewport for the app, cached per udid+bundle. */
+export async function getViewport(
+  api: IosDeviceRunnerApi,
+  bundleId: string,
+  opts: { fresh?: boolean } = {}
+): Promise<RunnerViewport> {
+  const cacheKey = `${api.udid}|${bundleId}`;
+  if (!opts.fresh) {
+    const cached = viewportCache.get(cacheKey);
+    if (cached) return cached;
+  }
+  const data = (await api.run(
+    { command: "viewport", appBundleId: bundleId },
+    { readOnly: true }
+  )) as ViewportData;
+  const viewport: RunnerViewport = {
+    x: data.x ?? 0,
+    y: data.y ?? 0,
+    width: data.width ?? 0,
+    height: data.height ?? 0,
+  };
+  if (!(viewport.width > 0) || !(viewport.height > 0)) {
+    throw new Error("The app's interaction viewport is unavailable; is the app foregrounded?");
+  }
+  viewportCache.set(cacheKey, viewport);
+  return viewport;
+}
+
+/** Convert a normalized 0-1 position into absolute viewport points. */
+export function toPoints(viewport: RunnerViewport, nx: number, ny: number): { x: number; y: number } {
+  return {
+    x: viewport.x + Math.max(0, Math.min(1, nx)) * viewport.width,
+    y: viewport.y + Math.max(0, Math.min(1, ny)) * viewport.height,
+  };
+}
+
+export async function tapAt(
+  api: IosDeviceRunnerApi,
+  bundleId: string,
+  point: { x: number; y: number }
+): Promise<void> {
+  await api.run({ command: "tap", appBundleId: bundleId, x: point.x, y: point.y });
+}
+
+/** Coordinate-to-coordinate drag; duration is honored through drag velocity. */
+export async function dragBetween(
+  api: IosDeviceRunnerApi,
+  bundleId: string,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  durationMs?: number
+): Promise<void> {
+  await api.run({
+    command: "drag",
+    appBundleId: bundleId,
+    fromX: from.x,
+    fromY: from.y,
+    toX: to.x,
+    toY: to.y,
+    ...(durationMs != null ? { durationMs } : {}),
+  });
+}
+
+export async function typeText(
+  api: IosDeviceRunnerApi,
+  bundleId: string,
+  text: string
+): Promise<void> {
+  await api.run({ command: "type", appBundleId: bundleId, text }, { timeoutMs: 60_000 });
+}
+
+export async function pressKeyboardReturn(api: IosDeviceRunnerApi, bundleId: string): Promise<void> {
+  await api.run({ command: "keyboardReturn", appBundleId: bundleId });
+}
+
+export interface RunnerSnapshotNode {
+  index: number;
+  type: string;
+  label: string | null;
+  identifier: string | null;
+  value: string | null;
+  rect: { x: number; y: number; width: number; height: number };
+  enabled: boolean;
+  focused: boolean | null;
+  selected: boolean | null;
+  hittable: boolean;
+  depth: number;
+  parentIndex: number | null;
+  hiddenContentAbove: boolean | null;
+  hiddenContentBelow: boolean | null;
+}
+
+export interface RunnerSnapshotQuality {
+  state?: string;
+  backend?: string;
+  reason?: string;
+  reasonCode?: string;
+}
+
+interface SnapshotData {
+  nodes?: RunnerSnapshotNode[];
+  quality?: RunnerSnapshotQuality;
+}
+
+export async function captureSnapshot(
+  api: IosDeviceRunnerApi,
+  bundleId: string,
+  opts: { interactiveOnly?: boolean; depth?: number } = {}
+): Promise<{ nodes: RunnerSnapshotNode[]; quality: RunnerSnapshotQuality | null }> {
+  const data = (await api.run(
+    {
+      command: "snapshot",
+      appBundleId: bundleId,
+      interactiveOnly: opts.interactiveOnly ?? false,
+      ...(opts.depth != null ? { depth: opts.depth } : {}),
+    },
+    { readOnly: true, timeoutMs: 45_000 }
+  )) as SnapshotData;
+  return { nodes: data.nodes ?? [], quality: data.quality ?? null };
+}

@@ -1,0 +1,120 @@
+import type { DeviceInfo, Registry } from "@argent/registry";
+import {
+  iosDeviceRunnerRef,
+  type IosDeviceRunnerApi,
+} from "../../../blueprints/ios-device-runner";
+import { requireCurrentIosDeviceApp } from "../../../utils/ios-device/app-session";
+import {
+  captureSnapshot,
+  type RunnerSnapshotNode,
+} from "../../../utils/ios-device/runner-commands";
+import type { DescribeNode, DescribeTreeData } from "../contract";
+
+/**
+ * Physical-iOS describe: the XCUITest runner's accessibility snapshot, adapted
+ * from its flat indexed node list (absolute point rects + parentIndex links)
+ * into the describe contract's nested tree with 0-1 normalized frames.
+ */
+export async function describeIosDevice(
+  registry: Registry,
+  device: DeviceInfo
+): Promise<DescribeTreeData> {
+  const bundleId = requireCurrentIosDeviceApp(device.id);
+  const ref = iosDeviceRunnerRef(device);
+  const api = await registry.resolveService<IosDeviceRunnerApi>(ref.urn, ref.options);
+  let { nodes, quality } = await captureSnapshot(api, bundleId, { interactiveOnly: false });
+  // Right after launch-app, XCTest can attach before the UI is fully built
+  // and report a root-only tree. One short settle-and-retry recovers the
+  // common case without pushing retry logic onto the agent.
+  if (nodes.length <= 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    ({ nodes, quality } = await captureSnapshot(api, bundleId, { interactiveOnly: false }));
+  }
+  if (nodes.length === 0) {
+    return {
+      tree: { role: "Application", frame: { x: 0, y: 0, width: 1, height: 1 }, children: [] },
+      source: "xcuitest-runner",
+      hint:
+        "The runner returned an empty accessibility tree. The app may still be launching, " +
+        "or this screen exposes no accessibility elements.",
+    };
+  }
+  const data = adaptRunnerSnapshot(nodes);
+  if (quality?.state && quality.state !== "healthy") {
+    data.hint =
+      `Snapshot quality: ${quality.state} (backend ${quality.backend ?? "?"}, ` +
+      `reason ${quality.reasonCode ?? quality.reason ?? "?"}). The tree may be incomplete; ` +
+      "retry after the UI settles, or fall back to the screenshot.";
+  }
+  return data;
+}
+
+/**
+ * XCUITest element types → the AX-style content roles the describe formatter
+ * emits unconditionally (see format-tree.ts CONTENT_ROLES). Unmapped types
+ * (Window, Other, ScrollView, Cell, …) keep their XCTest name and surface via
+ * the nested renderer's container rules — printed when labeled or when they
+ * have printable descendants.
+ */
+const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
+  Button: "AXButton",
+  StaticText: "AXStaticText",
+  Image: "AXImage",
+  Link: "AXLink",
+  TextField: "AXTextField",
+  SecureTextField: "AXTextField",
+  SearchField: "AXTextField",
+  TextView: "AXTextField",
+  TabBar: "AXTabBar",
+  Switch: "AXAdjustable",
+  Slider: "AXAdjustable",
+  Stepper: "AXAdjustable",
+};
+
+function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
+  // Reference frame: the shallowest node's rect (the Application root). All
+  // frames normalize against it; XCTest occasionally reports children a point
+  // outside the root, so clamp into [0, 1] to satisfy the contract schema.
+  const root = nodes.reduce((a, b) => (b.depth < a.depth ? b : a));
+  const refW = root.rect.width > 0 ? root.rect.width : 1;
+  const refH = root.rect.height > 0 ? root.rect.height : 1;
+
+  const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
+  const toDescribe = (node: RunnerSnapshotNode): DescribeNode => {
+    const x = clamp01((node.rect.x - root.rect.x) / refW);
+    const y = clamp01((node.rect.y - root.rect.y) / refH);
+    return {
+      role: RUNNER_TYPE_TO_ROLE[node.type] ?? node.type,
+      frame: {
+        x,
+        y,
+        width: clamp01((node.rect.x - root.rect.x + node.rect.width) / refW) - x,
+        height: clamp01((node.rect.y - root.rect.y + node.rect.height) / refH) - y,
+      },
+      children: [],
+      ...(node.label ? { label: node.label } : {}),
+      ...(node.identifier ? { identifier: node.identifier } : {}),
+      ...(node.value != null ? { value: String(node.value) } : {}),
+      ...(node.focused ? { focused: true } : {}),
+      ...(node.selected ? { selected: true } : {}),
+      ...(node.enabled === false ? { disabled: true } : {}),
+    };
+  };
+
+  const describeByIndex = new Map<number, DescribeNode>();
+  for (const node of nodes) describeByIndex.set(node.index, toDescribe(node));
+  const rootDescribe = describeByIndex.get(root.index)!;
+  for (const node of nodes) {
+    if (node.index === root.index) continue;
+    const parent =
+      (node.parentIndex != null ? describeByIndex.get(node.parentIndex) : undefined) ??
+      rootDescribe;
+    parent.children.push(describeByIndex.get(node.index)!);
+  }
+
+  return {
+    tree: rootDescribe,
+    source: "xcuitest-runner",
+    screen: { width: refW, height: refH },
+  };
+}

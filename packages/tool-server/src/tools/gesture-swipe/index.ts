@@ -1,6 +1,12 @@
 import { z } from "zod";
-import type { ToolCapability, ToolDefinition } from "@argent/registry";
+import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
+import {
+  iosDeviceRunnerRef,
+  type IosDeviceRunnerApi,
+} from "../../blueprints/ios-device-runner";
+import { requireCurrentIosDeviceApp } from "../../utils/ios-device/app-session";
+import { dragBetween, getViewport, toPoints } from "../../utils/ios-device/runner-commands";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
 
@@ -61,13 +67,33 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
   searchHint: "swipe scroll drag pan gesture device simulator emulator touch move",
   zodSchema,
   capability,
-  services: (params) => ({
-    simulatorServer: simulatorServerRef(resolveDevice(params.udid)),
-  }),
+  services: (params): Record<string, ServiceRef> => {
+    const device = resolveDevice(params.udid);
+    if (device.platform === "ios" && device.kind === "device") {
+      return { iosDeviceRunner: iosDeviceRunnerRef(device) };
+    }
+    return { simulatorServer: simulatorServerRef(device) };
+  },
   async execute(services, params) {
     const duration = params.durationMs ?? 300;
     const settle = params.settle ?? false;
     const timestampMs = Date.now();
+    const device = resolveDevice(params.udid);
+    if (device.platform === "ios" && device.kind === "device") {
+      // XCUITest executes the drag as one planned gesture; its easing profile
+      // is runner-owned, so `settle` has no separate effect on hardware.
+      const runner = services.iosDeviceRunner as IosDeviceRunnerApi;
+      const bundleId = requireCurrentIosDeviceApp(device.id);
+      const viewport = await getViewport(runner, bundleId);
+      await dragBetween(
+        runner,
+        bundleId,
+        toPoints(viewport, params.fromX, params.fromY),
+        toPoints(viewport, params.toX, params.toY),
+        duration
+      );
+      return { swiped: true, timestampMs };
+    }
     const api = services.simulatorServer as SimulatorServerApi;
     const steps = Math.max(1, Math.round(duration / 16));
 

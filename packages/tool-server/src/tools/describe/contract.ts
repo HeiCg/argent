@@ -73,7 +73,11 @@ export type DescribeSource =
   | "android-devtools"
   | "cdp-dom"
   | "vega-automation"
-  | "tv-focus";
+  | "tv-focus"
+  // Physical iOS devices: the XCUITest runner's accessibility snapshot. No
+  // ax-service/DYLD path exists on hardware, so tree quality is bounded by
+  // what XCTest exposes (labels, identifiers, values, hittability).
+  | "xcuitest-runner";
 
 // Adapter-internal: `tree` is rendered by `format-tree.ts` and then dropped —
 // callers get `DescribeResult` below, i.e. only the rendered text.

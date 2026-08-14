@@ -2,6 +2,12 @@ import { z } from "zod";
 import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
+import {
+  iosDeviceRunnerRef,
+  type IosDeviceRunnerApi,
+} from "../../blueprints/ios-device-runner";
+import { requireCurrentIosDeviceApp } from "../../utils/ios-device/app-session";
+import { getViewport, tapAt, toPoints } from "../../utils/ios-device/runner-commands";
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";
 import { resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
@@ -103,6 +109,9 @@ Before tapping, determine the correct coordinates by using discovery tools — p
     if (device.platform === "chromium") {
       return { chromium: chromiumCdpRef(device) };
     }
+    if (device.platform === "ios" && device.kind === "device") {
+      return { iosDeviceRunner: iosDeviceRunnerRef(device) };
+    }
     return { simulatorServer: simulatorServerRef(device) };
   },
   async execute(services, params) {
@@ -114,6 +123,17 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       // Mouse dispatch stalls at ~5s per event on a hidden window.
       await assertChromiumWindowVisible(chromium, "tap", "chromium_tap_window_hidden");
       await tapChromium(chromium, params.x, params.y, clickCount);
+      return { tapped: true, timestampMs };
+    }
+    if (device.platform === "ios" && device.kind === "device") {
+      const runner = services.iosDeviceRunner as IosDeviceRunnerApi;
+      const bundleId = requireCurrentIosDeviceApp(device.id);
+      const viewport = await getViewport(runner, bundleId);
+      const point = toPoints(viewport, params.x, params.y);
+      for (let i = 1; i <= clickCount; i++) {
+        if (i > 1) await sleep(MULTI_TAP_GAP_MS);
+        await tapAt(runner, bundleId, point);
+      }
       return { tapped: true, timestampMs };
     }
     const api = services.simulatorServer as SimulatorServerApi;

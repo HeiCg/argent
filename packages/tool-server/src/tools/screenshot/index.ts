@@ -11,9 +11,16 @@ import { getScreenshotScale } from "../../utils/simulator-client";
 import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
 import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
 import { isTvOsSimulator } from "../../utils/ios-devices";
+import { captureScreenshot as captureIosDeviceScreenshot } from "../../utils/ios-device/devicectl";
+import {
+  iosDeviceRunnerRef,
+  type IosDeviceRunnerApi,
+} from "../../blueprints/ios-device-runner";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
+import type { DeviceInfo } from "@argent/registry";
+import * as fs from "node:fs/promises";
 
 const execFileAsync = promisify(execFile);
 
@@ -71,6 +78,54 @@ const capability: ToolCapability = {
   chromium: { app: true },
   vega: { vvd: true },
 };
+
+/**
+ * Physical-iOS screenshot. Primary: host-side `xcrun devicectl device
+ * screenshot` (no runner needed). Not every Xcode ships that subcommand —
+ * devicectl 518.x (iOS 26 SDK) does not — so on the unknown-option/subcommand
+ * error the capture falls back to the on-device XCUITest runner's
+ * `screenshot` command with an inline base64 payload. Both paths finish with
+ * the same best-effort `sips` downscale as the tvOS path.
+ */
+async function iosPhysicalScreenshot(
+  registry: Registry,
+  device: DeviceInfo,
+  scale: number
+): Promise<string> {
+  const file = path.join(
+    os.tmpdir(),
+    `argent-ios-device-screenshot-${device.id.slice(0, 8)}-${process.hrtime.bigint()}.png`
+  );
+  try {
+    await captureIosDeviceScreenshot(device.id, file);
+  } catch (error) {
+    const text = `${(error as Error).message}\n${String((error as Error & { cause?: Error }).cause?.message ?? "")}`;
+    const missingSubcommand = /unknown option|unknown subcommand|unrecognized subcommand/i.test(
+      text
+    );
+    if (!missingSubcommand) throw error;
+    const ref = iosDeviceRunnerRef(device);
+    const runner = (await registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
+    // Device-wide capture (XCUIScreen): the runner's screenshot command is
+    // app-agnostic and always answers with an inline base64 PNG.
+    const data = (await runner.run(
+      { command: "screenshot" },
+      { readOnly: true, timeoutMs: 30_000 }
+    )) as { imageBase64?: string };
+    if (!data.imageBase64) {
+      throw new Error("Runner screenshot returned no inline image data.", { cause: error });
+    }
+    await fs.writeFile(file, Buffer.from(data.imageBase64, "base64"));
+  }
+  if (scale < 1.0) {
+    await execFileAsync("sips", ["-Z", String(await tvTargetLongSide(file, scale)), file]).catch(
+      () => {
+        // Best-effort downscale, mirroring the tvOS path.
+      }
+    );
+  }
+  return file;
+}
 
 /**
  * tvOS screenshot path: simulator-server has no tvOS backend, so capture with
@@ -158,6 +213,18 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
         });
         const image = await requireArtifacts(ctx).register({
           hostPath: capturedPath,
+          kind: "screenshot",
+          mimeType: "image/png",
+        });
+        return { image };
+      }
+
+      // Physical iPhones/iPads capture host-side via devicectl — before the
+      // tvOS probe (which shells out to simctl and can't know hardware UDIDs).
+      if (device.platform === "ios" && device.kind === "device") {
+        const pngPath = await iosPhysicalScreenshot(registry, device, scale);
+        const image = await requireArtifacts(ctx).register({
+          hostPath: pngPath,
           kind: "screenshot",
           mimeType: "image/png",
         });

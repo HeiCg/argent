@@ -10,6 +10,7 @@ import type { DescribeResult, DescribeTreeData } from "./contract";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
 import { describeAndroid, androidRequires } from "./platforms/android";
 import { iosRequires, describeIos, withBootCaveatOncePerDevice } from "./platforms/ios";
+import { describeIosDevice } from "./platforms/ios-device";
 import { describeChromium } from "./platforms/chromium";
 import { describeTv } from "./platforms/tv";
 import { describeVega, vegaRequires } from "./platforms/vega";
@@ -101,6 +102,11 @@ function makeDescribeExecute(
                 await describeIos(registry, device, params, { isTvOs: false })
               )
             ),
+    },
+    iosDevice: {
+      requires: iosRequires,
+      handler: async (_services, _params, device) =>
+        withDescription(await describeIosDevice(registry, device)),
     },
     iosRemote: {
       // Both the ax-service and native-devtools blueprints route through
