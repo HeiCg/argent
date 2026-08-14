@@ -57,7 +57,14 @@ describe("flow `type` — clear parsing", () => {
     // message with "Cannot read properties of undefined" under a
     // REGISTRY_TOOL_EXECUTION_FAILED code. Through the real server that is what
     // `type: { clear: true }` returned, for a flow the parser can name exactly.
-    expect(() => parseType(`      clear: true`)).toThrow(/type\.into/);
+    //
+    // And the entry it renders is the STEP, not the absent selector: handing
+    // the missing `into` to `parseSelector` rendered the entry as the bare word
+    // `undefined`, which in a multi-step flow says nothing about which step is
+    // broken.
+    expect(() => parseType(`      clear: true`)).toThrow(/needs an `into` selector/);
+    expect(() => parseType(`      clear: true`)).toThrow(/\{"type":\{"clear":true\}\}/);
+    expect(() => parseType(`      text: "x"`)).toThrow(/\{"type":\{"text":"x"\}\}/);
   });
 
   it("rejects a non-boolean clear", () => {

@@ -2696,6 +2696,14 @@ function fromYamlStep(raw: YamlStep, blockDepth = 0): FlowStep {
     if (body.submit !== undefined && typeof body.submit !== "boolean") {
       badEntry(raw, "type.submit must be a boolean");
     }
+    // An absent `into` is caught here rather than inside `parseSelector`,
+    // because the diagnostic echoes the offending ENTRY and an absent selector
+    // renders as `undefined` — which in a multi-step flow does not say WHICH
+    // step is broken. Echo the step instead, the way the `claer` typo path
+    // already does.
+    if (body.into === undefined) {
+      badEntry(raw, "type needs an `into` selector ({ into, text } or { into, clear: true })");
+    }
     // Built in one expression, not field by field: the union above pairs `text`
     // with `clear` so a step carrying neither cannot be spelled, and an
     // incremental build passes through exactly that state.

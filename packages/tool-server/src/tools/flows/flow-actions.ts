@@ -1017,9 +1017,13 @@ function focusedFromInside(
     // reports them: the iOS full-hierarchy adapter never sets `clickable`
     // (`flow-ios-tree`), so there this arm never admits anything and the shape
     // it exists to fix still falls through to the refusal below.
+    //
+    // "And nothing else under the tap is a control" needs no separate test:
+    // `underTap ⊆ inside`, so a clickable member of it other than `tapped`
+    // would be in `controls` — which has exactly one member, and that member is
+    // not under the tap or the arm above would have returned.
     const controls = tap.inside.filter((before) => before !== tap.tapped && before.clickable);
-    if (controls.length !== 1 || controls[0] !== named[0]) return false;
-    return tap.underTap.every((before) => before === tap.tapped || !before.clickable);
+    return controls.length === 1 && controls[0] === named[0];
   });
 }
 
@@ -2182,17 +2186,21 @@ function clearRefusalReason(into: FlowSelector, focus: FocusOutcome): string {
     return (
       `${head}: the only element reporting focus within ${TYPE_FOCUS_TIMEOUT_MS}ms CONTAINS ${sel} ` +
       `rather than being it — a focused WebView or a focus trap looks exactly like this while a ` +
-      `different element holds the keys, so clearing here can empty that element instead. Point ` +
-      `the selector at the input itself, or clear it with the app's own affordance`
+      `different element holds the keys, so clearing here can empty that element instead. A field ` +
+      `that merely OVERHANGS the box ${sel} names reads the same way, which default content-box ` +
+      `sizing does for a few pixels. Point the selector at the input itself, or clear it with the ` +
+      `app's own affordance`
     );
   }
   if (focus === "overlaps") {
     return (
       `${head}: within ${TYPE_FOCUS_TIMEOUT_MS}ms focus was reported on an element that OVERLAPS ` +
       `${sel} without being it and without covering where the tap landed — an overlay over the ` +
-      `field (a suggestion popover, an autocomplete list), or a SIBLING inside the container ` +
-      `${sel} names (a currency/amount row, an OTP row). Clearing would empty that element ` +
-      `instead. Dismiss the overlay first, or name the input that actually holds the caret`
+      `field (a suggestion popover, an autocomplete list), a SIBLING inside the container ` +
+      `${sel} names (a currency/amount row, an OTP row), or the field itself overhanging that ` +
+      `container's box, which default content-box sizing does for a few pixels. Clearing would ` +
+      `empty that element instead. Dismiss the overlay first, or name the input that actually ` +
+      `holds the caret`
     );
   }
   if (focus === "unreadable") {

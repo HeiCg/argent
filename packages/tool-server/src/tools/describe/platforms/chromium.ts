@@ -387,9 +387,15 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   }
 
   /**
-   * Input focus: el is the activeElement of its OWN root. Deliberately emitted
-   * to EVERY describe consumer (the agent-facing tool as much as the flow type
-   * directive's focus wait) — where the caret is is useful targeting info.
+   * Input focus: el is the activeElement of its OWN root. Emitted on the node
+   * for every describe consumer — where the caret is is useful targeting info,
+   * and the flow type directive's focus wait reads nothing else. The
+   * agent-facing render is narrower than that: \`hasContent\`
+   * (describe/format-tree) does not list \`focused\`, so a node whose only signal
+   * is focus — no id, no name, no text, no children — is dropped from it.
+   * Verified on Chrome 151: an anonymous EMPTY focused \`contenteditable\` is
+   * absent from \`describe\` output, while the same editor holding a \`<p>\`, or
+   * carrying an id, is shown.
    *
    * The root, not the document, because an open shadow root has an
    * activeElement of its own while the outer document reports only the HOST.
@@ -409,7 +415,17 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
    * descend into a subdocument at all (see the note where the descent used to
    * sit), so focus in one reaches the tree from neither side. Verified on
    * Chrome 151: an <iframe srcdoc> leaves no trace of its content in describe,
-   * and focusing an input inside it leaves the tree with NO focus flag at all.
+   * and focusing an input inside a LIGHT-DOM iframe leaves the tree with no
+   * focus flag at all.
+   *
+   * Put that same iframe in an OPEN shadow root and the flag lands on the HOST
+   * instead: \`shadowRoot.activeElement\` is the iframe, which is excluded here,
+   * so the shadow subtree carries no flag out, the host is not suppressed as
+   * delegating, and the host is its own document's activeElement. Also verified
+   * on Chrome 151. That is the suppression rule working as intended — it is
+   * exactly the "the inner element will carry it" assumption it refuses to make
+   * — and it leaves a flag on a box spanning the whole component, which the
+   * type directive's focus wait reads as "encloses" and refuses a clear on.
    *
    * The body is excluded — it's the default holder when nothing is focused, and
    * its screen-spanning frame would satisfy any overlap check.
@@ -470,7 +486,12 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     // holdsFocus). Everything else about the node is unchanged — it is emitted
     // with its real box, which for an opacity:0 field is the box the user's
     // keystrokes are going into.
-    if (hidden(el, style) && !holdsFocus(el)) return null;
+    //
+    // display:none is not part of the exception. An element in a display:none
+    // subtree cannot hold focus — the browser blurs it — so a root that names
+    // one as its activeElement is describing a page that cannot exist, and
+    // honouring it would resurrect a subtree the walker has always dropped.
+    if (hidden(el, style) && (style.display === "none" || !holdsFocus(el))) return null;
     // Charge the node budget only for elements that can actually EMIT. A
     // visibility:hidden element paints nothing itself and is descended into
     // purely to catch a descendant that overrides visibility back to visible
@@ -603,7 +624,17 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
         const cf = contentFrame(el);
         if (cf) selfFrame = cf;
       }
-      if (childResults.length === 0 && selfFrame.width <= 0 && selfFrame.height <= 0) {
+      // \`focusedSelf\` for the same reason as the two structural collapses
+      // below: this is a sibling drop of the same class, and a focused node
+      // vanishing from the tree is what the flow's focus wait reads as "nothing
+      // is focused" — the one non-confirmed outcome a destructive clear goes
+      // through on.
+      if (
+        childResults.length === 0 &&
+        selfFrame.width <= 0 &&
+        selfFrame.height <= 0 &&
+        !focusedSelf
+      ) {
         return null;
       }
       if (
