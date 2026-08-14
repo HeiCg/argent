@@ -1453,6 +1453,9 @@ async function waitForFocus(
   // When the current run of unanswered reads STARTED — the instant the window
   // last knew anything. Undefined whenever the most recent read succeeded.
   let darkSince: number | undefined;
+  // What a healthy read costs on THIS device, from the most recent one that
+  // answered. 0 until one does. Read by the affordability check in the loop.
+  let lastReadMs = 0;
   const giveUp = (): FocusOutcome => {
     // `undefined` means no read ever succeeded — an outage, not an observation.
     // Reporting it as "unobservable" would let a clear through on the strength
@@ -1484,6 +1487,26 @@ async function waitForFocus(
     // claims the observation window was.
     if (Date.now() >= deadline) return giveUp();
     const readStartedAt = Date.now();
+    // A read the window cannot afford is not started at all. Its budget is
+    // whatever is left of the window, so one started too late is abandoned
+    // mid-flight — and `giveUp` books that abandonment as darkness, which is a
+    // fact about read latency against the deadline phase and not about the
+    // device. The step then failed telling the author "the device's tree source
+    // is down" while every read in the window had answered. Worse, whether the
+    // last read starts far enough before the deadline to cross
+    // FOCUS_DARK_TAIL_TOLERANCE_MS depends on how the read time divides into
+    // TYPE_FOCUS_TIMEOUT_MS, so the verdict was not monotonic in latency:
+    // measured on Chrome 151, a page whose focus the tree cannot report failed
+    // as an outage at ~900ms and ~1200ms per read while passing at 0ms — same
+    // page, same screen, every read successful in all of them. Android's
+    // `getHierarchy` sits squarely in that band (2.85s / 0.29s / 0.46s / 0.30s
+    // across four consecutive idle `describe` calls on this host), so the same
+    // step flips between pass and hard failure with load alone.
+    //
+    // A source that has never answered is exempt: `lastReadMs` is 0, the read
+    // starts, and a hang consumes the whole window and IS reported as an
+    // outage — which is the case the dark tail exists for.
+    if (lastReadMs > 0 && deadline - readStartedAt < lastReadMs) return giveUp();
     // Bounded by what is left of the window, the way `waitForIdle` bounds its
     // own read. No AbortSignal reaches any transport, so an unbounded read
     // overran the window by its transport timeout instead — up to 15s on
@@ -1503,6 +1526,7 @@ async function waitForFocus(
       const { tree, source } = read.value;
       darkTail = 0;
       darkSince = undefined;
+      lastReadMs = Date.now() - readStartedAt;
       if (!FOCUS_REPORTING_SOURCES.has(source)) return "unobservable";
       // The target NODE, not just its frame: identity is the only unambiguous
       // evidence. `tappedFrame` still covers a round where neither the element
