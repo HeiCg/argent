@@ -708,6 +708,34 @@ function frameNoLargerThan(inner: DescribeFrame, outer: DescribeFrame): boolean 
 }
 
 /**
+ * Does `frame` cover the point a tap was dispatched at — the way the OS hit
+ * test covers it?
+ *
+ * Half-open, so the start edge belongs to the frame and the end edge belongs to
+ * the next one along. That is what `Rect.contains`, `CGRectContainsPoint` and
+ * Chrome's `elementFromPoint` all do, and asking the same question the OS
+ * answered is the whole point: this decides which of a row's children the tap
+ * that moved focus actually landed on.
+ *
+ * {@link frameContains} — inclusive on every edge — cannot: when a container's
+ * two children split it evenly the container's centre IS the seam, so BOTH
+ * halves contain it and the test discriminates nothing, while the tap went to
+ * exactly one of them (the right/lower one). Reproduced on Chrome 42 and on
+ * Android API 36: a 50/50 row whose LEFT input held focus took a clear aimed at
+ * the row and reported a pass, where the same page split 30/70 refused. Even
+ * splits are the common case, not a corner: an OTP row of 6 boxes on a 1080px
+ * screen lands on exact 180px boundaries.
+ *
+ * No epsilon. The slack that {@link frameWithin} needs absorbs a border's
+ * overhang between two frames; here a hair of slack on the end edge would put
+ * the seam back. Frames that genuinely straddle the point by less than a device
+ * pixel are left to the refusal, which is the safe direction.
+ */
+function frameCoversTap(frame: DescribeFrame, x: number, y: number): boolean {
+  return x >= frame.x && x < frame.x + frame.width && y >= frame.y && y < frame.y + frame.height;
+}
+
+/**
  * Is this node a scroll container? Android's uiautomator dump flags one
  * directly (`scrollable`); the iOS full-hierarchy adapter carries no such flag
  * but maps UIScrollView/UITableView/UICollectionView class names to the
@@ -761,8 +789,10 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
  * what the tree flags?
  *
  * The node has to sit inside the target's box, be no bigger than it, AND cover
- * the point the tap lands on. Containment alone has no discriminator at all: a
- * container that
+ * the point the tap lands on — the last by {@link frameCoversTap}, which reads
+ * the seam between two children the way the OS hit test does, so an even split
+ * still names one child rather than both. Containment alone has no
+ * discriminator at all: a container that
  * holds more than one input is the everyday row (an `amount-row` over currency
  * and amount, an OTP row that forces focus to the first empty box wherever you
  * tap, a card number/expiry/cvc row with auto-advance), and a suggestion
@@ -800,7 +830,7 @@ function focusedFromInside(target: DescribeNode, focused: DescribeNode[]): boole
     (n) =>
       frameWithin(n.frame, target.frame) &&
       frameNoLargerThan(n.frame, target.frame) &&
-      frameContains(n.frame, tap.x, tap.y)
+      frameCoversTap(n.frame, tap.x, tap.y)
   );
 }
 
