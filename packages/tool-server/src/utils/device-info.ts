@@ -1,3 +1,4 @@
+import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type { DeviceInfo, DeviceKind, Platform } from "@argent/registry";
 
 /**
@@ -93,8 +94,29 @@ export function harmonyInstanceName(udid: string): string {
     : udid;
 }
 
-/** The `hdc` connect key behind a `harmony-<connectKey>` id. */
+/**
+ * The `hdc` connect key behind a `harmony-<connectKey>` id.
+ *
+ * An instance id is refused rather than stripped: `harmony-emulator-<name>`
+ * carries the `harmony-` prefix too, so slicing it yields `emulator-<name>` — a
+ * key no target holds, which `hdc` answers with `[Fail]Not match target` naming
+ * a device the caller never asked for. The capability gate turns an instance id
+ * away at the HTTP edge, but a flow step reaches `execute` through the registry,
+ * which does not gate it.
+ */
 export function harmonyConnectKey(udid: string): string {
+  if (udid.startsWith(HARMONY_EMULATOR_ID_PREFIX)) {
+    throw new FailureError(
+      `"${udid}" names a HarmonyOS emulator instance, not a device to drive. Start it with ` +
+        "boot-device and drive the `harmony-<connectKey>` id that returns.",
+      {
+        error_code: FAILURE_CODES.HARMONY_DEVICE_ID_INVALID,
+        failure_stage: "harmony_connect_key",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      }
+    );
+  }
   return udid.startsWith(HARMONY_ID_PREFIX) ? udid.slice(HARMONY_ID_PREFIX.length) : udid;
 }
 

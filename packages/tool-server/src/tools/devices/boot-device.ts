@@ -54,6 +54,7 @@ import { startVvd, stopVvd, isVvdRunning, waitForVvdRunning } from "../../utils/
 import { resolveRunningVvdSerial, listVegaDevices } from "../../utils/vega-devices";
 import {
   EMULATOR_NOT_FOUND,
+  EMULATOR_TIMEOUT_MS,
   emulatorFailure,
   isChinaOnlyRestriction,
   resolveHarmonyEmulator,
@@ -1518,7 +1519,7 @@ const HARMONY_IMAGE_RESTRICTION =
   "the image; an instance has to be created in DevEco Studio on a host that can download one.";
 
 /**
- * Said when the start failed and the manager lists no instances at all. Zero
+ * Said in place of the available-instance list when there is none to give. Zero
  * instances is equally what a host that simply has not created one yet looks
  * like — including inside mainland China, where the download works — so this
  * states what was observed and offers the restriction as a possible cause
@@ -1662,13 +1663,24 @@ async function connectedHarmonyTargets(timeoutMs?: number) {
  * `force` path says so too, and staying quiet here would have the same failure
  * read as "nothing happened" depending only on which call failed.
  */
-async function connectedHarmonyKeys(stoppedInstance: string | null): Promise<Set<string>> {
+async function connectedHarmonyKeys(
+  stoppedInstance: string | null,
+  deadline: number
+): Promise<Set<string>> {
   for (let attempt = 0; ; attempt++) {
+    // The snapshot is spent from the same budget as everything after it. Left
+    // on its own ceilings it runs 18s past the deadline on the `force` path —
+    // a shutdown is given "the whole remaining budget" by design, so arriving
+    // here with none left is the ordinary case, not the odd one — and the wait
+    // it feeds then returns on its first line. A budget too small to trace the
+    // key is refused here rather than overspent: the message below is the one
+    // that says the instance is down and the restart has to be re-run.
+    const budget = Math.max(1, deadline - Date.now());
     try {
-      const targets = await listHarmonyHdcTargetsStrict();
+      const targets = await listHarmonyHdcTargetsStrict(Math.min(HDC_LIST_TIMEOUT_MS, budget));
       return new Set(targets.filter((t) => t.state === "Connected").map((t) => t.connectKey));
     } catch (err) {
-      if (attempt > 0) {
+      if (attempt > 0 || Date.now() >= deadline) {
         throw new FailureError(
           "Could not read `hdc`'s device table while preparing to start the HarmonyOS instance, " +
             "so the target it registers under could not have been told apart from those already " +
@@ -1688,7 +1700,9 @@ async function connectedHarmonyKeys(stoppedInstance: string | null): Promise<Set
           { cause: err instanceof Error ? err : new Error(String(err)) }
         );
       }
-      await new Promise((r) => setTimeout(r, HARMONY_TARGET_POLL_MS));
+      await new Promise((r) =>
+        setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, Math.max(0, deadline - Date.now())))
+      );
     }
   }
 }
@@ -2077,7 +2091,30 @@ async function bootHarmonyImpl(params: {
   // start fails — whether the host has any at all. `null` is a listing that
   // itself failed and answers neither, so it neither blocks a start nor lets
   // one be blamed on a host with no instances.
-  const instances = await listHarmonyInstances().catch(() => null);
+  const instances = await listHarmonyInstances(
+    Math.min(HARMONY_LIST_TIMEOUT_MS, Math.max(1, bootDeadline - Date.now()))
+  ).catch(() => null);
+  // A name the manager does not know can only fail, and the listing that names
+  // the caller's typo is already in hand — the same refusal Android makes off
+  // `emulator -list-avds`. Left to `-start`, the boot instead spends the budget
+  // and answers with the manager's own words, which name nothing that exists.
+  // Only a listing that was read can refuse; a failed one answers neither
+  // question (above), so it still lets the start be attempted.
+  if (instances && !instances.some((i) => i.name === params.instanceName)) {
+    throw new FailureError(
+      `HarmonyOS emulator instance "${params.instanceName}" not found. ` +
+        (instances.length === 0
+          ? HARMONY_NO_INSTANCES
+          : `Available: ${instances.map((i) => i.name).join(", ")}.`),
+      {
+        error_code: FAILURE_CODES.BOOT_HARMONY_INSTANCE_NOT_FOUND,
+        failure_stage: "boot_harmony_instance_lookup",
+        failure_area: "tool_server",
+        error_kind: "not_found",
+      }
+    );
+  }
+
   const alreadyRunning =
     instances?.some((i) => i.name === params.instanceName && i.running) ?? false;
 
@@ -2091,7 +2128,14 @@ async function bootHarmonyImpl(params: {
     };
   }
   if (alreadyRunning) {
-    const stopped = await runHarmonyEmulator(["-stop", params.instanceName]);
+    // Bounded by the budget like every wait after it: `-stop` returns as soon as
+    // it has asked, but its own 30s ceiling is the whole of a minimum budget,
+    // and a manager slow to answer would leave nothing for the shutdown this
+    // call still has to wait out.
+    const stopped = await runHarmonyEmulator(
+      ["-stop", params.instanceName],
+      Math.min(EMULATOR_TIMEOUT_MS, Math.max(1, bootDeadline - Date.now()))
+    );
     const stopDiagnostic = emulatorFailure(stopped);
     if (stopDiagnostic) {
       throw new FailureError(
@@ -2140,7 +2184,7 @@ async function bootHarmonyImpl(params: {
   // `alreadyRunning` can only still be set on the `force` path — the other
   // return above — so it is exactly "this call has stopped the instance".
   const before = hdcAvailable
-    ? await connectedHarmonyKeys(alreadyRunning ? params.instanceName : null)
+    ? await connectedHarmonyKeys(alreadyRunning ? params.instanceName : null, bootDeadline)
     : new Set<string>();
   // The panel this instance is configured with, which the guest reports back as
   // its `render resolution` — the only thing that separates the instance
@@ -2180,14 +2224,11 @@ async function bootHarmonyImpl(params: {
           }
         );
       }
-      const imageMissing =
-        isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image");
-      // Only the manager's own words justify blaming the region; an empty
-      // instance list is merely consistent with it.
-      const cause = imageMissing
-        ? ` ${HARMONY_IMAGE_RESTRICTION}`
-        : instances?.length === 0
-          ? ` ${HARMONY_NO_INSTANCES}`
+      // Only the manager's own words justify blaming the region. A host with no
+      // instances at all is answered before the start, by the lookup above.
+      const cause =
+        isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image")
+          ? ` ${HARMONY_IMAGE_RESTRICTION}`
           : "";
       throw new FailureError(
         cause

@@ -240,6 +240,17 @@ describe("HarmonyOS device ids", () => {
     expect(harmonyInstanceName("Phone_1")).toBe("Phone_1");
     expect(harmonyConnectKey("025DEK236V035771")).toBe("025DEK236V035771");
   });
+
+  it("refuses an instance id rather than driving the key that stripping it invents", () => {
+    // `harmony-emulator-Phone_1` carries the target prefix too, so a slice
+    // yields `emulator-Phone_1` — a key no target holds. The capability gate
+    // stops an instance id at the HTTP edge, but a flow step goes through the
+    // registry, which does not gate it, and `hdc` would answer for a device the
+    // caller never named.
+    expect(() => harmonyConnectKey(harmonyEmulatorId("Phone_1"))).toThrow(
+      /names a HarmonyOS emulator instance/
+    );
+  });
 });
 
 // Both wrappers default to 30s, which is itself above `list-devices`'
@@ -264,5 +275,19 @@ describe("discovery calls are bounded by the constants list-devices was sized ag
       ["list", "targets", "-v"],
       HDC_LIST_TIMEOUT_MS
     );
+  });
+
+  // The caller's ceiling has to reach the process, not just the argument list.
+  // A `timeoutMs` accepted and dropped here leaves `boot-device`'s clamp
+  // computing a bound nothing enforces — and the callers that pass one are
+  // polling to a deadline, so the ceiling they hand over is the whole point.
+  it("hands a caller's own ceiling to `Emulator`, not just the default", async () => {
+    await listHarmonyInstances(1_500);
+    expect(vi.mocked(realRunHarmonyEmulator)).toHaveBeenCalledWith(["-list", "-details"], 1_500);
+  });
+
+  it("hands a caller's own ceiling to `hdc`, not just the default", async () => {
+    await listHarmonyHdcTargets(1_500);
+    expect(vi.mocked(realRunHdc)).toHaveBeenCalledWith(["list", "targets", "-v"], 1_500);
   });
 });

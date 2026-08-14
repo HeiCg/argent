@@ -824,42 +824,61 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await settled;
   });
 
-  it("points at creating an instance when the start failed and none exist", async () => {
+  it("points at creating an instance when the host has none", async () => {
     listHarmonyInstances.mockResolvedValue([]);
     targets([PHONE]);
-    vi.useFakeTimers();
 
-    const pending = boot({ bootTimeoutMs: 900_000 });
-    const settled = expect(pending).rejects.toThrow(/create one in DevEco Studio/);
-    await vi.advanceTimersByTimeAsync(1_000);
-    child.die(`"${INSTANCE}" is not found. Please create the device(folder): /x`, 1);
-    await vi.advanceTimersByTimeAsync(3_000);
-    await settled;
+    const failed = await boot({ bootTimeoutMs: 900_000 }).catch((e: unknown) => e);
 
-    expect(getFailureSignal(await pending.catch((e: unknown) => e))).toMatchObject({
-      error_code: FAILURE_CODES.BOOT_HARMONY_START_FAILED,
-      failure_command: "deveco_emulator",
+    expect((failed as Error).message).toMatch(/create one in DevEco Studio/);
+    expect(getFailureSignal(failed)).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_INSTANCE_NOT_FOUND,
     });
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("does not claim the host has no instances when the listing itself failed", async () => {
+  it("names the instances the host does have, rather than starting one it does not", async () => {
+    // The name is the caller's to spell and the listing is already in hand, so
+    // a typo is answered here — not by spending the budget on a start whose
+    // failure quotes the manager naming nothing that exists.
+    listHarmonyInstances.mockResolvedValue([
+      { name: "Tablet_9", deviceType: "Tablet", osVersion: null, running: false },
+      { name: INSTANCE, deviceType: "Phone", osVersion: null, running: false },
+    ]);
+    targets([PHONE]);
+
+    const failed = await boot({ harmonyInstance: "Phone1", bootTimeoutMs: 900_000 }).catch(
+      (e: unknown) => e
+    );
+
+    expect((failed as Error).message).toMatch(
+      /"Phone1" not found\. Available: Tablet_9, Phone_1\./
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("still starts the instance when the listing itself could not be read", async () => {
     // An unreadable list answers nothing, so it must not be read as "none" —
-    // that would send the caller off creating an instance they already have.
+    // that would refuse a boot of an instance the host has.
     listHarmonyInstances.mockRejectedValue(new Error("Emulator: spawn EACCES"));
     targets([PHONE]);
     vi.useFakeTimers();
 
     const pending = boot({ bootTimeoutMs: 900_000 });
-    // A negative LOOKAHEAD anchored on `is not found…` would not catch the
-    // no-instances sentence prepended BEFORE the anchor, so this asserts the
-    // absence directly.
     const settled = expect(pending).rejects.toThrow(/is not found\. Please create the device/);
     await vi.advanceTimersByTimeAsync(1_000);
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.any(String),
+      ["-start", INSTANCE],
+      expect.any(Object)
+    );
     child.die(`"${INSTANCE}" is not found. Please create the device(folder): /x`, 1);
     await vi.advanceTimersByTimeAsync(3_000);
     await settled;
-    const msg = await pending.catch((e: unknown) => (e as Error).message);
-    expect(msg).not.toContain("create one in DevEco Studio");
+    expect(getFailureSignal(await pending.catch((e: unknown) => e))).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_START_FAILED,
+      failure_command: "deveco_emulator",
+    });
   });
 
   it("leaves a running instance alone and says how to reach it", async () => {
@@ -905,7 +924,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     const result = (await pending) as { udid: string; note?: string };
 
-    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
+    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE], expect.any(Number));
     expect(spawnMock).toHaveBeenCalledWith(
       expect.any(String),
       ["-start", INSTANCE],
@@ -982,7 +1001,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await vi.advanceTimersByTimeAsync(61_000);
     await settled;
 
-    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
+    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE], expect.any(Number));
     expect(spawnMock).not.toHaveBeenCalled();
     expect(getFailureSignal(await pending.catch((e: unknown) => e))).toMatchObject({
       error_code: FAILURE_CODES.BOOT_HARMONY_STOP_TIMEOUT,
@@ -1000,7 +1019,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
       return new Promise((resolve) =>
         setTimeout(
           () => resolve([{ name: INSTANCE, deviceType: "Phone", osVersion: null, running: true }]),
-          4_000
+          3_500
         )
       );
     });
@@ -1019,6 +1038,62 @@ describe("boot-device — HarmonyOS emulator path", () => {
     for (const listing of waitRounds) {
       expect(listing.timeoutMs).toBeGreaterThan(0);
       expect(listing.at + listing.timeoutMs!).toBeLessThanOrEqual(startedAt + 30_000);
+    }
+    // 3.5s per listing and a 2s poll between them leave the last round 1s of
+    // budget, so its sleep is clamped and the loop comes back around exactly on
+    // the deadline — the round that has to give up rather than open a listing
+    // with nothing left to bound it.
+    expect(waitRounds.at(-1)!.at).toBeLessThan(startedAt + 30_000);
+  });
+
+  it("pays for a `force` restart's stop and snapshot out of the budget, not on top of it", async () => {
+    // The shutdown is given the whole remaining budget by design, so reaching
+    // the pre-start snapshot with almost none left is the ordinary `force` case
+    // rather than the odd one. Left on their own ceilings from there, `-stop`
+    // (30s) and the snapshot listing (8s, and again after a retry) answer a
+    // third of a minute past the budget the caller set — and the wait they feed
+    // then returns on its first line, so the overspend buys nothing.
+    const calls: { at: number; timeoutMs?: number }[] = [];
+    runHarmonyEmulator.mockImplementation((args: string[], timeoutMs?: number) => {
+      if (args[0] === "-stop") calls.push({ at: Date.now(), timeoutMs });
+      return Promise.resolve({ stdout: "", stderr: "" });
+    });
+    listHarmonyHdcTargetsStrict.mockImplementation((timeoutMs?: number) => {
+      calls.push({ at: Date.now(), timeoutMs });
+      return new Promise((resolve) => setTimeout(() => resolve([PHONE]), 4_000));
+    });
+    // Four seconds per listing and a 2s poll between them puts the instance's
+    // shutdown at 26s of a 30s budget.
+    let listed = 0;
+    listHarmonyInstances.mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve([
+                {
+                  name: INSTANCE,
+                  deviceType: "Phone",
+                  osVersion: null,
+                  running: listed++ < 4,
+                  display: PANEL,
+                },
+              ]),
+            4_000
+          )
+        )
+    );
+    vi.useFakeTimers();
+
+    const startedAt = Date.now();
+    const pending = boot({ force: true, bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(90_000);
+    await pending;
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.timeoutMs).toBeGreaterThan(0);
+      expect(call.at + call.timeoutMs!).toBeLessThanOrEqual(startedAt + 30_000);
     }
   });
 
@@ -1050,7 +1125,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await vi.advanceTimersByTimeAsync(31_000);
     await settled;
 
-    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
+    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE], expect.any(Number));
     expect(spawnMock).not.toHaveBeenCalled();
     // `hdc`, not the manager: this refusal is the device table being unreadable,
     // and the binary named is what the caller has to go and check.
@@ -1066,9 +1141,11 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // rows reconnected — 95s against a 30s budget, measured. Three arrivals at
     // 20s apiece is that shape: one round already outlasts two budgets.
     const slowPanel = { width: 1, height: 1, screenOn: true };
-    harmonyDisplay.mockImplementation(
-      () => new Promise((resolve) => setTimeout(() => resolve(slowPanel), 20_000))
-    );
+    const probes: number[] = [];
+    harmonyDisplay.mockImplementation(() => {
+      probes.push(Date.now());
+      return new Promise((resolve) => setTimeout(() => resolve(slowPanel), 20_000));
+    });
     const peers = [1, 2, 3].map((i) => ({
       connectKey: `127.0.0.1:555${i}`,
       connection: "TCP",
@@ -1087,6 +1164,12 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // the failure, however few calls it made getting there.
     expect(await elapsed).toBeLessThanOrEqual(30_000);
     expect(((await pending) as { note?: string }).note).toMatch(/registered/);
+    // Abandoning the wait is not enough: the first probe eats the whole budget,
+    // so the two arrivals behind it must never be spawned at all. An `hdc`
+    // client started at the deadline is one nothing will ever read, still
+    // holding the guest for its own 20s ceiling.
+    expect(probes.length).toBeGreaterThan(0);
+    for (const at of probes) expect(at).toBeLessThan(startedAt + 30_000);
   });
 
   // Every one of these lookups is `i.name === params.instanceName` against a
@@ -1279,7 +1362,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     const [plain, forced] = (await pending) as { udid: string; note?: string }[];
 
-    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
+    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE], expect.any(Number));
     expect(plain.udid).toBe(`harmony-emulator-${INSTANCE}`);
     expect(plain.note).toMatch(/already running/);
     expect(forced.udid).toBe(`harmony-${EMULATOR_KEY}`);
@@ -1302,19 +1385,15 @@ describe("boot-device — HarmonyOS emulator path", () => {
   });
 
   it("does not read a connect-key id as an instance name", async () => {
-    vi.useFakeTimers();
-
-    const pending = boot({
+    // A device id passed where a boot target belongs is refused under the
+    // spelling it was given — nothing strips the prefix and starts whatever is
+    // left of it, which would boot an instance the caller never named.
+    const failed = await boot({
       harmonyInstance: `harmony-${PHONE.connectKey}`,
       bootTimeoutMs: 30_000,
-    });
-    await vi.advanceTimersByTimeAsync(31_000);
-    await pending;
+    }).catch((e: unknown) => e);
 
-    expect(spawnMock).toHaveBeenCalledWith(
-      expect.any(String),
-      ["-start", `harmony-${PHONE.connectKey}`],
-      expect.any(Object)
-    );
+    expect((failed as Error).message).toContain(`"harmony-${PHONE.connectKey}" not found`);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 });
