@@ -803,11 +803,9 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
  * serve, where the selector names a testID container and the input inside it is
  * what the tree flags?
  *
- * The node has to sit inside the target's box, be no bigger than it, AND cover
- * the point the tap lands on — the last by {@link frameCoversTap}, which reads
- * the seam between two children the way the OS hit test does, so an even split
- * still names one child rather than both. Containment alone has no
- * discriminator at all: a container that
+ * The node has to sit inside the target's box, be no bigger than it, AND be one
+ * of the elements the tap could have hit ({@link nodesUnderTap}). Containment
+ * alone has no discriminator at all: a container that
  * holds more than one input is the everyday row (an `amount-row` over currency
  * and amount, an OTP row that forces focus to the first empty box wherever you
  * tap, a card number/expiry/cvc row with auto-advance), and a suggestion
@@ -817,9 +815,18 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
  * `#amount` while the keys emptied and rewrote `#currency`, and `#composer`
  * kept its draft while the overlay `#mention` took the replacement.
  *
- * The tap point is the centre of the target's CURRENT frame, recomputed per
- * round rather than carried from the dispatch, so keyboard avoidance scrolling
- * the field mid-step cannot stale it.
+ * "Could have hit" is settled ONCE, against the tree the tap was dispatched
+ * from, and never recomputed from the target's current frame. Recomputing looks
+ * safer — it follows a field that keyboard avoidance scrolls away — but it
+ * silently follows a container that GROWS as well, and a combobox wrapper
+ * rendering its listbox inside itself on focus is exactly that: the recomputed
+ * centre drops out of the input and into the option list, and the clear is
+ * refused with a reason naming an overlay or a sibling row, neither of which
+ * exists. Downshift, HeadlessUI and most React Native autocompletes render the
+ * list inside the wrapper, and the wrapper is where a testID sits. Reproduced
+ * on Chrome 42, and a validation message appearing under the field crosses the
+ * same threshold. Matching by {@link sameElement} instead of by geometry is
+ * what keeps the moved-field case working without it.
  *
  * Structure would be the sharper test, but the flow trees do not carry it:
  * both the Android and the iOS full-hierarchy adapters flatten to leaves under
@@ -851,12 +858,10 @@ function focusedFromInside(
   focused: DescribeNode[],
   underTap: DescribeNode[]
 ): boolean {
-  const tap = getDescribeTapPoint(target.frame);
   return focused.some(
     (n) =>
       frameWithin(n.frame, target.frame) &&
       frameNoLargerThan(n.frame, target.frame) &&
-      frameCoversTap(n.frame, tap.x, tap.y) &&
       underTap.some((before) => sameElement(before, n))
   );
 }
