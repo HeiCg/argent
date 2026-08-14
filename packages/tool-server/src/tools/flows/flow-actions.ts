@@ -903,7 +903,34 @@ function focusedFromInside(
     // the tap. Ambiguity is not evidence, and refusing is the safe direction.
     const named = tap.inside.filter((before) => sameElement(before, n));
     if (named.length !== 1) return false;
-    return tap.underTap.includes(named[0]);
+    if (tap.underTap.includes(named[0])) return true;
+    // The tap point is ONE point — the container's centre — and a container is
+    // not laid out to put its input there. When that point lands on inert
+    // chrome (a `<label for>`, a helper line, the padding) nothing under it
+    // could have taken the keys itself, so the app routing focus to the
+    // container's one control is the honest consequence of the gesture rather
+    // than a competing element winning it. Measured on Chrome 151: the same page
+    // refused or cleared purely on whether the label was taller than the input
+    // — 32px passed, 40px failed — while the tap focused the right field either
+    // way, the same step without `clear` succeeded, and the refusal blamed an
+    // overlay and a sibling row that did not exist. A two-line label, a label
+    // with vertical padding, and a label plus helper text all sit past that
+    // line, so it is a layout coin toss rather than a corner.
+    //
+    // A control under the point is the whole difference from the row this gate
+    // refuses: there the tap DID reach something that takes focus, and focus
+    // sitting on a different sibling is exactly the mis-target. The target
+    // itself never counts — the everyday React Native shape is a `Pressable`
+    // wrapping a `TextInput`, so the container is clickable by construction.
+    //
+    // "Nothing under the point is a control" is only a statement about the
+    // SCREEN where the source reports controls at all: the iOS full-hierarchy
+    // adapter never sets `clickable` (`flow-ios-tree`), so there it would be a
+    // statement about the adapter and would wave every sibling through. One
+    // control anywhere inside the box is the evidence that the flag is being
+    // emitted; without it this stays the refusal it is today.
+    if (!tap.inside.some((before) => before.clickable)) return false;
+    return tap.underTap.every((before) => before === tap.tapped || !before.clickable);
   });
 }
 
@@ -1044,29 +1071,31 @@ function trackTarget(
  * to the tap is told apart from one the tap landed on.
  */
 interface TapCandidates {
+  /** The node the tap was dispatched at, as it stood in that same tree. */
+  tapped: DescribeNode;
   /**
-   * Everything that sat inside `tappedFrame` before the tap. The scope the
-   * focused node's NAME has to be unambiguous in: two of these answering to one
-   * name is exactly the row `focusedFromInside` refuses.
+   * Everything that sat inside the tapped node's box before the tap. The scope
+   * the focused node's NAME has to be unambiguous in: two of these answering to
+   * one name is exactly the row `focusedFromInside` refuses.
    */
   inside: DescribeNode[];
   /** Those of {@link inside} the tap point itself landed on. A subset, by identity. */
   underTap: DescribeNode[];
 }
 
-function tapCandidates(preTap: DescribeNode, tappedFrame: DescribeFrame): TapCandidates {
-  const tap = getDescribeTapPoint(tappedFrame);
+function tapCandidates(preTap: DescribeNode, tapped: DescribeNode): TapCandidates {
+  const tap = getDescribeTapPoint(tapped.frame);
   const inside: DescribeNode[] = [];
   const underTap: DescribeNode[] = [];
   const walk = (node: DescribeNode): void => {
-    if (frameWithin(node.frame, tappedFrame) && isVisible(node)) {
+    if (frameWithin(node.frame, tapped.frame) && isVisible(node)) {
       inside.push(node);
       if (frameCoversTap(node.frame, tap.x, tap.y)) underTap.push(node);
     }
     for (const child of node.children) walk(child);
   };
   walk(preTap);
-  return { inside, underTap };
+  return { tapped, inside, underTap };
 }
 
 /**
@@ -1174,7 +1203,7 @@ async function waitForFocus(
 ): Promise<FocusOutcome> {
   const deadline = Date.now() + TYPE_FOCUS_TIMEOUT_MS;
   const tappedFrame = tapped.frame;
-  const candidates = tapCandidates(preTapTree, tappedFrame);
+  const candidates = tapCandidates(preTapTree, tapped);
   // Did the MOST RECENT successful read see focus on anything? Deliberately the
   // latest look and not "any look, ever": the question the caller is about to
   // act on is whether something else holds focus NOW, and a sticky flag answers
