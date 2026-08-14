@@ -509,19 +509,27 @@ describe("DESCRIBE_DOM_SCRIPT — a <textarea>'s own text is not its value", () 
     expect(findById(tree, "t3")!.value).toBeUndefined();
   });
 
-  it("reports a MULTI-LINE value once, not once raw and once normalized", () => {
-    // Two spellings of one value cannot both be quoted by a failing assert, so
-    // there is only ever one: the accessible name. Emitting a normalized copy
-    // as node text alongside it reported the contents TWICE for any value
-    // holding a newline or a run of spaces, and `nodeText` joined them, so an
-    // `equals` assert on the field's real contents matched neither spelling —
-    // and that assert is what the skill prescribes as the proof a clear landed.
-    // The single-line case above cannot see this.
+  it("reports a MULTI-LINE value once, and spelled as the field holds it", () => {
+    // A <textarea> is the one field that can hold a newline or a run of spaces,
+    // and its contents reach the tree as exactly one string — so that string is
+    // the one the field HOLDS, raw, like an <input>'s. Normalizing it here made
+    // the same typed text assertable back in an <input> and not in a
+    // <textarea>, and emitting a normalized copy as node text alongside the raw
+    // name reported the contents twice. The single-line case above sees
+    // neither.
     const { tree } = run([
       textareaEl({ value: "line one\nline two", attrs: { id: "t4" }, rect: BOX }),
     ]);
-    expect(findById(tree, "t4")!.label).toBe("line one line two");
+    expect(findById(tree, "t4")!.label).toBe("line one\nline two");
     expect(findById(tree, "t4")!.value).toBeUndefined();
+  });
+
+  it("keeps the spaces an equals-assert was written against", () => {
+    // `.trim()` on the value alone silently made `equals: "  hello  "` — which
+    // matched at the base — stop matching, while the same value in an <input>
+    // still did.
+    const { tree } = run([textareaEl({ value: "  hello  ", attrs: { id: "t6" }, rect: BOX })]);
+    expect(findById(tree, "t6")!.label).toBe("  hello  ");
   });
 
   it("caps a long value at 200 characters without duplicating it", () => {

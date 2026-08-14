@@ -144,17 +144,14 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
       // Never fall through to a password input's value: with no aria label or
       // placeholder (a floating/uncontrolled-label pattern) the typed secret
       // would become the node's label and reach every describe consumer.
-      if (el.value && !isPassword(el)) {
-        // A <textarea>'s value is the one that can hold a newline or a run of
-        // spaces, and it is whitespace-normalized here for the same reason
-        // every other node's text is: an assert quotes what describe printed,
-        // and the two spellings of the same contents cannot both be quoted.
-        // Emitting the raw value here and the normalized one as the node's text
-        // reported the contents TWICE, so an equals-assert on what the field
-        // really holds matched neither spelling.
-        const v = el instanceof HTMLTextAreaElement ? el.value.replace(/\\s+/g, " ").trim() : el.value;
-        if (v) return v.slice(0, 200);
-      }
+      // Raw, for a <textarea> as much as an <input>: this is the one string
+      // the field's contents reach the tree as, so it has to be the string the
+      // field HOLDS. Whitespace-normalizing only the textarea made the same
+      // typed text assertable back in one element type and not the other — a
+      // two-line value came back spelled as one line — and an equals-assert on
+      // a value with leading or trailing spaces stopped matching what was typed
+      // into it.
+      if (el.value && !isPassword(el)) return el.value.slice(0, 200);
     }
     if (el instanceof HTMLImageElement && el.alt) return el.alt.slice(0, 200);
     // getAttribute, not el.title: a <form> with a control named "title" clobbers the
