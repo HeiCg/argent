@@ -135,7 +135,8 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
     device: DeviceInfo,
     services: Record<string, unknown>,
     isTvOs: boolean,
-    androidIsTv: boolean
+    androidIsTv: boolean,
+    budgetMs: number
   ): Promise<DescribeTreeData> {
     if (device.platform === "ios") {
       return describeIos(registry, device, {}, { isTvOs });
@@ -144,7 +145,7 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
       return describeAndroid(registry, device.id, undefined, androidIsTv);
     }
     if (device.platform === "harmony") {
-      return describeHarmony(harmonyConnectKey(device.id));
+      return describeHarmony(harmonyConnectKey(device.id), budgetMs);
     }
     return describeChromium(services.chromium as ChromiumCdpApi);
   }
@@ -200,7 +201,7 @@ Use after a launch/navigation to wait for the UI to render before screenshotting
       let stableSince = 0;
 
       const poll = await pollDescribeTree<true>({
-        fetchTree: () => fetchTree(device, services, isTvOs, androidIsTv),
+        fetchTree: (budgetMs) => fetchTree(device, services, isTvOs, androidIsTv, budgetMs),
         timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         pollIntervalMs: params.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
         signal: ctx?.signal,

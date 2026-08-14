@@ -133,8 +133,12 @@ describe("await-ui-element on HarmonyOS", () => {
       }
     );
 
-    expect(harmonyDisplay).toHaveBeenCalledWith(CONNECT_KEY);
-    expect(harmonyDumpLayout).toHaveBeenCalledWith(CONNECT_KEY, expect.any(String));
+    expect(harmonyDisplay).toHaveBeenCalledWith(CONNECT_KEY, expect.any(Number));
+    expect(harmonyDumpLayout).toHaveBeenCalledWith(
+      CONNECT_KEY,
+      expect.any(String),
+      expect.any(Number)
+    );
   });
 
   it("`hidden` succeeds once the element leaves a still-populated screen", async () => {
@@ -156,6 +160,30 @@ describe("await-ui-element on HarmonyOS", () => {
 
     expect(result.success).toBe(true);
     expect(result.note ?? "").not.toMatch(/never matched/i);
+  });
+
+  it("`hidden` met on sight against a suspended panel still says the display is off", async () => {
+    // The two notes are not alternatives: a screen that went dark holds a frame
+    // the selector never matched, so this wait meets its condition at once AND
+    // is the one most likely to be followed by a tap into a dead panel.
+    vi.mocked(harmonyDisplay).mockResolvedValue({ ...DISPLAY, screenOn: false });
+    sequenceDumps([dumpWith("Content")]);
+    const tool = createAwaitUiElementTool(harmonyRegistry());
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: HARMONY_ID,
+        condition: "hidden",
+        selector: { text: "Spinner" },
+        timeoutMs: 2000,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.note).toMatch(/never matched/i);
+    expect(result.note).toMatch(/display is off/i);
   });
 
   // ── Unreadable screen must never confirm `hidden` ─────────────────────────
@@ -281,6 +309,32 @@ describe("await-screen-idle on HarmonyOS", () => {
     expect(result.note).toMatch(/no windows/i);
   });
 
+  it("gives the read only what is left of the wait, so an abandoned dump frees the queue", async () => {
+    // The wait abandons a read it cannot finish but cannot cancel one, and a
+    // `uitest` client holds this device's queue until it is killed. Left on its
+    // own 20s ceiling, a read abandoned at a 300ms deadline is time the caller's
+    // NEXT call spends queued — measured at 0.8s of it on a warm emulator, on
+    // the auto-screenshot that follows every interaction.
+    const budgets: (number | undefined)[] = [];
+    vi.mocked(harmonyDumpLayout).mockImplementation(async (_key, _path, timeoutMs) => {
+      budgets.push(timeoutMs);
+      return dumpWith("Content");
+    });
+    const tool = createAwaitScreenIdleTool(harmonyRegistry());
+
+    await tool.execute(
+      {},
+      { udid: HARMONY_ID, timeoutMs: 500, pollIntervalMs: 10, minStableMs: 10 }
+    );
+
+    expect(budgets.length).toBeGreaterThan(0);
+    for (const budget of budgets) {
+      expect(budget).toBeGreaterThan(0);
+      expect(budget).toBeLessThanOrEqual(500);
+    }
+    expect(harmonyDisplay).toHaveBeenCalledWith(CONNECT_KEY, expect.any(Number));
+  });
+
   it("does not settle while the dump keeps changing (times out)", async () => {
     sequenceDumps(Array.from({ length: 30 }, (_, i) => dumpWith(`item-${i}`)));
     const tool = createAwaitScreenIdleTool(harmonyRegistry());
@@ -302,7 +356,11 @@ describe("await-screen-idle on HarmonyOS", () => {
       { udid: HARMONY_ID, timeoutMs: 2000, pollIntervalMs: 10, minStableMs: 0 }
     );
 
-    expect(harmonyDisplay).toHaveBeenCalledWith(CONNECT_KEY);
-    expect(harmonyDumpLayout).toHaveBeenCalledWith(CONNECT_KEY, expect.any(String));
+    expect(harmonyDisplay).toHaveBeenCalledWith(CONNECT_KEY, expect.any(Number));
+    expect(harmonyDumpLayout).toHaveBeenCalledWith(
+      CONNECT_KEY,
+      expect.any(String),
+      expect.any(Number)
+    );
   });
 });

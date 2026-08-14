@@ -127,11 +127,14 @@ interface HarmonyDisplay {
  * fold. The call is a local service dump measured at 50-190ms, cheap enough to
  * pay per gesture rather than risk that.
  */
-export async function harmonyDisplay(connectKey: string): Promise<HarmonyDisplay> {
+export async function harmonyDisplay(
+  connectKey: string,
+  timeoutMs = UITEST_TIMEOUT_MS
+): Promise<HarmonyDisplay> {
   const { stdout } = await runHdcShell(
     connectKey,
     "hidumper -s RenderService -a screen",
-    UITEST_TIMEOUT_MS
+    timeoutMs
   );
   const res = /render resolution=(\d+)x(\d+)/.exec(stdout);
   if (!res) {
@@ -194,7 +197,7 @@ export function assertHarmonyScreenAwake(display: HarmonyDisplay, action: string
   );
 }
 
-type HarmonyTouchCommand = "click" | "doubleClick" | "longClick";
+type HarmonyTouchCommand = "click" | "doubleClick";
 
 export async function harmonyTouch(
   connectKey: string,
@@ -204,7 +207,7 @@ export async function harmonyTouch(
   await runUitest(connectKey, `uiInput ${command} ${point.x} ${point.y}`);
 }
 
-type HarmonySwipeCommand = "swipe" | "drag" | "fling";
+type HarmonySwipeCommand = "swipe" | "fling";
 
 /**
  * `uitest` rejects a velocity outside this range with `Invalid parameters.`, so
@@ -261,22 +264,45 @@ async function viaDeviceTmp(
   connectKey: string,
   suffix: string,
   localPath: string,
-  producer: (remotePath: string) => Promise<void>
+  producer: (remotePath: string) => Promise<void>,
+  deadline?: number
 ): Promise<void> {
   const remotePath = `${REMOTE_TMP}/argent-${process.pid}-${process.hrtime.bigint()}${suffix}`;
   try {
     await producer(remotePath);
-    await hdcFileRecv(connectKey, remotePath, localPath);
+    // The fetch is bounded together with the producer rather than left on the
+    // 30s default: a caller working to a deadline spends it across BOTH round
+    // trips, and one that has already run out asks for a transfer that fails at
+    // once instead of one that runs 30s past it. The delete keeps the default —
+    // it runs outside the queue, and a spent budget is no reason to leave a
+    // capture behind on the device.
+    await hdcFileRecv(
+      connectKey,
+      remotePath,
+      localPath,
+      deadline === undefined ? undefined : Math.max(1, deadline - Date.now())
+    );
   } finally {
     await runHdcShell(connectKey, `rm -f ${shellQuote(remotePath)}`).catch(() => {});
   }
 }
 
 /** Capture the display to `localPath` as a PNG. */
-export async function harmonyScreenCap(connectKey: string, localPath: string): Promise<void> {
-  await viaDeviceTmp(connectKey, ".png", localPath, async (remotePath) => {
-    await runUitest(connectKey, `screenCap -p ${shellQuote(remotePath)}`);
-  });
+export async function harmonyScreenCap(
+  connectKey: string,
+  localPath: string,
+  timeoutMs = UITEST_TIMEOUT_MS
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  await viaDeviceTmp(
+    connectKey,
+    ".png",
+    localPath,
+    async (remotePath) => {
+      await runUitest(connectKey, `screenCap -p ${shellQuote(remotePath)}`, timeoutMs);
+    },
+    deadline
+  );
 }
 
 /** A node of the tree `uitest dumpLayout` writes. */
@@ -298,9 +324,16 @@ export async function harmonyDumpLayout(
   localPath: string,
   timeoutMs = UITEST_TIMEOUT_MS
 ): Promise<HarmonyLayoutNode> {
-  await viaDeviceTmp(connectKey, ".json", localPath, async (remotePath) => {
-    await runUitest(connectKey, `dumpLayout -p ${shellQuote(remotePath)}`, timeoutMs);
-  });
+  const deadline = Date.now() + timeoutMs;
+  await viaDeviceTmp(
+    connectKey,
+    ".json",
+    localPath,
+    async (remotePath) => {
+      await runUitest(connectKey, `dumpLayout -p ${shellQuote(remotePath)}`, timeoutMs);
+    },
+    deadline
+  );
   const raw = await readFile(localPath, "utf8");
   try {
     return JSON.parse(raw) as HarmonyLayoutNode;

@@ -31,12 +31,26 @@ const EMPTY_HINT =
  * The dump is written on the device and copied back, so it needs somewhere to
  * land on the host; the file is temporary and removed once parsed, since
  * describe's contract is the rendered text and nothing downstream reads it.
+ *
+ * `timeoutMs` is the whole read's budget, split across the panel query and the
+ * dump rather than given to each. A caller polling to a deadline needs it: the
+ * `uitest` client this spawns holds the device's queue until it is killed, so a
+ * read left on its own 20s ceiling and abandoned at a 300ms deadline is 20s the
+ * caller's NEXT call spends queued — measured at 0.8s of it on a warm emulator,
+ * on every auto-screenshot that follows an interaction. Killing the client
+ * frees the queue at once: the on-device `uitest` goes with it (measured — a
+ * dump run 0.3s after one was killed mid-flight costs the same as a cold one).
  */
-export async function describeHarmony(connectKey: string): Promise<DescribeTreeData> {
+export async function describeHarmony(
+  connectKey: string,
+  timeoutMs?: number
+): Promise<DescribeTreeData> {
   const localPath = join(tmpdir(), `argent-harmony-dump-${process.hrtime.bigint()}.json`);
-  const display = await harmonyDisplay(connectKey);
+  const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+  const left = () => (deadline === undefined ? undefined : Math.max(1, deadline - Date.now()));
+  const display = await harmonyDisplay(connectKey, left());
   try {
-    const raw = await harmonyDumpLayout(connectKey, localPath);
+    const raw = await harmonyDumpLayout(connectKey, localPath, left());
     const { tree, screen } = parseHarmonyLayout(raw, {
       width: display.width,
       height: display.height,

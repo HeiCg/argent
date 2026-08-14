@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   hdcFileRecv as realHdcFileRecv,
   runHdcShell as realRunHdcShell,
 } from "../src/utils/harmony-hdc";
-import { harmonyScreenCap } from "../src/utils/harmony-uitest";
+import { harmonyDumpLayout, harmonyScreenCap } from "../src/utils/harmony-uitest";
 
 // Only the transport is faked, so the queue under test is the real one and the
 // commands it serializes are the ones a device would receive.
@@ -173,5 +176,36 @@ describe("the per-device uitest queue", () => {
     expect(events).toEqual(["start:dev-a"]);
     await releaseOne();
     await expect(next).resolves.toBeUndefined();
+  });
+});
+
+describe("a caller's own ceiling reaches the device", () => {
+  // A `timeoutMs` accepted here and dropped leaves every clamp upstream —
+  // boot-device's probe, the wait tools' polls — computing a bound nothing
+  // enforces, which is the state this whole parameter exists to leave behind.
+  // Both round trips count: the fetch is the half that hangs when a device
+  // starts to go away, and it defaults to 30s, above every caller's budget.
+  it("bounds the `uitest` call and the fetch that follows it", async () => {
+    const shellTimeouts: (number | undefined)[] = [];
+    runHdcShell.mockImplementation(async (_key, command, timeoutMs) => {
+      if (command.startsWith("uitest ")) shellTimeouts.push(timeoutMs);
+      return { stdout: "", exitCode: 0 };
+    });
+    const fetchTimeouts: (number | undefined)[] = [];
+    hdcFileRecv.mockImplementation(async (_key, _remote, localPath, timeoutMs) => {
+      fetchTimeouts.push(timeoutMs);
+      writeFileSync(localPath, "{}");
+    });
+
+    await harmonyDumpLayout(
+      "dev-a",
+      join(tmpdir(), `argent-uitest-budget-${process.pid}.json`),
+      900
+    );
+
+    expect(shellTimeouts).toEqual([900]);
+    expect(fetchTimeouts).toHaveLength(1);
+    expect(fetchTimeouts[0]).toBeGreaterThan(0);
+    expect(fetchTimeouts[0]).toBeLessThanOrEqual(900);
   });
 });

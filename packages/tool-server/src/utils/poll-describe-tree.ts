@@ -22,8 +22,15 @@ import { settleWithin, sleepOrAbort } from "./timing";
 export type PollVerdict<R> = { done: true; result: R } | { done: false };
 
 export interface PollDescribeTreeArgs<R> {
-  /** Read the current tree. Called once per poll; must be read-only. */
-  fetchTree: () => Promise<DescribeTreeData>;
+  /**
+   * Read the current tree. Called once per poll; must be read-only.
+   *
+   * `budgetMs` is what is left before the wait's deadline. This loop abandons a
+   * read that overruns it but cannot cancel one, so a backend whose read holds
+   * a device-side resource has to bound itself with this to keep the abandoned
+   * read from charging the caller's next call for it.
+   */
+  fetchTree: (budgetMs: number) => Promise<DescribeTreeData>;
   timeoutMs: number;
   pollIntervalMs: number;
   signal?: AbortSignal;
@@ -95,7 +102,7 @@ export async function pollDescribeTree<R>(
 
     // Bound each fetch to the time left before the deadline.
     const remaining = Math.max(0, deadline - Date.now());
-    const settled = await settleWithin(fetchTree(), remaining, signal);
+    const settled = await settleWithin(fetchTree(remaining), remaining, signal);
     polls += 1;
 
     if (settled.type === "aborted") return outcome(undefined, true);

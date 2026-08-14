@@ -89,7 +89,7 @@ const zodSchema = z
       .string()
       .optional()
       .describe(
-        "Optional iOS app bundle id, passed to the describe fallback (see `describe`). Ignored on Android / Chromium."
+        "Optional iOS app bundle id, passed to the describe fallback (see `describe`). Ignored on every other platform."
       ),
     timeoutMs: z
       .number()
@@ -230,7 +230,8 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
     params: Params,
     services: Record<string, unknown>,
     isTvOs: boolean,
-    androidIsTv: boolean
+    androidIsTv: boolean,
+    budgetMs: number
   ): Promise<DescribeTreeData> {
     if (device.platform === "ios") {
       return describeIos(registry, device, { bundleId: params.bundleId }, { isTvOs });
@@ -242,7 +243,7 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
       return describeVega(device.id);
     }
     if (device.platform === "harmony") {
-      return describeHarmony(harmonyConnectKey(device.id));
+      return describeHarmony(harmonyConnectKey(device.id), budgetMs);
     }
     return describeChromium(services.chromium as ChromiumCdpApi);
   }
@@ -328,7 +329,7 @@ or before tapping an element that appears asynchronously.`,
       let everMatched = false;
 
       const poll = await pollDescribeTree<WaitResult>({
-        fetchTree: () => fetchTree(device, params, services, isTvOs, androidIsTv),
+        fetchTree: (budgetMs) => fetchTree(device, params, services, isTvOs, androidIsTv, budgetMs),
         timeoutMs,
         pollIntervalMs,
         signal,
@@ -340,17 +341,21 @@ or before tapping an element that appears asynchronously.`,
           const blind = isBlindRead(data, everMatched);
           if (!blind && evaluateMatches(params, matches)) {
             const result: WaitResult = { success: true, elapsed: Date.now() - start };
-            if (params.condition === "hidden" && !everMatched) {
-              result.note =
-                "condition met immediately — the selector never matched any element, " +
-                "so it may have already been hidden before the wait, or the selector is wrong";
-            } else if (data.hint && READ_CAVEAT_SOURCES.has(data.source)) {
+            // Both, not the first that applies: a `hidden` that met its
+            // condition on sight is exactly the wait a suspended panel resolves
+            // — the selector matches nothing in a frame composited before the
+            // screen went dark — and the caveat is what stops the tap that
+            // follows from landing nowhere.
+            const notes = [
+              params.condition === "hidden" && !everMatched
+                ? "condition met immediately — the selector never matched any element, " +
+                  "so it may have already been hidden before the wait, or the selector is wrong"
+                : null,
               // A success read off a tree that may not be the live screen still
-              // owes the agent that caveat: on HarmonyOS a `visible` resolved
-              // against the last-composited frame is followed by a tap that
-              // lands nowhere unless the screen is woken first.
-              result.note = data.hint;
-            }
+              // owes the agent that caveat.
+              data.hint && READ_CAVEAT_SOURCES.has(data.source) ? data.hint : null,
+            ].filter((n): n is string => n !== null);
+            if (notes.length > 0) result.note = notes.join(" ");
             return { done: true, result };
           }
           return { done: false };
