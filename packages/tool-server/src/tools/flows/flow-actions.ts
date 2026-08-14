@@ -219,14 +219,23 @@ export function invokeOnDevice(
  * frame, lifts the fingers and throws a named `AbortError`. Without this wrapper
  * `runRotate` would report that deliberate unwind as a failed step.
  *
- * `keyboard` and `gesture-tap` honour nothing — the `ToolContext` reaches their
- * platform handlers and every one of them discards it — so their dispatches
- * reject only for an unrelated reason that happens to land inside a cancelled
- * window: a `typeTv` refusal on a TV target, an `adb shell input` timeout, a
- * simulator-server socket error. Rare, but the classification still has to be
- * the skip, because the alternative is a report blaming the tool for a run the
- * caller cancelled — and in `runType`'s case a report whose verdict depended on
- * which of its three dispatches happened to be in flight.
+ * `keyboard` honours it too, on all three platforms `clear` supports:
+ * `keyboard/platforms/ios.ts` forwards `options?.signal` into
+ * `simulator-server-keys`, which calls `signal?.throwIfAborted()` between
+ * keypresses, and the android and chromium handlers do the same. An
+ * abort-driven rejection is the DESIGNED outcome there, not a coincidence,
+ * which is what makes this wrapper load-bearing rather than defensive: a
+ * cancelled run interrupts a keyboard call far more often than it interrupts
+ * anything else in a step.
+ *
+ * `gesture-tap` is the one that honours nothing — the `ToolContext` reaches its
+ * platform handlers and every one of them discards it — so its dispatch rejects
+ * only for an unrelated reason that happens to land inside a cancelled window:
+ * an `adb shell input` timeout, a simulator-server socket error. Rarer, but the
+ * classification still has to be the skip, because the alternative is a report
+ * blaming the tool for a run the caller cancelled — and in `runType`'s case a
+ * report whose verdict depended on which of its three dispatches happened to be
+ * in flight.
  *
  * (Cancelling a run does NOT tear down the transport under an in-flight call.
  * Flow-run's Chromium teardown is run-level, in the `finally` after `execSteps`
@@ -265,9 +274,14 @@ const TYPE_FOCUS_SETTLE_MS = 500;
 const TYPE_FOCUS_TIMEOUT_MS = 3000;
 
 // Tree sources that surface `focused` (see flow-ios-tree / flow-android-tree /
-// the chromium DOM walker). A source outside this set (e.g. Vega's toolkit
-// page source) never reports it, so polling would burn the whole timeout on
-// every type step — skip the focus wait there instead.
+// the chromium DOM walker). A source outside this set is one whose focus
+// reporting the `type` directive has no use for, so polling would burn the
+// whole timeout on every type step — skip the focus wait there instead.
+//
+// Not the same as "cannot report focus". Vega's toolkit page source DOES set it
+// (`describe/platforms/vega/source-parser.ts`, preserved through
+// `flow-vega-tree`); it is outside the set because `runDirective` refuses
+// `type` on Vega before any of this runs, so the flag has no reader.
 const FOCUS_REPORTING_SOURCES: ReadonlySet<DescribeSource> = new Set([
   "native-devtools",
   "android-devtools",
@@ -1083,10 +1097,17 @@ type FocusOutcome =
  * settled the question of whether SOMETHING holds the target: a plain `type`
  * ends its wait the moment any focus-flagged node overlaps, and pays one poll
  * instead of the whole {@link TYPE_FOCUS_TIMEOUT_MS} for an answer it discards.
- * The shape that needs it is ordinary — uiautomator flags the enclosing
- * `android.webkit.WebView` rather than the `EditText` inside it, so a
- * WebView-hosted form of n fields would otherwise pay n × 3s on the path with
- * no `clear` at all.
+ * A form of n fields typed into without a `clear` would otherwise pay n × 3s
+ * for verdicts nobody reads, whenever the tree flags something that covers the
+ * field rather than the field itself.
+ *
+ * Current Android is NOT that tree, so the saving is smaller than it looks
+ * there: surveyed across eight screens on API 36 / WebView 151, including a
+ * genuine in-app `android.webkit.WebView`, the WebView is `focused="false"`
+ * every time and the inner `EditText` carries the flag — every screen had
+ * exactly one focused node and no focused ancestor. Older WebView builds were
+ * not testable here, and the exit costs nothing on a tree that confirms, so it
+ * stays.
  */
 async function waitForFocus(
   env: ActionEnv,
@@ -1920,12 +1941,15 @@ async function runType(
     //
     // On an Android TV target this call is where a step with NO `clear` fails:
     // the text lands and the submit errors, because `typeTv` rejects `key`
-    // unconditionally. A `clear: true` step never gets this far — `typeTv`
-    // checks `params.clear` before `params.key` and before it types anything, so
-    // the FIRST dispatch above is the one that fails and nothing is typed.
-    // (Android TV is the TV kind that reaches here at all: `runDirective` gates
-    // `type` on Vega alone, and an Apple TV stops at the focus tap above, whose
-    // `gesture-tap` resolves simulator-server and rejects a tvOS UDID.)
+    // unconditionally. A `clear: true` step never reaches any dispatch at all —
+    // a tap cannot move D-pad focus, `android-devtools` is in
+    // FOCUS_REPORTING_SOURCES so the wait really looks, and it reports
+    // "unconfirmed", which the refusal above turns into a failed step. The
+    // `typeTv` clear rejection is therefore unreachable from a flow `type` step;
+    // it is what a direct `keyboard` call hits. (Android TV is the TV kind that
+    // reaches here at all: `runDirective` gates `type` on Vega alone, and an
+    // Apple TV stops at the focus tap above, whose `gesture-tap` resolves
+    // simulator-server and rejects a tvOS UDID.)
     if (!(await dispatchOrAbort(env, "keyboard", { key: "enter" }))) {
       return ABORTED_OUTCOME;
     }

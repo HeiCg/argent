@@ -1618,7 +1618,7 @@ function stepTarget(step: FlowStep): string | undefined {
     case "type":
       // Name the clear: "into X" alone reads as a plain append, so a run report
       // of a replace-a-field step would look identical to the bug it fixes.
-      // Present tense, like every sibling's option echo ("(down)", "(scale 3)"):
+      // Present tense, like every sibling's option echo ("(scale 3)", "(by 90°)"):
       // this column says what the step ASKED for, not what happened — `base` is
       // stamped before the directive runs and rides every outcome, so a past
       // tense would claim a clear on a step that failed, errored, was skipped,
