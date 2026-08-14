@@ -277,6 +277,19 @@ describe("terminateHarmonyApp", () => {
     const err = await terminateHarmonyApp("dev", "c").catch((e: unknown) => e);
     expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
   });
+
+  it("cannot be talked into not_found by a bundle id carrying the digits", async () => {
+    // The bundle id is caller input and `aa` can echo it, so the marker carries
+    // the `Error Code:` prefix — matching on the bare number would let this
+    // internal failure forge a not-installed verdict.
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        "error: failed to force stop process for com.example.a10104002.\nError Code:16000050  Error Message:Internal error."
+      )
+    );
+    const err = await terminateHarmonyApp("dev", "com.example.a10104002").catch((e: unknown) => e);
+    expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
+  });
 });
 
 describe("restart-app on harmony", () => {

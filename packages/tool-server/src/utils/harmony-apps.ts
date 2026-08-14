@@ -138,8 +138,12 @@ export async function resolveHarmonyEntry(
  * Both are the caller naming an app that is not installed, so both report
  * `not_found` — telling an agent to fix the bundle id rather than to retry a
  * subprocess that will fail identically forever.
+ *
+ * Carries `aa`'s own `Error Code:` prefix rather than the bare digits, for the
+ * reason `emulatorFailure` matches verified markers: the bundle id is caller
+ * input, and a bare number could be forged by one that contains it.
  */
-const AA_NO_SUCH_PACKAGE_CODE = "10104002";
+const AA_NO_SUCH_PACKAGE = "Error Code:10104002";
 
 /**
  * Stop every process of an app.
@@ -161,7 +165,7 @@ export async function terminateHarmonyApp(connectKey: string, bundleId: string):
         error_code: FAILURE_CODES.HARMONY_ABILITY_START_FAILED,
         failure_stage: "harmony_force_stop",
         failure_area: "tool_server",
-        error_kind: stdout.includes(AA_NO_SUCH_PACKAGE_CODE) ? "not_found" : "subprocess",
+        error_kind: stdout.includes(AA_NO_SUCH_PACKAGE) ? "not_found" : "subprocess",
       }
     );
   }
