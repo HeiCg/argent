@@ -7,8 +7,9 @@ import { gestureScrollTool } from "../src/tools/gesture-scroll";
 // The hidden-window guard: a minimized / fully occluded Chromium window
 // throttles compositor hit-testing, so every MOUSE dispatch stalls ~5s
 // (measured live on an Electron testbed). tap, drag and scroll refuse up
-// front with an actionable error; keyboard/button skip the guard because key
-// events bypass hit-testing and stay fast on hidden windows. In practice the
+// front with an actionable error; keyboard skips the guard because key events
+// bypass hit-testing and stay fast on hidden windows, and button never reaches
+// it — its capability omits chromium. In practice the
 // guard is a backstop: primePageSession's focus emulation pins reported
 // visibility to "visible" while a session is attached, so the probe reads
 // "hidden" only on sessions where emulation could not be applied — exactly

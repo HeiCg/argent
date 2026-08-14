@@ -29,7 +29,7 @@ import type { ChromiumCdpApi } from "../blueprints/chromium-cdp";
  * Any throw from the probe means "proves nothing about visibility", and there
  * are two distinct shapes: a CDP rejection (mid-navigation teardown), and a
  * TypeError from a `chromium` carrying no usable `cdp` — the shape the bare
- * tool fakes in the sibling gesture tests pass.
+ * fakes in the sibling gesture tests pass into the guard.
  *
  * `failureStage` is derived rather than passed in: all three call sites want
  * `chromium_<action>_window_hidden`, and hand-writing it invites a silent drift
