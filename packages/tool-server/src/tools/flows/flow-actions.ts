@@ -935,21 +935,35 @@ function sameElement(a: DescribeNode, b: DescribeNode): boolean {
  * with an id on the editable, or with the `<p>` replaced by a bare text node,
  * cleared fine.
  *
- * Equality, not containment, is what keeps this away from the shapes "encloses"
- * exists to refuse. A focused `android.webkit.WebView` wrapping a form, and a
- * focus trap holding a `<textarea>` over the field, both show text of their own
- * beyond the target's — the WebView the whole form's, the textarea its own
- * value — so neither reads as "this element's content IS the thing named".
- * Requiring EVERY focus flag to sit on such an element keeps a second, unrelated
- * focused node from being cleared past.
+ * Equality is not on its own enough to keep this away from the shapes
+ * "encloses" exists to refuse: a focus trap holding a `<textarea>` over the
+ * field confirms the moment its draft happens to equal the field's value, and
+ * that costs the draft. Reproduced on Chrome 151 — a `focusin` trap over an
+ * `<input>` holding `old.remembered.login`, with the textarea holding the same
+ * string, passed the step, emptied the TEXTAREA and rewrote it with the new
+ * address while the named input kept its old one. The same page with any other
+ * draft in the textarea refused. Worse, the coincidence is structural rather
+ * than lucky: an anonymous target does not shield (`flow-tree-flatten`), so its
+ * text hoists into every enclosing node's `subtreeText`.
+ *
+ * So the focused node must have NO text of its own ({@link nodeText} — its
+ * label and value). That is what "this element's content IS the thing named"
+ * means for an editing host: the editable carries no id, no accessible name and
+ * no own text, and the only text on it is the target's, hoisted. A trapped
+ * `<textarea>` fails it (an unlabelled one's value IS its accessible name), and
+ * so does a focused `android.webkit.WebView` carrying the whole form's text.
  *
  * The flow adapters flatten to leaves under one root, so tree ancestry is not
  * available to ask this more directly; hoisted text ({@link assertText}) is
  * what survives the flatten.
  *
- * Residual: an editor holding more than the named paragraph shows more text
+ * Residuals: an editor holding more than the named paragraph shows more text
  * than the selector named, so it still refuses — with the same unfollowable
- * advice. Naming the whole body, or giving the editable an id, both work.
+ * advice. Naming the whole body, or giving the editable an id, both work. And a
+ * focused non-editable WRAPPER whose only text is an anonymous target's still
+ * reads as an editing host, because at the tree level it is one; on Chromium
+ * the keyboard tool then refuses the clear itself ("the focused element is not
+ * a text field").
  */
 function focusedOwnsTargetText(target: DescribeNode, focused: DescribeNode[]): boolean {
   const named = assertText(target);
@@ -961,6 +975,7 @@ function focusedOwnsTargetText(target: DescribeNode, focused: DescribeNode[]): b
         n !== target &&
         frameWithin(target.frame, n.frame) &&
         !frameNoLargerThan(n.frame, target.frame) &&
+        !nodeText(n) &&
         assertText(n) === named
     )
   );
