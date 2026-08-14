@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
 
 // The tools whose HarmonyOS support is a single entry in a `dispatchByPlatform`
 // table. Every other harmony test reaches the backend by importing it and
@@ -67,6 +68,15 @@ import { createRestartAppTool } from "../src/tools/restart-app";
 import { openUrlTool } from "../src/tools/open-url";
 import { createKeyboardTool } from "../src/tools/keyboard";
 import { createDescribeTool } from "../src/tools/describe";
+
+// `describe`'s harmony branch declares `requires: ["hdc"]`, so its preflight
+// runs before the handler. Prime the probe rather than leave it to the host:
+// `hdc` is present on a HarmonyOS dev machine and absent on a CI runner, and
+// the claim under test here is dispatch either way.
+beforeEach(() => {
+  __resetDepCacheForTests();
+  __primeDepCacheForTests(["hdc"]);
+});
 
 const HARMONY_UDID = "harmony-025DEK236V035771";
 const registry = { resolveService: vi.fn(async () => ({})) } as never;
