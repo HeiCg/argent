@@ -9,6 +9,7 @@ const runHarmonyEmulator = vi.fn();
 const resolveHarmonyEmulator = vi.fn();
 const listHarmonyInstances = vi.fn();
 const listHarmonyHdcTargets = vi.fn();
+const listHarmonyHdcTargetsStrict = vi.fn();
 const resolveHdc = vi.fn();
 const ensureDep = vi.fn();
 const spawnMock = vi.fn();
@@ -32,6 +33,7 @@ vi.mock("../src/utils/harmony-cli", async () => {
 vi.mock("../src/utils/harmony-devices", () => ({
   listHarmonyInstances: (...a: unknown[]) => listHarmonyInstances(...a),
   listHarmonyHdcTargets: (...a: unknown[]) => listHarmonyHdcTargets(...a),
+  listHarmonyHdcTargetsStrict: (...a: unknown[]) => listHarmonyHdcTargetsStrict(...a),
 }));
 vi.mock("../src/utils/harmony-hdc", async () => {
   const actual = await vi.importActual<typeof import("../src/utils/harmony-hdc")>(
@@ -105,9 +107,11 @@ interface HdcTargetRow {
 /** Successive `hdc list targets` results, the last one repeating forever. */
 function targets(...rounds: HdcTargetRow[][]) {
   let call = 0;
-  listHarmonyHdcTargets.mockImplementation(() =>
-    Promise.resolve(rounds[Math.min(call++, rounds.length - 1)])
-  );
+  // One counter across both: the snapshot takes the first round and the polls
+  // take the rest, exactly as when a single listing served both.
+  const next = () => Promise.resolve(rounds[Math.min(call++, rounds.length - 1)]);
+  listHarmonyHdcTargets.mockImplementation(next);
+  listHarmonyHdcTargetsStrict.mockImplementation(next);
 }
 
 beforeEach(() => {
@@ -437,7 +441,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // A failed listing read as an empty one makes every already-connected
     // emulator this boot's arrival. Refused before the spawn, so there is no
     // instance left running behind the error.
-    listHarmonyHdcTargets.mockRejectedValue(new Error("[Fail]Connect server failed"));
+    listHarmonyHdcTargetsStrict.mockRejectedValue(new Error("[Fail]Connect server failed"));
     vi.useFakeTimers();
 
     const pending = boot({ bootTimeoutMs: 30_000 });
@@ -452,11 +456,13 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // The `hdc` daemon restarting after a `-stop` is the likely cause and it
     // clears, so one refusal must not cost the caller the boot.
     let call = 0;
-    listHarmonyHdcTargets.mockImplementation(() => {
+    const next = () => {
       call += 1;
       if (call === 1) return Promise.reject(new Error("[Fail]Connect server failed"));
       return Promise.resolve(call <= 2 ? [PHONE] : [PHONE, emulatorTarget]);
-    });
+    };
+    listHarmonyHdcTargets.mockImplementation(next);
+    listHarmonyHdcTargetsStrict.mockImplementation(next);
     vi.useFakeTimers();
 
     const pending = boot({ bootTimeoutMs: 30_000 });
@@ -495,7 +501,14 @@ describe("boot-device — HarmonyOS emulator path", () => {
     });
     targets([PHONE], [PHONE, emulatorTarget]);
 
-    await expect(boot({ bootTimeoutMs: 30_000 })).rejects.toThrow(/disk image corrupted/);
+    // The key WAS resolved — it is what the failing probe is aimed at — so the
+    // message the pre-registration wait uses would deny the registration that
+    // had already happened.
+    const err = (await boot({ bootTimeoutMs: 30_000 }).catch((e: unknown) => e)) as Error;
+
+    expect(err.message).toMatch(/disk image corrupted/);
+    expect(err.message).toMatch(/`127\.0\.0\.1:5555`\) was still coming up/);
+    expect(err.message).not.toMatch(/before "Phone_1" registered/);
   });
 
   it("says the key rests on arrival alone when the instance has no panel to check it against", async () => {
@@ -517,7 +530,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     const result = (await boot({})) as { udid: string; note?: string };
 
     expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
-    expect(result.note).toMatch(/does not describe a single panel/);
+    expect(result.note).toMatch(/no panel on record for this instance/);
     expect(harmonyDisplay).not.toHaveBeenCalled();
   });
 
@@ -553,7 +566,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await vi.advanceTimersByTimeAsync(31_000);
     const result = (await pending) as { udid: string; note?: string };
 
-    expect(result.note).toMatch(/never reported its display/);
+    expect(result.note).toMatch(/never reported a display argent could read/);
     expect(result.note).not.toMatch(/is not the panel/);
   });
 
@@ -569,7 +582,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     const result = (await pending) as { udid: string; note?: string };
 
     expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
-    expect(result.note).toMatch(/never reported its display/);
+    expect(result.note).toMatch(/never reported a display argent could read/);
     expect(result.note).not.toMatch(/had not registered/);
   });
 
@@ -594,7 +607,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     const result = (await pending) as { udid: string; note?: string };
 
     expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
-    expect(result.note).toMatch(/does not describe a single panel/);
+    expect(result.note).toMatch(/no panel on record for this instance/);
     expect(result.note).toMatch(/still not answering `uitest`/);
   });
 

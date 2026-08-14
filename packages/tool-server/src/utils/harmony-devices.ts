@@ -188,10 +188,38 @@ export function parseHdcTargets(stdout: string): HarmonyHdcTarget[] {
   return out;
 }
 
-/** Connected HarmonyOS targets, or [] when `hdc` isn't installed. */
+/**
+ * HarmonyOS targets `hdc` lists, or [] when `hdc` isn't installed or could not
+ * produce a listing.
+ *
+ * Callers that cannot read "no devices" and "no answer" as the same thing want
+ * {@link listHarmonyHdcTargetsStrict}.
+ */
 export async function listHarmonyHdcTargets(): Promise<HarmonyHdcTarget[]> {
+  return listTargets(false);
+}
+
+/**
+ * The same listing, refusing rather than answering `[]` when `hdc` could not
+ * produce one.
+ *
+ * `hdc` exits 0 whatever happens, so its `[Fail]` line is the only thing
+ * separating "nothing is connected" from "the device table could not be read".
+ * A caller polling for a change can treat those alike; one establishing a
+ * BASELINE to compare against cannot, since an empty baseline quietly means
+ * "everything that shows up next is new".
+ */
+export async function listHarmonyHdcTargetsStrict(): Promise<HarmonyHdcTarget[]> {
+  return listTargets(true);
+}
+
+async function listTargets(strict: boolean): Promise<HarmonyHdcTarget[]> {
   if (!(await resolveHdc())) return [];
   const result = await runHdc(["list", "targets", "-v"], HDC_LIST_TIMEOUT_MS);
-  if (hdcFailure(result)) return [];
+  const failure = hdcFailure(result);
+  if (failure) {
+    if (strict) throw new Error(failure);
+    return [];
+  }
   return parseHdcTargets(result.stdout);
 }

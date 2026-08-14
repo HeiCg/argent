@@ -143,6 +143,23 @@ describe("parseHarmonyLayout", () => {
       expect(target.children[0].label).toBe("Wi-Fi");
     });
 
+    it("costs one attribute, not the whole tree, when a dump value is not a string", () => {
+      // The dump is `JSON.parse`d and asserted to be all-strings — measured on
+      // 6.1.1, promised by nothing. Unguarded, one numeric `description` threw a
+      // bare TypeError out of the parser and took `describe` down with it.
+      const odd: Record<string, string> = {
+        type: "Text",
+        description: 0 as unknown as string,
+        text: "Submit",
+        id: false as unknown as string,
+        bounds: "[0,300][1216,440]",
+      };
+      const target = wrapping(odd).children[0].children[0];
+
+      expect(target.label).toBe("Submit");
+      expect(target.identifier).toBeUndefined();
+    });
+
     it("keeps a container carrying the label an agent selects on", () => {
       // `.accessibilityText()` on a composite row is the idiomatic way to name
       // one, and it lands on the `Column`/`Row` the author wrote. Hoisted away

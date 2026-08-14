@@ -103,12 +103,24 @@ function isScrollable(attrs: Record<string, string>): boolean {
  * `value`. `hint` is the placeholder of an empty field, which is the only label
  * such a field has.
  */
+/**
+ * One attribute as trimmed text.
+ *
+ * The dump is `JSON.parse`d and asserted to be all-strings, which is measured
+ * on 6.1.1 but not guaranteed by anything: a single numeric or boolean value
+ * would otherwise throw a bare `TypeError` out of the parser and take the whole
+ * `describe` down, with no failure signal, rather than costing one attribute.
+ */
+function attrText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 export function harmonyLabel(attrs: Record<string, string>): string {
-  const description = (attrs.description ?? "").trim();
+  const description = attrText(attrs.description);
   if (description) return description;
-  const text = (attrs.text ?? "").trim();
+  const text = attrText(attrs.text);
   if (text) return text;
-  return (attrs.hint ?? "").trim();
+  return attrText(attrs.hint);
 }
 
 interface HarmonyNode {
@@ -175,9 +187,9 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
   if (label) own.label = label;
   // Only surface `text` separately when `description` already claimed the label
   // slot and the two genuinely differ — otherwise `value` just repeats `label`.
-  const text = (attrs.text ?? "").trim();
+  const text = attrText(attrs.text);
   if (text && text !== own.label) own.value = text;
-  const identifier = (attrs.id ?? "").trim() || (attrs.key ?? "").trim();
+  const identifier = attrText(attrs.id) || attrText(attrs.key);
   if (identifier) own.identifier = identifier;
 
   // Scaffolding contributes nothing itself; hoist whatever survived beneath it.
@@ -403,7 +415,7 @@ export function parseHarmonyLayout(
   const windows: DescribeNode[] = [];
   for (const child of root.children ?? []) {
     const attrs = child.attributes ?? {};
-    const bundle = (attrs.bundleName ?? "").trim();
+    const bundle = attrText(attrs.bundleName);
     const built = build(child)
       .map((n) => toDescribeNode(n, screen.width, screen.height))
       .filter((n) => !isFullyOffScreen(n.frame, n.children));

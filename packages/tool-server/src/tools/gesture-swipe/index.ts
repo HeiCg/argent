@@ -69,7 +69,7 @@ export const gestureSwipeTool: ToolDefinition<Params, Result> = {
     failedMsg: ({ failureSignal }) => `Failed to swipe: ${failureSignal.error_code}`,
   },
   description: `Execute a smooth swipe / drag touch gesture between two points on the device (iOS simulator, Android emulator, or HarmonyOS device). All from/to positions are normalized 0.0–1.0 (fractions of screen width/height, not pixels), same as gesture-tap.
-Generates interpolated Move events for a natural feel (~60fps).
+On iOS and Android, generates interpolated Move events for a natural feel (~60fps); HarmonyOS takes the whole gesture in one call and interpolates it on-device.
 Swipe up (fromY > toY) to scroll content down.
 Use when you need to scroll a list, dismiss a modal, drag an element, or navigate between pages. Not supported on Chromium — use gesture-scroll there instead.
 Pass settle:true for a momentum-free swipe that lands exactly where the finger lifts (no fling), when you need a deterministic scroll distance. Returns { swiped: true, timestampMs }. Fails if the simulator-server / emulator backend, or \`hdc\` on HarmonyOS, is not reachable for the given device.`,

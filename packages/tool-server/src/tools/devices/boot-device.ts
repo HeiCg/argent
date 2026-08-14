@@ -59,7 +59,11 @@ import {
   resolveHarmonyEmulator,
   runHarmonyEmulator,
 } from "../../utils/harmony-cli";
-import { listHarmonyHdcTargets, listHarmonyInstances } from "../../utils/harmony-devices";
+import {
+  listHarmonyHdcTargets,
+  listHarmonyHdcTargetsStrict,
+  listHarmonyInstances,
+} from "../../utils/harmony-devices";
 import { resolveHdc } from "../../utils/harmony-hdc";
 import { harmonyDisplay, harmonyDumpLayout } from "../../utils/harmony-uitest";
 import { bootElectronApp, type ElectronBootResult } from "./boot-electron";
@@ -1568,27 +1572,33 @@ const HARMONY_MISMATCHED_TARGET =
  * Said when a target registered but never reported a panel to check it against.
  * Distinct from {@link HARMONY_MISMATCHED_TARGET}, which knows the target is
  * someone else's, and from {@link HARMONY_NO_TARGET}, whose "had not registered"
- * would be a plain untruth here — the target did register, so a longer budget
- * is not the remedy.
+ * would be a plain untruth here.
+ *
+ * A guest still composing its first frame answers `0x0` and reaches this too,
+ * so unlike the other refusals a longer budget CAN be the remedy — it is
+ * offered second, after the reading the caller can act on directly.
  */
 const HARMONY_UNPROBEABLE_TARGET =
-  "A target registered while the instance was booting but never reported its display, so argent " +
-  "could not tell whether it is this instance or another device that reconnected, and did not " +
-  'guess. Call `list-devices` and drive the `kind: "device"` entry for the instance.';
+  "A target registered while the instance was booting but never reported a display argent could " +
+  "read, so it could not tell whether the target is this instance or another device that " +
+  "reconnected, and did not guess. A guest that has not finished compositing reads this way too, " +
+  'so call `list-devices` and drive the `kind: "device"` entry for the instance, or give the ' +
+  "boot longer with `bootTimeoutMs`.";
 
 /**
- * Said when the key rests on arrival alone. The instance's config does not
- * describe a single panel, so the check that separates it from another device
- * reconnecting in the same window had nothing to compare against. The key is
- * returned because it is the only candidate that appeared and usually is the
- * instance — but silently returning an unchecked id is how every later tap ends
- * up on someone else's device, so the caller is told what it rests on.
+ * Said when the key rests on arrival alone, because no panel for this instance
+ * was on record to check it against. Deliberately does not say WHY there was
+ * none: the manager listing may have failed, or timed out, or not mentioned the
+ * instance, or described a profile that does not key a single LCD — and nothing
+ * here distinguishes those. The key is returned because it is the only
+ * candidate that appeared and usually is the instance, but silently returning
+ * an unchecked id is how every later tap ends up on someone else's device.
  */
 const HARMONY_UNCONFIRMED_TARGET =
-  "This instance's configuration does not describe a single panel, so argent could not check the " +
-  "target it returned against it and matched on arrival timing alone. If another emulator or " +
-  "device reconnected while the instance was booting, this may be its connect key; confirm " +
-  "against `list-devices` before relying on it.";
+  "argent had no panel on record for this instance, so it could not check the target it returned " +
+  "against one and matched on arrival timing alone. If another emulator or device reconnected " +
+  "while the instance was booting, this may be its connect key; confirm against `list-devices` " +
+  "before relying on it.";
 
 /**
  * Said when the instance registered but never answered `uitest` in time. The
@@ -1637,20 +1647,23 @@ async function connectedHarmonyTargets() {
  * "nothing new yet", but the baseline cannot: empty, it makes every emulator
  * already connected count as this boot's arrival, and a peer off the same
  * device profile answers the same panel — so nothing downstream catches it and
- * the boot hands back a drivable id for the wrong device. Retried once, since
- * the `hdc` daemon restarting after a `-stop` is both the likely cause and one
- * that clears, then refused while there is still nothing spawned to clean up.
+ * the boot hands back a drivable id for the wrong device. Hence the STRICT
+ * listing: `hdc` exits 0 for its own failures, so the tolerant one reports a
+ * broken daemon as an empty device table. Retried once, since the daemon
+ * restarting after a `-stop` is both the likely cause and one that clears,
+ * then refused while there is still nothing spawned to clean up.
  */
 async function connectedHarmonyKeys(): Promise<Set<string>> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const targets = await listHarmonyHdcTargets();
+      const targets = await listHarmonyHdcTargetsStrict();
       return new Set(targets.filter((t) => t.state === "Connected").map((t) => t.connectKey));
     } catch (err) {
       if (attempt > 0) {
         throw new Error(
-          "Could not list `hdc` targets before starting the HarmonyOS instance, so the target " +
-            "it registers under could not have been told apart from those already connected: " +
+          "Could not read `hdc`'s device table while preparing to start the HarmonyOS instance, " +
+            "so the target it registers under could not have been told apart from those already " +
+            "connected: " +
             (err instanceof Error ? err.message : String(err)),
           { cause: err }
         );
@@ -1749,8 +1762,9 @@ async function startHarmonyEmulator(
  *
  * `reason` says why there is no key, and is read only when there is none;
  * `unconfirmed` marks a key that arrival alone picked out. Both feed the boot's
- * `note`, and each has to stay distinct there: only "none" is a budget the
- * caller can usefully raise.
+ * `note`, and each has to stay distinct there, since they send the caller
+ * somewhere different: "ambiguous" and "mismatched" are decisions no budget
+ * changes, while "none" and "unprobeable" can both be a boot still in progress.
  */
 type HarmonyTargetOutcome = {
   key: string | null;
@@ -2004,6 +2018,9 @@ async function bootHarmonyImpl(params: {
 
   const emulator = await startHarmonyEmulator(params.instanceName);
 
+  // Set once the target wait resolves a key, so a death reported from the
+  // readiness wait can say which side of registration it happened on.
+  let resolvedKey: string | null = null;
   const assertEmulatorAlive = () => {
     {
       const exit = emulator.exited();
@@ -2013,11 +2030,15 @@ async function bootHarmonyImpl(params: {
       // printed is the only signal (see `harmony-cli.ts`).
       const diagnostic = emulatorFailure({ stdout: exit.output, stderr: "" });
       if (!diagnostic) {
+        // Both waits poll this, and they sit on opposite sides of the key being
+        // resolved — saying "before it registered" during the readiness wait
+        // would deny the registration the failing probe is aimed at.
+        const when = resolvedKey
+          ? `while "${params.instanceName}" (\`${resolvedKey}\`) was still coming up`
+          : `before "${params.instanceName}" registered with \`hdc\``;
         throw new Error(
-          `The HarmonyOS emulator manager exited (${exit.reason}) before "${params.instanceName}" ` +
-            `registered with \`hdc\`, so nothing is running to drive. It printed: ${
-              exit.output.trim() || "(nothing)"
-            }`
+          `The HarmonyOS emulator manager exited (${exit.reason}) ${when}` +
+            `, so nothing is running to drive. It printed: ${exit.output.trim() || "(nothing)"}`
         );
       }
       const imageMissing =
@@ -2060,6 +2081,7 @@ async function bootHarmonyImpl(params: {
   // Registered is not driveable. The remaining budget rather than a slice of
   // it: the key is already in hand, so there is nothing else left to spend it
   // on, and an expiry is reported rather than walked into.
+  resolvedKey = connectKey;
   const drivable = connectKey
     ? await waitForHarmonyDrivable(connectKey, bootDeadline, assertEmulatorAlive)
     : false;

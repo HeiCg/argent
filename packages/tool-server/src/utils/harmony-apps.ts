@@ -18,7 +18,12 @@ import { runHdcShell, shellQuote } from "./harmony-hdc";
 const AA_SUCCESS = "start ability successfully.";
 
 interface HarmonyBundleEntry {
-  /** The ability to launch, as `bm` reports it — always fully qualified. */
+  /**
+   * The ability to launch, in the spelling `aa start` accepts — which is the
+   * one `abilityInfos` uses, NOT `bm`'s `mainAbility`. The two differ on real
+   * bundles (Calculator: `CalculatorAbility` against a fully-qualified
+   * `mainAbility`), which is what {@link startableAbilityName} reconciles.
+   */
   mainAbility: string;
   /** The HAP module the ability lives in; `aa start -m` needs it. */
   module: string;
@@ -223,7 +228,8 @@ export async function openHarmonyUrl(connectKey: string, url: string): Promise<v
   if (!stdout.includes(AA_SUCCESS)) {
     throw new FailureError(
       `HarmonyOS device '${connectKey}' could not open '${url}': ${firstLine(stdout)}. ` +
-        `No installed app claims this URI scheme; the device may now be showing a chooser dialog.`,
+        `If no installed app claims the scheme \`aa\` reports \`10103101\`; either way the device may ` +
+        `now be showing a chooser dialog.`,
       {
         error_code: FAILURE_CODES.HARMONY_ABILITY_START_FAILED,
         failure_stage: "harmony_open_url",
