@@ -262,6 +262,25 @@ describe("await-screen-idle on HarmonyOS", () => {
     expect(result.note).toMatch(/taps land nowhere/i);
   });
 
+  it("says why the screen was never readable, not just that it never settled", async () => {
+    // A windowless dump can never settle — the loop wants content before it
+    // starts timing stability — so this ends as a timeout with the reason
+    // already in hand. Dropped, "did not settle" reads as a busy screen and the
+    // caller waits longer for a screen that is not being drawn; the sibling
+    // `await-ui-element` puts the same hint on its own timeout note, off the
+    // very same read.
+    sequenceDumps([dumpWith()]);
+    const tool = createAwaitScreenIdleTool(harmonyRegistry());
+
+    const result = await tool.execute(
+      {},
+      { udid: HARMONY_ID, timeoutMs: 40, pollIntervalMs: 10, minStableMs: 10 }
+    );
+
+    expect(result.settled).toBe(false);
+    expect(result.note).toMatch(/no windows/i);
+  });
+
   it("does not settle while the dump keeps changing (times out)", async () => {
     sequenceDumps(Array.from({ length: 30 }, (_, i) => dumpWith(`item-${i}`)));
     const tool = createAwaitScreenIdleTool(harmonyRegistry());

@@ -174,6 +174,23 @@ export interface FormatDescribeOptions {
   source: DescribeSource;
 }
 
+/**
+ * The gesture tools whose backend covers the platform a source comes from. A
+ * frame is only useful to the agent as an argument to one of these, so naming a
+ * tool the device's own gate then refuses costs a round trip and leaves nothing
+ * to fall back on.
+ *
+ * Only the sources whose platform is not the touch default appear here.
+ * HarmonyOS drives touch through `uitest uiInput`, which injects one contact at
+ * a time; Chromium has no touch at all and gets the CDP-driven pair instead.
+ */
+const GESTURE_TOOLS_BY_SOURCE: Partial<Record<DescribeSource, string>> = {
+  "harmony-uitest": "gesture-tap / gesture-swipe",
+  "cdp-dom": "gesture-tap / gesture-scroll / gesture-drag",
+};
+
+const DEFAULT_GESTURE_TOOLS = "gesture-tap / gesture-swipe / gesture-pinch";
+
 export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptions): string {
   // iOS providers (ax-service, native-devtools) emit a flat list under a
   // synthetic root, so the flat renderer is correct. Sources that produce
@@ -205,12 +222,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
     );
   } else {
     header.push(
-      // HarmonyOS drives touch through `uitest uiInput`, which has no multi-touch
-      // verb — `gesture-pinch` has no harmony backend and refuses the device, so
-      // naming it here would send the agent at a tool it cannot reach.
-      opts.source === "harmony-uitest"
-        ? "Pass them straight to gesture-tap / gesture-swipe, which expect this same space."
-        : "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space."
+      `Pass them straight to ${GESTURE_TOOLS_BY_SOURCE[opts.source] ?? DEFAULT_GESTURE_TOOLS}, which expect this same space.`
     );
     header.push(
       "To tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2."

@@ -13,7 +13,7 @@ import { isTvOsSimulator } from "../../utils/ios-devices";
 import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
-import { pollDescribeTree } from "../../utils/poll-describe-tree";
+import { pollDescribeTree, readCaveats } from "../../utils/poll-describe-tree";
 import { READ_CAVEAT_SOURCES } from "../describe/contract";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
@@ -177,14 +177,7 @@ function isBlindRead(data: DescribeTreeData, everMatched: boolean): boolean {
 // learns the real cause (degraded AX, native injection pending) rather than a
 // bare "no element matched".
 function appendDiagnostics(base: string, lastData: DescribeTreeData | null): string {
-  if (!lastData) return base;
-  const extras: string[] = [];
-  if (lastData.should_restart) {
-    extras.push(
-      "the foreground app may need a restart for native inspection — call restart-app and retry"
-    );
-  }
-  if (lastData.hint) extras.push(lastData.hint);
+  const extras = readCaveats(lastData);
   return extras.length === 0 ? base : `${base} (${extras.join("; ")})`;
 }
 

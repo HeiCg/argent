@@ -5,16 +5,17 @@ description: Autonomously test an app UI (iOS, Android, or HarmonyOS) by running
 
 ## Platform-agnostic
 
-The interaction tool names are identical on iOS and Android — `gesture-tap`, `gesture-swipe`, `describe`, `screenshot`, `launch-app`, etc. — and the tool-server auto-dispatches based on the `udid` you pass (UUID-shape → iOS, adb serial → Android).
+The interaction tool names are identical on iOS, Android and HarmonyOS — `gesture-tap`, `gesture-swipe`, `describe`, `screenshot`, `launch-app`, etc. — and the tool-server auto-dispatches based on the `udid` you pass (UUID-shape → iOS, `harmony-<connectKey>` → HarmonyOS, adb serial → Android). HarmonyOS takes one contact per call, so `gesture-pinch`, `gesture-rotate`, `gesture-custom` and `rotate` are refused there; every other tool in this workflow applies.
 
 **Before testing, resolve which device to test on.** Call `list-devices` and follow `<device_selection_rule>`: prefer a running device on any platform;
 
 Once a platform is chosen, the per-platform setup skill takes over:
 
-| Platform | Setup skill                     | Find devices with                                           |
-| -------- | ------------------------------- | ----------------------------------------------------------- |
-| iOS      | `argent-ios-simulator-setup`    | `list-devices` → `boot-device` with `udid` if none booted   |
-| Android  | `argent-android-emulator-setup` | `list-devices` → `boot-device` with `avdName` if none ready |
+| Platform  | Setup skill                     | Find devices with                                                                                             |
+| --------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| iOS       | `argent-ios-simulator-setup`    | `list-devices` → `boot-device` with `udid` if none booted                                                     |
+| Android   | `argent-android-emulator-setup` | `list-devices` → `boot-device` with `avdName` if none ready                                                   |
+| HarmonyOS | `argent-device-interact`        | `list-devices` → a phone on `hdc` is ready as-is; `boot-device` with a `harmony-emulator-<name>` id otherwise |
 
 ## 1. Workflow
 
@@ -25,7 +26,7 @@ For implementation tasks that modify visible UI, this workflow can also serve as
 1. **Baseline screenshot**: Call `screenshot` to see the current UI state. For visual regression comparison or UI change verification, capture the baseline at `scale: 1.0` with `includeImageInContext: false` and keep the returned `path` before editing whenever feasible.
 2. **Find target**: Before tapping, use a discovery tool to get element coordinates:
    - **React Native apps**: use `debugger-component-tree` — it returns component names with (tap: x,y) coordinates. This is the preferred tool for RN apps on either platform. To use it, resolve the `argent-react-native-app-workflow` skill for setup; on Android you must also run `adb -s <serial> reverse tcp:8081 tcp:8081` so Metro is reachable from the device.
-   - **Standard app screens and in-app modals**: use `describe`. On iOS this returns the AX tree (falls back to native-devtools when AX is empty); on Android it returns the uiautomator tree in the same DescribeNode shape.
+   - **Standard app screens and in-app modals**: use `describe`. On iOS this returns the AX tree (falls back to native-devtools when AX is empty); on Android it returns the uiautomator tree, and on HarmonyOS the `uitest dumpLayout` tree, both in the same DescribeNode shape.
    - **Permission prompts / system modal overlays**: try `describe` first. Fall back to `screenshot` only if the overlay is not exposed reliably. When the app raises its own permission dialog, answer it here — that's the real flow under test. To take a prompt _out_ of the flow (pre-grant/deny before launch, re-enable a permission the user already denied, or reset it so the dialog reappears), use the `argent-settings-permissions` skill during setup instead of interacting with the dialog.
    - **Fallback**: use `screenshot` to estimate where the desired component is, then verify immediately after the action.
 3. **Interact**: Perform the action (`gesture-tap`, `gesture-swipe`, `keyboard`, `button`, ...) — you receive a screenshot automatically.
@@ -122,7 +123,7 @@ Steps:
 
 | Skill                              | When to use                                              |
 | ---------------------------------- | -------------------------------------------------------- |
-| `argent-device-interact`           | Tool usage for tapping, swiping, typing (iOS + Android)  |
+| `argent-device-interact`           | Tool usage for tapping, swiping, typing (every platform) |
 | `argent-screenshot-diff`           | Visual regression and before/after screenshot comparison |
 | `argent-ios-simulator-setup`       | Booting and connecting an iOS simulator                  |
 | `argent-android-emulator-setup`    | Booting and connecting an Android emulator               |

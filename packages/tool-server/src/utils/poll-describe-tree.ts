@@ -50,6 +50,26 @@ export interface PollDescribeTreeResult<R> {
   lastError?: string;
 }
 
+/**
+ * What the last read said about itself, as clauses for a wait's timeout note:
+ * a tree the adapter flagged as degraded or partial, and an app whose native
+ * inspection needs a restart before it can be seen at all. A wait that ends
+ * without its condition met ends on one of these far more often than on a
+ * screen that genuinely kept moving, and neither wait tool can tell them apart
+ * from the tree alone.
+ */
+export function readCaveats(lastData: DescribeTreeData | null): string[] {
+  if (!lastData) return [];
+  const caveats: string[] = [];
+  if (lastData.should_restart) {
+    caveats.push(
+      "the foreground app may need a restart for native inspection — call restart-app and retry"
+    );
+  }
+  if (lastData.hint) caveats.push(lastData.hint);
+  return caveats;
+}
+
 export async function pollDescribeTree<R>(
   args: PollDescribeTreeArgs<R>
 ): Promise<PollDescribeTreeResult<R>> {
