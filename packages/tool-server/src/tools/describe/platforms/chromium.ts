@@ -37,7 +37,9 @@ const DESCRIBE_FAILURE = {
  *    box. A collapsed overflow:hidden container genuinely hides its content, so it stays
  *    pruned. visibility:hidden is NOT hard-pruned (it inherits, but a descendant can
  *    override it back to visible): we descend and suppress only the hidden element's own
- *    paint, so a visibility:visible descendant still surfaces.
+ *    paint, so a visibility:visible descendant still surfaces. Nor is the branch holding
+ *    the caret — an invisible element can still be focused, and dropping it reports a
+ *    page as having nothing focused (see `holdsFocus`).
  *  - Cap node count at 5000 — that, not depth, bounds the payload a runaway SPA
  *    would otherwise serialize past CDP's single Runtime.evaluate reply limit
  *    (~50MB). Cap depth at 60 purely to bound recursion: modern React DOMs
@@ -123,6 +125,53 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   const shadowProto = typeof ShadowRoot === "function" ? ShadowRoot.prototype : {};
   const getShadowActiveElement = protoGetter(shadowProto, "activeElement");
   const isShadowRoot = (n) => typeof ShadowRoot === "function" && n instanceof ShadowRoot;
+  const containsNode = Node.prototype.contains;
+
+  // The activeElement of el's own root — the same read isFocusedElement makes,
+  // hoisted so the visibility prune can consult it before walk() gets that far.
+  function activeInRootOf(el) {
+    const doc = getOwnerDocument.call(el);
+    if (!doc) return null;
+    let root = null;
+    try {
+      root = el.getRootNode ? el.getRootNode() : doc;
+    } catch (e) {
+      root = doc;
+    }
+    return isShadowRoot(root) ? getShadowActiveElement.call(root) : getActiveElement.call(doc);
+  }
+
+  /**
+   * Is el, or something inside it, the element holding the caret?
+   *
+   * Asked of an element the visibility prune is about to drop. opacity:0 does
+   * not stop an element being focused, and the field that is invisible BY
+   * DESIGN is very often the one holding the secret: the capture input under
+   * rendered OTP/PIN boxes, a barcode-scanner sink, a styled file input. Pruning
+   * it left the tree with no focus flag anywhere, which the type directive's
+   * focus wait reads as "nothing is focused" — the one non-confirmed outcome it
+   * dispatches a destructive clear on. Measured on Chrome 151: an opacity:0
+   * capture input holding an OTP was emptied and rewritten with the step
+   * reporting a pass, while the identical page at opacity:1 refused.
+   *
+   * The body is excluded — it is the default holder when nothing is focused,
+   * and it contains everything. An <iframe> is excluded for the reason
+   * isFocusedElement excludes it: it is the outer document's activeElement
+   * whenever focus merely sits in its subdocument.
+   */
+  function holdsFocus(el) {
+    const doc = getOwnerDocument.call(el);
+    const active = activeInRootOf(el);
+    if (!active || !doc || getDocBody.call(doc) === active) return false;
+    const activeTag = getTagName.call(active);
+    if (activeTag === "IFRAME" || activeTag === "FRAME") return false;
+    if (active === el) return true;
+    try {
+      return containsNode.call(el, active) === true;
+    } catch (e) {
+      return false;
+    }
+  }
 
   function nodeRole(el) {
     const r = getAttr.call(el, "role");
@@ -417,7 +466,11 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     if (depth > MAX_DEPTH) return null;
     if (!(el instanceof Element)) return null;
     const style = window.getComputedStyle(el);
-    if (hidden(el, style)) return null;
+    // The one exception to the prune: the branch holding the caret stays (see
+    // holdsFocus). Everything else about the node is unchanged — it is emitted
+    // with its real box, which for an opacity:0 field is the box the user's
+    // keystrokes are going into.
+    if (hidden(el, style) && !holdsFocus(el)) return null;
     // Charge the node budget only for elements that can actually EMIT. A
     // visibility:hidden element paints nothing itself and is descended into
     // purely to catch a descendant that overrides visibility back to visible
