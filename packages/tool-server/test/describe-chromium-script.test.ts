@@ -14,7 +14,7 @@ import type { DescribeNode } from "../src/tools/describe/contract";
  *
  * The mock implements only the DOM surface the script reads: getBoundingClientRect,
  * getComputedStyle (display / visibility / opacity / overflow{,X,Y}), children,
- * childNodes (text), getAttribute/hasAttribute, open shadowRoot, iframe contentDocument,
+ * childNodes (text), getAttribute/hasAttribute, open shadowRoot,
  * and a Range whose rect unions the element's own painted content with the still-laid-out
  * boxes of its descendants (everything but display:none) — so it reproduces the real
  * behaviour where a box-less wrapper's Range is non-zero purely from a visibility:hidden /
@@ -154,7 +154,6 @@ type Opts = {
   children?: MockElement[];
   shadow?: MockElement[]; // open shadow root children (walker pierces these)
   shadowActive?: MockElement; // that shadow root's own activeElement
-  iframeDoc?: MockElement; // <iframe> contentDocument.documentElement (same-origin pierce)
   clobber?: boolean; // set .title/.id to non-string objects (DOM-clobbering)
   clobberStructural?: boolean; // shadow .children/.childNodes/.tagName with named controls (LegacyOverrideBuiltins)
   clobberAccessors?: boolean; // shadow getAttribute/hasAttribute/getBoundingClientRect/shadowRoot with a control element
@@ -194,11 +193,6 @@ function el(opts: Opts = {}): MockElement {
     node.shadowRoot = sr as unknown;
   } else {
     node.shadowRoot = null;
-  }
-  // A same-origin <iframe> exposes contentDocument.documentElement (read directly, not via
-  // a prototype getter). Only meaningful when tag === "iframe".
-  if (opts.iframeDoc) {
-    (node as Record<string, unknown>).contentDocument = { documentElement: opts.iframeDoc };
   }
   (node as Record<string, unknown>).__content = opts.content ?? null;
   if (opts.clobber) {
@@ -991,24 +985,6 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
       el({ tag: "my-widget", rect: BOX, shadow: [el({ text: "SHADOWTEXT", rect: BOX })] }),
     ]);
     expect(valuesOf(tree)).toContain("SHADOWTEXT");
-  });
-
-  it("pierces a same-origin iframe's contentDocument", () => {
-    const innerDoc = el({
-      tag: "html",
-      rect: { x: 0, y: 0, w: W, h: H },
-      children: [
-        el({
-          tag: "body",
-          rect: { x: 0, y: 0, w: W, h: H },
-          children: [el({ text: "IFRAMETEXT", rect: BOX })],
-        }),
-      ],
-    });
-    const { tree } = run([
-      el({ tag: "iframe", rect: { x: 0, y: 0, w: 500, h: 500 }, iframeDoc: innerDoc }),
-    ]);
-    expect(valuesOf(tree)).toContain("IFRAMETEXT");
   });
 
   // ---- a password input's typed value must never become its label ----

@@ -1367,9 +1367,14 @@ const MAX_ENTRY_RENDER_CHARS = 200;
 function badEntry(raw: unknown, detail: string): never {
   // A cyclic YAML alias materializes as a cyclic object — JSON.stringify
   // would throw and mask the validation message, so fall back to a marker.
+  // `?? String(raw)` for the values JSON.stringify RETURNS undefined for:
+  // `type: { clear: true }` reaches here with no `into` at all, and reading
+  // `.length` off that undefined replaced the whole validation failure with
+  // "Cannot read properties of undefined" and a REGISTRY_TOOL_EXECUTION_FAILED
+  // code, for a flow the parser diagnoses precisely.
   let rendered: string;
   try {
-    rendered = JSON.stringify(raw);
+    rendered = JSON.stringify(raw) ?? String(raw);
   } catch {
     rendered = "[cyclic entry]";
   }

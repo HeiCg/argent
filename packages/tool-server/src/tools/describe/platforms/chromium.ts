@@ -19,9 +19,11 @@ const DESCRIBE_FAILURE = {
  * applies on Chromium).
  *
  * Choices:
- *  - Walk children plus open shadow roots and same-origin iframe documents so
- *    modern Chromium apps (VS Code, Slack, custom-element-heavy SPAs) don't
- *    appear as empty pages.
+ *  - Walk children plus open shadow roots so modern Chromium apps (VS Code,
+ *    Slack, custom-element-heavy SPAs) don't appear as empty pages. An iframe's
+ *    document is NOT walked — see `walk()` for why the descent cannot work from
+ *    inside the page script — so a subdocument's content reaches no describe
+ *    consumer.
  *  - Skip purely structural wrappers (anonymous single-child divs) so the
  *    tree stays small.
  *  - Treat anchors, buttons, inputs, [role=button], [onclick], [tabindex]≥0
@@ -112,9 +114,15 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   // root is a DocumentFragment and can never be a clobbering <form>, so this is
   // belt-and-braces — but it keeps the "every inherited read goes through a
   // captured getter" invariant whole rather than carving out an exception.
-  const shadowProto = typeof ShadowRoot === "undefined" ? {} : ShadowRoot.prototype;
+  // \`typeof === "function"\`, not \`!== "undefined"\`: a legacy Shadow-DOM polyfill
+  // shim can assign a NON-constructor (window.ShadowRoot = null is the shape
+  // seen in the wild), and both \`null.prototype\` here and \`n instanceof null\`
+  // below throw — the first before a single node is walked, so describe fails
+  // for the whole page. Verified on Chrome 151: with window.ShadowRoot = null
+  // the tool returned CHROMIUM_DESCRIBE_FAILED and no tree at all.
+  const shadowProto = typeof ShadowRoot === "function" ? ShadowRoot.prototype : {};
   const getShadowActiveElement = protoGetter(shadowProto, "activeElement");
-  const isShadowRoot = (n) => typeof ShadowRoot !== "undefined" && n instanceof ShadowRoot;
+  const isShadowRoot = (n) => typeof ShadowRoot === "function" && n instanceof ShadowRoot;
 
   function nodeRole(el) {
     const r = getAttr.call(el, "role");
@@ -348,10 +356,9 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
    * focus flag anywhere. A host <iframe>/<frame> is excluded too: it is the
    * outer document's activeElement whenever focus merely sits inside its
    * subdocument, and its screen-spanning frame would satisfy any overlap check.
-   * NOT because the inner element carries the flag instead — walk() bails on
-   * an element that is not an \`Element\`, and an inner \`documentElement\`'s
-   * constructor belongs to the INNER realm, so the descent below is dead and
-   * focus in a subdocument reaches the tree from neither side. Verified on
+   * NOT because the inner element carries the flag instead — walk() does not
+   * descend into a subdocument at all (see the note where the descent used to
+   * sit), so focus in one reaches the tree from neither side. Verified on
    * Chrome 151: an <iframe srcdoc> leaves no trace of its content in describe,
    * and focusing an input inside it leaves the tree with NO focus flag at all.
    *
@@ -388,9 +395,18 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     // directly made that the whole page's answer — the form was flagged, the
     // input holding the caret was not, and every clear inside such a form
     // hard-stopped the flow blaming a focus trap.
+    // A root that is neither a ShadowRoot nor this element's own document falls
+    // back to the document's activeElement rather than to "nothing is focused".
+    // ShadyDOM and webcomponents.js REPLACE Element.prototype.getRootNode, so
+    // the captured getter is not consulted and the object handed back is
+    // neither — and answering null there dropped the focus flag from every node
+    // on the page (verified on Chrome 151), which is the no-focus tree a
+    // destructive clear goes through on. The document read is what this was
+    // before open roots were handled, and it is still right for a light-DOM
+    // element.
     const active = isShadowRoot(root)
       ? getShadowActiveElement.call(root)
-      : root && root === doc
+      : doc
         ? getActiveElement.call(doc)
         : null;
     return active === el && !!doc && getDocBody.call(doc) !== el;
@@ -445,20 +461,14 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
       }
     }
 
-    // Same-origin iframes: pierce contentDocument if accessible. Cross-origin
-    // contentDocument access throws SecurityError — swallowed silently so the
-    // walker doesn't abort the whole tree.
-    if (getTagName.call(el) === "IFRAME") {
-      try {
-        const doc = el.contentDocument;
-        if (doc && doc.documentElement) {
-          const c = walk(doc.documentElement, depth + 1);
-          if (c) childResults.push(c);
-        }
-      } catch (e) {
-        /* cross-origin iframe — skip */
-      }
-    }
+    // No iframe descent. Walking a same-origin contentDocument cannot work from
+    // here: walk() bails on anything that is not an \`Element\`, and an inner
+    // \`documentElement\`'s constructor belongs to the INNER realm, so the
+    // instanceof is false and the subtree never materializes. Verified on
+    // Chrome 151 — an <iframe srcdoc> leaves no trace of its content in
+    // describe. Reviving it needs a realm-independent node test AND every inner
+    // frame translated into the host document's coordinates, or the tree gains
+    // nodes whose boxes point at the wrong place.
 
     // A visibility:hidden element paints nothing itself, but a descendant can override
     // visibility back to visible, so walk() descended instead of pruning (see hidden()).

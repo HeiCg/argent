@@ -692,10 +692,22 @@ export async function waitForFrame(
  * {@link waitForFrame}, keeping the node it resolved and the settled tree that
  * node came out of.
  *
- * `runType` needs both: the tree as it stood when the tap was dispatched is the
+ * `runType` needs both: the last tree read before the tap was dispatched is the
  * only record of what the tap could have hit (see {@link tapCandidates}), and
  * the node is the element the step went on to tap — which is not always what
  * the same selector resolves to a moment later (see {@link trackTarget}).
+ *
+ * "The last read", not "the screen at the instant of the tap": {@link
+ * settleTree} returns the last read that SUCCEEDED on its best-effort timeout
+ * path, so when the read after it runs to the platform's cap before failing,
+ * the tree handed back predates the tap by `SETTLE_POLL_MS` plus that read's
+ * duration — up to ~15s on Android, ~10s on Chromium, ~5s on iOS. A node that
+ * had already moved out from under the tap point can therefore still sit in
+ * `underTap` and confirm a clear the screen at dispatch time would not have.
+ * That window opens only when a read fails outright, which is the same outage
+ * `settleTree` throws on once NO read succeeds; `settleTree` gives the caller
+ * no signal that its return was best-effort, so nothing downstream can narrow
+ * it further today.
  */
 async function waitForFrameAndTree(
   env: ActionEnv,
@@ -1245,6 +1257,14 @@ type FocusOutcome =
  * A form of n fields typed into without a `clear` would otherwise pay n × 3s
  * for verdicts nobody reads, whenever the tree flags something that covers the
  * field rather than the field itself.
+ *
+ * The exit fires on the two verdicts that mean focus HAS landed somewhere over
+ * the target, and deliberately not on a tree that flags focus nowhere: there is
+ * nothing focused yet to type into, and the rest of the wait is the app's focus
+ * round-trip. So the iOS build without `firstResponder` documented above — the
+ * one shape where no read ever flags anything — still pays the whole
+ * {@link TYPE_FOCUS_TIMEOUT_MS} and its reads on every plain `type`, for a
+ * verdict `runType` discards. Known, and the safe side of the trade.
  *
  * Current Android is NOT that tree, so the saving is smaller than it looks
  * there: surveyed across eight screens on API 36 / WebView 151, including a
@@ -1993,8 +2013,11 @@ async function runRotate(
  * observation. Every arm keeps the substring "refusing to clear", which is what
  * a caller (and the suite) greps for.
  *
- * Deliberately names no element text: a flow report is written to disk and
- * echoed to the agent, and a focused node's label can BE the field's value.
+ * Deliberately names no element text: the reason is echoed to the agent and
+ * printed by `argent flow run`, and a focused node's label can BE the field's
+ * value. (Nothing writes the step report to a file — `--output` exports failed
+ * snapshot images only — but stdout and the agent's context are surfaces
+ * enough.)
  */
 function clearRefusalReason(into: FlowSelector, focus: FocusOutcome): string {
   const sel = describeSelector(into);
