@@ -87,6 +87,10 @@ const foreignTarget = { connectKey: "127.0.0.1:5559", connection: "TCP", state: 
 /** `hw.lcd.single.width`/`height` of the phone image, echoed by the guest's `render resolution`. */
 const PANEL = { width: 1320, height: 2856 };
 const logPath = join(tmpdir(), `argent-harmony-${INSTANCE}.log`);
+/** A second instance the manager keeps apart from {@link INSTANCE} by one space. */
+const SPACED_INSTANCE = "Phone 1";
+/** Its log: the space escaped, since the name is not a safe filename as it stands. */
+const spacedLogPath = join(tmpdir(), "argent-harmony-Phone%201.log");
 
 /** Stands in for the detached `Emulator -start`, which normally never exits. */
 class FakeEmulator extends EventEmitter {
@@ -834,7 +838,7 @@ describe("boot-device — HarmonyOS emulator path", () => {
     vi.useFakeTimers();
 
     const pending = boot({ bootTimeoutMs: 900_000 });
-    const settled = expect(pending).rejects.toThrow(/create one in DevEco Studio/);
+    const settled = expect(pending).rejects.toThrow(/Create one in DevEco Studio if there is none/);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(spawnMock).toHaveBeenCalledWith(
       expect.any(String),
@@ -1300,6 +1304,64 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await settled;
 
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps waiting through a stop-wait listing that answered no rows at all", async () => {
+    // The sibling case: `listHarmonyInstances` resolves `[]` for a `-list` that
+    // ran and printed a diagnostic, not only for a host with no instances — and
+    // an instance that stopped keeps a row of its own, with `isRunning` false.
+    // So no rows is the unreadable answer, and taking it for a shutdown sends
+    // `-start` at an instance still up.
+    let listed = 0;
+    listHarmonyInstances.mockImplementation(() => {
+      listed += 1;
+      if (listed === 1)
+        return Promise.resolve([
+          { name: INSTANCE, deviceType: "Phone", osVersion: null, running: true, display: PANEL },
+        ]);
+      return Promise.resolve([]);
+    });
+    vi.useFakeTimers();
+
+    const pending = boot({ force: true, bootTimeoutMs: 30_000 });
+    const settled = expect(pending).rejects.toThrow(/still running when the 30s budget ran out/);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await settled;
+
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("gives two instances that differ only in an unsafe character their own start logs", async () => {
+    // The log is opened `"w"`, so collapsing every unsafe character onto `_`
+    // would point "Phone 1" and "Phone_1" at one file — and a boot of the second
+    // truncates the first's diagnostic while its manager is still dying, leaving
+    // that failure to be reported with nothing printed.
+    const children: FakeEmulator[] = [];
+    spawnMock.mockImplementation(() => {
+      const spawned = new FakeEmulator();
+      children.push(spawned);
+      return spawned;
+    });
+    listHarmonyInstances.mockResolvedValue([
+      { name: SPACED_INSTANCE, deviceType: "Phone", osVersion: null, running: false },
+      { name: INSTANCE, deviceType: "Phone", osVersion: null, running: false },
+    ]);
+    vi.useFakeTimers();
+
+    const spaced = boot({ harmonyInstance: SPACED_INSTANCE, bootTimeoutMs: 900_000 });
+    const spacedSettled = expect(spaced).rejects.toThrow(/Cannot find image for the profile/);
+    await vi.advanceTimersByTimeAsync(1_000);
+    writeFileSync(spacedLogPath, "Cannot find image for the profile\n");
+
+    const underscored = boot({ bootTimeoutMs: 900_000 }).catch((e: Error) => e);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(children).toHaveLength(2);
+
+    children[0].emit("exit", 1, null);
+    children[1].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await spacedSettled;
+    await underscored;
   });
 
   it("reports a manager that could not be spawned instead of taking the server down", async () => {

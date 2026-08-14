@@ -291,6 +291,17 @@ describe("terminateHarmonyApp", () => {
     const err = await terminateHarmonyApp("dev", "com.example.a10104002").catch((e: unknown) => e);
     expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
   });
+
+  it("fails a stop that printed nothing recognisable", async () => {
+    // The success line is the only evidence the stop happened. `aa`'s `error:`
+    // headline is not a reliable stand-in for its absence: `runHdcShell` returns
+    // stdout only, so a diagnostic written to stderr arrives here as an empty
+    // string, and reading that as success hands `restart-app` a live process.
+    runHdcShell.mockResolvedValueOnce(ok(""));
+    await expect(terminateHarmonyApp("dev", "c")).rejects.toThrow(
+      "Failed to stop 'c' on HarmonyOS device 'dev': the ability assistant printed nothing"
+    );
+  });
 });
 
 describe("launch-app on harmony", () => {
@@ -364,6 +375,34 @@ describe("restart-app on harmony", () => {
       "aa start -b 'com.huawei.hmos.calculator' -a 'CalculatorAbility' -m 'phone'",
     ]);
   });
+
+  it("does not launch when the stop reported neither success nor an error", async () => {
+    // The outcome the tool exists to prevent: `aa start` on a still-running app
+    // foregrounds it and prints success, so a stop taken on faith turns into
+    // `restarted: true` for a process that never went away.
+    runHdcShell.mockResolvedValueOnce(ok(""));
+    await expect(
+      harmonyRestartImpl.handler({}, { udid: device.id, bundleId: "c" }, device)
+    ).rejects.toThrow(/Failed to stop 'c'/);
+    expect(runHdcShell).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds each step so the whole restart stays inside the MCP client's 30s cap", async () => {
+    // Past 30s the client aborts and replays the call while the abandoned hdc
+    // children keep running, so a second `aa start` races the first. Nothing
+    // here declares `longRunning`, and `runHdcShell`'s own default would give
+    // these three steps 90s between them.
+    runHdcShell
+      .mockResolvedValueOnce(ok("force stop process successfully."))
+      .mockResolvedValueOnce(ok(CALCULATOR))
+      .mockResolvedValueOnce(ok("start ability successfully."));
+    await harmonyRestartImpl.handler({}, { udid: device.id, bundleId: "c" }, device);
+    const budgets = runHdcShell.mock.calls.map((c) => c[2]);
+    expect(budgets).toEqual([8_000, 6_000, 10_000]);
+    expect(budgets.reduce<number>((total, ms) => total + (ms ?? Number.NaN), 0)).toBeLessThan(
+      30_000
+    );
+  });
 });
 
 describe("openHarmonyUrl", () => {
@@ -380,5 +419,47 @@ describe("openHarmonyUrl", () => {
     runHdcShell.mockResolvedValueOnce(ok("start ability successfully."));
     await openHarmonyUrl("dev", "app://x?a=1&b=2;id");
     expect(runHdcShell.mock.calls[0][1]).toBe("aa start -U 'app://x?a=1&b=2;id'");
+  });
+
+  it("bounds the `aa start -U` call well inside the MCP client's 30s cap", async () => {
+    // open-url is one hdc call, but it takes its budget from the same ceiling as
+    // the launch path rather than `runHdcShell`'s 30s default — at the default a
+    // slow open is aborted and replayed, and the replay opens the URI twice.
+    runHdcShell.mockResolvedValueOnce(ok("start ability successfully."));
+    await openHarmonyUrl("dev", "app://x");
+    expect(runHdcShell.mock.calls[0][2]).toBe(10_000);
+  });
+
+  it("reports a URI no app claims as not_found", async () => {
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        "error: failed to start ability.\nError Code:10103101  Error Message:Failed to find a matching application for implicit launch."
+      )
+    );
+    const err = await openHarmonyUrl("dev", "nope://x").catch((e: unknown) => e);
+    expect(getFailureSignal(err as Error)?.error_kind).toBe("not_found");
+  });
+
+  it("reports a claimed URI whose handler refused as a subprocess failure", async () => {
+    // A handler exists and would not start — `10104001` is the same code the
+    // launch path calls a subprocess failure. Calling it not_found tells the
+    // agent to go fix a URI that is fine.
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        "error: failed to start ability.\nError Code:10104001  Error Message:The specified ability does not exist."
+      )
+    );
+    const err = await openHarmonyUrl("dev", "app://x").catch((e: unknown) => e);
+    expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
+  });
+
+  it("matches the coded line, not the digits wherever they appear", async () => {
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        "error: failed to start ability.\nAbility name: com.example.a10103101\nError Code:10104001  Error Message:The specified ability does not exist."
+      )
+    );
+    const err = await openHarmonyUrl("dev", "app://x").catch((e: unknown) => e);
+    expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
   });
 });

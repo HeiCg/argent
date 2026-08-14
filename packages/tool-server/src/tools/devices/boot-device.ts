@@ -1519,15 +1519,18 @@ const HARMONY_IMAGE_RESTRICTION =
   "the image; an instance has to be created in DevEco Studio on a host that can download one.";
 
 /**
- * Said when the start failed and the manager lists no instances at all. Zero
- * instances is equally what a host that simply has not created one yet looks
- * like — including inside mainland China, where the download works — so this
- * states what was observed and offers the restriction as a possible cause
- * rather than asserting it the way {@link HARMONY_IMAGE_RESTRICTION} does.
+ * Said when the start failed and the listing came back empty. Empty is what a
+ * host that simply has not created an instance yet looks like — including
+ * inside mainland China, where the download works — and equally what a `-list`
+ * that ran and printed a diagnostic looks like, since `listHarmonyInstances`
+ * answers `[]` for that too. So this states what was observed and offers the
+ * restriction as a possible cause rather than asserting it the way
+ * {@link HARMONY_IMAGE_RESTRICTION} does.
  */
 const HARMONY_NO_INSTANCES =
-  "The emulator manager lists no HarmonyOS instances at all; create one in DevEco Studio before " +
-  "starting it. If creating one fails for want of an image, note that Huawei serves HarmonyOS " +
+  "The emulator manager listed no HarmonyOS instances — either none has been created, or the " +
+  "listing itself failed; `Emulator -list -details` shows which. Create one in DevEco Studio if " +
+  "there is none. If creating one fails for want of an image, note that Huawei serves HarmonyOS " +
   "emulator images only within mainland China.";
 
 /** Said when the instance was already running, its target therefore unidentifiable. */
@@ -1762,7 +1765,14 @@ async function startHarmonyEmulator(
       failure_command: "deveco_emulator",
     });
   }
-  const logPath = join(tmpdir(), `argent-harmony-${instanceName.replace(/[^\w.-]/g, "_")}.log`);
+  // Escaped rather than blanked to `_`, because the log is opened `"w"`:
+  // collapsing every unsafe character onto one would point two instances the
+  // manager keeps apart ("Phone 1", "Phone_1") at a single file, and a boot of
+  // the second truncates the first's diagnostic mid-start — leaving a failure
+  // to be reported with nothing printed. `%` is itself escaped, so the mapping
+  // stays one-to-one.
+  const safeName = instanceName.replace(/[^\w.-]/g, (c) => `%${c.codePointAt(0)!.toString(16)}`);
+  const logPath = join(tmpdir(), `argent-harmony-${safeName}.log`);
   const logFd = openSync(logPath, "w");
   const child = spawn(bin, ["-start", instanceName], {
     detached: true,
@@ -2072,7 +2082,12 @@ async function waitForHarmonyInstanceStopped(name: string, deadline: number): Pr
     const instances = await listHarmonyInstances(Math.min(HARMONY_LIST_TIMEOUT_MS, budget)).catch(
       () => null
     );
-    if (instances && !instances.some((i) => i.name === name && i.running)) return true;
+    // Only a listing WITH ROWS can say the instance stopped. A `-list` that ran
+    // and printed a diagnostic resolves to `[]` rather than throwing, and the
+    // stopped instance itself is still a row (with `isRunning` false), so an
+    // empty answer is the unreadable one — and reading it as "gone" would
+    // `-start` into an instance still running.
+    if (instances?.length && !instances.some((i) => i.name === name && i.running)) return true;
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;
     await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));

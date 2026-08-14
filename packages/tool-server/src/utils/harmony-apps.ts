@@ -17,6 +17,38 @@ import { runHdcShell, shellQuote } from "./harmony-hdc";
 /** Printed verbatim by `aa start` on success. */
 const AA_SUCCESS = "start ability successfully.";
 
+/**
+ * Printed verbatim by `aa force-stop` on success — measured over `hdc shell` on
+ * a HarmonyOS emulator, for a running app and an already-stopped one alike.
+ *
+ * Matched positively because `aa`'s failures share no marker: the same emulator
+ * answers a rejected invocation with a bare `usage: aa force-stop …` line, and
+ * writes its coded diagnostic under a capital `Error Code:` that a scan for the
+ * lowercase `error:` headline misses.
+ */
+const AA_STOP_SUCCESS = "force stop process successfully.";
+
+/**
+ * Per-call ceilings for the `aa`/`bm` steps.
+ *
+ * None of launch-app, restart-app or open-url declares `longRunning`, so the MCP
+ * client aborts a call at 30s and *replays* it while the abandoned `hdc`
+ * children keep running — a second `aa start` racing the first. `runHdcShell`'s
+ * own 30s default would give restart-app's stop-dump-start 90s between them, so
+ * each step is capped instead: 24s worst case for restart-app, 16s for
+ * launch-app, 10s for open-url.
+ *
+ * The split follows the Android twins' magnitudes (`am force-stop` 15s,
+ * `cmd package resolve-activity` 10s, `am start -W` 30s) scaled to fit all three
+ * in one budget. Every one of them is far above the work itself — measured over
+ * `hdc shell`, `aa start` answers in 50-100ms, returning once the ability has
+ * been asked for rather than once it is drawn — so what they bound is a wedged
+ * daemon, not a slow app.
+ */
+const AA_STOP_TIMEOUT_MS = 8_000;
+const BM_DUMP_TIMEOUT_MS = 6_000;
+const AA_START_TIMEOUT_MS = 10_000;
+
 interface HarmonyBundleEntry {
   /**
    * The ability to launch, in the spelling `aa start` accepts — which is the
@@ -67,7 +99,11 @@ export async function resolveHarmonyEntry(
   connectKey: string,
   bundleId: string
 ): Promise<HarmonyBundleEntry> {
-  const { stdout } = await runHdcShell(connectKey, `bm dump -n ${shellQuote(bundleId)}`);
+  const { stdout } = await runHdcShell(
+    connectKey,
+    `bm dump -n ${shellQuote(bundleId)}`,
+    BM_DUMP_TIMEOUT_MS
+  );
   const start = stdout.indexOf("{");
   if (start === -1) {
     // `bm dump` prints a prose line for an unknown bundle rather than JSON.
@@ -159,25 +195,33 @@ const AA_NO_SUCH_PACKAGE = "Error Code:10104002";
  * `aa force-stop` takes the bundle name and, unlike `aa start`, needs no ability
  * — there is nothing to resolve. Stopping an app that is not running is not a
  * failure to it: measured on 6.0.1 against three never-launched bundles, it
- * answers `force stop process successfully.` So every `error:` it does print is
- * a real refusal and propagates — `restart-app` exists to guarantee a fresh
- * process, and reporting `restarted: true` for an app still running with its old
- * state is the one outcome it must not produce.
+ * answers `force stop process successfully.` So {@link AA_STOP_SUCCESS} is the
+ * whole verdict, read the way the launch path reads its own — a coded refusal, a
+ * diagnostic `runHdcShell` never saw because `aa` wrote it to stderr, or nothing
+ * at all are equally a stop that did not happen. `restart-app` exists to
+ * guarantee a fresh process, and reporting `restarted: true` for an app still
+ * running with its old state is the one outcome it must not produce.
+ *
+ * The bundle name is positional: `aa force-stop -b <bundle>` answers `10104002
+ * … not installed` even for an installed, running app.
  */
 export async function terminateHarmonyApp(connectKey: string, bundleId: string): Promise<void> {
-  const { stdout } = await runHdcShell(connectKey, `aa force-stop ${shellQuote(bundleId)}`);
-  if (stdout.includes("error:")) {
-    throw new FailureError(
-      `Failed to stop '${bundleId}' on HarmonyOS device '${connectKey}': ${firstLine(stdout)}`,
-      {
-        error_code: FAILURE_CODES.HARMONY_ABILITY_START_FAILED,
-        failure_stage: "harmony_force_stop",
-        failure_area: "tool_server",
-        error_kind: stdout.includes(AA_NO_SUCH_PACKAGE) ? "not_found" : "subprocess",
-        failure_command: "hdc",
-      }
-    );
-  }
+  const { stdout } = await runHdcShell(
+    connectKey,
+    `aa force-stop ${shellQuote(bundleId)}`,
+    AA_STOP_TIMEOUT_MS
+  );
+  if (stdout.includes(AA_STOP_SUCCESS)) return;
+  throw new FailureError(
+    `Failed to stop '${bundleId}' on HarmonyOS device '${connectKey}': ${firstLine(stdout)}`,
+    {
+      error_code: FAILURE_CODES.HARMONY_ABILITY_START_FAILED,
+      failure_stage: "harmony_force_stop",
+      failure_area: "tool_server",
+      error_kind: stdout.includes(AA_NO_SUCH_PACKAGE) ? "not_found" : "subprocess",
+      failure_command: "hdc",
+    }
+  );
 }
 
 /**
@@ -213,10 +257,22 @@ export async function launchHarmonyApp(connectKey: string, bundleId: string): Pr
   const entry = await resolveHarmonyEntry(connectKey, bundleId);
   const { stdout } = await runHdcShell(
     connectKey,
-    `aa start -b ${shellQuote(bundleId)} -a ${shellQuote(entry.mainAbility)} -m ${shellQuote(entry.module)}`
+    `aa start -b ${shellQuote(bundleId)} -a ${shellQuote(entry.mainAbility)} -m ${shellQuote(entry.module)}`,
+    AA_START_TIMEOUT_MS
   );
   assertAbilityStarted(stdout, connectKey, bundleId);
 }
+
+/**
+ * What `aa start -U` says when no installed ability claims the scheme — the
+ * open-url counterpart of {@link AA_NO_SUCH_PACKAGE}, and the only failure here
+ * that is about something not existing. Every other code comes from a handler
+ * that does exist and refused, which is a subprocess failure.
+ *
+ * Prefixed like {@link AA_NO_SUCH_PACKAGE}: the URI is caller input, and a bare
+ * number could be forged by output quoting it.
+ */
+const AA_NO_IMPLICIT_MATCH = "Error Code:10103101";
 
 /**
  * Open a URI through whichever app claims it.
@@ -228,7 +284,11 @@ export async function launchHarmonyApp(connectKey: string, bundleId: string): Pr
  * discover a dialog sitting on the screen.
  */
 export async function openHarmonyUrl(connectKey: string, url: string): Promise<void> {
-  const { stdout } = await runHdcShell(connectKey, `aa start -U ${shellQuote(url)}`);
+  const { stdout } = await runHdcShell(
+    connectKey,
+    `aa start -U ${shellQuote(url)}`,
+    AA_START_TIMEOUT_MS
+  );
   if (!stdout.includes(AA_SUCCESS)) {
     throw new FailureError(
       `HarmonyOS device '${connectKey}' could not open '${url}': ${firstLine(stdout)}. ` +
@@ -238,7 +298,7 @@ export async function openHarmonyUrl(connectKey: string, url: string): Promise<v
         error_code: FAILURE_CODES.HARMONY_ABILITY_START_FAILED,
         failure_stage: "harmony_open_url",
         failure_area: "tool_server",
-        error_kind: "not_found",
+        error_kind: stdout.includes(AA_NO_IMPLICIT_MATCH) ? "not_found" : "subprocess",
         failure_command: "hdc",
       }
     );
