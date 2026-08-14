@@ -28,7 +28,7 @@ beforeEach(() => {
   openHarmonyUrlMock.mockResolvedValue(undefined);
 });
 
-describe("open-url HarmonyOS handler surfaces the caveat only for web URLs", () => {
+describe("open-url HarmonyOS handler caveats every URL it reports as opened", () => {
   it("attaches note for an https URL, appended to the shared web-URL note", async () => {
     const url = "https://bsky.app/profile/tvpworld.bsky.social";
     const res = await harmonyImpl.handler({}, { udid: device.id, url }, device);
@@ -39,7 +39,7 @@ describe("open-url HarmonyOS handler surfaces the caveat only for web URLs", () 
     // both halves are load-bearing, and on this platform the caveat is the only
     // signal that `opened: true` may mean nothing happened on screen.
     expect(res.note).toContain(httpDeepLinkNote(url));
-    expect(res.note).toMatch(/aa start -U. reports success for a web URL even when nothing opens/);
+    expect(res.note).toMatch(/aa start -U. reports success whenever the system accepts the URI/);
     expect(res.note?.startsWith(httpDeepLinkNote(url)!)).toBe(true);
     // No stray separator or stringified `undefined` from the composition.
     expect(res.note).not.toMatch(/undefined|^\s|\s\s|\s$/);
@@ -48,16 +48,19 @@ describe("open-url HarmonyOS handler surfaces the caveat only for web URLs", () 
     expect(openHarmonyUrlMock).toHaveBeenCalledWith(CONNECT_KEY, url);
   });
 
-  it("omits note for a custom-scheme deep link", async () => {
-    const res = await harmonyImpl.handler(
-      {},
-      { udid: device.id, url: "bluesky://profile/x" },
-      device
-    );
+  it("attaches the caveat alone for a non-web scheme, which the shared note skips", async () => {
+    // A scheme the system routes to its app selector reports success exactly
+    // like a handled one: measured on 6.0.1, `tel:12345` and `mailto:a@b.com`
+    // both print `start ability successfully.` and leave a modal "No options to
+    // open with" on screen. Only a scheme nothing claims at all throws
+    // (10103101), so `opened: true` needs the caveat here too.
+    const res = await harmonyImpl.handler({}, { udid: device.id, url: "tel:12345" }, device);
     expect(res.opened).toBe(true);
-    // A custom scheme no app claims fails loudly on HarmonyOS (10103101), so
-    // there is nothing here for a caveat to hedge about.
-    expect(res.note).toBeUndefined();
+    expect(httpDeepLinkNote("tel:12345")).toBeUndefined();
+    expect(res.note).toMatch(/aa start -U. reports success whenever the system accepts the URI/);
+    expect(res.note).toMatch(/No options to open with/);
+    // The shared web-URL note must not be pasted onto a non-web scheme.
+    expect(res.note).not.toMatch(/Universal Links/);
   });
 
   it("propagates a device-side failure instead of resolving with a note", async () => {

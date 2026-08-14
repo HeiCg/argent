@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { getFailureSignal, type DeviceInfo } from "@argent/registry";
 import { runHdcShell as realRunHdcShell } from "../src/utils/harmony-hdc";
-import { resolveHarmonyEntry, launchHarmonyApp, openHarmonyUrl } from "../src/utils/harmony-apps";
+import {
+  resolveHarmonyEntry,
+  launchHarmonyApp,
+  openHarmonyUrl,
+  terminateHarmonyApp,
+} from "../src/utils/harmony-apps";
+import { harmonyImpl as harmonyRestartImpl } from "../src/tools/restart-app/platforms/harmony";
 
 // Only the transport is faked: these tests are about what the module makes of
 // `bm`/`aa` output, and both CLIs report failure on stdout while exiting 0.
@@ -230,6 +237,81 @@ describe("launchHarmonyApp", () => {
     expect(runHdcShell.mock.calls[1][1]).toBe(
       "aa start -b 'com.huawei.hmos.calculator' -a 'CalculatorAbility' -m 'phone'"
     );
+  });
+});
+
+describe("terminateHarmonyApp", () => {
+  it("succeeds on the success line, which is also what a not-running app gets", async () => {
+    // Measured on 6.0.1 against three never-launched bundles: `aa force-stop`
+    // reports success rather than a not-running error, which is why restart-app
+    // tolerates nothing here.
+    runHdcShell.mockResolvedValueOnce(ok("force stop process successfully."));
+    await expect(terminateHarmonyApp("dev", "com.huawei.hmos.calculator")).resolves.toBeUndefined();
+    expect(runHdcShell.mock.calls[0][1]).toBe("aa force-stop 'com.huawei.hmos.calculator'");
+  });
+
+  it("throws on an `error:` line, even though `aa` exits 0", async () => {
+    runHdcShell.mockResolvedValueOnce(
+      ok("error: failed to force stop process.\nError Code:16000050  Error Message:Internal error.")
+    );
+    await expect(terminateHarmonyApp("dev", "c")).rejects.toThrow(/Failed to stop 'c'.*16000050/s);
+  });
+
+  it("reports a missing bundle as not_found, like the launch path's lookup", async () => {
+    // The same condition through the other verb: `resolveHarmonyEntry` answers
+    // not_found for a bundle that is not installed, so a stop must not tell the
+    // agent to retry a subprocess that can never succeed.
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        "error: failed to force stop process.\nError Code:10104002  Error Message:Failed to retrieve specified package information."
+      )
+    );
+    const err = await terminateHarmonyApp("dev", "com.example.nope").catch((e: unknown) => e);
+    expect(getFailureSignal(err as Error)?.error_kind).toBe("not_found");
+  });
+
+  it("keeps a non-package stop failure classified as a subprocess failure", async () => {
+    runHdcShell.mockResolvedValueOnce(
+      ok("error: failed to force stop process.\nError Code:16000050  Error Message:Internal error.")
+    );
+    const err = await terminateHarmonyApp("dev", "c").catch((e: unknown) => e);
+    expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
+  });
+});
+
+describe("restart-app on harmony", () => {
+  const device: DeviceInfo = { id: "harmony-KEY", platform: "harmony", kind: "device" };
+
+  it("does not launch — and does not report a restart — when the stop was refused", async () => {
+    // The whole point of the tool: a refused stop leaves the old process up, so
+    // the launch that follows would no-op on it and `restarted: true` would name
+    // a process that never went away.
+    runHdcShell.mockResolvedValueOnce(
+      ok("error: failed to force stop process.\nError Code:16000050  Error Message:Internal error.")
+    );
+    await expect(
+      harmonyRestartImpl.handler({}, { udid: device.id, bundleId: "c" }, device)
+    ).rejects.toThrow(/Failed to stop 'c'/);
+    expect(runHdcShell).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops and then launches, reporting the bundle it restarted", async () => {
+    runHdcShell
+      .mockResolvedValueOnce(ok("force stop process successfully."))
+      .mockResolvedValueOnce(ok(CALCULATOR))
+      .mockResolvedValueOnce(ok("start ability successfully."));
+    await expect(
+      harmonyRestartImpl.handler(
+        {},
+        { udid: device.id, bundleId: "com.huawei.hmos.calculator" },
+        device
+      )
+    ).resolves.toEqual({ restarted: true, bundleId: "com.huawei.hmos.calculator" });
+    expect(runHdcShell.mock.calls.map((c) => c[1])).toEqual([
+      "aa force-stop 'com.huawei.hmos.calculator'",
+      "bm dump -n 'com.huawei.hmos.calculator'",
+      "aa start -b 'com.huawei.hmos.calculator' -a 'CalculatorAbility' -m 'phone'",
+    ]);
   });
 });
 

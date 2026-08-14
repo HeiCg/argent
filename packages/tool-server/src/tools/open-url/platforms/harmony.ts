@@ -9,22 +9,26 @@ import { httpDeepLinkNote } from "../deep-link-note";
  * handler, which is exactly what this tool wants (and the one place implicit
  * start is the right verb; see `harmony-apps`).
  *
- * A **custom scheme** with no registered handler is caught: `aa` prints
- * `10103101 Failed to find a matching application for implicit launch`, which
- * `openHarmonyUrl` turns into a throw. (It also leaves a "No options to open
- * with" chooser on the device, which the thrown message says.)
+ * A scheme **no ability claims at all** is caught: `aa` prints `10103101 Failed
+ * to find a matching application for implicit launch`, which `openHarmonyUrl`
+ * turns into a throw.
  *
- * A **web URL** is not, and cannot be. Measured on HarmonyOS 6.0.1: `aa start
- * -U https://example.com` prints `start ability successfully.` and the
- * foreground app does not change — no browser opens, no chooser appears, and
- * nothing on the device distinguishes that from a handled link. So the caveat is
- * stated rather than papered over; `opened: true` here means "the system
- * accepted the URI", which on this platform is weaker than it sounds.
+ * What the system does accept is not caught, and cannot be. Measured on
+ * HarmonyOS 6.0.1, all printing `start ability successfully.`:
+ * `https://example.com` leaves the foreground app unchanged, and `tel:` /
+ * `mailto:` hand off to the system app selector, which puts up a modal "No
+ * options to open with" that covers the screen until it is dismissed. Nothing in
+ * `aa`'s output separates any of those from a link that was really followed, so
+ * the caveat rides on every URL rather than on web ones alone: `opened: true`
+ * here means "the system accepted the URI", which on this platform is weaker
+ * than it sounds.
  */
-const HARMONY_WEB_URL_CAVEAT =
-  "On HarmonyOS specifically, `aa start -U` reports success for a web URL even when nothing " +
-  "opens it — a device with no browser registered for https shows no chooser and stays on the " +
-  "current screen. Confirm with describe or screenshot before treating the link as followed.";
+const HARMONY_OPEN_CAVEAT =
+  "On HarmonyOS specifically, `aa start -U` reports success whenever the system accepts the URI, " +
+  "so `opened: true` does not mean an app opened it: a web URL with no browser registered stays " +
+  "on the current screen, and a scheme the system hands to its app selector (measured with `tel:` " +
+  'and `mailto:`) leaves a modal "No options to open with" dialog covering the screen. Confirm ' +
+  "with describe or screenshot, and dismiss any chooser, before treating the link as followed.";
 
 export const harmonyImpl: PlatformImpl<OpenUrlServices, OpenUrlParams, OpenUrlResult> = {
   requires: ["hdc"],
@@ -34,7 +38,7 @@ export const harmonyImpl: PlatformImpl<OpenUrlServices, OpenUrlParams, OpenUrlRe
     return {
       opened: true,
       url: params.url,
-      note: shared ? `${shared} ${HARMONY_WEB_URL_CAVEAT}` : undefined,
+      note: shared ? `${shared} ${HARMONY_OPEN_CAVEAT}` : HARMONY_OPEN_CAVEAT,
     };
   },
 };

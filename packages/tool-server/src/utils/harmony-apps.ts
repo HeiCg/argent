@@ -1,4 +1,4 @@
-import { FAILURE_CODES, FailureError, getFailureSignal } from "@argent/registry";
+import { FAILURE_CODES, FailureError } from "@argent/registry";
 import { runHdcShell, shellQuote } from "./harmony-hdc";
 
 /**
@@ -132,19 +132,25 @@ export async function resolveHarmonyEntry(
   };
 }
 
-/** Stop a running app. See {@link terminateHarmonyApp} for why this is separate. */
-const AA_NOT_RUNNING_MARKER = "not running";
+/**
+ * `aa force-stop` says this when the package does not exist, which is
+ * `resolveHarmonyEntry`'s unknown-bundle case reached through the other verb.
+ * Both are the caller naming an app that is not installed, so both report
+ * `not_found` — telling an agent to fix the bundle id rather than to retry a
+ * subprocess that will fail identically forever.
+ */
+const AA_NO_SUCH_PACKAGE_CODE = "10104002";
 
 /**
  * Stop every process of an app.
  *
  * `aa force-stop` takes the bundle name and, unlike `aa start`, needs no ability
- * — there is nothing to resolve.
- *
- * Throws when the stop was refused for any reason other than the app not
- * running: `restart-app` exists to guarantee a fresh process, and reporting
- * `restarted: true` for an app that is still running with its old state is the
- * one outcome it must not produce.
+ * — there is nothing to resolve. Stopping an app that is not running is not a
+ * failure to it: measured on 6.0.1 against three never-launched bundles, it
+ * answers `force stop process successfully.` So every `error:` it does print is
+ * a real refusal and propagates — `restart-app` exists to guarantee a fresh
+ * process, and reporting `restarted: true` for an app still running with its old
+ * state is the one outcome it must not produce.
  */
 export async function terminateHarmonyApp(connectKey: string, bundleId: string): Promise<void> {
   const { stdout } = await runHdcShell(connectKey, `aa force-stop ${shellQuote(bundleId)}`);
@@ -155,24 +161,10 @@ export async function terminateHarmonyApp(connectKey: string, bundleId: string):
         error_code: FAILURE_CODES.HARMONY_ABILITY_START_FAILED,
         failure_stage: "harmony_force_stop",
         failure_area: "tool_server",
-        error_kind: "subprocess",
+        error_kind: stdout.includes(AA_NO_SUCH_PACKAGE_CODE) ? "not_found" : "subprocess",
       }
     );
   }
-}
-
-/**
- * The one `aa force-stop` failure that is not a failure: stopping an app that
- * is not running. A restart of an app that was never launched must still
- * launch it — that is a start, not an error — so `restart-app` narrows its
- * tolerance to this exact diagnostic rather than swallowing every refusal.
- */
-export function isHarmonyAppNotRunning(error: unknown): boolean {
-  return (
-    error instanceof FailureError &&
-    getFailureSignal(error)?.failure_stage === "harmony_force_stop" &&
-    error.message.includes(AA_NOT_RUNNING_MARKER)
-  );
 }
 
 /**
