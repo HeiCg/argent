@@ -30,11 +30,17 @@ vi.mock("../src/utils/harmony-cli", async () => {
     resolveHarmonyEmulator: (...a: unknown[]) => resolveHarmonyEmulator(...a),
   };
 });
-vi.mock("../src/utils/harmony-devices", () => ({
-  listHarmonyInstances: (...a: unknown[]) => listHarmonyInstances(...a),
-  listHarmonyHdcTargets: (...a: unknown[]) => listHarmonyHdcTargets(...a),
-  listHarmonyHdcTargetsStrict: (...a: unknown[]) => listHarmonyHdcTargetsStrict(...a),
-}));
+vi.mock("../src/utils/harmony-devices", async () => {
+  const actual = await vi.importActual<typeof import("../src/utils/harmony-devices")>(
+    "../src/utils/harmony-devices"
+  );
+  return {
+    ...actual,
+    listHarmonyInstances: (...a: unknown[]) => listHarmonyInstances(...a),
+    listHarmonyHdcTargets: (...a: unknown[]) => listHarmonyHdcTargets(...a),
+    listHarmonyHdcTargetsStrict: (...a: unknown[]) => listHarmonyHdcTargetsStrict(...a),
+  };
+});
 vi.mock("../src/utils/harmony-hdc", async () => {
   const actual = await vi.importActual<typeof import("../src/utils/harmony-hdc")>(
     "../src/utils/harmony-hdc"
@@ -489,6 +495,69 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect(existsSync(probes[0]!)).toBe(false);
   });
 
+  it("caps the readiness probe at what is left of the budget", async () => {
+    // The probe outlives the wait that abandons it: `uitest` is serialized per
+    // device, so a 20s client still running after boot-device returned is 20s
+    // the caller's first interaction spends queued — and `HARMONY_NOT_DRIVABLE`
+    // is precisely the answer that tells them to retry it.
+    const probes: { at: number; timeoutMs?: number }[] = [];
+    harmonyDumpLayout.mockImplementation((_key: unknown, path: string, timeoutMs?: number) => {
+      probes.push({ at: Date.now(), timeoutMs });
+      writeFileSync(path, "{}");
+      return new Promise(() => {}); // never answers, like a guest still coming up
+    });
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    // Under `uitest`'s own 20s ceiling, so a probe taking that ceiling would
+    // outlive the boot — which is the whole failure being pinned.
+    const startedAt = Date.now();
+    const pending = boot({ bootTimeoutMs: 10_000 });
+    const settled = expect(pending).resolves.toMatchObject({
+      note: expect.stringMatching(/uitest/),
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    await settled;
+
+    expect(probes.length).toBeGreaterThan(0);
+    for (const probe of probes) {
+      expect(probe.timeoutMs).toBeGreaterThan(0);
+      // Killed by the deadline at the latest — never `uitest`'s own ceiling
+      // measured from whenever this probe happened to start.
+      expect(probe.at + probe.timeoutMs!).toBeLessThanOrEqual(startedAt + 10_000);
+    }
+  });
+
+  it("caps the target listing at what is left of the budget too", async () => {
+    // The listing opens every poll round, so its own 8s ceiling is spent on top
+    // of the budget rather than inside it: the round that starts with 6s left
+    // still hands `hdc` 8, and the boot answers 2s late every time the last
+    // round lands there.
+    const listings: { at: number; timeoutMs?: number }[] = [];
+    listHarmonyHdcTargetsStrict.mockResolvedValue([PHONE]);
+    listHarmonyHdcTargets.mockImplementation((timeoutMs?: number) => {
+      listings.push({ at: Date.now(), timeoutMs });
+      // Long enough that rounds start at 0/6s/12s/…, so one of them opens
+      // inside the last 8s of the budget with the ceiling still to pay.
+      return new Promise((resolve) => setTimeout(() => resolve([PHONE]), 4_000));
+    });
+    vi.useFakeTimers();
+
+    const startedAt = Date.now();
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    const settled = expect(pending).resolves.toMatchObject({
+      note: expect.stringMatching(/bootTimeoutMs/),
+    });
+    await vi.advanceTimersByTimeAsync(40_000);
+    await settled;
+
+    expect(listings.length).toBeGreaterThan(1);
+    for (const listing of listings) {
+      expect(listing.timeoutMs).toBeGreaterThan(0);
+      expect(listing.at + listing.timeoutMs!).toBeLessThanOrEqual(startedAt + 30_000);
+    }
+  });
+
   it("reports the manager's death during the readiness wait, not a slow guest", async () => {
     // The wait for the target polls the exit latch for exactly this reason, and
     // the readiness wait sits in the same window: a dead emulator answers no
@@ -509,6 +578,10 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect(err.message).toMatch(/disk image corrupted/);
     expect(err.message).toMatch(/`127\.0\.0\.1:5555`\) was still coming up/);
     expect(err.message).not.toMatch(/before "Phone_1" registered/);
+    expect(getFailureSignal(err)).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_MANAGER_EXITED,
+      failure_command: "deveco_emulator",
+    });
   });
 
   it("removes the readiness probe's dump when the wait ends by throwing", async () => {
@@ -762,6 +835,11 @@ describe("boot-device — HarmonyOS emulator path", () => {
     child.die(`"${INSTANCE}" is not found. Please create the device(folder): /x`, 1);
     await vi.advanceTimersByTimeAsync(3_000);
     await settled;
+
+    expect(getFailureSignal(await pending.catch((e: unknown) => e))).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_START_FAILED,
+      failure_command: "deveco_emulator",
+    });
   });
 
   it("does not claim the host has no instances when the listing itself failed", async () => {
@@ -906,6 +984,42 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
     expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
     expect(spawnMock).not.toHaveBeenCalled();
+    expect(getFailureSignal(await pending.catch((e: unknown) => e))).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_STOP_TIMEOUT,
+      failure_command: "deveco_emulator",
+    });
+  });
+
+  it("caps the stop-wait listing at what is left of the budget", async () => {
+    // Same shape one stage earlier: a `force` restart pays for the shutdown out
+    // of the boot's budget, so the listing that watches for the instance to go
+    // down must not run past the deadline the caller set for the whole restart.
+    const listings: { at: number; timeoutMs?: number }[] = [];
+    listHarmonyInstances.mockImplementation((timeoutMs?: number) => {
+      listings.push({ at: Date.now(), timeoutMs });
+      return new Promise((resolve) =>
+        setTimeout(
+          () => resolve([{ name: INSTANCE, deviceType: "Phone", osVersion: null, running: true }]),
+          4_000
+        )
+      );
+    });
+    vi.useFakeTimers();
+
+    const startedAt = Date.now();
+    const pending = boot({ force: true, bootTimeoutMs: 30_000 });
+    const settled = expect(pending).rejects.toThrow(/still running when the 30s budget ran out/);
+    await vi.advanceTimersByTimeAsync(40_000);
+    await settled;
+
+    // The pre-stop lookup runs unbounded; every wait round after it is the
+    // one on the clock.
+    const waitRounds = listings.slice(1);
+    expect(waitRounds.length).toBeGreaterThan(1);
+    for (const listing of waitRounds) {
+      expect(listing.timeoutMs).toBeGreaterThan(0);
+      expect(listing.at + listing.timeoutMs!).toBeLessThanOrEqual(startedAt + 30_000);
+    }
   });
 
   it("says the instance is down when a `force` restart refuses at the snapshot", async () => {
@@ -938,6 +1052,12 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
     expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
     expect(spawnMock).not.toHaveBeenCalled();
+    // `hdc`, not the manager: this refusal is the device table being unreadable,
+    // and the binary named is what the caller has to go and check.
+    expect(getFailureSignal(await pending.catch((e: unknown) => e))).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_TARGET_LIST_FAILED,
+      failure_command: "hdc",
+    });
   });
 
   it("stops probing arrivals once the budget is spent, rather than once per arrival", async () => {

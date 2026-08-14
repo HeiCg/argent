@@ -193,8 +193,9 @@ export async function runHarmonyEmulator(
 /**
  * Emulator-image downloads are restricted by Huawei to mainland China; outside it
  * `Emulator -install` prints exactly this and exits 0. Without an image no
- * instance can be created, so this is the wall every non-China host hits — worth
- * naming precisely instead of reporting the generic create failure it causes.
+ * instance can be created, so this is the wall a host outside it hits until one
+ * is obtained — worth naming precisely instead of reporting the generic create
+ * failure it causes.
  */
 const CHINA_ONLY_MARKER = "available only in the Chinese mainland";
 

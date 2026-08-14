@@ -1,5 +1,25 @@
-import { describe, it, expect } from "vitest";
-import { parseHarmonyInstances, parseHdcTargets } from "../src/utils/harmony-devices";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import {
+  HARMONY_LIST_TIMEOUT_MS,
+  HDC_LIST_TIMEOUT_MS,
+  listHarmonyHdcTargets,
+  listHarmonyInstances,
+  parseHarmonyInstances,
+  parseHdcTargets,
+} from "../src/utils/harmony-devices";
+import { runHarmonyEmulator as realRunHarmonyEmulator } from "../src/utils/harmony-cli";
+import { runHdc as realRunHdc } from "../src/utils/harmony-hdc";
+
+vi.mock("../src/utils/harmony-cli", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/harmony-cli")>()),
+  resolveHarmonyEmulator: vi.fn(async () => "/deveco/Emulator"),
+  runHarmonyEmulator: vi.fn(async () => ({ stdout: "[Empty]", stderr: "" })),
+}));
+vi.mock("../src/utils/harmony-hdc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/harmony-hdc")>()),
+  resolveHdc: vi.fn(async () => "/deveco/hdc"),
+  runHdc: vi.fn(async () => ({ stdout: "[Empty]", stderr: "" })),
+}));
 import {
   HARMONY_EMULATOR_ID_PREFIX,
   HARMONY_ID_PREFIX,
@@ -219,5 +239,30 @@ describe("HarmonyOS device ids", () => {
   it("leaves an unprefixed name alone", () => {
     expect(harmonyInstanceName("Phone_1")).toBe("Phone_1");
     expect(harmonyConnectKey("025DEK236V035771")).toBe("025DEK236V035771");
+  });
+});
+
+// Both wrappers default to 30s, which is itself above `list-devices`'
+// BRANCH_DEADLINE_MS — so a discovery call that forgets to pass its own timeout
+// is not merely slower, it is a branch the backstop truncates while it is still
+// working, dropping every HarmonyOS device from the list. The deadline test
+// compares the two constants; this is what ties them to the calls.
+describe("discovery calls are bounded by the constants list-devices was sized against", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("bounds `Emulator -list -details`", async () => {
+    await listHarmonyInstances();
+    expect(vi.mocked(realRunHarmonyEmulator)).toHaveBeenCalledWith(
+      ["-list", "-details"],
+      HARMONY_LIST_TIMEOUT_MS
+    );
+  });
+
+  it("bounds `hdc list targets`", async () => {
+    await listHarmonyHdcTargets();
+    expect(vi.mocked(realRunHdc)).toHaveBeenCalledWith(
+      ["list", "targets", "-v"],
+      HDC_LIST_TIMEOUT_MS
+    );
   });
 });

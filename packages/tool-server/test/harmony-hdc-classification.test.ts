@@ -54,8 +54,9 @@ describe("hdcFileRecv success is read off the transfer line", () => {
 
   it("refuses a transfer the connector never made", async () => {
     // The whole failure is on stderr with no prefix, so classifying on `[Fail]`
-    // alone resolves — handing `harmony-screen` a path with nothing at it, which
-    // it then reports as a decode failure of a file that was never copied.
+    // alone resolves — handing `harmony-screen` a path with nothing at it, where
+    // `readFile` throws a bare ENOENT naming a tmp file, the connector's own
+    // diagnostic having already been dropped.
     hdcBehaves("connect-fail");
     const err = await rejection(hdcFileRecv("127.0.0.1:5555", remote, join(root, "out.png")));
     expect(err.message).toContain("Connect server failed");

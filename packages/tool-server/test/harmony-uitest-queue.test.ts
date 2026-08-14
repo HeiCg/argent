@@ -47,10 +47,11 @@ async function releaseOne(): Promise<void> {
 
 describe("the per-device uitest queue", () => {
   it("holds a second call on one device until the first has finished", async () => {
-    // `uitest` is single-instance on the device: a second one launched while the
-    // first is running fails with `Another uitest is running`, so two argent
-    // calls landing together would fail whichever lost the race — a failure the
-    // caller cannot do anything about and did not cause.
+    // `uitest` does not tolerate overlapping invocations: a second one launched
+    // while the first is running blocks, and is SIGKILLed if that carries it
+    // past the 20s timeout — measured as one 20s failure out of two concurrent
+    // `dumpLayout`s. Two argent calls landing together take that loss on a race
+    // the caller did not cause and cannot do anything about.
     const first = harmonyScreenCap("dev-a", "/tmp/a.png");
     const second = harmonyScreenCap("dev-a", "/tmp/b.png");
     await settle();

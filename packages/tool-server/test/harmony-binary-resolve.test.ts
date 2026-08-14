@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 
 // Force the PATH probe to miss. `resolveHdc` falls back to `command -v hdc` for
 // standalone command-line-tools installs, and on a host that has one it would
@@ -136,6 +137,35 @@ describe("DevEco Studio binary resolution", () => {
 
       const { resolveHarmonyEmulator } = await loadResolvers();
       expect(await resolveHarmonyEmulator()).toBe(emulator);
+    });
+  });
+
+  describe("running the manager once it has been resolved", () => {
+    it("classifies a run killed with nothing to say as a subprocess failure", async () => {
+      // The one `Emulator` failure with no diagnostic to read: killed at the
+      // timeout, so `emulatorFailure`'s marker list has nothing to match and the
+      // caller cannot classify it downstream. Left a bare `Error` it buckets as
+      // REGISTRY_TOOL_EXECUTION_FAILED, which is where every unclassified throw
+      // in the server already sits — and drops the binary that hung with it.
+      const bundle = join(tmpRoot, "DevEco-Studio.app");
+      const emulator = join(bundle, "Contents", EMULATOR_RELATIVE);
+      await mkdir(join(emulator, ".."), { recursive: true });
+      await writeFile(emulator, "#!/usr/bin/env bash\nsleep 30\n");
+      await chmod(emulator, 0o755);
+      process.env.DEVECO_STUDIO_HOME = bundle;
+
+      vi.resetModules();
+      const { runHarmonyEmulator } = await import("../src/utils/harmony-cli");
+      const err = await runHarmonyEmulator(["-list"], 100).then(
+        () => null,
+        (e: unknown) => e
+      );
+
+      expect(getFailureSignal(err)).toMatchObject({
+        error_code: FAILURE_CODES.HARMONY_EMULATOR_COMMAND_FAILED,
+        error_kind: "subprocess",
+        failure_command: "deveco_emulator",
+      });
     });
   });
 

@@ -29,7 +29,7 @@ vi.mock("../src/utils/harmony-devices", () => ({
   listHarmonyHdcTargets: vi.fn(async () => []),
 }));
 
-import { listDevicesTool } from "../src/tools/devices/list-devices";
+import { BRANCH_DEADLINE_MS, listDevicesTool } from "../src/tools/devices/list-devices";
 import { listHarmonyInstances, listHarmonyHdcTargets } from "../src/utils/harmony-devices";
 
 const instances = vi.mocked(listHarmonyInstances);
@@ -170,5 +170,25 @@ describe("list-devices HarmonyOS branch", () => {
       ["emulator", "booted_emu", "running"],
       ["emulator", "stopped_emu", "stopped"],
     ]);
+  });
+
+  it("returns the rest of the fleet when a HarmonyOS probe never answers", async () => {
+    // Both harmony probes are branches of the same `Promise.all` as every other
+    // platform's, so one that hangs — a wedged `hdc` daemon, a stuck manager —
+    // takes the whole `alwaysLoad` tool with it unless the branch deadline
+    // stands behind its per-call timeout. The listing must come back without
+    // the harmony entries rather than not come back.
+    vi.useFakeTimers();
+    hdcTargets.mockImplementation(() => new Promise(() => {}));
+    instances.mockResolvedValue([
+      { name: "emu", deviceType: "Phone", osVersion: null, running: false, display: null },
+    ]);
+
+    const pending = listDevicesTool.execute!({}, {});
+    await vi.advanceTimersByTimeAsync(BRANCH_DEADLINE_MS + 1_000);
+    const devices = (await pending).devices.filter((d) => d.platform === "harmony");
+
+    expect(devices.map((d) => d.kind)).toEqual(["emulator"]);
+    vi.useRealTimers();
   });
 });

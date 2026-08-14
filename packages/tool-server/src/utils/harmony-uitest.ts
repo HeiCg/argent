@@ -43,7 +43,12 @@ import { hdcFileRecv, runHdcShell, shellQuote } from "./harmony-hdc";
 /** Where on-device artifacts are staged before being copied to the host. */
 const REMOTE_TMP = "/data/local/tmp";
 
-const UITEST_TIMEOUT_MS = 20_000;
+/**
+ * Per-`uitest` ceiling. Exported because a caller working to a deadline of its
+ * own has to cap its probe against it: a probe outliving the call that made it
+ * holds this device's queue, and the next call is what waits.
+ */
+export const UITEST_TIMEOUT_MS = 20_000;
 
 /**
  * `uitest` does not tolerate overlapping invocations: a second call on the
@@ -290,10 +295,11 @@ export interface HarmonyLayoutNode {
  */
 export async function harmonyDumpLayout(
   connectKey: string,
-  localPath: string
+  localPath: string,
+  timeoutMs = UITEST_TIMEOUT_MS
 ): Promise<HarmonyLayoutNode> {
   await viaDeviceTmp(connectKey, ".json", localPath, async (remotePath) => {
-    await runUitest(connectKey, `dumpLayout -p ${shellQuote(remotePath)}`);
+    await runUitest(connectKey, `dumpLayout -p ${shellQuote(remotePath)}`, timeoutMs);
   });
   const raw = await readFile(localPath, "utf8");
   try {

@@ -60,12 +60,14 @@ import {
   runHarmonyEmulator,
 } from "../../utils/harmony-cli";
 import {
+  HARMONY_LIST_TIMEOUT_MS,
+  HDC_LIST_TIMEOUT_MS,
   listHarmonyHdcTargets,
   listHarmonyHdcTargetsStrict,
   listHarmonyInstances,
 } from "../../utils/harmony-devices";
 import { resolveHdc } from "../../utils/harmony-hdc";
-import { harmonyDisplay, harmonyDumpLayout } from "../../utils/harmony-uitest";
+import { UITEST_TIMEOUT_MS, harmonyDisplay, harmonyDumpLayout } from "../../utils/harmony-uitest";
 import { bootElectronApp, type ElectronBootResult } from "./boot-electron";
 
 const execFileAsync = promisify(execFile);
@@ -1617,8 +1619,8 @@ const HARMONY_NO_HDC =
   "connector (or put `hdc` on PATH), then call `list-devices`.";
 
 /** The targets `hdc` can drive right now. */
-async function connectedHarmonyTargets() {
-  const targets = await listHarmonyHdcTargets().catch(() => []);
+async function connectedHarmonyTargets(timeoutMs?: number) {
+  const targets = await listHarmonyHdcTargets(timeoutMs).catch(() => []);
   return targets.filter((t) => t.state === "Connected");
 }
 
@@ -1811,10 +1813,15 @@ type HarmonyTargetOutcome = {
  *
  * Only the waiting is abandoned. The probe's own timeout still ends the process
  * it spawned, so nothing outlives the call that would not have anyway.
+ *
+ * Takes a thunk rather than a promise: an argument is evaluated before the call,
+ * so a promise passed in has already spawned its `hdc` client by the time the
+ * clock is read here — one per arrival, every one of them past the deadline.
  */
-async function withinBudget<T>(work: Promise<T>, deadline: number): Promise<T | null> {
+async function withinBudget<T>(start: () => Promise<T>, deadline: number): Promise<T | null> {
   const remaining = deadline - Date.now();
   if (remaining <= 0) return null;
+  const work = start();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -1883,7 +1890,19 @@ async function waitForHarmonyTarget(
   let sawMismatch = false;
   let sawUnprobeable = false;
   for (;;) {
-    const arrived = (await connectedHarmonyTargets()).filter(
+    // The listing is bounded by the budget too, not just the probes it feeds:
+    // `hdc list targets` carries its own 8s ceiling, so a daemon slow enough to
+    // reach it would return this wait a quarter past `bootTimeoutMs`. Bounded
+    // rather than abandoned, since a listing that lands at the deadline still
+    // names the key this whole wait exists to find.
+    const budget = deadline - Date.now();
+    if (budget <= 0) {
+      return {
+        key: null,
+        reason: sawMismatch ? "mismatched" : sawUnprobeable ? "unprobeable" : "none",
+      };
+    }
+    const arrived = (await connectedHarmonyTargets(Math.min(HDC_LIST_TIMEOUT_MS, budget))).filter(
       (t) => !before.has(t.connectKey) && couldBeHarmonyEmulator(t)
     );
     const confirmed: string[] = [];
@@ -1893,7 +1912,7 @@ async function waitForHarmonyTarget(
         continue;
       }
       const display = await withinBudget(
-        harmonyDisplay(target.connectKey).catch(() => null),
+        () => harmonyDisplay(target.connectKey).catch(() => null),
         deadline
       );
       // A guest that has not composited yet answers `0x0`. The manager side of
@@ -1968,15 +1987,23 @@ async function waitForHarmonyDrivable(
       // Asked before it is spawned, not only before it is awaited: a target
       // confirmed on arrival alone (no panel to check it against) can resolve at
       // the deadline itself, and a probe started then is one nothing will ever
-      // read — holding this device's `uitest` queue for its own timeout, which
-      // is exactly what the retry the caller is about to be told to make would
-      // then wait behind.
-      if (Date.now() >= deadline) return false;
-      inFlight = harmonyDumpLayout(connectKey, probePath).then(
+      // read.
+      const budget = deadline - Date.now();
+      if (budget <= 0) return false;
+      // Capped by the budget as well as by `uitest`'s own ceiling: a probe this
+      // wait abandons at the deadline still holds the device's `uitest` queue
+      // until its client is killed, and the retry the caller is about to be told
+      // to make is what waits behind it.
+      const probe = harmonyDumpLayout(
+        connectKey,
+        probePath,
+        Math.min(UITEST_TIMEOUT_MS, budget)
+      ).then(
         () => true,
         () => false
       );
-      const answered = await withinBudget(inFlight, deadline);
+      inFlight = probe;
+      const answered = await withinBudget(() => probe, deadline);
       if (answered !== null) inFlight = null;
       if (answered) return true;
       checkAlive();
@@ -2023,7 +2050,14 @@ async function waitForHarmonyExit(
  */
 async function waitForHarmonyInstanceStopped(name: string, deadline: number): Promise<boolean> {
   for (;;) {
-    const instances = await listHarmonyInstances().catch(() => null);
+    // Bounded for the same reason as the arrival wait's listing: this one
+    // carries a 6s ceiling of its own, and a `force` restart spends one budget
+    // on the shutdown and the boot that follows it.
+    const budget = deadline - Date.now();
+    if (budget <= 0) return false;
+    const instances = await listHarmonyInstances(Math.min(HARMONY_LIST_TIMEOUT_MS, budget)).catch(
+      () => null
+    );
     if (instances && !instances.some((i) => i.name === name && i.running)) return true;
     const remaining = deadline - Date.now();
     if (remaining <= 0) return false;

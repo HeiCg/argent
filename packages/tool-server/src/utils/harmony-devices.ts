@@ -135,10 +135,18 @@ export function parseHarmonyInstances(stdout: string): HarmonyInstance[] {
  */
 export const HARMONY_LIST_TIMEOUT_MS = 6_000;
 
-/** Emulator instances, or [] when DevEco Studio isn't installed. */
-export async function listHarmonyInstances(): Promise<HarmonyInstance[]> {
+/**
+ * Emulator instances, or [] when DevEco Studio isn't installed.
+ *
+ * `timeoutMs` is for a caller polling this on a deadline of its own: the
+ * default is a ceiling for one call, not a promise about when the call returns
+ * to a caller that has less time than that left.
+ */
+export async function listHarmonyInstances(
+  timeoutMs = HARMONY_LIST_TIMEOUT_MS
+): Promise<HarmonyInstance[]> {
   if (!(await resolveHarmonyEmulator())) return [];
-  const result = await runHarmonyEmulator(["-list", "-details"], HARMONY_LIST_TIMEOUT_MS);
+  const result = await runHarmonyEmulator(["-list", "-details"], timeoutMs);
   if (emulatorFailure(result)) return [];
   return parseHarmonyInstances(result.stdout);
 }
@@ -201,8 +209,10 @@ export function parseHdcTargets(stdout: string): HarmonyHdcTarget[] {
  * Callers that cannot read "no devices" and "no answer" as the same thing want
  * {@link listHarmonyHdcTargetsStrict}.
  */
-export async function listHarmonyHdcTargets(): Promise<HarmonyHdcTarget[]> {
-  return listTargets(false);
+export async function listHarmonyHdcTargets(
+  timeoutMs = HDC_LIST_TIMEOUT_MS
+): Promise<HarmonyHdcTarget[]> {
+  return listTargets(false, timeoutMs);
 }
 
 /**
@@ -215,8 +225,10 @@ export async function listHarmonyHdcTargets(): Promise<HarmonyHdcTarget[]> {
  * BASELINE to compare against cannot, since an empty baseline quietly means
  * "everything that shows up next is new".
  */
-export async function listHarmonyHdcTargetsStrict(): Promise<HarmonyHdcTarget[]> {
-  return listTargets(true);
+export async function listHarmonyHdcTargetsStrict(
+  timeoutMs = HDC_LIST_TIMEOUT_MS
+): Promise<HarmonyHdcTarget[]> {
+  return listTargets(true, timeoutMs);
 }
 
 /**
@@ -232,9 +244,9 @@ function hdcDiagnostic(result: { stdout: string; stderr: string }): string | nul
   return hdcProse(result);
 }
 
-async function listTargets(strict: boolean): Promise<HarmonyHdcTarget[]> {
+async function listTargets(strict: boolean, timeoutMs: number): Promise<HarmonyHdcTarget[]> {
   if (!(await resolveHdc())) return [];
-  const result = await runHdc(["list", "targets", "-v"], HDC_LIST_TIMEOUT_MS);
+  const result = await runHdc(["list", "targets", "-v"], timeoutMs);
   const failure = hdcFailure(result) ?? hdcDiagnostic(result);
   if (failure) {
     if (strict) throw new Error(failure);
