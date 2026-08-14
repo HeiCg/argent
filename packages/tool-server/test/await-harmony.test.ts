@@ -93,6 +93,31 @@ describe("await-ui-element on HarmonyOS", () => {
     expect(calls()).toBeGreaterThan(1);
   });
 
+  it("`visible` succeeds against a suspended panel but says the display is off", async () => {
+    // `uitest dumpLayout` keeps serving the last composited frame while the
+    // panel is suspended, so the element is "there" and the wait is right to
+    // resolve — but the following tap lands nowhere. Without the caveat a
+    // wait-then-tap loop runs to completion against a dead screen.
+    vi.mocked(harmonyDisplay).mockResolvedValue({ ...DISPLAY, screenOn: false });
+    sequenceDumps([dumpWith("Submit")]);
+    const tool = createAwaitUiElementTool(harmonyRegistry());
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: HARMONY_ID,
+        condition: "visible",
+        selector: { text: "Submit" },
+        timeoutMs: 2000,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.note).toMatch(/display is off/i);
+    expect(result.note).toMatch(/taps land nowhere/i);
+  });
+
   it("passes the bare connect key to `uitest`, not the `harmony-` prefixed device id", async () => {
     sequenceDumps([dumpWith("Submit")]);
     const tool = createAwaitUiElementTool(harmonyRegistry());
