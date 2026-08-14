@@ -36,24 +36,40 @@ const execFileAsync = promisify(execFile);
 export const HARMONY_EMPTY_SENTINEL = "[Empty]";
 
 /**
- * DevEco Studio's macOS install root. Non-macOS hosts (DevEco also ships for
- * Windows) are supported through `$DEVECO_STUDIO_HOME` rather than a second
- * hardcoded root, because only the macOS layout has been verified here.
+ * DevEco Studio's default macOS install location. Non-macOS hosts (DevEco also
+ * ships for Windows) are reached through `$DEVECO_STUDIO_HOME` rather than a
+ * second hardcoded root, because only the macOS layout has been verified here.
  */
-const MACOS_DEVECO_ROOT = "/Applications/DevEco-Studio.app/Contents";
+const MACOS_DEVECO_APP = "/Applications/DevEco-Studio.app";
 
 /** Path of the emulator manager relative to a DevEco Studio install root. */
 const EMULATOR_RELATIVE = join("tools", "emulator", "Emulator");
 
-// Mirrors android-binary.ts / vega-cli.ts: memoize briefly so a burst of tool
-// calls pays one lookup, but a *negative* result expires — a user who installs
-// DevEco Studio mid-session recovers without restarting the tool-server.
-const BINARY_TTL_MS = 60_000;
-let cachedEmulator: { path: string | null; checkedAt: number } | undefined;
+/**
+ * DevEco Studio install roots to search, in order.
+ *
+ * `$DEVECO_STUDIO_HOME` is tried ahead of the macOS default rather than in place
+ * of it — the same ordering `androidRoots()` gives `$ANDROID_HOME`, for the same
+ * reason: a stale or mis-set variable must not be able to hide a working
+ * install. Here that failure is silent, since both readers turn a null binary
+ * into an empty device list.
+ *
+ * Every root is searched with `Contents` appended too, because on macOS the
+ * install root a user can name is the `DevEco-Studio.app` bundle while the SDK
+ * and tools sit one level inside it. Both spellings name the same install.
+ */
+function devecoRoots(): string[] {
+  const roots: string[] = [];
+  const configured = process.env.DEVECO_STUDIO_HOME?.trim();
+  if (configured) roots.push(configured);
+  if (process.platform === "darwin") roots.push(MACOS_DEVECO_APP);
+  return roots.flatMap((root) => [root, join(root, "Contents")]);
+}
 
 // X_OK rather than F_OK (as in vega-cli.ts): a present-but-non-executable file
-// at the DevEco path is a partial install, and returning it would surface as an
-// opaque EACCES at spawn instead of the actionable not-found hint.
+// at a DevEco path is a partial install, so the search moves on to the next root
+// rather than returning a path that would surface as an opaque EACCES at spawn
+// instead of the actionable not-found hint.
 async function isExecutable(p: string): Promise<boolean> {
   try {
     await access(p, fsConstants.X_OK);
@@ -62,6 +78,26 @@ async function isExecutable(p: string): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * Absolute path to a binary that ships inside DevEco Studio, named by its path
+ * relative to the install root, or null when no candidate root holds an
+ * executable copy of it. Shared with `harmony-hdc.ts`: `hdc` and the emulator
+ * manager come out of one install, so they have to agree on where it is.
+ */
+export async function resolveDevecoBinary(relative: string): Promise<string | null> {
+  for (const root of devecoRoots()) {
+    const candidate = join(root, relative);
+    if (await isExecutable(candidate)) return candidate;
+  }
+  return null;
+}
+
+// Mirrors android-binary.ts / vega-cli.ts: memoize briefly so a burst of tool
+// calls pays one lookup, but a *negative* result expires — a user who installs
+// DevEco Studio mid-session recovers without restarting the tool-server.
+const BINARY_TTL_MS = 60_000;
+let cachedEmulator: { path: string | null; checkedAt: number } | undefined;
 
 /**
  * Absolute path to the HarmonyOS emulator manager, or null when DevEco Studio
@@ -73,13 +109,7 @@ export async function resolveHarmonyEmulator(): Promise<string | null> {
   if (cachedEmulator && now - cachedEmulator.checkedAt < BINARY_TTL_MS) {
     return cachedEmulator.path;
   }
-  const configured = process.env.DEVECO_STUDIO_HOME?.trim();
-  const root = configured || (process.platform === "darwin" ? MACOS_DEVECO_ROOT : null);
-  let path: string | null = null;
-  if (root) {
-    const candidate = join(root, EMULATOR_RELATIVE);
-    if (await isExecutable(candidate)) path = candidate;
-  }
+  const path = await resolveDevecoBinary(EMULATOR_RELATIVE);
   cachedEmulator = { path, checkedAt: now };
   return path;
 }
@@ -101,8 +131,11 @@ export async function runHarmonyEmulator(
   const bin = await resolveHarmonyEmulator();
   if (!bin) {
     throw new Error(
-      "The HarmonyOS `Emulator` manager was not found. Install DevEco Studio, or set " +
-        "`$DEVECO_STUDIO_HOME` to its install root, then retry."
+      "The HarmonyOS `Emulator` manager was not found. Install DevEco Studio: a macOS install " +
+        "at /Applications/DevEco-Studio.app is found on its own, and anywhere else set " +
+        "`$DEVECO_STUDIO_HOME` to the directory holding `tools/emulator/Emulator` (on macOS " +
+        "that is the `DevEco-Studio.app` bundle, or the `Contents` directory inside it). " +
+        "Then retry."
     );
   }
   try {

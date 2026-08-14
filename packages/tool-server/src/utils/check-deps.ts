@@ -48,9 +48,9 @@ const INSTALL_HINTS: Record<ToolDependency, string> = {
   "vega":
     "Vega SDK CLI not found. Install the Amazon Vega SDK and run `source ~/vega/env` so `vega` (or its `kepler` alias) is on PATH; the resolver also checks `~/vega/bin/vega`. Only required for Vega (Fire TV) devices.",
   "harmony-emulator":
-    "HarmonyOS emulator manager not found. Install DevEco Studio; on a non-macOS host set `$DEVECO_STUDIO_HOME` to its install root. Only required to list or launch HarmonyOS emulators.",
+    "HarmonyOS emulator manager not found. Install DevEco Studio; a macOS install at `/Applications/DevEco-Studio.app` is found automatically, and anywhere else set `$DEVECO_STUDIO_HOME` to the directory holding `tools/emulator/Emulator` (the resolver also checks that path under `Contents/`, so a macOS app bundle works too). Only required to list or launch HarmonyOS emulators.",
   "hdc":
-    "`hdc`, the HarmonyOS device connector, was not found. Install DevEco Studio (it ships under `sdk/default/openharmony/toolchains`), or put `hdc` from the OpenHarmony command-line tools on PATH, or set `$DEVECO_STUDIO_HOME` to the DevEco install root. Only required to drive HarmonyOS devices.",
+    "`hdc`, the HarmonyOS device connector, was not found. Install DevEco Studio (it ships `hdc` under `sdk/default/openharmony/toolchains`, and a macOS install at `/Applications/DevEco-Studio.app` is found automatically), or put `hdc` from the OpenHarmony command-line tools on PATH, or set `$DEVECO_STUDIO_HOME` to the directory holding `sdk/default/openharmony/toolchains/hdc` (the resolver also checks that path under `Contents/`, so a macOS app bundle works too). Only required to drive HarmonyOS devices.",
 };
 
 async function probe(dep: ToolDependency): Promise<boolean> {

@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { access, constants as fsConstants } from "node:fs/promises";
 import { join } from "node:path";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import { formatSubprocessFailure } from "./subprocess-error";
 import { commandOnPath } from "./command-on-path";
+import { resolveDevecoBinary } from "./harmony-cli";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,22 +43,11 @@ export const HDC_EMPTY_SENTINEL = "[Empty]";
  */
 const RC_SENTINEL = "__argent_hdc_rc";
 
-const MACOS_DEVECO_ROOT = "/Applications/DevEco-Studio.app/Contents";
-
 /** Path of `hdc` relative to a DevEco Studio install root. */
 const HDC_RELATIVE = join("sdk", "default", "openharmony", "toolchains", "hdc");
 
 const BINARY_TTL_MS = 60_000;
 let cachedHdc: { path: string | null; checkedAt: number } | undefined;
-
-async function isExecutable(p: string): Promise<boolean> {
-  try {
-    await access(p, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Absolute path to `hdc`, or null when neither DevEco Studio nor a standalone
@@ -74,14 +63,7 @@ export async function resolveHdc(): Promise<string | null> {
   if (cachedHdc && now - cachedHdc.checkedAt < BINARY_TTL_MS) {
     return cachedHdc.path;
   }
-  const configured = process.env.DEVECO_STUDIO_HOME?.trim();
-  const root = configured || (process.platform === "darwin" ? MACOS_DEVECO_ROOT : null);
-  let path: string | null = null;
-  if (root) {
-    const candidate = join(root, HDC_RELATIVE);
-    if (await isExecutable(candidate)) path = candidate;
-  }
-  path ??= await commandOnPath("hdc");
+  const path = (await resolveDevecoBinary(HDC_RELATIVE)) ?? (await commandOnPath("hdc"));
   cachedHdc = { path, checkedAt: now };
   return path;
 }
@@ -90,9 +72,12 @@ async function resolveHdcOrThrow(): Promise<string> {
   const path = await resolveHdc();
   if (!path) {
     throw new FailureError(
-      "`hdc` (the HarmonyOS device connector) was not found. Install DevEco Studio, or set " +
-        "`$DEVECO_STUDIO_HOME` to its install root, or put `hdc` from the OpenHarmony " +
-        "command-line tools on PATH.",
+      "`hdc` (the HarmonyOS device connector) was not found. Install DevEco Studio: a macOS " +
+        "install at /Applications/DevEco-Studio.app is found on its own, and anywhere else set " +
+        "`$DEVECO_STUDIO_HOME` to the directory holding " +
+        "`sdk/default/openharmony/toolchains/hdc` (on macOS that is the `DevEco-Studio.app` " +
+        "bundle, or the `Contents` directory inside it). Alternatively put `hdc` from the " +
+        "OpenHarmony command-line tools on PATH.",
       {
         error_code: FAILURE_CODES.HARMONY_HDC_NOT_FOUND,
         failure_stage: "harmony_hdc_resolve_binary",
