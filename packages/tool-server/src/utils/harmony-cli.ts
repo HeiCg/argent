@@ -124,20 +124,20 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 /** See `HDC_KILL_SIGNAL`: a SIGTERM the child may ignore leaves `timeout` unenforced. */
 const EMULATOR_KILL_SIGNAL = "SIGKILL" as const;
 
+/** Said by every caller that needs the manager, so they cannot drift apart. */
+export const EMULATOR_NOT_FOUND =
+  "The HarmonyOS `Emulator` manager was not found. Install DevEco Studio: a macOS install " +
+  "at /Applications/DevEco-Studio.app is found on its own, and anywhere else set " +
+  "`$DEVECO_STUDIO_HOME` to the directory holding `tools/emulator/Emulator` (on macOS " +
+  "that is the `DevEco-Studio.app` bundle, or the `Contents` directory inside it). " +
+  "Then retry.";
+
 export async function runHarmonyEmulator(
   args: string[],
   timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<HarmonyRunResult> {
   const bin = await resolveHarmonyEmulator();
-  if (!bin) {
-    throw new Error(
-      "The HarmonyOS `Emulator` manager was not found. Install DevEco Studio: a macOS install " +
-        "at /Applications/DevEco-Studio.app is found on its own, and anywhere else set " +
-        "`$DEVECO_STUDIO_HOME` to the directory holding `tools/emulator/Emulator` (on macOS " +
-        "that is the `DevEco-Studio.app` bundle, or the `Contents` directory inside it). " +
-        "Then retry."
-    );
-  }
+  if (!bin) throw new Error(EMULATOR_NOT_FOUND);
   try {
     const { stdout, stderr } = await execFileAsync(bin, args, {
       timeout: timeoutMs,

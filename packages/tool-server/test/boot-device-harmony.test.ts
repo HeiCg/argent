@@ -418,6 +418,121 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect(result.note).toMatch(/still not answering `uitest`/);
   });
 
+  it("reports the manager's death during the readiness wait, not a slow guest", async () => {
+    // The wait for the target polls the exit latch for exactly this reason, and
+    // the readiness wait sits in the same window: a dead emulator answers no
+    // probe, which is what one still starting its window service looks like.
+    // Without the latch the boot spends the rest of the budget on a corpse and
+    // then hands back a drivable id telling the caller to retry.
+    harmonyDumpLayout.mockImplementation(() => {
+      child.die("error: the emulator instance quit unexpectedly (disk image corrupted)");
+      return Promise.reject(new Error("DumpLayout failed:Get window nodes failed"));
+    });
+    targets([PHONE], [PHONE, emulatorTarget]);
+
+    await expect(boot({ bootTimeoutMs: 30_000 })).rejects.toThrow(/disk image corrupted/);
+  });
+
+  it("says the key rests on arrival alone when the instance has no panel to check it against", async () => {
+    // A multi-display profile keys its LCDs differently, so `display` is null on
+    // a perfectly good instance — and the check that separates it from another
+    // device reconnecting in the same window has nothing to compare against.
+    // Returning the key unremarked is how a later tap lands on that device.
+    listHarmonyInstances.mockResolvedValue([
+      {
+        name: INSTANCE,
+        deviceType: "Phone",
+        osVersion: "HarmonyOS 6.1.1(24)",
+        running: false,
+        display: null,
+      },
+    ]);
+    targets([PHONE], [PHONE, emulatorTarget]);
+
+    const result = (await boot({})) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(result.note).toMatch(/does not describe a single panel/);
+    expect(harmonyDisplay).not.toHaveBeenCalled();
+  });
+
+  it("re-probes a target that read wrong once instead of disqualifying it for the boot", async () => {
+    // A guest mid-boot has not settled: this platform's flagship form factors
+    // are foldables, whose resolution changes with the fold. Latching the first
+    // reading rejects the instance argent itself started, for the whole budget.
+    harmonyDisplay
+      .mockResolvedValueOnce({ width: 1080, height: 2340, screenOn: true })
+      .mockResolvedValue({ ...PANEL, screenOn: true });
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(result.note).toBeUndefined();
+    expect(harmonyDisplay.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("reads a 0x0 panel as a guest that has not composited, not as another device", async () => {
+    // The manager side refuses zero as a panel, so reading it as someone else's
+    // would have the two sides of the one joining value disagree — and would
+    // report a guest that never got as far as compositing as proof that the
+    // target belongs to some other device.
+    harmonyDisplay.mockResolvedValue({ width: 0, height: 0, screenOn: true });
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.note).toMatch(/never reported its display/);
+    expect(result.note).not.toMatch(/is not the panel/);
+  });
+
+  it("does not blame `hdc` registration for a target that registered but never reported a panel", async () => {
+    // "had not registered with `hdc`" is a plain untruth here, and it sends the
+    // caller to raise a budget that was never the problem.
+    harmonyDisplay.mockRejectedValue(new Error("hidumper produced no render resolution"));
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(result.note).toMatch(/never reported its display/);
+    expect(result.note).not.toMatch(/had not registered/);
+  });
+
+  it("carries both caveats when the key is neither checked nor answering", async () => {
+    // One `note` field, two independent things left unproven. Dropping either
+    // for the other has the payload assert something the boot did not establish.
+    listHarmonyInstances.mockResolvedValue([
+      {
+        name: INSTANCE,
+        deviceType: "Phone",
+        osVersion: "HarmonyOS 6.1.1(24)",
+        running: false,
+        display: null,
+      },
+    ]);
+    harmonyDumpLayout.mockRejectedValue(new Error("DumpLayout failed:Get window nodes failed"));
+    targets([PHONE], [PHONE, emulatorTarget]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(result.note).toMatch(/does not describe a single panel/);
+    expect(result.note).toMatch(/still not answering `uitest`/);
+  });
+
   it("names the instance and says why when nothing registers within the budget", async () => {
     targets([PHONE]);
     vi.useFakeTimers();

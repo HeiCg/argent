@@ -53,6 +53,7 @@ import { listVvdImages } from "../../utils/vega-sdk";
 import { startVvd, stopVvd, isVvdRunning, waitForVvdRunning } from "../../utils/vega-vvd";
 import { resolveRunningVvdSerial, listVegaDevices } from "../../utils/vega-devices";
 import {
+  EMULATOR_NOT_FOUND,
   emulatorFailure,
   isChinaOnlyRestriction,
   resolveHarmonyEmulator,
@@ -1452,8 +1453,13 @@ function bootVega(params: {
 
 /**
  * `udid` is the id to drive next: the connect-key id once the instance reached
- * `hdc`, the instance id plus a `note` when it did not. Only the first is an id
- * the interaction tools accept.
+ * `hdc`, the instance id when it did not. Only the first is an id the
+ * interaction tools accept.
+ *
+ * `note` does not mark which of the two it is. It carries whatever the boot
+ * left unproven — why no key was resolved, or what is unestablished about the
+ * one that was — so a caller reading it as "this is the instance id" is wrong
+ * exactly when the caveat matters.
  */
 type HarmonyBootResult = {
   platform: "harmony";
@@ -1559,6 +1565,32 @@ const HARMONY_MISMATCHED_TARGET =
   'Call `list-devices` and drive the `kind: "device"` entry for the instance once it appears.';
 
 /**
+ * Said when a target registered but never reported a panel to check it against.
+ * Distinct from {@link HARMONY_MISMATCHED_TARGET}, which knows the target is
+ * someone else's, and from {@link HARMONY_NO_TARGET}, whose "had not registered"
+ * would be a plain untruth here — the target did register, so a longer budget
+ * is not the remedy.
+ */
+const HARMONY_UNPROBEABLE_TARGET =
+  "A target registered while the instance was booting but never reported its display, so argent " +
+  "could not tell whether it is this instance or another device that reconnected, and did not " +
+  'guess. Call `list-devices` and drive the `kind: "device"` entry for the instance.';
+
+/**
+ * Said when the key rests on arrival alone. The instance's config does not
+ * describe a single panel, so the check that separates it from another device
+ * reconnecting in the same window had nothing to compare against. The key is
+ * returned because it is the only candidate that appeared and usually is the
+ * instance — but silently returning an unchecked id is how every later tap ends
+ * up on someone else's device, so the caller is told what it rests on.
+ */
+const HARMONY_UNCONFIRMED_TARGET =
+  "This instance's configuration does not describe a single panel, so argent could not check the " +
+  "target it returned against it and matched on arrival timing alone. If another emulator or " +
+  "device reconnected while the instance was booting, this may be its connect key; confirm " +
+  "against `list-devices` before relying on it.";
+
+/**
  * Said when the instance registered but never answered `uitest` in time. The
  * connect key is returned regardless — it is the right id, and an interaction
  * tool retried by hand may well work — so this is a caveat, not a failure.
@@ -1651,13 +1683,7 @@ async function startHarmonyEmulator(
   instanceName: string
 ): Promise<{ exited: () => { reason: string; output: string } | null }> {
   const bin = await resolveHarmonyEmulator();
-  if (!bin) {
-    throw new Error(
-      "The HarmonyOS `Emulator` manager was not found. Install DevEco Studio, or set " +
-        "`$DEVECO_STUDIO_HOME` to the directory holding `tools/emulator/Emulator` (on macOS " +
-        "the app bundle itself works), then retry."
-    );
-  }
+  if (!bin) throw new Error(EMULATOR_NOT_FOUND);
   const logPath = join(tmpdir(), `argent-harmony-${instanceName.replace(/[^\w.-]/g, "_")}.log`);
   const logFd = openSync(logPath, "w");
   const child = spawn(bin, ["-start", instanceName], {
@@ -1696,6 +1722,20 @@ async function startHarmonyEmulator(
 }
 
 /**
+ * What the wait for a target concluded.
+ *
+ * `reason` says why there is no key, and is read only when there is none;
+ * `unconfirmed` marks a key that arrival alone picked out. Both feed the boot's
+ * `note`, and each has to stay distinct there: only "none" is a budget the
+ * caller can usefully raise.
+ */
+type HarmonyTargetOutcome = {
+  key: string | null;
+  unconfirmed?: boolean;
+  reason?: "ambiguous" | "mismatched" | "unprobeable" | "none";
+};
+
+/**
  * The connect key of the target that appears after a start, or null if none
  * does before `deadline`.
  *
@@ -1717,16 +1757,21 @@ async function startHarmonyEmulator(
  * host-local emulator is not on a cable), a candidate is confirmed against
  * `expected` — the panel the instance is configured with, which the guest
  * reports back as its `render resolution` — and two confirmed arrivals are
- * refused rather than guessed between, as the Android path refuses when more
- * than one serial appears.
+ * refused rather than guessed between.
  *
  * The panel check is a filter and never a requirement. An instance whose config
- * does not describe a single panel passes `expected: null` and is not checked at
- * all, and a target that cannot be probed yet is left pending for the next poll
- * rather than rejected — a row reaches `Connected` before its render service
- * answers. Only a target that answers with someone else's panel is out, and
- * then for good: re-probing it could not change the answer and would cost a
- * round trip per poll.
+ * does not describe a single panel passes `expected: null`, and its arrival is
+ * taken on arrival alone, flagged `unconfirmed` so the caller is told the id
+ * rests on timing rather than on identity.
+ *
+ * Nothing is rejected for good. A target that cannot be probed yet is left
+ * pending — a row reaches `Connected` before its render service answers — and
+ * so is one answering `0x0`, which is that service up but not yet composited.
+ * Even a target answering someone else's panel is only skipped for that poll:
+ * the reading is not final, since this platform's flagship form factors are
+ * foldables whose resolution changes with the fold, and a boot is when a
+ * guest's panel is least settled. Latching a verdict off one early reading
+ * would disqualify the instance argent itself started for the whole budget.
  *
  * What this does NOT cover: two instances sharing one device profile, whose
  * panels are identical by construction; and a second emulator registering
@@ -1741,11 +1786,12 @@ async function waitForHarmonyTarget(
   deadline: number,
   checkAlive: () => void,
   expected: { width: number; height: number } | null
-): Promise<{ key: string | null; ambiguous: boolean; mismatched: boolean }> {
-  const rejected = new Set<string>();
+): Promise<HarmonyTargetOutcome> {
+  let sawMismatch = false;
+  let sawUnprobeable = false;
   for (;;) {
     const arrived = (await connectedHarmonyTargets()).filter(
-      (t) => !before.has(t.connectKey) && couldBeHarmonyEmulator(t) && !rejected.has(t.connectKey)
+      (t) => !before.has(t.connectKey) && couldBeHarmonyEmulator(t)
     );
     const confirmed: string[] = [];
     for (const target of arrived) {
@@ -1754,22 +1800,35 @@ async function waitForHarmonyTarget(
         continue;
       }
       const display = await harmonyDisplay(target.connectKey).catch(() => null);
-      if (!display) continue;
+      // A guest that has not composited yet answers `0x0`. The manager side of
+      // this comparison refuses zero as a panel for the same reason, so reading
+      // it as someone else's would have the two sides disagree about the one
+      // value that joins them.
+      if (!display || display.width <= 0 || display.height <= 0) {
+        sawUnprobeable = true;
+        continue;
+      }
       if (sameHarmonyPanel(display, expected)) confirmed.push(target.connectKey);
-      else rejected.add(target.connectKey);
+      else sawMismatch = true;
     }
     if (confirmed.length === 1) {
-      return { key: confirmed[0]!, ambiguous: false, mismatched: false };
+      return { key: confirmed[0]!, unconfirmed: !expected };
     }
     // Two confirmed arrivals is a refusal to guess, not a slow boot, and it is
     // answered here rather than latched: polling on would spend the rest of the
     // budget on a decision already made, and would turn the refusal into a
     // guess the moment one of the two flapped and left the other alone.
-    if (confirmed.length > 1) return { key: null, ambiguous: true, mismatched: false };
+    if (confirmed.length > 1) return { key: null, reason: "ambiguous" };
     checkAlive();
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      return { key: null, ambiguous: false, mismatched: rejected.size > 0 };
+      // A target that registered and was declined, or one that registered and
+      // never answered, are both distinct from nothing arriving at all — the
+      // budget is not what failed, so the caller must not be sent to raise it.
+      return {
+        key: null,
+        reason: sawMismatch ? "mismatched" : sawUnprobeable ? "unprobeable" : "none",
+      };
     }
     await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
   }
@@ -1789,19 +1848,28 @@ async function waitForHarmonyTarget(
  *
  * The probe is a real `dumpLayout` rather than something cheaper because that
  * is the call the gap is in; `hidumper` answers throughout it.
+ *
+ * `checkAlive` is polled here for the same reason the wait for the target polls
+ * it: an emulator that dies in this window answers no probe, which is exactly
+ * what one still starting its window service looks like. Without it the manager
+ * can be gone — with its diagnostic already latched — for the whole remaining
+ * budget, and the boot still reports a drivable id under a note telling the
+ * caller to retry.
  */
-async function waitForHarmonyDrivable(connectKey: string, deadline: number): Promise<boolean> {
+async function waitForHarmonyDrivable(
+  connectKey: string,
+  deadline: number,
+  checkAlive: () => void
+): Promise<boolean> {
   const probePath = join(tmpdir(), `argent-harmony-bootprobe-${process.hrtime.bigint()}.json`);
   try {
     for (;;) {
-      if (
-        await harmonyDumpLayout(connectKey, probePath).then(
-          () => true,
-          () => false
-        )
-      ) {
-        return true;
-      }
+      const answered = await harmonyDumpLayout(connectKey, probePath).then(
+        () => true,
+        () => false
+      );
+      if (answered) return true;
+      checkAlive();
       const remaining = deadline - Date.now();
       if (remaining <= 0) return false;
       await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
@@ -1959,27 +2027,39 @@ async function bootHarmonyImpl(params: {
     assertEmulatorAlive();
   }
 
-  const outcome = hdcAvailable
+  const outcome: HarmonyTargetOutcome = hdcAvailable
     ? await waitForHarmonyTarget(before, bootDeadline, assertEmulatorAlive, expectedPanel)
-    : { key: null, ambiguous: false, mismatched: false };
+    : { key: null };
   const connectKey = outcome.key;
 
   // Registered is not driveable. The remaining budget rather than a slice of
   // it: the key is already in hand, so there is nothing else left to spend it
   // on, and an expiry is reported rather than walked into.
-  const drivable = connectKey ? await waitForHarmonyDrivable(connectKey, bootDeadline) : false;
+  const drivable = connectKey
+    ? await waitForHarmonyDrivable(connectKey, bootDeadline, assertEmulatorAlive)
+    : false;
 
-  const note = connectKey
-    ? drivable
-      ? undefined
-      : HARMONY_NOT_DRIVABLE
-    : !hdcAvailable
-      ? HARMONY_NO_HDC
-      : outcome.ambiguous
+  // Collected rather than picked: a key can be both unchecked and not yet
+  // answering, and dropping either caveat for the other would leave the payload
+  // asserting something the boot did not establish.
+  const caveats: string[] = [];
+  if (connectKey) {
+    if (outcome.unconfirmed) caveats.push(HARMONY_UNCONFIRMED_TARGET);
+    if (!drivable) caveats.push(HARMONY_NOT_DRIVABLE);
+  } else if (!hdcAvailable) {
+    caveats.push(HARMONY_NO_HDC);
+  } else {
+    caveats.push(
+      outcome.reason === "ambiguous"
         ? HARMONY_AMBIGUOUS_TARGET
-        : outcome.mismatched
+        : outcome.reason === "mismatched"
           ? HARMONY_MISMATCHED_TARGET
-          : HARMONY_NO_TARGET;
+          : outcome.reason === "unprobeable"
+            ? HARMONY_UNPROBEABLE_TARGET
+            : HARMONY_NO_TARGET
+    );
+  }
+  const note = caveats.length > 0 ? caveats.join(" ") : undefined;
 
   return {
     platform: "harmony",
@@ -2033,7 +2113,7 @@ Pick the platform by which argument you pass: 'udid' for an iOS simulator from l
 Use at the start of a session once you have picked a target.
 Returns a tagged payload: { platform: 'ios', udid, booted } or { platform: 'android', serial, avdName, booted } or { platform: 'vega', serial, vvdImage, booted } or { platform: 'harmony', udid, instanceName, booted, note? } or { platform: 'chromium', id, port, pid, booted } (an Electron app boots as a Chromium/CDP device).
 Android boots take 2–10 minutes depending on machine and cold/warm state; the tool transparently hot-boots from the AVD's default_boot snapshot when usable and falls back to cold boot otherwise. Vega starts the single SDK-managed VVD via the vega CLI (~10s) and returns once it reports running. If an Android/Electron boot stage fails, the tool terminates the device it spawned so the next retry starts clean.
-HarmonyOS hands the instance to DevEco Studio's Emulator manager, then waits for it to register with 'hdc' and returns its connect key as 'udid' — the id the interaction tools drive. The manager itself reports no readiness signal and never names a port, so an instance that is already running is left alone unless you pass 'force: true'; whenever the key could not be resolved the payload names the instance instead and carries a 'note' saying why. Huawei serves the emulator images only within mainland China, so on a host outside it no instance can exist to start.`,
+HarmonyOS hands the instance to DevEco Studio's Emulator manager, then waits for it to register with 'hdc' and returns its connect key as 'udid' — the id the interaction tools drive. The manager itself reports no readiness signal and never names a port, so an instance that is already running is left alone unless you pass 'force: true'; when the key could not be resolved the payload names the instance instead, and a 'note' is present whenever the boot left something unproven — no key and why, or a key that is not yet answering or could not be checked against the instance. Huawei serves the emulator images only within mainland China, so on a host outside it no instance can exist to start.`,
     alwaysLoad: true,
     searchHint:
       "boot start launch simulator emulator avd device session ios android vega vvd firetv harmony harmonyos deveco cold hot",
