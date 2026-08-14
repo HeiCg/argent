@@ -162,6 +162,12 @@ describe("button tool — per-platform validation", () => {
     await expect(
       buttonTool.execute(services, { udid: harmonyUdid, button: "volumeUp" })
     ).rejects.toBeInstanceOf(UnsupportedOperationError);
+    // The refusal names what IS available, like the sibling keyboard tool's
+    // unsupported-key message — four of the seven buttons are refused here, so
+    // a message that only names the failing one leaves the caller guessing.
+    await expect(
+      buttonTool.execute(services, { udid: harmonyUdid, button: "volumeUp" })
+    ).rejects.toThrow(/Supported: home, back, power/);
     expect(harmonyKeyEvent).not.toHaveBeenCalled();
   });
 

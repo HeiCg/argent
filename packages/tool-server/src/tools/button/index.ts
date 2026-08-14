@@ -100,11 +100,18 @@ Fails if the device backend is not reachable — the simulator-server for iOS, \
   },
   async execute(services, params) {
     const device = resolveDevice(params.udid);
-    if (!BUTTONS_BY_PLATFORM[device.platform].has(params.button)) {
+    const available = BUTTONS_BY_PLATFORM[device.platform];
+    if (!available.has(params.button)) {
+      // Name the set, as the sibling `keyboard` does for an unsupported key:
+      // HarmonyOS accepts three of the seven buttons, so a refusal that only
+      // says which one failed leaves an agent guessing at the other six. The
+      // platforms whose set is empty are refused by the capability gate above,
+      // so this list never is.
       throw new UnsupportedOperationError(
         "button",
         device,
-        `button '${params.button}' is not available on ${device.platform}`
+        `button '${params.button}' is not available on ${device.platform}. ` +
+          `Supported: ${[...available].join(", ")}`
       );
     }
     if (device.platform === "android") {
