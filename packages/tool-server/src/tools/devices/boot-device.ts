@@ -1519,7 +1519,7 @@ const HARMONY_IMAGE_RESTRICTION =
   "the image; an instance has to be created in DevEco Studio on a host that can download one.";
 
 /**
- * Said in place of the available-instance list when there is none to give. Zero
+ * Said when the start failed and the manager lists no instances at all. Zero
  * instances is equally what a host that simply has not created one yet looks
  * like — including inside mainland China, where the download works — so this
  * states what was observed and offers the restriction as a possible cause
@@ -2098,14 +2098,16 @@ async function bootHarmonyImpl(params: {
   // the caller's typo is already in hand — the same refusal Android makes off
   // `emulator -list-avds`. Left to `-start`, the boot instead spends the budget
   // and answers with the manager's own words, which name nothing that exists.
-  // Only a listing that was read can refuse; a failed one answers neither
-  // question (above), so it still lets the start be attempted.
-  if (instances && !instances.some((i) => i.name === params.instanceName)) {
+  //
+  // Only a listing WITH ROWS refuses. An empty one is not the same claim: a
+  // `-list` that ran but printed a diagnostic — "Cannot find image" on a host
+  // whose images were never downloaded — comes back from `listHarmonyInstances`
+  // as `[]` too, and refusing on that would block a boot of an instance the host
+  // has. That case is still left to the start, whose failure says as much.
+  if (instances?.length && !instances.some((i) => i.name === params.instanceName)) {
     throw new FailureError(
       `HarmonyOS emulator instance "${params.instanceName}" not found. ` +
-        (instances.length === 0
-          ? HARMONY_NO_INSTANCES
-          : `Available: ${instances.map((i) => i.name).join(", ")}.`),
+        `Available: ${instances.map((i) => i.name).join(", ")}.`,
       {
         error_code: FAILURE_CODES.BOOT_HARMONY_INSTANCE_NOT_FOUND,
         failure_stage: "boot_harmony_instance_lookup",
@@ -2224,11 +2226,14 @@ async function bootHarmonyImpl(params: {
           }
         );
       }
-      // Only the manager's own words justify blaming the region. A host with no
-      // instances at all is answered before the start, by the lookup above.
-      const cause =
-        isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image")
-          ? ` ${HARMONY_IMAGE_RESTRICTION}`
+      const imageMissing =
+        isChinaOnlyRestriction(diagnostic) || diagnostic.includes("Cannot find image");
+      // Only the manager's own words justify blaming the region; an empty
+      // instance list is merely consistent with it.
+      const cause = imageMissing
+        ? ` ${HARMONY_IMAGE_RESTRICTION}`
+        : instances?.length === 0
+          ? ` ${HARMONY_NO_INSTANCES}`
           : "";
       throw new FailureError(
         cause

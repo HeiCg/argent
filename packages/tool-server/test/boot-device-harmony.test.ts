@@ -824,17 +824,31 @@ describe("boot-device — HarmonyOS emulator path", () => {
     await settled;
   });
 
-  it("points at creating an instance when the host has none", async () => {
+  it("points at creating an instance when the start failed and none exist", async () => {
+    // An empty listing is not a refusal of its own: `listHarmonyInstances`
+    // answers `[]` for a `-list` that ran and printed a diagnostic too, so a
+    // host whose images are missing must still reach the start rather than be
+    // told it has no instances by a listing that could not see them.
     listHarmonyInstances.mockResolvedValue([]);
     targets([PHONE]);
+    vi.useFakeTimers();
 
-    const failed = await boot({ bootTimeoutMs: 900_000 }).catch((e: unknown) => e);
+    const pending = boot({ bootTimeoutMs: 900_000 });
+    const settled = expect(pending).rejects.toThrow(/create one in DevEco Studio/);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(spawnMock).toHaveBeenCalledWith(
+      expect.any(String),
+      ["-start", INSTANCE],
+      expect.any(Object)
+    );
+    child.die(`"${INSTANCE}" is not found. Please create the device(folder): /x`, 1);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await settled;
 
-    expect((failed as Error).message).toMatch(/create one in DevEco Studio/);
-    expect(getFailureSignal(failed)).toMatchObject({
-      error_code: FAILURE_CODES.BOOT_HARMONY_INSTANCE_NOT_FOUND,
+    expect(getFailureSignal(await pending.catch((e: unknown) => e))).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_START_FAILED,
+      failure_command: "deveco_emulator",
     });
-    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it("names the instances the host does have, rather than starting one it does not", async () => {
@@ -854,6 +868,9 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect((failed as Error).message).toMatch(
       /"Phone1" not found\. Available: Tablet_9, Phone_1\./
     );
+    expect(getFailureSignal(failed)).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_INSTANCE_NOT_FOUND,
+    });
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
