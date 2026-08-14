@@ -596,7 +596,66 @@ describe("type directive — clear dispatch", () => {
     const result = asRun(await run(registry));
     expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
     expect(result.steps[0]!.reason).toContain("refusing to clear");
-    expect(result.steps[0]!.reason).toContain("could not be read");
+    expect(result.steps[0]!.reason).toContain("stopped answering");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("refuses to clear when the reads go dark after seeing nothing focused", async () => {
+    // `lastRead` is only written by a read that SUCCEEDED, so a single
+    // successful poll used to disarm the outage verdict for the whole window —
+    // including the FIRST poll, which is the one most likely to report "no
+    // focus yet" because the app's focus round-trip has not finished. That
+    // verdict maps to "unobservable", which a destructive clear goes through
+    // on, so a tree-source outage in the tail turned a refusal into a blind
+    // clear. Reproduced on Chrome 151 by poisoning the tree read at t+600ms
+    // with focus landing elsewhere at t+900: the step passed and emptied a
+    // field it never named.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      // The pre-tap settle reads and the first focus poll succeed and see
+      // nothing focused; every read after that throws.
+      if (reads > 3) throw new Error("device disconnected");
+      return { xml: noFocusXml() };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("stopped answering");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("absorbs a single failed poll rather than calling it an outage", async () => {
+    // One failure is the last-poll blip the tolerance exists for. Only the read
+    // AFTER the deadline check fails here, so the window still ends on a
+    // determinate observation and keeps its own verdict.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      if (reads === 5) throw new Error("transient blip");
+      return { xml: unfocusedXml() };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("focus never reached");
+    expect(result.steps[0]!.reason).not.toContain("stopped answering");
     expect(keyboardArgs(calls)).toEqual([]);
   });
 

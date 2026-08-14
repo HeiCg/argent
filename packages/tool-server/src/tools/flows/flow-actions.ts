@@ -405,6 +405,13 @@ const DEFAULT_ASSERT_TIMEOUT_MS = 1000;
 // the deadline.
 const CONDITION_DARK_TAIL_TOLERANCE_MS = POLL_INTERVAL_MS * 2;
 
+// The same bound for `waitForFocus`, counted in consecutive failed polls rather
+// than in milliseconds: one poll there costs a whole `uiautomator dump` on
+// Android and a CDP round-trip on Chromium, so an elapsed-time budget reads a
+// slow device as an outage. Two, for the reason above — one failure is the
+// last-poll blip, more than one is darkness.
+const FOCUS_DARK_TAIL_POLLS = 2;
+
 /**
  * Evaluate a `when:` block's UI guard — the same engine as `assert`, on the
  * same assert grace window: a skipped block must not add an await-sized dead
@@ -1193,12 +1200,30 @@ async function waitForFocus(
   // Latest-read-wins still decides between the sightings themselves, which is
   // what keeps a blur-on-tap from being answered with history.
   let lastSighting: "focus-elsewhere" | "focus-encloses" | "focus-overlaps" | undefined;
+  // Reads that have thrown since the last successful one. `lastRead` is only
+  // ever written by a read that SUCCEEDED, so without this one successful poll
+  // disarms the outage verdict permanently — including the very first, which is
+  // the one most likely to report "no-focus" because the app's focus round-trip
+  // has not finished. That mapped to "unobservable", which a destructive clear
+  // goes through on, so an outage in the TAIL of the window converted a correct
+  // refusal into a blind clear. Reproduced on Chrome 151 by poisoning the tree
+  // read at t+600ms, where focus landed elsewhere at t+900: the step passed and
+  // emptied a field it never named, while the same page with the reads left
+  // alone refused.
+  let darkTail = 0;
   const giveUp = (): FocusOutcome => {
     // `undefined` means no read ever succeeded — an outage, not an observation.
     // Reporting it as "unobservable" would let a clear through on the strength
     // of a window in which nothing was seen at all; `settleTree` sets the same
     // convention for the same condition, and for the same reason.
     if (lastRead === undefined) return "unreadable";
+    // Consecutive polls went dark, so a verdict narrated from the reads before
+    // the darkness would describe a screen nobody saw at the deadline — the
+    // rule `CONDITION_DARK_TAIL_TOLERANCE_MS` states for `waitForCondition`,
+    // counted in polls rather than milliseconds because one poll's cost is a
+    // whole `uiautomator dump` on Android and a CDP round-trip on Chromium. One
+    // failure is the genuine last-poll blip that tolerance exists to absorb.
+    if (darkTail >= FOCUS_DARK_TAIL_POLLS) return "unreadable";
     const seen = lastRead === "no-focus" ? lastSighting : lastRead;
     if (seen === "focus-encloses") return "encloses";
     if (seen === "focus-overlaps") return "overlaps";
@@ -1208,6 +1233,7 @@ async function waitForFocus(
     if (env.signal?.aborted) return giveUp();
     try {
       const { tree, source } = await readFlowTree(env);
+      darkTail = 0;
       if (!FOCUS_REPORTING_SOURCES.has(source)) return "unobservable";
       // The target NODE, not just its frame: identity is the only unambiguous
       // evidence. `tappedFrame` still covers a round where neither the element
@@ -1243,6 +1269,7 @@ async function waitForFocus(
     } catch {
       // transient describe failure — retry until the deadline, leaving
       // `lastRead` alone so a window of nothing but failures stays "unreadable"
+      darkTail++;
     }
     if (Date.now() >= deadline) return giveUp();
     const sleepMs = Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()));
@@ -1870,8 +1897,8 @@ function clearRefusalReason(into: FlowSelector, focus: FocusOutcome): string {
   }
   if (focus === "unreadable") {
     return (
-      `${head}: the UI tree could not be read at all during the ${TYPE_FOCUS_TIMEOUT_MS}ms focus ` +
-      `wait, so nothing is known about what holds focus. Retry the step; if it persists the ` +
+      `${head}: the UI tree stopped answering before the ${TYPE_FOCUS_TIMEOUT_MS}ms focus wait ` +
+      `ended, so nothing is known about what holds focus NOW. Retry the step; if it persists the ` +
       `device's tree source is down`
     );
   }
