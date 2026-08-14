@@ -265,6 +265,37 @@ describe("screenshotDiffTool", () => {
     ).toHaveLength(1);
   });
 
+  it("does not leave the capture behind when the copy into `outputDir` fails", async () => {
+    // The failure path is the one that accumulates: a diff that cannot write
+    // its copy still captured a full-resolution frame, and retrying leaves one
+    // per attempt in `tmpdir()`.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-ro-"));
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "argent-fake-backend-"));
+    const baselinePath = path.join(os.tmpdir(), `argent-baseline-${Date.now()}.png`);
+    const capturedPath = path.join(scratch, "backend-capture.png");
+    await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
+    const captureScreenshot = vi.fn(async () => {
+      await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+      return { url: "http://localhost/current.png", path: capturedPath };
+    });
+    await fs.chmod(dir, 0o500);
+
+    try {
+      await expect(
+        executeScreenshotDiffTool(
+          { simulatorServer: { apiUrl: "http://localhost:4949" } },
+          { baselinePath, captureCurrent: true, udid: "ABC", outputDir: dir },
+          { artifacts: new ArtifactStore() },
+          captureScreenshot as never
+        )
+      ).rejects.toThrow();
+    } finally {
+      await fs.chmod(dir, 0o700);
+    }
+
+    expect(await fs.readdir(scratch)).toEqual([]);
+  });
+
   it("validates mutually exclusive saved and live inputs at execute time", async () => {
     await expect(
       executeScreenshotDiffTool(

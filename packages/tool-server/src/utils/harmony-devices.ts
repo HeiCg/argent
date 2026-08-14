@@ -66,11 +66,18 @@ interface RawInstance {
 
 const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
 
-/** A positive pixel count from the manager's all-strings JSON, or null. */
+/**
+ * A positive pixel count from the manager's all-strings JSON, or null.
+ *
+ * Digits and nothing else: `parseInt` stops at the first character it cannot
+ * read, so `"1,320"` and `"1e4"` would both come back as `1`. A wrong panel is
+ * worse here than no panel, since `boot-device` reads one no guest can match as
+ * proof the target is someone else's device.
+ */
 const px = (v: unknown): number | null => {
-  if (typeof v !== "string") return null;
+  if (typeof v !== "string" || !/^\d+$/.test(v)) return null;
   const n = Number.parseInt(v, 10);
-  return Number.isInteger(n) && n > 0 ? n : null;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 };
 
 /**

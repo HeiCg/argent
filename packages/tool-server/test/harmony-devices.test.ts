@@ -107,6 +107,20 @@ describe("parseHarmonyInstances", () => {
     }
   });
 
+  it("reports no panel rather than the digits it could read off the front of one", () => {
+    // A truncated read is the dangerous shape: `parseInt("1,320")` is 1, a
+    // panel no guest can ever report back, so `boot-device` would spend the
+    // whole budget concluding the instance it started is another device. Worse
+    // than the null, which only turns the check off.
+    const shapes = ["1,320", "1e4", "1320px", "1320\n2856", "999999999999999999999"];
+    for (const width of shapes) {
+      const raw = `[{ "name": "n", "isRunning": "false", "hw.lcd.single.width": ${JSON.stringify(
+        width
+      )}, "hw.lcd.single.height": "2856" }]`;
+      expect(parseHarmonyInstances(raw)[0].display).toBeNull();
+    }
+  });
+
   it("reads isRunning as the string it actually is, not a JSON boolean", () => {
     // The manager emits every value as a string, `isRunning` included. Comparing
     // it as a boolean would make every instance read as stopped, so a booted
