@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { access, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { PNG } from "pngjs";
 import {
   hdcFileRecv as realHdcFileRecv,
@@ -21,6 +22,33 @@ const hdcFileRecv = vi.mocked(realHdcFileRecv);
 /** A minimal valid PNG — what `uitest screenCap` would have written. */
 function tinyPng(): Buffer {
   return PNG.sync.write(new PNG({ width: 4, height: 4 }));
+}
+
+/**
+ * A valid PNG whose bytes pngjs will not reproduce: the same pixels written
+ * with the None row filter, as an encoder that is not pngjs — `uitest` — may
+ * well have written them. Re-encoding changes the bytes while leaving the image
+ * identical, which is what separates "moved the device's file" from "decoded it
+ * and wrote it out again".
+ */
+function devicePng(width = 8, height = 12): Buffer {
+  const png = new PNG({ width, height });
+  for (let i = 0; i < png.data.length; i += 4) {
+    png.data[i] = (i * 7) % 256;
+    png.data[i + 1] = (i * 13) % 256;
+    png.data[i + 2] = (i * 29) % 256;
+    png.data[i + 3] = 255;
+  }
+  return PNG.sync.write(png, { filterType: 0 });
+}
+
+const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+
+/** Serve `bytes` as the file `uitest screenCap` captured. */
+function deviceServes(bytes: Buffer): void {
+  hdcFileRecv.mockImplementation(async (_key, _remote, localPath) => {
+    await writeFile(localPath, bytes);
+  });
 }
 
 /** The remote path of every `uitest screenCap -p '<path>'` call, in order. */
@@ -92,6 +120,33 @@ describe("harmonyScreenCap viaDeviceTmp", () => {
 });
 
 describe("captureHarmonyScreenshotPng", () => {
+  it("hands back the device's own bytes at full resolution", async () => {
+    // screenshot-diff captures at scale 1, where scaleDecodedPng returns the
+    // decoded image untouched — re-encoding it costs ~100ms per 3.7MP frame for
+    // an image identical to the one hdc already delivered.
+    const bytes = devicePng();
+    deviceServes(bytes);
+
+    const out = await capture();
+
+    expect(sha256(await readFile(out))).toBe(sha256(bytes));
+    const decoded = PNG.sync.read(await readFile(out));
+    expect([decoded.width, decoded.height]).toEqual([8, 12]);
+  });
+
+  it("re-encodes a downscaled capture and keeps no raw intermediate", async () => {
+    deviceServes(devicePng());
+
+    const out = await captureHarmonyScreenshotPng({ connectKey: "dev", scale: 0.5 });
+    outPaths.push(out);
+
+    const decoded = PNG.sync.read(await readFile(out));
+    expect([decoded.width, decoded.height]).toEqual([4, 6]);
+    // hdcFileRecv's localPath IS the raw intermediate — the resample writes a
+    // second file, so this one has to be cleaned up behind it.
+    await expect(access(hdcFileRecv.mock.calls[0]![2])).rejects.toThrow();
+  });
+
   it("removes the host-side raw capture when decoding it fails", async () => {
     // The fetch "succeeds" but delivers garbage; the raw file must not be
     // left behind in the host tmpdir on the error path.

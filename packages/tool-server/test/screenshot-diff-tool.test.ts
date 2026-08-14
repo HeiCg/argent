@@ -210,11 +210,12 @@ describe("screenshotDiffTool", () => {
     const baselinePath = path.join(dir, "baseline.png");
     const capturedPath = path.join(dir, "captured.png");
     await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
-    await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
-    const captureScreenshot = vi.fn(async () => ({
-      url: "http://localhost/current.png",
-      path: capturedPath,
-    }));
+    // Re-written per call, as a real backend does: each capture writes its own
+    // uniquely named file, and the diff removes the one it copied from.
+    const captureScreenshot = vi.fn(async () => {
+      await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+      return { url: "http://localhost/current.png", path: capturedPath };
+    });
 
     await executeScreenshotDiffTool(
       { simulatorServer: { apiUrl: "http://localhost:4949" } },
@@ -234,6 +235,34 @@ describe("screenshotDiffTool", () => {
     );
     expect(liveCaptures).toHaveLength(2);
     expect(new Set(liveCaptures).size).toBe(2);
+  });
+
+  it("does not leave the backend's own capture behind once it has been copied in", async () => {
+    // Every backend writes its capture to a uniquely named file in `tmpdir()`
+    // that nothing else prunes — measured at 213KB per call for one 1320x2856
+    // frame, since this path captures at `scale: 1.0`. The copy under
+    // `outputDir` is what outlives the call; the original is scratch.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-scratch-"));
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "argent-fake-backend-"));
+    const baselinePath = path.join(dir, "baseline.png");
+    const capturedPath = path.join(scratch, "backend-capture.png");
+    await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
+    const captureScreenshot = vi.fn(async () => {
+      await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+      return { url: "http://localhost/current.png", path: capturedPath };
+    });
+
+    await executeScreenshotDiffTool(
+      { simulatorServer: { apiUrl: "http://localhost:4949" } },
+      { baselinePath, captureCurrent: true, udid: "ABC", outputDir: dir },
+      { artifacts: new ArtifactStore() },
+      captureScreenshot as never
+    );
+
+    expect(await fs.readdir(scratch)).toEqual([]);
+    expect(
+      (await fs.readdir(dir)).filter((n) => /^current-[a-f0-9]{8}\.live\.png$/.test(n))
+    ).toHaveLength(1);
   });
 
   it("validates mutually exclusive saved and live inputs at execute time", async () => {

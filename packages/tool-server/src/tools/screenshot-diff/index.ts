@@ -339,5 +339,13 @@ async function captureLiveInput(params: {
   const destination = path.join(params.outputDir, `${params.name}-${suffix}.live.png`);
   await fs.mkdir(params.outputDir, { recursive: true });
   await fs.copyFile(capturedPath, destination);
+  // The capture is scratch, not an artifact: every backend writes a uniquely
+  // named PNG that nothing else prunes, so one per diff would accumulate in
+  // `tmpdir()` for the life of the process — and at `scale: 1.0`, which this
+  // path asks for, each is a full-resolution frame. `destination` is the copy
+  // that outlives the call. Same ownership `flow-pixels`' `capturePng` takes,
+  // and only reachable for a capture this function made: a caller-supplied
+  // `baselinePath`/`currentPath` never comes through here.
+  await fs.rm(capturedPath, { force: true }).catch(() => {});
   return destination;
 }
