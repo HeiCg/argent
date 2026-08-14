@@ -1039,17 +1039,29 @@ function sameElement(a: DescribeNode, b: DescribeNode): boolean {
  * available to ask this more directly; hoisted text ({@link assertText}) is
  * what survives the flatten.
  *
+ * And the named content must not be a CONTROL. An editing host's content is
+ * static — a paragraph, a text node — while a focused wrapper around one text
+ * FIELD produces the identical tree: the field's value is its accessible name,
+ * an anonymous field does not shield, so the value hoists and the wrapper has
+ * no text of its own either. That is the shape the paragraph above says the
+ * `!nodeText` guard refuses, and it does not: the `android.webkit.WebView`
+ * argument only holds for a WebView carrying a WHOLE form, while one wrapping
+ * exactly one field — hosted payment fields are one input per iframe — passed.
+ * Confirmed on Chrome 151: a `<div tabindex=0>` focus-trapped around an
+ * unidentified `<input value="hello-target">` CONFIRMED, and only the keyboard
+ * tool's own "the focused element DIV#wrap is not a text field" stopped the
+ * clear — a backstop iOS and Android do not have, since both dispatch a clear
+ * at whatever holds focus. Where a source reports no controls at all (the iOS
+ * full-hierarchy adapter never sets `clickable`), this cannot discriminate and
+ * the residual stands.
+ *
  * Residuals: an editor holding more than the named paragraph shows more text
  * than the selector named, so it still refuses — with the same unfollowable
- * advice. Naming the whole body, or giving the editable an id, both work. And a
- * focused non-editable WRAPPER whose only text is an anonymous target's still
- * reads as an editing host, because at the tree level it is one; on Chromium
- * the keyboard tool then refuses the clear itself ("the focused element is not
- * a text field").
+ * advice. Naming the whole body, or giving the editable an id, both work.
  */
 function focusedOwnsTargetText(target: DescribeNode, focused: DescribeNode[]): boolean {
   const named = assertText(target);
-  if (!named) return false;
+  if (!named || target.clickable) return false;
   return (
     focused.length > 0 &&
     focused.every(
