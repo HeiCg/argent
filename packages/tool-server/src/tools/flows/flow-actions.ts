@@ -921,6 +921,7 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
  * same page with no popover at all.
  */
 function focusedFromInside(
+  tree: DescribeNode,
   target: DescribeNode,
   focused: DescribeNode[],
   tap: TapCandidates
@@ -947,6 +948,34 @@ function focusedFromInside(
     // the tap. Ambiguity is not evidence, and refusing is the safe direction.
     const named = tap.inside.filter((before) => sameElement(before, n));
     if (named.length !== 1) return false;
+    // And unambiguous in the tree the VERDICT is drawn from, not only in the
+    // one the evidence was collected in. The two halves of this gate are joined
+    // by a name across two different tree reads and two different container
+    // boxes, so a focused node can otherwise borrow the evidence gathered for a
+    // different element. Three ways in, all reproduced on Chrome 151 against
+    // this branch:
+    //   - a namesake the TAP CREATES. `tap.inside` is frozen before the tap, so
+    //     an element that appears inside the container on focus is invisible to
+    //     the check above — the wrapper-grows-on-focus shape (Downshift,
+    //     HeadlessUI, a React Native autocomplete), and on Android every row
+    //     inflated from one layout shares its resource-id. A wrapper that
+    //     appended a second `row_input` and focused it passed, and the field the
+    //     step never named was emptied and rewritten;
+    //   - a container that GROWS. Candidates are frozen to the pre-tap box while
+    //     containment is judged against the current one, so a 44px row growing
+    //     to 140px on focus swallowed a field that was never a tap candidate at
+    //     all, and cleared it;
+    //   - a focused field that RENAMES ITSELF out of the namesake set — a
+    //     currency input dropping its separators, a phone or card mask — leaving
+    //     a sibling as the unique pre-tap match. That sibling was under the tap,
+    //     so the row's own mis-target passed.
+    // Each of the three leaves two namesakes inside the container in the current
+    // tree, and each refuses once that is what decides. Removing the growth, the
+    // late namesake or the rename refuses too, which is the pre-existing
+    // behaviour these three were routing around.
+    if (currentInside(tree, target).filter((now) => sameElement(now, n)).length !== 1) {
+      return false;
+    }
     if (tap.underTap.includes(named[0])) return true;
     // The tap point is ONE point — the container's centre — and a container is
     // not laid out to put its input there. When that point lands on inert
@@ -1240,6 +1269,22 @@ interface TapCandidates {
   point: { x: number; y: number };
 }
 
+/**
+ * What sits inside `target`'s box in the tree a verdict is being drawn from —
+ * the current-tree counterpart of {@link TapCandidates.inside}, and read by the
+ * same rule so the two sides of {@link focusedFromInside}'s name join are
+ * symmetric.
+ */
+function currentInside(tree: DescribeNode, target: DescribeNode): DescribeNode[] {
+  const inside: DescribeNode[] = [];
+  const walk = (node: DescribeNode): void => {
+    if (frameWithin(node.frame, target.frame) && isVisible(node)) inside.push(node);
+    for (const child of node.children) walk(child);
+  };
+  walk(tree);
+  return inside;
+}
+
 function tapCandidates(preTap: DescribeNode, tapped: DescribeNode): TapCandidates {
   const tap = getDescribeTapPoint(tapped.frame);
   const inside: DescribeNode[] = [];
@@ -1472,7 +1517,9 @@ async function waitForFocus(
       // verdict a race — an app that blurs on the focusing tap reports focus
       // for however many rounds precede the blur.
       if (focused.some((n) => n === targetNode)) return "confirmed";
-      if (targetNode && focusedFromInside(targetNode, focused, candidates)) return "confirmed";
+      if (targetNode && focusedFromInside(tree, targetNode, focused, candidates)) {
+        return "confirmed";
+      }
       if (targetNode && focusedOwnsTargetText(tree, targetNode, focused)) return "confirmed";
       lastRead =
         focused.length === 0
