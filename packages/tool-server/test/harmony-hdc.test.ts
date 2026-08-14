@@ -38,6 +38,9 @@ describe("shellQuote", () => {
   it.each([
     ["hello world", `'hello world'`],
     ["a'b", `'a'\\''b'`],
+    // The only row with two quotes: at one, a first-match-only replace produces
+    // identical bytes, so nothing else here separates it from `replaceAll`.
+    ["a'b'c", `'a'\\''b'\\''c'`],
     ['a"b', `'a"b'`],
     ["a$b", `'a$b'`],
     ["a;echo PWNED", `'a;echo PWNED'`],
