@@ -690,7 +690,15 @@ export type FlowStep =
   | { kind: "when"; condition: WhenCondition; steps: FlowStep[] }
   | { kind: "tap"; selector?: FlowSelector; x?: number; y?: number; times?: number }
   | { kind: "long-press"; selector?: FlowSelector; x?: number; y?: number; duration?: number }
-  | { kind: "type"; into: FlowSelector; text?: string; clear?: boolean; submit?: boolean }
+  // A step with NEITHER `text` nor `clear` has nothing to do: it serializes to
+  // YAML the parser then rejects, labels itself `⇐ (clear only)` in a recording
+  // summary, and dispatches no keyboard call at all — a silently passing no-op.
+  // The parser is the only construction site today, and it refuses that body;
+  // pairing the two fields keeps it that way for any future one.
+  | ({ kind: "type"; into: FlowSelector; submit?: boolean } & (
+      | { text: string; clear?: boolean }
+      | { text?: string; clear: true }
+    ))
   | {
       kind: "await";
       condition: WaitCondition;
@@ -2683,12 +2691,17 @@ function fromYamlStep(raw: YamlStep, blockDepth = 0): FlowStep {
     if (body.submit !== undefined && typeof body.submit !== "boolean") {
       badEntry(raw, "type.submit must be a boolean");
     }
-    const step: Extract<FlowStep, { kind: "type" }> = {
-      kind: "type",
-      into: parseSelector(body.into, "type.into"),
-    };
-    if (typeof body.text === "string") step.text = body.text;
-    if (body.clear === true) step.clear = true;
+    // Built in one expression, not field by field: the union above pairs `text`
+    // with `clear` so a step carrying neither cannot be spelled, and an
+    // incremental build passes through exactly that state.
+    const into = parseSelector(body.into, "type.into");
+    const text = typeof body.text === "string" ? body.text : undefined;
+    const step: Extract<FlowStep, { kind: "type" }> =
+      body.clear === true
+        ? { kind: "type", into, clear: true, ...(text !== undefined ? { text } : {}) }
+        : // The validation above rejected every body that reaches here without
+          // a non-empty text.
+          { kind: "type", into, text: text as string };
     // `submit` defaults to true when there is text to commit, and to false for a
     // clear-only step — firing Enter into a field the step just emptied is never
     // what the author meant, and requiring `submit: false` on every such step

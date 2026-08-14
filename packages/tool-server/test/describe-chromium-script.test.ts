@@ -69,7 +69,20 @@ defineNative(MockElement.prototype, "clientWidth", "__clientWidth");
 // laid over them.
 defineNative(MockDocument.prototype, "activeElement", "__activeElement");
 defineNative(MockDocument.prototype, "body", "__body");
-defineNative(MockShadowRoot.prototype, "activeElement", "__activeElement");
+// Brand-checked, like Blink's: calling ShadowRoot's accessor on anything that is
+// not a ShadowRoot throws `Illegal invocation`. A stub that answered `undefined`
+// instead cannot see a page that removed `Element.prototype.shadowRoot` and made
+// the script's shadow read hand a form CONTROL to this getter.
+Object.defineProperty(MockShadowRoot.prototype, "activeElement", {
+  get(this: object): unknown {
+    if (!(this instanceof MockShadowRoot)) throw new TypeError("Illegal invocation");
+    return (this as Record<string, unknown>).__activeElement;
+  },
+  set(this: Record<string, unknown>, v: unknown) {
+    this.__activeElement = v;
+  },
+  configurable: true,
+});
 
 /**
  * A Document the script's captured accessors work on. `activeElement`/`body`
@@ -1067,6 +1080,28 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     const { tree } = run([host], { activeElement: host });
     expect(findById(tree, "shadow-input")!.focused).toBe(true);
     expect(findById(tree, "the-host")!.focused).toBeUndefined();
+  });
+
+  it("survives a page that removed Element.prototype.shadowRoot", () => {
+    // `protoGetter` falls back to a direct property read when the descriptor is
+    // gone — this file's own documented threat model — so a `<form>` holding
+    // `<input name="shadowRoot">` hands back the CONTROL element. Passing that
+    // to the ShadowRoot accessor throws `Illegal invocation`, which aborted the
+    // whole walk: verified live, describe answered CHROMIUM_DESCRIBE_FAILED for
+    // the entire page and recovered when the descriptor was put back.
+    const descriptor = Object.getOwnPropertyDescriptor(MockElement.prototype, "shadowRoot")!;
+    Reflect.deleteProperty(MockElement.prototype, "shadowRoot");
+    try {
+      const form = el({ tag: "form", attrs: { id: "clobbering-form" }, rect: BOX }) as Record<
+        string,
+        unknown
+      >;
+      form.shadowRoot = el({ tag: "input", rect: BOX });
+      const { tree } = run([form as unknown as MockElement]);
+      expect(findById(tree, "clobbering-form")).toBeDefined();
+    } finally {
+      Object.defineProperty(MockElement.prototype, "shadowRoot", descriptor);
+    }
   });
 
   it("keeps a focused element the walker would otherwise collapse away", () => {

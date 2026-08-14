@@ -359,8 +359,16 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     if (tag === "IFRAME" || tag === "FRAME") return false;
     // \`shadow\` is the one captured for the descent — both reads must go through
     // getShadowRoot, or a <form> with a control named "shadowRoot" decides
-    // whether this element reports focus.
-    if (shadow && getShadowActiveElement.call(shadow) && carriesFocus(shadowResults)) return false;
+    // whether this element reports focus. And it is only a ShadowRoot when the
+    // page left the descriptor in place: protoGetter falls back to a direct
+    // property read when it is gone (the file's own threat model), so a <form>
+    // with <input name="shadowRoot"> hands back the CONTROL, and calling the
+    // ShadowRoot accessor on it throws \`Illegal invocation\` — which aborted the
+    // whole describe, for every page. The same guard is applied to \`root\` two
+    // lines down.
+    if (shadow && isShadowRoot(shadow) && getShadowActiveElement.call(shadow) && carriesFocus(shadowResults)) {
+      return false;
+    }
     const doc = getOwnerDocument.call(el);
     let root = null;
     try {

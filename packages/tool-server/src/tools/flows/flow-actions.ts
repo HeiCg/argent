@@ -1260,6 +1260,11 @@ async function waitForFocus(
   };
   for (;;) {
     if (env.signal?.aborted) return giveUp();
+    // Before the read, not after it. The sleep below is capped to land exactly
+    // ON the deadline, so a check that ran afterwards let one more whole tree
+    // read start past it — a `uiautomator dump` costs 1-2s of the 3000ms every
+    // refusal message claims the observation window was.
+    if (Date.now() >= deadline) return giveUp();
     try {
       const { tree, source } = await readFlowTree(env);
       darkTail = 0;
@@ -1282,7 +1287,14 @@ async function waitForFocus(
       lastRead =
         focused.length === 0
           ? "no-focus"
-          : focused.some((n) => frameWithin(target, n.frame))
+          : // Genuinely larger, not merely containing: `frameWithin`'s slack is
+            // per-edge, so two identical frames satisfy it, and a focused node
+            // whose frame EQUALS the target's is not the WebView-or-focus-trap
+            // shape "encloses" describes — telling its author to point the
+            // selector at the input itself is advice they have already taken.
+            // Reachable whenever `trackTarget` cannot identify the element and
+            // `target` falls back to the frame the tap was dispatched at.
+            focused.some((n) => frameWithin(target, n.frame) && !frameNoLargerThan(n.frame, target))
             ? "focus-encloses"
             : focused.some((n) => framesOverlap(n.frame, target))
               ? "focus-overlaps"
@@ -1300,7 +1312,6 @@ async function waitForFocus(
       // `lastRead` alone so a window of nothing but failures stays "unreadable"
       darkTail++;
     }
-    if (Date.now() >= deadline) return giveUp();
     const sleepMs = Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()));
     if (!(await sleepOrAbort(sleepMs, env.signal))) return giveUp();
   }
