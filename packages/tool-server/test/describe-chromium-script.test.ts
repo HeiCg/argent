@@ -452,7 +452,7 @@ afterEach(() => {
 });
 
 describe("DESCRIBE_DOM_SCRIPT — a <textarea>'s own text is not its value", () => {
-  it("emits the LIVE value, never the markup default", () => {
+  it("never emits the markup default", () => {
     // `ownText` reads child text nodes, which for a <textarea> is its authored
     // DEFAULT and never tracks `el.value`. Once typing (or a keyboard clear)
     // makes them diverge, emitting the default makes the node read as holding
@@ -468,16 +468,18 @@ describe("DESCRIBE_DOM_SCRIPT — a <textarea>'s own text is not its value", () 
       }),
     ]);
     expect(JSON.stringify(tree)).not.toContain("textarea-default");
-    expect(findById(tree, "ta")!.value).toBe("final");
+    expect(findById(tree, "ta")!.value).toBeUndefined();
   });
 
-  it("keeps a LABELLED textarea's contents reachable", () => {
-    // `accessibleName` returns aria-label / aria-labelledby / placeholder before
-    // it ever falls through to `el.value`, so suppressing the text outright left
-    // a labelled field exposing neither: the name was the label and the value
-    // was gone, and the contents reached no describe consumer at all. Measured
-    // on Chrome 151 — `assert: { text: { in: { id: t1 }, contains: "initial
-    // content" } }` failed with `its text was "Notes"` while `el.value` held it.
+  it("leaves a LABELLED textarea's contents out of the tree, exactly as an <input> does", () => {
+    // A textarea has no own text, so what it HOLDS reaches the tree only
+    // through `accessibleName`'s value fallback — which an aria-label or a
+    // placeholder pre-empts. Emitting the value as node text instead exposed
+    // the contents, but node text is what the page DISPLAYS: on Chrome 151 a
+    // container `text` assert then passed on an unsent draft, `visible:` passed
+    // on the composer itself, and a `tap` landed in a note whose draft matched
+    // the button's label. See `asserting-field-values.md` for what to assert
+    // instead.
     const { tree } = run([
       textareaEl({
         value: "initial content one",
@@ -492,9 +494,9 @@ describe("DESCRIBE_DOM_SCRIPT — a <textarea>'s own text is not its value", () 
       }),
     ]);
     expect(findById(tree, "t1")!.label).toBe("Notes");
-    expect(findById(tree, "t1")!.value).toBe("initial content one");
+    expect(findById(tree, "t1")!.value).toBeUndefined();
     expect(findById(tree, "t2")!.label).toBe("Type here");
-    expect(findById(tree, "t2")!.value).toBe("initial content two");
+    expect(findById(tree, "t2")!.value).toBeUndefined();
   });
 
   it("does not double-report an UNLABELLED textarea's contents", () => {
@@ -508,18 +510,29 @@ describe("DESCRIBE_DOM_SCRIPT — a <textarea>'s own text is not its value", () 
   });
 
   it("reports a MULTI-LINE value once, not once raw and once normalized", () => {
-    // The walker normalizes a textarea's own text; `accessibleName` returned
-    // the same value RAW. For any value holding a newline or a run of spaces
-    // the two strings differ, so both were emitted — the raw one as the label,
-    // the normalized one as the value — and the flow's text matching
-    // concatenated them, so an `equals` assert on the field's real contents
-    // matched neither spelling. That assert is what the skill prescribes as the
-    // proof a clear landed. The single-line case above cannot see this.
+    // Two spellings of one value cannot both be quoted by a failing assert, so
+    // there is only ever one: the accessible name. Emitting a normalized copy
+    // as node text alongside it reported the contents TWICE for any value
+    // holding a newline or a run of spaces, and `nodeText` joined them, so an
+    // `equals` assert on the field's real contents matched neither spelling —
+    // and that assert is what the skill prescribes as the proof a clear landed.
+    // The single-line case above cannot see this.
     const { tree } = run([
       textareaEl({ value: "line one\nline two", attrs: { id: "t4" }, rect: BOX }),
     ]);
     expect(findById(tree, "t4")!.label).toBe("line one line two");
     expect(findById(tree, "t4")!.value).toBeUndefined();
+  });
+
+  it("caps a long value at 200 characters without duplicating it", () => {
+    // `accessibleName` slices to 200. Emitting the value as node text as well
+    // compared the UNSLICED text to the already-sliced name, so anything past
+    // the cap differed BY THE SLICE ALONE and both keys were set — to the same
+    // 200-character prefix, which `nodeText` then joined into the contents
+    // reported twice. 201 characters is the first length that could see it.
+    const { tree } = run([textareaEl({ value: "C".repeat(201), attrs: { id: "t5" }, rect: BOX })]);
+    expect(findById(tree, "t5")!.label).toBe("C".repeat(200));
+    expect(findById(tree, "t5")!.value).toBeUndefined();
   });
 
   it("still emits an ordinary element's own text as its value", () => {

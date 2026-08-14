@@ -457,20 +457,24 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     // through, and is framed by, whatever visible descendants it has.
     const invisibleSelf = style.visibility === "hidden";
     // A <textarea>'s child text is its markup DEFAULT, not its value, and it
-    // never tracks el.value — so once typing (or a keyboard clear) changes the
-    // field, ownText still returns the authored content, and an equals-assert
-    // on what the field really contains fails against text the field lost.
-    // Read the LIVE value instead of dropping the text altogether: the
-    // accessible name only falls through to el.value when the field carries no
-    // aria-label, aria-labelledby or placeholder, so suppressing the text left
-    // a labelled textarea exposing neither its label's value nor its own — the
-    // contents reached no describe consumer at all. Every other element's own
-    // text IS what it shows.
-    const text = invisibleSelf
-      ? ""
-      : el instanceof HTMLTextAreaElement
-        ? (el.value || "").replace(/\\s+/g, " ").trim()
-        : ownText(el);
+    // never tracks el.value — so emitting it makes the node read as holding
+    // text the field lost the moment anything types into it. It carries no own
+    // text at all, exactly like an <input>: what the field HOLDS reaches the
+    // tree through accessibleName's value fallback and nowhere else.
+    //
+    // Emitting the live value here instead looks like the friendlier fix, and
+    // it does expose a LABELLED textarea's contents, which the fallback cannot.
+    // But node text is what the page DISPLAYS: it hoists into an ancestor's
+    // subtreeText, a text selector matches it, and the resolver ranks an exact
+    // field match on it above a substring hit. Measured on Chrome 151 — a
+    // container text assert passed on an unsent draft with the message list
+    // empty, an "assert visible Alpha" passed on the composer holding "Alpha",
+    // and a "tap text Save" landed in a note whose draft was the word "Save"
+    // rather than on the Save button. A field's contents are not the page's
+    // text, and there is no third channel to tell them apart in, so a
+    // <textarea> reads its contents back the same way every other form control
+    // does.
+    const text = invisibleSelf ? "" : el instanceof HTMLTextAreaElement ? "" : ownText(el);
     const name = invisibleSelf ? null : accessibleName(el);
     const clickable = invisibleSelf ? false : isInteractive(el);
     const role = nodeRole(el);
