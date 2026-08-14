@@ -796,6 +796,67 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  it("says the instance is down when a `force` restart refuses at the snapshot", async () => {
+    // The one refusal that leaves the host somewhere the caller never asked to
+    // be: `-stop` has already run, so "the device table could not be read"
+    // arrives with the instance down and nothing started in its place. Read as
+    // "nothing happened" it costs the caller a working emulator they still
+    // believe is up.
+    let listed = 0;
+    listHarmonyInstances.mockImplementation(() =>
+      Promise.resolve([
+        {
+          name: INSTANCE,
+          deviceType: "Phone",
+          osVersion: null,
+          running: listed++ < 1,
+          display: PANEL,
+        },
+      ])
+    );
+    listHarmonyHdcTargetsStrict.mockRejectedValue(new Error("Connect server failed"));
+    vi.useFakeTimers();
+
+    const pending = boot({ force: true, bootTimeoutMs: 30_000 });
+    const settled = expect(pending).rejects.toThrow(
+      /`force` had already stopped "Phone_1", which is still down/
+    );
+    await vi.advanceTimersByTimeAsync(31_000);
+    await settled;
+
+    expect(runHarmonyEmulator).toHaveBeenCalledWith(["-stop", INSTANCE]);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("stops probing arrivals once the budget is spent, rather than once per arrival", async () => {
+    // Each probe carries its own timeout and takes no budget from the wait, so
+    // probing every arrival in turn multiplies `bootTimeoutMs` by however many
+    // rows reconnected — 95s against a 30s budget, measured. Three arrivals at
+    // 20s apiece is that shape: one round already outlasts two budgets.
+    const slowPanel = { width: 1, height: 1, screenOn: true };
+    harmonyDisplay.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(slowPanel), 20_000))
+    );
+    const peers = [1, 2, 3].map((i) => ({
+      connectKey: `127.0.0.1:555${i}`,
+      connection: "TCP",
+      state: "Connected",
+    }));
+    targets([PHONE], [PHONE, ...peers]);
+    vi.useFakeTimers();
+
+    const startedAt = Date.now();
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    const elapsed = pending.then(() => Date.now() - startedAt);
+    await vi.advanceTimersByTimeAsync(200_000);
+
+    // The budget is the caller's word on how long boot-device may take, so what
+    // is asserted is the clock, not the probe count: a boot that answers late is
+    // the failure, however few calls it made getting there.
+    expect(await elapsed).toBeLessThanOrEqual(30_000);
+    expect(((await pending) as { note?: string }).note).toMatch(/registered/);
+  });
+
   it("returns an id the interaction tools accept, which the instance id is not", async () => {
     targets([PHONE], [PHONE, emulatorTarget]);
 

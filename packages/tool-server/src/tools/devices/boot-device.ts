@@ -1651,9 +1651,16 @@ async function connectedHarmonyTargets() {
  * listing: `hdc` exits 0 for its own failures, so the tolerant one reports a
  * broken daemon as an empty device table. Retried once, since the daemon
  * restarting after a `-stop` is both the likely cause and one that clears,
- * then refused while there is still nothing spawned to clean up.
+ * then refused before anything is spawned.
+ *
+ * `stoppedInstance` names the instance a `force` restart has already stopped by
+ * this point, since refusing here is the one path that leaves the host in a
+ * state the caller did not ask for: they asked for a restart and get an error,
+ * with the instance down and nothing started in its place. The other side of the
+ * `force` path says so too, and staying quiet here would have the same failure
+ * read as "nothing happened" depending only on which call failed.
  */
-async function connectedHarmonyKeys(): Promise<Set<string>> {
+async function connectedHarmonyKeys(stoppedInstance: string | null): Promise<Set<string>> {
   for (let attempt = 0; ; attempt++) {
     try {
       const targets = await listHarmonyHdcTargetsStrict();
@@ -1664,7 +1671,11 @@ async function connectedHarmonyKeys(): Promise<Set<string>> {
           "Could not read `hdc`'s device table while preparing to start the HarmonyOS instance, " +
             "so the target it registers under could not have been told apart from those already " +
             "connected: " +
-            (err instanceof Error ? err.message : String(err)),
+            (err instanceof Error ? err.message : String(err)) +
+            (stoppedInstance
+              ? `. \`force\` had already stopped "${stoppedInstance}", which is still down — ` +
+                "re-run boot-device to start it"
+              : ""),
           { cause: err }
         );
       }
@@ -1818,6 +1829,36 @@ type HarmonyTargetOutcome = {
  * so closing those needs a lock across every harmony boot on the host, which
  * would head-of-line block them all on one slow start.
  */
+/**
+ * `work`, or null once `deadline` has passed.
+ *
+ * Every probe these waits are built on carries its own fixed timeout and takes
+ * no budget from its caller, so a poll that probes each arrival in turn runs for
+ * that timeout times the number of arrivals — measured at 95s against a 30s
+ * `bootTimeoutMs`, with two stale rows reconnecting beside the instance. The
+ * budget is the caller's word on how long boot-device may take: the Android boot
+ * above clamps its frame wait against the same deadline, "so the frame-wait
+ * stage cannot push total elapsed time past bootTimeoutMs".
+ *
+ * Only the waiting is abandoned. The probe's own timeout still ends the process
+ * it spawned, so nothing outlives the call that would not have anyway.
+ */
+async function withinBudget<T>(work: Promise<T>, deadline: number): Promise<T | null> {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), remaining);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function waitForHarmonyTarget(
   before: Set<string>,
   deadline: number,
@@ -1836,11 +1877,16 @@ async function waitForHarmonyTarget(
         confirmed.push(target.connectKey);
         continue;
       }
-      const display = await harmonyDisplay(target.connectKey).catch(() => null);
+      const display = await withinBudget(
+        harmonyDisplay(target.connectKey).catch(() => null),
+        deadline
+      );
       // A guest that has not composited yet answers `0x0`. The manager side of
       // this comparison refuses zero as a panel for the same reason, so reading
       // it as someone else's would have the two sides disagree about the one
-      // value that joins them.
+      // value that joins them. A probe the budget cut short lands here too:
+      // unprobed and unrejected are the same thing to the poll after it, and
+      // once the budget is gone the rest of this round costs nothing.
       if (!display || display.width <= 0 || display.height <= 0) {
         sawUnprobeable = true;
         continue;
@@ -1899,12 +1945,17 @@ async function waitForHarmonyDrivable(
   checkAlive: () => void
 ): Promise<boolean> {
   const probePath = join(tmpdir(), `argent-harmony-bootprobe-${process.hrtime.bigint()}.json`);
+  // Non-null only while a probe is in flight, which past the deadline is a probe
+  // nothing is waiting for any more.
+  let inFlight: Promise<unknown> | null = null;
   try {
     for (;;) {
-      const answered = await harmonyDumpLayout(connectKey, probePath).then(
+      inFlight = harmonyDumpLayout(connectKey, probePath).then(
         () => true,
         () => false
       );
+      const answered = await withinBudget(inFlight, deadline);
+      if (answered !== null) inFlight = null;
       if (answered) return true;
       checkAlive();
       const remaining = deadline - Date.now();
@@ -1912,7 +1963,14 @@ async function waitForHarmonyDrivable(
       await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
     }
   } finally {
-    await rm(probePath, { force: true }).catch(() => {});
+    // A probe abandoned at the deadline can still write `probePath` after this
+    // point, so its removal waits it out — bounded by the probe's own timeout —
+    // rather than racing it and leaving the dump behind in the temp directory.
+    // That one is not awaited, since the budget that would pay for it is what
+    // just ran out; on every other path the dump is gone before this returns.
+    const remove = () => rm(probePath, { force: true }).catch(() => {});
+    if (inFlight) void inFlight.then(remove);
+    else await remove();
   }
 }
 
@@ -2009,7 +2067,11 @@ async function bootHarmonyImpl(params: {
   // any assumption about how an emulator's key is spelled. Reaching `Connected`
   // after this point is what marks the instance just booted — including on the
   // key it held before, since a stopped instance's row survives as `Offline`.
-  const before = hdcAvailable ? await connectedHarmonyKeys() : new Set<string>();
+  // `alreadyRunning` can only still be set on the `force` path — the other
+  // return above — so it is exactly "this call has stopped the instance".
+  const before = hdcAvailable
+    ? await connectedHarmonyKeys(alreadyRunning ? params.instanceName : null)
+    : new Set<string>();
   // The panel this instance is configured with, which the guest reports back as
   // its `render resolution` — the only thing that separates the instance
   // reconnecting from another device doing the same. Read before the start
