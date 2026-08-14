@@ -1178,15 +1178,31 @@ async function waitForFocus(
   // window in which every read throws stays distinguishable — see `giveUp`,
   // which maps it to "unreadable" and NOT to "unobservable".
   let lastRead: "focus-elsewhere" | "focus-encloses" | "focus-overlaps" | "no-focus" | undefined;
+  // The most recent read that actually SAW focus on something. An empty
+  // `focused[]` is not the observation "nothing is focused": it is equally "this
+  // read could not see the element that is", which both flow adapters produce
+  // for a frame that clips to zero area — the everyday keyboard-avoidance
+  // scroll, and on Android a healthy `uiautomator` dump whose focused view's
+  // bounds have collapsed. Letting it overwrite a determinate sighting turns a
+  // refusal into a destructive clear on the very field the run had already
+  // identified as holding the keys: reproduced on Chrome 151, where collapsing
+  // the focused input's box mid-window (it keeps the caret throughout and is
+  // still `document.activeElement` at the end) took the step from "focus never
+  // reached the target" to a pass that emptied and rewrote it.
+  //
+  // Latest-read-wins still decides between the sightings themselves, which is
+  // what keeps a blur-on-tap from being answered with history.
+  let lastSighting: "focus-elsewhere" | "focus-encloses" | "focus-overlaps" | undefined;
   const giveUp = (): FocusOutcome => {
     // `undefined` means no read ever succeeded — an outage, not an observation.
     // Reporting it as "unobservable" would let a clear through on the strength
     // of a window in which nothing was seen at all; `settleTree` sets the same
     // convention for the same condition, and for the same reason.
     if (lastRead === undefined) return "unreadable";
-    if (lastRead === "focus-encloses") return "encloses";
-    if (lastRead === "focus-overlaps") return "overlaps";
-    return lastRead === "focus-elsewhere" ? "unconfirmed" : "unobservable";
+    const seen = lastRead === "no-focus" ? lastSighting : lastRead;
+    if (seen === "focus-encloses") return "encloses";
+    if (seen === "focus-overlaps") return "overlaps";
+    return seen === "focus-elsewhere" ? "unconfirmed" : "unobservable";
   };
   for (;;) {
     if (env.signal?.aborted) return giveUp();
@@ -1216,6 +1232,7 @@ async function waitForFocus(
             : focused.some((n) => framesOverlap(n.frame, target))
               ? "focus-overlaps"
               : "focus-elsewhere";
+      if (lastRead !== "no-focus") lastSighting = lastRead;
       // Enough for a caller that will not act on the verdict: something focused
       // covers the target, which is as far as a plain `type` ever needed to get.
       // The refusal arms below are the same verdicts, just reached now instead
@@ -1930,12 +1947,15 @@ async function runType(
   // working on an iOS build whose injected framework omits `firstResponder`.
   //
   // Known residual, and the reason `argent-create-flow` says to assert the
-  // result: "unobservable" also covers three states where something IS focused
-  // and the tree cannot say so.
+  // result: "unobservable" also covers states where something IS focused and
+  // the tree cannot say so. It no longer covers them once a read in the same
+  // window has SEEN where focus is (see `lastSighting`), so what is left is a
+  // window in which no read ever saw it:
   //
-  //   - an app that BLURS on an outside tap, leaving nothing focused;
-  //   - a focused field that scrolled off screen — both flow adapters suppress
-  //     the leaf for a frame clipping to zero area, so the flag goes with it;
+  //   - an app that BLURS on an outside tap before the first read;
+  //   - a focused field that had already scrolled off screen — both flow
+  //     adapters suppress the leaf for a frame clipping to zero area, so the
+  //     flag goes with it;
   //   - focus inside a Chromium sub-document. The describe walker's iframe
   //     descent is dead: `el instanceof Element` rejects the inner
   //     `documentElement`, because that constructor belongs to the OUTER realm.

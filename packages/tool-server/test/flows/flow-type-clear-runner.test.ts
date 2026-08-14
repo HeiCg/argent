@@ -600,19 +600,23 @@ describe("type directive — clear dispatch", () => {
     expect(keyboardArgs(calls)).toEqual([]);
   });
 
-  it("judges focus by the latest read, not by any read that ever saw it", async () => {
-    // The blur race. An app that drops focus when the tap lands reports the
-    // PREVIOUS field as focused for however many poll rounds precede the blur.
-    // With a sticky "saw focus at any point" flag the verdict then depended on
-    // whether round 1 beat the blur — the same flow against the same app failing
-    // or passing between runs. The question the clear is about to act on is
-    // whether something else holds focus NOW.
+  it("does not let a read that sees NO focus erase one that saw where focus is", async () => {
+    // An empty focus set is not the observation "nothing is focused" — it is
+    // equally "this read could not see the element that is", which is what both
+    // flow adapters produce for a frame that has clipped to zero area (the
+    // everyday keyboard-avoidance scroll). Letting it overwrite a determinate
+    // sighting drops the verdict to "unobservable", the one non-confirmed
+    // outcome a destructive clear goes through on, so the field the run had
+    // already identified as holding the keys is the one emptied. Reproduced on
+    // Chrome 151: collapsing the focused input's box mid-window took the step
+    // from a refusal to a pass that emptied and rewrote it, while it kept the
+    // caret and was still `document.activeElement` at the end.
     const calls: Call[] = [];
     let reads = 0;
     const registry = mockRegistry(calls, () => {
       reads++;
-      // The pre-tap settle reads plus the first focus poll still see the old
-      // field focused; everything after the blur sees nothing focused.
+      // The pre-tap settle reads plus the first focus poll see the OTHER field
+      // focused; every read after that sees no focus anywhere.
       return { xml: reads <= 3 ? unfocusedXml() : noFocusXml() };
     });
 
@@ -624,11 +628,37 @@ describe("type directive — clear dispatch", () => {
     });
 
     const result = asRun(await run(registry));
-    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
-    expect(keyboardArgs(calls)).toEqual([
-      { clear: true, text: "new@example.com" },
-      { key: "enter" },
-    ]);
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("focus never reached");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("judges focus by the latest read that saw it, not by any read that ever did", async () => {
+    // Latest-read-wins still decides BETWEEN sightings. With a sticky "saw focus
+    // at any point" flag the verdict depended on whether round 1 beat the app's
+    // focus round-trip, so the same flow against the same app gave a different
+    // reason between runs. Here the first sighting puts the flag on a node
+    // CONTAINING the target and the later ones put it on a different field, and
+    // the refusal has to be the later one's.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: reads <= 3 ? enclosingFocusXml() : unfocusedXml() };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("focus never reached");
+    expect(result.steps[0]!.reason).not.toContain("CONTAINS");
+    expect(keyboardArgs(calls)).toEqual([]);
   });
 
   it("still clears when the tree reports focus on no node at all", async () => {
