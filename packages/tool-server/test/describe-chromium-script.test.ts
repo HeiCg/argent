@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { DESCRIBE_DOM_SCRIPT } from "../src/tools/describe/platforms/chromium";
+import { adaptChromiumTreeForFlows } from "../src/tools/flows/flow-chromium-tree";
+import { assertText, evaluateCondition, findAll, selectorToNode } from "../src/utils/ui-tree-match";
+import type { DescribeNode } from "../src/tools/describe/contract";
 
 /**
  * `DESCRIBE_DOM_SCRIPT` is an IIFE injected via Runtime.evaluate that walks the live
@@ -1187,45 +1190,38 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     expect(findById(tree, "signin")!.focused).toBeUndefined();
   });
 
-  it("flags a focused input inside a same-origin iframe once — never its host <iframe>", () => {
-    // Focus inside a subdocument makes BOTH activeElements point at it: the
-    // inner document's is the input, the outer document's is the host iframe
-    // element. Only the inner element carries the flag; flagging the host too
-    // would double-report the focus.
-    const innerInput = el({ tag: "input", attrs: { id: "iframe-input" }, rect: BOX });
-    const innerBody = el({
-      tag: "body",
-      rect: { x: 0, y: 0, w: 500, h: 500 },
-      children: [innerInput],
-    });
-    const innerHtml = el({
-      tag: "html",
-      rect: { x: 0, y: 0, w: 500, h: 500 },
-      children: [innerBody],
-    });
-    const innerDoc = mockDoc({
-      documentElement: innerHtml,
-      activeElement: innerInput,
-      body: innerBody,
-    });
-    for (const n of [innerHtml, innerBody, innerInput]) {
-      (n as unknown as Record<string, unknown>).ownerDocument = innerDoc;
-      (n as unknown as Record<string, unknown>).__root = innerDoc;
-    }
+  it("leaves focus in a same-origin subdocument unreported, host <iframe> included", () => {
+    // The iframe descent is dead in a real renderer, and the host exclusion is
+    // what makes focus inside a subdocument invisible ENTIRELY rather than
+    // double-reported. `walk` bails on `!(el instanceof Element)`, and the inner
+    // `documentElement`'s constructor belongs to the INNER realm, so the check
+    // is false for every subdocument. Verified live on Chrome 151: an
+    // `<iframe srcdoc>` whose body holds a unique marker leaves no trace of the
+    // marker, or of the inner input's id, in describe's output, and focusing
+    // that inner input leaves the whole tree carrying NO focus flag.
+    //
+    // A single-realm mock cannot express that on its own — every element it
+    // builds is an `Element` — so the inner documentElement is a foreign object
+    // here, which is exactly what the guard rejects. That zero-focus tree is
+    // the state `runType`'s residual comment reads as "unobservable", the one
+    // non-confirmed outcome it dispatches a destructive clear on.
+    const foreignHtml = { __realm: "inner" };
+    const innerDoc = mockDoc({ documentElement: foreignHtml, activeElement: null, body: null });
     const iframe = el({
       tag: "iframe",
       attrs: { id: "the-iframe" },
       rect: { x: 0, y: 0, w: 500, h: 500 },
     });
     (iframe as unknown as Record<string, unknown>).contentDocument = innerDoc;
-    // The outer document reports the host iframe as ITS activeElement.
+    // The outer document reports the host iframe as ITS activeElement, which is
+    // what focus inside the subdocument looks like from outside.
     const outerDoc = mockDoc({ activeElement: iframe, body: null });
     (iframe as unknown as Record<string, unknown>).ownerDocument = outerDoc;
     (iframe as unknown as Record<string, unknown>).__root = outerDoc;
 
     const { tree } = run([iframe]);
-    expect(findById(tree, "iframe-input")!.focused).toBe(true);
     expect(findById(tree, "the-iframe")!.focused).toBeUndefined();
+    expect(JSON.stringify(tree)).not.toContain("focused");
   });
 
   // ---- a missing captured accessor must degrade, not abort the whole describe ----
@@ -1244,5 +1240,110 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     } finally {
       Object.defineProperty(MockElement.prototype, "scrollHeight", saved!);
     }
+  });
+});
+
+// The walker's output is only half the question a flow asks. A field's contents
+// reaching the tree at all decides three more things one layer down — whether
+// they hoist onto a container, whether a page-wide `visible`/`hidden` check sees
+// them, and whether they out-rank a real control for a `tap` — and none of those
+// is visible in a single-node assertion on the walker. These run the real walker
+// and then the real flow adapter and matcher over it, so a regression at either
+// layer is caught here.
+describe("a <textarea>'s contents through the flow tree", () => {
+  const flowTree = (children: MockElement[]): DescribeNode =>
+    adaptChromiumTreeForFlows(run(children).tree as DescribeNode);
+
+  const composer = (value: string, attrs: Record<string, string> = {}) =>
+    textareaEl({ value, placeholder: "Message", attrs, rect: { x: 0, y: 200, w: 400, h: 80 } });
+
+  it("keeps a labelled composer's draft out of its container's text", () => {
+    // An unidentified field does not shield, so anything it contributes hoists
+    // into the nearest identified ancestor: a container `text` assert then
+    // passed on an unsent draft with the message list empty, and a saved
+    // regression test written that way can never go red.
+    const tree = flowTree([
+      el({
+        attrs: { id: "chat" },
+        rect: { x: 0, y: 100, w: 400, h: 200 },
+        children: [
+          el({ attrs: { id: "messages" }, rect: { x: 0, y: 100, w: 400, h: 40 } }),
+          composer("hello team"),
+        ],
+      }),
+    ]);
+    const chat = findAll(tree, { identifier: "chat" })[0]!;
+    expect(assertText(chat)).not.toContain("hello team");
+  });
+
+  it("keeps a labelled composer's draft out of a page-wide visible check", () => {
+    // `assert: { visible: X }` is the pattern `asserting-field-values.md`
+    // prescribes for platforms that hide a field's contents — "assert the
+    // CONSEQUENCE instead" — so it passing on the composer holding X undoes the
+    // advice. It is also the same query as the clear-only proof's `hidden`.
+    const tree = flowTree([
+      composer("Alpha", { id: "composer" }),
+      el({ attrs: { id: "note-list" }, rect: { x: 0, y: 300, w: 400, h: 40 } }),
+    ]);
+    expect(evaluateCondition("visible", undefined, findAll(tree, { text: "Alpha" }))).toBe(false);
+  });
+
+  it("does not let a draft out-rank a real control for a tap", () => {
+    // `selectorToNode` scores an exact field match above a substring hit, and
+    // that beats smallest-frame-wins — so a note whose draft was the word
+    // "Save" took the tap on Chrome 151, and the button whose LABEL is the only
+    // "Save" on the page did not.
+    const tree = flowTree([
+      textareaEl({
+        value: "Save",
+        placeholder: "Note",
+        attrs: { id: "note" },
+        rect: { x: 0, y: 100, w: 400, h: 100 },
+      }),
+      el({
+        tag: "button",
+        attrs: { id: "save-btn" },
+        text: "Save changes",
+        rect: { x: 0, y: 220, w: 120, h: 30 },
+      }),
+    ]);
+    expect(selectorToNode(tree, { text: "Save" })?.identifier).toBe("save-btn");
+  });
+
+  it("still proves a clear landed on an UNLABELLED composer", () => {
+    // The capability the exposure was added for, and the one that survives: with
+    // no label of any kind the contents ARE the accessible name, so the old
+    // value's absence is assertable — `hidden` is false while it is there and
+    // true once the clear emptied it.
+    const held = flowTree([
+      textareaEl({
+        value: "the old value",
+        attrs: { id: "c" },
+        rect: { x: 0, y: 100, w: 400, h: 80 },
+      }),
+    ]);
+    const cleared = flowTree([
+      textareaEl({ value: "", attrs: { id: "c" }, rect: { x: 0, y: 100, w: 400, h: 80 } }),
+    ]);
+    const seen = (t: DescribeNode) =>
+      evaluateCondition("hidden", undefined, findAll(t, { text: "the old value" }));
+    expect(seen(held)).toBe(false);
+    expect(seen(cleared)).toBe(true);
+  });
+
+  it("spells a multi-line draft the way an <input> spells the same string", () => {
+    // Normalizing only the textarea made the same typed text assertable back in
+    // one element type and not the other.
+    const tree = flowTree([
+      textareaEl({ value: "line one\nline two", attrs: { id: "ta" }, rect: BOX }),
+      inputEl({
+        value: "line one\nline two",
+        attrs: { id: "inp" },
+        rect: { x: 0, y: 300, w: 200, h: 30 },
+      }),
+    ]);
+    const ta = findAll(tree, { identifier: "ta" })[0]!;
+    const inp = findAll(tree, { identifier: "inp" })[0]!;
+    expect(assertText(ta)).toBe(assertText(inp));
   });
 });
