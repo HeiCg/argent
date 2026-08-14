@@ -5,7 +5,7 @@ description: Autonomously test an app UI (iOS, Android, or HarmonyOS) by running
 
 ## Platform-agnostic
 
-The interaction tool names are identical on iOS, Android and HarmonyOS — `gesture-tap`, `gesture-swipe`, `describe`, `screenshot`, `launch-app`, etc. — and the tool-server auto-dispatches based on the `udid` you pass (UUID-shape → iOS, `harmony-<connectKey>` → HarmonyOS, adb serial → Android). HarmonyOS takes one contact per call, so `gesture-pinch`, `gesture-rotate`, `gesture-custom` and `rotate` are refused there; every other tool in this workflow applies.
+The interaction tool names are identical on iOS, Android and HarmonyOS — `gesture-tap`, `gesture-swipe`, `describe`, `screenshot`, `launch-app`, etc. — and the tool-server auto-dispatches based on the `udid` you pass (UUID-shape → iOS, `harmony-<connectKey>` → HarmonyOS, adb serial → Android). HarmonyOS drives the tap / swipe / type / read loop; everything outside it is refused there — `gesture-pinch`, `gesture-rotate` and `gesture-custom` (one contact per call, so no pinch, no rotate, and no long-press), `gesture-drag`, `gesture-scroll`, `rotate`, and the JS / native inspectors `debugger-component-tree`, `debugger-evaluate`, `debugger-log-registry`, `native-describe-screen` and `view-network-logs`.
 
 **Before testing, resolve which device to test on.** Call `list-devices` and follow `<device_selection_rule>`: prefer a running device on any platform;
 
@@ -114,19 +114,19 @@ Steps:
 ## Tips
 
 - **Wait on the UI, don't poll.** When a step needs the screen to change first, gate it with `await-ui-element` (block until an element is `visible`/`hidden` or contains `text`) rather than repeated `screenshot` calls with fixed sleeps. See the `await-ui-element` section of `argent-device-interact`.
-- **Use `gesture-custom` for long-press** context menus (800ms hold).
+- **Use `gesture-custom` for long-press** context menus (800ms hold). Not on HarmonyOS — it has no long-press tool.
 - **Report clearly**: state what you expected, what you saw, and the verdict.
 - **Permission modals**: try `describe` first. Use `screenshot` only as fallback, tap one visible button at a time, and verify with the returned screenshot before continuing.
 - **Record for replay**: If a tested flow is likely to be repeated, use the `argent-create-flow` skill to record it as a `.yaml` script. This lets you replay the entire sequence later with a single `flow-execute` call instead of re-running each step manually.
 
 ## Related Skills
 
-| Skill                              | When to use                                              |
-| ---------------------------------- | -------------------------------------------------------- |
-| `argent-device-interact`           | Tool usage for tapping, swiping, typing (every platform) |
-| `argent-screenshot-diff`           | Visual regression and before/after screenshot comparison |
-| `argent-ios-simulator-setup`       | Booting and connecting an iOS simulator                  |
-| `argent-android-emulator-setup`    | Booting and connecting an Android emulator               |
-| `argent-react-native-app-workflow` | Starting the app, Metro, build issues                    |
-| `argent-metro-debugger`            | Breakpoints, console logs, JS evaluation                 |
-| `argent-create-flow`               | Record a test sequence as a replayable flow              |
+| Skill                              | When to use                                                                                                                         |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `argent-device-interact`           | Tool usage for tapping, swiping, typing (iOS, Android, HarmonyOS, Chromium — TV targets are focus-driven, see `argent-tv-interact`) |
+| `argent-screenshot-diff`           | Visual regression and before/after screenshot comparison                                                                            |
+| `argent-ios-simulator-setup`       | Booting and connecting an iOS simulator                                                                                             |
+| `argent-android-emulator-setup`    | Booting and connecting an Android emulator                                                                                          |
+| `argent-react-native-app-workflow` | Starting the app, Metro, build issues                                                                                               |
+| `argent-metro-debugger`            | Breakpoints, console logs, JS evaluation                                                                                            |
+| `argent-create-flow`               | Record a test sequence as a replayable flow                                                                                         |

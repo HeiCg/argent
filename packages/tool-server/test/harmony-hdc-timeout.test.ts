@@ -59,8 +59,16 @@ describe("runHdc timeout enforcement", () => {
     // sanitiser validates `failure_command` against this list and silently drops
     // a spelling it does not carry, which would file every `hdc` failure under
     // no binary at all.
+    // The kind and the signal come off the child the same way `adb`'s wrapper
+    // reads them, so a wedged daemon is counted as a timeout rather than as a
+    // command that ran and failed.
     const signal = getFailureSignal(err);
-    expect(signal).toMatchObject({ failure_command: "hdc", failure_stage: "harmony_hdc_run" });
+    expect(signal).toMatchObject({
+      failure_command: "hdc",
+      failure_stage: "harmony_hdc_run",
+      error_kind: "timeout",
+      failure_signal: "SIGKILL",
+    });
     expect(FAILURE_COMMANDS).toContain(signal?.failure_command);
   }, 20_000);
 });

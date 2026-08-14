@@ -141,12 +141,14 @@ describe("DevEco Studio binary resolution", () => {
   });
 
   describe("running the manager once it has been resolved", () => {
-    it("classifies a run killed with nothing to say as a subprocess failure", async () => {
+    it("classifies a run killed at its ceiling as a timeout, naming the signal", async () => {
       // The one `Emulator` failure with no diagnostic to read: killed at the
       // timeout, so `emulatorFailure`'s marker list has nothing to match and the
       // caller cannot classify it downstream. Left a bare `Error` it buckets as
       // REGISTRY_TOOL_EXECUTION_FAILED, which is where every unclassified throw
       // in the server already sits — and drops the binary that hung with it.
+      // The kind is read off the child, as `adb`'s wrapper does it: a manager
+      // that ran out of time is not one that failed.
       const bundle = join(tmpRoot, "DevEco-Studio.app");
       const emulator = join(bundle, "Contents", EMULATOR_RELATIVE);
       await mkdir(join(emulator, ".."), { recursive: true });
@@ -163,8 +165,9 @@ describe("DevEco Studio binary resolution", () => {
 
       expect(getFailureSignal(err)).toMatchObject({
         error_code: FAILURE_CODES.HARMONY_EMULATOR_COMMAND_FAILED,
-        error_kind: "subprocess",
+        error_kind: "timeout",
         failure_command: "deveco_emulator",
+        failure_signal: "SIGKILL",
       });
     });
   });

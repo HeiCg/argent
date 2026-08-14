@@ -218,6 +218,10 @@ describe("keyboard text+key ordering", () => {
       "space": "2050",
       "arrow-left": "2014",
       "arrow-right": "2015",
+      // The aliases iOS and Android take for these two. A step that spells the
+      // submit key `return` runs on both of them and must not stop here.
+      "return": "2054",
+      "delete": "2055",
     };
 
     for (const [key, keyId] of Object.entries(expected)) {

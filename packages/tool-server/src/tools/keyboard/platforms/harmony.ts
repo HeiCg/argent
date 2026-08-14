@@ -57,6 +57,13 @@ function assertTypeableHarmonyText(text: string): void {
  * `abX Y`, which pins both directions; `enter` submitted the search and
  * replaced the screen.
  *
+ * `return` and `delete` are the same two presses under the names the other
+ * backends also take (`NAMED_KEYS`, `ANDROID_NAMED_KEYCODES`): a named key means
+ * the same thing on every platform, so a step written against iOS or Android
+ * must not be refused here for spelling `enter` the other way. `delete` aliases
+ * backspace rather than forward-delete, for the reason spelled out beside the
+ * Android table.
+ *
  * `tab`, `escape` and the vertical arrows are deliberately absent. `uitest`
  * accepts their documented keycodes and reports `No Error`, but nothing
  * observable happened in a text field, so there is no evidence they do the
@@ -66,7 +73,9 @@ function assertTypeableHarmonyText(text: string): void {
  */
 const HARMONY_KEYCODES: Record<string, number> = {
   "enter": 2054,
+  "return": 2054,
   "backspace": 2055,
+  "delete": 2055,
   "space": 2050,
   "arrow-left": 2014,
   "arrow-right": 2015,

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { access, constants as fsConstants } from "node:fs/promises";
 import { join } from "node:path";
-import { FAILURE_CODES, FailureError } from "@argent/registry";
+import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import { formatSubprocessFailure } from "./subprocess-error";
 
 const execFileAsync = promisify(execFile);
@@ -130,7 +130,12 @@ export interface HarmonyRunResult {
   stderr: string;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+/**
+ * Per-`Emulator` ceiling. Exported for the same reason `UITEST_TIMEOUT_MS` is: a
+ * caller on a deadline of its own has to cap against it, since a manager call
+ * left on this ceiling can outlast the budget the whole boot was given.
+ */
+export const EMULATOR_TIMEOUT_MS = 30_000;
 
 /** See `HDC_KILL_SIGNAL`: a SIGTERM the child may ignore leaves `timeout` unenforced. */
 const EMULATOR_KILL_SIGNAL = "SIGKILL" as const;
@@ -145,7 +150,7 @@ export const EMULATOR_NOT_FOUND =
 
 export async function runHarmonyEmulator(
   args: string[],
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = EMULATOR_TIMEOUT_MS
 ): Promise<HarmonyRunResult> {
   const bin = await resolveHarmonyEmulator();
   if (!bin) {
@@ -165,7 +170,13 @@ export async function runHarmonyEmulator(
     });
     return { stdout, stderr };
   } catch (err) {
-    const e = err as { killed?: boolean; code?: unknown; stdout?: string; stderr?: string };
+    const e = err as {
+      killed?: boolean;
+      signal?: string | null;
+      code?: unknown;
+      stdout?: string;
+      stderr?: string;
+    };
     // The child ran and exited non-zero (`-start` on a missing instance does
     // this) — its diagnostic is on stdout, so hand the output back and let the
     // caller classify it exactly as it would an exit-0 failure. A numeric `code`
@@ -175,15 +186,16 @@ export async function runHarmonyEmulator(
       return { stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
     }
     // Spawn failure or timeout SIGKILL: no diagnostic to classify, so surface it
-    // the way every other subprocess wrapper here does.
+    // the way every other subprocess wrapper here does — including the kind, so
+    // a manager killed at its ceiling is not counted as one that failed.
     throw new FailureError(
       formatSubprocessFailure("Emulator", args, err),
       {
         error_code: FAILURE_CODES.HARMONY_EMULATOR_COMMAND_FAILED,
         failure_stage: "harmony_emulator_run",
         failure_area: "tool_server",
-        error_kind: "subprocess",
-        failure_command: "deveco_emulator",
+        error_kind: e.killed || e.signal ? "timeout" : "subprocess",
+        ...subprocessFailureMetadata(err, "deveco_emulator"),
       },
       { cause: err instanceof Error ? err : new Error(String(err)) }
     );

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join } from "node:path";
-import { FAILURE_CODES, FailureError } from "@argent/registry";
+import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import { formatSubprocessFailure } from "./subprocess-error";
 import { commandOnPath } from "./command-on-path";
 import { resolveDevecoBinary } from "./harmony-cli";
@@ -127,16 +127,25 @@ export async function runHdc(
     });
     return { stdout, stderr };
   } catch (err) {
-    const e = err as { killed?: boolean; code?: unknown; stdout?: string; stderr?: string };
+    const e = err as {
+      killed?: boolean;
+      signal?: string | null;
+      code?: unknown;
+      stdout?: string;
+      stderr?: string;
+    };
     if (!e.killed && typeof e.code === "number" && (e.stdout != null || e.stderr != null)) {
       return { stdout: e.stdout ?? "", stderr: e.stderr ?? "" };
     }
+    // Kind from what happened to the child, as `adb`'s wrapper reads it: a
+    // client killed at its ceiling is a timeout, not a command that failed, and
+    // the two want different answers from whoever reads the telemetry.
     throw new FailureError(formatSubprocessFailure("hdc", args, err), {
       error_code: FAILURE_CODES.HARMONY_HDC_COMMAND_FAILED,
       failure_stage: "harmony_hdc_run",
       failure_area: "tool_server",
-      error_kind: "subprocess",
-      failure_command: "hdc",
+      error_kind: e.killed || e.signal ? "timeout" : "subprocess",
+      ...subprocessFailureMetadata(err, "hdc"),
     });
   }
 }

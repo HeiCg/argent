@@ -170,7 +170,7 @@ Values: `home`, `back`, `power`, `volumeUp`, `volumeDown`, `appSwitch`, `actionB
 { "udid": "<UDID>", "text": "search query", "key": "enter" }
 ```
 
-Special keys: `enter`, `escape`, `backspace`, `tab`, `space`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `f1`–`f12` — on HarmonyOS only `enter`, `backspace`, `space`, `arrow-left` and `arrow-right` exist; any other key is refused with 400 KEYBOARD_KEY_UNSUPPORTED. Optional: `"delayMs": 100` between keystrokes (default 50ms) — applies to the iOS simulator and Chromium; it is ignored on Android phones/tablets (typed via `adb input text`, no per-key cadence), on HarmonyOS (`uitest uiInput text` types in one shot), on Vega, and on TV targets.
+Special keys: `enter`, `escape`, `backspace`, `tab`, `space`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `f1`–`f12` — on HarmonyOS only `enter` (`return`), `backspace` (`delete`), `space`, `arrow-left` and `arrow-right` exist; any other key is refused with 400 KEYBOARD_KEY_UNSUPPORTED. Optional: `"delayMs": 100` between keystrokes (default 50ms) — applies to the iOS simulator and Chromium; it is ignored on Android phones/tablets (typed via `adb input text`, no per-key cadence), on HarmonyOS (`uitest uiInput text` types in one shot), on Vega, and on TV targets.
 
 **Typing secrets.** To enter a credential without its plaintext ever entering your context, transcript, or logs, use a secret placeholder in `text` (works in `keyboard`, `paste`, `run-sequence` keyboard steps, and flow `type` steps):
 
