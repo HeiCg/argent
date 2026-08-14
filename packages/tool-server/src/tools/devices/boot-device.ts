@@ -1632,9 +1632,32 @@ async function connectedHarmonyTargets() {
  * `Offline` is also what a connection blip leaves behind, so a foreign device
  * reconnecting is an arrival by this rule too. {@link waitForHarmonyTarget}
  * settles that with the panel the instance is configured with.
+ *
+ * A failed listing is not an empty one. Every later poll can shrug one off as
+ * "nothing new yet", but the baseline cannot: empty, it makes every emulator
+ * already connected count as this boot's arrival, and a peer off the same
+ * device profile answers the same panel — so nothing downstream catches it and
+ * the boot hands back a drivable id for the wrong device. Retried once, since
+ * the `hdc` daemon restarting after a `-stop` is both the likely cause and one
+ * that clears, then refused while there is still nothing spawned to clean up.
  */
 async function connectedHarmonyKeys(): Promise<Set<string>> {
-  return new Set((await connectedHarmonyTargets()).map((t) => t.connectKey));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const targets = await listHarmonyHdcTargets();
+      return new Set(targets.filter((t) => t.state === "Connected").map((t) => t.connectKey));
+    } catch (err) {
+      if (attempt > 0) {
+        throw new Error(
+          "Could not list `hdc` targets before starting the HarmonyOS instance, so the target " +
+            "it registers under could not have been told apart from those already connected: " +
+            (err instanceof Error ? err.message : String(err)),
+          { cause: err }
+        );
+      }
+      await new Promise((r) => setTimeout(r, HARMONY_TARGET_POLL_MS));
+    }
+  }
 }
 
 /**
@@ -1960,12 +1983,19 @@ async function bootHarmonyImpl(params: {
     }
   }
 
+  // Asked rather than waited out: with no connector there is no target list to
+  // watch, so the wait would spend the whole budget concluding that nothing
+  // registered — blaming the emulator for the connector's absence. Asked before
+  // the snapshot because the snapshot is that same target list, and refuses the
+  // boot when it cannot be read.
+  const hdcAvailable = Boolean(await resolveHdc());
+
   // Snapshot immediately before the start, so a target already driveable
   // (another emulator, a phone on USB) is excluded by identity rather than by
   // any assumption about how an emulator's key is spelled. Reaching `Connected`
   // after this point is what marks the instance just booted — including on the
   // key it held before, since a stopped instance's row survives as `Offline`.
-  const before = await connectedHarmonyKeys();
+  const before = hdcAvailable ? await connectedHarmonyKeys() : new Set<string>();
   // The panel this instance is configured with, which the guest reports back as
   // its `render resolution` — the only thing that separates the instance
   // reconnecting from another device doing the same. Read before the start
@@ -1974,10 +2004,6 @@ async function bootHarmonyImpl(params: {
 
   const emulator = await startHarmonyEmulator(params.instanceName);
 
-  // Asked rather than waited out: with no connector there is no target list to
-  // watch, so the wait would spend the whole budget concluding that nothing
-  // registered — blaming the emulator for the connector's absence.
-  const hdcAvailable = Boolean(await resolveHdc());
   const assertEmulatorAlive = () => {
     {
       const exit = emulator.exited();
@@ -2017,9 +2043,8 @@ async function bootHarmonyImpl(params: {
   // note whose first clause, "the instance started", nothing has checked.
   //
   // Asking once is not enough. Nothing between the spawn and here does any I/O
-  // (`resolveHdc` is a warm memo by this point, primed by the pre-start
-  // snapshot), so a single check runs microtasks after the spawn, before the
-  // child could have exited. The grace is small and bounded because a failing
+  // at all, so a single check runs microtasks after the spawn, before the child
+  // could have exited. The grace is small and bounded because a failing
   // `-start` prints and exits at once — this must not become the whole-budget
   // wait the connector-absent path exists to avoid.
   if (!hdcAvailable) {

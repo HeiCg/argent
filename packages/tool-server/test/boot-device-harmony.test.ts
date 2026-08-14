@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -74,6 +74,8 @@ const emulatorTarget = { connectKey: EMULATOR_KEY, connection: "TCP", state: "Co
  * comes back on that same port.
  */
 const staleEmulatorTarget = { connectKey: EMULATOR_KEY, connection: "TCP", state: "Offline" };
+/** A second emulator, already up and driveable when this boot starts. */
+const foreignTarget = { connectKey: "127.0.0.1:5559", connection: "TCP", state: "Connected" };
 /** `hw.lcd.single.width`/`height` of the phone image, echoed by the guest's `render resolution`. */
 const PANEL = { width: 1320, height: 2856 };
 const logPath = join(tmpdir(), `argent-harmony-${INSTANCE}.log`);
@@ -416,6 +418,69 @@ describe("boot-device — HarmonyOS emulator path", () => {
 
     expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
     expect(result.note).toMatch(/still not answering `uitest`/);
+  });
+
+  it("ignores a second emulator that was connected and driveable before the start", async () => {
+    // The pre-start snapshot is the only thing standing between this boot and a
+    // peer emulator: it is TCP like ours, so the USB filter passes it, and off
+    // the same device profile it answers the same panel, so the confirmation
+    // passes it too. Every other fixture's pre-existing row is USB or
+    // `Offline`, i.e. excluded by something else.
+    targets([PHONE, foreignTarget], [PHONE, foreignTarget, emulatorTarget]);
+
+    const result = (await boot({})) as { udid: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+  });
+
+  it("refuses rather than starting blind when the pre-start listing cannot be read", async () => {
+    // A failed listing read as an empty one makes every already-connected
+    // emulator this boot's arrival. Refused before the spawn, so there is no
+    // instance left running behind the error.
+    listHarmonyHdcTargets.mockRejectedValue(new Error("[Fail]Connect server failed"));
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    const assertion = expect(pending).rejects.toThrow(/could not have been told apart/);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await assertion;
+
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("takes the snapshot on a retry rather than failing the boot for one bad listing", async () => {
+    // The `hdc` daemon restarting after a `-stop` is the likely cause and it
+    // clears, so one refusal must not cost the caller the boot.
+    let call = 0;
+    listHarmonyHdcTargets.mockImplementation(() => {
+      call += 1;
+      if (call === 1) return Promise.reject(new Error("[Fail]Connect server failed"));
+      return Promise.resolve(call <= 2 ? [PHONE] : [PHONE, emulatorTarget]);
+    });
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    expect(result.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(result.note).toBeUndefined();
+  });
+
+  it("removes the readiness probe's dump instead of leaving one per boot in tmpdir", async () => {
+    // A full `uitest dumpLayout` JSON, and nothing else prunes it.
+    const probes: string[] = [];
+    harmonyDumpLayout.mockImplementation((_key: unknown, path: string) => {
+      probes.push(path);
+      writeFileSync(path, "{}");
+      return Promise.resolve({ attributes: {} });
+    });
+    targets([PHONE], [PHONE, emulatorTarget]);
+
+    await boot({});
+
+    expect(probes).toHaveLength(1);
+    expect(existsSync(probes[0]!)).toBe(false);
   });
 
   it("reports the manager's death during the readiness wait, not a slow guest", async () => {

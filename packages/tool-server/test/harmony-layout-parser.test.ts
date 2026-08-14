@@ -143,6 +143,25 @@ describe("parseHarmonyLayout", () => {
       expect(target.children[0].label).toBe("Wi-Fi");
     });
 
+    it("keeps a container carrying the label an agent selects on", () => {
+      // `.accessibilityText()` on a composite row is the idiomatic way to name
+      // one, and it lands on the `Column`/`Row` the author wrote. Hoisted away
+      // for wearing a layout type, the row's name is gone from the tree
+      // entirely — `await-ui-element {text}` and tap-by-label stop finding an
+      // element that is plainly on screen. One label per source attribute,
+      // since each reaches `label` by its own branch.
+      const cases: Record<string, string>[] = [
+        { type: "Column", description: "Wi-Fi, connected" },
+        { type: "Row", hint: "Wi-Fi, connected" },
+      ];
+      for (const attrs of cases) {
+        const target = wrapping(attrs).children[0].children[0];
+        expect(target.label).toBe("Wi-Fi, connected");
+        // Hoisted, this position would hold the `Text` instead.
+        expect(target.children[0].label).toBe("Wi-Fi");
+      }
+    });
+
     it("keeps a container that knows it is disabled, selected or focused", () => {
       // One flag per case, so each is pinned on its own rather than by an `id`
       // that would have kept the node regardless.
