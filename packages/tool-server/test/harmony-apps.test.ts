@@ -8,6 +8,7 @@ import {
   terminateHarmonyApp,
 } from "../src/utils/harmony-apps";
 import { harmonyImpl as harmonyRestartImpl } from "../src/tools/restart-app/platforms/harmony";
+import { harmonyImpl as harmonyLaunchImpl } from "../src/tools/launch-app/platforms/harmony";
 
 // Only the transport is faked: these tests are about what the module makes of
 // `bm`/`aa` output, and both CLIs report failure on stdout while exiting 0.
@@ -289,6 +290,43 @@ describe("terminateHarmonyApp", () => {
     );
     const err = await terminateHarmonyApp("dev", "com.example.a10104002").catch((e: unknown) => e);
     expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
+  });
+});
+
+describe("launch-app on harmony", () => {
+  const device: DeviceInfo = { id: "harmony-KEY", platform: "harmony", kind: "device" };
+
+  it("resolves the entry ability before starting, and reports the bundle it launched", async () => {
+    runHdcShell
+      .mockResolvedValueOnce(ok(CALCULATOR))
+      .mockResolvedValueOnce(ok("start ability successfully."));
+    await expect(
+      harmonyLaunchImpl.handler(
+        {},
+        { udid: device.id, bundleId: "com.huawei.hmos.calculator" },
+        device
+      )
+    ).resolves.toEqual({ launched: true, bundleId: "com.huawei.hmos.calculator" });
+    expect(runHdcShell.mock.calls.map((c) => c[1])).toEqual([
+      "bm dump -n 'com.huawei.hmos.calculator'",
+      "aa start -b 'com.huawei.hmos.calculator' -a 'CalculatorAbility' -m 'phone'",
+    ]);
+  });
+
+  it("does not report a launch when `aa` refused it", async () => {
+    // `aa` exits 0 either way, so a missing success line is the only signal that
+    // separates this from the case above.
+    runHdcShell
+      .mockResolvedValueOnce(ok(CALCULATOR))
+      .mockResolvedValueOnce(
+        ok(
+          "error: failed to start ability.\nError Code:10104001  Error Message:The specified ability does not exist."
+        )
+      );
+    const err = await harmonyLaunchImpl
+      .handler({}, { udid: device.id, bundleId: "com.huawei.hmos.calculator" }, device)
+      .catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/Error Code:10104001/);
   });
 });
 
