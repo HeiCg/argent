@@ -405,12 +405,31 @@ const DEFAULT_ASSERT_TIMEOUT_MS = 1000;
 // the deadline.
 const CONDITION_DARK_TAIL_TOLERANCE_MS = POLL_INTERVAL_MS * 2;
 
-// The same bound for `waitForFocus`, counted in consecutive failed polls rather
-// than in milliseconds: one poll there costs a whole `uiautomator dump` on
-// Android and a CDP round-trip on Chromium, so an elapsed-time budget reads a
-// slow device as an outage. Two, for the reason above — one failure is the
-// last-poll blip, more than one is darkness.
+// The same bound for `waitForFocus`, in two forms, because either alone leaves
+// the outage refusal open.
+//
+// Counted in consecutive failed polls, one poll is the genuine last-poll blip
+// and more than one is darkness — the rule above, restated for a loop whose
+// polls each cost a whole tree read (an android-devtools `getHierarchy`, a CDP
+// DOM walk), so a device that is merely slow is not read as an outage.
+//
+// That counter can only be REACHED by failures that come back fast, which is
+// not how a tree source usually goes down. A read that hangs is bounded by its
+// own transport timeout — 15s on Android's `getHierarchy`, 10s per CDP call,
+// 5s per ViewInspector RPC — every one of them longer than this whole focus
+// window, so a single hang ends the window with the counter at 1 and the
+// verdict fell through to "unobservable", the one non-confirmed outcome
+// `runType` dispatches a destructive clear on. Reproduced on Chrome 151: a page
+// that blocks its own main thread for 12s from the focusing tap's `mousedown`
+// took the step from a refusal to a pass that emptied and rewrote a field the
+// step never named.
+//
+// So darkness is ALSO measured in elapsed milliseconds, from the moment the
+// first unanswered read STARTED — the span the window learned nothing in,
+// whether that was spent on one hang or on several quick throws. Same tolerance
+// as `waitForCondition`'s, for the same reason.
 const FOCUS_DARK_TAIL_POLLS = 2;
+const FOCUS_DARK_TAIL_TOLERANCE_MS = POLL_INTERVAL_MS * 2;
 
 /**
  * Evaluate a `when:` block's UI guard — the same engine as `assert`, on the
@@ -1243,19 +1262,26 @@ async function waitForFocus(
   // emptied a field it never named, while the same page with the reads left
   // alone refused.
   let darkTail = 0;
+  // When the current run of unanswered reads STARTED — the instant the window
+  // last knew anything. Undefined whenever the most recent read succeeded.
+  let darkSince: number | undefined;
   const giveUp = (): FocusOutcome => {
     // `undefined` means no read ever succeeded — an outage, not an observation.
     // Reporting it as "unobservable" would let a clear through on the strength
     // of a window in which nothing was seen at all; `settleTree` sets the same
     // convention for the same condition, and for the same reason.
     if (lastRead === undefined) return "unreadable";
-    // Consecutive polls went dark, so a verdict narrated from the reads before
-    // the darkness would describe a screen nobody saw at the deadline — the
-    // rule `CONDITION_DARK_TAIL_TOLERANCE_MS` states for `waitForCondition`,
-    // counted in polls rather than milliseconds because one poll's cost is a
-    // whole `uiautomator dump` on Android and a CDP round-trip on Chromium. One
-    // failure is the genuine last-poll blip that tolerance exists to absorb.
+    // The window went dark, so a verdict narrated from the reads before the
+    // darkness would describe a screen nobody saw at the deadline — the rule
+    // `CONDITION_DARK_TAIL_TOLERANCE_MS` states for `waitForCondition`. Either
+    // measure of darkness settles it: consecutive failed polls, or one span of
+    // the window long enough that a verdict from before it is stale (see
+    // FOCUS_DARK_TAIL_POLLS for why a hang can only ever be caught by the
+    // second).
     if (darkTail >= FOCUS_DARK_TAIL_POLLS) return "unreadable";
+    if (darkSince !== undefined && Date.now() - darkSince >= FOCUS_DARK_TAIL_TOLERANCE_MS) {
+      return "unreadable";
+    }
     const seen = lastRead === "no-focus" ? lastSighting : lastRead;
     if (seen === "focus-encloses") return "encloses";
     if (seen === "focus-overlaps") return "overlaps";
@@ -1265,12 +1291,30 @@ async function waitForFocus(
     if (env.signal?.aborted) return giveUp();
     // Before the read, not after it. The sleep below is capped to land exactly
     // ON the deadline, so a check that ran afterwards let one more whole tree
-    // read start past it — a `uiautomator dump` costs 1-2s of the 3000ms every
-    // refusal message claims the observation window was.
+    // read start past it — and a read costs an android-devtools `getHierarchy`
+    // or a CDP DOM walk, a real fraction of the 3000ms every refusal message
+    // claims the observation window was.
     if (Date.now() >= deadline) return giveUp();
-    try {
-      const { tree, source } = await readFlowTree(env);
+    const readStartedAt = Date.now();
+    // Bounded by what is left of the window, the way `waitForIdle` bounds its
+    // own read. No AbortSignal reaches any transport, so an unbounded read
+    // overran the window by its transport timeout instead — up to 15s on
+    // Android — and every refusal message still narrated the wait as 3000ms.
+    // The abandoned read's eventual settle is consumed by `settleWithin`.
+    const read = await settleWithin(readFlowTree(env), deadline - readStartedAt, env.signal);
+    if (read.type === "aborted") return giveUp();
+    if (read.type !== "value") {
+      // A read that threw, or one still in flight when the window ended —
+      // either way this poll observed nothing. `lastRead` is left alone so a
+      // window of nothing but failures stays "unreadable", and the darkness is
+      // dated from when the read STARTED, since that is when the window stopped
+      // learning anything.
+      darkTail++;
+      darkSince ??= readStartedAt;
+    } else {
+      const { tree, source } = read.value;
       darkTail = 0;
+      darkSince = undefined;
       if (!FOCUS_REPORTING_SOURCES.has(source)) return "unobservable";
       // The target NODE, not just its frame: identity is the only unambiguous
       // evidence. `tappedFrame` still covers a round where neither the element
@@ -1310,10 +1354,6 @@ async function waitForFocus(
       if (!requireEvidence && (lastRead === "focus-encloses" || lastRead === "focus-overlaps")) {
         return giveUp();
       }
-    } catch {
-      // transient describe failure — retry until the deadline, leaving
-      // `lastRead` alone so a window of nothing but failures stays "unreadable"
-      darkTail++;
     }
     const sleepMs = Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()));
     if (!(await sleepOrAbort(sleepMs, env.signal))) return giveUp();
