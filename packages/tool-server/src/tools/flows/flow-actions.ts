@@ -645,27 +645,29 @@ export async function waitForFrame(
   selector: FlowSelector
 ): Promise<DescribeFrame | "aborted" | undefined> {
   const resolved = await waitForFrameAndTree(env, selector);
-  return typeof resolved === "object" ? resolved.frame : resolved;
+  return typeof resolved === "object" ? resolved.node.frame : resolved;
 }
 
 /**
- * {@link waitForFrame}, keeping the settled tree the frame came out of.
+ * {@link waitForFrame}, keeping the node it resolved and the settled tree that
+ * node came out of.
  *
- * `runType` needs it: the tree as it stood when the tap was dispatched is the
- * only record of what the tap could have hit, and every focus verdict after the
- * tap is read against it (see {@link nodesUnderTap}).
+ * `runType` needs both: the tree as it stood when the tap was dispatched is the
+ * only record of what the tap could have hit (see {@link nodesUnderTap}), and
+ * the node is the element the step went on to tap — which is not always what
+ * the same selector resolves to a moment later (see {@link trackTarget}).
  */
 async function waitForFrameAndTree(
   env: ActionEnv,
   selector: FlowSelector
-): Promise<{ frame: DescribeFrame; tree: DescribeNode } | "aborted" | undefined> {
+): Promise<{ node: DescribeNode; tree: DescribeNode } | "aborted" | undefined> {
   const deadline = Date.now() + DEFAULT_ACTION_TIMEOUT_MS;
   for (;;) {
     if (env.signal?.aborted) return "aborted";
     const tree = await settleTree(env);
     if (tree) {
-      const frame = flowSelectorToFrame(tree, selector);
-      if (frame) return { frame, tree };
+      const node = flowSelectorToNode(tree, selector);
+      if (node) return { node, tree };
     } else if (env.signal?.aborted) {
       return "aborted"; // settleTree bailed on the abort, not on a blank read
     }
@@ -888,6 +890,47 @@ function sameElement(a: DescribeNode, b: DescribeNode): boolean {
 }
 
 /**
+ * Find `tapped` again in a tree read after the tap.
+ *
+ * Re-running the selector is not the same question. It asks "what does this
+ * selector match NOW", and the answer changes when the tap adds a better-ranked
+ * match: a field that opens a typeahead list on focus, where a suggestion
+ * repeats the field's own value, hands the match to the suggestion — the chip
+ * is smaller than the input and `selectorToNode` ranks smallest-frame-wins. The
+ * focus check would then test focus against an element the step never touched
+ * and refuse the clear, saying focus never reached the target while focus is
+ * exactly where the flow put it. Reproduced on Chrome 42; changing only the
+ * suggestion's text made the same step pass.
+ *
+ * So follow the element instead ({@link sameElement}), and use the selector
+ * only as the fallback for a round where it cannot be found — a re-render that
+ * changes the label of a node carrying no identifier, say. When several nodes
+ * answer to the same name, the nearest to where the tap landed wins: that is
+ * the one the step acted on.
+ */
+function trackTarget(
+  tree: DescribeNode,
+  tapped: DescribeNode,
+  selector: FlowSelector
+): DescribeNode | undefined {
+  let best: DescribeNode | undefined;
+  let bestDistance = Infinity;
+  const walk = (node: DescribeNode): void => {
+    if (sameElement(tapped, node)) {
+      const distance =
+        Math.abs(node.frame.x - tapped.frame.x) + Math.abs(node.frame.y - tapped.frame.y);
+      if (distance < bestDistance) {
+        best = node;
+        bestDistance = distance;
+      }
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(tree);
+  return best ?? flowSelectorToNode(tree, selector);
+}
+
+/**
  * The elements that sat inside `tappedFrame` and under the point the focusing
  * tap was dispatched at, in the settled tree that frame was resolved from —
  * i.e. what the tap could possibly have hit. {@link focusedFromInside} matches
@@ -956,10 +999,12 @@ type FocusOutcome =
  *
  * Identity first, then {@link focusedFromInside}: the selector often matches a
  * testID container while focus is reported by the input inside it, and the two
- * are then different nodes with different frames. The target NODE is
- * re-resolved each round — the keyboard sliding up routinely scrolls the field
- * away from where it was tapped (keyboard avoidance), and the focused element
- * must be compared against where the field is NOW.
+ * are then different nodes with different frames. The target NODE is found
+ * again each round by {@link trackTarget} — the keyboard sliding up routinely
+ * scrolls the field away from where it was tapped (keyboard avoidance), and the
+ * focused element must be compared against where the field is NOW — but by
+ * following the element the step tapped, not by re-running the selector, which
+ * a post-tap suggestion list can answer with something else entirely.
  *
  * Neither arm accepts a bare overlap. A focus-flagged node large enough to
  * COVER the target satisfies an overlap test by construction, and every shape
@@ -1001,11 +1046,12 @@ type FocusOutcome =
 async function waitForFocus(
   env: ActionEnv,
   into: FlowSelector,
-  tappedFrame: DescribeFrame,
+  tapped: DescribeNode,
   preTapTree: DescribeNode,
   requireEvidence: boolean
 ): Promise<FocusOutcome> {
   const deadline = Date.now() + TYPE_FOCUS_TIMEOUT_MS;
+  const tappedFrame = tapped.frame;
   const underTap = nodesUnderTap(preTapTree, tappedFrame);
   // Did the MOST RECENT successful read see focus on anything? Deliberately the
   // latest look and not "any look, ever": the question the caller is about to
@@ -1033,10 +1079,10 @@ async function waitForFocus(
       const { tree, source } = await readFlowTree(env);
       if (!FOCUS_REPORTING_SOURCES.has(source)) return "unobservable";
       // The target NODE, not just its frame: identity is the only unambiguous
-      // evidence. `tappedFrame` still covers a round where the selector does
-      // not resolve, but only the refusal classification below can use it —
-      // with no node there is nothing to confirm against.
-      const targetNode = flowSelectorToNode(tree, into);
+      // evidence. `tappedFrame` still covers a round where neither the element
+      // nor the selector resolves, but only the refusal classification below
+      // can use it — with no node there is nothing to confirm against.
+      const targetNode = trackTarget(tree, tapped, into);
       const target = targetNode?.frame ?? tappedFrame;
       const focused = collectFocused(tree, []);
       // Classified from the MOST RECENT successful read, never from "any read,
@@ -1724,7 +1770,7 @@ async function runType(
   if (!resolved) {
     return { ok: false, reason: offscreenHint(step.into) };
   }
-  const { frame, tree: preTapTree } = resolved;
+  const { node: tappedNode, tree: preTapTree } = resolved;
   // Wrapped like the two keyboard dispatches below, so all three of this step's
   // device calls classify a cancelled run the same way. Leaving the focus tap
   // bare made one step report `error` or `skip` depending on which dispatch
@@ -1732,7 +1778,7 @@ async function runType(
   // `scrollIncrement` leave their own dispatch bare — one call each, so there is
   // no within-step split to fix there. `runPinch` chains several, but guards the
   // signal between them itself.)
-  if (!(await dispatchOrAbort(env, "gesture-tap", getDescribeTapPoint(frame)))) {
+  if (!(await dispatchOrAbort(env, "gesture-tap", getDescribeTapPoint(tappedNode.frame)))) {
     return ABORTED_OUTCOME;
   }
   // Keys are injected at the HID level and go to whatever holds focus, so the
@@ -1740,7 +1786,7 @@ async function runType(
   if (!(await sleepOrAbort(TYPE_FOCUS_SETTLE_MS, env.signal))) {
     return ABORTED_OUTCOME;
   }
-  const focus = await waitForFocus(env, step.into, frame, preTapTree, step.clear === true);
+  const focus = await waitForFocus(env, step.into, tappedNode, preTapTree, step.clear === true);
   // waitForFocus returns on abort as well as on focus/timeout — re-check before
   // every keyboard dispatch (the keyboard tool has no abort handling of its
   // own), so a cancelled run can never type into, or submit, whatever the app
