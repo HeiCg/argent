@@ -32,7 +32,7 @@ const zodSchema = z.object({
     .string()
     .min(1)
     .regex(BUNDLE_ID_PATTERN, "bundleId may only contain letters, digits, '.', '_' and '-'")
-    .describe("App identifier. iOS: bundle id. Android: package name."),
+    .describe("App identifier. iOS: bundle id. Android: package name. HarmonyOS: bundle name."),
   activity: z
     .string()
     .regex(ACTIVITY_PATTERN, "activity may only contain letters, digits, '.', '_', '-' and '/'")

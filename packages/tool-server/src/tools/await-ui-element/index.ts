@@ -277,9 +277,11 @@ It polls the same accessibility / DOM tree as \`describe\`
 dumpLayout\`) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
 
-Returns { success: boolean, elapsed: number } — success=false means the condition never held before the
-timeout (a \`note\` then explains what was seen). Use this after a tap/navigation to wait for the next screen,
-or before tapping an element that appears asynchronously.`,
+Returns { success: boolean, elapsed: number }, plus a \`note\` whenever there is something to say about the
+read — on success=false it explains what was seen before the timeout, and on success=true it qualifies the
+match (the tree it matched is not the whole live screen, e.g. a suspended HarmonyOS panel still serving its
+last frame, or a Chromium page truncated at the walker's node budget), so read it either way. Use this after
+a tap/navigation to wait for the next screen, or before tapping an element that appears asynchronously.`,
     alwaysLoad: true,
     searchHint:
       "wait await poll until visible hidden exists text appears disappears timeout element condition settle",

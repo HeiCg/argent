@@ -117,7 +117,7 @@ Steps:
 - **Use `gesture-custom` for long-press** context menus (800ms hold). Not on HarmonyOS — it has no long-press tool.
 - **Report clearly**: state what you expected, what you saw, and the verdict.
 - **Permission modals**: try `describe` first. Use `screenshot` only as fallback, tap one visible button at a time, and verify with the returned screenshot before continuing.
-- **Record for replay**: If a tested flow is likely to be repeated, use the `argent-create-flow` skill to record it as a `.yaml` script. This lets you replay the entire sequence later with a single `flow-execute` call instead of re-running each step manually.
+- **Record for replay** (iOS, Android, Chromium, Vega): If a tested flow is likely to be repeated, use the `argent-create-flow` skill to record it as a `.yaml` script. This lets you replay the entire sequence later with a single `flow-execute` call instead of re-running each step manually. HarmonyOS is not one of the flow engine's platforms: a harmony device is never auto-resolved as the run's target, `when: { platform: harmony }` is rejected when the YAML is parsed, and any step resolving a selector against the screen fails with `ui-tree matching is not supported on platform "harmony"`. Re-run a HarmonyOS scenario as the live loop above.
 
 ## Related Skills
 
@@ -129,4 +129,4 @@ Steps:
 | `argent-android-emulator-setup`    | Booting and connecting an Android emulator                                                                                          |
 | `argent-react-native-app-workflow` | Starting the app, Metro, build issues                                                                                               |
 | `argent-metro-debugger`            | Breakpoints, console logs, JS evaluation                                                                                            |
-| `argent-create-flow`               | Record a test sequence as a replayable flow                                                                                         |
+| `argent-create-flow`               | Record a test sequence as a replayable flow (iOS, Android, Chromium, Vega — not HarmonyOS)                                          |

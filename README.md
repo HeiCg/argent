@@ -9,7 +9,7 @@
 [![Ad](https://swm-delivery.com/www/images/zone-gh-argent-2?n=1)](https://swm-delivery.com/www/delivery/ck-slug.php?zoneid=zone-gh-argent-2&n=1)
 [![Ad](https://swm-delivery.com/www/images/zone-gh-argent-3?n=1)](https://swm-delivery.com/www/delivery/ck-slug.php?zoneid=zone-gh-argent-3&n=1)
 
-**[Argent](https://argent.swmansion.com)** is an **agentic toolkit** that gives your AI assistant direct access to iOS Simulators, Android emulators and physical devices, TVs (Apple TV, Android TV, Fire TV) and Electron/Chromium desktop and web apps. Ask it to tap a button, run a profiler or reproduce an issue manually - all from within your CLI, without switching context.
+**[Argent](https://argent.swmansion.com)** is an **agentic toolkit** that gives your AI assistant direct access to iOS Simulators, Android emulators and physical devices, HarmonyOS phones and emulators, TVs (Apple TV, Android TV, Fire TV) and Electron/Chromium desktop and web apps. Ask it to tap a button, run a profiler or reproduce an issue manually - all from within your CLI, without switching context.
 
 ```bash
 npx @swmansion/argent@latest init
@@ -33,7 +33,7 @@ Argent drives a growing set of targets through a single toolkit, each with the r
 
 ## Capabilities
 
-- **Autonomous mobile, TV and desktop development** - Allow your agent to work with iOS, Android, TV and Electron/web apps on its own - let it build, open, interact with the app and debug it. Ask for reproducing issues, testing features manually, profiling your app and much more, without ever interrupting your work.
+- **Autonomous mobile, TV and desktop development** - Allow your agent to work with iOS, Android, HarmonyOS, TV and Electron/web apps on its own - let it build, open, interact with the app and debug it. Ask for reproducing issues, testing features manually, profiling your app and much more, without ever interrupting your work.
 - **UI interaction** - Give your agent the full control toolkit - tapping, swiping, pinching, typing, gestures and hardware buttons on mobile; the directional remote on TV; mouse, scroll and drag on desktop/web. Let it navigate your app exactly as a user would, without lifting a finger.
 - **Record & replay flows** - Capture a sequence of interactions once and let your agent replay it deterministically, so manual repros and smoke tests become repeatable.
 - **Visual regression** - Diff two screenshots (or a saved baseline against a live capture) with OCR- and font-aware comparison to catch unintended UI changes.

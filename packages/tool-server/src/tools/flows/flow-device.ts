@@ -74,7 +74,8 @@ const DEVICE_BIND_LIST_KEYS = ["devices"] as const;
 const DEVICE_ARG_KEYS = DEVICE_BIND_KEYS;
 
 interface RawDevice {
-  platform: FlowPlatform;
+  /** `list-devices` lists every platform it knows, not only the ones flows run on. */
+  platform: FlowPlatform | "ios-remote" | "harmony";
   state?: string;
   udid?: string;
   serial?: string;
@@ -82,7 +83,12 @@ interface RawDevice {
 }
 
 function deviceEntryId(d: RawDevice): string | undefined {
-  if (d.platform === "ios") return d.udid;
+  // `ios-remote` and `harmony` key their entries by `udid` as iOS does, though a
+  // flow runs on neither: the id still reaches the caller through the "available
+  // devices" line, which names what there is rather than only what would run.
+  if (d.platform === "ios" || d.platform === "ios-remote" || d.platform === "harmony") {
+    return d.udid;
+  }
   if (d.platform === "chromium") return d.id;
   return d.serial; // android, vega
 }
