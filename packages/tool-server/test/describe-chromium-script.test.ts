@@ -276,7 +276,13 @@ function run(
    * `el()` take the global document as their root node unless a shadow root
    * claims them, so this is what the light DOM's focus reads answer with.
    */
-  focus?: { activeElement?: MockElement; clobberedBy?: MockElement }
+  focus?: { activeElement?: MockElement; clobberedBy?: MockElement },
+  /**
+   * Globals a hostile page can redefine before the script runs. `ShadowRoot`
+   * is not always a constructor: a legacy Shadow-DOM polyfill can assign a
+   * non-object to it, and the script reads `ShadowRoot.prototype` at top level.
+   */
+  globals?: { ShadowRoot?: unknown }
 ): { tree: unknown; truncated: boolean } {
   const root = el({ tag: "html", rect: { x: 0, y: 0, w: W, h: H } }) as MockElement &
     Record<string, unknown>;
@@ -378,7 +384,7 @@ function run(
   g.HTMLTextAreaElement = MockHTMLTextAreaElement;
   g.HTMLImageElement = MockHTMLImageElement;
   g.Document = MockDocument;
-  g.ShadowRoot = MockShadowRoot;
+  g.ShadowRoot = globals && "ShadowRoot" in globals ? globals.ShadowRoot : MockShadowRoot;
   try {
     const payload = (0, eval)(DESCRIBE_DOM_SCRIPT) as string;
     return JSON.parse(payload);
@@ -1200,6 +1206,36 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     expect(JSON.stringify(tree)).not.toContain("focused");
   });
 
+  it("still reports focus when getRootNode answers with neither a root nor the document", () => {
+    // ShadyDOM and webcomponents.js REPLACE Element.prototype.getRootNode, so
+    // the captured accessor is never consulted and what comes back is neither a
+    // ShadowRoot nor the element's own document. Answering "nothing is focused"
+    // there dropped the flag from every node on the page — verified on Chrome
+    // 151 — and a tree with no focus flag is what the type directive's focus
+    // wait reads as "unobservable", the one non-confirmed outcome it dispatches
+    // a destructive clear on.
+    const input = inputEl({ attrs: { id: "email" }, value: "abc", rect: BOX });
+    (input as unknown as Record<string, unknown>).__root = { __shady: true };
+
+    const { tree } = run([input], { activeElement: input });
+    expect(findById(tree, "email")!.focused).toBe(true);
+  });
+
+  it("describes the page even when ShadowRoot is not a constructor", () => {
+    // `typeof ShadowRoot === "undefined"` does not cover a page assigning a
+    // non-constructor (window.ShadowRoot = null is the shape a legacy polyfill
+    // shim uses): `null.prototype` threw at script top, before a single node
+    // was walked, and describe failed for the WHOLE page — reproduced against
+    // Chrome 151, where the tool returned CHROMIUM_DESCRIBE_FAILED and no tree.
+    const input = inputEl({ attrs: { id: "email" }, value: "abc", rect: BOX });
+    let out: { tree: unknown } | undefined;
+    expect(() => {
+      out = run([input], { activeElement: input }, { ShadowRoot: null });
+    }).not.toThrow();
+    // …and the page is described in full, focus flag included.
+    expect(findById(out!.tree, "email")!.focused).toBe(true);
+  });
+
   // ---- a missing captured accessor must degrade, not abort the whole describe ----
   it("degrades instead of aborting when a captured prototype accessor is absent", () => {
     // scrollHeight is read only for overflow:auto/scroll nodes. Removing its prototype
@@ -1250,6 +1286,46 @@ describe("a <textarea>'s contents through the flow tree", () => {
     ]);
     const chat = findAll(tree, { identifier: "chat" })[0]!;
     expect(assertText(chat)).not.toContain("hello team");
+  });
+
+  it("lets an UNIDENTIFIED composer's draft INTO its container's text", () => {
+    // The other half of the sentence, and the one the three tests around it
+    // cannot show, because each gives its field a placeholder or an id: the
+    // shield is the IDENTIFIER, not the fact that a field's contents are a
+    // field's contents. With neither, the draft is the node's accessible name
+    // and hoists like any other text. Reproduced live on Chrome 151 through
+    // flow-execute — `text: { in: <chat>, contains: "unsent draft" }` passed
+    // with the message list empty — which is why
+    // `asserting-field-values.md` tells authors to give the field an id.
+    const tree = flowTree([
+      el({
+        attrs: { id: "chat" },
+        rect: { x: 0, y: 100, w: 400, h: 200 },
+        children: [
+          el({ attrs: { id: "messages" }, rect: { x: 0, y: 100, w: 400, h: 40 } }),
+          textareaEl({ value: "hello team", rect: { x: 0, y: 200, w: 400, h: 80 } }),
+        ],
+      }),
+    ]);
+    const chat = findAll(tree, { identifier: "chat" })[0]!;
+    expect(assertText(chat)).toContain("hello team");
+  });
+
+  it("lets an UNIDENTIFIED draft out-rank a real control for a tap", () => {
+    // Same for the ranking: `shield` governs hoisting only, so an unidentified
+    // field's value reaches `label` and the resolver's exact-field match beats
+    // the button whose label merely contains the word. Reproduced live: the tap
+    // landed in the note, not on the Save button.
+    const tree = flowTree([
+      textareaEl({ value: "Save", rect: { x: 0, y: 100, w: 400, h: 100 } }),
+      el({
+        tag: "button",
+        attrs: { id: "save-btn" },
+        text: "Save changes",
+        rect: { x: 0, y: 220, w: 120, h: 30 },
+      }),
+    ]);
+    expect(selectorToNode(tree, { text: "Save" })?.identifier).toBeUndefined();
   });
 
   it("keeps a labelled composer's draft out of a page-wide visible check", () => {

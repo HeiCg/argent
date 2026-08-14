@@ -51,6 +51,15 @@ describe("flow `type` — clear parsing", () => {
     );
   });
 
+  it("rejects a clear-only step with no `into`, as a validation failure", () => {
+    // The diagnostic renders the offending entry, and `JSON.stringify` returns
+    // undefined for undefined — so reading `.length` off it replaced the whole
+    // message with "Cannot read properties of undefined" under a
+    // REGISTRY_TOOL_EXECUTION_FAILED code. Through the real server that is what
+    // `type: { clear: true }` returned, for a flow the parser can name exactly.
+    expect(() => parseType(`      clear: true`)).toThrow(/type\.into/);
+  });
+
   it("rejects a non-boolean clear", () => {
     expect(() => parseType(`      into: search\n      clear: "yes"\n      text: "x"`)).toThrow(
       /type.clear must be a boolean/

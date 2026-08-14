@@ -106,22 +106,51 @@ const enclosingFocusXml = () =>
 /**
  * Two ANONYMOUS fields in one row — no resource-id on either, so `sameElement`
  * falls through to the label. Every other fixture in this file identifies its
- * nodes, so nothing here reached that fallback, and it is the whole H1 defect:
- * two elements sharing a name are not one element. `second` decides whether the
- * name collides. On Android the collision needs no coincidence — `identifier`
- * is the raw resource-id, which names the layout SLOT, so every row inflated
- * from one layout carries the same one.
+ * nodes, so nothing here reached that fallback, and it is the whole defect it
+ * pins: two elements sharing a name are not one element. `second` decides
+ * whether the name collides. On Android the collision needs no coincidence —
+ * `identifier` is the raw resource-id, which names the layout SLOT, so every
+ * row inflated from one layout carries the same one.
  *
- * The row's centre (540) falls in the RIGHT field, and the LEFT one holds
- * focus: the mis-target this gate exists to refuse.
+ * Built so the ambiguity is the ONLY thing deciding the outcome: the row's
+ * centre (540) falls in the FOCUSED field, which is also first in tree order,
+ * so with a distinct sibling name the step confirms through the under-the-tap
+ * arm. Make the names collide and nothing else about the screen changes. (An
+ * earlier shape put focus on the field the tap MISSED, which every later gate
+ * refuses on its own, so both arms were refused and the ambiguity test itself
+ * was never exercised.)
  */
 const anonymousRowXml = (second: string) =>
   `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
 <hierarchy rotation="0">
   <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
     <node index="0" class="android.view.ViewGroup" resource-id="amount-row" package="com.acme.app" bounds="[40,200][1040,280]">
-      <node index="0" class="android.widget.EditText" content-desc="Amount" focused="true" package="com.acme.app" bounds="[40,200][240,280]" />
-      <node index="1" class="android.widget.EditText" content-desc="${second}" package="com.acme.app" bounds="[280,200][1040,280]" />
+      <node index="0" class="android.widget.EditText" content-desc="Amount" clickable="true" focused="true" package="com.acme.app" bounds="[280,200][1040,280]" />
+      <node index="1" class="android.widget.EditText" content-desc="${second}" clickable="true" package="com.acme.app" bounds="[40,200][240,280]" />
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
+ * A row whose two children are separated by a GAP, so the container's centre
+ * (540) covers neither of them — a flex `gap`, `space-between`, a margin, or a
+ * divider the adapter does not emit. `secondControl` decides whether the row
+ * holds one control or two; focus sits on the LEFT child either way, and the
+ * tap point lands on nothing but the row itself.
+ *
+ * With two controls the tap cannot say which one it meant, and the clear went
+ * to whichever already held focus — reproduced on Chrome 151, where the left
+ * input was emptied and rewritten with a pass reported on the row. With one it
+ * is the tall-label shape: the container's single control took the focus the
+ * gesture asked for.
+ */
+const gapRowXml = (secondControl: boolean) =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" resource-id="name-row" package="com.acme.app" bounds="[40,200][1040,280]">
+      <node index="0" class="android.widget.EditText" resource-id="first" content-desc="First name" text="do not erase me" clickable="true" focused="true" package="com.acme.app" bounds="[40,200][500,280]" />
+      <node index="1" class="${secondControl ? "android.widget.EditText" : "android.widget.TextView"}" resource-id="last" content-desc="Last name" text="Smith" ${secondControl ? 'clickable="true" ' : ""}package="com.acme.app" bounds="[580,200][1040,280]" />
     </node>
   </node>
 </hierarchy>`;
@@ -133,8 +162,21 @@ const anonymousRowXml = (second: string) =>
  * becomes the nearest namesake and a proximity tie-break adopts it as "the
  * target". The identity arm then trusts it absolutely.
  */
-const twoSameIdRowsXml = (scrolled: boolean) =>
-  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+const twoSameIdRowsXml = (scrolled: boolean, focusedFirst = false) =>
+  scrolled && focusedFirst
+    ? // The same scrolled screen with the namesakes listed the other way round.
+      // First-match-wins is not a rule about safety: where the focused
+      // namesake happens to come first, falling back to "the first one" hands
+      // the clear the element the selector never resolved to — so the refusal
+      // has to come from the ambiguity itself, not from the fixture's order.
+      `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.widget.EditText" resource-id="row" content-desc="Row" text="SECRET-B" focused="true" package="com.acme.app" bounds="[40,200][1040,280]" />
+    <node index="1" class="android.widget.EditText" resource-id="row" content-desc="Row" text="KEEP-ME" package="com.acme.app" bounds="[40,20][1040,100]" />
+  </node>
+</hierarchy>`
+    : `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
 <hierarchy rotation="0">
   <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
     <node index="0" class="android.widget.EditText" resource-id="row" content-desc="Row" text="KEEP-ME" package="com.acme.app" bounds="${scrolled ? "[40,20][1040,100]" : "[40,200][1040,280]"}" />
@@ -388,6 +430,27 @@ const richTextEditorXml = (extraLine: boolean) =>
 </hierarchy>`;
 
 /**
+ * A focused, non-editable WRAPPER around exactly one anonymous FIELD. At the
+ * tree level it is the editing host `richTextEditorXml` describes, node for
+ * node: the field's contents are its accessible name, an anonymous node does
+ * not shield, so the name hoists and the wrapper carries the target's text with
+ * none of its own. What tells them apart is what the wrapper wraps — an editing
+ * host's content is static text, never another control. Hosted payment fields
+ * (one input per iframe) and a `<div tabindex=0>` focus trap are both this
+ * shape; the trap was confirmed on Chrome 151, where only the keyboard tool's
+ * own "not a text field" refusal stopped the clear.
+ */
+const wrapperAroundOneFieldXml = () =>
+  `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" focused="true" package="com.acme.app" bounds="[40,100][1040,500]">
+      <node index="0" class="android.widget.EditText" content-desc="hello-target" clickable="true" package="com.acme.app" bounds="[80,200][900,280]" />
+    </node>
+  </node>
+</hierarchy>`;
+
+/**
  * The role test's over-match: Material's `TextInputLayout` is the non-editable
  * WRAPPER that carries the app's `resource-id`, and `deriveUiAutomatorRole`
  * matches `textinput` on the short class name, so it derives `TextField`.
@@ -404,7 +467,10 @@ const textInputLayoutWrapperXml = () =>
   </node>
 </hierarchy>`;
 
-function mockRegistry(calls: Call[], getHierarchy: () => { xml: string }): Registry {
+function mockRegistry(
+  calls: Call[],
+  getHierarchy: () => { xml: string } | Promise<{ xml: string }>
+): Registry {
   return {
     invokeTool: vi.fn(async (id: string, args: Record<string, unknown>) => {
       calls.push({ id, args });
@@ -577,12 +643,17 @@ describe("type directive — clear dispatch", () => {
     ]);
   });
 
-  it.each([4, 5, 12, 100])(
+  it.each([1, 2, 3, 4, 5, 12, 100])(
     "refuses to clear when the only focused node encloses the target by %ipx",
     async (pad) => {
       // The containment epsilon must not admit an ENCLOSING node. Its slack is
       // per-edge, so a symmetric pad of half the tolerance satisfied it on every
       // side at once: at 4px the WebView took the clear and the step passed.
+      //
+      // The sweep starts at ONE pixel because that is where the defect lived
+      // after the extent comparison arrived: a trap 1-2px larger on every edge
+      // still cleared, and destroyed a draft on Chrome 151. Starting at 4 left
+      // exactly that range unswept.
       const calls: Call[] = [];
       const registry = mockRegistry(calls, () => ({ xml: enclosingByPadXml(pad) }));
 
@@ -739,6 +810,52 @@ describe("type directive — clear dispatch", () => {
     expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
     expect(result.steps[0]!.reason).toContain("stopped answering");
     expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("refuses to clear when the read that ends the window HANGS rather than throwing", async () => {
+    // A counter of consecutive FAILED polls can only be reached by failures
+    // that come back fast, and that is not how a tree source goes down: every
+    // transport's own timeout outlasts this whole window — 15s for the Android
+    // `getHierarchy`, 10s per CDP call, 5s per ViewInspector RPC — so one hang
+    // ends the window with the counter at one. Reproduced on Chrome 151 with a
+    // page blocking its own main thread for 12s from the focusing tap's
+    // mousedown: the step PASSED, emptied a field it never named, and ran 13.9s
+    // while its report claimed a 3000ms window.
+    const calls: Call[] = [];
+    let reads = 0;
+    let hungReadSettled = false;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      // Two pre-tap settle reads and one clean focus poll, then a read that
+      // does not come back inside the window.
+      if (reads <= 3) return { xml: noFocusXml() };
+      return new Promise<{ xml: string }>((_resolve, reject) => {
+        const timer = setTimeout(() => {
+          hungReadSettled = true;
+          reject(new Error("device wedged"));
+        }, 15_000);
+        // Nothing may wait on this: the point is that the step does not.
+        (timer as unknown as { unref?: () => void }).unref?.();
+      });
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const startedAt = Date.now();
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("stopped answering");
+    expect(keyboardArgs(calls)).toEqual([]);
+    // And the wait was bounded by the window rather than by the transport: the
+    // step answered while the hung read was still outstanding, which is what
+    // keeps every refusal message's "within 3000ms" true.
+    expect(hungReadSettled).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(15_000);
   });
 
   it("absorbs a single failed poll rather than calling it an outage", async () => {
@@ -1327,36 +1444,77 @@ describe("type directive — a rich-text composer", () => {
     expect(result.steps[0]!.reason).toContain("refusing to clear");
     expect(keyboardArgs(calls)).toEqual([]);
   });
+
+  it("refuses a focused WRAPPER whose only text belongs to one field inside it", async () => {
+    // The editor's twin, and the shape the editing-host gate admitted: a
+    // focused non-editable wrapper around ONE anonymous field carries the
+    // target's text with none of its own, exactly like a contenteditable
+    // carrying its paragraph's. What separates them is that an editing host's
+    // content is static text — a control inside means the thing holding focus
+    // is a wrapper, and the keys would be dispatched at it. Confirmed on Chrome
+    // 151, where the gate passed and only the keyboard tool's "the focused
+    // element DIV#wrap is not a text field" stopped the clear; iOS and Android
+    // dispatch at whatever holds focus and have no such backstop.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: wrapperAroundOneFieldXml() }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { text: "hello-target" }, text: "REPLACED", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
 });
 
 describe("type directive — a name is not an identity", () => {
-  it.each([
-    ["a namesake", "Amount"],
-    ["a differently named sibling", "Currency"],
-  ])(
-    "refuses to clear a row of ANONYMOUS fields when the tap missed the focused one (%s)",
-    async (_name, second) => {
-      // `sameElement` compares role + identifier and falls back to the LABEL when
-      // neither side has an identifier — the everyday React Native and plain-DOM
-      // shape, and the one no other fixture in this file reaches. Two elements
-      // sharing a name are not one element, so "the focused node is A namesake of
-      // something under the tap" handed the clear to whichever namesake held
-      // focus. Reproduced on Chrome 151: the LEFT field was emptied and rewritten
-      // with a pass reported on the row.
-      const calls: Call[] = [];
-      const registry = mockRegistry(calls, () => ({ xml: anonymousRowXml(second) }));
+  it("refuses to clear a row of ANONYMOUS fields whose names COLLIDE", async () => {
+    // `sameElement` compares role + identifier and falls back to the LABEL when
+    // neither side has an identifier — the everyday React Native and plain-DOM
+    // shape, and the one no other fixture in this file reaches. Two elements
+    // sharing a name are not one element, so "the focused node is A namesake of
+    // something under the tap" handed the clear to whichever namesake held
+    // focus. Reproduced on Chrome 151: the LEFT field was emptied and rewritten
+    // with a pass reported on the row.
+    //
+    // Everything else on this screen confirms — the focused field IS the one
+    // under the tap point — so the colliding name is the only thing this and
+    // its twin below differ on. With focus on a field the tap MISSED, later
+    // gates refuse both arms and the ambiguity test is never reached.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: anonymousRowXml("Amount") }));
 
-      await writeFlow("f", {
-        executionPrerequisite: "",
-        steps: [{ kind: "type", into: { identifier: "amount-row" }, text: "9", clear: true }],
-      });
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "amount-row" }, text: "9", clear: true }],
+    });
 
-      const result = asRun(await run(registry));
-      expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
-      expect(result.steps[0]!.reason).toContain("refusing to clear");
-      expect(keyboardArgs(calls)).toEqual([]);
-    }
-  );
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("still clears the ANONYMOUS field under the tap when its sibling is named differently", async () => {
+    // The twin: one name, one element, and the tap landed on it. It is also
+    // what keeps the label fallback honest in the other direction — matching
+    // every anonymous node of a role against every other would make this row
+    // ambiguous too, and refuse a clear that is exactly on target.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: anonymousRowXml("Currency") }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "amount-row" }, text: "9", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([{ clear: true, text: "9" }, { key: "enter" }]);
+  });
 
   it("refuses to clear when a re-layout puts a different namesake where the tap landed", async () => {
     // `trackTarget` follows the element the step tapped rather than re-running
@@ -1374,6 +1532,30 @@ describe("type directive — a name is not an identity", () => {
       // The selector resolves and the tap goes out against the unscrolled
       // layout; the focus poll sees the scrolled one.
       return { xml: twoSameIdRowsXml(reads > 2) };
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "row" }, text: "TYPED", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("refuses the same re-layout when the FOCUSED namesake is the first one listed", async () => {
+    // The other tree order, and the one that shows the refusal comes from the
+    // ambiguity rather than from the fixture: handing back "the first
+    // namesake" instead of nothing gives the identity arm the focused row
+    // here, which confirms absolutely and empties the row the selector never
+    // resolved to. Reading order is not a safety property.
+    const calls: Call[] = [];
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      return { xml: twoSameIdRowsXml(reads > 2, true) };
     });
 
     await writeFlow("f", {
@@ -1456,6 +1638,43 @@ describe("type directive — a tap the container's own chrome absorbed", () => {
     expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
     expect(result.steps[0]!.reason).toContain("refusing to clear");
     expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("refuses when the tap point is inert but the container holds TWO controls", async () => {
+    // `underTap` holds what COVERS the tap point, so a gap between two children
+    // empties it and "nothing under the tap is a control" becomes vacuously
+    // true — the clear then went to whichever sibling already held focus, four
+    // OTP boxes away from the tap on Chrome 151. The evidence the arm needs is
+    // that the container has exactly ONE control to route focus to.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: gapRowXml(true) }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "name-row" }, text: "Jones", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("still clears through the same gap when the container holds ONE control", async () => {
+    // The twin, with the second child a plain label rather than a field: the
+    // tap point covers nothing either way, so the gap is not what decides —
+    // the number of controls that could have taken the keys is.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: gapRowXml(false) }));
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "name-row" }, text: "Jones", clear: true }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(keyboardArgs(calls)).toEqual([{ clear: true, text: "Jones" }, { key: "enter" }]);
   });
 });
 
