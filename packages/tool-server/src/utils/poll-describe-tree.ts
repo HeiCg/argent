@@ -102,6 +102,12 @@ export async function pollDescribeTree<R>(
 
     // Bound each fetch to the time left before the deadline.
     const remaining = Math.max(0, deadline - Date.now());
+    // The final poll runs AT the deadline (see the sleep clamp below), so it is
+    // handed nothing. A backend that refuses an empty budget outright then fails
+    // for a reason of the loop's own making, which must not displace what the
+    // polls that had time actually found — the same reason the timeout branch
+    // below only speaks up when no tree was ever read.
+    const unbudgeted = remaining === 0;
     const settled = await settleWithin(fetchTree(remaining), remaining, signal);
     polls += 1;
 
@@ -116,7 +122,7 @@ export async function pollDescribeTree<R>(
       break;
     }
     if (settled.type === "error") {
-      lastError = settled.error;
+      if (!unbudgeted || (lastError === undefined && lastData === null)) lastError = settled.error;
     } else {
       lastData = settled.value;
       lastError = undefined;

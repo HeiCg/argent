@@ -3,7 +3,8 @@ import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { InvalidToolInputError } from "../../../utils/capability";
 import { harmonyConnectKey } from "../../../utils/device-info";
 import {
-  assertHarmonyScreenAwake,
+  HARMONY_INTERACTION_TIMEOUT_MS,
+  assertHarmonyDisplayReady,
   harmonyDisplay,
   harmonyKeyEvent,
   harmonyTypeText,
@@ -112,21 +113,30 @@ async function typeHarmony(connectKey: string, params: KeyboardParams): Promise<
   // rejects having typed nothing.
   const keycode = params.key ? resolveHarmonyKeycode(params.key) : null;
   if (params.text) assertTypeableHarmonyText(params.text);
-  // Typing into a suspended panel reports `No Error` and lands nowhere, so a
-  // dead screen fails the same way a tap does.
-  assertHarmonyScreenAwake(await harmonyDisplay(connectKey), "type");
+  // Neither key nor text is schema-valid (both are optional, with no refinement)
+  // and injects nothing, so it costs no device round trip — the contract every
+  // sibling backend follows. Reaching the device first would let a suspended
+  // panel fail a step that was never going to type anything.
+  if (keycode === null && !params.text) return { typed: "", keys: 0 };
+  // One deadline for the display read and both injections, so a type-then-submit
+  // call stays under the MCP layer's abort-and-replay cap.
+  const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
+  // Typing into a panel that is suspended, or that the render service could not
+  // size, reports `No Error` and lands nowhere, so a dead screen fails the same
+  // way a tap does.
+  assertHarmonyDisplayReady(await harmonyDisplay(connectKey), "type");
   let keysPressed = 0;
   if (params.text) {
     // `uitest uiInput text` types into whatever holds focus, in one shot — there
     // is no per-character injection, so `delayMs` has nothing to pace (the tool
     // description already lists the platforms that ignore it).
-    await harmonyTypeText(connectKey, params.text);
+    await harmonyTypeText(connectKey, params.text, deadline - Date.now());
     keysPressed += [...params.text].length;
   }
   // Key after text, so a combined call means "type, then submit". Pressing first
   // would submit an empty field.
   if (keycode !== null) {
-    await harmonyKeyEvent(connectKey, String(keycode));
+    await harmonyKeyEvent(connectKey, String(keycode), deadline - Date.now());
     keysPressed++;
   }
   return { typed: params.text ?? params.key ?? "", keys: keysPressed };

@@ -180,32 +180,103 @@ describe("the per-device uitest queue", () => {
 });
 
 describe("a caller's own ceiling reaches the device", () => {
+  const dumpPath = (tag: string) =>
+    join(tmpdir(), `argent-uitest-budget-${process.pid}-${tag}.json`);
+
+  /** Serve a `uitest` call that takes `runMs`, recording the ceiling it was given. */
+  function deviceTakes(runMs: number): {
+    shellTimeouts: (number | undefined)[];
+    fetchTimeouts: (number | undefined)[];
+  } {
+    const shellTimeouts: (number | undefined)[] = [];
+    const fetchTimeouts: (number | undefined)[] = [];
+    runHdcShell.mockImplementation(async (_key, command, timeoutMs) => {
+      if (!command.startsWith("uitest ")) return { stdout: "", exitCode: 0 };
+      shellTimeouts.push(timeoutMs);
+      await new Promise((r) => setTimeout(r, runMs));
+      return { stdout: "", exitCode: 0 };
+    });
+    hdcFileRecv.mockImplementation(async (_key, _remote, localPath, timeoutMs) => {
+      fetchTimeouts.push(timeoutMs);
+      writeFileSync(localPath, "{}");
+    });
+    return { shellTimeouts, fetchTimeouts };
+  }
+
   // A `timeoutMs` accepted here and dropped leaves every clamp upstream —
   // boot-device's probe, the wait tools' polls — computing a bound nothing
   // enforces, which is the state this whole parameter exists to leave behind.
   // Both round trips count: the fetch is the half that hangs when a device
   // starts to go away, and it defaults to 30s, above every caller's budget.
   it("bounds the `uitest` call and the fetch that follows it", async () => {
-    const shellTimeouts: (number | undefined)[] = [];
+    const RUN_MS = 200;
+    const { shellTimeouts, fetchTimeouts } = deviceTakes(RUN_MS);
+
+    await harmonyDumpLayout("dev-a", dumpPath("one"), 900);
+
+    // Nothing ran before it, so the capture gets ~the whole budget…
+    expect(shellTimeouts).toHaveLength(1);
+    expect(shellTimeouts[0]).toBeGreaterThan(800);
+    expect(shellTimeouts[0]).toBeLessThanOrEqual(900);
+    // …and the fetch gets what the capture left, rather than a sliver above zero
+    // or a fresh 30s default.
+    expect(fetchTimeouts).toHaveLength(1);
+    expect(fetchTimeouts[0]).toBeLessThanOrEqual(900 - RUN_MS);
+    expect(fetchTimeouts[0]).toBeGreaterThan(900 - RUN_MS - 150);
+  });
+
+  it("charges the wait for another caller's `uitest` to the budget, not to the fetch alone", async () => {
+    // Two callers on one device, each with the same budget. The second waits out
+    // the first in `enqueueUitest` — time nothing was charging — and then, if the
+    // capture is handed a fresh full ceiling, spends the whole budget on the
+    // capture and leaves the fetch a 1ms SIGKILL reported as a device that hung,
+    // with the capture still sitting on the device.
+    const BUDGET_MS = 500;
+    const RUN_MS = 300;
+    const { shellTimeouts, fetchTimeouts } = deviceTakes(RUN_MS);
+
+    const first = harmonyDumpLayout("dev-a", dumpPath("first"), BUDGET_MS);
+    const second = harmonyDumpLayout("dev-a", dumpPath("second"), BUDGET_MS);
+
+    await expect(first).resolves.toEqual({});
+    const outcome = await second.then(
+      () => null,
+      (e: unknown) => e as Error
+    );
+
+    // The queued caller's capture is bounded by what its budget had left after
+    // the wait, not by the budget it started with.
+    expect(shellTimeouts).toHaveLength(2);
+    expect(shellTimeouts[1]).toBeLessThanOrEqual(BUDGET_MS - RUN_MS);
+    // And once that is spent, the fetch is not attempted at all: the caller is
+    // told the budget ran out instead of being handed a killed transfer.
+    expect(fetchTimeouts).toHaveLength(1);
+    expect(getFailureSignal(outcome)).toMatchObject({
+      error_code: FAILURE_CODES.HARMONY_HDC_COMMAND_FAILED,
+      failure_stage: "harmony_budget_exhausted",
+      error_kind: "timeout",
+    });
+    expect(outcome?.message).toContain("Ran out of time");
+  });
+
+  it("bounds the cleanup delete, which runs after the budget is spent", async () => {
+    // The delete is deliberately outside the shared budget — a spent budget is
+    // no reason to leave a multi-hundred-KB capture on the device — but on
+    // `runHdcShell`'s 30s default a wedged daemon adds 30s to a call whose
+    // caller has already run out of time, on top of every ceiling before it.
+    const rmTimeouts: (number | undefined)[] = [];
     runHdcShell.mockImplementation(async (_key, command, timeoutMs) => {
-      if (command.startsWith("uitest ")) shellTimeouts.push(timeoutMs);
+      if (command.startsWith("rm -f ")) rmTimeouts.push(timeoutMs);
       return { stdout: "", exitCode: 0 };
     });
-    const fetchTimeouts: (number | undefined)[] = [];
-    hdcFileRecv.mockImplementation(async (_key, _remote, localPath, timeoutMs) => {
-      fetchTimeouts.push(timeoutMs);
+    hdcFileRecv.mockImplementation(async (_key, _remote, localPath) => {
       writeFileSync(localPath, "{}");
     });
 
-    await harmonyDumpLayout(
-      "dev-a",
-      join(tmpdir(), `argent-uitest-budget-${process.pid}.json`),
-      900
-    );
+    await harmonyDumpLayout("dev-a", dumpPath("cleanup"), 900);
 
-    expect(shellTimeouts).toEqual([900]);
-    expect(fetchTimeouts).toHaveLength(1);
-    expect(fetchTimeouts[0]).toBeGreaterThan(0);
-    expect(fetchTimeouts[0]).toBeLessThanOrEqual(900);
+    // Sized against the 0.1-0.8s an `hdc shell` round trip was measured at, and
+    // well under the MCP client's 30s abort.
+    expect(rmTimeouts).toEqual([5_000]);
   });
 });

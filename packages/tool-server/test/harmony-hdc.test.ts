@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { getFailureSignal } from "@argent/registry";
 import { hdcFailure, shellQuote } from "../src/utils/harmony-hdc";
-import { toDevicePoint } from "../src/utils/harmony-uitest";
+import { assertHarmonyDisplayReady, toDevicePoint } from "../src/utils/harmony-uitest";
 
 describe("hdcFailure", () => {
   it("reports the `[Fail]` line hdc printed", () => {
@@ -79,5 +80,63 @@ describe("toDevicePoint", () => {
 
   it("puts the origin at the first pixel", () => {
     expect(toDevicePoint(0, 0, display)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("collapses every point onto the origin when the display has no size", () => {
+    // Not a behaviour to rely on — the reason `assertHarmonyDisplayReady` refuses
+    // a 0x0 read before any of this runs. The clamp has no in-range pixel to
+    // pick, so a tap anywhere on the screen becomes a tap on the top-left one.
+    expect(toDevicePoint(0.83, 0.42, { width: 0, height: 0 })).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe("assertHarmonyDisplayReady", () => {
+  const awake = { width: 1216, height: 2688, screenOn: true };
+
+  it("passes a panel that has a size and is on", () => {
+    expect(() => assertHarmonyDisplayReady(awake, "tap")).not.toThrow();
+  });
+
+  it("refuses a non-positive panel, naming the size the render service reported", () => {
+    // `render resolution=0x0` is what a guest prints while its compositor is
+    // still coming up, and `harmonyDisplay` parses it without complaint. Every
+    // coordinate then collapses onto the origin (above) while `uitest uiInput`
+    // answers `No Error`, so the injection reports the tap that was asked for
+    // and lands somewhere else entirely.
+    const err = (() => {
+      try {
+        assertHarmonyDisplayReady({ width: 0, height: 0, screenOn: true }, "tap");
+      } catch (e) {
+        return e as Error;
+      }
+      throw new Error("expected a 0x0 display to be refused");
+    })();
+
+    expect(getFailureSignal(err)?.failure_stage).toBe("harmony_display_zero");
+    expect(err.message).toContain("0x0 display");
+    expect(err.message).toContain("Cannot tap");
+  });
+
+  it("refuses a half-read panel too", () => {
+    // One dimension is enough: a 1216x0 read makes every y collapse onto the top
+    // row while x still scales, which reads as a working tap on the wrong element
+    // rather than an obviously broken one.
+    expect(() => assertHarmonyDisplayReady({ ...awake, height: 0 }, "swipe")).toThrow(
+      /1216x0 display/
+    );
+  });
+
+  it("refuses a suspended panel with the wake-it advice", () => {
+    const err = (() => {
+      try {
+        assertHarmonyDisplayReady({ ...awake, screenOn: false }, "type");
+      } catch (e) {
+        return e as Error;
+      }
+      throw new Error("expected a suspended display to be refused");
+    })();
+
+    expect(getFailureSignal(err)?.failure_stage).toBe("harmony_screen_off");
+    expect(err.message).toMatch(/Wake it with `button` \(power\)/);
   });
 });

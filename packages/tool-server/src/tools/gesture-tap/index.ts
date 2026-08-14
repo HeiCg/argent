@@ -5,7 +5,8 @@ import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-c
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";
 import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import {
-  assertHarmonyScreenAwake,
+  HARMONY_INTERACTION_TIMEOUT_MS,
+  assertHarmonyDisplayReady,
   harmonyDisplay,
   harmonyTouch,
   toDevicePoint,
@@ -110,18 +111,23 @@ async function tapHarmony(
   y: number,
   clickCount: number
 ): Promise<void> {
+  // One deadline for the read and every injection that follows it, so a
+  // multi-tap cannot spend a fresh ceiling per click and outlive the MCP layer's
+  // abort-and-replay cap — where the replay is another tap on the same spot.
+  const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
   const display = await harmonyDisplay(connectKey);
-  // A tap against a suspended panel reports `No Error` and lands nowhere —
-  // refuse it rather than report { tapped: true } for a touch that did nothing.
-  assertHarmonyScreenAwake(display, "tap");
+  // A tap against a panel that is suspended, or that the render service could
+  // not size, reports `No Error` and lands nowhere — refuse it rather than
+  // report { tapped: true } for a touch that did nothing.
+  assertHarmonyDisplayReady(display, "tap");
   const point = toDevicePoint(x, y, display);
   if (clickCount === 2) {
-    await harmonyTouch(connectKey, "doubleClick", point);
+    await harmonyTouch(connectKey, "doubleClick", point, deadline - Date.now());
     return;
   }
   for (let i = 0; i < clickCount; i++) {
     if (i > 0) await sleep(MULTI_TAP_GAP_MS);
-    await harmonyTouch(connectKey, "click", point);
+    await harmonyTouch(connectKey, "click", point, deadline - Date.now());
   }
 }
 

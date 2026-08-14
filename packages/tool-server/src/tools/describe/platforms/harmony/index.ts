@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { rm } from "node:fs/promises";
 import type { ToolDependency } from "@argent/registry";
 import type { DescribeTreeData } from "../../contract";
-import { harmonyDisplay, harmonyDumpLayout } from "../../../../utils/harmony-uitest";
+import {
+  harmonyDisplay,
+  harmonyDumpLayout,
+  remainingBudget,
+  HARMONY_INTERACTION_TIMEOUT_MS,
+} from "../../../../utils/harmony-uitest";
 import { parseHarmonyLayout } from "./layout-parser";
 
 /** `uitest` runs on the device; reaching it needs only the connector. */
@@ -33,7 +38,9 @@ const EMPTY_HINT =
  * describe's contract is the rendered text and nothing downstream reads it.
  *
  * `timeoutMs` is the whole read's budget, split across the panel query and the
- * dump rather than given to each. A caller polling to a deadline needs it: the
+ * dump rather than given to each, and defaulting to the one-interaction ceiling
+ * so a caller with no deadline of its own is bounded under the MCP client's
+ * abort-and-replay cap. A caller polling to a deadline needs it: the
  * `uitest` client this spawns holds the device's queue until it is killed, so a
  * read left on its own 20s ceiling and abandoned at a 300ms deadline is 20s the
  * caller's NEXT call spends queued — measured at 0.8s of it on a warm emulator,
@@ -43,14 +50,20 @@ const EMPTY_HINT =
  */
 export async function describeHarmony(
   connectKey: string,
-  timeoutMs?: number
+  timeoutMs: number = HARMONY_INTERACTION_TIMEOUT_MS
 ): Promise<DescribeTreeData> {
   const localPath = join(tmpdir(), `argent-harmony-dump-${process.hrtime.bigint()}.json`);
-  const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
-  const left = () => (deadline === undefined ? undefined : Math.max(1, deadline - Date.now()));
-  const display = await harmonyDisplay(connectKey, left());
+  const deadline = Date.now() + timeoutMs;
+  const display = await harmonyDisplay(
+    connectKey,
+    remainingBudget(connectKey, deadline, "the display read")
+  );
   try {
-    const raw = await harmonyDumpLayout(connectKey, localPath, left());
+    const raw = await harmonyDumpLayout(
+      connectKey,
+      localPath,
+      remainingBudget(connectKey, deadline, "the layout dump")
+    );
     const { tree, screen } = parseHarmonyLayout(raw, {
       width: display.width,
       height: display.height,

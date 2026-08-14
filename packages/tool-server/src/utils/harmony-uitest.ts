@@ -51,6 +51,34 @@ const REMOTE_TMP = "/data/local/tmp";
 export const UITEST_TIMEOUT_MS = 20_000;
 
 /**
+ * Whole-call ceiling for one interaction — the display read, the wait for this
+ * device's `uitest` queue and every injection come out of it together.
+ *
+ * None of the interaction tools declares `longRunning`, so the MCP client aborts
+ * a call at 30s and *replays* it while the abandoned `hdc` children keep running
+ * and keep holding the queue. For a tap that replay is a second touch for one
+ * the caller believes never happened, so the tool has to fail on its own budget
+ * first — which two legs on {@link UITEST_TIMEOUT_MS} each cannot do.
+ */
+export const HARMONY_INTERACTION_TIMEOUT_MS = 20_000;
+
+/**
+ * Ceiling for one render-service read, and the reason the whole interaction fits
+ * inside one `uitest` ceiling: the read is measured at 50-190ms and the slowest
+ * `hdc shell` round trip measured on an emulator is 0.8s, so this is ~6x headroom
+ * for a loaded host rather than a bound a healthy read approaches.
+ */
+export const HARMONY_DISPLAY_TIMEOUT_MS = 5_000;
+
+/**
+ * Ceiling for the on-device cleanup delete, which runs after the caller's budget
+ * is already spent. `runHdcShell`'s 30s default would add that much again past a
+ * deadline the caller has exhausted; a `rm -f` is the lightest shell round trip
+ * there is, against the 0.1-0.8s measured for one.
+ */
+const REMOTE_CLEANUP_TIMEOUT_MS = 5_000;
+
+/**
  * `uitest` does not tolerate overlapping invocations: a second call on the
  * same device blocks until the first finishes, and if that takes past the
  * timeout the loser is SIGKILLed with the internal status sentinel in its
@@ -89,14 +117,45 @@ function uitestDiagnostic(stdout: string): string {
   return first?.trim() ?? "uitest failed without a diagnostic";
 }
 
+/**
+ * Milliseconds left of a shared deadline, or a refusal when there are none.
+ *
+ * A leg started with nothing left is killed the moment it begins and reported as
+ * a device that hung, which is the wrong repair for a budget that was gone
+ * before it — and a spent budget cannot simply be passed on, since `execFile`
+ * reads a timeout of 0 as *no* timeout.
+ */
+export function remainingBudget(connectKey: string, deadline: number, step: string): number {
+  const left = deadline - Date.now();
+  if (left > 0) return left;
+  throw new FailureError(
+    `Ran out of time before ${step} on HarmonyOS device '${connectKey}': the call's budget was ` +
+      `spent by the steps before it, waiting for this device's \`uitest\` queue included. ` +
+      `Retry once the device is idle.`,
+    {
+      error_code: FAILURE_CODES.HARMONY_HDC_COMMAND_FAILED,
+      failure_stage: "harmony_budget_exhausted",
+      failure_area: "tool_server",
+      error_kind: "timeout",
+      failure_command: "hdc",
+    }
+  );
+}
+
 /** Run a `uitest` subcommand, throwing with its own diagnostic if it exits non-zero. */
-async function runUitest(
-  connectKey: string,
-  args: string,
-  timeoutMs = UITEST_TIMEOUT_MS
-): Promise<string> {
+async function runUitest(connectKey: string, args: string, timeoutMs: number): Promise<string> {
+  // The ceiling spans the queue as well as the call. A clock started once this
+  // device's queue hands over cannot see the wait in front of it, so a caller
+  // queued behind another — the one case that makes an interaction outlive its
+  // budget — would be charged against no ceiling at all.
+  const deadline = Date.now() + timeoutMs;
   const { stdout, exitCode } = await enqueueUitest(connectKey, () =>
-    runHdcShell(connectKey, `uitest ${args}`, timeoutMs)
+    runHdcShell(
+      connectKey,
+      `uitest ${args}`,
+      // The subcommand alone — the arguments carry the text being typed.
+      remainingBudget(connectKey, deadline, `\`uitest ${args.split(" ")[0]}\``)
+    )
   );
   if (exitCode !== 0) {
     throw new FailureError(`uitest ${args} failed on ${connectKey}: ${uitestDiagnostic(stdout)}`, {
@@ -129,7 +188,7 @@ interface HarmonyDisplay {
  */
 export async function harmonyDisplay(
   connectKey: string,
-  timeoutMs = UITEST_TIMEOUT_MS
+  timeoutMs = HARMONY_DISPLAY_TIMEOUT_MS
 ): Promise<HarmonyDisplay> {
   const { stdout } = await runHdcShell(
     connectKey,
@@ -174,16 +233,42 @@ export function toDevicePoint(
 }
 
 /**
- * Refuse an input injection against a suspended panel.
+ * Refuse an input injection against a display that cannot receive one.
  *
- * `uitest uiInput` reports `No Error` whether or not the touch landed, and
- * against a screen that is OFF or SUSPEND it lands nowhere — measured: a tap
- * on the WLAN row of Settings with `powerStatus=POWER_STATUS_OFF` returned
- * success and changed nothing. `describe` is honest about this same state
- * (its asleep hint); the input tools must be too, or a screen timeout mid-
- * session turns every later gesture into a silent no-op that reports success.
+ * `uitest uiInput` reports `No Error` whether or not the touch landed, so both
+ * states it cannot land in are argent's to catch, off the one read every input
+ * tool already makes:
+ *
+ * - **A non-positive panel.** The render service prints `render resolution=0x0`
+ *   while the guest's compositor is still coming up, and every normalized
+ *   coordinate then clamps to the origin — a tap at (0.83, 0.42) goes out as
+ *   `uiInput click 0 0` and comes back as the tap that was asked for.
+ *   `boot-device` refuses the same read as unreadable rather than act on it.
+ * - **A suspended panel.** Measured: a tap on the WLAN row of Settings with
+ *   `powerStatus=POWER_STATUS_OFF` returned success and changed nothing.
+ *   `describe` is honest about this state (its asleep hint); the input tools
+ *   must be too, or a screen timeout mid-session turns every later gesture into
+ *   a silent no-op that reports success.
  */
-export function assertHarmonyScreenAwake(display: HarmonyDisplay, action: string): void {
+export function assertHarmonyDisplayReady(display: HarmonyDisplay, action: string): void {
+  // Before the power state, which is read off the same dump: a service that
+  // could not name a panel has said nothing trustworthy about that panel's
+  // power either.
+  if (display.width <= 0 || display.height <= 0) {
+    throw new FailureError(
+      `Cannot ${action} on a HarmonyOS device whose render service reports a ` +
+        `${display.width}x${display.height} display: there are no coordinates to aim at, and ` +
+        `every position would collapse onto the top-left pixel. The panel has not composited ` +
+        `yet, or the render service answered with nothing usable — retry once the device has ` +
+        `finished booting.`,
+      {
+        error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
+        failure_stage: "harmony_display_zero",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      }
+    );
+  }
   if (display.screenOn) return;
   throw new FailureError(
     `Cannot ${action} on a HarmonyOS device whose display is off: injected input lands nowhere ` +
@@ -202,9 +287,10 @@ type HarmonyTouchCommand = "click" | "doubleClick";
 export async function harmonyTouch(
   connectKey: string,
   command: HarmonyTouchCommand,
-  point: { x: number; y: number }
+  point: { x: number; y: number },
+  timeoutMs: number
 ): Promise<void> {
-  await runUitest(connectKey, `uiInput ${command} ${point.x} ${point.y}`);
+  await runUitest(connectKey, `uiInput ${command} ${point.x} ${point.y}`, timeoutMs);
 }
 
 type HarmonySwipeCommand = "swipe" | "fling";
@@ -235,19 +321,32 @@ export async function harmonySwipe(
   command: HarmonySwipeCommand,
   from: { x: number; y: number },
   to: { x: number; y: number },
-  velocity: number
+  velocity: number,
+  timeoutMs: number
 ): Promise<void> {
   const v = Math.max(HARMONY_VELOCITY_MIN, Math.min(HARMONY_VELOCITY_MAX, Math.round(velocity)));
-  await runUitest(connectKey, `uiInput ${command} ${from.x} ${from.y} ${to.x} ${to.y} ${v}`);
+  await runUitest(
+    connectKey,
+    `uiInput ${command} ${from.x} ${from.y} ${to.x} ${to.y} ${v}`,
+    timeoutMs
+  );
 }
 
-export async function harmonyKeyEvent(connectKey: string, key: string): Promise<void> {
-  await runUitest(connectKey, `uiInput keyEvent ${key}`);
+export async function harmonyKeyEvent(
+  connectKey: string,
+  key: string,
+  timeoutMs: number
+): Promise<void> {
+  await runUitest(connectKey, `uiInput keyEvent ${key}`, timeoutMs);
 }
 
 /** Type into whatever currently holds focus. */
-export async function harmonyTypeText(connectKey: string, text: string): Promise<void> {
-  await runUitest(connectKey, `uiInput text ${shellQuote(text)}`);
+export async function harmonyTypeText(
+  connectKey: string,
+  text: string,
+  timeoutMs: number
+): Promise<void> {
+  await runUitest(connectKey, `uiInput text ${shellQuote(text)}`, timeoutMs);
 }
 
 /**
@@ -264,26 +363,33 @@ async function viaDeviceTmp(
   connectKey: string,
   suffix: string,
   localPath: string,
-  producer: (remotePath: string) => Promise<void>,
-  deadline?: number
+  producer: (remotePath: string, timeoutMs: number) => Promise<void>,
+  deadline: number
 ): Promise<void> {
   const remotePath = `${REMOTE_TMP}/argent-${process.pid}-${process.hrtime.bigint()}${suffix}`;
   try {
-    await producer(remotePath);
-    // The fetch is bounded together with the producer rather than left on the
-    // 30s default: a caller working to a deadline spends it across BOTH round
-    // trips, and one that has already run out asks for a transfer that fails at
-    // once instead of one that runs 30s past it. The delete keeps the default —
-    // it runs outside the queue, and a spent budget is no reason to leave a
-    // capture behind on the device.
+    // A caller working to a deadline spends it across BOTH round trips, so each
+    // leg is handed what is left of it rather than a ceiling of its own — a
+    // producer given the full budget leaves the fetch a sliver, and a fetch left
+    // on `hdc`'s 30s default runs that far past a deadline the caller has
+    // already exhausted.
+    await producer(remotePath, remainingBudget(connectKey, deadline, "the capture"));
     await hdcFileRecv(
       connectKey,
       remotePath,
       localPath,
-      deadline === undefined ? undefined : Math.max(1, deadline - Date.now())
+      remainingBudget(connectKey, deadline, "copying the result off the device")
     );
   } finally {
-    await runHdcShell(connectKey, `rm -f ${shellQuote(remotePath)}`).catch(() => {});
+    // The delete is outside the shared budget — it runs after that budget is
+    // spent, and leaving a multi-hundred-KB capture on a partition nothing
+    // prunes is not the way to save the time — but on a ceiling of its own, so a
+    // wedged daemon cannot add 30s to a call that is already over.
+    await runHdcShell(
+      connectKey,
+      `rm -f ${shellQuote(remotePath)}`,
+      REMOTE_CLEANUP_TIMEOUT_MS
+    ).catch(() => {});
   }
 }
 
@@ -293,15 +399,14 @@ export async function harmonyScreenCap(
   localPath: string,
   timeoutMs = UITEST_TIMEOUT_MS
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
   await viaDeviceTmp(
     connectKey,
     ".png",
     localPath,
-    async (remotePath) => {
-      await runUitest(connectKey, `screenCap -p ${shellQuote(remotePath)}`, timeoutMs);
+    async (remotePath, leftMs) => {
+      await runUitest(connectKey, `screenCap -p ${shellQuote(remotePath)}`, leftMs);
     },
-    deadline
+    Date.now() + timeoutMs
   );
 }
 
@@ -324,15 +429,14 @@ export async function harmonyDumpLayout(
   localPath: string,
   timeoutMs = UITEST_TIMEOUT_MS
 ): Promise<HarmonyLayoutNode> {
-  const deadline = Date.now() + timeoutMs;
   await viaDeviceTmp(
     connectKey,
     ".json",
     localPath,
-    async (remotePath) => {
-      await runUitest(connectKey, `dumpLayout -p ${shellQuote(remotePath)}`, timeoutMs);
+    async (remotePath, leftMs) => {
+      await runUitest(connectKey, `dumpLayout -p ${shellQuote(remotePath)}`, leftMs);
     },
-    deadline
+    Date.now() + timeoutMs
   );
   const raw = await readFile(localPath, "utf8");
   try {

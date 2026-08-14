@@ -11,7 +11,8 @@ import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/c
 // Stub the `uitest`-over-`hdc` transport rather than `describeHarmony` itself,
 // so the wait tools poll through the real dump parser and the real hint rules —
 // those are what decide whether an unreadable screen may confirm `hidden`.
-vi.mock("../src/utils/harmony-uitest", () => ({
+vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
   harmonyDisplay: vi.fn(),
   harmonyDumpLayout: vi.fn(),
 }));

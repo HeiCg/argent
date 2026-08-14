@@ -17,7 +17,11 @@ vi.mock("../src/utils/check-deps", async (importOriginal) => ({
 }));
 
 import { gestureTapTool } from "../src/tools/gesture-tap";
-import { harmonyDisplay, harmonyTouch } from "../src/utils/harmony-uitest";
+import {
+  HARMONY_INTERACTION_TIMEOUT_MS,
+  harmonyDisplay,
+  harmonyTouch,
+} from "../src/utils/harmony-uitest";
 import { ensureDep } from "../src/utils/check-deps";
 
 const CONNECT_KEY = "025DEK236V035771";
@@ -124,6 +128,56 @@ describe("gesture-tap on HarmonyOS", () => {
     expect(getFailureSignal(err)?.failure_stage).toBe("harmony_screen_off");
     expect((err as Error).message).toMatch(/Wake it with `button` \(power\)/);
     expect(harmonyTouch).not.toHaveBeenCalled();
+  });
+
+  it("refuses to tap when the render service reports a 0x0 display", async () => {
+    // What the render service prints while the guest's compositor is still
+    // coming up. `toDevicePoint` clamps every normalized coordinate into a
+    // 0-wide, 0-tall panel, so the tap below would go out as `uiInput click 0 0`
+    // — a corner tap the caller never asked for, reported as `{ tapped: true }`.
+    vi.mocked(harmonyDisplay).mockResolvedValue({ width: 0, height: 0, screenOn: true });
+
+    const err = await gestureTapTool
+      .execute(noServices, { udid: HARMONY_UDID, x: 0.83, y: 0.42 })
+      .then(
+        () => {
+          throw new Error("expected the tap to reject, but it resolved");
+        },
+        (e: unknown) => e
+      );
+
+    expect(getFailureSignal(err)?.failure_stage).toBe("harmony_display_zero");
+    expect((err as Error).message).toContain("0x0 display");
+    expect(harmonyTouch).not.toHaveBeenCalled();
+  });
+
+  it("spends ONE budget across the display read and every click of a multi-tap", async () => {
+    // A display read on `UITEST_TIMEOUT_MS` plus a fresh ceiling per injection
+    // puts a triple-tap at 80s, and the MCP client aborts at 30s and REPLAYS the
+    // call — more taps on the same point, for taps the caller believes never
+    // landed. Every leg comes out of one deadline instead, so each click is
+    // handed strictly less than the one before it.
+    const READ_MS = 60;
+    vi.mocked(harmonyDisplay).mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, READ_MS));
+      return DISPLAY;
+    });
+
+    await gestureTapTool.execute(noServices, {
+      udid: HARMONY_UDID,
+      x: 0.5,
+      y: 0.5,
+      clickCount: 3,
+    });
+
+    const budgets = vi.mocked(harmonyTouch).mock.calls.map((c) => c[3]);
+    expect(budgets).toHaveLength(3);
+    // The read is charged first…
+    expect(budgets[0]).toBeLessThanOrEqual(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS);
+    // …and so is each 100ms inter-tap gap, so the last click cannot be handed a
+    // ceiling that ignores the two before it.
+    expect(budgets[2]).toBeLessThanOrEqual(budgets[0] - 2 * 100);
+    expect(budgets[2]).toBeGreaterThan(0);
   });
 });
 

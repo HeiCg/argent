@@ -28,6 +28,10 @@ vi.mock("../src/utils/check-deps", async (importOriginal) => ({
 import { gestureSwipeTool } from "../src/tools/gesture-swipe";
 import { ensureDep } from "../src/utils/check-deps";
 import { runHdcShell as realRunHdcShell } from "../src/utils/harmony-hdc";
+import {
+  HARMONY_DISPLAY_TIMEOUT_MS,
+  HARMONY_INTERACTION_TIMEOUT_MS,
+} from "../src/utils/harmony-uitest";
 import { sendCommand } from "../src/utils/simulator-client";
 
 const runHdcShell = vi.mocked(realRunHdcShell);
@@ -159,6 +163,63 @@ describe("gesture-swipe on HarmonyOS", () => {
     expect(runHdcShell.mock.calls.filter(([, c]) => c.startsWith("uitest uiInput"))).toHaveLength(
       0
     );
+  });
+
+  it("refuses to swipe when the render service reports a 0x0 render resolution", async () => {
+    // What a guest prints while its compositor is still coming up — parsed here
+    // rather than stubbed, since `render resolution=0x0` is a line the parser
+    // accepts without complaint. Both endpoints would clamp onto the origin, so
+    // the swipe would go out as `uiInput fling 0 0 0 0 <v>`: a gesture from the
+    // corner to itself, reported as `{ swiped: true }`.
+    runHdcShell.mockImplementation(async (_connectKey, command) =>
+      command.startsWith("hidumper")
+        ? { stdout: `render resolution=0x0\npowerStatus=POWER_STATUS_ON`, exitCode: 0 }
+        : { stdout: "No Error", exitCode: 0 }
+    );
+
+    const err = await gestureSwipeTool.execute(services, base).then(
+      () => {
+        throw new Error("expected the swipe to reject, but it resolved");
+      },
+      (e: unknown) => e
+    );
+
+    expect(getFailureSignal(err)?.failure_stage).toBe("harmony_display_zero");
+    expect((err as Error).message).toContain("0x0 display");
+    expect(runHdcShell.mock.calls.filter(([, c]) => c.startsWith("uitest uiInput"))).toHaveLength(
+      0
+    );
+  });
+
+  it("reads the display on its own small ceiling and gives the injection the rest", async () => {
+    // Two legs on `UITEST_TIMEOUT_MS` put a swipe's worst case at 40s, above the
+    // 30s at which the MCP client (`FETCH_TIMEOUT_MS` in argent-mcp) aborts a
+    // call and REPLAYS it — a second scroll of a list the caller believes never
+    // moved. The read gets a ceiling sized to what it was measured at, and the
+    // injection gets what is left of the one shared budget.
+    const READ_MS = 60;
+    runHdcShell.mockImplementation(async (_connectKey, command) => {
+      if (!command.startsWith("hidumper")) return { stdout: "No Error", exitCode: 0 };
+      await new Promise((r) => setTimeout(r, READ_MS));
+      return {
+        stdout: `render resolution=${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}\npowerStatus=POWER_STATUS_ON`,
+        exitCode: 0,
+      };
+    });
+
+    await gestureSwipeTool.execute(services, { ...base, durationMs: 500 });
+
+    const read = runHdcShell.mock.calls.find(([, c]) => c.startsWith("hidumper"));
+    expect(read?.[2]).toBe(HARMONY_DISPLAY_TIMEOUT_MS);
+    const injection = runHdcShell.mock.calls.find(([, c]) => c.startsWith("uitest uiInput"));
+    expect(injection?.[2]).toBeLessThanOrEqual(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS);
+    expect(injection?.[2]).toBeGreaterThan(0);
+    // The magnitudes themselves, not just the wiring: the whole interaction has
+    // to finish inside the MCP client's 30s cap, and the read has to stay a
+    // small slice of it — it was measured at 50-190ms, against an `hdc shell`
+    // round trip of 0.1-0.8s.
+    expect(HARMONY_INTERACTION_TIMEOUT_MS).toBeLessThanOrEqual(25_000);
+    expect(HARMONY_DISPLAY_TIMEOUT_MS).toBeLessThanOrEqual(5_000);
   });
 
   it("does not declare the simulator-server service for a HarmonyOS target", () => {

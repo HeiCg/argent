@@ -3,7 +3,8 @@ import { harmonyDisplay, harmonyDumpLayout } from "../src/utils/harmony-uitest";
 import { describeHarmony } from "../src/tools/describe/platforms/harmony";
 import { formatDescribeTree } from "../src/tools/describe/format-tree";
 
-vi.mock("../src/utils/harmony-uitest", () => ({
+vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
   harmonyDisplay: vi.fn(),
   harmonyDumpLayout: vi.fn(),
 }));

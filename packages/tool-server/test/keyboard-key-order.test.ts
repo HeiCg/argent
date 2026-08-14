@@ -24,7 +24,12 @@ vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
 }));
 
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
-import { harmonyDisplay, harmonyKeyEvent, harmonyTypeText } from "../src/utils/harmony-uitest";
+import {
+  HARMONY_INTERACTION_TIMEOUT_MS,
+  harmonyDisplay,
+  harmonyKeyEvent,
+  harmonyTypeText,
+} from "../src/utils/harmony-uitest";
 
 const IOS_SIM: DeviceInfo = { id: "TEST-UDID", platform: "ios", kind: "simulator" };
 const CHROMIUM: DeviceInfo = { id: "chromium-cdp-9222", platform: "chromium", kind: "app" };
@@ -160,10 +165,14 @@ describe("keyboard text+key ordering", () => {
     );
 
     expect(order).toEqual(["text", "key"]);
-    expect(harmonyTypeText).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, "hi");
+    expect(harmonyTypeText).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, "hi", expect.any(Number));
     // The keyID, not the key name — `uitest` names only Home/Back/Power and
     // takes a raw number for everything else.
-    expect(harmonyKeyEvent).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, HARMONY_ENTER_KEYID);
+    expect(harmonyKeyEvent).toHaveBeenCalledWith(
+      HARMONY_CONNECT_KEY,
+      HARMONY_ENTER_KEYID,
+      expect.any(Number)
+    );
     // Two characters plus the key press.
     expect(result.keys).toBe(3);
   });
@@ -204,7 +213,11 @@ describe("keyboard text+key ordering", () => {
 
     await harmonyImpl.handler({}, { udid: HARMONY.id, key: "Enter" }, HARMONY);
 
-    expect(harmonyKeyEvent).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, HARMONY_ENTER_KEYID);
+    expect(harmonyKeyEvent).toHaveBeenCalledWith(
+      HARMONY_CONNECT_KEY,
+      HARMONY_ENTER_KEYID,
+      expect.any(Number)
+    );
   });
 
   it("harmony: sends each supported key its own measured keyID", async () => {
@@ -227,7 +240,70 @@ describe("keyboard text+key ordering", () => {
     for (const [key, keyId] of Object.entries(expected)) {
       vi.mocked(harmonyKeyEvent).mockClear();
       await harmonyImpl.handler({}, { udid: HARMONY.id, key }, HARMONY);
-      expect(harmonyKeyEvent, key).toHaveBeenCalledWith(HARMONY_CONNECT_KEY, keyId);
+      expect(harmonyKeyEvent, key).toHaveBeenCalledWith(
+        HARMONY_CONNECT_KEY,
+        keyId,
+        expect.any(Number)
+      );
     }
+  });
+
+  it("harmony: no-ops on an empty request (neither key nor text), with zero device traffic", async () => {
+    // The schema leaves both `key` and `text` optional with no refinement, so an
+    // empty request is a no-op returning { typed:"", keys:0 } — the same
+    // contract every other keyboard backend follows. Reaching the device first
+    // costs a round trip for a step that injects nothing, and fails the whole
+    // sequence when the panel happens to be suspended.
+    vi.mocked(harmonyDisplay).mockClear();
+    vi.mocked(harmonyTypeText).mockClear();
+    vi.mocked(harmonyKeyEvent).mockClear();
+
+    const result = await harmonyImpl.handler({}, { udid: HARMONY.id }, HARMONY);
+
+    expect(result).toEqual({ typed: "", keys: 0 });
+    expect(harmonyDisplay).not.toHaveBeenCalled();
+    expect(harmonyTypeText).not.toHaveBeenCalled();
+    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("harmony: refuses to type when the render service reports a 0x0 display", async () => {
+    // A guest whose compositor has not come up answers `render resolution=0x0`.
+    // `uitest uiInput text` would report `No Error` for characters that reached
+    // no field, so this read is refused for typing exactly as it is for a tap.
+    vi.mocked(harmonyTypeText).mockClear();
+    vi.mocked(harmonyKeyEvent).mockClear();
+    vi.mocked(harmonyDisplay).mockResolvedValueOnce({ width: 0, height: 0, screenOn: true });
+
+    await expect(
+      harmonyImpl.handler({}, { udid: HARMONY.id, text: "hi", key: "enter" }, HARMONY)
+    ).rejects.toThrow(/0x0 display/);
+    expect(harmonyTypeText).not.toHaveBeenCalled();
+    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+  });
+
+  it("harmony: spends ONE budget across the display read, the text and the key", async () => {
+    // Three legs on a ceiling each put a type-then-submit at 60s, and the MCP
+    // client aborts at 30s and REPLAYS — retyping into a field it cannot see.
+    // Each leg is charged against the one deadline, so the key gets strictly
+    // less than the text that ran before it.
+    const LEG_MS = 60;
+    vi.mocked(harmonyDisplay).mockImplementationOnce(async () => {
+      await new Promise((r) => setTimeout(r, LEG_MS));
+      return { width: 1216, height: 2688, screenOn: true };
+    });
+    vi.mocked(harmonyTypeText)
+      .mockClear()
+      .mockImplementationOnce(async () => {
+        await new Promise((r) => setTimeout(r, LEG_MS));
+      });
+    vi.mocked(harmonyKeyEvent).mockClear();
+
+    await harmonyImpl.handler({}, { udid: HARMONY.id, text: "hi", key: "enter" }, HARMONY);
+
+    const textBudget = vi.mocked(harmonyTypeText).mock.calls[0][2];
+    const keyBudget = vi.mocked(harmonyKeyEvent).mock.calls[0][2];
+    expect(textBudget).toBeLessThanOrEqual(HARMONY_INTERACTION_TIMEOUT_MS - LEG_MS);
+    expect(keyBudget).toBeLessThanOrEqual(textBudget - LEG_MS);
+    expect(keyBudget).toBeGreaterThan(0);
   });
 });

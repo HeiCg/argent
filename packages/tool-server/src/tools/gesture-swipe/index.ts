@@ -3,7 +3,8 @@ import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registr
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import {
-  assertHarmonyScreenAwake,
+  HARMONY_INTERACTION_TIMEOUT_MS,
+  assertHarmonyDisplayReady,
   harmonyDisplay,
   harmonySwipe,
   toDevicePoint,
@@ -95,14 +96,25 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
     if (device.platform === "harmony") {
       await ensureDep("hdc");
       const connectKey = harmonyConnectKey(device.id);
+      // One deadline for the geometry read and the injection it feeds, so the
+      // pair stays under the MCP layer's abort-and-replay cap.
+      const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
       const display = await harmonyDisplay(connectKey);
-      // A swipe against a suspended panel reports `No Error` and lands nowhere.
-      assertHarmonyScreenAwake(display, "swipe");
+      // A swipe against a panel that is suspended, or that the render service
+      // could not size, reports `No Error` and lands nowhere.
+      assertHarmonyDisplayReady(display, "swipe");
       const fromPx = toDevicePoint(params.fromX, params.fromY, display);
       const toPx = toDevicePoint(params.toX, params.toY, display);
       const distance = Math.hypot(toPx.x - fromPx.x, toPx.y - fromPx.y);
       const seconds = Math.max(duration, 1) / 1000;
-      await harmonySwipe(connectKey, settle ? "swipe" : "fling", fromPx, toPx, distance / seconds);
+      await harmonySwipe(
+        connectKey,
+        settle ? "swipe" : "fling",
+        fromPx,
+        toPx,
+        distance / seconds,
+        deadline - Date.now()
+      );
       return { swiped: true, timestampMs };
     }
     const api = services.simulatorServer as SimulatorServerApi;
