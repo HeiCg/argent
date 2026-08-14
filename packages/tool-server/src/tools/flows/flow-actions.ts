@@ -981,30 +981,38 @@ function focusedOwnsTargetText(target: DescribeNode, focused: DescribeNode[]): b
  *
  * So follow the element instead ({@link sameElement}), and use the selector
  * only as the fallback for a round where it cannot be found — a re-render that
- * changes the label of a node carrying no identifier, say. When several nodes
- * answer to the same name, the nearest to where the tap landed wins: that is
- * the one the step acted on.
+ * changes the label of a node carrying no identifier, say.
+ *
+ * When SEVERAL nodes answer to the name, none of them is "the element": the
+ * name is not an identity, and picking one by proximity to where the tap landed
+ * is a coin toss that a re-layout decides. Keyboard avoidance — the everyday
+ * movement this function exists to follow — is exactly such a re-layout.
+ * Reproduced on Chrome 151: two rows sharing a `data-testid`, the selector
+ * resolving to the first, and a 100px scroll during the focus wait putting the
+ * SECOND row where the first had been. It became the nearest namesake, the
+ * identity arm in `waitForFocus` then trusted it absolutely, and the field the
+ * selector never resolved to was emptied and overwritten with the step
+ * reporting a pass. The same page with distinct testids refused.
+ *
+ * So an ambiguous name yields no target at all — not even the selector's own
+ * pick, which ranks by frame and reading order and would hand back one of the
+ * same namesakes on the strength of a tie-break. With no target node there is
+ * nothing to confirm against, which for a `clear` is a refusal and for a plain
+ * `type` is the best-effort path it was already on.
  */
 function trackTarget(
   tree: DescribeNode,
   tapped: DescribeNode,
   selector: FlowSelector
 ): DescribeNode | undefined {
-  let best: DescribeNode | undefined;
-  let bestDistance = Infinity;
+  const named: DescribeNode[] = [];
   const walk = (node: DescribeNode): void => {
-    if (sameElement(tapped, node)) {
-      const distance =
-        Math.abs(node.frame.x - tapped.frame.x) + Math.abs(node.frame.y - tapped.frame.y);
-      if (distance < bestDistance) {
-        best = node;
-        bestDistance = distance;
-      }
-    }
+    if (sameElement(tapped, node)) named.push(node);
     for (const child of node.children) walk(child);
   };
   walk(tree);
-  return best ?? flowSelectorToNode(tree, selector);
+  if (named.length > 1) return undefined;
+  return named[0] ?? flowSelectorToNode(tree, selector);
 }
 
 /**
