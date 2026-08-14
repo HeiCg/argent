@@ -122,13 +122,13 @@ When reading from the log file:
 
 ## Quick Reference
 
-| Action                            | Tool                                                                   |
-| --------------------------------- | ---------------------------------------------------------------------- |
-| Diagnose / check connection       | `debugger-status`                                                      |
-| Connect to CDP (Metro / Chromium) | `debugger-connect`                                                     |
-| Reload JS (already connected)     | `debugger-reload-metro`                                                |
-| Relaunch app on device            | `restart-app` (iOS / Android / Vega; on Chromium re-run `boot-device`) |
-| Inspect component at point        | `debugger-inspect-element`                                             |
-| Full component tree               | `debugger-component-tree`                                              |
-| Console log overview              | `debugger-log-registry` (summary + log file path for `Grep`/`Read`)    |
-| Evaluate JS                       | `debugger-evaluate`                                                    |
+| Action                            | Tool                                                                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Diagnose / check connection       | `debugger-status`                                                                                                                                                         |
+| Connect to CDP (Metro / Chromium) | `debugger-connect`                                                                                                                                                        |
+| Reload JS (already connected)     | `debugger-reload-metro`                                                                                                                                                   |
+| Relaunch app on device            | `restart-app` (iOS / Android / Vega); on Chromium relaunch the app itself — `boot-device` with `electronAppPath` for Electron, or start the browser again on its CDP port |
+| Inspect component at point        | `debugger-inspect-element`                                                                                                                                                |
+| Full component tree               | `debugger-component-tree`                                                                                                                                                 |
+| Console log overview              | `debugger-log-registry` (summary + log file path for `Grep`/`Read`)                                                                                                       |
+| Evaluate JS                       | `debugger-evaluate`                                                                                                                                                       |
