@@ -27,7 +27,7 @@ Convert element-seeking swipes to `scroll-to`. Keep a coordinate swipe only when
 Work this gate as soon as capture warns that it kept a raw point — and equally when it silently recorded a role-only selector, which warns about nothing. Keep the source screen available and do these checks:
 
 1. **iOS:** query plausible ids or labels with `native-find-views`. If no term is useful, call `native-full-hierarchy` with narrow fields and `maxDepth: 100`. `describe` and `native-describe-screen` are accessibility projections. They cannot prove that no flow selector exists.
-2. **Other platforms:** use `debugger-component-tree` for React Native, otherwise `describe`. Android has no agent view of the runner tree, so verify candidates in step 3. On Chromium, `describe` walks the same DOM on a shorter budget, so absence from it does not prove the runner lacks the element either — verify candidates in step 3 there too.
+2. **Other platforms:** use `debugger-component-tree` for React Native; otherwise, use `describe`. Verify Android and Chromium candidates in step 3. Their discovery trees can omit runner elements.
 3. Test each candidate in a scratch fragment with `assert: { visible: <candidate> }` on the valid screen. Inspect every failure before trying a better id, label, app, or container.
 4. If source is available, inspect its `testID`, `accessibilityIdentifier`, or `resource-id`. If none exists, report the missing stable id as the real fix.
 
@@ -62,7 +62,7 @@ Apple system apps cannot load the instrumentation, and nothing in the launch pat
 - A point focus tap plus raw keyboard with `delayMs: 500`.
 - Raw swipes with `settle: true` because `scroll-to` needs the missing flow tree. Momentum-free scrolling keeps later coordinate taps valid.
 
-Expect every recorded `await-ui-element` here to cost about a second more and to return a warning that the check could not be re-verified against the runner's tree. That is correct and permanent in this mode: the re-probe needs the same instrumentation the app cannot load, and no `bundleId` argument reaches it. Read the warning once, keep the checks raw, and do not act on its suggestion to restore the tree source.
+Each recorded wait adds about one second and warns that the runner tree is unavailable. This warning is expected. Keep the wait as a raw `tool:` step.
 
 Report that the flow is injection-free and its coordinates are not portable. It cannot satisfy the QA contract. Report the artifact and platform blocker instead.
 
