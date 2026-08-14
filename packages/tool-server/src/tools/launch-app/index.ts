@@ -6,6 +6,7 @@ import { resolveDevice } from "../../utils/device-info";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
 import type { LaunchAppResult, LaunchAppVegaServices, LaunchAppIosServices } from "./types";
 import { makeIosImpl } from "./platforms/ios";
+import { iosDeviceImpl } from "./platforms/ios-device";
 import { iosRemoteImpl } from "./platforms/ios-remote";
 import { androidImpl } from "./platforms/android";
 import { chromiumImpl, type LaunchAppChromiumServices } from "./platforms/chromium";
@@ -98,6 +99,7 @@ Common Android packages: com.android.settings, com.android.chrome, com.google.an
       toolId: "launch-app",
       capability,
       ios: makeIosImpl(registry),
+      iosDevice: iosDeviceImpl,
       iosRemote: iosRemoteImpl,
       android: androidImpl,
       chromium: chromiumImpl,
