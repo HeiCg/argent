@@ -25,9 +25,13 @@ import {
  * agent-facing `describe` is purely host-side parsing — its interactables-only
  * trim collapses a testID-only container (no label, not clickable) into a
  * passthrough and discards the node carrying the id. This module parses the
- * same dump without that trim. The trim's scroll-clip prune IS preserved (see
- * `flattenHoisting`), so both trees agree on what is visible. Throws rather
- * than degrade to the trimmed uiautomator tree — see `fetchFlowTree`.
+ * same dump without that trim, keeping every view a selector could address
+ * plus the two the runner needs whether or not a selector can name them: the
+ * focused view and a framework-marked scrollable one (see
+ * `projectAndroidNode` for what each buys). The trim's scroll-clip prune IS
+ * preserved (see `flattenHoisting`), so both trees agree on what is visible.
+ * Throws rather than degrade to the trimmed uiautomator tree — see
+ * `fetchFlowTree`.
  */
 
 // Above the helper's 5000 default: flows keep far more of the dump than the
