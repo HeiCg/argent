@@ -890,6 +890,51 @@ function sameElement(a: DescribeNode, b: DescribeNode): boolean {
 }
 
 /**
+ * Is the focus flag on an element whose ENTIRE content is the target — the
+ * editing host whose own text the selector named?
+ *
+ * Quill, ProseMirror and Lexical all render `<div contenteditable><p>…</p></div>`.
+ * The editable node carries no id, no accessible name and no own text, so the
+ * only text in the tree belongs to the block child, and every selector that can
+ * name the editor's content resolves to something INSIDE the focused node.
+ * That classifies as "encloses" and is refused with advice — *point the
+ * selector at the input itself* — which cannot be followed, because there is
+ * nothing else to point at. Reproduced on Chrome 42, where the identical page
+ * with an id on the editable, or with the `<p>` replaced by a bare text node,
+ * cleared fine.
+ *
+ * Equality, not containment, is what keeps this away from the shapes "encloses"
+ * exists to refuse. A focused `android.webkit.WebView` wrapping a form, and a
+ * focus trap holding a `<textarea>` over the field, both show text of their own
+ * beyond the target's — the WebView the whole form's, the textarea its own
+ * value — so neither reads as "this element's content IS the thing named".
+ * Requiring EVERY focus flag to sit on such an element keeps a second, unrelated
+ * focused node from being cleared past.
+ *
+ * The flow adapters flatten to leaves under one root, so tree ancestry is not
+ * available to ask this more directly; hoisted text ({@link assertText}) is
+ * what survives the flatten.
+ *
+ * Residual: an editor holding more than the named paragraph shows more text
+ * than the selector named, so it still refuses — with the same unfollowable
+ * advice. Naming the whole body, or giving the editable an id, both work.
+ */
+function focusedOwnsTargetText(target: DescribeNode, focused: DescribeNode[]): boolean {
+  const named = assertText(target);
+  if (!named) return false;
+  return (
+    focused.length > 0 &&
+    focused.every(
+      (n) =>
+        n !== target &&
+        frameWithin(target.frame, n.frame) &&
+        !frameNoLargerThan(n.frame, target.frame) &&
+        assertText(n) === named
+    )
+  );
+}
+
+/**
  * Find `tapped` again in a tree read after the tap.
  *
  * Re-running the selector is not the same question. It asks "what does this
@@ -1092,6 +1137,7 @@ async function waitForFocus(
       // for however many rounds precede the blur.
       if (focused.some((n) => n === targetNode)) return "confirmed";
       if (targetNode && focusedFromInside(targetNode, focused, underTap)) return "confirmed";
+      if (targetNode && focusedOwnsTargetText(targetNode, focused)) return "confirmed";
       lastRead =
         focused.length === 0
           ? "no-focus"
