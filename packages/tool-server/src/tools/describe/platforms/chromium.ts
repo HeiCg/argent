@@ -345,10 +345,15 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
    * produced the flag. "The inner element will carry it" is an assumption, not
    * a guarantee: it can be pruned as zero-area, or collapsed as a pure layer,
    * and suppressing the host on the strength of it then left the tree with no
-   * focus flag anywhere. The same no-double-reporting reason excludes a host
-   * <iframe>/<frame>: it is the outer document's activeElement whenever focus
-   * merely sits inside its subdocument, and the inner element (that document's
-   * own activeElement, checked per-document) is the one that carries the flag.
+   * focus flag anywhere. A host <iframe>/<frame> is excluded too: it is the
+   * outer document's activeElement whenever focus merely sits inside its
+   * subdocument, and its screen-spanning frame would satisfy any overlap check.
+   * NOT because the inner element carries the flag instead — walk() bails on
+   * an element that is not an \`Element\`, and an inner \`documentElement\`'s
+   * constructor belongs to the INNER realm, so the descent below is dead and
+   * focus in a subdocument reaches the tree from neither side. Verified on
+   * Chrome 151: an <iframe srcdoc> leaves no trace of its content in describe,
+   * and focusing an input inside it leaves the tree with NO focus flag at all.
    *
    * The body is excluded — it's the default holder when nothing is focused, and
    * its screen-spanning frame would satisfy any overlap check.

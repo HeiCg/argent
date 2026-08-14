@@ -851,10 +851,13 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
  * same threshold. Matching by {@link sameElement} instead of by geometry is
  * what keeps the moved-field case working without it.
  *
- * Structure would be the sharper test, but the flow trees do not carry it:
- * both the Android and the iOS full-hierarchy adapters flatten to leaves under
- * one root, so a wrapper and the input it wraps arrive as SIBLINGS and there is
- * no ancestry to consult.
+ * Structure would be the sharper test, but the flow trees do not carry it on
+ * ANY platform: `flow-chromium-tree` runs the same `flattenHoisting` pass as
+ * the Android and iOS full-hierarchy adapters, so a wrapper and the input it
+ * wraps arrive as SIBLINGS and there is no ancestry to consult. Worth stating
+ * plainly, because every reproduction cited above comes from Chrome — where the
+ * agent-facing `describe` DOES print a nested tree, and a reader could
+ * reasonably conclude the sharper test was available there.
  *
  * Deliberately NOT a role test on the target. Asking "is the target itself a
  * text input" both over- and under-matches against the roles the adapters

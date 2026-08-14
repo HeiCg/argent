@@ -175,7 +175,7 @@ One call does one action. `text` and `key` are mutually exclusive, and a call th
 
 Special keys: `enter`, `escape`, `backspace`, `tab`, `space`, `arrow-up`, `arrow-down`, `arrow-left`, `arrow-right`, `f1`–`f12`. Optional: `"delayMs": 100` between keystrokes (default 50ms, max 5000ms). It applies only to iOS and Chromium.
 
-**Replacing a field's value.** Typing does **not** replace — the old value survives and the new text goes in at the caret, which lands after it or splices into the middle of it depending on where focus left the caret (on Android and Chromium, tap a long value to focus it and the caret sits where you tapped; on iOS it jumps to the end). Pass `"clear": true` to empty the focused field first:
+**Replacing a field's value.** Typing does **not** replace — the old value survives and the new text goes in at the caret, which lands after it or splices into the middle of it depending on where focus left the caret. Tap a long value to focus it and the caret sits where you tapped; tap past the end of a short one and it sits at the end. Pass `"clear": true` to empty the focused field first:
 
 ```json
 { "udid": "<UDID>", "clear": true, "text": "new@example.com" }
