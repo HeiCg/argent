@@ -1,0 +1,350 @@
+import { promises as fs } from "node:fs";
+import net, { type Server, type Socket } from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  buildUsbmuxPlistMessage,
+  decodeUsbmuxPacket,
+  encodeUsbmuxPacket,
+  hostToNetworkPort,
+  IosDeviceTransportError,
+  parsePlist,
+  readUsbmuxDeviceIdForSerial,
+  readUsbmuxResultCode,
+  type PlistDict,
+  type PlistValue,
+  type UsbmuxPacket,
+  USBMUX_HEADER_BYTES,
+  USBMUX_MAX_PACKET_BYTES,
+  USBMUX_MESSAGE_TYPE_PLIST,
+  USBMUX_PROTOCOL_VERSION,
+} from "../src/utils/ios-device/usbmux-protocol";
+import { buildUsbmuxConnectError, openUsbmuxRunnerSocket } from "../src/utils/ios-device/usbmux";
+
+const DEVICE_UDID = "00008110-000978540290401E";
+const RUNNER_PORT = 51_234;
+
+describe("usbmux packet framing", () => {
+  it("round-trips header fields and payload through encode/decode", () => {
+    const xml = buildUsbmuxPlistMessage("ListDevices");
+    const packet = encodeUsbmuxPacket(7, xml);
+
+    const decoded: UsbmuxPacket | null = decodeUsbmuxPacket(packet);
+
+    expect(decoded).not.toBeNull();
+    expect(decoded?.version).toBe(USBMUX_PROTOCOL_VERSION);
+    expect(decoded?.messageType).toBe(USBMUX_MESSAGE_TYPE_PLIST);
+    expect(decoded?.tag).toBe(7);
+    expect(decoded?.payload.toString("utf8")).toBe(xml);
+    expect(decoded?.bytesConsumed).toBe(packet.length);
+  });
+
+  it("returns null while the buffer holds only a partial packet", () => {
+    const packet = encodeUsbmuxPacket(1, buildUsbmuxPlistMessage("ListDevices"));
+
+    expect(decodeUsbmuxPacket(packet.subarray(0, USBMUX_HEADER_BYTES - 1))).toBeNull();
+    expect(decodeUsbmuxPacket(packet.subarray(0, packet.length - 1))).toBeNull();
+  });
+
+  it("rejects a length prefix below the header size", () => {
+    const packet = Buffer.alloc(USBMUX_HEADER_BYTES);
+    packet.writeUInt32LE(USBMUX_HEADER_BYTES - 1, 0);
+
+    expect(() => decodeUsbmuxPacket(packet)).toThrow(IosDeviceTransportError);
+    expect(() => decodeUsbmuxPacket(packet)).toThrow(/Invalid usbmuxd packet length/);
+  });
+
+  it("rejects a length prefix above the 4 MiB cap without waiting for the bytes", () => {
+    const packet = Buffer.alloc(USBMUX_HEADER_BYTES);
+    packet.writeUInt32LE(USBMUX_MAX_PACKET_BYTES + 1, 0);
+
+    let thrown: unknown;
+    try {
+      decodeUsbmuxPacket(packet);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(IosDeviceTransportError);
+    expect((thrown as IosDeviceTransportError).kind).toBe("protocol");
+    expect((thrown as IosDeviceTransportError).retryable).toBe(false);
+  });
+
+  it("keeps bytes past the packet boundary out of the payload", () => {
+    const packet = encodeUsbmuxPacket(1, "<plist/>");
+    const stream = Buffer.concat([packet, Buffer.from("HTTP/1.1 200 OK")]);
+
+    const decoded = decodeUsbmuxPacket(stream);
+
+    expect(decoded?.payload.toString("utf8")).toBe("<plist/>");
+    expect(decoded?.bytesConsumed).toBe(packet.length);
+  });
+});
+
+describe("hostToNetworkPort", () => {
+  it("swaps the byte order of a 16-bit port (htons)", () => {
+    expect(hostToNetworkPort(0x1234)).toBe(0x3412);
+    expect(hostToNetworkPort(RUNNER_PORT)).toBe(((RUNNER_PORT & 0xff) << 8) | (RUNNER_PORT >>> 8));
+    expect(hostToNetworkPort(0)).toBe(0);
+    expect(hostToNetworkPort(0xffff)).toBe(0xffff);
+  });
+
+  it("is its own inverse", () => {
+    expect(hostToNetworkPort(hostToNetworkPort(RUNNER_PORT))).toBe(RUNNER_PORT);
+  });
+
+  it("rejects out-of-range ports", () => {
+    expect(() => hostToNetworkPort(-1)).toThrow(IosDeviceTransportError);
+    expect(() => hostToNetworkPort(0x1_0000)).toThrow(IosDeviceTransportError);
+    expect(() => hostToNetworkPort(1.5)).toThrow(IosDeviceTransportError);
+  });
+});
+
+describe("plist build/parse", () => {
+  it("escapes XML metacharacters in message fields", () => {
+    const xml = buildUsbmuxPlistMessage("Connect", { Weird: `<&>"'` });
+
+    expect(xml).toContain("<key>Weird</key><string>&lt;&amp;&gt;&quot;&apos;</string>");
+    expect(parsePlist(xml)).toMatchObject({ MessageType: "Connect", Weird: `<&>"'` });
+  });
+
+  it("parses the shapes usbmuxd emits: dicts, arrays, integers, booleans", () => {
+    const xml = `<?xml version="1.0"?><plist version="1.0"><dict>
+      <key>Number</key><integer>3</integer>
+      <key>Attached</key><true/>
+      <key>List</key><array><string>a</string><integer>2</integer></array>
+    </dict></plist>`;
+
+    const parsed: PlistValue = parsePlist(xml);
+    expect(parsed).toEqual({ Number: 3, Attached: true, List: ["a", 2] } satisfies PlistDict);
+  });
+
+  it("reads the Result code usbmuxd answers Connect with", () => {
+    const xml =
+      "<plist><dict><key>MessageType</key><string>Result</string><key>Number</key><integer>3</integer></dict></plist>";
+
+    expect(readUsbmuxResultCode(xml)).toBe(3);
+    expect(readUsbmuxResultCode("<plist><dict/></plist>")).toBeUndefined();
+  });
+});
+
+describe("readUsbmuxDeviceIdForSerial", () => {
+  const deviceListXml = (devices: Array<{ id: number; serial: string }>): string => {
+    const entries = devices
+      .map(
+        (device) =>
+          `<dict><key>DeviceID</key><integer>${device.id}</integer>` +
+          `<key>Properties</key><dict>` +
+          `<key>ConnectionType</key><string>USB</string>` +
+          `<key>SerialNumber</key><string>${device.serial}</string>` +
+          `</dict></dict>`
+      )
+      .join("");
+    return `<plist><dict><key>DeviceList</key><array>${entries}</array></dict></plist>`;
+  };
+
+  it("resolves the DeviceID by exact serial match regardless of list position", () => {
+    const xml = deviceListXml([
+      { id: 11, serial: "00008030-000000000000AAAA" },
+      { id: 77, serial: DEVICE_UDID },
+      { id: 22, serial: "00008040-000000000000BBBB" },
+    ]);
+
+    expect(readUsbmuxDeviceIdForSerial(xml, DEVICE_UDID)).toBe(77);
+  });
+
+  it("never matches a near-miss serial that merely shares a prefix or suffix", () => {
+    // Hardware UDIDs share long prefixes across a model generation; a fuzzy
+    // match here would tap commands into the wrong phone.
+    const xml = deviceListXml([
+      { id: 5, serial: `${DEVICE_UDID}0` },
+      { id: 6, serial: DEVICE_UDID.slice(0, -1) },
+    ]);
+
+    expect(readUsbmuxDeviceIdForSerial(xml, DEVICE_UDID)).toBeUndefined();
+  });
+
+  it("ignores malformed entries instead of failing the whole list", () => {
+    const xml =
+      "<plist><dict><key>DeviceList</key><array>" +
+      "<dict><key>DeviceID</key><string>not-a-number</string></dict>" +
+      `<dict><key>DeviceID</key><integer>9</integer><key>Properties</key><dict><key>SerialNumber</key><string>${DEVICE_UDID}</string></dict></dict>` +
+      "</array></dict></plist>";
+
+    expect(readUsbmuxDeviceIdForSerial(xml, DEVICE_UDID)).toBe(9);
+  });
+});
+
+describe("buildUsbmuxConnectError result-code mapping", () => {
+  const context = { udid: DEVICE_UDID, port: RUNNER_PORT };
+
+  it("maps result 2 (device gone mid-connect) to the unattached verdict", () => {
+    const error = buildUsbmuxConnectError(2, context);
+
+    expect(error.kind).toBe("device-unattached");
+    expect(error.retryable).toBe(false);
+    expect(error.hint).toMatch(/cable/);
+  });
+
+  it("maps result 3 (port closed on a live device) to a retryable runner-not-listening", () => {
+    const error = buildUsbmuxConnectError(3, context);
+
+    expect(error.kind).toBe("runner-not-listening");
+    expect(error.retryable).toBe(true);
+    expect(error.hint).not.toMatch(/cable/);
+  });
+
+  it("maps unknown results to a generic failure with the cable/trust/unlock hint", () => {
+    const error = buildUsbmuxConnectError(6, context);
+
+    expect(error.kind).toBe("protocol");
+    expect(error.retryable).toBe(false);
+    expect(error.hint).toMatch(/cable/);
+  });
+});
+
+describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
+  const openServers: Server[] = [];
+  const socketDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      openServers.splice(0).map(
+        (server) => new Promise<void>((resolve) => server.close(() => resolve()))
+      )
+    );
+    await Promise.all(
+      socketDirs.splice(0).map((dir) => fs.rm(dir, { force: true, recursive: true }))
+    );
+  });
+
+  const createSocketPath = async (): Promise<string> => {
+    // os.tmpdir rather than the test scratchpad: unix socket paths are capped
+    // at ~104 bytes on macOS and deep scratch paths exceed that.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-usbmux-"));
+    socketDirs.push(dir);
+    return path.join(dir, "usbmuxd.sock");
+  };
+
+  const readPacket = (socket: Socket): Promise<string> =>
+    new Promise((resolve, reject) => {
+      let buffer = Buffer.alloc(0);
+      const onData = (chunk: Buffer) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        if (buffer.length < 16) return;
+        const length = buffer.readUInt32LE(0);
+        if (buffer.length < length) return;
+        socket.off("data", onData);
+        resolve(buffer.subarray(16, length).toString("utf8"));
+      };
+      socket.on("data", onData);
+      socket.once("error", reject);
+    });
+
+  const startFakeUsbmuxd = async (
+    socketPath: string,
+    devices: Array<{ id: number; serial: string }>,
+    connectResult: number
+  ): Promise<{ connectRequests: string[] }> => {
+    const connectRequests: string[] = [];
+    let connectionIndex = 0;
+    const server = net.createServer((socket) => {
+      const index = connectionIndex;
+      connectionIndex += 1;
+      void readPacket(socket).then((request) => {
+        if (index === 0) {
+          const entries = devices
+            .map(
+              (device) =>
+                `<dict><key>DeviceID</key><integer>${device.id}</integer>` +
+                `<key>Properties</key><dict><key>SerialNumber</key><string>${device.serial}</string></dict></dict>`
+            )
+            .join("");
+          socket.end(
+            encodeUsbmuxPacket(
+              1,
+              `<plist><dict><key>DeviceList</key><array>${entries}</array></dict></plist>`
+            )
+          );
+          return;
+        }
+        connectRequests.push(request);
+        socket.write(
+          encodeUsbmuxPacket(
+            2,
+            `<plist><dict><key>MessageType</key><string>Result</string><key>Number</key><integer>${connectResult}</integer></dict></plist>`
+          )
+        );
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    openServers.push(server);
+    return { connectRequests };
+  };
+
+  it("resolves the mux DeviceID and connects with the port in network byte order", async () => {
+    const socketPath = await createSocketPath();
+    const fake = await startFakeUsbmuxd(socketPath, [{ id: 42, serial: DEVICE_UDID }], 0);
+
+    const socket = await openUsbmuxRunnerSocket({
+      udid: DEVICE_UDID,
+      port: RUNNER_PORT,
+      timeoutMs: 2_000,
+      socketPath,
+    });
+    socket.destroy();
+
+    expect(fake.connectRequests).toHaveLength(1);
+    expect(fake.connectRequests[0]).toContain("<key>DeviceID</key><integer>42</integer>");
+    expect(fake.connectRequests[0]).toContain(
+      `<key>PortNumber</key><integer>${hostToNetworkPort(RUNNER_PORT)}</integer>`
+    );
+  });
+
+  it("reports a device missing from ListDevices as unattached", async () => {
+    const socketPath = await createSocketPath();
+    await startFakeUsbmuxd(socketPath, [{ id: 42, serial: "00008030-000000000000AAAA" }], 0);
+
+    const error = await openUsbmuxRunnerSocket({
+      udid: DEVICE_UDID,
+      port: RUNNER_PORT,
+      timeoutMs: 2_000,
+      socketPath,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(IosDeviceTransportError);
+    expect((error as IosDeviceTransportError).kind).toBe("device-unattached");
+  });
+
+  it("reports Connect result 2 as unattached (device unplugged mid-connect)", async () => {
+    const socketPath = await createSocketPath();
+    await startFakeUsbmuxd(socketPath, [{ id: 42, serial: DEVICE_UDID }], 2);
+
+    const error = await openUsbmuxRunnerSocket({
+      udid: DEVICE_UDID,
+      port: RUNNER_PORT,
+      timeoutMs: 2_000,
+      socketPath,
+    }).catch((caught: unknown) => caught);
+
+    expect((error as IosDeviceTransportError).kind).toBe("device-unattached");
+  });
+
+  it("reports Connect result 3 as the runner not listening, not a cable problem", async () => {
+    const socketPath = await createSocketPath();
+    await startFakeUsbmuxd(socketPath, [{ id: 42, serial: DEVICE_UDID }], 3);
+
+    const error = await openUsbmuxRunnerSocket({
+      udid: DEVICE_UDID,
+      port: RUNNER_PORT,
+      timeoutMs: 2_000,
+      socketPath,
+    }).catch((caught: unknown) => caught);
+
+    expect((error as IosDeviceTransportError).kind).toBe("runner-not-listening");
+    expect((error as IosDeviceTransportError).retryable).toBe(true);
+  });
+});

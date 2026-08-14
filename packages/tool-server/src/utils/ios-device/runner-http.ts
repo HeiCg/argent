@@ -1,0 +1,243 @@
+import http from "node:http";
+import net from "node:net";
+import { IosDeviceTransportError } from "./usbmux-protocol";
+
+/**
+ * One HTTP POST per connection to the XCUITest runner's /command endpoint.
+ *
+ * The runner speaks plain HTTP/1.1, but on a physical device the "connection"
+ * is a usbmux socket that is already established before HTTP enters the
+ * picture. node:http cannot dial such a socket itself, so each request gets a
+ * throwaway Agent whose createConnection hands back the pre-connected socket.
+ * One request per connection (Connection: close) keeps the lifecycle trivial:
+ * no keep-alive pooling of muxed sockets whose device may unplug between
+ * requests, and every error path can simply destroy both agent and socket.
+ */
+
+/**
+ * Large snapshot/screenshot payloads are legitimate, but the length is
+ * attacker-adjacent data from a USB peripheral — cap it so a corrupt stream
+ * cannot drive an unbounded allocation.
+ */
+const RUNNER_HTTP_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
+
+interface PostRunnerCommandOptions {
+  /**
+   * Produces the connected socket for this one request. A factory rather than
+   * a socket so the (potentially slow) usbmux handshake only happens once the
+   * caller actually commits to sending, and so its typed errors flow through
+   * this function's error path.
+   */
+  socketFactory: () => Promise<net.Socket>;
+  /** JSON-serialized as the POST body. */
+  body: unknown;
+  timeoutMs: number;
+}
+
+/** POST one runner command over a pre-connected socket; resolves with the parsed JSON body. */
+export async function postRunnerCommand(options: PostRunnerCommandOptions): Promise<unknown> {
+  requireTimeRemaining(options.timeoutMs);
+  const socket = await options.socketFactory();
+  const agent = new http.Agent({ keepAlive: false });
+  // @types/node exposes createConnection on Agent instances; returning the
+  // pre-connected socket short-circuits the dial step entirely.
+  agent.createConnection = ((_options: unknown, callback?: (err: Error | null, stream: net.Socket) => void) => {
+    callback?.(null, socket);
+    return socket;
+  }) as typeof agent.createConnection;
+  try {
+    const payload = Buffer.from(JSON.stringify(options.body), "utf8");
+    const response = await requestOverAgent(agent, socket, payload, options.timeoutMs);
+    return parseRunnerResponseBody(response.statusCode, response.body);
+  } finally {
+    agent.destroy();
+    socket.destroy();
+  }
+}
+
+interface PostRunnerCommandTcpOptions {
+  /** IPv4, IPv6 (bracketed or bare), or hostname. */
+  host: string;
+  port: number;
+  body: unknown;
+  timeoutMs: number;
+}
+
+/**
+ * Plain-TCP variant for tunnel/localhost routes (e.g. a CoreDevice tunnel IP
+ * or a simulator on 127.0.0.1). Accepts bracketed IPv6 (`[fd00::1]`) because
+ * tunnel addresses travel through URL-shaped config; node:net wants them bare.
+ */
+export async function postRunnerCommandTcp(options: PostRunnerCommandTcpOptions): Promise<unknown> {
+  const host = stripIpv6Brackets(options.host);
+  const startedAt = Date.now();
+  const socket = await connectTcp(host, options.port, options.timeoutMs);
+  try {
+    // The connect phase spent part of the budget; hand the remainder to the
+    // HTTP exchange so the caller's timeoutMs bounds the whole operation.
+    return await postRunnerCommand({
+      socketFactory: async () => socket,
+      body: options.body,
+      timeoutMs: options.timeoutMs - (Date.now() - startedAt),
+    });
+  } catch (error) {
+    // postRunnerCommand destroys the socket once its factory has run; this
+    // covers the pre-factory failure paths (e.g. an already-spent budget).
+    socket.destroy();
+    throw error;
+  }
+}
+
+function stripIpv6Brackets(host: string): string {
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
+async function connectTcp(host: string, port: number, timeoutMs: number): Promise<net.Socket> {
+  requireTimeRemaining(timeoutMs);
+  return await new Promise<net.Socket>((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(
+        new IosDeviceTransportError("timeout", `Timed out connecting to runner at ${host}:${port}`, {
+          retryable: true,
+        })
+      );
+    }, timeoutMs);
+    const onConnect = () => finish();
+    const onError = (error: NodeJS.ErrnoException) => {
+      // A refused port is the "runner still starting" signal, same as usbmux
+      // Connect result 3 — classify it identically so retry policy treats the
+      // two transports the same.
+      if (error.code === "ECONNREFUSED") {
+        finish(
+          new IosDeviceTransportError(
+            "runner-not-listening",
+            `XCUITest runner is not listening at ${host}:${port}`,
+            { retryable: true, cause: error }
+          )
+        );
+        return;
+      }
+      finish(
+        new IosDeviceTransportError("http", `Cannot connect to runner at ${host}:${port}`, {
+          retryable: true,
+          cause: error,
+        })
+      );
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.off("connect", onConnect);
+      socket.off("error", onError);
+      if (error) {
+        socket.destroy();
+        reject(error);
+      } else {
+        resolve(socket);
+      }
+    };
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+  });
+}
+
+async function requestOverAgent(
+  agent: http.Agent,
+  socket: net.Socket,
+  payload: Buffer,
+  timeoutMs: number
+): Promise<{ statusCode: number; body: Buffer }> {
+  requireTimeRemaining(timeoutMs);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = http.request(
+        {
+          method: "POST",
+          // Host header only — the actual connection is the injected socket.
+          host: "127.0.0.1",
+          path: "/command",
+          headers: {
+            "Content-Type": "application/json",
+            "Content-Length": payload.length,
+            Connection: "close",
+          },
+          agent,
+          signal: timeoutSignal,
+        },
+        (response) => {
+          readBoundedBody(response).then(
+            (body) => resolve({ statusCode: response.statusCode ?? 500, body }),
+            reject
+          );
+        }
+      );
+      request.once("error", reject);
+      // The usbmux layer leaves the socket paused with any early bytes
+      // unshifted; resume so the response can flow.
+      socket.resume();
+      request.end(payload);
+    });
+  } catch (error) {
+    if (timeoutSignal.aborted) {
+      throw new IosDeviceTransportError(
+        "timeout",
+        `Timed out waiting for XCUITest runner response after ${timeoutMs}ms`,
+        { retryable: true, cause: error }
+      );
+    }
+    if (error instanceof IosDeviceTransportError) throw error;
+    throw new IosDeviceTransportError(
+      "http",
+      `Runner HTTP request failed: ${error instanceof Error ? error.message : String(error)}`,
+      { retryable: true, cause: error }
+    );
+  }
+}
+
+async function readBoundedBody(response: http.IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of response) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    totalBytes += buffer.length;
+    if (totalBytes > RUNNER_HTTP_MAX_RESPONSE_BYTES) {
+      throw new IosDeviceTransportError(
+        "protocol",
+        `Runner response exceeded ${RUNNER_HTTP_MAX_RESPONSE_BYTES} bytes`,
+        { retryable: false }
+      );
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * The runner encodes command failures inside its JSON envelope (ok:false), so
+ * a parseable body is returned regardless of HTTP status and left to the
+ * client layer to interpret. Only an unparseable body is a transport-level
+ * failure — at that point the status code is the best diagnostic available.
+ */
+function parseRunnerResponseBody(statusCode: number, body: Buffer): unknown {
+  const text = body.toString("utf8");
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new IosDeviceTransportError(
+      "http",
+      `Runner returned non-JSON response (HTTP ${statusCode})`,
+      { retryable: false }
+    );
+  }
+}
+
+function requireTimeRemaining(timeoutMs: number): void {
+  if (timeoutMs > 0) return;
+  throw new IosDeviceTransportError("timeout", "No time remaining to send runner command", {
+    retryable: true,
+  });
+}
