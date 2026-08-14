@@ -223,14 +223,19 @@ const FLOW_STEP_DEFINITIONS: {
 } = {
   "tool": {
     summary: (step) => `${step.name} ${renderToolArgs(step.args)}${delayLabel(step)}`,
+    // Carries its subject in a report field of its own (`tool`) that renderers
+    // print in the target's place.
     target: () => undefined,
   },
   "echo": {
     summary: (step) => step.message,
+    // As for `tool`, but the field is `message`.
     target: () => undefined,
   },
   "launch": {
     summary: (step) => (typeof step.app === "string" ? step.app : JSON.stringify(step.app)),
+    // A launch's app id may be per-platform (`appIdForPlatform`), and a step
+    // alone does not know the run device.
     target: () => undefined,
   },
   "run": {
