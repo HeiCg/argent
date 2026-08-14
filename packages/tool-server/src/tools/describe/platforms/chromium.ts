@@ -484,6 +484,15 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     // text, and there is no third channel to tell them apart in, so a
     // <textarea> reads its contents back the same way every other form control
     // does.
+    //
+    // The name channel narrows those harms rather than removing them. Only the
+    // hoist is answered, and only for a field carrying an id/testID, which is
+    // what shields (flow-chromium-tree); a selector match and the resolver's
+    // ranking both read the label directly, so an UNIDENTIFIED field leaks
+    // through all three either way — the two Chrome 151 measurements above
+    // reproduce unchanged on a textarea with no id. argent-create-flow's
+    // references/asserting-field-values.md is where that is stated for flow
+    // authors, with "give the field an id" as the answer.
     const text = invisibleSelf ? "" : el instanceof HTMLTextAreaElement ? "" : ownText(el);
     const name = invisibleSelf ? null : accessibleName(el);
     const clickable = invisibleSelf ? false : isInteractive(el);
