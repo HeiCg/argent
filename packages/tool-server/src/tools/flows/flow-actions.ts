@@ -1044,8 +1044,10 @@ function sameElement(a: DescribeNode, b: DescribeNode): boolean {
  * label and value). That is what "this element's content IS the thing named"
  * means for an editing host: the editable carries no id, no accessible name and
  * no own text, and the only text on it is the target's, hoisted. A trapped
- * `<textarea>` fails it (an unlabelled one's value IS its accessible name), and
- * so does a focused `android.webkit.WebView` carrying the whole form's text.
+ * `<textarea>` fails it (an unlabelled one's value IS its accessible name). A
+ * focused `android.webkit.WebView` carrying the whole form fails the content
+ * count below rather than this guard — its fields are identified, so their text
+ * never reaches its hoist in the first place.
  *
  * The flow adapters flatten to leaves under one root, so tree ancestry is not
  * available to ask this more directly; hoisted text ({@link assertText}) is
@@ -1067,11 +1069,33 @@ function sameElement(a: DescribeNode, b: DescribeNode): boolean {
  * full-hierarchy adapter never sets `clickable`), this cannot discriminate and
  * the residual stands.
  *
+ * Text equality alone does not say the editor holds nothing else, because the
+ * hoist it is read from is not a full account of the editor's content: an
+ * identified descendant SHIELDS its own text out of every ancestor's
+ * `subtreeText` (`flow-tree-flatten`), and a password field shields too. So an
+ * editing host holding the named paragraph PLUS any amount of identified
+ * content hoists only the paragraph and compares equal, while the clear —
+ * select-all over the host — destroys all of it. Reproduced on Chrome 151: a
+ * composer holding `<p>Draft body paragraph</p>` beside `<div id="signature">`
+ * passed, wiped the editor to the replacement text and took the signature with
+ * it; the identical page with the signature ANONYMOUS refused, because then its
+ * text hoisted and the equality failed. `data-testid`, a `<input
+ * type=password>` and three identified card fields all behaved like the id.
+ *
+ * What the shield hides from the hoist it does NOT hide from the tree — the
+ * shielding node is emitted as its own leaf. So the content is counted from
+ * the flat tree instead ({@link holdsUnnamedContent}), which is the same
+ * question asked where the answer survives the flatten.
+ *
  * Residuals: an editor holding more than the named paragraph shows more text
  * than the selector named, so it still refuses — with the same unfollowable
  * advice. Naming the whole body, or giving the editable an id, both work.
  */
-function focusedOwnsTargetText(target: DescribeNode, focused: DescribeNode[]): boolean {
+function focusedOwnsTargetText(
+  tree: DescribeNode,
+  target: DescribeNode,
+  focused: DescribeNode[]
+): boolean {
   const named = assertText(target);
   if (!named || target.clickable) return false;
   return (
@@ -1082,9 +1106,51 @@ function focusedOwnsTargetText(target: DescribeNode, focused: DescribeNode[]): b
         frameWithin(target.frame, n.frame) &&
         !frameNoLargerThan(n.frame, target.frame) &&
         !nodeText(n) &&
-        assertText(n) === named
+        assertText(n) === named &&
+        !holdsUnnamedContent(tree, n, target)
     )
   );
+}
+
+/**
+ * Does `host` contain anything the selector did NOT name — content a clear on
+ * `host` would destroy without the step ever mentioning it?
+ *
+ * Read from the flat tree rather than from `host`'s hoisted text, because the
+ * hoist is exactly what a shield removes (see {@link focusedOwnsTargetText}).
+ * "Content" is anything a leaf can stand for: its own text, an id/testID, a
+ * control, or a password field — a masked field carries no text at all, and
+ * losing it is the most expensive of the four.
+ *
+ * Nodes inside the TARGET's own box are what the selector named, so they never
+ * count; every adapter flattens to leaves, so this is a frame test rather than
+ * an ancestry one.
+ */
+function holdsUnnamedContent(
+  tree: DescribeNode,
+  host: DescribeNode,
+  target: DescribeNode
+): boolean {
+  let found = false;
+  const walk = (node: DescribeNode): void => {
+    if (found) return;
+    if (
+      node !== host &&
+      node !== target &&
+      frameWithin(node.frame, host.frame) &&
+      !frameWithin(node.frame, target.frame) &&
+      (Boolean(nodeText(node)) ||
+        node.identifier !== undefined ||
+        node.clickable === true ||
+        node.password === true)
+    ) {
+      found = true;
+      return;
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(tree);
+  return found;
 }
 
 /**
@@ -1388,7 +1454,7 @@ async function waitForFocus(
       // for however many rounds precede the blur.
       if (focused.some((n) => n === targetNode)) return "confirmed";
       if (targetNode && focusedFromInside(targetNode, focused, candidates)) return "confirmed";
-      if (targetNode && focusedOwnsTargetText(targetNode, focused)) return "confirmed";
+      if (targetNode && focusedOwnsTargetText(tree, targetNode, focused)) return "confirmed";
       lastRead =
         focused.length === 0
           ? "no-focus"
