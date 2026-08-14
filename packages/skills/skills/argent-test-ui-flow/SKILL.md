@@ -65,8 +65,6 @@ Steps:
 7. screenshot → verify home screen appeared
 ```
 
-> **Pre-filled fields:** `keyboard` appends, so a remembered login would leave `user@example.comuser@example.com` behind. Use `clear: true` on any field that may already hold a value — but assert the result when you depend on it, since only Chromium reads the field back (per-platform detail in `argent-device-interact`).
-
 > **Credentials:** never type plaintext credentials — use a `{{secret:<NAME>}}` placeholder in `keyboard`, resolved server-side so the value never enters agent context. It comes from the `ARGENT_SECRET_<NAME>` environment variable or an argent secrets file (`.argent/secrets.env` in the project, `~/.argent/secrets.env`, or an `ARGENT_SECRET_`-prefixed key in the project's `.env` / `.env.local`). If the name is not defined, the failure lists the available names and every path it checked — ask the user to add it to one of those files (which applies immediately) instead of pasting the secret into the conversation. Never invent credentials or echo secret values into reports or saved files.
 
 ### Scroll and navigation

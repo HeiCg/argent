@@ -117,7 +117,7 @@ Record the focus tap, then record `keyboard` with `text`. A `keyboard` call carr
 
 **`describe` reports focus on Chromium only.** iOS and Android leave it unset — it is a Vega/D-pad signal there — so those platforms have no live pre-typing focus check, and the value check afterwards is what proves the keys landed. On Chromium, read `focused` before recording `keyboard`.
 
-If characters are lost, restore the field with direct calls. Do not record a duplicate typing step. Polish the valid pair into `type:` — unless the `keyboard` step carries `clear: true`, which `type:` cannot express, so keep that one raw (see the conversion table). Its replay focus wait reads the runner's own tree, which does report focus on iOS, Android, and Chromium, but an unconfirmed poll falls through to typing rather than failing — so retain the committed-value check. Store credentials as `{{secret:NAME}}`. Never record a literal credential.
+If characters are lost, restore the field with direct calls. Do not record a duplicate typing step. Polish the valid pair with the conversion table below. During replay, `type` reads the runner tree for focus. This tree reports focus on iOS, Android, and Chromium. An unconfirmed poll falls through to typing. Retain the value check. Store credentials as `{{secret:NAME}}`. Never record a literal credential.
 
 ### Scrolling and swiping
 
@@ -146,7 +146,7 @@ Call `flow-finish-recording`, then read the saved YAML. Apply only meaning-prese
 
 | Recorded form                | Finished form                                                      |
 | ---------------------------- | ------------------------------------------------------------------ |
-| focus tap + `tool: keyboard` | `type:` — but keep the raw step when it carries `clear: true`      |
+| focus tap + `tool: keyboard` | `type:`; keep raw when `keyboard` uses `clear: true`               |
 | text `keyboard` + `key: enter` `keyboard` | submitted `type:` without Enter in its text |
 | `tool: await-ui-element`     | `await:` or `assert:`                                              |
 | element-seeking movement     | `scroll-to:`                                                       |
@@ -161,7 +161,7 @@ Only these unrecorded insertions are allowed, at states observed live:
 - `await: { idle: true }` after a navigation identity check.
 - The Chromium launch that packages the live boot.
 
-Keep raw forms only when conversion changes behavior. Examples include point-anchored or panning pinch, velocity-sensitive swipe, or rotation with a tested start angle, radius, pivot, duration, or speed. The `clear: true` exception in the table above is the same rule: `type:` accepts only `into`, `text` and `submit`, so rewriting such a step drops the emptying without a word, and the replay appends into the pre-filled field — and still reports PASS. Keep screenshots for human evidence. Use `snapshot:` for automated visual comparison. Read [Flow YAML](flow-yaml.md) for syntax.
+Keep raw forms only when conversion changes behavior. Examples include point-anchored or panning pinch, velocity-sensitive swipe, or rotation with a tested start angle, radius, pivot, duration, or speed. Keep screenshots for human evidence. Use `snapshot:` for automated visual comparison. Read [Flow YAML](flow-yaml.md) for syntax.
 
 If polish reveals a missing action or structural check, restore its preceding state and record it. Do not add remembered behavior directly to YAML.
 
