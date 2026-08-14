@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { Registry, FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 
 // The harmony backend rejects an unknown key before injecting, so these tests
@@ -8,16 +8,16 @@ vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
   harmonyTypeText: vi.fn(async () => {}),
   harmonyKeyEvent: vi.fn(async () => {}),
-  // The screen-awake guard reads the display first; stub it ON so these tests
-  // reach the validation they exercise.
-  harmonyDisplay: vi.fn(async () => ({ width: 1216, height: 2688, screenOn: true })),
+  // The screen-awake guard reads the display; the beforeEach below stubs it ON
+  // so these tests reach the validation they exercise.
+  harmonyDisplay: vi.fn(),
 }));
 
 import { InvalidToolInputError } from "../src/utils/capability";
 import { typeSimulatorServer } from "../src/tools/keyboard/simulator-server-keys";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
 import { harmonyImpl } from "../src/tools/keyboard/platforms/harmony";
-import { harmonyKeyEvent, harmonyTypeText } from "../src/utils/harmony-uitest";
+import { harmonyDisplay, harmonyKeyEvent, harmonyTypeText } from "../src/utils/harmony-uitest";
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
 import { injectAndroidNamedKey, injectAndroidText } from "../src/utils/android-input";
 
@@ -62,6 +62,12 @@ const chromiumDevice = {
   platform: "chromium",
   kind: "app",
 } as unknown as DeviceInfo;
+
+beforeEach(() => {
+  vi.mocked(harmonyDisplay)
+    .mockReset()
+    .mockResolvedValue({ width: 1216, height: 2688, screenOn: true });
+});
 
 describe("keyboard backends — input rejection is a 400 with a uniform telemetry taxonomy", () => {
   it("iOS: unknown key → 400 + KEYBOARD_KEY_UNSUPPORTED", async () => {
@@ -192,6 +198,8 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
       FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED
     );
     expect(harmonyTypeText).not.toHaveBeenCalled();
+    // Decided without asking the device: see the unsupported-key case below.
+    expect(harmonyDisplay).not.toHaveBeenCalled();
   });
 
   it("harmony: a control character in text → 400 + KEYBOARD_CHARACTER_UNSUPPORTED", async () => {
@@ -202,5 +210,26 @@ describe("keyboard backends — input rejection is a 400 with a uniform telemetr
       FAILURE_CODES.KEYBOARD_CHARACTER_UNSUPPORTED
     );
     expect(harmonyTypeText).not.toHaveBeenCalled();
+    expect(harmonyDisplay).not.toHaveBeenCalled();
+  });
+
+  it("harmony: an unsupported key is diagnosed without reaching the device", async () => {
+    const harmonyDevice: DeviceInfo = { id: "harmony-KEY", platform: "harmony", kind: "device" };
+    // `tab` is one of the keys this backend deliberately does not map, so the
+    // answer never depends on the device — the unreachable display stubbed
+    // below stands in for one that is unhappy. A device round trip ahead of the
+    // key check turns this 400 into `hdc could not reach HarmonyOS device …:
+    // Device not found or connected`, sending the caller to check a cable over
+    // a key that will never be supported (hubgan review).
+    vi.mocked(harmonyKeyEvent).mockClear();
+    vi.mocked(harmonyDisplay).mockRejectedValue(
+      new Error("[Fail][E001005] Device not found or connected")
+    );
+    await expectInvalidInput(
+      harmonyImpl.handler({}, { udid: harmonyDevice.id, key: "tab" }, harmonyDevice),
+      FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED
+    );
+    expect(harmonyDisplay).not.toHaveBeenCalled();
+    expect(harmonyKeyEvent).not.toHaveBeenCalled();
   });
 });

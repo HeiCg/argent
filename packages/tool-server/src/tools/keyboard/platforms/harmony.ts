@@ -92,17 +92,19 @@ function resolveHarmonyKeycode(key: string): number {
 }
 
 async function typeHarmony(connectKey: string, params: KeyboardParams): Promise<KeyboardResult> {
-  // Typing into a suspended panel reports `No Error` and lands nowhere — check
-  // before resolving anything, so a dead screen fails the same way a tap does.
-  assertHarmonyScreenAwake(await harmonyDisplay(connectKey), "type");
-  // Resolve before injecting anything: a combined key+text call with an unknown
-  // key name must reject having typed nothing, not type the text and then 400.
+  // Both checks are pure and both precede the first device round trip: an
+  // unsupported key or an un-typeable character is the caller's mistake, and
+  // asking the device first lets an unreachable one rewrite that 400 into a
+  // connection error about a key that will never be supported. Nothing is
+  // injected until both pass, so a combined key+text call with an unknown key
+  // rejects having typed nothing.
   const keycode = params.key ? resolveHarmonyKeycode(params.key) : null;
+  if (params.text) assertTypeableHarmonyText(params.text);
+  // Typing into a suspended panel reports `No Error` and lands nowhere, so a
+  // dead screen fails the same way a tap does.
+  assertHarmonyScreenAwake(await harmonyDisplay(connectKey), "type");
   let keysPressed = 0;
   if (params.text) {
-    // Validate before injecting: `uitest` reports `No Error` whether or not the
-    // text landed, so an un-typeable character must be caught here (see above).
-    assertTypeableHarmonyText(params.text);
     // `uitest uiInput text` types into whatever holds focus, in one shot — there
     // is no per-character injection, so `delayMs` has nothing to pace (the tool
     // description already lists the platforms that ignore it).

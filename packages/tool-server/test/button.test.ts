@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { getFailureSignal } from "@argent/registry";
 
 // Keep the real module (blueprints import from it too) but neutralise the
 // fire-and-forget WebSocket send so no real socket is opened during the test.
@@ -15,10 +16,13 @@ vi.mock("../src/utils/android-input", async (importOriginal) => ({
 }));
 
 // HarmonyOS presses go over `uitest uiInput keyEvent` on the device; neutralise
-// it for the same reason as the adb call above.
+// it for the same reason as the adb call above. `harmonyDisplay` is the power
+// state the press is gated on, stubbed awake by default (see beforeEach);
+// `assertHarmonyScreenAwake` stays real so the tests see the guard's own refusal.
 vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
   harmonyKeyEvent: vi.fn(),
+  harmonyDisplay: vi.fn(),
 }));
 
 // The Android branch preflights adb via `ensureDep("adb")` before injecting.
@@ -34,7 +38,7 @@ import { buttonTool, BUTTONS_BY_PLATFORM } from "../src/tools/button";
 import { UnsupportedOperationError } from "../src/utils/capability";
 import { ANDROID_BUTTON_KEYCODES, injectAndroidKeycode } from "../src/utils/android-input";
 import { DependencyMissingError, ensureDep } from "../src/utils/check-deps";
-import { harmonyKeyEvent } from "../src/utils/harmony-uitest";
+import { harmonyDisplay, harmonyKeyEvent } from "../src/utils/harmony-uitest";
 import { sendCommand } from "../src/utils/simulator-client";
 
 const iosUdid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
@@ -56,6 +60,14 @@ const HARMONY_KEY_NAMES: Record<string, string> = {
   back: "Back",
   power: "Power",
 };
+
+/** A Mate 60's render resolution, awake. */
+const HARMONY_AWAKE = { width: 1216, height: 2688, screenOn: true };
+const HARMONY_SUSPENDED = { ...HARMONY_AWAKE, screenOn: false };
+
+beforeEach(() => {
+  vi.mocked(harmonyDisplay).mockReset().mockResolvedValue(HARMONY_AWAKE);
+});
 
 describe("button tool — per-platform validation", () => {
   it("rejects `back` on iOS (no hardware back button) instead of a silent no-op", async () => {
@@ -212,6 +224,59 @@ describe("button tool — per-platform validation", () => {
     await expect(
       buttonTool.execute(services, { udid: harmonyUdid, button: "home" })
     ).rejects.toThrow(/Not match target found/);
+  });
+});
+
+describe("button tool — a suspended HarmonyOS panel", () => {
+  // `uitest uiInput keyEvent` answers `No Error` against a display that is OFF
+  // or SUSPEND while the press lands nowhere: measured on a 6.1.1 emulator, a
+  // `Home` keyEvent injected into a suspended panel left Settings foreground
+  // after waking. `gesture-tap`, `gesture-swipe` and `keyboard` all refuse in
+  // that state, and `home`/`back` are the keys an agent reaches for to recover
+  // from a screen timeout.
+  beforeEach(() => {
+    vi.mocked(harmonyKeyEvent).mockClear();
+    vi.mocked(ensureDep).mockClear();
+  });
+
+  for (const button of ["home", "back"] as const) {
+    it(`refuses \`${button}\` while the display is suspended, injecting nothing`, async () => {
+      vi.mocked(harmonyDisplay).mockResolvedValue(HARMONY_SUSPENDED);
+      const err = await buttonTool.execute(services, { udid: harmonyUdid, button }).then(
+        () => {
+          throw new Error("expected the press to reject, but it resolved");
+        },
+        (e: unknown) => e
+      );
+      // The same guard the tap refusal comes from, so the two agree at the
+      // moment it matters — not a second, divergent message.
+      expect(getFailureSignal(err)?.failure_stage).toBe("harmony_screen_off");
+      expect((err as Error).message).toMatch(/display is off/);
+      // The refusal names the button, not "tap": the shared helper takes the
+      // verb from its caller.
+      expect((err as Error).message).toContain(`press ${button}`);
+      expect(harmonyKeyEvent).not.toHaveBeenCalled();
+    });
+  }
+
+  it("still presses `power` while the display is suspended — it is the way back", async () => {
+    // The refusal above tells the caller to wake the device with `button`
+    // (power). Gating power on the same check would make that advice
+    // unfollowable, so it is carved out — and carved out before the display
+    // read, so waking a device does not depend on the render service answering.
+    vi.mocked(harmonyDisplay).mockResolvedValue(HARMONY_SUSPENDED);
+    await expect(
+      buttonTool.execute(services, { udid: harmonyUdid, button: "power" })
+    ).resolves.toEqual({ pressed: "power" });
+    expect(harmonyKeyEvent).toHaveBeenCalledWith(harmonyConnectKey, "Power");
+    expect(harmonyDisplay).not.toHaveBeenCalled();
+  });
+
+  it("presses `home` as usual once the display is awake", async () => {
+    await expect(
+      buttonTool.execute(services, { udid: harmonyUdid, button: "home" })
+    ).resolves.toEqual({ pressed: "home" });
+    expect(harmonyKeyEvent).toHaveBeenCalledWith(harmonyConnectKey, "Home");
   });
 });
 

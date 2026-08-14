@@ -2,7 +2,11 @@ import { z } from "zod";
 import type { Platform, ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
-import { harmonyKeyEvent } from "../../utils/harmony-uitest";
+import {
+  assertHarmonyScreenAwake,
+  harmonyDisplay,
+  harmonyKeyEvent,
+} from "../../utils/harmony-uitest";
 import { UnsupportedOperationError } from "../../utils/capability";
 import { sendCommand } from "../../utils/simulator-client";
 import { ANDROID_BUTTON_KEYCODES, injectAndroidKeycode } from "../../utils/android-input";
@@ -136,7 +140,19 @@ Fails if the device backend is not reachable — the simulator-server for iOS, \
       // sim-server for HarmonyOS). The BUTTONS_BY_PLATFORM guard above
       // guarantees a key name exists for every accepted button.
       await ensureDep("hdc");
-      await harmonyKeyEvent(harmonyConnectKey(device.id), HARMONY_BUTTON_KEYS[params.button]!);
+      const connectKey = harmonyConnectKey(device.id);
+      // `uitest uiInput keyEvent` answers `No Error` against a suspended panel
+      // while the press lands nowhere, so `home` and `back` share the guard the
+      // tap, swipe and typing backends use: a screen timeout mid-session must
+      // not turn the keys an agent recovers with into silent no-ops.
+      //
+      // `power` is exempt, and exempt before the display read — it is what the
+      // refusal tells the caller to wake the device with, and the one key that
+      // works while the panel is suspended.
+      if (params.button !== "power") {
+        assertHarmonyScreenAwake(await harmonyDisplay(connectKey), `press ${params.button}`);
+      }
+      await harmonyKeyEvent(connectKey, HARMONY_BUTTON_KEYS[params.button]!);
       return { pressed: params.button };
     }
     const api = services.simulatorServer as SimulatorServerApi;
