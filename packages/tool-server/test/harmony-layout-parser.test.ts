@@ -4,6 +4,7 @@ import {
   parseHarmonyBounds,
   parseHarmonyLayout,
 } from "../src/tools/describe/platforms/harmony/layout-parser";
+import { findAll } from "../src/utils/ui-tree-match";
 import type { HarmonyLayoutNode } from "../src/utils/harmony-uitest";
 import type { DescribeNode } from "../src/tools/describe/contract";
 
@@ -115,6 +116,41 @@ describe("parseHarmonyLayout", () => {
     const target = tree.children[0].children[0];
     expect(target.identifier).toBe("tap-me");
     expect(target.clickable).toBe(true);
+  });
+
+  // ArkUI puts `.id()` and the state flags on whatever component the author
+  // wrote, and that is routinely a plain `Column`/`Row`. Hoisting one away for
+  // wearing a layout type takes the only copy of that id with it.
+  describe("layout containers that know something themselves", () => {
+    const wrapping = (attrs: Record<string, string>): DescribeNode =>
+      parseHarmonyLayout(
+        root([
+          node({ type: "root", bundleName: "com.app", bounds: "[0,0][1216,2688]" }, [
+            node({ ...attrs, bounds: "[0,300][1216,440]" }, [
+              node({ type: "Text", text: "Wi-Fi", bounds: "[40,340][400,400]" }),
+            ]),
+          ]),
+        ]),
+        SCREEN
+      ).tree;
+
+    it("keeps a container carrying the identifier an agent selects on", () => {
+      const tree = wrapping({ type: "Column", id: "wifi_entry", key: "wifi_entry" });
+      expect(findAll(tree, { identifier: "wifi_entry" })).toHaveLength(1);
+      const target = tree.children[0].children[0];
+      expect(target.identifier).toBe("wifi_entry");
+      // The row's own text stays reachable underneath it.
+      expect(target.children[0].label).toBe("Wi-Fi");
+    });
+
+    it("keeps a container that knows it is disabled, selected or focused", () => {
+      // One flag per case, so each is pinned on its own rather than by an `id`
+      // that would have kept the node regardless.
+      const own = (attrs: Record<string, string>) => wrapping(attrs).children[0].children[0];
+      expect(own({ type: "Row", enabled: "false" }).disabled).toBe(true);
+      expect(own({ type: "Column", selected: "true" }).selected).toBe(true);
+      expect(own({ type: "Stack", focused: "true" }).focused).toBe(true);
+    });
   });
 
   // ArkUI sets `.id()` and the state flags on the OUTER component, so the

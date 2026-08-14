@@ -111,15 +111,6 @@ export function harmonyLabel(attrs: Record<string, string>): string {
   return (attrs.hint ?? "").trim();
 }
 
-function isInteractive(attrs: Record<string, string>): boolean {
-  return (
-    isTrue(attrs, "clickable") ||
-    isTrue(attrs, "longClickable") ||
-    isTrue(attrs, "checkable") ||
-    isScrollable(attrs)
-  );
-}
-
 interface HarmonyNode {
   role: string;
   pixelBounds: PixelRect | null;
@@ -173,14 +164,6 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
   }
 
   const label = harmonyLabel(attrs);
-  const interactive = isInteractive(attrs);
-
-  // Scaffolding contributes nothing itself; hoist whatever survived beneath it.
-  // A container that is *itself* clickable or labelled is a real target wearing
-  // a layout type (ArkUI builds buttons out of `Stack`/`Row`), so it stays.
-  if (LAYOUT_CONTAINERS.has(type) && !interactive && !label) {
-    return children;
-  }
 
   if (!hasArea(bounds) && children.length === 0) return [];
 
@@ -196,6 +179,15 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
   if (text && text !== own.label) own.value = text;
   const identifier = (attrs.id ?? "").trim() || (attrs.key ?? "").trim();
   if (identifier) own.identifier = identifier;
+
+  // Scaffolding contributes nothing itself; hoist whatever survived beneath it.
+  // A container that is *itself* clickable, labelled, or carrying something the
+  // subtree beneath it does not know is a real node wearing a layout type: ArkUI
+  // builds buttons out of `Stack`/`Row`, and puts `.id()` — the string an
+  // `await-ui-element {identifier}` selects on — on plain `Column`s.
+  if (LAYOUT_CONTAINERS.has(type) && !label && !own.clickable && !ownCarriesState(own)) {
+    return children;
+  }
 
   // A wrapper whose only child covers exactly the same rect is a duplicate
   // layer: collapse to whichever of the two carries the label.
@@ -218,12 +210,12 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
 }
 
 /**
- * Whether a node knows something its same-rect child cannot: an identifier to
+ * Whether a node knows something the subtree beneath it cannot: an identifier to
  * select on, or any state flag other than `clickable` (which the collapse
- * merges). `clickable` alone still marks a plain duplicate layer.
+ * merges onto the surviving child, and which the hoist tests separately).
  *
- * `value` is deliberately absent: it is only ever set alongside a label, which
- * the caller's `!own.label` already keeps out of the collapse.
+ * `value` is deliberately absent: it is only ever set alongside a label, and
+ * both callers already check for one.
  */
 function ownCarriesState(n: HarmonyNode): boolean {
   return Boolean(
