@@ -79,6 +79,7 @@ export async function resolveHarmonyEntry(
         failure_stage: "harmony_resolve_bundle",
         failure_area: "tool_server",
         error_kind: "not_found",
+        failure_command: "hdc",
       }
     );
   }
@@ -100,6 +101,7 @@ export async function resolveHarmonyEntry(
         failure_stage: "harmony_resolve_bundle",
         failure_area: "tool_server",
         error_kind: "subprocess",
+        failure_command: "hdc",
       },
       { cause: err as Error }
     );
@@ -128,6 +130,7 @@ export async function resolveHarmonyEntry(
         failure_stage: "harmony_resolve_bundle",
         failure_area: "tool_server",
         error_kind: "not_found",
+        failure_command: "hdc",
       }
     );
   }
@@ -171,6 +174,7 @@ export async function terminateHarmonyApp(connectKey: string, bundleId: string):
         failure_stage: "harmony_force_stop",
         failure_area: "tool_server",
         error_kind: stdout.includes(AA_NO_SUCH_PACKAGE) ? "not_found" : "subprocess",
+        failure_command: "hdc",
       }
     );
   }
@@ -235,6 +239,7 @@ export async function openHarmonyUrl(connectKey: string, url: string): Promise<v
         failure_stage: "harmony_open_url",
         failure_area: "tool_server",
         error_kind: "not_found",
+        failure_command: "hdc",
       }
     );
   }
@@ -249,6 +254,7 @@ function assertAbilityStarted(stdout: string, connectKey: string, bundleId: stri
       failure_stage: "harmony_ability_start",
       failure_area: "tool_server",
       error_kind: "subprocess",
+      failure_command: "hdc",
     }
   );
 }

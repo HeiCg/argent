@@ -147,14 +147,21 @@ describe("captureHarmonyScreenshotPng", () => {
     await expect(access(hdcFileRecv.mock.calls[0]![2])).rejects.toThrow();
   });
 
-  it("removes the host-side raw capture when decoding it fails", async () => {
-    // The fetch "succeeds" but delivers garbage; the raw file must not be
-    // left behind in the host tmpdir on the error path.
+  it("names the device and the size when the capture will not decode", async () => {
+    // The fetch "succeeds" but delivers garbage — the one failure `uitest`'s own
+    // exit status cannot show, since the capture it reports on happened before
+    // the transfer. The raw file must not be left behind in the host tmpdir on
+    // the error path either.
     hdcFileRecv.mockImplementation(async (_key, _remote, localPath) => {
       await writeFile(localPath, Buffer.from("this is not a png"));
     });
 
-    await expect(captureHarmonyScreenshotPng({ connectKey: "dev", scale: 1 })).rejects.toThrow();
+    // `dumpLayout`'s parse failure names both, and for the same reason: pngjs'
+    // own "Invalid file signature" says nothing about which device answered or
+    // how much of an image arrived.
+    await expect(captureHarmonyScreenshotPng({ connectKey: "dev", scale: 1 })).rejects.toThrow(
+      /device 'dev' returned a screenshot that is not a readable PNG \(17 bytes\)/
+    );
 
     // hdcFileRecv's localPath IS the raw intermediate; it must be gone.
     const rawPath = hdcFileRecv.mock.calls[0]![2];

@@ -89,6 +89,24 @@ export type DescribeSource =
   | "harmony-uitest"
   | "tv-focus";
 
+// Sources whose `hint` questions the tree just read: HarmonyOS keeps dumping the
+// last composited frame while the panel is suspended, so a matched element need
+// not be on the live screen; Chromium's walker stops at its node budget, so the
+// page is only partly there. Every other hint is a standing fact about the target
+// — not booted through argent, a tvOS / Android TV device, an app that cannot be
+// instrumented — as true before a wait as after, so on a success it reads as a
+// verdict on what the wait saw; iOS' ends "You MUST call boot-device with
+// force=true now", i.e. restart the simulator and lose the app state. Those stay
+// on the timeout note. Listing rather than excluding leaves a source added later
+// silent on success until someone judges its hint.
+//
+// Read by both wait tools, which owe the caveat for the same reason: each
+// answers off one describe read and reports what it saw as the current screen.
+export const READ_CAVEAT_SOURCES: ReadonlySet<DescribeSource> = new Set([
+  "harmony-uitest",
+  "cdp-dom",
+]);
+
 // Internal shape produced by the per-platform adapters. The `tree` is consumed
 // by the formatter in `format-tree.ts` and then dropped before the tool replies
 // — callers see `DescribeResult` below, which surfaces only the rendered text.

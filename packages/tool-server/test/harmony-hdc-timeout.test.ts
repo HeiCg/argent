@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FAILURE_COMMANDS, getFailureSignal } from "@argent/registry";
 import { runHdc } from "../src/utils/harmony-hdc";
 
 // Resolve `hdc` through the documented `$DEVECO_STUDIO_HOME` layout rather than
@@ -51,5 +52,15 @@ describe("runHdc timeout enforcement", () => {
     // Far below the stub's own 30s sleep: the assertion is that the deadline is
     // enforced at all, not its precise latency on a loaded CI box.
     expect(elapsed).toBeLessThan(6_000);
+
+    // Named binary, as every other platform's subprocess failures are — `adb`,
+    // `vega`, `xcrun_simctl`. Membership is asserted alongside the value because
+    // it is what decides whether the value is ever reported: the telemetry
+    // sanitiser validates `failure_command` against this list and silently drops
+    // a spelling it does not carry, which would file every `hdc` failure under
+    // no binary at all.
+    const signal = getFailureSignal(err);
+    expect(signal).toMatchObject({ failure_command: "hdc", failure_stage: "harmony_hdc_run" });
+    expect(FAILURE_COMMANDS).toContain(signal?.failure_command);
   }, 20_000);
 });

@@ -25,6 +25,7 @@ export const FAILURE_COMMANDS = [
   "adb",
   "emulator",
   "vega",
+  "hdc",
   "xcrun_simctl",
   "xctrace",
   "native_devtools",

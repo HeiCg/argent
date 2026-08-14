@@ -243,6 +243,25 @@ describe("await-screen-idle on HarmonyOS", () => {
     expect(result.polls).toBeGreaterThan(1);
   });
 
+  it("settles instantly on a suspended panel but says the display is off", async () => {
+    // A frozen frame is maximally still, so this is the one screen that settles
+    // fastest and means it least. `await-ui-element` carries the same caveat off
+    // the same read — the two must not disagree about a screen they both just
+    // described, since the agent's next call after either is a tap.
+    vi.mocked(harmonyDisplay).mockResolvedValue({ ...DISPLAY, screenOn: false });
+    sequenceDumps([dumpWith("Settings")]);
+    const tool = createAwaitScreenIdleTool(harmonyRegistry());
+
+    const result = await tool.execute(
+      {},
+      { udid: HARMONY_ID, timeoutMs: 2000, pollIntervalMs: 10, minStableMs: 30 }
+    );
+
+    expect(result.settled).toBe(true);
+    expect(result.note).toMatch(/display is off/i);
+    expect(result.note).toMatch(/taps land nowhere/i);
+  });
+
   it("does not settle while the dump keeps changing (times out)", async () => {
     sequenceDumps(Array.from({ length: 30 }, (_, i) => dumpWith(`item-${i}`)));
     const tool = createAwaitScreenIdleTool(harmonyRegistry());

@@ -14,7 +14,8 @@ import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
-import type { DescribeNode, DescribeSource, DescribeTreeData } from "../describe/contract";
+import { READ_CAVEAT_SOURCES } from "../describe/contract";
+import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
@@ -186,18 +187,6 @@ function appendDiagnostics(base: string, lastData: DescribeTreeData | null): str
   if (lastData.hint) extras.push(lastData.hint);
   return extras.length === 0 ? base : `${base} (${extras.join("; ")})`;
 }
-
-// Sources whose `hint` questions the tree just read: HarmonyOS keeps dumping the
-// last composited frame while the panel is suspended, so a matched element need
-// not be on the live screen; Chromium's walker stops at its node budget, so the
-// page is only partly there. Every other hint is a standing fact about the target
-// — not booted through argent, a tvOS / Android TV device, an app that cannot be
-// instrumented — as true before the wait as after, so on a success it reads as a
-// verdict on what the wait saw; iOS' ends "You MUST call boot-device with
-// force=true now", i.e. restart the simulator and lose the app state. Those stay
-// on the timeout note. Listing rather than excluding leaves a source added later
-// silent on success until someone judges its hint.
-const READ_CAVEAT_SOURCES: ReadonlySet<DescribeSource> = new Set(["harmony-uitest", "cdp-dom"]);
 
 function timeoutNote(
   params: Params,

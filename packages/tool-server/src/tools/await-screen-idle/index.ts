@@ -14,6 +14,7 @@ import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
+import { READ_CAVEAT_SOURCES } from "../describe/contract";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
@@ -69,7 +70,11 @@ interface IdleResult {
   waitedMs: number;
   /** Number of tree reads taken. */
   polls: number;
-  /** Why a false `settled` is not a screen that stayed busy — e.g. the device went away. */
+  /**
+   * Why a false `settled` is not a screen that stayed busy — e.g. the device
+   * went away — or, on a true one, why the tree it settled on may not be the
+   * live screen.
+   */
   note?: string;
 }
 
@@ -135,7 +140,9 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
 Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (default ${DEFAULT_POLL_INTERVAL_MS}ms) until it
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
 ${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls }, and a note when settled=false because the tree
-read itself failed — that note is what separates a device that went away from a screen that never went still.
+read itself failed — that note is what separates a device that went away from a screen that never went still. A note on
+settled=true instead means the tree may not be the live screen: a suspended HarmonyOS panel settles instantly on its last
+composited frame, and taps land nowhere until it is woken.
 Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
@@ -201,6 +208,17 @@ Use after a launch/navigation to wait for the UI to render before screenshotting
         // the same `lastError` into its note.
         ...(poll.result !== true && poll.lastError
           ? { note: `last tree fetch failed: ${poll.lastError}` }
+          : {}),
+        // A settled screen still owes the caveat when the tree it settled on may
+        // not be the live one — a suspended HarmonyOS panel keeps dumping its
+        // last composited frame, which is maximally still and so settles at
+        // once. `await-ui-element` reports the same hint on the same sources for
+        // the same reason; without it the two wait tools disagree about a screen
+        // they both just read.
+        ...(poll.result === true &&
+        poll.lastData?.hint &&
+        READ_CAVEAT_SOURCES.has(poll.lastData.source)
+          ? { note: poll.lastData.hint }
           : {}),
       };
     },

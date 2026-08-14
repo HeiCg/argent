@@ -99,6 +99,7 @@ async function runUitest(
       failure_stage: "harmony_uitest",
       failure_area: "tool_server",
       error_kind: "subprocess",
+      failure_command: "hdc",
     });
   }
   return stdout;
@@ -136,6 +137,7 @@ export async function harmonyDisplay(connectKey: string): Promise<HarmonyDisplay
         failure_stage: "harmony_display_size",
         failure_area: "tool_server",
         error_kind: "subprocess",
+        failure_command: "hdc",
       }
     );
   }
@@ -305,6 +307,7 @@ export async function harmonyDumpLayout(
         failure_stage: "harmony_dump_layout",
         failure_area: "tool_server",
         error_kind: "subprocess",
+        failure_command: "hdc",
       },
       { cause: err as Error }
     );

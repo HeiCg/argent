@@ -83,6 +83,7 @@ async function resolveHdcOrThrow(): Promise<string> {
         failure_stage: "harmony_hdc_resolve_binary",
         failure_area: "tool_server",
         error_kind: "dependency_missing",
+        failure_command: "hdc",
       }
     );
   }
@@ -131,6 +132,7 @@ export async function runHdc(
       failure_stage: "harmony_hdc_run",
       failure_area: "tool_server",
       error_kind: "subprocess",
+      failure_command: "hdc",
     });
   }
 }
@@ -197,6 +199,7 @@ export async function runHdcShell(
         failure_stage: "harmony_hdc_shell",
         failure_area: "tool_server",
         error_kind: "not_found",
+        failure_command: "hdc",
       }
     );
   }
@@ -216,6 +219,7 @@ export async function runHdcShell(
         failure_stage: "harmony_hdc_shell",
         failure_area: "tool_server",
         error_kind: "subprocess",
+        failure_command: "hdc",
       }
     );
   }
@@ -243,6 +247,7 @@ export async function hdcFileRecv(
         failure_stage: "harmony_hdc_file_recv",
         failure_area: "tool_server",
         error_kind: "subprocess",
+        failure_command: "hdc",
       }
     );
   }
