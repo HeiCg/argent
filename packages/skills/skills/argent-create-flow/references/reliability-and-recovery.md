@@ -145,6 +145,8 @@ Starting again under the same name truncates the YAML. Copy any working prefix b
 
 State the added proof before rerunning.
 
+Read [Asserting a field's value](asserting-field-values.md) before adding that last one. A field's contents reach the flow tree unevenly — never on iOS, never for a password, and on Chromium an `<input>` only as its accessible name — so the direct assert on the field's own text hard-fails on a perfectly good value. Assert the consequence where the contents are invisible.
+
 ### Correction limit
 
 After each correction, audit and replay from the declared start. Stop after two unsuccessful correction cycles and report the remaining blocker. If failures move while the flow grows, re-record the affected span instead of adding more patches.

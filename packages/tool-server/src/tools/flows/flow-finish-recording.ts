@@ -223,8 +223,10 @@ export function summarizeStep(step: FlowStep, n: number): string {
       // carries a `delayMs` (only `tool` steps do), so no delayLabel here.
       //
       // That reasoning is NOT applied file-wide, and the arms below show it:
-      // `type.submit` (whose `false` suppresses the Enter press) and
-      // `await.timeout` also change what replays and still render nothing, as
+      // `type.submit` (two-sided since `clear` arrived — `false` suppresses the
+      // Enter press after text, `true` ADDS one to a clear-only step, whose
+      // default is no Enter) and `await.timeout` also change what replays and
+      // still render nothing, as
       // they did before the recorder shared this renderer. Neither kind is
       // recorder-built, so both reach an author only through the finish
       // `summary` — beside the `flowFile` that spells them out. Rendering them

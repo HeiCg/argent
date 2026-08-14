@@ -219,23 +219,28 @@ export function invokeOnDevice(
  * frame, lifts the fingers and throws a named `AbortError`. Without this wrapper
  * `runRotate` would report that deliberate unwind as a failed step.
  *
- * `keyboard` honours it too, on all three platforms `clear` supports:
+ * `keyboard` honours it too, on all three platforms `clear` supports, but not
+ * to the same depth. Only iOS checks it BETWEEN keypresses:
  * `keyboard/platforms/ios.ts` forwards `options?.signal` into
- * `simulator-server-keys`, which calls `signal?.throwIfAborted()` between
- * keypresses, and the android and chromium handlers do the same. An
- * abort-driven rejection is the DESIGNED outcome there, not a coincidence,
- * which is what makes this wrapper load-bearing rather than defensive: a
- * cancelled run interrupts a keyboard call far more often than it interrupts
- * anything else in a step.
+ * `simulator-server-keys`, which calls `signal?.throwIfAborted()` per key.
+ * Android and Chromium check it ONCE, as the call's turn on the per-device
+ * chain comes round (`keyboard/platforms/android.ts`, `.../chromium.ts`), and
+ * neither `runAndroidPhoneType` nor `runChromium` takes a signal at all —
+ * Android's own comment says so outright, `adb shell input` not being
+ * cancellable. Concretely: cancel a run mid-`type` on Android or Chromium and
+ * the whole text is still typed out, a resolved `{{secret:…}}` included. An
+ * abort-driven rejection is still the DESIGNED outcome on every one of them,
+ * which is what this wrapper classifies.
  *
- * `gesture-tap` is the one that honours nothing — the `ToolContext` reaches its
- * platform handlers and every one of them discards it — so its dispatch rejects
- * only for an unrelated reason that happens to land inside a cancelled window:
- * an `adb shell input` timeout, a simulator-server socket error. Rarer, but the
- * classification still has to be the skip, because the alternative is a report
- * blaming the tool for a run the caller cancelled — and in `runType`'s case a
- * report whose verdict depended on which of its three dispatches happened to be
- * in flight.
+ * `gesture-tap` is the one that honours nothing. Not because its handlers
+ * discard the context — it has no platform handlers, and `execute(services,
+ * params)` (`gesture-tap/index.ts`) declares no context parameter, so the
+ * signal never arrives. Its dispatch therefore rejects only for an unrelated
+ * reason that happens to land inside a cancelled window: an `adb shell input`
+ * timeout, a simulator-server socket error. Rarer, but the classification still
+ * has to be the skip, because the alternative is a report blaming the tool for
+ * a run the caller cancelled — and in `runType`'s case a report whose verdict
+ * depended on which of its three dispatches happened to be in flight.
  *
  * (Cancelling a run does NOT tear down the transport under an in-flight call.
  * Flow-run's Chromium teardown is run-level, in the `finally` after `execSteps`
@@ -704,10 +709,14 @@ export async function waitForFrame(
  * duration — up to ~15s on Android, ~10s on Chromium, ~5s on iOS. A node that
  * had already moved out from under the tap point can therefore still sit in
  * `underTap` and confirm a clear the screen at dispatch time would not have.
- * That window opens only when a read fails outright, which is the same outage
- * `settleTree` throws on once NO read succeeds; `settleTree` gives the caller
- * no signal that its return was best-effort, so nothing downstream can narrow
- * it further today.
+ * That window opens on the whole best-effort path, not only on a read that
+ * failed outright: `settleTree` also returns its last successful read when
+ * every read SUCCEEDED and no two consecutive ones matched — a spinner, a live
+ * clock, a blinking caret — and there the staleness is one poll rather than a
+ * platform cap. A read failing outright is the wider case, and once NO read
+ * succeeds it is the outage `settleTree` throws on instead. Either way
+ * `settleTree` gives the caller no signal that its return was best-effort, so
+ * nothing downstream can narrow it further today.
  */
 async function waitForFrameAndTree(
   env: ActionEnv,
@@ -2288,9 +2297,28 @@ async function runType(
   // window in which no read ever saw it:
   //
   //   - an app that BLURS on an outside tap before the first read;
-  //   - a focused field that had already scrolled off screen — both flow
-  //     adapters suppress the leaf for a frame clipping to zero area, so the
-  //     flag goes with it;
+  //   - a focused field with no on-screen frame. All THREE flow adapters drop
+  //     the leaf for a frame clipping to zero area, so the flag goes with it —
+  //     an off-screen field is the persistent case (positioned there by design,
+  //     not moved there by a scroll), a keyboard-avoidance scroll the transient
+  //     one. The shared scroll-clip prune (`flow-tree-flatten`) drops one whose
+  //     own frame is a healthy on-screen rect, which "clipping to zero area"
+  //     does not describe: a non-clipping carousel, a nested scroller;
+  //   - a focused field the adapter prunes as INVISIBLE before focus is
+  //     considered. `flow-ios-tree` drops `hidden === true || alpha < 0.01`,
+  //     and `flow-android-tree` drops the `com.android.systemui` package and
+  //     its resource-id prefixes — which is the notification direct-reply field
+  //     and the bouncer. Chromium no longer belongs here: its walker keeps the
+  //     branch holding the caret (see `holdsFocus` in describe/platforms/
+  //     chromium), which is what the opacity:0 OTP-capture shape needs;
+  //   - a TRUNCATED tree, on either source. `blueprints/android-devtools`
+  //     returns `truncated` and `windowCount` and `flow-android-tree`
+  //     destructures only `{ xml }`; on Chromium the node-cap sets a `hint`
+  //     that `flow-chromium-tree` drops. A partial tree with no focus flag is
+  //     indistinguishable from "nothing is focused". (The repo's own
+  //     `keyboard/platforms/android` treats those same two fields as
+  //     disqualifying.) iOS truncates by depth instead — `maxDepth: 40` — with
+  //     no signal at all;
   //   - focus inside a Chromium sub-document. The describe walker's iframe
   //     descent is dead: `el instanceof Element` rejects the inner
   //     `documentElement`, because that constructor belongs to the OUTER realm.
@@ -2299,8 +2327,12 @@ async function runType(
   //     tree gains nodes whose boxes point at the wrong place.
   //
   // Deliberate — the alternative refuses every clear on the iOS builds above
-  // (verified: it did), and a clear with nothing focused loses no data, where
-  // clearing the WRONG field does.
+  // (verified: it did). It is NOT justified by "a clear with nothing focused
+  // loses no data": that premise is false for every shape above, and each of
+  // them is a field the step never named. The justification is only that
+  // refusing here costs the platform its `clear` outright, while clearing the
+  // WRONG field is worse than either — so `argent-create-flow` telling authors
+  // to assert the result is load-bearing, not advisory.
   if (step.clear && focus !== "confirmed" && focus !== "unobservable") {
     return { ok: false, reason: clearRefusalReason(step.into, focus) };
   }
