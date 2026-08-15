@@ -101,4 +101,27 @@ describe("describeHarmony", () => {
     expect(out).not.toContain("gesture-pinch");
     expect(out).toContain("gesture-tap / gesture-swipe");
   });
+
+  it("spends one budget across the panel read and the dump, not one apiece", async () => {
+    // A wait tool hands this the time left before ITS deadline, so two legs each
+    // taking the whole of it is a read that runs to twice the caller's budget —
+    // and past the MCP client's 30s abort, which replays the call while the
+    // abandoned `uitest` keeps holding the device's queue. The clock is frozen
+    // so the only thing moving it is the panel read.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const PANEL_MS = 400;
+      vi.mocked(harmonyDisplay).mockImplementation(async () => {
+        vi.setSystemTime(Date.now() + PANEL_MS);
+        return { width: 1216, height: 2688, screenOn: true };
+      });
+      vi.mocked(harmonyDumpLayout).mockResolvedValue(lockScreenDump());
+
+      await describeHarmony(CONNECT_KEY, 3_000);
+
+      expect(vi.mocked(harmonyDumpLayout).mock.calls[0][2]).toBe(3_000 - PANEL_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

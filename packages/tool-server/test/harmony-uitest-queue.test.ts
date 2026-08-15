@@ -7,7 +7,12 @@ import {
   hdcFileRecv as realHdcFileRecv,
   runHdcShell as realRunHdcShell,
 } from "../src/utils/harmony-hdc";
-import { harmonyDumpLayout, harmonyScreenCap } from "../src/utils/harmony-uitest";
+import {
+  HARMONY_INTERACTION_TIMEOUT_MS,
+  harmonyDisplay,
+  harmonyDumpLayout,
+  harmonyScreenCap,
+} from "../src/utils/harmony-uitest";
 
 // Only the transport is faked, so the queue under test is the real one and the
 // commands it serializes are the ones a device would receive.
@@ -278,5 +283,28 @@ describe("a caller's own ceiling reaches the device", () => {
     // Sized against the 0.1-0.8s an `hdc shell` round trip was measured at, and
     // well under the MCP client's 30s abort.
     expect(rmTimeouts).toEqual([5_000]);
+  });
+
+  it("reads the display on a ceiling small enough to leave the injection its budget", async () => {
+    // Every gesture backend calls this with no budget of its own, so the default
+    // is the whole bound on the read — and the read is the first of two legs
+    // inside ONE interaction ceiling. Left on `uitest`'s 20s the render service
+    // alone could spend the entire interaction budget, leaving the injection it
+    // was read for nothing to run in; the tool would then fail on a step that
+    // never touched the screen. Sized off a measured 50-190ms read.
+    const displayTimeouts: (number | undefined)[] = [];
+    runHdcShell.mockImplementation(async (_key, command, timeoutMs) => {
+      displayTimeouts.push(timeoutMs);
+      return { stdout: "render resolution=1320x2856\npowerStatus=POWER_STATUS_ON\n", exitCode: 0 };
+    });
+
+    await expect(harmonyDisplay("dev-a")).resolves.toEqual({
+      width: 1320,
+      height: 2856,
+      screenOn: true,
+    });
+
+    expect(displayTimeouts).toEqual([5_000]);
+    expect(displayTimeouts[0]!).toBeLessThan(HARMONY_INTERACTION_TIMEOUT_MS);
   });
 });

@@ -1,7 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { getFailureSignal } from "@argent/registry";
+import { describe, it, expect, vi } from "vitest";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import { hdcFailure, shellQuote } from "../src/utils/harmony-hdc";
-import { assertHarmonyDisplayReady, toDevicePoint } from "../src/utils/harmony-uitest";
+import {
+  assertHarmonyDisplayReady,
+  remainingBudget,
+  toDevicePoint,
+} from "../src/utils/harmony-uitest";
 
 describe("hdcFailure", () => {
   it("reports the `[Fail]` line hdc printed", () => {
@@ -138,5 +142,45 @@ describe("assertHarmonyDisplayReady", () => {
 
     expect(getFailureSignal(err)?.failure_stage).toBe("harmony_screen_off");
     expect(err.message).toMatch(/Wake it with `button` \(power\)/);
+  });
+});
+
+describe("remainingBudget", () => {
+  it("refuses a deadline that has exactly arrived rather than passing the zero on", () => {
+    // The clock is frozen so the deadline lands on 0 left and not 1ms either
+    // side of it, which is the only value telling a `> 0` clamp from a `>= 0`
+    // one — and the value that matters, since `execFile` reads `timeout: 0` as
+    // NO timeout. Pass it through and the leg it bounds runs unbounded, which
+    // is the outcome every caller of this helper is spending a deadline to
+    // avoid.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const err = (() => {
+        try {
+          remainingBudget("dev-a", Date.now(), "the capture");
+        } catch (e) {
+          return e as Error;
+        }
+        throw new Error("expected a spent budget to be refused");
+      })();
+
+      expect(getFailureSignal(err)).toMatchObject({
+        error_code: FAILURE_CODES.HARMONY_HDC_COMMAND_FAILED,
+        failure_stage: "harmony_budget_exhausted",
+        error_kind: "timeout",
+      });
+      expect(err.message).toContain("Ran out of time before the capture");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hands on what is left when the deadline is still ahead", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      expect(remainingBudget("dev-a", Date.now() + 750, "the layout dump")).toBe(750);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

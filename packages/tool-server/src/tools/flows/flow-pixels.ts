@@ -305,8 +305,8 @@ async function chromiumScrollOffset(api: ChromiumCdpApi): Promise<{ x: number; y
  * the simulator-server both iOS and Android share. Chromium does not appear
  * here — it answers with bytes, never a file (see captureChromiumPng). Nor does
  * HarmonyOS, whose `screenshot` route (`uitest screenCap`) has no counterpart
- * here because the flow engine has no harmony arm at all: such a device is
- * refused by `simulatorServerRef` below.
+ * here because the flow engine has no harmony arm at all: the service resolved
+ * below refuses the platform outright.
  *
  * The `screenshot` tool itself is deliberately not reused: it registers every
  * capture as an artifact, and a settle takes tens of them per step.
