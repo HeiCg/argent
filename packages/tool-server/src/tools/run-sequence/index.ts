@@ -116,8 +116,8 @@ Allowed tools and their args (udid is auto-injected, do NOT include it in args):
   gesture-rotate: { centerX: number, centerY: number, radius?: number, radiusX?: number, radiusY?: number, startAngle: number, endAngle: number, durationMs?: number }  [ios/android]
   button:         { button: "home"|"back"|"power"|"volumeUp"|"volumeDown"|"appSwitch"|"actionButton" }                  [ios/android]
   keyboard:       { text?: string, key?: string, clear?: boolean, delayMs?: number }  (clear + text OR key, never both; TV: text only)  [ios/android/chromium/vega/tv]
-                  text supports {{secret:<NAME>}} placeholders, resolved server-side from ARGENT_SECRET_<NAME> env vars or an argent secrets file — credentials never enter agent context
-                  clear empties the focused field first (typing alone appends); iOS/Android/Chromium only, rejected on Vega and TV.
+                  text takes {{secret:...}} placeholders — see the keyboard tool for where they resolve
+                  clear empties the field before the step types into it (typing alone appends); iOS/Android/Chromium only, rejected on Vega and TV.
                   Only Chromium verifies it emptied — elsewhere cleared means the clear was dispatched, so assert the value if the step depends on it
   rotate:         { orientation: "Portrait"|"LandscapeLeft"|"LandscapeRight"|"PortraitUpsideDown" }                     [ios/android]
   shake:          { count?: number }                                                                                    [ios sim/android emu]
