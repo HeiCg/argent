@@ -117,7 +117,22 @@ Record the focus tap, then record `keyboard` with `text`. A `keyboard` call carr
 
 **`describe` reports focus on Chromium only.** iOS and Android leave it unset — it is a Vega/D-pad signal there — so those platforms have no live pre-typing focus check, and the value check afterwards is what proves the keys landed. On Chromium, read `focused` before recording `keyboard`.
 
-If characters are lost, restore the field with direct calls. Do not record a duplicate typing step. Polish the valid pair into `type:`, carrying `clear: true` across when the `keyboard` step sets it — dropping it turns a replace back into typing on top of the old value, a data bug the cleaned flow only reveals at a later `assert`. A `clear` with no `text` becomes `type: { into: "<field>", clear: true }`. Carry a recorded `key: "enter"` across too, as `submit: true`: a clear-only `type` sends no Enter by default, so a recorded `{ clear: true, key: "enter" }` would silently lose its submit. Conversely a recorded `keyboard` step with `text` but _no_ `key` needs `submit: false`, since `type` adds an Enter the recording never sent. Its replay focus wait reads the runner's own tree, which does report focus on iOS, Android, and Chromium. A `clear` step **fails** rather than typing anyway whenever that wait reported focus somewhere the step did not name, or stopped answering before it ended. The one poll it still clears on is a window where every read succeeded and none reported focus at all — an iOS build without `firstResponder` looks exactly like that, and a clear with nothing focused loses no data (see the residual in [flow-yaml.md](flow-yaml.md)). A plain `type` falls through on all of them. Retain the committed-value check either way. Store credentials as `{{secret:NAME}}`. Never record a literal credential.
+If characters are lost, restore the field with direct calls. Do not record a duplicate typing step.
+
+**Polish the recorded steps into `type:` as a group, not one at a time.** A submit is always its own recorded step, because a `keyboard` call cannot carry `text` and `key` together. Read the whole run of `keyboard` steps on one field, then apply the row that matches:
+
+| Recorded steps on the field                      | Finished `type:`                             |
+| ------------------------------------------------ | -------------------------------------------- |
+| `{ text }`, then `{ key: "enter" }`              | `{ into, text }` — delete the Enter step     |
+| `{ text }` alone                                 | `{ into, text, submit: false }`              |
+| `{ clear: true, text }`, then `{ key: "enter" }` | `{ into, text, clear: true }`                |
+| `{ clear: true, text }` alone                    | `{ into, text, clear: true, submit: false }` |
+| `{ clear: true }`, then `{ key: "enter" }`       | `{ into, clear: true, submit: true }`        |
+| `{ clear: true }` alone                          | `{ into, clear: true }`                      |
+
+Two mistakes the rows above prevent. Keeping the Enter step next to a submitting `type:` submits twice. Dropping `clear: true` turns a replace back into typing on top of the old value — a data bug the cleaned flow only reveals at a later `assert`.
+
+The replay focus wait reads the runner's own tree, which reports focus on iOS, Android, and Chromium. A `clear` step **fails** rather than typing anyway whenever that wait reported focus somewhere the step did not name, or stopped answering before it ended. The one poll it still clears on is a window where every read succeeded and none reported focus at all — an iOS build without `firstResponder` looks exactly like that, and a clear with nothing focused loses no data (see the residual in [flow-yaml.md](flow-yaml.md)). A plain `type` falls through on all of them. Retain the committed-value check either way. Store credentials as `{{secret:NAME}}`. Never record a literal credential.
 
 ### Scrolling and swiping
 
@@ -144,16 +159,15 @@ Stop immediately. Restore the last valid screen with direct MCP calls, not `flow
 
 Call `flow-finish-recording`, then read the saved YAML. Apply only meaning-preserving conversions:
 
-| Recorded form                | Finished form                                                      |
-| ---------------------------- | ------------------------------------------------------------------ |
-| focus tap + `tool: keyboard` | `type:` — carrying `clear: true` across when the call sets it      |
-| text `keyboard` + `key: enter` `keyboard` | submitted `type:` without Enter in its text |
-| `tool: await-ui-element`     | `await:` or `assert:`                                              |
-| element-seeking movement     | `scroll-to:`                                                       |
-| coordinate tap or long-press | strict selector after the fallback gate                            |
-| `tool: gesture-pinch`        | selector-based `pinch:` with `scale = endDistance / startDistance` |
-| `tool: gesture-rotate`       | selector-based `rotate:` with `by = endAngle - startAngle`         |
-| sibling `tool: flow-execute` | recorder-captured `run:`                                           |
+| Recorded form                            | Finished form                                                                          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| focus tap + the field's `keyboard` steps | one `type:` — see the table in [Typing](#typing) for the exact `clear` / `submit` pair |
+| `tool: await-ui-element`                 | `await:` or `assert:`                                                                  |
+| element-seeking movement                 | `scroll-to:`                                                                           |
+| coordinate tap or long-press             | strict selector after the fallback gate                                                |
+| `tool: gesture-pinch`                    | selector-based `pinch:` with `scale = endDistance / startDistance`                     |
+| `tool: gesture-rotate`                   | selector-based `rotate:` with `by = endAngle - startAngle`                             |
+| sibling `tool: flow-execute`             | recorder-captured `run:`                                                               |
 
 Only these unrecorded insertions are allowed, at states observed live:
 
