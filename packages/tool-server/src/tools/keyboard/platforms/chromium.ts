@@ -13,10 +13,11 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
   const delay = params.delayMs ?? 50;
   let keysPressed = 0;
 
-  // Resolve the named key BEFORE anything is dispatched: an unknown name has to
-  // fail fast rather than after the text has already been typed, and `clear`
-  // empties the field, so it must reject with the field still intact rather than
-  // emptied and then 400.
+  // Resolve the named key BEFORE anything is dispatched, because `clear` empties
+  // the field: a `{ clear, key: "bogus" }` must reject with the field still
+  // intact rather than emptied and then 400. (Not to protect the text — the tool
+  // rejects `{ text, key }` above the dispatch, so a key never follows typing in
+  // the same call.)
   let named: (typeof CHROMIUM_NAMED_KEYS)[string] | undefined;
   if (params.key) {
     const lower = params.key.toLowerCase();
@@ -59,11 +60,12 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
   // DEFINITION — the reason the split check also excludes a named `key`.
   // Anything sent AFTER one of them may therefore land in a different field
   // because the request asked for exactly that, which is why the guarantee stops
-  // there. Without that stop the SAME Enter succeeded spelled as `key: "enter"`
-  // and failed spelled as `\n`: measured on Chrome 151 against a search box that
+  // there. Without that stop the SAME Enter succeeded as a named `key` and
+  // failed spelled as `\n`: measured on Chrome 151 against a search box that
   // submits, empties and blurs (the shape the check's own comment cites),
   // `{ clear, text: "query\n" }` raised a 500 naming a split 3/3 while the page
-  // had done exactly what was asked, and the control with the named key passed.
+  // had done exactly what was asked — and the control, the same Enter sent as
+  // `{ clear, key: "enter" }` after a `{ clear, text: "query" }`, passed.
   //
   // What it no longer does is drop the check for the WHOLE call. `descs.some`
   // tested the whole string and skipped every character, so one newline in a
@@ -206,18 +208,19 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
     //   - `{ clear, key: "enter" }` on a search box that blurs on submit — the
     //     ordinary "replace the query and submit" shape.
     //
-    // So the check is narrowed on both axes. A named `key` never reaches it: the
-    // sample is taken HERE, between the last character and the key, because one
-    // key event cannot be split across two fields while for `tab`/`enter` the
-    // focus move IS the requested effect. `text` carrying `\n`/`\r`/`\t` ends the
-    // guarantee at that character for exactly that second reason — see
-    // `guaranteed`, which is the same physical key arriving by a different
-    // spelling, and everything before it is still held to. Sampling after the
-    // key instead made every `{ clear, text, key: "enter" }` against the ordinary
-    // "send and reset" handler — a search box, a chat composer, a tag input, all
-    // of which empty the field and blur it on submit — fail with a 500 naming a
-    // split that did not happen, on a request that had done exactly what it was
-    // asked to.
+    // So the check is narrowed on both axes. A named `key` never reaches it,
+    // because `guaranteed` counts characters and a key-only request has none:
+    // one key event cannot be split across two fields, while for `tab`/`enter`
+    // the focus move IS the requested effect, so a `{ clear, key: "enter" }`
+    // against the ordinary "send and reset" handler — a search box, a chat
+    // composer, a tag input, all of which empty the field and blur it on
+    // submit — must come back clean rather than as a 500 naming a split that did
+    // not happen. `text` carrying `\n`/`\r`/`\t` ends the guarantee at that
+    // character for exactly that second reason — see `guaranteed`, which is the
+    // same physical key arriving by a different spelling, and everything before
+    // it is still held to. (`text` and `key` never arrive together: the tool
+    // rejects that shape above the dispatch, so the block below this one is
+    // unreachable in the same call as the loop above it.)
     //
     // For characters the evidence is PROVENANCE, corroborated by the value:
     // `delivered` counts the insertions the parked element itself received, and
@@ -313,8 +316,11 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
       }
     }
 
-    // Key after text: a combined call means "type, then press" (text +
-    // key:"enter"). Pressing the key first would send the still-empty field.
+    // Key after the CLEAR — not after the text, which never accompanies it: the
+    // tool rejects `{ text, key }` above the dispatch, so this block and the
+    // typing loop above are mutually exclusive. What the position still buys is
+    // `{ clear, key: "enter" }`, where pressing the key before the field is
+    // emptied would submit the value the caller asked to be replaced.
     if (named) {
       await api.dispatchKeyEvent({
         type: "keyDown",

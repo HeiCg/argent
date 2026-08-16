@@ -109,13 +109,13 @@ async function runAndroidPhoneType(
   params: KeyboardParams
 ): Promise<KeyboardResult> {
   let keysPressed = 0;
-  // Validate the text and the key name BEFORE anything is injected: an unknown
-  // key name must fail fast rather than reject only once the text has landed on
-  // the device, and `clear` empties the field, so a request bad in either half
-  // has to reject with the field still intact — not emptied and then 400. Both
-  // checks are pure; `injectAndroidText` re-runs the text one, so hoisting it
-  // alongside only decides which error a request bad in BOTH halves reports
-  // (the text one).
+  // Validate the text and the key name BEFORE anything is injected, because
+  // `clear` empties the field: a `{ clear, text: "café" }` or
+  // `{ clear, key: "bogus" }` has to reject with the field still intact, not
+  // emptied and then 400. Both checks are pure, and `injectAndroidText` re-runs
+  // the text one, so this hoist exists purely to sit above the clear below.
+  // Only one of the two can be set — the tool rejects `{ text, key }` above the
+  // dispatch — so there is no tie between them to break.
   if (params.text) assertTypeableAndroidText(params.text);
   if (params.key) resolveAndroidNamedKeycode(params.key);
   // Clear first: `keyboard { clear: true, text: "…" }` replaces a field's value

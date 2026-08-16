@@ -115,7 +115,7 @@ describe("run-sequence", () => {
 
   it("carries a keyboard `clear` through, which its own copy advertises", async () => {
     // The tool description lists `clear` in the keyboard step's arg shape and
-    // spells out the clear → text → key order, but nothing pinned that the
+    // spells out the clear-first order, but nothing pinned that the
     // parameter survives the step's arg forwarding. The flow path got a
     // dedicated suite; this one had none, and a step whose `clear` was dropped
     // still reports `completed` while APPENDING to the field it was meant to

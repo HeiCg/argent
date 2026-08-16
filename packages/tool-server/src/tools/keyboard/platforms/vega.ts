@@ -1,11 +1,7 @@
 import { FAILURE_CODES } from "@argent/registry";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { InvalidToolInputError } from "../../../utils/capability";
-import {
-  injectVegaNamedKey,
-  injectVegaText,
-  resolveVegaNamedKeycode,
-} from "../../../utils/vega-input";
+import { injectVegaNamedKey, injectVegaText } from "../../../utils/vega-input";
 import type { KeyboardParams, KeyboardResult } from "../types";
 
 // Vega has no simulator-server: input is injected over `adb` (on-device
@@ -30,10 +26,23 @@ async function runVega(params: KeyboardParams): Promise<KeyboardResult> {
     // unsupported on the target, and hard-codes
     // TOOL_CAPABILITY_UNSUPPORTED_OPERATION as its signal, which files a refused
     // `clear` under the same code as a tool that cannot run here at all.
+    // What to re-send depends on what else the request carries, the way the TV
+    // twin (`platforms/tv.ts`) discriminates it. One blanket "send the same call
+    // without `clear`" is wrong for the two shapes that carry nothing to type:
+    // `{ clear: true }` alone — the empty-the-field call this parameter exists
+    // for — and `{ clear: true, text: "" }`, which `if (params.text)` below
+    // no-ops. Re-sending either does nothing at all, so the field ends up
+    // neither emptied nor typed into. Unlike a TV, Vega does accept `key`, so a
+    // `{ clear, key }` request has a real remainder to re-send.
+    const next = params.text
+      ? "Typing works: send the same call without `clear`."
+      : params.key
+        ? "The key press works: send the same call without `clear`."
+        : "Nothing else in this request needs re-sending.";
     throw new InvalidToolInputError(
       "keyboard clear: `clear` is not supported on Vega — its `inputd-cli` transport cannot " +
-        "send the select-all modifier chord. Typing works: send the same call without " +
-        '`clear`, and empty the field first with repeated `key: "backspace"` presses.',
+        'send the select-all modifier chord. Empty the field with repeated `key: "backspace"` ' +
+        `presses instead. ${next}`,
       {
         error_code: FAILURE_CODES.KEYBOARD_CLEAR_UNSUPPORTED_TARGET,
         failure_stage: "keyboard_clear_vega",
@@ -41,8 +50,12 @@ async function runVega(params: KeyboardParams): Promise<KeyboardResult> {
       }
     );
   }
-  // Resolve the named key before injecting text so an unknown name fails fast.
-  if (params.key) resolveVegaNamedKeycode(params.key);
+  // No resolve-before-inject hoist here, unlike the other three backends. It
+  // buys nothing on this one: the tool rejects `{ text, key }` above the
+  // dispatch (see ../index.ts), and the only other way a bad key name could
+  // arrive after something destructive — `{ clear, key }` — is refused above.
+  // So at most one of the two branches below runs, and it is the first thing
+  // this backend does.
   if (params.text) {
     await injectVegaText(params.text);
     keysPressed += [...params.text].length;

@@ -37,10 +37,15 @@ export async function typeTv(
     // ordering below was built for — straight into a second 400 from the `key`
     // refusal (verified live on tvOS 26.5). A clear-only call has nothing to
     // re-send at all.
+    // Truthiness, not `!== undefined`: `{ clear: true, text: "" }` names `text`
+    // but carries nothing to type, and `if (text)` below would no-op it — so the
+    // re-send advice would send the caller to a second call that neither clears
+    // nor types. It belongs in the same arm as a clear-only request, which is
+    // the shape it actually is.
     const next = params.key
       ? "This request also carries `key`, which a TV target does not accept either — press it " +
         "with `tv-remote` (select/up/down/left/right) instead."
-      : params.text !== undefined
+      : params.text
         ? "Typing works: send the same call without `clear`."
         : "Nothing else in this request needs re-sending.";
     throw new InvalidToolInputError(

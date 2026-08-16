@@ -144,16 +144,16 @@ Stop immediately. Restore the last valid screen with direct MCP calls, not `flow
 
 Call `flow-finish-recording`, then read the saved YAML. Apply only meaning-preserving conversions:
 
-| Recorded form                | Finished form                                                      |
-| ---------------------------- | ------------------------------------------------------------------ |
-| focus tap + `tool: keyboard` | `type:`; keep raw when `keyboard` uses `clear: true`               |
-| text `keyboard` + `key: enter` `keyboard` | submitted `type:` without Enter in its text |
-| `tool: await-ui-element`     | `await:` or `assert:`                                              |
-| element-seeking movement     | `scroll-to:`                                                       |
-| coordinate tap or long-press | strict selector after the fallback gate                            |
-| `tool: gesture-pinch`        | selector-based `pinch:` with `scale = endDistance / startDistance` |
-| `tool: gesture-rotate`       | selector-based `rotate:` with `by = endAngle - startAngle`         |
-| sibling `tool: flow-execute` | recorder-captured `run:`                                           |
+| Recorded form                             | Finished form                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| focus tap + `tool: keyboard`              | `type:`; keep raw when `keyboard` uses `clear: true`               |
+| text `keyboard` + `key: enter` `keyboard` | submitted `type:` without Enter in its text                        |
+| `tool: await-ui-element`                  | `await:` or `assert:`                                              |
+| element-seeking movement                  | `scroll-to:`                                                       |
+| coordinate tap or long-press              | strict selector after the fallback gate                            |
+| `tool: gesture-pinch`                     | selector-based `pinch:` with `scale = endDistance / startDistance` |
+| `tool: gesture-rotate`                    | selector-based `rotate:` with `by = endAngle - startAngle`         |
+| sibling `tool: flow-execute`              | recorder-captured `run:`                                           |
 
 Only these unrecorded insertions are allowed, at states observed live:
 

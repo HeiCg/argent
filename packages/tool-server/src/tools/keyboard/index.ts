@@ -104,6 +104,13 @@ type Params = z.infer<typeof zodSchema>;
  * the request shape is named exactly once. A request with none of the three is
  * still possible (`{ udid }` alone types nothing) and reads as a key press,
  * which is what it did before `clear` existed.
+ *
+ * The text-AND-key arm is asymmetric on purpose. `execute` rejects that shape,
+ * but `startedMsg` renders BEFORE it does, so the started phrasing is the one an
+ * event log really shows for a request that is about to 400 — and it has to name
+ * both halves, or the log reads as a plain typing call. The completed phrasing
+ * of the same arm is unreachable, and stays here only so the two tenses are
+ * written in one place rather than diverging when the rule next changes.
  */
 function keyboardAction(params: Pick<Params, "text" | "key" | "clear">): [string, string] {
   const text = params.text !== undefined;
@@ -189,11 +196,11 @@ On a TV target (runtimeKind 'tv') only \`text\` applies — focus a text field f
 One call does one typing action: pass text OR key, never both. \`clear\` rides along with either, and the order within a call is always clear → text, or clear → key. To type and then press a key, send two \`keyboard\` steps in one \`run-sequence\` — { clear: true, text: "hello" } then { key: "enter" } — which also keeps it to a single round-trip.`,
     zodSchema,
     capability,
-    // One request can run a clear AND a text injection AND a named key, and the
-    // three are budgeted separately: on Android the clear is capped at 26s
-    // (ANDROID_CLEAR_BUDGET_MS, which derives as ADB_INPUT_TIMEOUT_MS +
-    // DELETE_RUN_RESERVE_MS) and the injections that follow it keep their own
-    // 15s caps each, so a `{ clear, text, key }` worst case sums past the MCP
+    // One request can run a clear AND one injection — `text` or `key`, never
+    // both — and the two are budgeted separately: on Android the clear is capped
+    // at 26s (ANDROID_CLEAR_BUDGET_MS, which derives as ADB_INPUT_TIMEOUT_MS +
+    // DELETE_RUN_RESERVE_MS) and the injection that follows keeps its own 15s
+    // cap, so a `{ clear, text }` worst case of ~41s still sums past the MCP
     // adapter's 30s per-request fetch timeout. Sizing the legs against 30s
     // instead would mean threading one deadline through the text/key injectors
     // the Android-TV blueprint shares; declaring the tool for what it is costs

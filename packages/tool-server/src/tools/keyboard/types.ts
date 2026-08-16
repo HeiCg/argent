@@ -10,7 +10,8 @@ export interface KeyboardParams {
   key?: string;
   /**
    * Empty the focused field before typing `text`. Not valid on Vega or TV
-   * targets. Order within one call: clear → text → key.
+   * targets. It is the one parameter that combines with either of the other
+   * two, and it always runs first: clear → text, or clear → key.
    *
    * How it is done differs by backend — a select-all + delete on iOS, Chromium
    * and Android levels with `input keycombination`; caret-to-end-of-line plus

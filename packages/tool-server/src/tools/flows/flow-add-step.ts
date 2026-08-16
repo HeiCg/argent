@@ -462,10 +462,9 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
     zodSchema,
     // Inherited from the step: this dispatches an arbitrary tool by name, so its
     // worst case is the worst case of whatever it wraps — and several of those
-    // are `longRunning` themselves. `keyboard` alone budgets ~56s for a
-    // `{ clear, text, key }` (26s + 15s + 15s) and declares the flag for exactly
-    // that reason; `await-ui-element` takes a `timeoutMs` with no ceiling below
-    // it. Without the flag here the MCP adapter applies its 30s FETCH_TIMEOUT_MS
+    // are `longRunning` themselves. `keyboard` alone budgets ~41s for a
+    // `{ clear, text }` (26s + 15s) and declares the flag for exactly that
+    // reason; `await-ui-element` takes a `timeoutMs` with no ceiling below it. Without the flag here the MCP adapter applies its 30s FETCH_TIMEOUT_MS
     // to the RECORDING of such a step and, on abort, re-POSTs the identical body
     // up to MAX_RETRIES more times.
     //

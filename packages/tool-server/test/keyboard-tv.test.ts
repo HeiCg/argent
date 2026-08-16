@@ -55,11 +55,11 @@ describe("typeTv — the TV keyboard backend", () => {
   });
 
   it("rejects the key BEFORE typing any text it was also handed", async () => {
-    // The tool rejects `{ text, key }` above the dispatch, so this shape does
-    // not arrive from the tool — `blueprints/android-tv-control.ts` is the other
-    // caller of this backend. What it pins is the ORDER inside `typeTv`: the
-    // rejection comes first, so a request it refuses leaves the field untouched
-    // rather than half-typed.
+    // No production caller can send this: `typeTv`'s only two call sites are
+    // `platforms/ios.ts` and `platforms/android.ts`, both below the guard that
+    // rejects `{ text, key }`. What it pins is the ORDER inside `typeTv` — the
+    // rejection comes first, so if that guard is ever relaxed this backend still
+    // leaves the field untouched instead of half-typed.
     await expect(
       typeTv(registry, ANDROID_TV, { udid: ANDROID_TV.id, text: "hello", key: "enter" })
     ).rejects.toThrow(/named keys are not supported on a TV target/);
@@ -92,6 +92,19 @@ describe("typeTv — the TV keyboard backend", () => {
       await expect(
         typeTv(registry, ANDROID_TV, { udid: ANDROID_TV.id, clear: true })
       ).rejects.toThrow(/Nothing else in this request needs re-sending/);
+    });
+
+    it("treats an EMPTY `text` as nothing to re-send, not as typing", async () => {
+      // `{ clear: true, text: "" }` names `text`, so a `!== undefined` check
+      // routes it to "Typing works: send the same call without `clear`" — advice
+      // that sends the caller to `{ text: "" }`, which `if (text)` below no-ops.
+      // The retry then neither clears nor types.
+      await expect(
+        typeTv(registry, ANDROID_TV, { udid: ANDROID_TV.id, clear: true, text: "" })
+      ).rejects.toThrow(/Nothing else in this request needs re-sending/);
+      await expect(
+        typeTv(registry, ANDROID_TV, { udid: ANDROID_TV.id, clear: true, text: "" })
+      ).rejects.not.toThrow(/Typing works/);
     });
   });
 

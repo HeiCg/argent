@@ -186,9 +186,10 @@ const DELETE_RUN_RESERVE_MS = 11_000;
  * A clear is up to four sequential adb calls plus an in-process backoff: the
  * `keycombination` probe, then on a legacy level a `uiautomator dump`, a
  * DUMP_RETRY_BACKOFF_MS wait, a second dump (see {@link readHierarchy}) and the
- * delete run. `text` / `key` injection still follows it inside the same
- * request, under its own ADB_INPUT_TIMEOUT_MS caps, so a `{ clear, text, key }`
- * worst case sums past the argent-mcp adapter's 30s per-request fetch timeout
+ * delete run. One `text` OR `key` injection still follows it inside the same
+ * request — the tool rejects both together — under its own ADB_INPUT_TIMEOUT_MS
+ * cap, so a `{ clear, text }` worst case of ~41s still sums past the argent-mcp
+ * adapter's 30s per-request fetch timeout
  * (`FETCH_TIMEOUT_MS`, mcp-server.ts) — which is why `keyboard` declares
  * `longRunning` and the adapter does not apply that timeout to it. The clear's
  * own legs still share ONE deadline rather than being sized individually: the
@@ -799,10 +800,10 @@ async function measureFocusedTextLength(
  *
  * The iOS and Chromium backends resolve their own named key up front for the
  * same reason (`simulator-server-keys.ts`, `platforms/chromium.ts`); they need no
- * split helper because their key tables are plain lookups. `resolveVegaNamedKeycode`
- * is this function's twin, but it carries only the typing reason —
- * `platforms/vega.ts` refuses `clear` outright, so the destructive hazard never
- * reaches it.
+ * split helper because their key tables are plain lookups. Vega has no such
+ * split and needs none: `platforms/vega.ts` refuses `clear` outright, so the
+ * destructive hazard never reaches it, and the tool rejects `{ text, key }`
+ * before the dispatch — leaving nothing there for an early resolve to protect.
  */
 export function resolveAndroidNamedKeycode(name: string): number {
   const lower = name.toLowerCase();
@@ -826,5 +827,10 @@ export function resolveAndroidNamedKeycode(name: string): number {
       }
     );
   }
-  await injectAndroidKeycode(serial, keycode);
+  return keycode;
+}
+
+/** Press a named key (keyboard tool `key` vocabulary) on Android. */
+export async function injectAndroidNamedKey(serial: string, name: string): Promise<void> {
+  await injectAndroidKeycode(serial, resolveAndroidNamedKeycode(name));
 }

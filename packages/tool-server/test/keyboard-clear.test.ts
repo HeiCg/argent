@@ -445,21 +445,24 @@ describe("keyboard clear — iOS (simulator-server)", () => {
     expect(chromium).toEqual(ios);
   });
 
-  it("orders clear → text → key in a single call", async () => {
+  it("orders clear → key in a single call", async () => {
+    // `key`, not `text`: clear-then-text is pinned by the test above, and the
+    // tool rejects `{ text, key }`, so clear-then-KEY is the second combination
+    // a caller can actually send and the only one still unpinned. A backend that
+    // pressed the key before emptying the field would submit the OLD value.
     const { events, api } = recordingApi();
 
     await typeSimulatorServer(registryWith(api), IOS_SIM, {
       udid: IOS_SIM.id,
       clear: true,
-      text: "a",
       key: "enter",
       delayMs: 0,
     });
 
-    // Left GUI, `a`, backspace, the typed `a`, enter — HID usages spelled out
-    // for the same reason as above.
+    // Left GUI, `a`, backspace (the select-all chord and its delete), then
+    // enter — HID usages spelled out for the same reason as above.
     const downs = events.filter((e) => e.startsWith("Down:"));
-    expect(downs).toEqual(["Down:227", "Down:4", "Down:42", "Down:4", "Down:40"]);
+    expect(downs).toEqual(["Down:227", "Down:4", "Down:42", "Down:40"]);
   });
 
   it("rejects an unknown key before clearing anything", async () => {
@@ -562,17 +565,19 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(result.cleared).toBe(true);
   });
 
-  it("orders clear → text → key in a single call", async () => {
+  it("orders clear → key in a single call", async () => {
+    // The clear-then-text order is pinned above; `{ text, key }` is rejected by
+    // the tool, so this is the other combination a caller can send. Pressing
+    // Enter before the delete run would submit the field's OLD contents.
     await makeAndroidImpl(registryWith({})).handler(
       {},
-      { udid: ANDROID.id, clear: true, text: "abc", key: "enter" },
+      { udid: ANDROID.id, clear: true, key: "enter" },
       ANDROID
     );
 
     expect(adbShell.mock.calls.map((c) => c[1])).toEqual([
       SELECT_ALL_CMD,
       DEL_CMD,
-      "input text 'abc'",
       "input keyevent 66",
     ]);
   });
@@ -1712,11 +1717,12 @@ describe("keyboard clear — tool schema", () => {
     expect(tool.zodSchema!.safeParse({ udid: ANDROID.id, clear: "yes" }).success).toBe(false);
   });
 
-  it("declares itself long-running, since one call budgets a clear and two injections", () => {
-    // The clear is capped at 26s on Android and the `text` / `key` injections
-    // that follow it keep their own 15s caps, so a `{ clear, text, key }` worst
-    // case sums past the MCP adapter's 30s per-request fetch timeout — which
-    // abandons the request while adb is still typing on the device.
+  it("declares itself long-running, since one call budgets a clear and an injection", () => {
+    // The clear is capped at 26s on Android and the one injection that can
+    // follow it — `text` or `key`, never both — keeps its own 15s cap, so a
+    // `{ clear, text }` worst case of ~41s still sums past the MCP adapter's 30s
+    // per-request fetch timeout, which abandons the request while adb is still
+    // typing on the device.
     expect(tool.longRunning).toBe(true);
   });
 
@@ -2023,9 +2029,10 @@ describe("keyboard clear — Chromium (CDP)", () => {
       // typing loop as those physical keys — delivering no character and moving
       // focus by definition, which is exactly why the named key is excluded.
       // Measured on Chrome 151 against a search box that submits, empties and
-      // blurs: `{ clear, text: "query\n" }` was a 500 naming a split 3/3 while
-      // `{ clear, text: "query", key: "enter" }` on the identical page passed,
-      // and the page's own state was the same in both.
+      // blurs: `{ clear, text: "query\n" }` was a 500 naming a split 3/3, while
+      // the same Enter sent as a named key — `{ clear, text: "query" }` then
+      // `{ key: "enter" }`, the two-step form the tool now requires — passed on
+      // the identical page, with the page's own state the same in both.
       const { api, events } = splitApi({ tracked: true, length: 0, focused: false });
 
       const result = await makeChromiumImpl(registryWith(api)).handler(
@@ -2084,23 +2091,26 @@ describe("keyboard clear — Chromium (CDP)", () => {
     expect(result).toMatchObject({ typed: "aaaa\nbbbb", cleared: true });
   });
 
-  it("reads the field back BEFORE the named key, so the key's own effect is not a split", async () => {
-    // `{ clear, text, key: "enter" }` is the combination the tool advertises,
-    // and the standard Enter handler — a search box, a chat composer, a tag
-    // input — sends the value and then empties and blurs the field. Sampled
-    // AFTER the key, that is indistinguishable from "the page moved focus while
-    // the text was being typed": reproduced 3/3 on Chrome 130 through the branch
-    // tool-server, where a request that replaced the value, typed it and ran the
-    // submit handler came back as a 500 naming a cause that never occurred.
+  it("runs no split check for a clear+key call, so the key's own effect is not a split", async () => {
+    // `{ clear, key: "enter" }` is the largest shape a single call can carry now
+    // that the tool rejects `{ text, key }`, and it is the "empty the box and
+    // submit" one. The standard Enter handler — a search box, a chat composer, a
+    // tag input — sends the value and then empties and blurs the field, which is
+    // indistinguishable from "the page moved focus mid-request" if the field is
+    // sampled afterwards: reproduced 3/3 on Chrome 130 through the branch
+    // tool-server, where a request that did exactly what it was asked came back
+    // as a 500 naming a cause that never occurred.
     //
-    // This page reacts on the Enter keyDown, so the verdict depends entirely on
-    // which side of that dispatch the read-back sits.
+    // The split check is gated on `guaranteed > 0` — characters this call
+    // promised to deliver — so a key-only request never reaches it. One key
+    // event cannot be split across two fields, and for `enter`/`tab` the focus
+    // move IS the requested effect. This pins the gate: the page below answers
+    // every probe after the clear's own with the blurred, emptied state that
+    // WOULD read as a split, and the call still succeeds.
     const trace: string[] = [];
-    let entered = false;
     const api = {
       dispatchKeyEvent: async (e: KeyEventArgs) => {
         trace.push(`key:${e.type}:${e.key ?? ""}`);
-        if (e.type === "keyDown" && e.key === "Enter") entered = true;
       },
       evaluate: async () => {
         trace.push("probe");
@@ -2115,22 +2125,27 @@ describe("keyboard clear — Chromium (CDP)", () => {
           });
         }
         if (nth === 2) return JSON.stringify({ tracked: true, length: 0, focused: true });
-        // The field is emptied and blurred by the submit handler, not by a split.
-        return entered
-          ? JSON.stringify({ tracked: true, length: 0, focused: false })
-          : JSON.stringify({ tracked: true, length: 5, focused: true });
+        // Anything past the release is the sample this gate must NOT take: the
+        // submit handler has emptied and blurred the field, which would read as
+        // a split.
+        return JSON.stringify({ tracked: true, length: 0, focused: false });
       },
     };
 
     const result = await makeChromiumImpl(registryWith(api)).handler(
       {},
-      { udid: CHROMIUM.id, clear: true, text: "hello", key: "enter", delayMs: 0 },
+      { udid: CHROMIUM.id, clear: true, key: "enter", delayMs: 0 },
       CHROMIUM
     );
 
-    expect(result).toMatchObject({ typed: "hello", keys: 6, cleared: true });
-    // Ordering is the property: release probe, THEN Enter.
-    expect(trace.lastIndexOf("probe")).toBeLessThan(trace.indexOf("key:keyDown:Enter"));
+    expect(result).toMatchObject({ typed: "enter", keys: 1, cleared: true });
+    // The Enter really was dispatched — otherwise a backend that pressed nothing
+    // would satisfy the assertion above.
+    expect(trace).toContain("key:keyDown:Enter");
+    // And the read that follows it is the `finally`'s release, not a verdict:
+    // the last probe answers "blurred and empty", the shape a split reports, and
+    // the call still came back clean.
+    expect(trace.lastIndexOf("probe")).toBeGreaterThan(trace.indexOf("key:keyDown:Enter"));
   });
 
   it("reports how much of the text landed when the value really was split", async () => {
@@ -2858,21 +2873,24 @@ describe("keyboard clear — Chromium (CDP)", () => {
     expect(events.map((e) => e.type)).toEqual(["rawKeyDown", "keyUp"]);
   });
 
-  it("orders clear → text → key in a single call", async () => {
+  it("orders clear → key in a single call", async () => {
+    // The clear-then-text order is pinned above; the tool rejects `{ text, key }`,
+    // so this is the other combination a caller can send. Dispatching Enter
+    // before the select-all chord would submit the field's OLD contents.
     const { events, api } = recordingApi();
 
     await makeChromiumImpl(registryWith(api)).handler(
       {},
-      { udid: CHROMIUM.id, clear: true, text: "hi", key: "enter", delayMs: 0 },
+      { udid: CHROMIUM.id, clear: true, key: "enter", delayMs: 0 },
       CHROMIUM
     );
 
-    // The clear's rawKeyDown, then each character, then Enter.
+    // The clear's rawKeyDown, then Enter.
     expect(events.filter((e) => e.type === "rawKeyDown").length).toBe(1);
     const typedOrder = events
       .filter((e) => e.type === "rawKeyDown" || e.type === "keyDown")
       .map((e) => e.key);
-    expect(typedOrder).toEqual(["a", "h", "i", "Enter"]);
+    expect(typedOrder).toEqual(["a", "Enter"]);
   });
 
   it("rejects an unknown key before clearing anything", async () => {
@@ -2926,6 +2944,28 @@ describe("keyboard clear — unsupported platforms", () => {
     // the field was emptied and the new text replaced the old.
     expect(injectVegaText).not.toHaveBeenCalled();
     expect(injectVegaNamedKey).not.toHaveBeenCalled();
+  });
+
+  it("vega's refusal only promises a re-send when there is something to re-send", async () => {
+    // One blanket "send the same call without `clear`" is wrong for the two
+    // shapes that carry nothing else: `{ clear: true }` alone — the
+    // empty-the-field call the parameter exists for — and `{ clear: true,
+    // text: "" }`, which the injection guard no-ops. Re-sending either does
+    // nothing, so the field is left neither emptied nor typed into.
+    await expect(vegaImpl.handler({}, { udid: VEGA.id, clear: true }, VEGA)).rejects.toThrow(
+      /Nothing else in this request needs re-sending/
+    );
+    await expect(
+      vegaImpl.handler({}, { udid: VEGA.id, clear: true, text: "" }, VEGA)
+    ).rejects.toThrow(/Nothing else in this request needs re-sending/);
+    // The two that DO have a remainder keep the advice. Unlike a TV, Vega
+    // accepts `key`, so a clear+key request has a real second half.
+    await expect(
+      vegaImpl.handler({}, { udid: VEGA.id, clear: true, text: "hi" }, VEGA)
+    ).rejects.toThrow(/Typing works: send the same call without `clear`/);
+    await expect(
+      vegaImpl.handler({}, { udid: VEGA.id, clear: true, key: "enter" }, VEGA)
+    ).rejects.toThrow(/The key press works: send the same call without `clear`/);
   });
 
   it("vega still types normally when clear is absent", async () => {

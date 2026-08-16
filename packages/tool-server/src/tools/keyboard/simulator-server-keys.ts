@@ -110,10 +110,11 @@ async function runSimulatorServerType(
     keysPressed++;
   };
 
-  // Resolve the named key BEFORE anything is sent: an unknown name has to fail
-  // fast rather than after the text has already been typed, and `clear` empties
-  // the field, so it must reject with the field still intact rather than emptied
-  // and then 400.
+  // Resolve the named key BEFORE anything is sent, because `clear` empties the
+  // field: a `{ clear, key: "bogus" }` must reject with the field still intact
+  // rather than emptied and then 400. (Not to protect the text — the tool
+  // rejects `{ text, key }` above the dispatch, so a key never follows typing in
+  // the same call; see the mutually-exclusive note further down.)
   let namedKeyCode: number | undefined;
   if (params.key) {
     const lower = params.key.toLowerCase();
