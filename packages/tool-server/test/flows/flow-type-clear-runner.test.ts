@@ -1774,6 +1774,26 @@ const lateNamesakeXml = (present: boolean) =>
 </hierarchy>`;
 
 /**
+ * A namesake that is OUTSIDE the target's box and no larger than it — the shape
+ * only the containment half of the gate refuses.
+ *
+ * The other two conjuncts pass it: it is 1000x80 against the wrapper's 1000x120,
+ * so `frameNoLargerThan` holds, and its name resolves to exactly one candidate
+ * inside the tap (the inner field), so both namesake counts hold too. Without
+ * `frameWithin` the clear would be confirmed from a field two hundred pixels
+ * below the container the step named, and emptied there.
+ */
+const outsideNamesakeXml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.view.ViewGroup" resource-id="email-wrapper" package="com.acme.app" bounds="[40,180][1040,300]">
+      <node index="0" class="android.widget.EditText" resource-id="email" content-desc="Email" text="old.remembered.login" clickable="true" package="com.acme.app" bounds="[40,200][1040,280]" />
+    </node>
+    <node index="1" class="android.widget.EditText" resource-id="email" content-desc="Email" text="KEEP-ME" clickable="true" focused="true" package="com.acme.app" bounds="[40,600][1040,680]" />
+  </node>
+</hierarchy>`;
+
+/**
  * A 44px row that GROWS on focus — the validation or helper line the gate's own
  * comments cite — swallowing a field that sat below it and was never a tap
  * candidate. `sameName` decides whether that field shares the decoy's
@@ -1921,6 +1941,32 @@ describe("type directive — the clear gate's two-tree joins", () => {
       reads++;
       return { xml: lateNamesakeXml(reads > 2) };
     });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email-wrapper" }, text: "REWRITTEN", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["fail"]);
+    expect(result.steps[0]!.reason).toContain("refusing to clear");
+    expect(keyboardArgs(calls)).toEqual([]);
+  });
+
+  it("refuses a namesake that reports focus OUTSIDE the container's box", async () => {
+    // The containment conjunct on its own. A mutation sweep found it pinned by
+    // nothing: every other fixture that pairs an out-of-target focused node with
+    // a small enough frame is already refused by the namesake counts, so
+    // dropping `frameWithin` reddened no test. Here the counts hold — the name
+    // picks out exactly one candidate under the tap, in both tree reads — and
+    // containment is the only thing left to refuse on. On Android this is the
+    // ordinary shape, not a contrivance: `resource-id` names the layout slot, so
+    // a second row inflated from the same layout carries the same identifier
+    // wherever it sits on screen.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: outsideNamesakeXml }));
 
     await writeFlow("f", {
       executionPrerequisite: "",

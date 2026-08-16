@@ -389,6 +389,45 @@ describe("run cancellation mid-directive", () => {
     expect(result.steps[0].reason).toBe("run aborted");
   });
 
+  it("reports a clear-only step cancelled during a RESOLVING dispatch as a skip", async () => {
+    // The twin of the test above, and the shape that actually happens:
+    // `dispatchOrAbort` reclassifies only a dispatch that REJECTS while the
+    // signal is aborted. On Android and Chromium the keyboard backend takes no
+    // signal at all, so a cancel mid-call leaves the call to resolve normally
+    // and the guard on its return value never fires.
+    //
+    // A step that submits is still caught, by the re-check before the Enter —
+    // which is why the two shapes diverged: `submit` defaults to false for a
+    // clear-only step, so that block, and the only remaining check with it, was
+    // skipped and the step reported a pass on a cancelled run.
+    const controller = new AbortController();
+    currentFetch = focusedField;
+    const calls: string[] = [];
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        calls.push(id);
+        if (id === "list-devices") return { devices: [] };
+        if (id === "keyboard") controller.abort();
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+
+    await writeFlow("cancelled-clear-only-resolving", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "email" }, clear: true }],
+    });
+
+    const result = await run("cancelled-clear-only-resolving", registry, controller.signal);
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["type:skip"]);
+    expect(result.steps[0].reason).toBe("run aborted");
+    // The clear itself went out — this is a cancellation caught AFTER the
+    // dispatch, not one that pre-empted it, so the assertion cannot pass by the
+    // step never reaching the keyboard at all.
+    expect(calls.filter((c) => c === "keyboard")).toHaveLength(1);
+  });
+
   it("reports a type cancelled DURING the submitting Enter as a skip, not an error", async () => {
     // The Enter dispatch needs the same reclassification as the text one: a
     // rejection that coincides with the cancel must not surface as a step error

@@ -1330,8 +1330,14 @@ function tapCandidates(preTap: DescribeNode, tapped: DescribeNode): TapCandidate
  *   it empties the overlay.
  * - "unconfirmed" — the tree reported focus, on something that does not
  *   overlap the target at all.
- * - "unobservable" — no focus evidence anywhere: the source cannot report
- *   focus, or every read succeeded and no node was flagged.
+ * - "unobservable" — no focus evidence anywhere. Today that always means every
+ *   read succeeded and no node was flagged. The {@link FOCUS_REPORTING_SOURCES}
+ *   guard also returns it, but no flow can reach that: `type` runs only on ios,
+ *   android and chromium (`runDirective` refuses it on Vega), and each of those
+ *   hard-codes one source that is already in the set — `native-devtools`
+ *   (`flow-ios-tree`), `android-devtools` (`flow-android-tree`), `cdp-dom`
+ *   (`describe/platforms/chromium`). It is kept as a forward guard: a new
+ *   platform would otherwise poll the full timeout on every type step.
  * - "unreadable" — every read in the window threw, so nothing at all was
  *   observed. Distinct from "unobservable", where reads DID succeed: this is
  *   the tree-source outage `settleTree` refuses to swallow for the same reason.
@@ -2365,9 +2371,16 @@ async function runType(
     });
     if (!sent) return ABORTED_OUTCOME;
   }
+  // Outside the submit gate, not inside it. `dispatchOrAbort` reclassifies only
+  // a dispatch that REJECTS while the signal is aborted, and the Android and
+  // Chromium keyboard backends take no signal at all — so a cancel landing
+  // mid-call leaves the call to resolve and returns `true`. Inside the gate this
+  // check ran only for a step that submits, which made a cancelled clear-only
+  // step (where `submit` defaults to false) report a pass while the identical
+  // cancellation on a submitting step reported a skip.
+  if (env.signal?.aborted) return ABORTED_OUTCOME;
   // Default: submit when there is text to commit, not on a clear-only step.
   if (step.submit ?? step.text !== undefined) {
-    if (env.signal?.aborted) return ABORTED_OUTCOME;
     // Enter is the ONE part that stays a separate call, and it has no choice:
     // the keyboard tool rejects a combined `{ text, key }` outright (see
     // ../keyboard/index.ts), so two calls are the only way to express "type,
