@@ -33,7 +33,9 @@ const zodSchema = z.object({
     .describe(
       "Number of taps/clicks dispatched as ONE multi-tap gesture (2 = double-tap / double-click). " +
         "The taps land inside the OS double-tap window; on Chromium each click carries an escalating " +
-        "CDP clickCount so dblclick actually fires. Default 1."
+        "CDP clickCount so dblclick actually fires. On HarmonyOS only 2 is one gesture — 3 or more " +
+        "are separate injections a device round trip apart, which the OS reads as single taps. " +
+        "Default 1."
     ),
 });
 
@@ -70,6 +72,11 @@ const capability: ToolCapability = {
 // One press-release is 50ms; taps in a multi-tap gesture are 100ms apart —
 // comfortably inside the OS double-tap window (~300ms on both platforms and
 // in Chromium's click counter), which separate tool calls could not guarantee.
+//
+// The gap holds the window only where the injection itself is free. On
+// HarmonyOS each click is its own `hdc shell` round trip, measured at
+// 0.24–0.63s on a 6.1.1 emulator, so it dominates the gap and only the native
+// `doubleClick` {@link tapHarmony} uses for a count of 2 stays inside.
 const TAP_HOLD_MS = 50;
 const MULTI_TAP_GAP_MS = 100;
 
@@ -103,7 +110,9 @@ async function tapChromium(
  * `uitest` has a native double-click, so a 2-tap request uses it rather than two
  * timed clicks: two separate injections are not guaranteed to land inside the
  * OS double-tap window, which is the whole point of `clickCount`. Counts above 2
- * have no native form and fall back to repeated clicks.
+ * have no native form and fall back to repeated clicks — a round trip apart, so
+ * outside that window, which is why `clickCount`'s description says so rather
+ * than promising a multi-tap the platform cannot deliver.
  */
 async function tapHarmony(
   connectKey: string,

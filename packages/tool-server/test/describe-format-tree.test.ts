@@ -359,6 +359,20 @@ describe("formatDescribeTree", () => {
     const out = formatDescribeTree(root, { source: "uiautomator" });
     expect(out).toMatch(/\[clickable,long-clickable,checked,disabled\]/);
     expect(out).toMatch(/\[scrollHidden=7\]/);
+
+    // Same node from HarmonyOS keeps every flag but that one. `uitest` reports
+    // `longClickable=true` on real screens (11 of the 86 nodes on the 6.1.1
+    // launcher), and nothing on the platform can perform the press — no verb is
+    // wired and `gesture-custom` declares no harmony capability — so printing it
+    // sends the agent after a tool that does not exist. Same reasoning as the
+    // per-source gesture-tool line in the header.
+    const harmony = formatDescribeTree(root, { source: "harmony-uitest" });
+    expect(harmony).toMatch(/\[clickable,checked,disabled\]/);
+    expect(harmony).not.toContain("long-clickable");
+    // Suppressed at the RENDER, not by dropping the node: 7 of those 11 nodes
+    // carry no other flag, and losing them from the tree costs the agent the
+    // element rather than one word about it.
+    expect(harmony).toMatch(/\[scrollHidden=7\]/);
   });
 
   // scrollHidden=0 is the "no clipped children" signal from the Android

@@ -78,10 +78,23 @@ function formatAttr(name: string, value: string | undefined): string {
   return ` ${name}="${escapeForLine(value)}"`;
 }
 
-function formatFlags(n: DescribeNode): string {
+/**
+ * Sources whose platform has no way to perform a long press, so the flag is a
+ * dead end rather than a target.
+ *
+ * Same reasoning as {@link GESTURE_TOOLS_BY_SOURCE}: naming an interaction the
+ * device's own gate then refuses costs a round trip and leaves nothing to fall
+ * back on. HarmonyOS earns it — `uitest` has a `longClick` verb but nothing
+ * wires it, and `gesture-custom`, where the skill sends an agent for a hold,
+ * declares no harmony capability — while 11 of the 86 nodes on the launcher
+ * home screen report `longClickable=true` (measured, 6.1.1).
+ */
+const NO_LONG_PRESS_SOURCES: ReadonlySet<DescribeSource> = new Set(["harmony-uitest"]);
+
+function formatFlags(n: DescribeNode, source: DescribeSource): string {
   const flags: string[] = [];
   if (n.clickable) flags.push("clickable");
-  if (n.longClickable) flags.push("long-clickable");
+  if (n.longClickable && !NO_LONG_PRESS_SOURCES.has(source)) flags.push("long-clickable");
   if (n.scrollable) flags.push("scrollable");
   if (n.checkable) flags.push(n.checked ? "checked" : "checkable");
   if (n.focused) flags.push("focused");
@@ -116,7 +129,7 @@ function shouldEmit(n: DescribeNode, contentRoles: ReadonlySet<string>): boolean
   return hasContent(n) || contentRoles.has(n.role);
 }
 
-function formatLine(n: DescribeNode, indent: number): string {
+function formatLine(n: DescribeNode, indent: number, source: DescribeSource): string {
   const pad = "  ".repeat(indent);
   // Drop value when it's the same string as label — iOS reports placeholder
   // text under both fields for text inputs, which doubled the byte cost for
@@ -125,7 +138,7 @@ function formatLine(n: DescribeNode, indent: number): string {
   const labelPart = formatLabel(n.label);
   const valuePart = formatAttr("value", dedupedValue);
   const idPart = formatAttr("id", n.identifier);
-  const flagPart = formatFlags(n);
+  const flagPart = formatFlags(n, source);
   // Single space between role and the rest — we deliberately don't pad the
   // role to a fixed column. Padding to 12 chars worked for iOS AX roles (all
   // ≤12 chars) but broke alignment the moment Android passed through raw
@@ -137,17 +150,25 @@ function formatLine(n: DescribeNode, indent: number): string {
 
 // ---- flat renderer (ax-service, native-devtools) ----
 
-function renderFlat(root: DescribeNode, contentRoles: ReadonlySet<string>): string[] {
+function renderFlat(
+  root: DescribeNode,
+  contentRoles: ReadonlySet<string>,
+  source: DescribeSource
+): string[] {
   return root.children
     .filter((n) => shouldEmit(n, contentRoles))
     .slice()
     .sort((a, b) => a.frame.y - b.frame.y || a.frame.x - b.frame.x)
-    .map((n) => formatLine(n, 1));
+    .map((n) => formatLine(n, 1, source));
 }
 
 // ---- nested renderer (uiautomator) ----
 
-function renderNested(root: DescribeNode, contentRoles: ReadonlySet<string>): string[] {
+function renderNested(
+  root: DescribeNode,
+  contentRoles: ReadonlySet<string>,
+  source: DescribeSource
+): string[] {
   const lines: string[] = [];
   // Iterative DFS so very deep Compose / RN trees don't risk a stack overflow.
   // Start at the root's children (depth 1) — the root itself is already
@@ -161,7 +182,7 @@ function renderNested(root: DescribeNode, contentRoles: ReadonlySet<string>): st
   while (stack.length > 0) {
     const { node, depth } = stack.pop()!;
     if (shouldEmit(node, contentRoles) || node.children.length > 0) {
-      lines.push(formatLine(node, depth));
+      lines.push(formatLine(node, depth, source));
     }
     for (let i = node.children.length - 1; i >= 0; i--) {
       stack.push({ node: node.children[i]!, depth: depth + 1 });
@@ -235,6 +256,9 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
   // Vega's lowercase toolkit roles count as content only for its own source; on
   // every other source the shared CONTENT_ROLES applies unchanged.
   const contentRoles = isVega ? VEGA_CONTENT_ROLES : CONTENT_ROLES;
-  const body = mode === "flat" ? renderFlat(root, contentRoles) : renderNested(root, contentRoles);
+  const body =
+    mode === "flat"
+      ? renderFlat(root, contentRoles, opts.source)
+      : renderNested(root, contentRoles, opts.source);
   return [...header, ...body].join("\n").replace(/\n+$/, "\n");
 }
