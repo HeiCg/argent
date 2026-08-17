@@ -80,7 +80,7 @@ export const flowStartRecordingTool: ToolDefinition<
     failedMsg: ({ params, failureSignal }) =>
       `Failed to start recording of flow ${params.name}: ${failureSignal.error_code}`,
   },
-  description: `Start recording a new flow, resetting .argent/flows/<name>.yaml to an empty flow and replacing any existing one (an existing \`requires:\` block survives the reset, except against a remote tool-server with no live recording, where this host cannot read the client-side file).
+  description: `Start recording a new flow, resetting .argent/flows/<name>.yaml to an empty flow and replacing any existing one (an existing \`requires:\` block survives the reset, except against a remote tool-server with no live recording, where this host cannot read the client-side file, or when the existing file does not parse, where the block is lost and the message says so).
 Use when you want to capture a reusable sequence of device interactions for later replay.
 Returns { message, flowFile, savedTo } and optionally { restarted, discardedSteps } if a live recording of the same flow was discarded.
 Whether this server writes that file depends on where your project is: co-located, it creates it and fails if the .argent/flows/ directory cannot be created or the file cannot be written; against a remote tool-server it writes nothing and \`savedTo\` is a directive your client applies (a null \`savedTo\` back means it did not).
@@ -124,10 +124,8 @@ costs the finish the cross-tree verdicts anchored to them.`,
     // step from the take being discarded can neither slip in between the reset
     // and the swap nor land after both - it finds its session superseded and
     // fails.
-    const { savedTo, replaced, discardedSteps, flowFile, carried } = await withFlowFileLock(
-      params.project_root,
-      params.name,
-      async () => {
+    const { savedTo, replaced, discardedSteps, flowFile, carried, requiresUnknown } =
+      await withFlowFileLock(params.project_root, params.name, async () => {
         // Read the take being discarded ONCE and drive both `restarted` and its
         // step count off that read. Count BEFORE the truncate destroys it, and
         // where it actually lives: on disk in host mode, since a hand-edit made
@@ -151,11 +149,14 @@ costs the finish the cross-tree verdicts anchored to them.`,
         // `requires` is the one FlowFile field no tool can write back, so the
         // reset carries it forward instead of silently unfencing the flow.
         // Best-effort: in host mode the source is the file about to be
-        // truncated (missing or unparseable carries nothing); in client mode
-        // this host has no file, so a live replaced session's in-memory flow
-        // is the only source.
-        const carried =
-          persist === "host" ? await requiresOnDisk(filePath) : replaced?.flow.requires;
+        // truncated; in client mode this host has no file, so a live replaced
+        // session's in-memory flow is the only source.
+        const onDisk = persist === "host" ? await requiresOnDisk(filePath) : undefined;
+        const carried = persist === "host" ? onDisk?.requires : replaced?.flow.requires;
+        // A file that would not parse carries nothing AND is about to be
+        // truncated, so whether it was fenced is now unknowable - reported
+        // rather than passed off as an unfenced flow.
+        const requiresUnknown = persist === "host" && onDisk === undefined;
 
         // The type emerges from the steps: a first `restart-app` becomes a
         // leading `launch` (flow-add-step) and makes it e2e; an
@@ -184,15 +185,16 @@ costs the finish the cross-tree verdicts anchored to them.`,
           filePath,
           flow,
         });
-        return { savedTo, replaced, discardedSteps, flowFile, carried };
-      }
-    );
+        return { savedTo, replaced, discardedSteps, flowFile, carried, requiresUnknown };
+      });
 
-    // The reset result otherwise reads as a fully empty flow, so name the block
-    // it kept - and that hand-editing the YAML is the only way to change it.
-    const kept = carried
+    // The reset result otherwise reads as a fully empty flow, so say what became
+    // of the block - and that hand-editing the YAML is the only way to set one.
+    const requiresNote = carried
       ? ` Kept the existing requires block (${describeRequires(carried)}) - edit the YAML to change it.`
-      : "";
+      : requiresUnknown
+        ? " The previous file did not parse, so any requires block it held was dropped - re-add it by hand if the flow was fenced."
+        : "";
 
     // Recordings are keyed per flow file, so only a same-key restart replaces
     // anything; starting a *different* flow abandons nothing to report.
@@ -212,7 +214,10 @@ costs the finish the cross-tree verdicts anchored to them.`,
           ? "the previous take"
           : `the previous take (${discardedSteps} step${discardedSteps === 1 ? "" : "s"})`;
       return {
-        message: `Restarted recording "${params.name}" — ${lost} was discarded and ` + reset + kept,
+        message:
+          `Restarted recording "${params.name}" — ${lost} was discarded and ` +
+          reset +
+          requiresNote,
         restarted: true,
         ...(discardedSteps === undefined ? {} : { discardedSteps }),
         flowFile,
@@ -221,8 +226,8 @@ costs the finish the cross-tree verdicts anchored to them.`,
     }
 
     return {
-      message: carried
-        ? `Started recording "${params.name}" flow.${kept}`
+      message: requiresNote
+        ? `Started recording "${params.name}" flow.${requiresNote}`
         : `Started recording "${params.name}" flow`,
       flowFile,
       savedTo,
