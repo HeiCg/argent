@@ -117,8 +117,10 @@ describe("diffPngFiles", () => {
     const result = await diffPngFiles({ baselinePath, currentPath, outputDir: dir });
 
     // Nothing was resampled and the aspect ratios differ, so there is no size
-    // to re-capture toward — the resize remedy must not appear here.
+    // to re-capture toward — the resize remedy must not appear here, and this
+    // summary may claim a size nowhere at all.
     expect(result.summary).not.toContain("`scale`");
+    expect(linesClaimingSize(result.summary)).toEqual([]);
     expect(result).toMatchObject({
       totalPixels: 2,
       differentPixels: 0,
@@ -222,6 +224,7 @@ describe("diffPngFiles", () => {
     expect(changedLines).toContain(RESIZE_CAVEAT);
     expect(changedLines).toContain(RESIZE_REMEDY);
     expect(changedLines.filter((line) => line.includes("`scale`"))).toHaveLength(1);
+    expect(linesClaimingSize(result.summary)).toEqual([RESIZE_CAVEAT]);
 
     // The tool description tells the caller what size diffPath comes out at, and
     // this is the case where that is not the input size.

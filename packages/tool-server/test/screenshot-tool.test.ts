@@ -107,5 +107,12 @@ describe("screenshot tool", () => {
     const opts = captureScreenshot.mock.calls[0]![0] as { scale?: number; rotation?: string };
     expect(opts.scale).toBeUndefined();
     expect(opts.rotation).toBe("LandscapeLeft");
+
+    // Rotating and downscaling share one optional dependency on this branch, so
+    // a description naming it for only one of them sends the reader at a no-op.
+    const shape = createScreenshotTool(registry).zodSchema!.shape;
+    for (const field of ["rotation", "scale", "downscaler"] as const) {
+      expect(shape[field].description, field).toContain("`sharp`");
+    }
   });
 });

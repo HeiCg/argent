@@ -4,6 +4,16 @@ import { readAgentDocs, sentencesClaimingSize } from "./helpers/size-claims";
 
 let docs: Array<{ name: string; text: string }> = [];
 
+/** Split at markdown headings, so an escort three sections away cannot cover a claim. */
+const sections = (text: string): string[] => {
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    if (out.length === 0 || /^#{1,6}\s/.test(line)) out.push(line);
+    else out[out.length - 1] += `\n${line}`;
+  }
+  return out;
+};
+
 beforeAll(async () => {
   docs = await readAgentDocs();
 });
@@ -13,20 +23,32 @@ beforeAll(async () => {
 // that sends an agent at a full-resolution capture without naming that failure
 // sends it at a call it cannot recover from. The claim keeps being copied into
 // new pages, so pin the pairing rather than any one file's wording — the error
-// string is the source of truth. Per file; and by sentence, because these pages
-// hard-wrap and a claim split across two lines is in neither of them. An
-// unrelated match is to be re-read, not narrowed away.
+// string is the source of truth. Per section, because a page that names the
+// rejection once would otherwise be trusted for everything else it ever says;
+// and by sentence, because these pages hard-wrap and a claim split across two
+// lines is in neither of them. An unrelated match is to be re-read, not narrowed
+// away.
 describe("agent docs reaching for a full-resolution screenshot", () => {
-  it("finds some, so the per-file check below cannot pass vacuously", () => {
+  it("finds some, so the check below cannot pass vacuously", () => {
     expect(docs.filter(({ text }) => sentencesClaimingSize(text).length > 0)).not.toHaveLength(0);
   });
 
   it("every one of them names the emulators that reject it", () => {
-    const unescorted = docs
-      .filter(({ text }) => sentencesClaimingSize(text).length > 0)
-      .filter(({ text }) => !text.includes("wrong data size"))
-      .map(({ name, text }) => `${name}: ${sentencesClaimingSize(text)[0]}`);
+    const unescorted = docs.flatMap(({ name, text }) =>
+      sections(text)
+        .filter((section) => !section.includes("wrong data size"))
+        .flatMap((section) => sentencesClaimingSize(section))
+        .map((claim) => `${name}: ${claim}`)
+    );
     expect(unescorted).toEqual([]);
+  });
+
+  it("reaches all three published directories", () => {
+    // Narrowing the walk is otherwise invisible: the claims in rules/ and
+    // agents/ just stop being read.
+    expect(new Set(docs.map(({ name }) => name.split("/")[0]))).toEqual(
+      new Set(["skills", "rules", "agents"])
+    );
   });
 });
 
@@ -59,12 +81,13 @@ describe("agent docs quoting the tool-server's screenshot scale", () => {
         if (!line.includes(quoted())) {
           wrong.push(`${name}: does not quote "${quoted()}" — ${line.trim()}`);
         }
-        // …and it says which platforms that is the default for. Chromium passes
-        // no scale of its own, so a claim naming no platform is false there. Any
-        // platform, not Chromium specifically: a page about one device class is
-        // entitled to describe only that class.
-        if (!/iOS|Android|Apple TV|Vega|Chromium/.test(line)) {
-          wrong.push(`${name}: names no platform — ${line.trim()}`);
+        // …and it names a platform this is the default for. Chromium is not one
+        // of them and so does not count, or the exception clause these lines
+        // carry ("Chromium has no default downscale") satisfies the check on
+        // behalf of the claim it is an exception to. Any of the other four: a
+        // page about one device class is entitled to describe only that class.
+        if (!/iOS|Android|Apple TV|Vega/.test(line)) {
+          wrong.push(`${name}: names no platform this is the default for — ${line.trim()}`);
         }
       }
     }

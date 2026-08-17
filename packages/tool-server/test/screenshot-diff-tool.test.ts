@@ -334,6 +334,16 @@ describe("screenshotDiffTool", () => {
     // A pin left behind by a renamed field is consulted from the surface side
     // only, so it goes quiet rather than red.
     expect(Object.keys(expected).filter((key) => !swept.includes(key))).toEqual([]);
+    // And the reach itself: drop a kind of surface from agentFacingText and the
+    // sweep goes on passing over a shorter list.
+    expect(swept).toEqual(
+      expect.arrayContaining([
+        "screenshot-diff.description",
+        "screenshot-diff.searchHint",
+        "screenshot-diff.completedMsg",
+        "screenshot-diff.baselinePath",
+      ])
+    );
     // Suppression is about where the bytes go, not what resolution they are:
     // conditioning it on a full-resolution capture sends agents at the call that
     // fails on these emulators. Pinned whole, because such a condition
