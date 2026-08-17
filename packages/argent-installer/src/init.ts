@@ -117,13 +117,18 @@ export async function init(args: string[]): Promise<void> {
 
     // ── Step 0: Install / Update Check ──────────────────────────────────────────
 
-    version = await runInstall({
+    const installed = await runInstall({
       installMode: tel.installMode,
       fromTar: parsed.fromTar,
       nonInteractive: parsed.nonInteractive,
       version,
       tel,
     });
+    version = installed.version;
+    // An unwritable global directory can send a global install to the project
+    // instead; every step below configures the install that exists, not the one
+    // that was asked for.
+    tel.installMode = installed.installMode;
 
     // ── Step 1: MCP Server Configuration ────────────────────────────────────────
 

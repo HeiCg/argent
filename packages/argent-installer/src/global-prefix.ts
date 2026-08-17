@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import pc from "picocolors";
@@ -78,7 +79,7 @@ function nearestExistingDir(dir: string): string | null {
   }
 }
 
-interface GlobalInstallTarget {
+export interface GlobalInstallTarget {
   /** Existing directory the global install has to write into. */
   dir: string;
   /** Proven unwritable — see {@link probeGlobalInstallTarget} on why not "not writable". */
@@ -131,11 +132,17 @@ export function probeGlobalInstallTarget(
   return describe(false);
 }
 
+/** Writable prefix the remedies point npm at, and that init can set for the user. */
+export function suggestedNpmPrefix(): string {
+  return path.join(os.homedir(), ".npm-global");
+}
+
 /**
- * Message for a global install or update that cannot proceed, naming the cause
- * and the ways out. Shared by init and update so both flows say the same thing.
+ * Why a global install or update cannot proceed — the cause and the directory,
+ * with no advice. The interactive recovery offers the ways out as choices it
+ * carries out itself, so it prints this instead of the full message.
  */
-export function unwritableGlobalTargetMessage(
+export function blockedGlobalTargetCause(
   target: GlobalInstallTarget,
   pm: PackageManager,
   verb: "install" | "update"
@@ -147,6 +154,24 @@ export function unwritableGlobalTargetMessage(
     ? `Nix store paths are immutable, so ${pc.cyan("sudo")} does not help either.`
     : "Nothing was installed or changed.";
 
+  return (
+    `${pc.cyan(pm)} cannot ${verb} ${PACKAGE_NAME} globally: ${cause}.\n` +
+    `  ${pc.dim(target.dir)}\n` +
+    note
+  );
+}
+
+/**
+ * The cause plus the ways out, spelled as commands to run. For flows that
+ * cannot ask: `--yes`/CI runs, and update.
+ */
+export function unwritableGlobalTargetMessage(
+  target: GlobalInstallTarget,
+  pm: PackageManager,
+  verb: "install" | "update"
+): string {
+  // Written as $HOME rather than the expanded suggestedNpmPrefix() so it can be
+  // pasted into any shell — the two name the same directory.
   const remedies: string[] = [
     pm === "npm"
       ? `  Point npm at a writable prefix, then retry:\n` +
@@ -157,10 +182,5 @@ export function unwritableGlobalTargetMessage(
       `    ${pc.cyan("argent init --local")}`,
   ];
 
-  return (
-    `${pc.cyan(pm)} cannot ${verb} ${PACKAGE_NAME} globally: ${cause}.\n` +
-    `  ${pc.dim(target.dir)}\n` +
-    `${note}\n\n` +
-    remedies.join("\n\n")
-  );
+  return `${blockedGlobalTargetCause(target, pm, verb)}\n\n${remedies.join("\n\n")}`;
 }
