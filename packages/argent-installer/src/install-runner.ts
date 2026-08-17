@@ -3,6 +3,7 @@ import pc from "picocolors";
 import { track } from "@argent/telemetry";
 import {
   getInstalledVersion,
+  getGloballyInstalledPackageRoot,
   getGloballyInstalledVersion,
   getLatestVersion,
   isNewerVersion,
@@ -21,12 +22,14 @@ import {
   isYarnPnp,
 } from "./utils.js";
 import { runShellCommand, runTrustingDisk, ShellCommandError } from "./shell.js";
+import { probeGlobalInstallTarget, unwritableGlobalTargetMessage } from "./global-prefix.js";
 import { PACKAGE_NAME } from "./constants.js";
 import { reportSkillRefresh } from "./skills.js";
 import type { InstallMode } from "./install-record.js";
 import {
   InitTelemetry,
   INSTALL_GLOBAL_PACKAGE_FAILED,
+  INSTALL_GLOBAL_PREFIX_UNWRITABLE,
   INSTALL_LOCAL_PACKAGE_FAILED,
   INSTALL_LOCAL_PRECONDITION_FAILED,
   INSTALL_FROM_TAR_PACKAGE_FAILED,
@@ -234,6 +237,24 @@ async function runGlobal(opts: {
   const globallyInstalled = isGloballyInstalled();
 
   if (!globallyInstalled) {
+    // Nothing to install into: the manager's global directory is not writable
+    // (a Nix-managed toolchain puts it in the immutable store). Fatal — global
+    // mode is what init was asked for, and there is no argent to configure.
+    const pm = detectPackageManager();
+    const preflightStartedAt = performance.now();
+    const globalTarget = probeGlobalInstallTarget(pm);
+    if (globalTarget?.blocked) {
+      p.log.error(unwritableGlobalTargetMessage(globalTarget, pm, "install"));
+      await tel.trackPackageAction(
+        "fresh_install",
+        preflightStartedAt,
+        false,
+        INSTALL_GLOBAL_PREFIX_UNWRITABLE
+      );
+      await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
+      process.exit(1);
+    }
+
     // No consent prompt here: the install-mode step directly above is where
     // the user chose "Globally" (or passed --global), and that choice IS the
     // consent to install the missing package — a second "install it?" select
@@ -241,7 +262,6 @@ async function runGlobal(opts: {
     p.log.info(`Argent is not installed globally — installing.`);
     track("installation:global_install_decision", { decision: "install" });
 
-    const pm = detectPackageManager();
     const installTarget = fromTar ?? PACKAGE_NAME;
     const cmd = globalInstallCommand(pm, installTarget);
     const cmdStr = formatShellCommand(cmd);
@@ -324,6 +344,12 @@ async function runGlobal(opts: {
   } else if (latest && isNewerVersion(latest, version)) {
     const fromMajor = Number.parseInt(version.split(".")[0] ?? "0", 10) || 0;
     const toMajor = Number.parseInt(latest.split(".")[0] ?? "0", 10) || 0;
+    const updatePm = detectPackageManager();
+    // Probed only on the branch that would run the install — a --yes run skips
+    // the update outright and must not pay for the package manager's query.
+    const globalTarget = nonInteractive
+      ? null
+      : probeGlobalInstallTarget(updatePm, getGloballyInstalledPackageRoot());
     if (nonInteractive) {
       // A --yes/CI install implicitly skips the update; emit the same
       // update_decision as the other branches so the upgrade funnel isn't blind.
@@ -333,6 +359,17 @@ async function runGlobal(opts: {
         decision: "skip",
       });
       await tel.trackPackageAction("update_skipped", packageActionStartedAt, true);
+    } else if (globalTarget?.blocked) {
+      // Offering an update argent cannot perform asks a question whose "yes"
+      // only produces an EACCES dump. init's real work still succeeds against
+      // the installed version, so this warns rather than aborting.
+      p.log.warn(unwritableGlobalTargetMessage(globalTarget, updatePm, "update"));
+      await tel.trackPackageAction(
+        "update_failed",
+        packageActionStartedAt,
+        false,
+        INSTALL_GLOBAL_PREFIX_UNWRITABLE
+      );
     } else {
       const updateChoice = await p.select({
         message: `Update available: ${pc.yellow(`v${version}`)} → ${pc.green(`v${latest}`)}`,
@@ -358,8 +395,7 @@ async function runGlobal(opts: {
       if (p.isCancel(updateChoice) || updateChoice === "skip") {
         await tel.trackPackageAction("update_skipped", packageActionStartedAt, true);
       } else if (updateChoice === "update") {
-        const pm = detectPackageManager();
-        const cmd = globalInstallCommand(pm, `${PACKAGE_NAME}@${latest}`);
+        const cmd = globalInstallCommand(updatePm, `${PACKAGE_NAME}@${latest}`);
         const cmdStr = formatShellCommand(cmd);
         const updateSpinner = p.spinner();
         updateSpinner.start(`Updating to v${latest}...`);

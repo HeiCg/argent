@@ -16,6 +16,16 @@ export const INSTALL_GLOBAL_PACKAGE_FAILED: InstallerFailureSignal = {
   error_kind: "subprocess",
 };
 
+// The package manager's global directory is not writable by this user (a
+// Nix-managed toolchain, a root-owned /usr/local). No install was attempted,
+// so it is kept out of the global-install subprocess funnel.
+export const INSTALL_GLOBAL_PREFIX_UNWRITABLE: InstallerFailureSignal = {
+  error_code: FAILURE_CODES.INSTALL_GLOBAL_PREFIX_UNWRITABLE,
+  failure_stage: "installer_global_prefix_preflight",
+  failure_area: "installer",
+  error_kind: "validation",
+};
+
 export const INSTALL_LOCAL_PACKAGE_FAILED: InstallerFailureSignal = {
   error_code: FAILURE_CODES.INSTALL_LOCAL_PACKAGE_FAILED,
   failure_stage: "installer_local_package_install",
