@@ -303,10 +303,9 @@ describe("screenshotDiffTool", () => {
       "diffPath is the diff at the size the comparison ran at"
     );
     // A positive phrase leaves room for a contradicting sentence beside it, so
-    // pin the whole collection instead. Over the whole catalogue, not the two
-    // tools this PR touches: the claim moves between them — `screenshot`
-    // captures the baseline `screenshot-diff` reads — and there is no reason it
-    // stops there.
+    // pin the whole collection instead. Over the whole catalogue: the claim
+    // moves between the two tools that make it — `screenshot` captures the
+    // baseline `screenshot-diff` reads — and there is no reason it stops there.
     const expected: Record<string, string[]> = {
       // The capture's resolution cannot be banned outright — it is genuinely
       // attempted at full resolution — so the condition is what gets pinned.

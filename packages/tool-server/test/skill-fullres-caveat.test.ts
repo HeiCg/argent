@@ -9,19 +9,13 @@ beforeAll(async () => {
 });
 
 // `screenshot` passes `scale` straight through and simulator-client turns the
-// emulator's in-band rejection into a hard SIMULATOR_SCREENSHOT_FAILED, so a
-// skill that sends an agent at a full-resolution capture without naming that
-// failure sends it at a call it cannot recover from. The claim is spread across
-// skills and keeps being copied into new ones, so pin the pairing rather than
-// any one file's wording — the error string is the source of truth, and a skill
-// that adds a claim satisfies the rule by explaining it rather than by updating
-// a number here. Per file, not per line: a page that already names the rejection
-// is trusted for the claims it makes below. The whole vocabulary counts, so an
-// unrelated `1:1` is expected to fail here and be re-read rather than narrowed
-// away — narrowing to lines that also say `screenshot` or `scale` excludes
-// nothing in this corpus while letting "captured at full resolution" through.
-// By sentence, because these files hard-wrap: a claim split across two lines is
-// in neither of them.
+// emulator's in-band rejection into a hard SIMULATOR_SCREENSHOT_FAILED, so a page
+// that sends an agent at a full-resolution capture without naming that failure
+// sends it at a call it cannot recover from. The claim keeps being copied into
+// new pages, so pin the pairing rather than any one file's wording — the error
+// string is the source of truth. Per file; and by sentence, because these pages
+// hard-wrap and a claim split across two lines is in neither of them. An
+// unrelated match is to be re-read, not narrowed away.
 describe("agent docs reaching for a full-resolution screenshot", () => {
   it("finds some, so the per-file check below cannot pass vacuously", () => {
     expect(docs.filter(({ text }) => sentencesClaimingSize(text).length > 0)).not.toHaveLength(0);
@@ -66,10 +60,9 @@ describe("agent docs quoting the tool-server's screenshot scale", () => {
           wrong.push(`${name}: does not quote "${quoted()}" — ${line.trim()}`);
         }
         // …and it says which platforms that is the default for. Chromium passes
-        // no scale of its own, so a claim that names no platform is false there,
-        // which is how one of these lines read. Any platform, not Chromium
-        // specifically: a page about one device class is entitled to describe
-        // only that class.
+        // no scale of its own, so a claim naming no platform is false there. Any
+        // platform, not Chromium specifically: a page about one device class is
+        // entitled to describe only that class.
         if (!/iOS|Android|Apple TV|Vega|Chromium/.test(line)) {
           wrong.push(`${name}: names no platform — ${line.trim()}`);
         }
