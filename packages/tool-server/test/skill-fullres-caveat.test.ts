@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { getScreenshotScale } from "../src/utils/simulator-client";
-import { linesClaimingSize, readAgentDocs } from "./helpers/size-claims";
+import { readAgentDocs, sentencesClaimingSize } from "./helpers/size-claims";
 
 let docs: Array<{ name: string; text: string }> = [];
 
@@ -20,16 +20,18 @@ beforeAll(async () => {
 // unrelated `1:1` is expected to fail here and be re-read rather than narrowed
 // away — narrowing to lines that also say `screenshot` or `scale` excludes
 // nothing in this corpus while letting "captured at full resolution" through.
+// By sentence, because these files hard-wrap: a claim split across two lines is
+// in neither of them.
 describe("agent docs reaching for a full-resolution screenshot", () => {
   it("finds some, so the per-file check below cannot pass vacuously", () => {
-    expect(docs.filter(({ text }) => linesClaimingSize(text).length > 0)).not.toHaveLength(0);
+    expect(docs.filter(({ text }) => sentencesClaimingSize(text).length > 0)).not.toHaveLength(0);
   });
 
   it("every one of them names the emulators that reject it", () => {
     const unescorted = docs
-      .filter(({ text }) => linesClaimingSize(text).length > 0)
+      .filter(({ text }) => sentencesClaimingSize(text).length > 0)
       .filter(({ text }) => !text.includes("wrong data size"))
-      .map(({ name, text }) => `${name}: ${linesClaimingSize(text)[0]}`);
+      .map(({ name, text }) => `${name}: ${sentencesClaimingSize(text)[0]}`);
     expect(unescorted).toEqual([]);
   });
 });

@@ -23,7 +23,7 @@ import { advertisedSchema } from "./catalog";
 const CLAIMS_SIZE =
   /full[- ](?:resolution|res\b|size)|\bunscaled\b|\b1:1\b|never downscaled|not resampled|100%\s*(?:of\s+)?(?:the\s+)?(?:original\s+|device\s+|native\s+)?(?:scale|resolution)|\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b/i;
 
-/** A line wrap inside "full resolution" must not hide it. */
+/** Whitespace is not part of a claim: a wrap inside "full resolution" must not hide it. */
 const flatten = (text: string): string => text.replace(/\s+/g, " ").trim();
 
 /**
@@ -42,7 +42,11 @@ export function sentencesClaimingSize(text: string): string[] {
     .filter((sentence) => CLAIMS_SIZE.test(sentence));
 }
 
-/** The same sweep over a rendered summary, which is line- rather than sentence-shaped. */
+/**
+ * The same sweep over a rendered summary, which is line- rather than
+ * sentence-shaped. Splitting first means a claim wrapped across two lines is
+ * seen by neither, which is why prose is swept by sentence instead.
+ */
 export function linesClaimingSize(text: string): string[] {
   return text.split("\n").filter((line) => CLAIMS_SIZE.test(flatten(line)));
 }
