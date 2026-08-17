@@ -5,6 +5,9 @@ import { PNG } from "pngjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@argent/registry";
 import { executeScreenshotDiffTool, screenshotDiffTool } from "../src/tools/screenshot-diff";
+import { formatScreenshotDiffSummary } from "../src/tools/screenshot-diff/screenshot-diff-summary";
+import { createScreenshotTool } from "../src/tools/screenshot";
+import { getScreenshotScale } from "../src/utils/simulator-client";
 
 describe("screenshotDiffTool", () => {
   afterEach(() => {
@@ -162,14 +165,15 @@ describe("screenshotDiffTool", () => {
     });
   });
 
-  it("falls back to the default scale when the full-resolution capture fails (Android framebuffer mismatch)", async () => {
+  it("falls back to the tool-server's screenshot scale when the full-resolution capture fails (Android framebuffer mismatch)", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-fallback-"));
     const baselinePath = path.join(dir, "baseline.png");
     const capturedPath = path.join(dir, "captured.png");
     await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
     await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
     // Full-res (scale 1.0) fails the way the Android simulator-server does;
-    // the default-scale retry (no scale arg) succeeds.
+    // the retry, which passes no scale and so resolves the tool-server's own,
+    // succeeds.
     const captureScreenshot = vi.fn(
       async (_api: unknown, _rotation: unknown, _signal: unknown, scale?: number) => {
         if (scale === 1.0) {
@@ -186,7 +190,7 @@ describe("screenshotDiffTool", () => {
       captureScreenshot as never
     );
 
-    // Full-res attempted first, then a default-scale retry without an explicit scale.
+    // Full-res attempted first, then a retry that passes no scale at all.
     expect(captureScreenshot).toHaveBeenCalledTimes(2);
     expect(captureScreenshot.mock.calls[0]![3]).toBe(1.0);
     expect(captureScreenshot.mock.calls[1]![3]).toBeUndefined();
@@ -197,26 +201,65 @@ describe("screenshotDiffTool", () => {
     expect(result.diffPath).toBeTruthy();
   });
 
-  it("sends the resolved scale on the retry, so the fallback lands at the documented 0.3", async () => {
+  it.each([
+    { env: "", expected: 0.3 },
+    { env: "0.6", expected: 0.6 },
+  ])(
+    "sends the scale the tool-server resolves on the retry (env $env)",
+    async ({ env, expected }) => {
+      vi.stubEnv("ARGENT_SCREENSHOT_SCALE", env);
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-wire-"));
+      const baselinePath = path.join(dir, "baseline.png");
+      const capturedPath = path.join(dir, "captured.png");
+      await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
+      await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+      const bodies = stubEmulatorRejectingFullRes(capturedPath);
+
+      const result = await executeScreenshotDiffTool(
+        { simulatorServer: { apiUrl: "http://127.0.0.1:4949" } },
+        { baselinePath, captureCurrent: true, udid: "emulator-5554", outputDir: dir },
+        { artifacts: new ArtifactStore() }
+      );
+
+      // Asserted on the wire rather than on an injected capture stub, because
+      // the scale the descriptions name is the one httpScreenshot resolves: a
+      // 1.0 request carries no `scale` at all, and only the retry reveals it.
+      // Both rows matter — with only the unset one, a retry that hardcoded 0.3
+      // would pass while ignoring the configured scale the prose promises.
+      expect(bodies).toEqual([{}, { scale: expected }]);
+      expect(result.summary).toContain("Screenshot diff summary");
+    }
+  );
+
+  it("names the resolved fallback scale in prose wherever it quotes it", () => {
     vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-wire-"));
-    const baselinePath = path.join(dir, "baseline.png");
-    const capturedPath = path.join(dir, "captured.png");
-    await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
-    await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
-    const bodies = stubEmulatorRejectingFullRes(capturedPath);
+    // The prose quotes this number as a literal, so it drifts the moment
+    // DEFAULT_SCREENSHOT_SCALE moves; nothing else reads the two together.
+    const fallback = String(getScreenshotScale());
+    const shape = screenshotDiffTool.zodSchema!.shape;
+    const registry = {
+      resolveService: vi.fn(),
+    } as unknown as import("@argent/registry").Registry;
+    const quoted = [
+      shape.captureBaseline.description,
+      shape.captureCurrent.description,
+      createScreenshotTool(registry).zodSchema!.shape.scale.description,
+      formatScreenshotDiffSummary({
+        totalPixels: 4,
+        differentPixels: 0,
+        mismatchPercentage: 0,
+        regions: [],
+        sizeNormalization: {
+          baseline: { width: 4, height: 8 },
+          current: { width: 2, height: 4 },
+          comparedAt: { width: 2, height: 4 },
+        },
+      }),
+    ];
 
-    const result = await executeScreenshotDiffTool(
-      { simulatorServer: { apiUrl: "http://127.0.0.1:4949" } },
-      { baselinePath, captureCurrent: true, udid: "emulator-5554", outputDir: dir },
-      { artifacts: new ArtifactStore() }
-    );
-
-    // Asserted on the wire rather than on an injected capture stub, because the
-    // scale the descriptions name is the one httpScreenshot resolves: a 1.0
-    // request carries no `scale` at all, and only the retry reveals the default.
-    expect(bodies).toEqual([{}, { scale: 0.3 }]);
-    expect(result.summary).toContain("Screenshot diff summary");
+    for (const text of quoted) {
+      expect(text).toContain(fallback);
+    }
   });
 
   it("has nothing lower to retry when ARGENT_SCREENSHOT_SCALE is 1.0, so the capture fails", async () => {
@@ -237,8 +280,8 @@ describe("screenshotDiffTool", () => {
     ).rejects.toThrow("Screenshot failed: wrong data size, expected 7853760 got 17627328.");
 
     // httpScreenshot omits an in-band 1.0, so the retry serializes to the same
-    // bytes as the attempt that just failed. Both flags' descriptions promise
-    // this dead end; the same stub succeeds at 0.3 in the test above.
+    // bytes as the attempt that just failed — the behaviour both flags'
+    // descriptions warn about. The same stub succeeds at 0.3 in the test above.
     expect(bodies).toEqual([{}, {}]);
   });
 

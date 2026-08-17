@@ -37,13 +37,13 @@ const zodSchema = z
       .boolean()
       .optional()
       .describe(
-        "Capture the baseline screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, so the capture fails). Cannot be combined with captureCurrent."
+        "Capture the baseline screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback). Cannot be combined with captureCurrent."
       ),
     captureCurrent: z.coerce
       .boolean()
       .optional()
       .describe(
-        "Capture the current screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, so the capture fails). Cannot be combined with captureBaseline."
+        "Capture the current screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback). Cannot be combined with captureBaseline."
       ),
     rotation: z
       .enum(["Portrait", "LandscapeLeft", "LandscapeRight", "PortraitUpsideDown"])
@@ -81,7 +81,7 @@ const capability: ToolCapability = {
 
 /**
  * The saved PNGs live on the AGENT's machine (typically materialized there by
- * an earlier full-res `screenshot` call), so both path params cross the file
+ * an earlier `screenshot` call), so both path params cross the file
  * boundary as `file` inputs. `outputDir` is only probed: when the agent-chosen
  * directory doesn't exist on this host (remote mode), the tool quietly falls
  * back to its temp default rather than recreating an agent-side path here.
@@ -259,14 +259,14 @@ function validateInputSources(params: Params): void {
   }
 }
 
-// simulatorServer is declared as an unconditional service dependency, so the
-// registry resolves it before execute() runs. Guard anyway: executeScreenshotDiffTool
-// is exported and a direct caller (e.g. a test) can pass a services map without it —
-// a clear error beats a downstream TypeError on `.captureScreenshot`. Only the
-// live-capture branches call this, so non-capture diffs never require the service.
-// Because the service is always resolved on the registry path, this can only trip
-// for a direct/test caller (never the telemetry path), so it stays a plain Error
-// without a code — a code here could never bucket a real failure.
+// Only the live-capture branches call this, and services() declares the
+// simulatorServer for exactly those, so the registry has always resolved it by
+// the time execute() runs. Guard anyway: executeScreenshotDiffTool is exported
+// and a direct caller (e.g. a test) can pass a services map without it — a clear
+// error beats a downstream TypeError on `.captureScreenshot`. That leaves this
+// unreachable on the registry path (and so on the telemetry path), which is why
+// it stays a plain Error without a code — a code here could never bucket a real
+// failure.
 function requireSimulatorServer(services: Record<string, unknown>): SimulatorServerApi {
   const api = services.simulatorServer as SimulatorServerApi | undefined;
   if (!api) {
