@@ -62,6 +62,8 @@ The impossibility surfaces where a selector actually needs the hierarchy. Where 
 - A point focus tap plus raw keyboard with `delayMs: 500`.
 - Raw swipes with `settle: true` because `scroll-to` needs the missing flow tree. Momentum-free scrolling keeps later coordinate taps valid.
 
+Where no instrumentation loads, every point tap or long-press passes **carrying a warning**: every tree read fails and each [selector-less gesture](flow-yaml.md#directives) dispatches unsettled. Nothing here repairs it. Accept the warnings, read each green as "the gesture was sent, not that it landed", and put an explicit `wait:` or a raw `tool: await-ui-element` before a gesture that follows a transition. Raw `tool:` steps never take that settle, so they never warn.
+
 Report that the coordinates are not portable. Being e2e does not make such a flow a QA test: its points are not genuinely unlabeled targets, so it fails the coordinate-fallback rule. Report the artifact and the platform blocker instead. For a flow you intend to keep, target an app you install.
 
 A normally injectable app that is broken in the environment is the opposite case — no verdict is withheld there, so the gate fails the launch outright. Raw `tool: restart-app` in place of `launch:` still makes a self-resetting flow, but it is then a **fragment**: its first non-echo step is not `launch:`, so the runner never classifies it as e2e and it cannot complete `argent-qa-flows`, which requires a leading `launch:`. Report the blocker rather than labeling that fallback a completed QA test.
@@ -111,6 +113,7 @@ Classify before editing:
 | Partial divergence | An intermediate result disagrees with its echo | Find the first divergent transition                                                                                                                     |
 | Acceptance failure | Actions pass but a requested check fails       | Preserve the check and investigate behavior                                                                                                             |
 | Idle warning       | A readiness step passes without settling       | Read [which of the six warnings](flow-yaml.md#idle-readiness) it is, then gate the next action on a stable element                                      |
+| Unsettled gesture  | A selector-less gesture passes unsettled       | Restore the tree source, usually by relaunching the app; the green says [only that the gesture was sent](flow-yaml.md#directives)                       |
 
 Then:
 
