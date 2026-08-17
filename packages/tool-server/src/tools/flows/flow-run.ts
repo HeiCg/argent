@@ -48,7 +48,7 @@ import {
   stepRequiresDevice,
   type FlowPlatform,
 } from "./flow-device";
-import { nestedOrchestratorOutcome } from "./flow-nested-outcome";
+import { isNestedOrchestratorTool, nestedOrchestratorOutcome } from "./flow-nested-outcome";
 import {
   runDirective,
   invokeOnDevice,
@@ -185,7 +185,11 @@ export interface StepReport {
    * looks like; it rendered no content to settle; too few reads came back with
    * content for it to judge anything; or its captures never produced a
    * comparable pair, leaving stillness proved on the UI tree alone without the
-   * presentation-layer motion the pixel half exists to catch.
+   * presentation-layer motion the pixel half exists to catch. Raised too by a
+   * selector-less gesture (coordinate `tap`/`long-press`, centre-anchored
+   * `pinch`/`rotate`) that a tree-source outage left unsettled: it is dispatched
+   * regardless, and the warning is the only thing separating it from one that
+   * waited.
    */
   warning?: string;
   /** Underlying tool id for `tool` steps. */
@@ -290,9 +294,10 @@ const NATIVE_READY_POLL_MS = 250;
 
 /**
  * `tool:` steps that can change or relaunch the foreground app — running one
- * invalidates {@link ActionEnv.launchedNativeApp}. `button` is included for
- * its `home` case; distinguishing button kinds here would couple this list to
- * that tool's arg schema for little gain.
+ * invalidates {@link ActionEnv.launchedNativeApp} and spends
+ * {@link ActionEnv.treeOutage}. `button` is included for its `home` case;
+ * distinguishing button kinds here would couple this list to that tool's arg
+ * schema for little gain.
  */
 const FOREGROUND_CHANGING_TOOLS = new Set([
   "launch-app",
@@ -435,6 +440,13 @@ async function treeSourceGate(
 async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcome> {
   const env = deviceEnv(state);
   const { registry, device, signal } = env;
+
+  // Relaunching is the repair the tree source asks for by name when it refuses
+  // an app that loaded no instrumentation, so a verdict recorded before it is
+  // spent. Cleared up front rather than on success: nothing after this point
+  // leaves the source in the state the memo describes, and a gesture can follow
+  // a launch with no read in between to clear it (see ActionEnv.treeOutage).
+  if (state.treeOutage) state.treeOutage.proven = undefined;
 
   if (device.platform === "chromium") return runChromiumLaunch(state, app);
 
@@ -948,8 +960,8 @@ when \`on\` is omitted; distinct from the \`rotate\` tool, which changes device 
 for a UI condition, and additionally takes the one condition that has no selector: \`idle: true\` waits
 until the screen has content and stops moving in BOTH the UI tree and the rendered pixels (it never
 fails a run — a screen that never settles passes carrying a \`warning\`, which is what makes it safe to
-persist; the one outcome that does stop the run is an \`error\` for a tree source that could not be read
-at all — a broken window rather than a verdict about the app, which leaves the run not-ok and skips
+persist; the one idle outcome that does stop the run is an \`error\` for a tree source THIS step could not
+read at all — a broken window rather than a verdict about the app, which leaves the run not-ok and skips
 every later step; it says nothing about WHICH screen settled — a dropped tap leaves the source screen
 perfectly idle — so pair it with the element check that names the destination); \`wait\` pauses for a fixed number of milliseconds; \`assert\` checks one now; \`snapshot\`
 diffs a screenshot — or, with \`cropOn: <selector>\`, one element's cropped region — against a stored
@@ -957,6 +969,14 @@ baseline (a missing baseline fails the step — set updateBaselines to adopt the
 cropped element whose size drifted fails on dimensions); \`echo\` annotates; \`run\` executes another flow
 inline — a YAML path resolved against the directory of the flow file that references it (co-located
 runs only).
+A selector-less gesture — a coordinate \`tap\`/\`long-press\`, or a \`pinch\`/\`rotate\` with no \`on\` — resolves
+no frame out of the tree, so an unreadable tree source does NOT stop it the way it stops \`idle\`: it
+settles best-effort, dispatches anyway, and the step PASSES carrying a \`warning\` that quotes the source's
+own error. That green says the gesture was SENT, not that it landed. Restore the tree source (usually
+relaunch the app so the instrumentation loads), or accept the warning where the app can serve no tree;
+the first such gesture proves the outage and later ones spend that verdict without paying the settle
+window again. A tree read that comes back, or a relaunch, retires that verdict — which only makes the
+next gesture pay a fresh window, and it warns again if the source is still down.
 A \`when:\` block (condition + \`steps:\`, no else) runs its steps only if the condition holds —
 checked once with the short assert grace — for one-sided divergences like interstitials and coach
 marks; a skipped block reports distinctly and failures inside an entered block are real failures.
@@ -1101,6 +1121,12 @@ Pass exactly one flow source: name for a saved flow under project_root, or flow_
         device,
         deviceIsExplicit: Boolean(params.device),
         signal,
+        // One holder per ExecState, shared by nested `run:` flows: `deviceEnv`
+        // spreads the reference, so what one step's settle learns about the
+        // tree source the next one already has. A `tool: flow-execute` builds
+        // its own instead, which is why that step spends this verdict rather
+        // than inheriting whatever the sub-run proved.
+        treeOutage: {},
         flowsDir,
         viaUpload,
         baselineKey: baselineKeyFor(canonicalPath, flowName),
@@ -2161,12 +2187,23 @@ async function execLeafStep(
       }
       try {
         // These sub-tools can change (or relaunch) the foreground app, so the
-        // `launch:`-derived hint no longer names what is on screen. Cleared
+        // `launch:`-derived hint no longer names what is on screen, and a
+        // relaunch is the repair a proven tree outage asks for by name - the
+        // same clear `runLaunch` makes for the directive spelling. Cleared
         // BEFORE invoking: a tool that throws mid-way may still have switched
-        // apps, and a stale hint is worse than no hint (tree reads fall back
-        // to plain auto-resolution, today's behavior).
+        // apps, and a stale hint is worse than no hint (tree reads fall back to
+        // plain auto-resolution, today's behavior).
         if (FOREGROUND_CHANGING_TOOLS.has(step.name)) {
           state.launchedNativeApp = undefined;
+          if (state.treeOutage) state.treeOutage.proven = undefined;
+        }
+        // A nested orchestrator runs its tools outside this run's holder -
+        // `flow-execute` on an ExecState of its own, `run-sequence` on none -
+        // so a tree read or relaunch inside it retires nothing here. Cleared
+        // before the invoke for the same reason as above, and over-clearing
+        // only costs a later gesture a window it would have skipped.
+        if (isNestedOrchestratorTool(step.name) && state.treeOutage) {
+          state.treeOutage.proven = undefined;
         }
         const result = await invokeSubTool(registry, ctx, step.name, args);
         if (isUnmetUiWaitResult(step.name, result)) {
