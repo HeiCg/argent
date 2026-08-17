@@ -720,7 +720,7 @@ export type FlowRuntimeKind = (typeof RUNTIME_KINDS)[number];
  * (`resolveFlowDevice`), so an ios-only flow picks the booted simulator
  * instead of erroring on the emulator sitting beside it.
  */
-export type FlowRequires = {
+export type DeclaredRequires = {
   /**
    * Platforms the flow may run on. Non-empty when present; `ios` covers a
    * remote simulator too, matching how the `when: { platform }` guard folds
@@ -729,12 +729,21 @@ export type FlowRequires = {
   platform?: WhenPlatform[];
   runtimeKind?: FlowRuntimeKind;
   /**
-   * Set only by {@link foldLeadingRequires}, never parsed from YAML: the block
-   * was folded across `run:` composition, so refusal messages must attribute
-   * it to the flow plus its fragments rather than claim one file declares it.
+   * `never`, so a folded block cannot be assigned where a flow file's block
+   * belongs: `composed` has no YAML spelling, and serializing it would write a
+   * file `parseRequires` rejects.
    */
-  composed?: true;
+  composed?: never;
 };
+
+/**
+ * A requires block as the runner judges it, which is the declared vocabulary
+ * plus the fold marker. Set only by {@link foldLeadingRequires}, never parsed
+ * from YAML: the block was folded across `run:` composition, so refusal
+ * messages must attribute it to the flow plus its fragments rather than claim
+ * one file declares it.
+ */
+export type FlowRequires = Omit<DeclaredRequires, "composed"> & { composed?: true };
 
 /**
  * Human-readable form of a `requires` block, for the messages a caller has to
@@ -751,7 +760,7 @@ export type FlowFile = {
   /** Fragments only: documented entry-state contract. "" when unset. */
   executionPrerequisite: string;
   /** Target contract; absent when the flow runs anywhere. */
-  requires?: FlowRequires;
+  requires?: DeclaredRequires;
   steps: FlowStep[];
 };
 
@@ -957,7 +966,7 @@ type YamlStep =
 
 type YamlFlowFile = {
   executionPrerequisite?: string;
-  requires?: FlowRequires;
+  requires?: DeclaredRequires;
   steps: YamlStep[];
 };
 
@@ -1924,7 +1933,7 @@ export const LAUNCH_PLATFORMS = ["ios", "android", "chromium", "vega"] as const;
 // Keys a launch map accepts: the platforms plus the `native` shared-id shorthand.
 const LAUNCH_MAP_KEYS = ["native", ...LAUNCH_PLATFORMS] as const;
 
-// Keys a `requires:` block accepts — FlowRequires' YAML vocabulary (the
+// Keys a `requires:` block accepts — DeclaredRequires' YAML vocabulary (the
 // `composed` marker is fold-only, never parsed).
 const REQUIRES_KEYS = ["platform", "runtimeKind"] as const;
 
@@ -1974,7 +1983,7 @@ function parseRequiredPlatforms(raw: unknown, value: unknown): WhenPlatform[] {
  * the author wrote into a flow that runs everywhere — the exact failure this
  * block exists to prevent.
  */
-function parseRequires(raw: unknown): FlowRequires {
+function parseRequires(raw: unknown): DeclaredRequires {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     badRequires(raw, `requires must be a map of ${REQUIRES_KEYS.join(" / ")}`);
   }
@@ -1988,7 +1997,7 @@ function parseRequires(raw: unknown): FlowRequires {
     );
   }
 
-  const out: FlowRequires = {};
+  const out: DeclaredRequires = {};
   if (b.platform !== undefined) out.platform = parseRequiredPlatforms(raw, b.platform);
   if (b.runtimeKind !== undefined) {
     const kind = b.runtimeKind;
@@ -2855,7 +2864,15 @@ function fromYamlStep(raw: YamlStep, blockDepth = 0): FlowStep {
 export function serializeFlow(flow: FlowFile): string {
   const doc: YamlFlowFile = { steps: flow.steps.map(toYamlStep) };
   if (flow.executionPrerequisite) doc.executionPrerequisite = flow.executionPrerequisite;
-  if (flow.requires) doc.requires = flow.requires;
+  // Project key by key rather than forwarding the block: only REQUIRES_KEYS
+  // re-parse, so a key added to the type must be emitted deliberately.
+  const requires = flow.requires;
+  if (requires) {
+    doc.requires = {
+      ...(requires.platform ? { platform: requires.platform } : {}),
+      ...(requires.runtimeKind ? { runtimeKind: requires.runtimeKind } : {}),
+    };
+  }
   // blockQuote: false — a block scalar is not round-trip-safe for our free-text
   // fields: whitespace-only lines inside a multi-line value are silently
   // stripped on re-parse (" \n" comes back as "\n"), and a block scalar at the
@@ -3540,7 +3557,7 @@ export async function countStepsOnDisk(filePath: string): Promise<number | undef
  * carries it forward instead of silently unfencing the flow. skipRequires so
  * even a coverage-violating block survives the reset rather than vanishing.
  */
-export async function requiresOnDisk(filePath: string): Promise<FlowRequires | undefined> {
+export async function requiresOnDisk(filePath: string): Promise<DeclaredRequires | undefined> {
   try {
     return parseFlow(await fs.readFile(filePath, "utf8"), { skipRequires: true }).requires;
   } catch {
