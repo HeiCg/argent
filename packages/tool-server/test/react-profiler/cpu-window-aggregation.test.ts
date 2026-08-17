@@ -19,8 +19,14 @@ import type { HermesProfileNode } from "../../src/utils/react-profiler/types/inp
  */
 const { renderComponentCpu } = __testables;
 
-/** One flat node: `parse` called under a root, no recursion. */
-function flatIndex(sampleTimesMs: number[]): CpuSampleIndex {
+/**
+ * One flat node: `parse` called under a root, no recursion.
+ *
+ * Takes the END of each sample's interval. Sample `i` stands for
+ * `(t[i-1], t[i]]` — the weighting `buildCpuSampleIndex` derives from Hermes'
+ * `timeDeltas`, and what `queryCpuWindow` integrates over a window.
+ */
+function flatIndex(sampleEndsMs: number[]): CpuSampleIndex {
   const nodeMap = new Map<number, HermesProfileNode>();
   nodeMap.set(1, {
     id: 1,
@@ -30,7 +36,7 @@ function flatIndex(sampleTimesMs: number[]): CpuSampleIndex {
   });
   nodeMap.set(2, {
     id: 2,
-    hitCount: sampleTimesMs.length,
+    hitCount: sampleEndsMs.length,
     callFrame: {
       functionName: "parse",
       url: "http://localhost/bundle.js",
@@ -41,12 +47,20 @@ function flatIndex(sampleTimesMs: number[]): CpuSampleIndex {
     children: [],
   });
   return {
-    timestampsMs: Float64Array.from(sampleTimesMs),
-    sampleNodeIds: sampleTimesMs.map(() => 2),
+    timestampsMs: Float64Array.from(sampleEndsMs),
+    intervalStartsMs: Float64Array.from(sampleEndsMs, (_, i) =>
+      i === 0 ? 0 : sampleEndsMs[i - 1]!
+    ),
+    sampleNodeIds: sampleEndsMs.map(() => 2),
     nodeMap,
-    durationMs: sampleTimesMs[sampleTimesMs.length - 1]! + 1,
+    durationMs: sampleEndsMs[sampleEndsMs.length - 1]!,
   };
 }
+
+// A sample every 1ms out to 15ms, so both commit windows below are fully
+// covered and each one's self-time comes to its own 5ms width.
+const everyMs = Array.from({ length: 15 }, (_, i) => i + 1);
+const firstCommitOnly = everyMs.slice(0, 5);
 
 /** Two commits, 10 ms apart, each 5 ms long — disjoint windows. */
 const twoCommits = {
@@ -75,15 +89,9 @@ function readRow(markdown: string, name: string): { self: number; total: number 
 }
 
 describe("renderComponentCpu — aggregating one function across commit windows", () => {
-  // Five samples in each of two windows. Whatever the per-window figures come
-  // to, the two windows are separate stretches of time, so the row must add
-  // them rather than report one window's.
-  const markdown = renderComponentCpu(
-    flatIndex([0, 1, 2, 3, 4, 10, 11, 12, 13, 14]),
-    twoCommits,
-    "Login",
-    10
-  );
+  // Whatever the per-window figures come to, the two windows are separate
+  // stretches of time, so the row must add them rather than report one window's.
+  const markdown = renderComponentCpu(flatIndex(everyMs), twoCommits, "Login", 10);
 
   it("never prints a self time longer than the inclusive time beside it", () => {
     const { self, total } = readRow(markdown, "parse");
@@ -92,7 +100,7 @@ describe("renderComponentCpu — aggregating one function across commit windows"
 
   it("adds the disjoint windows rather than keeping the larger one", () => {
     const oneWindow = renderComponentCpu(
-      flatIndex([0, 1, 2, 3, 4]),
+      flatIndex(firstCommitOnly),
       { commits: [twoCommits.commits[0]!] },
       "Login",
       10
