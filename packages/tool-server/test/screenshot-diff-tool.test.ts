@@ -276,14 +276,27 @@ describe("screenshotDiffTool", () => {
     // way the summary once labelled the same file "(full size)" three lines
     // below a bullet denying it. Nothing here may claim that size at all.
     expect(screenshotDiffTool.description).not.toMatch(/full[- ]size/);
+    // The capture's resolution cannot be banned outright — it is genuinely
+    // attempted at full resolution — so require every mention to carry the
+    // condition. The reverted sentences ("live at full resolution before
+    // diffing", "always taken at full resolution") are unqualified and land as
+    // an extra unmatched occurrence.
+    const shape = screenshotDiffTool.zodSchema!.shape;
+    for (const text of [
+      screenshotDiffTool.description,
+      shape.captureBaseline.description!,
+      shape.captureCurrent.description!,
+    ]) {
+      expect(text.match(/full[- ]resolution/g) ?? []).toHaveLength(
+        (text.match(/full[- ]resolution when that capture succeeds/g) ?? []).length
+      );
+    }
     // Suppression is about where the bytes go, not what resolution they are:
     // conditioning it on a full-resolution capture is what sent agents at the
-    // call that fails on these emulators. Pinned through the dash, because the
-    // condition re-attaches inside the sentence rather than after it.
-    expect(
-      createScreenshotTool(registry).zodSchema!.shape.includeImageInContext.description
-    ).toContain(
-      "Set false only when capturing a baseline/current PNG for screenshot-diff — the file is still written"
+    // call that fails on these emulators. Pinned whole, because the condition
+    // re-attaches anywhere inside the sentence, including past its last clause.
+    expect(createScreenshotTool(registry).zodSchema!.shape.includeImageInContext.description).toBe(
+      "Default true. Set false only when capturing a baseline/current PNG for screenshot-diff — the file is still written, but the image bytes are not attached to the agent context."
     );
   });
 

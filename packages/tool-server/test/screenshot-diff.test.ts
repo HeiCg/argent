@@ -301,7 +301,11 @@ describe("diffPngFiles", () => {
         .filter((entry) => entry.isDirectory())
         .map(async (entry) => ({
           name: entry.name,
-          text: await fs.readFile(path.join(skillsDir, entry.name, "SKILL.md"), "utf8"),
+          // A directory carrying no SKILL.md is not this test's subject; the
+          // floor below is what keeps skipping one from going unnoticed.
+          text: await fs
+            .readFile(path.join(skillsDir, entry.name, "SKILL.md"), "utf8")
+            .catch(() => ""),
         }))
     );
     const caveats = skills.filter(({ text }) => text.includes("downscale can erase"));

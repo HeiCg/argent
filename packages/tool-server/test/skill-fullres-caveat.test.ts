@@ -6,14 +6,15 @@ import { getScreenshotScale } from "../src/utils/simulator-client";
 const SKILLS_DIR = path.join(__dirname, "../../skills/skills");
 
 // Assigning 1.0 (or 1) to `scale`, in the spellings the skills actually use:
-// JSON, a fenced pseudo-call, backticked prose, "a `scale` of 1.0", or a bare
-// "`scale` 1.0" — plus the spelling that names no parameter at all ("use
-// full-resolution screenshots for…"), which already ships in two of these files
-// and would otherwise let the prescription into a new skill unescorted. A range
-// mention ("`scale` accepts values from 0.01 to 1.0") is not a prescription and
-// deliberately does not match.
+// JSON, a fenced pseudo-call, backticked prose, "a `scale` of 1.0", "set
+// `scale` to 1.0", or a bare "`scale` 1.0" — plus the spelling that names no
+// parameter at all ("use full-resolution screenshots for…"), which already
+// ships in two of these files and would otherwise let the prescription into a
+// new skill unescorted. A range mention ("`scale` accepts values from 0.01 to
+// 1.0") is not a prescription and deliberately does not match; the leading
+// boundary keeps `grayscale = 1` and `upscale: 1` out.
 const PRESCRIBES_FULL_RES =
-  /scale["'`]?\s*(?:[:=]|\s+of\s+)?\s*1(?:\.0+)?\b|\b(?:use|capture|save|take)\b[^.]{0,60}full[- ]resolution/i;
+  /\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b|\b(?:use|capture|save|take)\b[^.]{0,60}full[- ]resolution/i;
 
 function markdownUnder(dir: string): string[] {
   return fs
