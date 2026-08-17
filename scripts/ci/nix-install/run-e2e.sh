@@ -203,6 +203,19 @@ elif [[ "$PHASE" == "update" ]]; then
     fail "global argent now reports '$still', expected '$PACKED_VERSION'"
   fi
 
+  # Reinstalling over the store install writes to the same directory the update
+  # could not, and reaches it through init's tarball path rather than update's.
+  begin "E. argent init --global --from over the install inside the Nix store"
+  home="$(new_home e)"
+  project="$(new_project e)"
+  out="$WORK/e.log"
+  (cd "$project" && HOME="$home" node "$CLI" init --global --yes --no-telemetry --from "$TGZ") >"$out" 2>&1
+  exit_is "$?" 1
+  contains "$out" "cannot install @swmansion/argent globally"
+  contains "$out" "read-only Nix store"
+  absent "$out" "npm error"
+  absent "$out" "EACCES"
+
 else
   require "unknown phase '$PHASE' (expected preinstall or update)"
 fi

@@ -292,6 +292,14 @@ async function runGlobal(opts: {
   if (fromTar) {
     // Developer-only reinstall path; it is not a product install decision.
     const pm = detectPackageManager();
+    // Replacing the existing install writes to the same unwritable directory a
+    // fresh one would.
+    const globalTarget = probeGlobalInstallTarget(pm, getGloballyInstalledPackageRoot());
+    if (globalTarget?.blocked) {
+      p.log.error(unwritableGlobalTargetMessage(globalTarget, pm, "install"));
+      await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
+      process.exit(1);
+    }
     const cmd = globalInstallCommand(pm, fromTar);
     const cmdStr = formatShellCommand(cmd);
     const spinner = p.spinner();
