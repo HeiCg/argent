@@ -1067,6 +1067,9 @@ export function createRunFlowTool(
         `Failed to run flow ${displayFlowName(params)}: ${failureSignal.error_code}`,
     },
     description: `Run a saved flow from the .argent/flows/ directory, or an explicit boundary-managed flow_path.
+Use when you want to replay a recorded flow end to end and get a per-step pass/fail report, rather than
+driving the device one tool call at a time; to read a fragment's entry-state contract without running
+anything, use flow-read-prerequisite instead.
 Steps run in order: \`launch\` starts an app from scratch (terminate + relaunch) and waits until it is
 ready (on iOS it also pins later element lookups to that app rather than auto-detecting the frontmost
 one); \`tool\` calls dispatch through the registry (a raw \`tool\` step ends that iOS pin, so lookups
