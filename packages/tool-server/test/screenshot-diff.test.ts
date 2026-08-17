@@ -20,7 +20,7 @@ const RESIZE_REMEDY =
 // what is left to drift is the pairing — and a swapped pair reads as fluently
 // as a correct one.
 const DIFF_IMAGES =
-  "- diff_images: see diffPath (compared size) and contextDiffPath (downscaled) in this result";
+  "- diff_images: diffPath is at the compared size, contextDiffPath is downscaled for display";
 
 const analyzeScreenshotTextChangesMock = vi.hoisted(() =>
   vi.fn(async () => ({

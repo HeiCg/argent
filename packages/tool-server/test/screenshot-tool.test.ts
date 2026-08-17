@@ -95,6 +95,11 @@ describe("screenshot tool", () => {
     // iOS put in wholesale — `ios-remote` is its own Platform whose MoQ
     // transport reads `opts.scale` and nothing else (#822). Nothing else in the
     // suite reads the sentence, so pin it against the two paths that disagree.
+    //
+    // Read the ambient scale instead of stubbing it and this fails on correct
+    // code for anyone who exports 1.0: httpScreenshot omits an in-band 1.0, so
+    // the body loses the key the assertion is written around.
+    vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
     const bodies: unknown[] = [];
     vi.stubGlobal(
       "fetch",

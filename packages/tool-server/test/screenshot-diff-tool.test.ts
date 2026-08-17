@@ -17,6 +17,36 @@ describe("screenshotDiffTool", () => {
     vi.unstubAllEnvs();
   });
 
+  it("carries each spelling its vocabulary claims, and none of the near misses", () => {
+    // Every sweep in this PR is exactly as wide as this regex, and most of its
+    // alternatives are reached by no sentence in the corpus, so they could be
+    // deleted unnoticed. The negatives are the exclusions the helper's own
+    // comment promises — `native resolution` (argent-screen-recording uses it
+    // correctly for h264), a range mention, the percentage form that asserts
+    // the opposite, and the three tokens that merely contain "scale".
+    const claims: Array<[string, boolean]> = [
+      ["The capture is at full resolution.", true],
+      ["Saved full-res for later.", true],
+      ["Written at full size.", true],
+      ["The bytes are unscaled.", true],
+      ["Pixels map 1:1 with the device.", true],
+      ["It is never downscaled.", true],
+      ["The frame is not resampled.", true],
+      ["Kept at 100% of original resolution.", true],
+      ["Written at original resolution.", true],
+      ["Pass scale: 1.0 for a baseline.", true],
+      ["h264 frames stay at native resolution.", false],
+      ["`scale` accepts values from 0.01 to 1.0.", false],
+      ["Downscaled to 30% of original resolution.", false],
+      ["grayscale = 1 is the default.", false],
+      ["upscale: 1 leaves it alone.", false],
+      ["Set ARGENT_SCREENSHOT_SCALE to change it.", false],
+    ];
+    expect(claims.map(([text]) => [text, sentencesClaimingSize(text).length > 0] as const)).toEqual(
+      claims
+    );
+  });
+
   it("reads schema descriptions at every depth an input_schema advertises", () => {
     // Depth as well as kind of surface: the sweep above is only as wide as this
     // walk, and narrowing it is invisible from the outside — the catalogue check
@@ -188,6 +218,37 @@ describe("screenshotDiffTool", () => {
     expect((await fs.readdir(dir)).sort()).toEqual(["baseline.png", "current.png"]);
     expect(screenshotDiffTool.description).toContain(
       "both images are omitted on dimension_mismatch"
+    );
+  });
+
+  it("normalizes inside the tolerance its description names, and mismatches outside it", async () => {
+    // The description is the only place that 1% appears in prose and nothing
+    // read it, so both its threshold and its direction could be inverted with
+    // the suite green. Against a 100x200 baseline, 101x200 is 0.99% off in
+    // aspect and 102x200 is 1.96%: the pair straddles ASPECT_RATIO_TOLERANCE,
+    // so halving or doubling the constant moves one of these two rows.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-tolerance-"));
+    const run = async (name: string, width: number): Promise<string> => {
+      const baselinePath = path.join(dir, `${name}-baseline.png`);
+      const currentPath = path.join(dir, `${name}-current.png`);
+      await writePng(baselinePath, width, 200, { r: 0, g: 0, b: 0 });
+      await writePng(currentPath, 100, 200, { r: 0, g: 0, b: 0 });
+      const result = await executeScreenshotDiffTool(
+        {},
+        { baselinePath, currentPath, udid: "ABC", outputDir: dir },
+        { artifacts: new ArtifactStore() }
+      );
+      return result.summary;
+    };
+
+    // Resampled toward the smaller-area side, which is the 100x200 current one.
+    expect(await run("inside", 101)).toContain(
+      "- size_normalized: baseline=101x200 current=100x200 compared_at=100x200"
+    );
+    expect(await run("outside", 102)).toContain("- status: dimension_mismatch");
+
+    expect(screenshotDiffTool.description).toContain(
+      "aspect ratios agree to within about 1% but whose resolutions differ are resampled to the smaller-area side"
     );
   });
 

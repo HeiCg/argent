@@ -46,9 +46,8 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
   it("never lets the escort cover a claim about the diff's own artifacts", () => {
     // The escort excuses a claim about capturing, because the `wrong data size`
     // rejection is what capturing at 1.0 runs into. It is no evidence at all
-    // about the size of what the diff writes — the sentence removed from the
-    // tool description named `diffPath`, which comes back at the compared size
-    // whenever the sides were normalized.
+    // about the size of what the diff writes: `diffPath` comes back at the
+    // compared size whenever the sides were normalized.
     //
     // Asked as "does this name a diff artifact", a closed set of identifiers,
     // rather than "is this about a capture", which no word list decides: every

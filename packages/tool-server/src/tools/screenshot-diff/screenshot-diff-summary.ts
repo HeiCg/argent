@@ -64,11 +64,14 @@ export function formatScreenshotDiffSummary(result: ScreenshotDiffSummaryInput):
   );
 
   if (result.diffPath || result.contextDiffPath) {
-    // Reference the result fields instead of embedding the paths: the client
-    // rewrites `diffPath`/`contextDiffPath` to paths on ITS machine, and a raw
-    // server path inlined here would dangle when the tool-server runs remotely.
+    // Name the result fields rather than embedding paths: the client rewrites
+    // `diffPath`/`contextDiffPath` to paths on ITS machine, and a raw server
+    // path inlined here would dangle when the tool-server runs remotely. Says
+    // what each artifact is rather than telling the reader to go find it — over
+    // MCP this text arrives beside the context image alone, with no field of
+    // either name to look up (#826).
     lines.push(
-      `- diff_images: see diffPath (compared size) and contextDiffPath (downscaled) in this result`
+      `- diff_images: diffPath is at the compared size, contextDiffPath is downscaled for display`
     );
     lines.push(
       `  - legend: green=pixel brighter in current, red=pixel darker in current, yellow rectangles outline changed regions`
