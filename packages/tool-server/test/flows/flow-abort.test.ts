@@ -461,6 +461,80 @@ describe("run cancellation mid-directive", () => {
     expect(keyboardCalls).toBe(2);
   });
 
+  it("reports a type cancelled DURING a RESOLVING Enter as a skip, not a pass", async () => {
+    // The twin of the test above, and the same gap the clear-only step had one
+    // dispatch earlier: `dispatchOrAbort` reclassifies only a dispatch that
+    // REJECTS under an aborted signal, and the Android backend takes no signal at
+    // all — so a cancel landing mid-Enter leaves the call to resolve and returns
+    // `true`. The re-check that catches the clear/text half runs BEFORE the Enter
+    // block, so nothing stood between this dispatch and `{ ok: true }`: the step
+    // reported a PASS with the submit already sent, while the identical
+    // cancellation one dispatch earlier reported a skip.
+    const controller = new AbortController();
+    currentFetch = focusedField;
+    let keyboardCalls = 0;
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args?: Record<string, unknown>) => {
+        if (id === "list-devices") return { devices: [] };
+        if (id === "keyboard") {
+          keyboardCalls++;
+          // Cancel while the Enter is in flight, and resolve anyway — what a
+          // signal-less backend does.
+          if (args?.key === "enter") controller.abort();
+        }
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+
+    await writeFlow("cancelled-enter-resolving", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "email" }, text: "a@b.com" }],
+    });
+
+    const result = await run("cancelled-enter-resolving", registry, controller.signal);
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["type:skip"]);
+    expect(result.steps[0].reason).toBe("run aborted");
+    // Both dispatches went out — this is a cancellation caught AFTER the submit,
+    // not one that pre-empted it, so the assertion cannot pass by the step never
+    // reaching the Enter at all.
+    expect(keyboardCalls).toBe(2);
+  });
+
+  it("reports an explicit `submit: true` clear-only step the same way", async () => {
+    // `submit` defaults off for a clear-only step, but an author can turn it on —
+    // and then the step's LAST dispatch is the Enter again, with no text dispatch
+    // before it. Without the re-check after the Enter this shape reported a pass
+    // while the same step minus `submit` reported a skip, which is the divergence
+    // the whole re-check exists to close.
+    const controller = new AbortController();
+    currentFetch = focusedField;
+    let keyboardCalls = 0;
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args?: Record<string, unknown>) => {
+        if (id === "list-devices") return { devices: [] };
+        if (id === "keyboard") {
+          keyboardCalls++;
+          if (args?.key === "enter") controller.abort();
+        }
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+
+    await writeFlow("cancelled-enter-clear-only", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "email" }, clear: true, submit: true }],
+    });
+
+    const result = await run("cancelled-enter-clear-only", registry, controller.signal);
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["type:skip"]);
+    expect(result.steps[0].reason).toBe("run aborted");
+    expect(keyboardCalls).toBe(2);
+  });
+
   it("reports a type cancelled DURING the focusing tap as a skip, not an error", async () => {
     // All three of the step's device calls have to classify a cancelled run the
     // same way; with the tap left bare, the same step reported `error` or `skip`

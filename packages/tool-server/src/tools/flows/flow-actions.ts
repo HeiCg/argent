@@ -2257,10 +2257,18 @@ async function runType(
   // Wrapped like the two keyboard dispatches below, so all three of this step's
   // device calls classify a cancelled run the same way. Leaving the focus tap
   // bare made one step report `error` or `skip` depending on which dispatch
-  // happened to be in flight when the caller gave up. (`runTap`, `runLongPress` and
-  // `scrollIncrement` leave their own dispatch bare — one call each, so there is
-  // no within-step split to fix there. `runPinch` chains several, but guards the
-  // signal between them itself.)
+  // happened to be in flight when the caller gave up. What makes this step the
+  // one that needed wrapping is that it makes SEVERAL dispatches with no guard of
+  // its own between them; every other directive is already covered from
+  // somewhere:
+  //
+  //   - `runTap` and `runLongPress` leave their dispatch bare, and can: one call
+  //     each, so there is no within-step split to classify inconsistently.
+  //   - `scrollIncrement` is bare too, but a `scroll-to` step calls it up to
+  //     MAX_SCROLL_ITERATIONS times — `scrollToVisible` guards the signal at the
+  //     head of every iteration, so a cancel is caught before the next increment
+  //     rather than after the wrong one.
+  //   - `runPinch` chains several, and guards the signal between them itself.
   if (!(await dispatchOrAbort(env, "gesture-tap", getDescribeTapPoint(tappedNode.frame)))) {
     return ABORTED_OUTCOME;
   }
@@ -2372,12 +2380,14 @@ async function runType(
     if (!sent) return ABORTED_OUTCOME;
   }
   // Outside the submit gate, not inside it. `dispatchOrAbort` reclassifies only
-  // a dispatch that REJECTS while the signal is aborted, and the Android and
-  // Chromium keyboard backends take no signal at all — so a cancel landing
-  // mid-call leaves the call to resolve and returns `true`. Inside the gate this
-  // check ran only for a step that submits, which made a cancelled clear-only
-  // step (where `submit` defaults to false) report a pass while the identical
-  // cancellation on a submitting step reported a skip.
+  // a dispatch that REJECTS while the signal is aborted, and the Android keyboard
+  // backend takes no signal at all — so a cancel landing mid-call leaves the call
+  // to resolve and returns `true`. The backends that DO take one (iOS, Chromium)
+  // only narrow the window rather than close it: each checks between keystrokes,
+  // so an abort arriving after the last check still lets the call finish. Inside
+  // the gate this check ran only for a step that submits, which made a cancelled
+  // clear-only step (where `submit` defaults to false) report a pass while the
+  // identical cancellation on a submitting step reported a skip.
   if (env.signal?.aborted) return ABORTED_OUTCOME;
   // Default: submit when there is text to commit, not on a clear-only step.
   if (step.submit ?? step.text !== undefined) {
@@ -2403,6 +2413,16 @@ async function runType(
       return ABORTED_OUTCOME;
     }
   }
+  // The same re-check as before the submit gate, for the same reason, because the
+  // Enter is a second dispatch and inherits the whole problem: `dispatchOrAbort`
+  // reclassifies only a dispatch that REJECTS under an aborted signal, and the
+  // Android backend takes no signal at all, so a cancel landing mid-Enter leaves
+  // the call to resolve and hands back `true`. With nothing between that and the
+  // pass below, the same cancellation window flipped a step between `pass` and
+  // `skip` on which of its two keyboard calls happened to be in flight — and the
+  // `pass` arm is the one where the submit really was sent after the caller gave
+  // up, which is exactly what the check above says must not happen.
+  if (env.signal?.aborted) return ABORTED_OUTCOME;
   return { ok: true };
 }
 
