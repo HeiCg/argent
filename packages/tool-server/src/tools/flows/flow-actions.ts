@@ -67,11 +67,16 @@ export interface ActionEnv {
    * Bundle id of the last successful native `launch:` in this RUN — nested
    * `run:` flows share it (ExecState is per-run, so a nested launch updates
    * the whole run's hint, matching "a nested e2e launch restarts its app").
-   * Cleared by `tool:` steps that can change the foreground app (launch-app,
-   * restart-app, open-url, button, reinstall-app). iOS tree reads use it ONLY
-   * as an arbiter when target auto-resolution itself times out — see
-   * `queryFullHierarchyTree` — so foreground-likeness guards keep firing
-   * whenever the app answers at all.
+   * Undefined until a launch runs, so a fragment brought to its entry state out
+   * of band has none. Cleared by `tool:` steps that can change the foreground
+   * app (launch-app, restart-app, open-url, button, reinstall-app).
+   *
+   * iOS tree reads use it for the two things auto-targeting cannot do, both
+   * following from it resolving only out of the connected list: as an arbiter
+   * when auto-resolution itself times out, and to name the app whose
+   * disconnection needs explaining when that list is empty — see
+   * `queryFullHierarchyTree`. Never to override a resolution that answered, so
+   * foreground-likeness guards keep firing whenever the app answers at all.
    */
   launchedNativeApp?: string;
   /**
