@@ -65,7 +65,6 @@ import {
 import {
   HARMONY_LIST_TIMEOUT_MS,
   HDC_LIST_TIMEOUT_MS,
-  listHarmonyHdcTargets,
   listHarmonyHdcTargetsStrict,
   listHarmonyInstances,
 } from "../../utils/harmony-devices";
@@ -1630,12 +1629,16 @@ const HARMONY_NO_HDC =
  * registered, and the caller is sent to raise `bootTimeoutMs` for a budget that
  * was never the problem. `ok` stays false only if EVERY attempt failed; one
  * `hdc` still coming up early in the boot is not a diagnosis.
+ *
+ * Hence the STRICT listing, as the snapshot uses: `hdc` exits 0 whatever
+ * happens, so a dead server prints a diagnostic and no rows, which the tolerant
+ * listing answers as `[]` — the one shape that makes `ok` mean nothing here.
  */
 async function connectedHarmonyTargets(
   timeoutMs?: number
-): Promise<{ ok: boolean; targets: Awaited<ReturnType<typeof listHarmonyHdcTargets>> }> {
+): Promise<{ ok: boolean; targets: Awaited<ReturnType<typeof listHarmonyHdcTargetsStrict>> }> {
   try {
-    const targets = await listHarmonyHdcTargets(timeoutMs);
+    const targets = await listHarmonyHdcTargetsStrict(timeoutMs);
     return { ok: true, targets: targets.filter((t) => t.state === "Connected") };
   } catch {
     return { ok: false, targets: [] };

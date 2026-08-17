@@ -289,6 +289,49 @@ describe("redactSecretsFromError", () => {
     }
   });
 
+  it("scrubs the fragment a backend that splits the text leaks", () => {
+    // `injectAndroidText` starts a new `adb shell input text` at every `%` so
+    // the device never sees a format specifier, and the Android TV remote types
+    // one word per space keyevent. The call that fails is the one echoed back,
+    // so the message carries a PIECE of the secret — neither the whole value
+    // nor its escaping, which is what a whole-value search looks for. The
+    // fixtures are built by the real split, not written by hand.
+    const percentValue = "Tr0ub4dor&3%xyzzy";
+    const segments = percentValue.match(/[^%]*%|[^%]+/g) ?? [];
+    expect(segments).toEqual(["Tr0ub4dor&3%", "xyzzy"]);
+
+    for (const segment of segments) {
+      const err = new Error(
+        `adb -s emulator-5554 shell input text '${segment}' failed: error: device offline`
+      );
+      redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: percentValue }]);
+      expect(err.message, segment).not.toContain(segment);
+      expect(err.message, segment).toContain("{{secret:APP_PASSWORD}}");
+    }
+
+    const spacedValue = "hunter2 admin";
+    for (const word of spacedValue.split(" ")) {
+      const err = new Error(`adb -s emulator-5554 shell input text '${word}' failed`);
+      redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: spacedValue }]);
+      expect(err.message, word).not.toContain(word);
+    }
+  });
+
+  it("leaves the diagnostic readable around the fragment it redacts", () => {
+    // The fragment search is bounded, or it blanks ordinary words out of the
+    // message the agent has to act on — short runs collide with the message's
+    // own vocabulary (`adb`, `text`, `dev`), and three characters of a
+    // credential is not a disclosure worth that. Here `adb` is a run of the
+    // secret AND the first word of the command.
+    const err = new Error(
+      "adb -s emulator-5554 shell input text 'hunter2%' failed: device offline"
+    );
+    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "hunter2%adbXY" }]);
+    expect(err.message).toBe(
+      "adb -s emulator-5554 shell input text '{{secret:APP_PASSWORD}}' failed: device offline"
+    );
+  });
+
   it("still scrubs the raw value when nothing quoted it", () => {
     // Positive control for the pair above: the backends that inject over HID or
     // CDP never build a shell line, so the value reaches an error message

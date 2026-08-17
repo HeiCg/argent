@@ -538,8 +538,10 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // still hands `hdc` 8, and the boot answers 2s late every time the last
     // round lands there.
     const listings: { at: number; timeoutMs?: number }[] = [];
-    listHarmonyHdcTargetsStrict.mockResolvedValue([PHONE]);
-    listHarmonyHdcTargets.mockImplementation((timeoutMs?: number) => {
+    // The snapshot before the start is not one of the wait's rounds, and is not
+    // paid out of its budget.
+    listHarmonyHdcTargetsStrict.mockResolvedValueOnce([PHONE]);
+    listHarmonyHdcTargetsStrict.mockImplementation((timeoutMs?: number) => {
       listings.push({ at: Date.now(), timeoutMs });
       // Long enough that rounds start at 0/6s/12s/…, so one of them opens
       // inside the last 8s of the budget with the ceiling still to pay.
@@ -743,10 +745,17 @@ describe("boot-device — HarmonyOS emulator path", () => {
     // argent could not ask. The snapshot before the start already refuses this
     // condition outright; the wait after it has to name it too.
     //
-    // The snapshot succeeds (it is the strict listing, and it is what decides
-    // the boot may proceed at all), so the failure below is only ever the wait's.
-    listHarmonyHdcTargetsStrict.mockResolvedValue([PHONE]);
-    listHarmonyHdcTargets.mockRejectedValue(new Error("[Fail]Connect server failed"));
+    // The snapshot succeeds (it is what decides the boot may proceed at all),
+    // so the failure below is only ever the wait's.
+    //
+    // Both listers are stubbed the way `hdc` really answers a dead server:
+    // exit 0, a diagnostic, no rows — which the strict listing refuses and the
+    // TOLERANT one reports as an empty table. A wait reading the tolerant
+    // answer therefore sees "nothing has registered yet" and blames the budget,
+    // so pinning the note pins which of the two the wait asks.
+    listHarmonyHdcTargetsStrict.mockResolvedValueOnce([PHONE]);
+    listHarmonyHdcTargetsStrict.mockRejectedValue(new Error("[Fail]Connect server failed"));
+    listHarmonyHdcTargets.mockResolvedValue([]);
     vi.useFakeTimers();
 
     const pending = boot({ bootTimeoutMs: 30_000 });
