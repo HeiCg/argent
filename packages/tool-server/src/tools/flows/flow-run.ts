@@ -8,7 +8,6 @@ import {
   getFailureSignal,
   isLiveServiceState,
   wrapFailure,
-  zodObjectToJsonSchema,
 } from "@argent/registry";
 import type {
   DeviceInfo,
@@ -22,14 +21,17 @@ import type {
 import {
   appIdForPlatform,
   assertSafeFlowName,
+  assertValidProjectRoot,
+  blockSteps,
   chromiumLaunchSpec,
   classifyOnDiskSpelling,
   describeSelector,
   describeTextExpectation,
   getFlowPath,
+  isBlockStep,
   parseFlow,
   runTargetName,
-  setActiveProjectRoot,
+  type BlockStep,
   type FlowFile,
   type FlowSelector,
   type FlowStep,
@@ -42,14 +44,16 @@ import type { TextMatchMode, WaitCondition } from "../../utils/ui-tree-match";
 import { sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { isUnmetUiWaitResult } from "../await-ui-element";
+import { isDebuggerNotConnectedResult } from "../debugger/not-connected";
 import {
   resolveFlowDevice,
   bindDeviceArgs,
   flowRequiresDevice,
+  flowScopesDevice,
   stepRequiresDevice,
   type FlowPlatform,
 } from "./flow-device";
-import { nestedOrchestratorOutcome } from "./flow-nested-outcome";
+import { isNestedOrchestratorTool, nestedOrchestratorOutcome } from "./flow-nested-outcome";
 import {
   runDirective,
   invokeOnDevice,
@@ -96,18 +100,20 @@ const zodSchema = z
       .string()
       .optional()
       .describe(
-        "Absolute path to a co-located flow .yaml on the client and tool server's shared filesystem. This must be supplied through the file-input boundary. For remote execution, pass name + project_root instead."
+        "Omit when name is set. Absolute path to a co-located flow .yaml on the client and tool server's shared filesystem. This must be supplied through the file-input boundary. For remote execution, pass name + project_root instead."
       ),
     device: z
       .string()
       .optional()
       .describe(
-        "Device id to run against (iOS UDID, Android/Vega serial, Chromium id). Auto-detected when omitted."
+        "Device id to run against (iOS UDID, Android/Vega serial, Chromium id) — the id list-devices reports. Auto-detected when omitted, but only when exactly one booted device matches (optionally narrowed by `platform`); with several booted the run fails and lists them, so pass this explicitly whenever more than one device is up."
       ),
     platform: z
       .enum(LAUNCH_PLATFORMS)
       .optional()
-      .describe("Restrict auto-detection to this platform when several devices are booted."),
+      .describe(
+        "Restrict auto-detection to this platform when several devices are booted. `chromium` does more than filter: with no `device` it SELECTS the self-boot branch for an e2e flow - the runner boots an Electron instance from the `launch` step's chromium value and tears it down after the run (a single-key `launch: { chromium: … }` map selects it on its own, without this parameter). When it selects that branch it never falls back to device auto-detection (a fragment, or an e2e launch map with no `chromium` key, still does), and the launch value must be a real Electron app path on the tool-server host: a bare-string `launch:` - what the recorder writes - holds an installed-app bundle id, so passing `chromium` for one fails the whole run with `Electron boot: path does not exist`. Edit the launch to `{ chromium: <app path> }` first."
+      ),
     updateBaselines: z
       .boolean()
       .optional()
@@ -132,15 +138,6 @@ const zodSchema = z
   });
 
 type Params = z.infer<typeof zodSchema>;
-
-const inputSchema: Record<string, unknown> = {
-  ...zodObjectToJsonSchema(zodSchema),
-  // Zod's JSON Schema conversion cannot represent superRefine. `oneOf` makes
-  // the same exactly-one source rule visible to MCP and HTTP clients: neither
-  // branch matches when both fields are absent, and both branches match (which
-  // is invalid for oneOf) when both fields are present.
-  oneOf: [{ required: ["name"] }, { required: ["flow_path"] }],
-};
 
 // A dual-source call (name + flow_path) must be diagnosed by the schema's
 // exactly-one rule, not by whether either unused file happens to exist — in
@@ -185,6 +182,21 @@ export interface StepReport {
    * the runner does not own reports no reason.
    */
   reason?: string;
+  /**
+   * The step passed, but the WAY it passed weakens it as proof. Rendered as a
+   * "⚠" suffix by the MCP client, and under the step line by the CLI. Raised by
+   * `await: { idle: true }`: the screen never settled at all (it waits, then
+   * goes ahead); something small on it never stopped, which is what a spinner
+   * looks like; it rendered no content to settle; too few reads came back with
+   * content for it to judge anything; or its captures never produced a
+   * comparable pair, leaving stillness proved on the UI tree alone without the
+   * presentation-layer motion the pixel half exists to catch. Raised too by a
+   * selector-less gesture (coordinate `tap`/`long-press`, centre-anchored
+   * `pinch`/`rotate`) that a tree-source outage left unsettled: it is dispatched
+   * regardless, and the warning is the only thing separating it from one that
+   * waited.
+   */
+  warning?: string;
   /** Underlying tool id for `tool` steps. */
   tool?: string;
   /** Tool result for `tool` steps. */
@@ -222,8 +234,8 @@ export interface StepReport {
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
   /**
-   * Nesting depth for display: omitted at top level, +1 inside each block
-   * directive's expanded steps (a `when:` block's guarded steps, a `run:`
+   * Nesting depth for display: omitted at top level, +1 inside each nesting
+   * step's expanded steps (a `when:` block's guarded steps, a `run:`
    * fragment's steps). Renderers indent by it without knowing which directives
    * nest — the report is a flat list with no block-end marker, so depth cannot
    * be reconstructed downstream.
@@ -278,8 +290,27 @@ const POST_LAUNCH_SETTLE_MS = 1500;
  * start would fail the first directive with a raw tree-source error; gating
  * the launch step reports the problem where it belongs, with a relaunch hint.
  */
-const NATIVE_READY_TIMEOUT_MS = 8000;
+// 15s (was 8s): the injected dylib's connect is gated on the app's main
+// thread, and a heavy first-ever cold start (Hermes first parse, asset
+// decode on a loaded host) can pin it past 8s. Matches the 15s
+// getFullHierarchy RPC tier — both wait out the same class of stall.
+const NATIVE_READY_TIMEOUT_MS = 15000;
 const NATIVE_READY_POLL_MS = 250;
+
+/**
+ * `tool:` steps that can change or relaunch the foreground app — running one
+ * invalidates {@link ActionEnv.launchedNativeApp} and spends
+ * {@link ActionEnv.treeOutage}. `button` is included for its `home` case;
+ * distinguishing button kinds here would couple this list to that tool's arg
+ * schema for little gain.
+ */
+const FOREGROUND_CHANGING_TOOLS = new Set([
+  "launch-app",
+  "restart-app",
+  "reinstall-app",
+  "open-url",
+  "button",
+]);
 
 /**
  * Poll until native-devtools is connected for `bundleId`. Returns true once
@@ -415,6 +446,13 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
   const env = deviceEnv(state);
   const { registry, device, signal } = env;
 
+  // Relaunching is the repair the tree source asks for by name when it refuses
+  // an app that loaded no instrumentation, so a verdict recorded before it is
+  // spent. Cleared up front rather than on success: nothing after this point
+  // leaves the source in the state the memo describes, and a gesture can follow
+  // a launch with no read in between to clear it (see ActionEnv.treeOutage).
+  if (state.treeOutage) state.treeOutage.proven = undefined;
+
   if (device.platform === "chromium") return runChromiumLaunch(state, app);
 
   const bundleId = appIdForPlatform(app, device.platform);
@@ -438,6 +476,11 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
   // it, or a cancelled gate would read as a launch that verified readiness.
   if (signal?.aborted) return ABORTED_OUTCOME;
   if (gate) return { ok: false, reason: gate };
+  // Remember the launched app for the rest of the RUN (nested `run:` flows
+  // share this state, so a nested launch retargets the whole run — see
+  // ActionEnv.launchedNativeApp). iOS tree reads use it only when target
+  // auto-resolution times out mid-stall.
+  state.launchedNativeApp = bundleId;
   return { ok: true };
 }
 
@@ -730,6 +773,12 @@ function noChromiumAppReason(device: DeviceInfo): string {
 interface ExecState extends Omit<ActionEnv, "device"> {
   device: DeviceInfo | null;
   /**
+   * Whether {@link device} is the one the CALLER named, rather than one
+   * auto-detected from what happens to be booted. Only a named device may
+   * override a scope a recording already carries — see {@link bindDeviceArgs}.
+   */
+  deviceIsExplicit: boolean;
+  /**
    * The ROOT flow file's canonical (realpath'd) directory — the anchor for
    * snapshot baselines and a chromium launch's relative app path, so a
    * symlinked root flow anchors beside its real file. `run:` targets instead
@@ -829,23 +878,30 @@ function displayFlowName(params: { name?: string; flow_path?: string }): string 
   return params.name || stem || params.flow_path || "(unspecified)";
 }
 
-/** Yield every parsed step, recursing into `when:` blocks (the parser's only nesting). */
+/**
+ * Yield every parsed step, recursing into a block directive's children through
+ * {@link blockSteps} rather than testing one kind: this is the sole feeder of
+ * {@link assertUploadSelfContained}, so a block absent from the recursion would
+ * carry an uploaded flow's nested `run:`/`snapshot` past the preflight and let
+ * an unrunnable flow report green.
+ */
 function* walkSteps(steps: FlowStep[]): Generator<FlowStep> {
   for (const step of steps) {
     yield step;
-    if (step.kind === "when") yield* walkSteps(step.steps);
+    const inner = blockSteps(step);
+    if (inner) yield* walkSteps(inner);
   }
 }
 
 /**
  * Reject an uploaded root flow that is not self-contained — one with a `run:`
- * or `snapshot` step (even inside a `when:` block) — before anything executes:
- * a mid-run or guard-gated error could execute half the flow first, or first
- * surface in CI. Both step kinds anchor at the flow file's real directory,
- * which an uploaded flow does not have: a run: step's referenced files stayed
- * on the client, and snapshot baselines live beside the flow's file — against
- * a per-call temp materialization a plain snapshot can only fail (no baseline)
- * and updateBaselines writes PNGs no later run can find.
+ * or `snapshot` step (at any depth inside a block directive) — before anything
+ * executes: a mid-run or guard-gated error could execute half the flow first,
+ * or first surface in CI. Both step kinds anchor at the flow file's real
+ * directory, which an uploaded flow does not have: a run: step's referenced
+ * files stayed on the client, and snapshot baselines live beside the flow's
+ * file — against a per-call temp materialization a plain snapshot can only fail
+ * (no baseline) and updateBaselines writes PNGs no later run can find.
  */
 function assertUploadSelfContained(flow: FlowFile): void {
   for (const step of walkSteps(flow.steps)) {
@@ -906,12 +962,26 @@ reads "inside card inside list", each container's frame inside the next);
 (\`pinch: { on?, scale }\` — scale > 1 in, < 1 out; screen center when \`on\` is omitted); \`rotate\` is the
 two-finger rotation gesture (\`rotate: { on?, by }\` — degrees, + clockwise, within ±3000°; screen center
 when \`on\` is omitted; distinct from the \`rotate\` tool, which changes device orientation); \`await\` waits
-for a UI condition; \`wait\` pauses for a fixed number of milliseconds; \`assert\` checks one now; \`snapshot\`
+for a UI condition, and additionally takes the one condition that has no selector: \`idle: true\` waits
+until the screen has content and stops moving in BOTH the UI tree and the rendered pixels (it never
+fails a run — a screen that never settles passes carrying a \`warning\`, which is what makes it safe to
+persist; the one idle outcome that does stop the run is an \`error\` for a tree source THIS step could not
+read at all — a broken window rather than a verdict about the app, which leaves the run not-ok and skips
+every later step; it says nothing about WHICH screen settled — a dropped tap leaves the source screen
+perfectly idle — so pair it with the element check that names the destination); \`wait\` pauses for a fixed number of milliseconds; \`assert\` checks one now; \`snapshot\`
 diffs a screenshot — or, with \`cropOn: <selector>\`, one element's cropped region — against a stored
 baseline (a missing baseline fails the step — set updateBaselines to adopt the current screen; a
 cropped element whose size drifted fails on dimensions); \`echo\` annotates; \`run\` executes another flow
 inline — a YAML path resolved against the directory of the flow file that references it (co-located
 runs only).
+A selector-less gesture — a coordinate \`tap\`/\`long-press\`, or a \`pinch\`/\`rotate\` with no \`on\` — resolves
+no frame out of the tree, so an unreadable tree source does NOT stop it the way it stops \`idle\`: it
+settles best-effort, dispatches anyway, and the step PASSES carrying a \`warning\` that quotes the source's
+own error. That green says the gesture was SENT, not that it landed. Restore the tree source (usually
+relaunch the app so the instrumentation loads), or accept the warning where the app can serve no tree;
+the first such gesture proves the outage and later ones spend that verdict without paying the settle
+window again. A tree read that comes back, or a relaunch, retires that verdict — which only makes the
+next gesture pay a fresh window, and it warns again if the source is still down.
 A \`when:\` block (condition + \`steps:\`, no else) runs its steps only if the condition holds —
 checked once with the short assert grace — for one-sided divergences like interstitials and coach
 marks; a skipped block reports distinctly and failures inside an entered block are real failures.
@@ -935,10 +1005,10 @@ off <id>\`, or \`retired <id> (same app relaunched)\` when the instance it left 
 a relaunch that retired an older owned instance names both.
 
 If a fragment has an execution prerequisite and prerequisiteAcknowledged is not set to true, the tool
-returns a notice with the prerequisite instead of running.`,
+returns a notice with the prerequisite instead of running.
+Pass exactly one flow source: name for a saved flow under project_root, or flow_path for an explicit YAML — both together, or neither, fails the call.`,
     longRunning: true,
     zodSchema,
-    inputSchema,
     fileInputs,
     services: () => ({}),
     async execute(_services, params, ctx?: ToolContext) {
@@ -1054,7 +1124,14 @@ returns a notice with the prerequisite instead of running.`,
         registry,
         ctx,
         device,
+        deviceIsExplicit: Boolean(params.device),
         signal,
+        // One holder per ExecState, shared by nested `run:` flows: `deviceEnv`
+        // spreads the reference, so what one step's settle learns about the
+        // tree source the next one already has. A `tool: flow-execute` builds
+        // its own instead, which is why that step spends this verdict rather
+        // than inheriting whatever the sub-run proved.
+        treeOutage: {},
         flowsDir,
         viaUpload,
         baselineKey: baselineKeyFor(canonicalPath, flowName),
@@ -1148,14 +1225,38 @@ async function resolveRunDevice(
     // Checked after the chromium boot path, which only applies to a flow led by
     // a `launch` step — and a launch needs a device, so the two never compete.
     if (!flowRequiresDevice(registry, flow.steps)) {
-      return { device: null, booted: null };
+      if (!flowScopesDevice(registry, flow.steps)) return { device: null, booted: null };
+      // A flow that only SCOPES to a device (a cleanup flow) takes one when one
+      // is unambiguous, so the teardown stays narrowed to the run device and
+      // cannot reap what another agent is mid-session on. When resolution has
+      // no single answer — nothing booted, or several — that is not a question
+      // a sweep has an answer to, so run it unscoped rather than failing the
+      // flow. Swallowed only here: every other caller genuinely needs the
+      // device, and the diagnosis in the error is the useful thing there.
+      //
+      // And swallowed only for THAT answer. `resolveFlowDevice` also reaches
+      // `list-devices` through the registry, so a bare catch also absorbed an
+      // adb/simctl failure, a dead sub-tool, an abort — and the teardown step
+      // then ran unscoped and reported pass, which is the machine-wide sweep
+      // this whole path exists to avoid. Anything that is not the ambiguity
+      // rethrows and fails the run.
+      try {
+        return {
+          device: await resolveFlowDevice(registry, ctx, resolveOpts(params)),
+          booted: null,
+        };
+      } catch (err) {
+        if (getFailureSignal(err)?.error_code !== FAILURE_CODES.FLOW_DEVICE_RESOLUTION) throw err;
+        return { device: null, booted: null };
+      }
     }
   }
-  const device = await resolveFlowDevice(registry, ctx, {
-    device: params.device,
-    platform: params.platform as FlowPlatform | undefined,
-  });
+  const device = await resolveFlowDevice(registry, ctx, resolveOpts(params));
   return { device, booted: null };
+}
+
+function resolveOpts(params: Params): { device?: string; platform?: FlowPlatform } {
+  return { device: params.device, platform: params.platform as FlowPlatform | undefined };
 }
 
 /**
@@ -1515,6 +1616,10 @@ function stepTarget(step: FlowStep): string | undefined {
     case "await":
     case "assert":
       return conditionLabel(step, selectorLabel);
+    case "idle":
+      // The caller already prints the kind, and this step has no target beyond
+      // the screen itself: returning one would render as "idle screen idle".
+      return undefined;
     case "when":
       return step.condition.kind === "platform"
         ? `platform ${step.condition.platform}`
@@ -1537,8 +1642,22 @@ function stepTarget(step: FlowStep): string | undefined {
       // The as-written path, so a report line shows exactly what the flow
       // references (`run ../shared/login.yaml`), not just the attribution stem.
       return step.flow;
-    default:
+    case "echo":
+    case "tool":
+      // Each carries its subject in a report field of its own (`message`,
+      // `tool`) that renderers print in the target's place.
       return undefined;
+    case "launch":
+      // A launch's app id may be per-platform (`appIdForPlatform`), and a step
+      // alone does not know the run device.
+      return undefined;
+    case "wait":
+      return undefined;
+    default: {
+      const unclassified: never = step;
+      void unclassified;
+      return undefined;
+    }
   }
 }
 
@@ -1621,7 +1740,7 @@ function scopeFlowDir(scope: StepScope): string {
   return path.dirname(scope.runStack[scope.runStack.length - 1]!.canonical);
 }
 
-/** The scope a block directive's children execute in — one level deeper. */
+/** The scope a nesting step's children execute in — one level deeper. */
 function childScope(
   scope: StepScope,
   overrides: Partial<Omit<StepScope, "depth">> = {}
@@ -1630,8 +1749,8 @@ function childScope(
 }
 
 /**
- * The depth stamp for a report — omitted at top level, so a flow with no block
- * directives produces a report byte-identical to the pre-depth shape.
+ * The depth stamp for a report — omitted at top level, so a flow with no
+ * nesting steps produces a report byte-identical to the pre-depth shape.
  */
 function depthOf(scope: StepScope): Pick<StepReport, "depth"> {
   return scope.depth ? { depth: scope.depth } : {};
@@ -1654,14 +1773,20 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
         // line rather than vanishing — matching reportBlockSkipped.
         ...(step.kind === "echo" ? { message: step.message } : {}),
       });
-      // A when block's literal steps are known — expand them so the report
+      // A block directive's literal steps are known — expand them so the report
       // keeps one line per authored step no matter where the stop landed.
-      if (step.kind === "when") reportBlockSkipped(state, step.steps, childScope(scope));
+      const inner = blockSteps(step);
+      if (inner) reportBlockSkipped(state, inner, childScope(scope));
       continue;
     }
     // The flow was resolved as needing no device, yet a step that acts on one
     // reached execution — the two decisions disagree. Report it as this step's
     // error and stop, rather than letting it fail obscurely further in.
+    // They cannot disagree today, nor for a future block directive whichever way
+    // stepRequiresDevice classifies it — flowRequiresDevice recurses through
+    // blockSteps, so no nesting hides a step: under `true` a device is resolved
+    // and `!state.device` is false; under `false` this guard's own
+    // stepRequiresDevice conjunct fails. The expansion below stays regardless.
     if (!state.device && stepRequiresDevice(state.registry, step)) {
       state.stopped = true;
       pushReport(state, {
@@ -1673,7 +1798,8 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
         ...depthOf(scope),
         reason: `step needs a device but the flow was resolved as device-free — pass an explicit device`,
       });
-      if (step.kind === "when") reportBlockSkipped(state, step.steps, childScope(scope));
+      const inner = blockSteps(step);
+      if (inner) reportBlockSkipped(state, inner, childScope(scope));
       continue;
     }
     if (state.signal?.aborted) {
@@ -1688,9 +1814,8 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
         ...depthOf(scope),
         ...(step.kind === "echo" ? { message: step.message } : {}),
       });
-      if (step.kind === "when") {
-        reportBlockSkipped(state, step.steps, childScope(scope), "run aborted");
-      }
+      const inner = blockSteps(step);
+      if (inner) reportBlockSkipped(state, inner, childScope(scope), "run aborted");
       continue;
     }
 
@@ -1698,8 +1823,8 @@ async function execSteps(state: ExecState, steps: FlowStep[], scope: StepScope):
       await execRunStep(state, step, scope);
       continue;
     }
-    if (step.kind === "when") {
-      await execWhenStep(state, step, scope);
+    if (isBlockStep(step)) {
+      await execBlockStep(state, step, scope);
       continue;
     }
 
@@ -1716,12 +1841,12 @@ function describeWhenCondition(cond: WhenCondition): string {
 }
 
 /**
- * Report every step of a `when:` block that will not run as skipped — so a
- * run where the block was skipped (unmet guard, errored guard, hard stop, or
- * cancellation) produces the same report shape (one line per authored step,
- * at the same depth) as a run where it entered, and reports stay comparable
- * run-to-run. Nested when blocks expand (their literal steps are known); a
- * `run:` composition stays one line, matching how post-hard-stop skips report
+ * Report every step of a block directive that will not run as skipped — so a
+ * run where the block was skipped (a `when:` guard unmet or errored, a hard
+ * stop, a cancellation) produces the same report shape (one line per authored
+ * step, at the same depth) as a run where it entered, and reports stay
+ * comparable run-to-run. Nested blocks expand (their literal steps are known);
+ * a `run:` composition stays one line, matching how post-hard-stop skips report
  * a fragment that was never loaded. `scope` is the scope the steps would have
  * executed in — already the block's child scope, not the marker's.
  */
@@ -1742,7 +1867,29 @@ function reportBlockSkipped(
       ...depthOf(scope),
       ...(step.kind === "echo" ? { message: step.message } : {}),
     });
-    if (step.kind === "when") reportBlockSkipped(state, step.steps, childScope(scope), reason);
+    const inner = blockSteps(step);
+    if (inner) reportBlockSkipped(state, inner, childScope(scope), reason);
+  }
+}
+
+/**
+ * Dispatch a block directive to its executor. The `never` default arm is the
+ * run-time site a kind registered in BLOCK_DIRECTIVE_KEYS cannot miss: an
+ * unhandled registered kind fails tsc here instead of returning silently and
+ * leaving the block out of the report entirely, not even its own marker.
+ * Preventing execLeafStep's "unsupported step kind" error is the isBlockStep
+ * gate's doing, not this arm's - a registered kind never reaches the leaf
+ * switch. Binds `step.kind` rather than `step` - while the registry has one
+ * entry BlockStep is not a union, so only the discriminant narrows to `never`.
+ */
+async function execBlockStep(state: ExecState, step: BlockStep, scope: StepScope): Promise<void> {
+  switch (step.kind) {
+    case "when":
+      return execWhenStep(state, step, scope);
+    default: {
+      const unhandled: never = step.kind;
+      void unhandled;
+    }
   }
 }
 
@@ -2064,6 +2211,7 @@ async function execLeafStep(
     case "type":
     case "await":
     case "assert":
+    case "idle":
     case "scroll-to":
     case "pinch":
     case "rotate": {
@@ -2075,7 +2223,25 @@ async function execLeafStep(
         // A run cancelled mid-directive is a skip (matching the pre-step guard
         // and `wait`), never a step failure — the app did nothing wrong.
         if (r.aborted) return { ...base, status: "skip", reason: r.reason };
-        return { ...base, status: r.ok ? "pass" : "fail", reason: r.reason };
+        // `indeterminate` is `idle`'s only non-passing outcome: a screen that
+        // merely kept moving passes with a warning, and so does one that
+        // rendered nothing, so what is left here is a wait that could not run
+        // at all — a tree source that failed, or one that answered and then
+        // wedged. Scoring that `fail` would make CI
+        // read an environment problem as a regression and a QA author reset a
+        // pass streak over it. `error` keeps the run non-ok while saying
+        // plainly that the app was never judged. Scoped to `idle`, whose whole
+        // verdict rests on being able to observe the screen; the selector
+        // conditions keep their existing `fail` mapping.
+        if (!r.ok && r.indeterminate && step.kind === "idle") {
+          return { ...base, status: "error", reason: r.reason };
+        }
+        return {
+          ...base,
+          status: r.ok ? "pass" : "fail",
+          reason: r.reason,
+          ...(r.warning !== undefined ? { warning: r.warning } : {}),
+        };
       } catch (err) {
         return { ...base, status: "error", reason: errMsg(err) };
       }
@@ -2113,15 +2279,46 @@ async function execLeafStep(
     }
 
     case "tool": {
-      // With no device, the step reached here only because its tool declares no
-      // device argument, so there is nothing to inject — binding still strips
-      // any device key the recorded args carried.
-      const args = bindDeviceArgs(registry, step.name, device?.id ?? "", step.args);
+      // A device-less run reaches here only for a tool declaring none of
+      // `DEVICE_ARG_KEYS` — a target key — so binding injects no target and
+      // merely strips any device key the recorded args carried. The `?? ""` is
+      // unreachable for those and must stay unreachable: injecting the empty
+      // string would not fail the step, it would silently retarget it at no
+      // device. A SCOPE key (`devices`) does reach here device-free, which is
+      // the cleanup-flow case `bindDeviceArgs` guards by keeping whatever the
+      // recording scoped — and, when the run device was only auto-detected, it
+      // keeps that even with a device resolved.
+      const args = bindDeviceArgs(
+        registry,
+        step.name,
+        device?.id ?? "",
+        step.args,
+        state.deviceIsExplicit
+      );
       const outputHint = registry.getTool(step.name)?.outputHint;
       if (step.delayMs && !(await sleepOrAbort(step.delayMs, signal))) {
         return { ...base, status: "skip", tool: step.name, reason: "run aborted during delay" };
       }
       try {
+        // These sub-tools can change (or relaunch) the foreground app, so the
+        // `launch:`-derived hint no longer names what is on screen, and a
+        // relaunch is the repair a proven tree outage asks for by name - the
+        // same clear `runLaunch` makes for the directive spelling. Cleared
+        // BEFORE invoking: a tool that throws mid-way may still have switched
+        // apps, and a stale hint is worse than no hint (tree reads fall back to
+        // plain auto-resolution, today's behavior).
+        if (FOREGROUND_CHANGING_TOOLS.has(step.name)) {
+          state.launchedNativeApp = undefined;
+          if (state.treeOutage) state.treeOutage.proven = undefined;
+        }
+        // A nested orchestrator runs its tools outside this run's holder -
+        // `flow-execute` on an ExecState of its own, `run-sequence` on none -
+        // so a tree read or relaunch inside it retires nothing here. Cleared
+        // before the invoke for the same reason as above, and over-clearing
+        // only costs a later gesture a window it would have skipped.
+        if (isNestedOrchestratorTool(step.name) && state.treeOutage) {
+          state.treeOutage.proven = undefined;
+        }
         const result = await invokeSubTool(registry, ctx, step.name, args);
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;
@@ -2142,6 +2339,23 @@ async function execLeafStep(
             status: nested.status,
             tool: step.name,
             reason: nested.reason,
+            result,
+            outputHint,
+            args,
+          };
+        }
+        if (isDebuggerNotConnectedResult(step.name, result)) {
+          // Keep `detail` in the report: it is the only place the underlying
+          // error text lives (device_mismatch's guidance points the agent at
+          // the logicalDeviceIds "listed in the detail message", and the
+          // metro_not_running `got:` fragment names what actually answered the
+          // port). The full structured result rides along like a passing
+          // step's would, so nothing the tool returned is dropped.
+          return {
+            ...base,
+            status: "fail",
+            tool: step.name,
+            reason: `debugger not connected (${result.reason}): ${result.detail} — ${result.guidance}`,
             result,
             outputHint,
             args,
@@ -2193,8 +2407,13 @@ function errMsg(err: unknown): string {
  * name must then appear in that flow's own directory listing byte-for-byte — a
  * case-insensitive filesystem opens files under spellings no directory entry
  * carries, and the name is what keys the report and `__baselines__/` (see
- * {@link classifyOnDiskSpelling}). Name and project_root are validated in every
- * branch.
+ * {@link classifyOnDiskSpelling}). Name is validated on the branch that has one;
+ * project_root is validated up front, before either branch, since only the
+ * `name` branch would otherwise reach a check.
+ *
+ * Resolution is pure: it reads and mutates no shared state, so replaying a flow
+ * in one project can never rebind the paths of a recording in progress in
+ * another (or in the same project on another agent).
  */
 export async function resolveFlowSource(
   params: {
@@ -2218,7 +2437,14 @@ export async function resolveFlowSource(
     });
   }
 
-  setActiveProjectRoot(params.project_root);
+  // Before either branch, so both are covered. `getFlowPath` validates the root
+  // on the `name` branch only, and deleting `setActiveProjectRoot` — which ran
+  // here, unconditionally, and whose body is today's assertValidProjectRoot —
+  // removed the check on the `flow_path` branch entirely, letting relative and
+  // ".."-bearing roots through. Nothing reads project_root on that branch
+  // today, so this restores a guardrail rather than fixing a live exploit; it
+  // is here so a future reader of it does not have to establish that.
+  assertValidProjectRoot(params.project_root);
 
   if (params.flow_path !== undefined) {
     if (flowPathInput?.viaUpload) {
@@ -2390,7 +2616,7 @@ export async function resolveFlowSource(
 
   const flowName = params.name!;
   assertSafeFlowName(flowName);
-  const expected = getFlowPath(flowName);
+  const expected = getFlowPath(params.project_root, flowName);
   // A path the boundary materialized from uploaded content is a fresh temp
   // file this process itself created (see file-inputs.ts) — trusted as-is, and
   // returned ahead of the on-disk-spelling gate below deliberately: the only
