@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { getScreenshotScale } from "../src/utils/simulator-client";
-import { linesClaimingCaptureSize, readAgentDocs } from "./helpers/size-claims";
+import { linesClaimingSize, readAgentDocs } from "./helpers/size-claims";
 
 let docs: Array<{ name: string; text: string }> = [];
 
@@ -16,19 +16,21 @@ beforeAll(async () => {
 // any one file's wording — the error string is the source of truth, and a skill
 // that adds a claim satisfies the rule by explaining it rather than by updating
 // a number here. Per file, not per line: a page that already names the rejection
-// is trusted for the claims it makes below.
+// is trusted for the claims it makes below. Narrowing the vocabulary to lines
+// that also say `screenshot` or `scale` was measured against the corpus and
+// excluded nothing, while letting "baselines are captured at full resolution"
+// through — so the whole vocabulary counts, and an unrelated `1:1` is expected to
+// fail here and be re-read rather than pattern-matched away.
 describe("agent docs reaching for a full-resolution screenshot", () => {
   it("finds some, so the per-file check below cannot pass vacuously", () => {
-    expect(docs.filter(({ text }) => linesClaimingCaptureSize(text).length > 0)).not.toHaveLength(
-      0
-    );
+    expect(docs.filter(({ text }) => linesClaimingSize(text).length > 0)).not.toHaveLength(0);
   });
 
   it("every one of them names the emulators that reject it", () => {
     const unescorted = docs
-      .filter(({ text }) => linesClaimingCaptureSize(text).length > 0)
+      .filter(({ text }) => linesClaimingSize(text).length > 0)
       .filter(({ text }) => !text.includes("wrong data size"))
-      .map(({ name, text }) => `${name}: ${linesClaimingCaptureSize(text)[0]}`);
+      .map(({ name, text }) => `${name}: ${linesClaimingSize(text)[0]}`);
     expect(unescorted).toEqual([]);
   });
 });

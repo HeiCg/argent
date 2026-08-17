@@ -48,17 +48,6 @@ export function linesClaimingSize(text: string): string[] {
 }
 
 /**
- * The same, narrowed to lines that are about a screenshot capture. The
- * vocabulary alone is too broad for a corpus this size — a skill describing a
- * full-size modal, or a tree that maps 1:1 onto another, is not making a claim
- * about this parameter and must not be made to carry an Android framebuffer
- * caveat to satisfy a check.
- */
-export function linesClaimingCaptureSize(text: string): string[] {
-  return linesClaimingSize(text).filter((line) => /screenshot|\bscale\b/i.test(line));
-}
-
-/**
  * The strings a tool puts in front of an agent: the description, the schema a
  * client is actually served, the search hint, and the progress messages. Read
  * through `advertisedSchema` rather than `zodSchema.shape`, because a
