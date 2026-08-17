@@ -255,8 +255,9 @@ export function platformFromArgs(data: unknown): TelemetryPlatform | null {
 /**
  * Attribution for a sub-tool an orchestrator dispatches: the outer request's AI
  * client is inherited unchanged, but the platform is re-derived from the child's
- * OWN device arg — `udid` / `device_id` / `devices` / `avdName`, whichever it
- * spells. Orchestrators like flow-execute carry no platform (and a flow can span
+ * OWN device arg — `udid` / `device_id` / `devices` / `avdName` /
+ * `harmonyInstance`, whichever it spells. Orchestrators like flow-execute carry
+ * no platform (and a flow can span
  * several devices), so the child's device arg is the only correct source; the
  * parent's platform is the fallback when the child has none. A replayed
  * `stop-all-simulator-servers` step is the `devices` case, and it resolves here

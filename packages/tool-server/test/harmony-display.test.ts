@@ -38,11 +38,17 @@ function dump(...screens: string[]): string {
   ].join("\n");
 }
 
-/** One panel's line, in the field order the render service prints it. */
-function screenLine(index: number, power: string, size: string): string {
+/**
+ * One panel's line, in the field order the render service prints it.
+ *
+ * `physical` defaults to the render size because that is what the measured
+ * emulator prints — which is also why it has to be settable: identical numbers
+ * cannot show which of the two fields was read.
+ */
+function screenLine(index: number, power: string, size: string, physical = size): string {
   return (
     `screen[${index}]: id=${index}, powerStatus=${power}, backlight=1, ` +
-    `screenType=EXTERNAL_TYPE, render resolution=${size}, physical resolution=${size}, ` +
+    `screenType=EXTERNAL_TYPE, render resolution=${size}, physical resolution=${physical}, ` +
     `isVirtual=false, skipFrameInterval=1, expectedRefreshRate=-1, skipFrameStrategy=0`
   );
 }
@@ -62,8 +68,21 @@ describe("harmonyDisplay", () => {
     answer(dump(AWAKE));
 
     // Literals, not a re-derivation of the fixture: the emulator was measured at
-    // 1320x2856, and `physical resolution` on the same line is the same numbers,
-    // so a parse that took the wrong field would still look right against itself.
+    // 1320x2856.
+    await expect(harmonyDisplay(CONNECT_KEY)).resolves.toEqual({
+      width: 1320,
+      height: 2856,
+      screenOn: true,
+    });
+  });
+
+  it("takes the render resolution, not the physical one beside it", async () => {
+    // The two agree on the measured emulator, so nothing there can tell which
+    // field the parse read. They part company wherever the panel is scaled, and
+    // the answer feeds `toDevicePoint` — read the wrong one and every tap and
+    // swipe lands somewhere else.
+    answer(dump(screenLine(0, "POWER_STATUS_ON", "1320x2856", "2640x5712")));
+
     await expect(harmonyDisplay(CONNECT_KEY)).resolves.toEqual({
       width: 1320,
       height: 2856,

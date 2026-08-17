@@ -317,6 +317,36 @@ describe("redactSecretsFromError", () => {
     }
   });
 
+  it("covers both splits for a secret that has a space AND a percent", () => {
+    // The two paths cut the same value differently, so only a value with both
+    // separators tells them apart: a phone runs `injectAndroidText` over the
+    // WHOLE text and breaks at the `%`, while the TV remote hands it one word at
+    // a time and each word is broken at its own `%`. Either source alone leaves
+    // the other path's piece unredacted.
+    // `pass admin%` spans the space, so only the whole-value split yields it;
+    // `admin%` is a cut inside the second word, so only the per-word split does.
+    const value = "hunter2%pass admin%root";
+    for (const piece of ["pass admin%", "admin%"]) {
+      const err = new Error(`adb -s emulator-5554 shell input text '${piece}' failed`);
+      redactSecretsFromError(err, [{ name: "APP_PASSWORD", value }]);
+      expect(err.message, piece).toBe(
+        "adb -s emulator-5554 shell input text '{{secret:APP_PASSWORD}}' failed"
+      );
+    }
+  });
+
+  it("redacts a secret shorter than the piece floor when it arrives whole", () => {
+    // The floor is about PIECES. A short value still reaches a message intact,
+    // and dropping it for being short would hand over the whole credential.
+    const err = new Error(
+      "uitest uiInput text '911' failed on 127.0.0.1:5555: Invalid parameters."
+    );
+    redactSecretsFromError(err, [{ name: "PIN", value: "911" }]);
+    expect(err.message).toBe(
+      "uitest uiInput text '{{secret:PIN}}' failed on 127.0.0.1:5555: Invalid parameters."
+    );
+  });
+
   it("leaves the diagnostic readable around the fragment it redacts", () => {
     // Only the pieces the backends really send are searched for, not every
     // substring: a value that merely CONTAINS a word of the diagnostic must not
@@ -363,6 +393,23 @@ describe("redactSecretsFromError", () => {
     redactSecretsFromError(err, [{ name: "KEY", value }]);
     expect(performance.now() - startedAt).toBeLessThan(250);
     expect(err.message).toBe("adb -s emulator-5554 shell input text '{{secret:KEY}}' failed");
+  });
+
+  it("redacts a secret past the length a regex could hold", () => {
+    // The scrub must not be built out of the secret in a form that can refuse to
+    // compile: an alternation `RegExp` throws past 32768 characters, and the
+    // `SyntaxError` quotes the pattern — so the one call that exists to keep the
+    // credential out of the message would hand over every character of it. A
+    // base64 keystore or a cert bundle reaches this size, and `paste` is the
+    // documented way to enter one.
+    const value = "A".repeat(40_000);
+    const err = new Error(
+      `adb -s emulator-5554 shell input text '${value}' failed: device offline`
+    );
+    expect(() => redactSecretsFromError(err, [{ name: "KEY", value }])).not.toThrow();
+    expect(err.message).toBe(
+      "adb -s emulator-5554 shell input text '{{secret:KEY}}' failed: device offline"
+    );
   });
 
   it("still scrubs the raw value when nothing quoted it", () => {

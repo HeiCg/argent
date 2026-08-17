@@ -157,11 +157,6 @@ function secretSpellings(value: string): string[] {
   return [...spellings];
 }
 
-/** Escaped for literal use in a `RegExp` (`RegExp.escape` needs Node 23). */
-function regExpLiteral(text: string): string {
-  return text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
-}
-
 /**
  * Scrub resolved secret values from an error before it propagates — a backend
  * failure can echo its input (e.g. Android typing surfaces the device-side
@@ -182,15 +177,40 @@ export function redactSecretsFromError(
     }
   }
   if (marked.size === 0) return err;
-  // Longest alternative first, because alternation is ordered: at any position
-  // the whole value must win over a piece of it, or the rest of the value is
-  // left standing beside the marker.
-  const spellings = [...marked.keys()].sort((a, b) => b.length - a.length);
-  const pattern = new RegExp(spellings.map(regExpLiteral).join("|"), "g");
-  // One pass over the original. `replace` never rescans what it substituted in,
-  // so a marker cannot itself be matched and redacted into a nest of markers —
-  // which is what a secret sharing any text with `{{secret:` would otherwise do.
-  const scrub = (s: string) => s.replace(pattern, (hit) => marked.get(hit) ?? hit);
+  // Bucketed by first character, longest first inside each bucket. Longest wins
+  // at a position, or the whole value loses to a piece of itself and the rest of
+  // it is left standing beside the marker.
+  //
+  // Matched by hand rather than by an alternation `RegExp`, which a secret can
+  // be too long to compile into: past 32768 characters the constructor throws a
+  // `SyntaxError` QUOTING THE PATTERN, so the one call that exists to keep the
+  // credential out of the message would hand over the whole of it. A PEM bundle
+  // or a base64 keystore reaches that size, and `paste` invites exactly those.
+  const byFirstChar = new Map<string, string[]>();
+  for (const spelling of [...marked.keys()].sort((a, b) => b.length - a.length)) {
+    const bucket = byFirstChar.get(spelling[0]!);
+    if (bucket) bucket.push(spelling);
+    else byFirstChar.set(spelling[0]!, [spelling]);
+  }
+  // One pass over the original, copying in runs: `cursor` trails the last thing
+  // written out, so what the scrub substitutes in is never itself scanned — a
+  // marker cannot be redacted again into a nest of markers, which is what a
+  // secret sharing any text with `{{secret:` or with its own name would do.
+  const scrub = (s: string) => {
+    let out = "";
+    let cursor = 0;
+    for (let at = 0; at < s.length; ) {
+      const hit = byFirstChar.get(s[at]!)?.find((spelling) => s.startsWith(spelling, at));
+      if (hit === undefined) {
+        at += 1;
+        continue;
+      }
+      out += s.slice(cursor, at) + marked.get(hit);
+      at += hit.length;
+      cursor = at;
+    }
+    return cursor === 0 ? s : out + s.slice(cursor);
+  };
   if (err instanceof Error) {
     err.message = scrub(err.message);
     if (err.stack) err.stack = scrub(err.stack);
