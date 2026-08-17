@@ -140,11 +140,11 @@ function delayLabel(step: Extract<FlowStep, { kind: "tool" }>): string {
   // The runner's own gate: a falsy `delayMs` (absent, 0, NaN) is never slept.
   if (!step.delayMs) return "";
   const ms = Number(step.delayMs);
-  // What `setTimeout` will actually wait. It floors anything under 1ms — and
-  // anything non-numeric, which coerces to NaN — to an immediate tick, so there
-  // is no delay to describe; anything above its 2³¹−1 ceiling is clamped to the
-  // same tick, so there is nothing to describe either.
-  return Number.isFinite(ms) && ms >= 1 && ms <= 2 ** 31 - 1 ? ` (after ${ms}ms)` : "";
+  // `setTimeout`'s accepted window, so the label describes the wait that really
+  // happens. Outside it — under 1ms, above the 2³¹−1 ceiling, or NaN from a
+  // non-numeric coercion — the timer fires on the next tick, so there is no
+  // delay to describe. The range test covers NaN and ±Infinity on its own.
+  return ms >= 1 && ms <= 2 ** 31 - 1 ? ` (after ${ms}ms)` : "";
 }
 
 // ── Step definitions ──
@@ -184,12 +184,9 @@ const POINT_GESTURE_STEP: FlowStepDefinition<Extract<FlowStep, { kind: "tap" | "
   // `flowFile` beside it. Neither kind carries a `delayMs` (only `tool` steps
   // do), so no delayLabel here.
   //
-  // That reasoning is NOT applied file-wide, and the `type` and `await`
-  // definitions show it: `type.submit` (whose `false` suppresses the Enter
-  // press) and `await.timeout` also change what replays and still render
-  // nothing. Neither kind is recorder-built, so both reach an author only
-  // through the finish `summary` — beside the `flowFile` that spells them out.
-  // Rendering them is a fair follow-up, not a gap the per-step view opened.
+  // Four replay-affecting fields are still rendered on neither surface —
+  // `type.submit`, `await.timeout`, `idle.timeout`, `idle.stableFor` — so a
+  // summary line alone does not distinguish two steps differing only in those.
   summary: (step) => {
     const target = step.selector ? yamlSelectorLabel(step.selector) : `(${step.x}, ${step.y})`;
     // Only ×2..×10 is renderable: `times: 1` is the default and never lands in
@@ -278,8 +275,13 @@ const FLOW_STEP_DEFINITIONS: {
       (step.within ? ` within ${yamlSelectorLabel(step.within)}` : ""),
     target: (step) => {
       const dir = step.direction !== "down" ? ` (${step.direction})` : "";
-      const within = step.within ? ` within (${selectorLabel(step.within)})` : "";
-      return `${selectorLabel(step.target)}${dir}${within}`;
+      // Named the way flow-actions spells it in its own failure reason ("scroll
+      // container …"), NOT as ` within (…)`: that is how `selectorLabel` renders
+      // a selector's own scope, so the two would read alike while meaning
+      // different things — this one anchors the gesture, that one narrows which
+      // element matches. A step carrying both renders both.
+      const container = step.within ? ` in scroll container (${selectorLabel(step.within)})` : "";
+      return `${selectorLabel(step.target)}${dir}${container}`;
     },
   },
   "pinch": {

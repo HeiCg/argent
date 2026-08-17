@@ -2744,8 +2744,8 @@ describe("the flow-add-step schema the CLI tests hand-copy", () => {
 // summarizeStep is the single spelling shared by the recorder's per-step
 // `recorded` line and flow-finish-recording's `summary`. `times` (tap),
 // `duration` (long-press) and `delayMs` (tool) change what replays, so a
-// summary that drops them misdescribes the file. long-press steps have no
-// live recorder path, so this is the only coverage of that rendering.
+// summary that drops them misdescribes the file. These exercise it through the
+// recording tools; flow-step-definitions.test.ts pins every kind directly.
 describe("summarizeStep rendering", () => {
   it("renders a tap's times count", () => {
     // A recorded selector spells the id key `identifier`; selectorToYaml maps it

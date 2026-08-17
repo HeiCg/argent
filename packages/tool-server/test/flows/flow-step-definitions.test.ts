@@ -34,10 +34,24 @@ const CASES = {
       target: undefined,
     },
     {
-      // A delayMs above setTimeout's 2³¹−1 ceiling sleeps a clamped tick, so
-      // the summary describes no delay. Reachable only from a hand-edited file
-      // (delayMs is copied unvalidated), hence the cast.
-      step: { kind: "tool", name: "screenshot", args: {}, delayMs: 3e9 as number },
+      // The ceiling itself: setTimeout accepts 2³¹−1, so this is a real
+      // ~24.8-day sleep the runner performs and the label must keep.
+      step: { kind: "tool", name: "screenshot", args: {}, delayMs: 2 ** 31 - 1 },
+      summary: "1. tool: screenshot {} (after 2147483647ms)",
+      target: undefined,
+    },
+    {
+      // One past it sleeps a clamped tick instead, so the summary describes no
+      // delay. Neither bound is hand-edit-only: `flow_add_step`'s `delayMs` is
+      // `z.number().int().min(0)` with no ceiling, so the recorder's own
+      // per-step line renders these too.
+      step: { kind: "tool", name: "screenshot", args: {}, delayMs: 2 ** 31 },
+      summary: "1. tool: screenshot {}",
+      target: undefined,
+    },
+    {
+      // Below setTimeout's 1ms floor, likewise no delay to describe.
+      step: { kind: "tool", name: "screenshot", args: {}, delayMs: 0.5 },
       summary: "1. tool: screenshot {}",
       target: undefined,
     },
@@ -110,6 +124,16 @@ const CASES = {
       step: { kind: "tap", selector: { text: "Submit" }, times: 3 },
       summary: '1. tap: {"text":"Submit"} ×3',
       target: '"Submit"',
+    },
+    {
+      // A selector carrying several fields at once — the order the report
+      // target concatenates them in is what tells two similar steps apart.
+      step: {
+        kind: "tap",
+        selector: { text: "Save", identifier: "save-btn", role: "button" },
+      },
+      summary: '1. tap: {"text":"Save","role":"button","id":"save-btn"}',
+      target: '"Save" id=save-btn role=button',
     },
     {
       // parseTapTimes normalizes `times: 1` to absent, so no file spells a
@@ -203,7 +227,30 @@ const CASES = {
         within: { identifier: "list" },
       },
       summary: '1. scroll-to: {"text":"Footer"} (down) within {"id":"list"}',
+      target: '"Footer" in scroll container (id=list)',
+    },
+    {
+      // The scroll container and a scope ON the target selector are different
+      // relationships, and a step may carry both: the report has to keep them
+      // apart, or these two steps read alike while scrolling different things.
+      step: {
+        kind: "scroll-to",
+        target: { text: "Footer", within: { identifier: "list" } },
+        direction: "down",
+      },
+      summary: '1. scroll-to: {"text":"Footer","within":{"id":"list"}} (down)',
       target: '"Footer" within (id=list)',
+    },
+    {
+      step: {
+        kind: "scroll-to",
+        target: { text: "Delete", within: { identifier: "cards" } },
+        direction: "up",
+        within: { identifier: "settings" },
+      },
+      summary:
+        '1. scroll-to: {"text":"Delete","within":{"id":"cards"}} (up) within {"id":"settings"}',
+      target: '"Delete" within (id=cards) (up) in scroll container (id=settings)',
     },
   ],
   "pinch": [
@@ -233,6 +280,20 @@ const CASES = {
       step: { kind: "snapshot", name: "home", maxMismatch: 2.5 },
       summary: "1. snapshot: home maxMismatch 2.5",
       target: '"home"',
+    },
+    {
+      // `maxMismatch: 0` — pixel-exact, the strictest setting a flow can ask
+      // for and the one value a truthiness guard would drop from the line.
+      step: { kind: "snapshot", name: "home", maxMismatch: 0 },
+      summary: "1. snapshot: home maxMismatch 0",
+      target: '"home"',
+    },
+    {
+      // Both suffixes together: the order they concatenate in is otherwise
+      // pinned by nothing, and this is the shape a real baseline step takes.
+      step: { kind: "snapshot", name: "cart", cropOn: { identifier: "total" }, maxMismatch: 1.5 },
+      summary: '1. snapshot: cart cropOn {"id":"total"} maxMismatch 1.5',
+      target: '"cart" cropOn id=total',
     },
   ],
 } satisfies Record<FlowStep["kind"], readonly Case[]>;
