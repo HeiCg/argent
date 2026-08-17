@@ -35,7 +35,7 @@ const zodSchema = z.object({
     .describe(
       "Scale factor (0.01-1.0). Defaults to ARGENT_SCREENSHOT_SCALE env var, or 0.3 if unset for iOS/Android. " +
         "On Chromium the default is 1.0 (no downscale); pass <1 to opt in. Downscaling on Chromium requires the optional `sharp` dependency. " +
-        "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; retry at a lower scale there, or omit `scale` when the capture is a screenshot-diff baseline, which is the size that tool captures its own live side at."
+        "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error. Retry at a lower scale there; for a screenshot-diff baseline omit `scale`, which is where that tool's own live capture lands once its full-resolution attempt fails on the same device."
     ),
   includeImageInContext: z
     .boolean()

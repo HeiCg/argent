@@ -27,7 +27,7 @@ Use normal downscaled `screenshot` calls for UI context and state checks. Use fu
 { "udid": "<UDID>", "scale": 1.0, "includeImageInContext": false }
 ```
 
-Some Android emulators cannot stream a full-resolution frame and reject `scale: 1.0` with a `wrong data size` error. Retry at a lower `scale` there — omitting `scale` altogether is the one that matches, because `screenshot-diff` captures its own live side the same way on those devices, so both sides come out the same size and nothing is resampled.
+Some Android emulators cannot stream a full-resolution frame and reject `scale: 1.0` with a `wrong data size` error. Retry at a lower `scale` there — omitting `scale` altogether is the one that matches, because `screenshot-diff` falls back to that same scale once its own full-resolution capture fails. Both sides then come out the same size unless the tool-server's screenshot scale changed between the two captures, which the summary discloses as `size_normalized`.
 
 Capture the stable baseline before the relevant interaction or before editing whenever feasible. Compare it to the post-change or post-interaction screen after the app reloads, rebuilds, or reaches the state under test.
 
