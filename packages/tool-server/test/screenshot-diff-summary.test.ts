@@ -80,13 +80,13 @@ describe("formatScreenshotDiffSummary", () => {
     expect(summary).not.toContain("confidence=");
   });
 
-  it("labels no text change with a resolution, in any of its five shapes", () => {
+  it("labels no text change with a resolution, in any shape it renders", () => {
     // The bounds these lines carry are rescaled out of each image's own
     // coordinate space, so they are the stretch of the summary most tempting to
     // label with one — and the sweeps in screenshot-diff.test.ts run on fixtures
     // that detect no text at all, leaving every branch below unrendered.
     const bounds = { x: 10, y: 20, width: 100, height: 24 };
-    const summary = formatScreenshotDiffSummary({
+    const input: Parameters<typeof formatScreenshotDiffSummary>[0] = {
       totalPixels: 100,
       differentPixels: 12,
       mismatchPercentage: 12,
@@ -141,23 +141,58 @@ describe("formatScreenshotDiffSummary", () => {
             source: "ocr",
             reasonCodes: ["stroke_width_delta"],
           },
+          // Movement and appearance for one text merge into a sixth shape, and
+          // only that one renders the `- appearance:` bullet — the five above
+          // reach it through neither branch.
+          {
+            kind: "moved",
+            text: "Moved and restyled",
+            normalizedText: "moved and restyled",
+            baselineBounds: bounds,
+            currentBounds: { ...bounds, y: 60 },
+            delta: { x: 0, y: 40, width: 0, height: 0 },
+            confidence: 0.9,
+            source: "ocr",
+            reasonCodes: ["exact_normalized_match", "position_delta"],
+          },
+          {
+            kind: "font_changed",
+            text: "Moved and restyled",
+            normalizedText: "moved and restyled",
+            baselineBounds: bounds,
+            currentBounds: { ...bounds, y: 60 },
+            confidence: 0.9,
+            source: "ocr",
+            reasonCodes: ["text_color_delta", "component_shape_delta"],
+          },
         ],
       },
-    });
+    };
+    const summary = formatScreenshotDiffSummary(input);
 
     // Each branch actually rendered, or the sweep below passes over prose that
     // was never produced.
-    expect(summary).toContain("- text_analysis: status=ok provider=ocr shown=5 total=5 omitted=0");
-    for (const label of [
+    expect(summary).toContain("- text_analysis: status=ok provider=ocr shown=6 total=6 omitted=0");
+    for (const line of [
       "- Moved:",
       "- Appeared:",
       "- Disappeared:",
       "- Changed:",
       "- Restyled:",
+      "- Moved/restyled:",
+      "  - appearance: color, shape/rendering",
     ]) {
-      expect(summary).toContain(label);
+      expect(summary).toContain(line);
     }
     expect(linesClaimingSize(summary)).toEqual([]);
+
+    // Every bounds and delta above renders a second way — raw device pixels,
+    // taken when the result carries no usable size to normalize against. Those
+    // are the numbers a resolution reads as a unit for, so sweep that shape too.
+    const rawSummary = formatScreenshotDiffSummary({ ...input, imageSize: undefined });
+    expect(rawSummary).toContain("x=10 y=20 w=100 h=24");
+    expect(rawSummary).toContain("delta: dx=0 dy=+20 dw=0 dh=0");
+    expect(linesClaimingSize(rawSummary)).toEqual([]);
   });
 
   it("summarizes font evidence with semantic labels", () => {

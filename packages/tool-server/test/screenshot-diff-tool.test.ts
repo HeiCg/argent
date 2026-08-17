@@ -382,9 +382,15 @@ describe("screenshotDiffTool", () => {
     expect(shape.captureCurrent.description).toContain(
       `ARGENT_SCREENSHOT_SCALE, ${fallback} by default`
     );
+    // The platform list, not just the figure after it: which side of the split
+    // a platform sits on is the half an agent acts on, and it is free to be
+    // re-partitioned while the figure stays right. Apple TV takes the resolved
+    // scale (index.ts hands `tvScreenshot` the `?? getScreenshotScale()` value,
+    // which sips-downscales below 1), Chromium is handed `params.scale` alone.
     expect(scaleDescription).toContain(
-      `ARGENT_SCREENSHOT_SCALE env var, or ${fallback} whenever that is unset or outside (0,1]`
+      `On iOS, Android, Apple TV and Vega, defaults to ARGENT_SCREENSHOT_SCALE env var, or ${fallback} whenever that is unset or outside (0,1]`
     );
+    expect(scaleDescription).toContain("On Chromium the default is 1.0 (no downscale)");
     // The hazard the rest of that paragraph exists for, on the one surface an
     // agent reads with no skill loaded — `screenshot` is alwaysLoad.
     expect(scaleDescription).toContain("wrong data size");

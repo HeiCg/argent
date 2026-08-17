@@ -140,9 +140,18 @@ describe("screenshot tool", () => {
     await httpScreenshot({ apiUrl: "moq://remote", transport } as never, "LandscapeLeft");
     expect(seen).toEqual([{ scale: getScreenshotScale() }]);
 
+    // Both halves verbatim, not the two ends of the sentence: matching only
+    // those leaves the middle free, and the middle is where a platform gets
+    // sorted into the wrong list. A tethered iPhone belongs to the first —
+    // `classifyDevice` calls it `ios`, and no branch in `execute` splits it from
+    // a simulator, so it leaves on the same wire asserted above.
     const description = createScreenshotTool(registry).zodSchema!.shape.rotation.description!;
-    expect(description).toContain("Applied on Android and on local iOS simulators");
-    expect(description).toMatch(/remote iOS simulators[^.]*capture unrotated/);
+    expect(description).toContain(
+      "Applied on Android, on local iOS simulators and on tethered iPhones"
+    );
+    expect(description).toContain(
+      "Apple TV, Vega and remote iOS simulators accept it and capture unrotated"
+    );
   });
 
   it("hands Chromium no scale of its own, so nothing is downscaled by default", async () => {

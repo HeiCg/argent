@@ -25,7 +25,7 @@ const zodSchema = z.object({
     .enum(["Portrait", "LandscapeLeft", "LandscapeRight", "PortraitUpsideDown"])
     .optional()
     .describe(
-      "Orientation override for the screenshot. Applied on Android and on local iOS simulators, and on Chromium after Page.captureScreenshot — where, like downscaling, it needs the optional `sharp` dependency. Apple TV, Vega and remote iOS simulators accept it and capture unrotated."
+      "Orientation override for the screenshot. Applied on Android, on local iOS simulators and on tethered iPhones, and on Chromium after Page.captureScreenshot — where, like downscaling, it needs the optional `sharp` dependency. Apple TV, Vega and remote iOS simulators accept it and capture unrotated."
     ),
   scale: z
     .number()

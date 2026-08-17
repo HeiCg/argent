@@ -99,6 +99,26 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
     expect(unescorted).toEqual([]);
   });
 
+  it("names the way out wherever it names the rejection", () => {
+    // Naming the rejection exempts every claim in the section, so what the page
+    // says to do instead carries the whole weight — and the check above cannot
+    // see it go. Strip the `ARGENT_SCREENSHOT_SCALE` 1.0 clause from all three
+    // pages and the corpus stays green, which is the exact truncation these
+    // guards were written after: omitting `scale` is only a way out while the
+    // env var is below 1, and at 1.0 it re-sends the request that just failed.
+    //
+    // Per page, not per section: the same pages carry compressed prompt
+    // templates that name the rejection in a line with no room for the remedy,
+    // and it is the page an agent reads.
+    const escorted = docs.filter(({ text }) => text.includes("wrong data size"));
+    expect(escorted.map(({ name }) => name)).not.toHaveLength(0);
+    expect(
+      escorted
+        .filter(({ text }) => !/ARGENT_SCREENSHOT_SCALE[^.]*\b1(?:\.0+)?\b/i.test(text))
+        .map(({ name }) => name)
+    ).toEqual([]);
+  });
+
   it("reaches all three published directories", () => {
     // Narrowing the walk is otherwise invisible: rules/ and agents/ simply stop
     // being read.
