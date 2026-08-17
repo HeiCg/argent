@@ -1,11 +1,11 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { getScreenshotScale } from "../src/utils/simulator-client";
-import { linesClaimingSize, readSkillDocs } from "./helpers/size-claims";
+import { linesClaimingCaptureSize, readAgentDocs } from "./helpers/size-claims";
 
 let docs: Array<{ name: string; text: string }> = [];
 
 beforeAll(async () => {
-  docs = await readSkillDocs();
+  docs = await readAgentDocs();
 });
 
 // `screenshot` passes `scale` straight through and simulator-client turns the
@@ -15,31 +15,31 @@ beforeAll(async () => {
 // skills and keeps being copied into new ones, so pin the pairing rather than
 // any one file's wording — the error string is the source of truth, and a skill
 // that adds a claim satisfies the rule by explaining it rather than by updating
-// a number here.
-//
-// Same vocabulary as the tool descriptions, deliberately: two lists that each
-// miss what the other catches is how `full size` stayed legal in markdown while
-// being banned in the description that ships beside it.
-describe("skill docs reaching for a full-resolution screenshot", () => {
+// a number here. Per file, not per line: a page that already names the rejection
+// is trusted for the claims it makes below.
+describe("agent docs reaching for a full-resolution screenshot", () => {
   it("finds some, so the per-file check below cannot pass vacuously", () => {
-    expect(docs.filter(({ text }) => linesClaimingSize(text).length > 0)).not.toHaveLength(0);
+    expect(docs.filter(({ text }) => linesClaimingCaptureSize(text).length > 0)).not.toHaveLength(
+      0
+    );
   });
 
   it("every one of them names the emulators that reject it", () => {
     const unescorted = docs
-      .filter(({ text }) => linesClaimingSize(text).length > 0)
+      .filter(({ text }) => linesClaimingCaptureSize(text).length > 0)
       .filter(({ text }) => !text.includes("wrong data size"))
-      .map(({ name, text }) => `${name}: ${linesClaimingSize(text)[0]}`);
+      .map(({ name, text }) => `${name}: ${linesClaimingCaptureSize(text)[0]}`);
     expect(unescorted).toEqual([]);
   });
 });
 
-describe("skill docs quoting the tool-server's screenshot scale", () => {
+describe("agent docs quoting the tool-server's screenshot scale", () => {
   // Spelled as a percentage in prose ("30% of original resolution") rather than
   // as the 0.3 the tool descriptions quote, so it drifts out of reach of the
   // cross-surface check in screenshot-diff-tool.test.ts.
   const quotes = (text: string): string[] =>
     text.split("\n").filter((line) => line.includes("of original resolution"));
+  const quoted = (): string => `${getScreenshotScale() * 100}% of original resolution`;
 
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -59,8 +59,8 @@ describe("skill docs quoting the tool-server's screenshot scale", () => {
       // Every such line, not the first: a second one is where a stale figure
       // sits unread while the first keeps the check green.
       for (const line of quotes(text)) {
-        if (!line.includes(`${getScreenshotScale() * 100}% of original resolution`)) {
-          wrong.push(`${name}: stale figure — ${line.trim()}`);
+        if (!line.includes(quoted())) {
+          wrong.push(`${name}: does not quote "${quoted()}" — ${line.trim()}`);
         }
         // …and it says which platforms that is the default for. Chromium passes
         // no scale of its own, so a claim that names no platform is false there,

@@ -41,10 +41,7 @@ export function formatScreenshotDiffSummary(result: ScreenshotDiffSummaryInput):
   lines.push(`- status: ${status}`);
 
   if (result.sizeNormalization) {
-    // Placed directly under the status so it frames every figure below it, and
-    // worded to stay true on both paths: when nothing differed there are no
-    // pixel or text differences to caveat, and when something did they may be
-    // resampling artifacts rather than real changes.
+    // Placed directly under the status so it frames every figure below it.
     const { baseline, current, comparedAt } = result.sizeNormalization;
     lines.push(
       `- size_normalized: baseline=${formatSize(baseline)} current=${formatSize(current)} compared_at=${formatSize(comparedAt)}`,

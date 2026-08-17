@@ -5,18 +5,15 @@ import { PNG } from "pngjs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-diff";
-import { linesClaimingSize, readSkillDocs } from "./helpers/size-claims";
+import { linesClaimingSize, readAgentDocs } from "./helpers/size-claims";
 
 // The two bullets under `size_normalized`, pinned whole: what must not happen is
 // a *prescription* being appended to an otherwise-correct sentence, and no
 // pattern separates prescribing a resolution from mentioning one. Constraints to
-// preserve when editing them: the caveat cuts both ways, because a downscale
-// erases fine differences as readily as it invents them (a 1px hairline shifting
-// shade goes from 1179 changed pixels to 0 at the 0.3 fallback, taking the
-// text pass with it — it is gated on a non-zero pixel diff); and the remedy
-// prescribes no scale, because the formatter is handed only sizes — it never
-// learns which side was captured live, or whether either was, so any scale it
-// named would be wrong for some reader.
+// keep when editing them: the caveat cuts both ways, because a downscale erases
+// fine differences as readily as it invents them; and the remedy prescribes no
+// scale, because the formatter is handed only sizes — it never learns which side
+// was captured live, or whether either was.
 const RESIZE_CAVEAT =
   "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; the differences below may include resampling artifacts, and differences finer than the downscale — hairlines, subpixel text — can be erased by it, so a clean result here is weaker evidence than an unnormalized one; the diff image is at compared_at rather than full size";
 const RESIZE_REMEDY =
@@ -191,9 +188,7 @@ describe("diffPngFiles", () => {
     expect(lines).toContain(DIFF_IMAGES);
     // The caveat's own denial is the only line here allowed to reach for that
     // vocabulary at all: a second one is a label on an artifact that is not at
-    // that size — the shape the diff_images line invites. Pinned as the whole
-    // collection, so a synonym ("still written at native resolution") is an
-    // extra element rather than a phrase a substring count walks past.
+    // that size — the shape the diff_images line invites.
     expect(linesClaimingSize(result.summary)).toEqual([RESIZE_CAVEAT]);
     // Exactly one line may reach for the knob, because a prescription creeps
     // back as a second bullet beside the pinned one rather than as an edit to
@@ -302,7 +297,7 @@ describe("diffPngFiles", () => {
     // this status is not a plain pass goes quietly inert. Selected by what the
     // caveat says rather than by the word under test, so the check cannot pass
     // by matching itself — and floored, so a reword cannot empty it silently.
-    const caveats = (await readSkillDocs()).filter(({ text }) =>
+    const caveats = (await readAgentDocs()).filter(({ text }) =>
       text.includes("downscale can erase")
     );
     expect(caveats.length).toBeGreaterThanOrEqual(2);

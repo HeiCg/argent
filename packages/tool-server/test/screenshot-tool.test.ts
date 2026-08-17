@@ -100,11 +100,10 @@ describe("screenshot tool", () => {
       { artifacts: new ArtifactStore() }
     );
 
-    // `rotation` rides the same object and the same post-processing branch, and
-    // the description documents it for Chromium in particular; dropping it there
-    // returns an unrotated image and says nothing. Read off the call rather than
-    // matched as a shape, so an absent `scale` key reads the same as the
-    // explicit undefined it is today — only the value is load-bearing.
+    // `rotation` rides the same object and the same post-processing branch, so
+    // dropping it returns an unrotated image and says nothing. Read off the call
+    // rather than matched as a shape: an absent `scale` key reads the same as
+    // the explicit undefined it is today.
     const opts = captureScreenshot.mock.calls[0]![0] as { scale?: number; rotation?: string };
     expect(opts.scale).toBeUndefined();
     expect(opts.rotation).toBe("LandscapeLeft");

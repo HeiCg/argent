@@ -10,9 +10,9 @@ import { advertisedSchema } from "./catalog";
  * at whatever size the comparison ran at, so every one of these is a claim that
  * has to be checked against `captureLiveInput` and `writeDiffArtifacts`.
  *
- * One list for every surface. Two lists that each miss what the other catches
- * is how `full size` — the exact wording of the label this fix removed — stayed
- * legal in skill markdown while being banned in the tool description.
+ * A vocabulary, not a paraphrase detector: a claim that shares no token here
+ * ("the diff keeps the capture's own dimensions") goes unseen. One list for both
+ * surfaces, since two lists each miss what the other catches.
  *
  * `native resolution` is deliberately absent: argent-screen-recording uses it
  * correctly for h264 frames, which never go through this parameter. A range
@@ -21,13 +21,9 @@ import { advertisedSchema } from "./catalog";
  * `upscale: 1` and `ARGENT_SCREENSHOT_SCALE` out.
  */
 const CLAIMS_SIZE =
-  /full[- ](?:resolution|res\b|size)|\bunscaled\b|\b1:1\b|100%\s*(?:of\s+)?(?:the\s+)?(?:original\s+|device\s+|native\s+)?(?:scale|resolution)|\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b/i;
+  /full[- ](?:resolution|res\b|size)|\bunscaled\b|\b1:1\b|never downscaled|not resampled|100%\s*(?:of\s+)?(?:the\s+)?(?:original\s+|device\s+|native\s+)?(?:scale|resolution)|\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b/i;
 
-/**
- * Whitespace is not part of a claim: a soft line wrap between "full" and
- * "resolution" reads identically to an agent and to a maintainer, and would
- * otherwise slip a banned phrase past a single-space pattern.
- */
+/** A line wrap inside "full resolution" must not hide it. */
 const flatten = (text: string): string => text.replace(/\s+/g, " ").trim();
 
 /**
@@ -52,11 +48,25 @@ export function linesClaimingSize(text: string): string[] {
 }
 
 /**
- * Every string a tool puts in front of an agent: the description, the schema a
+ * The same, narrowed to lines that are about a screenshot capture. The
+ * vocabulary alone is too broad for a corpus this size — a skill describing a
+ * full-size modal, or a tree that maps 1:1 onto another, is not making a claim
+ * about this parameter and must not be made to carry an Android framebuffer
+ * caveat to satisfy a check.
+ */
+export function linesClaimingCaptureSize(text: string): string[] {
+  return linesClaimingSize(text).filter((line) => /screenshot|\bscale\b/i.test(line));
+}
+
+/**
+ * The strings a tool puts in front of an agent: the description, the schema a
  * client is actually served, the search hint, and the progress messages. Read
  * through `advertisedSchema` rather than `zodSchema.shape`, because a
  * `.describe()` written before `.optional()` is dropped from the shape while
  * still being advertised — a description an agent reads and a sweep does not.
+ *
+ * The progress messages are read as source, so a formatter that returns a
+ * constant declared elsewhere hands back only that identifier.
  */
 export function agentFacingText(def: ToolDefinition<any, any>): Array<[string, string]> {
   const schema = advertisedSchema(def);
@@ -65,9 +75,6 @@ export function agentFacingText(def: ToolDefinition<any, any>): Array<[string, s
   return [
     ["description", def.description ?? ""],
     ["searchHint", def.searchHint ?? ""],
-    // The progress messages read as source rather than as output: two of the
-    // three need a result or a failure signal to render, and a claim written
-    // into one is a literal in the function either way.
     ...Object.entries(interaction).map(([name, formatter]): [string, string] => [
       name,
       typeof formatter === "function" ? formatter.toString() : "",
@@ -79,9 +86,13 @@ export function agentFacingText(def: ToolDefinition<any, any>): Array<[string, s
   ];
 }
 
-/** Every markdown file shipped with a skill, so a claim cannot hide in `references/`. */
-export async function readSkillDocs(): Promise<Array<{ name: string; text: string }>> {
-  const root = path.join(__dirname, "../../../skills/skills");
+/**
+ * Every markdown file the `argent` package ships as agent-facing prose, so a
+ * claim cannot hide in a `references/` page — nor in `rules/argent.md`, which is
+ * loaded on every session rather than on demand.
+ */
+export async function readAgentDocs(): Promise<Array<{ name: string; text: string }>> {
+  const root = path.join(__dirname, "../../../skills");
   const walk = async (dir: string): Promise<string[]> => {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const nested = await Promise.all(
@@ -93,7 +104,11 @@ export async function readSkillDocs(): Promise<Array<{ name: string; text: strin
     );
     return nested.flat();
   };
-  const files = await walk(root);
+  // The three directories `packages/argent/package.json` publishes; `scripts/`
+  // is build tooling and never reaches an agent.
+  const files = (
+    await Promise.all(["skills", "rules", "agents"].map((d) => walk(path.join(root, d))))
+  ).flat();
   return Promise.all(
     files.map(async (file) => ({
       name: path.relative(root, file),

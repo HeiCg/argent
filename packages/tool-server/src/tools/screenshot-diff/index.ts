@@ -54,7 +54,7 @@ const zodSchema = z
       .min(1)
       .optional()
       .describe(
-        "Directory where diff artifacts should be written. Optional — defaults to a temp directory; the diff images are returned in the result either way."
+        "Directory where diff artifacts should be written. Optional — defaults to a temp directory, and wherever they land the result carries them, on every status that produces them."
       ),
   })
   .strict();
@@ -259,14 +259,10 @@ function validateInputSources(params: Params): void {
   }
 }
 
-// Only the live-capture branches call this, and services() declares the
-// simulatorServer for exactly those, so the registry has always resolved it by
-// the time execute() runs. Guard anyway: executeScreenshotDiffTool is exported
-// and a direct caller (e.g. a test) can pass a services map without it — a clear
-// error beats a downstream TypeError on `.captureScreenshot`. That leaves this
-// unreachable on the registry path (and so on the telemetry path), which is why
-// it stays a plain Error without a code — a code here could never bucket a real
-// failure.
+// services() declares the simulatorServer for exactly the live branches, so the
+// registry path always has one; this guards the exported direct caller against a
+// TypeError on `.captureScreenshot`. Unreachable through the registry, and so
+// through telemetry, which is why it carries no failure code.
 function requireSimulatorServer(services: Record<string, unknown>): SimulatorServerApi {
   const api = services.simulatorServer as SimulatorServerApi | undefined;
   if (!api) {
@@ -285,15 +281,13 @@ async function captureLiveInput(params: {
   signal?: AbortSignal;
   captureScreenshot: CaptureScreenshot;
 }): Promise<string> {
-  // Prefer a full-resolution capture for maximum diff fidelity. Some Android
-  // emulator configurations cannot stream a full-res frame — the simulator-server
-  // rejects it with a "wrong data size" framebuffer mismatch — so any failure
-  // retries at whatever getScreenshotScale() resolves (ARGENT_SCREENSHOT_SCALE,
-  // else 0.3); same-aspect normalization in diffPngFiles keeps a scaled capture
-  // diff-compatible with a baseline saved at a different one, until the scale is
-  // small enough that integer rounding moves the aspect ratio. Setting that env to 1.0
-  // leaves nothing to fall back to: the retry re-sends the request that just
-  // failed, so both attempts throw and the second error surfaces.
+  // Full resolution first, for diff fidelity. Some Android emulators cannot
+  // stream a full-res frame — the simulator-server rejects it with a "wrong data
+  // size" framebuffer mismatch — so any failure retries at getScreenshotScale();
+  // same-aspect normalization in diffPngFiles keeps the size difference that
+  // leaves diffable, until integer rounding moves the aspect ratio. At
+  // ARGENT_SCREENSHOT_SCALE=1.0 the retry re-sends the request that just failed,
+  // so both attempts throw and the second error surfaces.
   let capture: Awaited<ReturnType<CaptureScreenshot>>;
   try {
     capture = await params.captureScreenshot(params.api, params.rotation, params.signal, 1.0);

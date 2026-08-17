@@ -134,14 +134,9 @@ describe("screenshotDiffTool", () => {
       { artifacts: new ArtifactStore() }
     );
 
-    // The description's "both images are omitted on dimension_mismatch, where
-    // nothing was compared" — the equal-size test above pins the other arm, and
-    // an omission is what a `toMatchObject` on the present keys cannot see.
     expect(result.summary).toContain("- status: dimension_mismatch");
     expect(Object.keys(result).sort()).toEqual(["summary"]);
     expect((await fs.readdir(dir)).sort()).toEqual(["baseline.png", "current.png"]);
-    // Behaviour and promise together: an agent that reads the description and
-    // then looks for diffPath here has to find the same answer in both.
     expect(screenshotDiffTool.description).toContain(
       "both images are omitted on dimension_mismatch"
     );
@@ -306,15 +301,9 @@ describe("screenshotDiffTool", () => {
     expect(screenshotDiffTool.description).toContain(
       "diffPath is the diff at the size the comparison ran at"
     );
-    // A positive phrase leaves room for a contradicting sentence beside it: a
-    // "(full size)" label three lines below a bullet denying it satisfies every
-    // positive check. So collect the sentences that reach for this vocabulary at
-    // all, across every string either tool puts in front of an agent, and pin
-    // that collection whole. An added claim is an extra element whether it
-    // repeats a pinned phrase verbatim or reaches for a synonym, and a sibling
-    // field is not a place the sweep does not look. Both tools together, because
-    // the claim moves between them: `screenshot` is what captures a diff
-    // baseline, and it is alwaysLoad, so it reaches an agent with no skill open.
+    // A positive phrase leaves room for a contradicting sentence beside it, so
+    // pin the whole collection instead. Both tools, because the claim moves
+    // between them: `screenshot` captures the baseline, and it is alwaysLoad.
     const expected: Record<string, string[]> = {
       // The capture's resolution cannot be banned outright — it is genuinely
       // attempted at full resolution — so the condition is what gets pinned.
@@ -329,15 +318,20 @@ describe("screenshotDiffTool", () => {
       ],
       "screenshot.scale": [
         "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; retry at a lower scale on those devices.",
-        "A screenshot-diff baseline should match what that tool's own live capture produces on the same device — it tries 1.0 and drops to the tool-server's screenshot scale when that fails — so save it at scale: 1.0 where a full frame streams, and with `scale` omitted where it does not, which yields a smaller frame only while ARGENT_SCREENSHOT_SCALE resolves below 1.0 and repeats the rejected request when it does not.",
+        "A screenshot-diff baseline should match what that tool's own live capture produces on the same device — it tries 1.0 and drops to the tool-server's screenshot scale when that fails — so save it at scale: 1.0 where a full frame streams, and with `scale` omitted where it does not — unless ARGENT_SCREENSHOT_SCALE is itself 1.0, where omitting it repeats the rejected request.",
       ],
     };
+    const swept: string[] = [];
     for (const def of [screenshotDiffTool, createScreenshotTool(registry)]) {
       for (const [surface, text] of agentFacingText(def)) {
         const key = `${def.id}.${surface}`;
+        swept.push(key);
         expect(sentencesClaimingSize(text), key).toEqual(expected[key] ?? []);
       }
     }
+    // A pin left behind by a renamed field is consulted from the surface side
+    // only, so it goes quiet rather than red.
+    expect(Object.keys(expected).filter((key) => !swept.includes(key))).toEqual([]);
     // Suppression is about where the bytes go, not what resolution they are:
     // conditioning it on a full-resolution capture sends agents at the call that
     // fails on these emulators. Pinned whole, because such a condition
@@ -421,7 +415,6 @@ describe("screenshotDiffTool", () => {
     );
     expect(liveCaptures).toHaveLength(1);
     expect(captureScreenshot).toHaveBeenCalledTimes(1);
-    // Full resolution is tried first on this side too, not only on captureCurrent.
     expect(captureScreenshot.mock.calls[0]![3]).toBe(1.0);
     expect(result.diffPath).toBeTruthy();
   });
