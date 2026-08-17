@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@argent/registry";
 import { createScreenshotTool } from "../src/tools/screenshot";
-import { getScreenshotScale } from "../src/utils/simulator-client";
+import {
+  createMoqTransport,
+  getScreenshotScale,
+  httpScreenshot,
+} from "../src/utils/simulator-client";
+
+const ONE_PIXEL_PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 describe("screenshot tool", () => {
   afterEach(() => {
@@ -81,6 +88,56 @@ describe("screenshot tool", () => {
     );
 
     expect(bodies).toEqual([{ scale: getScreenshotScale() }]);
+  });
+
+  it("puts rotation on the wire for a local sim, and loses it on the remote transport", async () => {
+    // This enumeration has been wrong twice: first as Chromium-only, then with
+    // iOS put in wholesale — `ios-remote` is its own Platform whose MoQ
+    // transport reads `opts.scale` and nothing else (#822). Nothing else in the
+    // suite reads the sentence, so pin it against the two paths that disagree.
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body: string }) => {
+        bodies.push(JSON.parse(init.body));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ url: "http://localhost/s.png", path: "/tmp/s.png" }),
+        } as unknown as Response;
+      })
+    );
+    const registry = {
+      resolveService: vi.fn().mockResolvedValue({ apiUrl: "http://localhost:4949" }),
+    } as unknown as import("@argent/registry").Registry;
+
+    await createScreenshotTool(registry).execute(
+      {},
+      { udid: "ABC", rotation: "LandscapeLeft", includeImageInContext: false },
+      { artifacts: new ArtifactStore() }
+    );
+    expect(bodies).toEqual([{ rotation: "LandscapeLeft", scale: getScreenshotScale() }]);
+
+    // Same call, one transport in front of it: httpScreenshot hands `rotation`
+    // to the transport, and createMoqTransport drops it on the floor.
+    const seen: unknown[] = [];
+    const transport = createMoqTransport(
+      {
+        sendControl: async () => {},
+        close: async () => {},
+        screenshot: async (opts: unknown) => {
+          seen.push(opts);
+          return Buffer.from(ONE_PIXEL_PNG_BASE64, "base64");
+        },
+      } as never,
+      { pasteText: async () => {} }
+    );
+    await httpScreenshot({ apiUrl: "moq://remote", transport } as never, "LandscapeLeft");
+    expect(seen).toEqual([{ scale: getScreenshotScale() }]);
+
+    const description = createScreenshotTool(registry).zodSchema!.shape.rotation.description!;
+    expect(description).toContain("Applied on Android and on local iOS simulators");
+    expect(description).toMatch(/remote iOS simulators[^.]*capture unrotated/);
   });
 
   it("hands Chromium no scale of its own, so nothing is downscaled by default", async () => {

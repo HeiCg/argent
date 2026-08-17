@@ -123,7 +123,7 @@ describe("screenshotDiffTool", () => {
     expect(Object.keys(result).sort()).toEqual(["contextDiffPath", "diffPath", "summary"]);
   });
 
-  it("returns the summary alone when the aspect ratios differ, and writes nothing", async () => {
+  it("returns the summary alone when the aspect ratios differ, and writes no diff images", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-mismatch-"));
     const baselinePath = path.join(dir, "baseline.png");
     const currentPath = path.join(dir, "current.png");
@@ -138,6 +138,10 @@ describe("screenshotDiffTool", () => {
 
     expect(result.summary).toContain("- status: dimension_mismatch");
     expect(Object.keys(result).sort()).toEqual(["summary"]);
+    // Both inputs and nothing else. Scoped to the two-saved-path form on
+    // purpose: a live capture is copied into outputDir before the comparison
+    // runs, so that form leaves its `current-<hex>.live.png` behind on this
+    // status too — the same intermediate a successful diff keeps.
     expect((await fs.readdir(dir)).sort()).toEqual(["baseline.png", "current.png"]);
     expect(screenshotDiffTool.description).toContain(
       "both images are omitted on dimension_mismatch"

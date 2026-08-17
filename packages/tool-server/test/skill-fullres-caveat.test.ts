@@ -43,21 +43,27 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
     expect(docs.flatMap(({ text }) => claimsIn(text))).not.toHaveLength(0);
   });
 
-  it("makes no size claim about anything but a capture", () => {
+  it("never lets the escort cover a claim about the diff's own artifacts", () => {
     // The escort excuses a claim about capturing, because the `wrong data size`
-    // rejection is what capturing at 1.0 runs into. It says nothing about the
-    // size of what the diff writes, so a section carrying it must not be trusted
-    // for that too — which is how a claim about the diff image's size lands in a
-    // skill unchallenged. Subject read off the claim's own vocabulary, so a sentence about a
-    // capture keeps the escort's cover however it spells one — but `screenshot-`
-    // is the head of a tool name, and naming the tool is not saying the claim is
-    // about its capture.
-    const offTopic = docs.flatMap(({ name, text }) =>
+    // rejection is what capturing at 1.0 runs into. It is no evidence at all
+    // about the size of what the diff writes — the sentence removed from the
+    // tool description named `diffPath`, which comes back at the compared size
+    // whenever the sides were normalized.
+    //
+    // Asked as "does this name a diff artifact", a closed set of identifiers,
+    // rather than "is this about a capture", which no word list decides: every
+    // spelling of the subject reads as a capture to one, `screenshot-diff` and
+    // `screenshot diff` and "the diff frame" alike. The cost is the converse —
+    // a claim that neither names an artifact nor spells one out goes unseen,
+    // and only the escort stands under it.
+    const misattributed = docs.flatMap(({ name, text }) =>
       claimsIn(text)
-        .filter((claim) => !/\bscreenshots?\b(?!-)|\bscale\b|\bcaptur|\bframe\b/i.test(claim))
+        .filter((claim) =>
+          /\b(?:context)?diffPath\b|\bdiff (?:image|frame|output)s?\b/i.test(claim)
+        )
         .map((claim) => `${name}: ${claim}`)
     );
-    expect(offTopic).toEqual([]);
+    expect(misattributed).toEqual([]);
   });
 
   it("states every claim as a condition, never an absolute", () => {
@@ -106,9 +112,15 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
 describe("agent docs quoting the tool-server's screenshot scale", () => {
   // Spelled as a percentage in prose ("30% of original resolution") rather than
   // as the 0.3 the tool descriptions quote, so it drifts out of reach of the
-  // cross-surface check in screenshot-diff-tool.test.ts.
+  // cross-surface check in screenshot-diff-tool.test.ts. Read by sentence over
+  // flattened blocks, like the claims above and for the same reason: `agents/`
+  // pages hard-wrap, and a figure wrapped between "50% of original" and
+  // "resolution" is on neither line.
   const quotes = (text: string): string[] =>
-    text.split("\n").filter((line) => line.includes("of original resolution"));
+    text
+      .split(/\n\s*\n/)
+      .flatMap((block) => block.replace(/\s+/g, " ").split(/(?<=\.)\s+/))
+      .filter((sentence) => /of (?:the )?original resolution/i.test(sentence));
   const quoted = (): string => `${getScreenshotScale() * 100}% of original resolution`;
 
   afterEach(() => {
