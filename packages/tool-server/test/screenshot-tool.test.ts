@@ -82,4 +82,24 @@ describe("screenshot tool", () => {
 
     expect(bodies).toEqual([{ scale: getScreenshotScale() }]);
   });
+
+  it("hands Chromium no scale of its own, so nothing is downscaled by default", async () => {
+    // The other half of the split this tool's `scale` description and
+    // argent-device-interact both state: 30% on iOS/Android, untouched on
+    // Chromium. `execute` resolves getScreenshotScale() one line above this
+    // branch and deliberately does not pass it, which is exactly the line a
+    // platform-unifying cleanup collapses.
+    const captureScreenshot = vi.fn().mockResolvedValue({ path: "/tmp/c.png" });
+    const registry = {
+      resolveService: vi.fn().mockResolvedValue({ captureScreenshot }),
+    } as unknown as import("@argent/registry").Registry;
+
+    await createScreenshotTool(registry).execute(
+      {},
+      { udid: "chromium-cdp-9222", includeImageInContext: false },
+      { artifacts: new ArtifactStore() }
+    );
+
+    expect(captureScreenshot).toHaveBeenCalledWith(expect.objectContaining({ scale: undefined }));
+  });
 });

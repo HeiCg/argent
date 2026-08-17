@@ -272,6 +272,27 @@ describe("diffPngFiles", () => {
     for (const word of emitted) {
       expect(screenshotDiffTool.description).toContain(word);
     }
+
+    // The skills are the third surface, and the one a rename reaches last: a
+    // maintainer who renames the status in the formatter and the description has
+    // made a consistent-looking change, while the caveat telling an agent that
+    // this status is not a plain pass goes quietly inert. Selected by what the
+    // caveat says rather than by the word under test, so the check cannot pass
+    // by matching itself — and floored, so a reword cannot empty it silently.
+    const skillsDir = path.join(__dirname, "../../skills/skills");
+    const skills = await Promise.all(
+      (await fs.readdir(skillsDir, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => ({
+          name: entry.name,
+          text: await fs.readFile(path.join(skillsDir, entry.name, "SKILL.md"), "utf8"),
+        }))
+    );
+    const caveats = skills.filter(({ text }) => text.includes("downscale can erase"));
+    expect(caveats.length).toBeGreaterThanOrEqual(2);
+    for (const { name, text } of caveats) {
+      expect(text, name).toContain(statusIn(normalized));
+    }
   });
 
   it("hard-fails same-aspect resolution differences when normalizeSizes is false", async () => {
