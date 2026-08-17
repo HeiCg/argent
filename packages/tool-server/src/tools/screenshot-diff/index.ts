@@ -103,7 +103,7 @@ export const screenshotDiffTool: ToolDefinition<Params, ScreenshotDiffResult> = 
 Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale. Sides that share an aspect ratio but not a resolution are downscaled to the smaller before comparing; the summary reports that as size_normalized, and a clean result there is status resized_no_change rather than unchanged; sides whose aspect ratios differ are not compared at all, reported as dimension_mismatch. Always provide udid — a live capture resolves the simulator-server from it.
 Use when stable before/after screenshots exist and the expected result is pixel-visible: layout, spacing, color, typography, image/icon rendering, clipping, overflow, or text rendering.
 For live captures, set exactly one of captureBaseline or captureCurrent; use baselinePath + captureCurrent for the common visual-regression flow.
-Returns { summary, diffPath, contextDiffPath }. The summary uses normalized [0,1] screen locations matching describe coordinates; diffPath is the full-size diff image and contextDiffPath is a downscaled image for MCP/agent display.
+Returns { summary, diffPath, contextDiffPath }. The summary uses normalized [0,1] screen locations matching describe coordinates; diffPath is the diff at the size the comparison ran at and contextDiffPath is a downscaled image for MCP/agent display.
 Ignores the fixed top status-bar band for both pixel and OCR text comparisons.
 Fails if the input sources are invalid, PNG files cannot be read, outputDir cannot be written, the simulator-server / emulator backend is not reachable, or a requested live capture cannot be taken.`,
   searchHint:
@@ -290,7 +290,8 @@ async function captureLiveInput(params: {
   // rejects it with a "wrong data size" framebuffer mismatch — so any failure
   // retries at whatever getScreenshotScale() resolves (ARGENT_SCREENSHOT_SCALE,
   // else 0.3); same-aspect normalization in diffPngFiles keeps a scaled capture
-  // diff-compatible with a baseline saved at any scale. Setting that env to 1.0
+  // diff-compatible with a baseline saved at a different one, until the scale is
+  // small enough that integer rounding moves the aspect ratio. Setting that env to 1.0
   // leaves nothing to fall back to: the retry re-sends the request that just
   // failed, so both attempts throw and the second error surfaces.
   let capture: Awaited<ReturnType<CaptureScreenshot>>;

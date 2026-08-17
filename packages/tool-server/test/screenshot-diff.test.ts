@@ -210,8 +210,14 @@ describe("diffPngFiles", () => {
     // the same way as on the no-change path, since the block renders on both and
     // a prescription can be added to either one alone.
     const changedLines = result.summary.split("\n");
+    expect(changedLines).toContain(RESIZE_CAVEAT);
     expect(changedLines).toContain(RESIZE_REMEDY);
     expect(changedLines.filter((line) => line.includes("`scale`"))).toHaveLength(1);
+
+    // The tool description tells the caller what size diffPath comes out at, and
+    // this is the case where that is not the input size.
+    const diff = PNG.sync.read(await fs.readFile(result.diffPath!));
+    expect({ width: diff.width, height: diff.height }).toEqual({ width: 10, height: 20 });
   });
 
   it("says nothing about normalization when the sizes already matched", async () => {

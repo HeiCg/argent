@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getScreenshotScale } from "../src/utils/simulator-client";
 
 const SKILLS_DIR = path.join(__dirname, "../../skills/skills");
@@ -57,7 +57,15 @@ describe("skill docs quoting the tool-server's screenshot scale", () => {
     expect(quoting.length).toBeGreaterThan(0);
   });
 
-  it.each(quoting)("$name quotes the scale getScreenshotScale resolves", ({ text }) => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each(quoting)("$name quotes the scale getScreenshotScale falls back to", ({ text }) => {
+    // Markdown ships as a static file, so it can only ever quote the default —
+    // read the ambient env instead and the assertion fails on correct prose for
+    // every developer who exports the var these same docs tell them about.
+    vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
     expect(text).toContain(`${getScreenshotScale() * 100}% of original resolution`);
   });
 });
