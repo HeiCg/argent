@@ -96,10 +96,15 @@ describe("screenshot tool", () => {
 
     await createScreenshotTool(registry).execute(
       {},
-      { udid: "chromium-cdp-9222", includeImageInContext: false },
+      { udid: "chromium-cdp-9222", rotation: "LandscapeLeft", includeImageInContext: false },
       { artifacts: new ArtifactStore() }
     );
 
-    expect(captureScreenshot).toHaveBeenCalledWith(expect.objectContaining({ scale: undefined }));
+    // `rotation` rides the same object and the same post-processing branch, and
+    // the description documents it for Chromium in particular; dropping it there
+    // returns an unrotated image and says nothing.
+    expect(captureScreenshot).toHaveBeenCalledWith(
+      expect.objectContaining({ scale: undefined, rotation: "LandscapeLeft" })
+    );
   });
 });

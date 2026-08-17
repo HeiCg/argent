@@ -272,12 +272,19 @@ describe("screenshotDiffTool", () => {
     expect(screenshotDiffTool.description).toContain(
       "diffPath is the diff at the size the comparison ran at"
     );
+    // A positive phrase leaves room for a contradicting sentence beside it, the
+    // way the summary once labelled the same file "(full size)" three lines
+    // below a bullet denying it. Nothing here may claim that size at all.
+    expect(screenshotDiffTool.description).not.toMatch(/full[- ]size/);
     // Suppression is about where the bytes go, not what resolution they are:
     // conditioning it on a full-resolution capture is what sent agents at the
-    // call that fails on these emulators.
+    // call that fails on these emulators. Pinned through the dash, because the
+    // condition re-attaches inside the sentence rather than after it.
     expect(
       createScreenshotTool(registry).zodSchema!.shape.includeImageInContext.description
-    ).toContain("Set false only when capturing a baseline/current PNG for screenshot-diff");
+    ).toContain(
+      "Set false only when capturing a baseline/current PNG for screenshot-diff — the file is still written"
+    );
   });
 
   it("tells a `screenshot` caller that the scale it picks is a diff input", () => {

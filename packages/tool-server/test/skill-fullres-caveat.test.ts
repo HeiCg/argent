@@ -6,10 +6,14 @@ import { getScreenshotScale } from "../src/utils/simulator-client";
 const SKILLS_DIR = path.join(__dirname, "../../skills/skills");
 
 // Assigning 1.0 (or 1) to `scale`, in the spellings the skills actually use:
-// JSON, a fenced pseudo-call, backticked prose, or "a `scale` of 1.0". A range
+// JSON, a fenced pseudo-call, backticked prose, "a `scale` of 1.0", or a bare
+// "`scale` 1.0" — plus the spelling that names no parameter at all ("use
+// full-resolution screenshots for…"), which already ships in two of these files
+// and would otherwise let the prescription into a new skill unescorted. A range
 // mention ("`scale` accepts values from 0.01 to 1.0") is not a prescription and
 // deliberately does not match.
-const PRESCRIBES_FULL_RES = /scale["'`]?\s*(?:[:=]|\s+of\s+)\s*1(?:\.0+)?\b/;
+const PRESCRIBES_FULL_RES =
+  /scale["'`]?\s*(?:[:=]|\s+of\s+)?\s*1(?:\.0+)?\b|\b(?:use|capture|save|take)\b[^.]{0,60}full[- ]resolution/i;
 
 function markdownUnder(dir: string): string[] {
   return fs
@@ -66,6 +70,12 @@ describe("skill docs quoting the tool-server's screenshot scale", () => {
     // read the ambient env instead and the assertion fails on correct prose for
     // every developer who exports the var these same docs tell them about.
     vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
-    expect(text).toContain(`${getScreenshotScale() * 100}% of original resolution`);
+    const quote = text.split("\n").find((line) => line.includes("of original resolution"))!;
+    expect(quote).toContain(`${getScreenshotScale() * 100}% of original resolution`);
+    // …and the same paragraph says which platforms that is the default for.
+    // Chromium passes no scale of its own, so an unqualified claim is false
+    // there, which is how this line read before. Scoped to the line, since
+    // these files name Chromium in a dozen unrelated places.
+    expect(quote).toContain("Chromium");
   });
 });
