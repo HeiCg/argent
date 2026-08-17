@@ -50,10 +50,12 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
     // for that too — which is how the sentence this change removed from the tool
     // description ("diffPath is the full-size diff image") could come back in a
     // skill. Subject read off the claim's own vocabulary, so a sentence about a
-    // capture keeps the escort's cover however it spells one.
+    // capture keeps the escort's cover however it spells one — but `screenshot-`
+    // is the head of a tool name, and naming the tool is not saying the claim is
+    // about its capture.
     const offTopic = docs.flatMap(({ name, text }) =>
       claimsIn(text)
-        .filter((claim) => !/screenshot|\bscale\b|\bcaptur|\bframe\b/i.test(claim))
+        .filter((claim) => !/\bscreenshots?\b(?!-)|\bscale\b|\bcaptur|\bframe\b/i.test(claim))
         .map((claim) => `${name}: ${claim}`)
     );
     expect(offTopic).toEqual([]);
