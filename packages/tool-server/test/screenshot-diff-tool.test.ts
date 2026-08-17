@@ -18,9 +18,9 @@ describe("screenshotDiffTool", () => {
   });
 
   it("carries each spelling its vocabulary claims, and none of the near misses", () => {
-    // Every sweep in this PR is exactly as wide as this regex, and most of its
-    // alternatives are reached by no sentence in the corpus, so they could be
-    // deleted unnoticed. The negatives are the exclusions the helper's own
+    // Every size-claim sweep is exactly as wide as this regex, and most of its
+    // alternatives match no sentence in the corpus, so they could be deleted
+    // unnoticed. The negatives are the exclusions the helper's own
     // comment promises — `native resolution` (argent-screen-recording uses it
     // correctly for h264), a range mention, the percentage form that asserts
     // the opposite, and the three tokens that merely contain "scale".

@@ -141,9 +141,9 @@ describe("formatScreenshotDiffSummary", () => {
             source: "ocr",
             reasonCodes: ["stroke_width_delta"],
           },
-          // Movement and appearance for one text merge into a sixth shape, and
-          // only that one renders the `- appearance:` bullet — the five above
-          // reach it through neither branch.
+          // Movement and appearance for one text merge into a shape of their
+          // own, the only one that renders the `- appearance:` bullet — the
+          // kinds above reach it through neither branch.
           {
             kind: "moved",
             text: "Moved and restyled",

@@ -55,8 +55,7 @@ export function linesClaimingSize(text: string): string[] {
 /**
  * Every `description` in a served JSON Schema, at any depth: array `items` and
  * nested object properties are advertised in `input_schema` the same as a
- * top-level parameter, and a tool taking a list of steps or a preview image
- * describes them there.
+ * top-level parameter.
  */
 function schemaDescriptions(node: unknown, path: string): Array<[string, string]> {
   if (!node || typeof node !== "object") return [];
