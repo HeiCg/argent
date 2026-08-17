@@ -49,13 +49,16 @@ const DEVICE_BIND_LIST_KEYS = ["devices"] as const;
 
 /**
  * Keys that mean a tool needs a device to act on at all — the TARGET keys, and
- * deliberately not the scope keys in {@link DEVICE_BIND_LIST_KEYS}. What
- * separates them is what a missing device does to the step: a `screenshot` with
- * no `udid` cannot run, while `stop-all-simulator-servers` with no `devices` is
- * the machine-wide sweep — a complete call, and the whole content of a cleanup
- * flow. Listing `devices` here made such a flow demand a device it has no use
- * for, failing it in the two situations it actually runs in: none booted, or
- * several.
+ * deliberately not the scope keys in {@link DEVICE_BIND_LIST_KEYS}. Declared
+ * keys are only half the question: a target reaching a tool inside an opaque
+ * arg is declared on the tool itself, via `ToolDefinition.opaqueDeviceTarget`.
+ *
+ * What separates target from scope is what a missing device does to the step: a
+ * `screenshot` with no `udid` cannot run, while `stop-all-simulator-servers`
+ * with no `devices` is the machine-wide sweep — a complete call, and the whole
+ * content of a cleanup flow. Listing `devices` here made such a flow demand a
+ * device it has no use for, failing it in the two situations it actually runs
+ * in: none booted, or several.
  *
  * A scope key is therefore bound OPPORTUNISTICALLY by {@link bindDeviceArgs} —
  * only when the run resolved a device, never as `{ devices: [""] }`, a teardown
@@ -540,10 +543,15 @@ export function flowScopesDevice(registry: Registry, steps: FlowStep[]): boolean
 }
 
 function toolRequiresDevice(registry: Registry, toolName: string): boolean {
+  const toolDef = registry.getTool(toolName);
   // An unknown tool is assumed to need a device: the step fails either way, and
   // it fails more usefully with one resolved.
-  if (!registry.getTool(toolName)) return true;
-  return declaresAny(registry, toolName, DEVICE_ARG_KEYS);
+  if (!toolDef) return true;
+  // `opaqueDeviceTarget` covers the target a schema cannot show: `flow-add-step`
+  // carries the recorded command's device id inside its `args` JSON, so reading
+  // declared keys alone left such a flow device-free with its `requires`
+  // unjudged.
+  return toolDef.opaqueDeviceTarget === true || declaresAny(registry, toolName, DEVICE_ARG_KEYS);
 }
 
 function declaresAny(registry: Registry, toolName: string, keys: readonly string[]): boolean {
