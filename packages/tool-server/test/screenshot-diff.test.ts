@@ -282,6 +282,12 @@ describe("diffPngFiles", () => {
     for (const word of emitted) {
       expect(screenshotDiffTool.description).toMatch(names(word));
     }
+    // Presence alone is too weak for the refusal: `dimension_mismatch` is named
+    // twice, so dropping the clause that says which inputs cause it leaves the
+    // word behind in the Returns line and the check still green.
+    expect(screenshotDiffTool.description).toMatch(
+      new RegExp(`aspect ratios differ[^.]*${statusIn(aspectMismatch)}`)
+    );
 
     // The skills are the third surface, and the one a rename reaches last: a
     // maintainer who renames the status in the formatter and the description has

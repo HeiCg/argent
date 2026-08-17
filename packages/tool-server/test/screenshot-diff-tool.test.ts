@@ -257,6 +257,29 @@ describe("screenshotDiffTool", () => {
     expect(scaleDescription).toContain("wrong data size");
   });
 
+  it("does not promise a full-resolution capture, or a full-size diff image", () => {
+    // The two sentences this whole change exists to correct. Both reverted
+    // cleanly to their pre-fix wording with 338 files green, so they are pinned
+    // as phrases: reword either and this fails, which is the point — the reword
+    // has to be checked against captureLiveInput and writeDiffArtifacts again.
+    const registry = {
+      resolveService: vi.fn(),
+    } as unknown as import("@argent/registry").Registry;
+
+    expect(screenshotDiffTool.description).toContain(
+      "otherwise the tool-server's screenshot scale"
+    );
+    expect(screenshotDiffTool.description).toContain(
+      "diffPath is the diff at the size the comparison ran at"
+    );
+    // Suppression is about where the bytes go, not what resolution they are:
+    // conditioning it on a full-resolution capture is what sent agents at the
+    // call that fails on these emulators.
+    expect(
+      createScreenshotTool(registry).zodSchema!.shape.includeImageInContext.description
+    ).toContain("Set false only when capturing a baseline/current PNG for screenshot-diff");
+  });
+
   it("tells a `screenshot` caller that the scale it picks is a diff input", () => {
     // The two wire tests above pin the sizes these tools agree on, but only
     // `screenshot`'s own description reaches an agent capturing a baseline for a

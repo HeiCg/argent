@@ -25,7 +25,7 @@ const zodSchema = z.object({
     .enum(["Portrait", "LandscapeLeft", "LandscapeRight", "PortraitUpsideDown"])
     .optional()
     .describe(
-      "Orientation override for the screenshot (rotates the captured image after Page.captureScreenshot on Chromium)."
+      "Orientation override for the screenshot (rotates the captured image after Page.captureScreenshot on Chromium, which like downscaling there requires the optional `sharp` dependency)."
     ),
   scale: z
     .number()
