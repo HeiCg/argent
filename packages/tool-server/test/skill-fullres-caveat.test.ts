@@ -5,16 +5,22 @@ import { getScreenshotScale } from "../src/utils/simulator-client";
 
 const SKILLS_DIR = path.join(__dirname, "../../skills/skills");
 
-// Assigning 1.0 (or 1) to `scale`, in the spellings the skills actually use:
+// Assigning 1.0 (or 1) to `scale`, in the spellings the skills actually use —
 // JSON, a fenced pseudo-call, backticked prose, "a `scale` of 1.0", "set
-// `scale` to 1.0", or a bare "`scale` 1.0" — plus the spelling that names no
-// parameter at all ("use full-resolution screenshots for…"), which already
-// ships in two of these files and would otherwise let the prescription into a
-// new skill unescorted. A range mention ("`scale` accepts values from 0.01 to
-// 1.0") is not a prescription and deliberately does not match; the leading
-// boundary keeps `grayscale = 1` and `upscale: 1` out.
-const PRESCRIBES_FULL_RES =
-  /\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b|\b(?:use|capture|save|take)\b[^.]{0,60}full[- ]resolution/i;
+// `scale` to 1.0", a bare "`scale` 1.0" — plus the spellings that name no
+// parameter at all, which already ship in two of these files. Those are matched
+// as vocabulary rather than as an imperative, because the claim arrives just as
+// often as an assertion about what already happens ("baselines are captured at
+// full resolution") as it does as an instruction, and an inflected verb is not
+// a weaker prescription than a bare one.
+//
+// A range mention ("`scale` accepts values from 0.01 to 1.0") is not a claim
+// about a capture and deliberately does not match; the leading boundary keeps
+// `grayscale = 1` and `upscale: 1` out. "native resolution" is deliberately
+// absent: argent-screen-recording uses it correctly for h264 frames, which do
+// not go through this parameter at all.
+const REACHES_FOR_FULL_RES =
+  /full[- ](?:resolution|res\b)|\bunscaled\b|100% scale|\b1:1\b|\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b/i;
 
 function markdownUnder(dir: string): string[] {
   return fs
@@ -36,19 +42,38 @@ const docs = fs
 
 // `screenshot` passes `scale` straight through and simulator-client turns the
 // emulator's in-band rejection into a hard SIMULATOR_SCREENSHOT_FAILED, so a
-// skill that prescribes a full-resolution capture without naming that failure
-// sends an agent at a call it cannot recover from. The prescription is spread
-// across skills and keeps being copied into new ones, so pin the pairing rather
-// than any one file's wording.
-describe("skill docs prescribing a full-resolution screenshot", () => {
-  const prescribing = docs.filter(({ text }) => PRESCRIBES_FULL_RES.test(text));
+// skill that sends an agent at a full-resolution capture without naming that
+// failure sends it at a call it cannot recover from. The claim is spread across
+// skills and keeps being copied into new ones, so pin the pairing rather than
+// any one file's wording.
+describe("skill docs reaching for a full-resolution screenshot", () => {
+  const reaching = docs.filter(({ text }) => REACHES_FOR_FULL_RES.test(text));
 
   it("finds some, so the per-file check below cannot pass vacuously", () => {
-    expect(prescribing.length).toBeGreaterThan(0);
+    expect(reaching.length).toBeGreaterThan(0);
   });
 
-  it.each(prescribing)("$name names the emulators that reject it", ({ text }) => {
+  it.each(reaching)("$name names the emulators that reject it", ({ text }) => {
     expect(text).toContain("wrong data size");
+  });
+
+  // Carrying the caveat somewhere in the file says nothing about a line added
+  // later, and the claim these files get wrong arrives as an extra sentence
+  // rather than an edit to an existing one. So count them: a new line reaching
+  // for this vocabulary has to be checked against captureLiveInput and
+  // writeDiffArtifacts, and updating the count here is where that happens.
+  it("holds the size claims to the lines that were checked against the code", () => {
+    const perFile = Object.fromEntries(
+      reaching.map(({ name, text }) => [
+        name,
+        text.split("\n").filter((line) => REACHES_FOR_FULL_RES.test(line)).length,
+      ])
+    );
+    expect(perFile).toEqual({
+      "argent-device-interact/SKILL.md": 4,
+      "argent-screenshot-diff/SKILL.md": 3,
+      "argent-test-ui-flow/SKILL.md": 3,
+    });
   });
 });
 

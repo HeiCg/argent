@@ -7,6 +7,7 @@ import { ArtifactStore } from "@argent/registry";
 import { executeScreenshotDiffTool, screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { createScreenshotTool } from "../src/tools/screenshot";
 import { getScreenshotScale } from "../src/utils/simulator-client";
+import { sentencesClaimingSize } from "./helpers/size-claims";
 
 describe("screenshotDiffTool", () => {
   afterEach(() => {
@@ -118,6 +119,32 @@ describe("screenshotDiffTool", () => {
       mimeType: "image/png",
     });
     expect(Object.keys(result).sort()).toEqual(["contextDiffPath", "diffPath", "summary"]);
+  });
+
+  it("returns the summary alone when the aspect ratios differ, and writes nothing", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-mismatch-"));
+    const baselinePath = path.join(dir, "baseline.png");
+    const currentPath = path.join(dir, "current.png");
+    await writePng(baselinePath, 4, 2, { r: 10, g: 20, b: 30 });
+    await writePng(currentPath, 2, 8, { r: 10, g: 20, b: 30 });
+
+    const result = await executeScreenshotDiffTool(
+      {},
+      { baselinePath, currentPath, udid: "ABC", outputDir: dir },
+      { artifacts: new ArtifactStore() }
+    );
+
+    // The description's "both images are omitted on dimension_mismatch, where
+    // nothing was compared" — the equal-size test above pins the other arm, and
+    // an omission is what a `toMatchObject` on the present keys cannot see.
+    expect(result.summary).toContain("- status: dimension_mismatch");
+    expect(Object.keys(result).sort()).toEqual(["summary"]);
+    expect((await fs.readdir(dir)).sort()).toEqual(["baseline.png", "current.png"]);
+    // Behaviour and promise together: an agent that reads the description and
+    // then looks for diffPath here has to find the same answer in both.
+    expect(screenshotDiffTool.description).toContain(
+      "both images are omitted on dimension_mismatch"
+    );
   });
 
   it("captures one live side at full resolution and copies it into outputDir", async () => {
@@ -251,17 +278,24 @@ describe("screenshotDiffTool", () => {
     expect(shape.captureCurrent.description).toContain(
       `ARGENT_SCREENSHOT_SCALE, ${fallback} by default`
     );
-    expect(scaleDescription).toContain(`ARGENT_SCREENSHOT_SCALE env var, or ${fallback} if unset`);
+    expect(scaleDescription).toContain(
+      `ARGENT_SCREENSHOT_SCALE env var, or ${fallback} whenever that is unset or outside (0,1]`
+    );
     // The hazard the rest of that paragraph exists for, on the one surface an
     // agent reads with no skill loaded — `screenshot` is alwaysLoad.
     expect(scaleDescription).toContain("wrong data size");
+    // …and the Fails line, which is where an agent looks to find out whether
+    // that hazard ends the call or is absorbed. It ends it.
+    expect(createScreenshotTool(registry).description).toContain(
+      "if the device rejects a capture at the requested scale"
+    );
+    expect(screenshotDiffTool.description).toContain("a requested live capture cannot be taken");
   });
 
   it("does not promise a full-resolution capture, or a full-size diff image", () => {
-    // The two sentences this whole change exists to correct. Both reverted
-    // cleanly to their pre-fix wording with 338 files green, so they are pinned
-    // as phrases: reword either and this fails, which is the point — the reword
-    // has to be checked against captureLiveInput and writeDiffArtifacts again.
+    // Both sentences are pinned as phrases: reword either and this fails, which
+    // is the point — a reword has to be checked against captureLiveInput and
+    // writeDiffArtifacts again.
     const registry = {
       resolveService: vi.fn(),
     } as unknown as import("@argent/registry").Registry;
@@ -272,28 +306,42 @@ describe("screenshotDiffTool", () => {
     expect(screenshotDiffTool.description).toContain(
       "diffPath is the diff at the size the comparison ran at"
     );
-    // A positive phrase leaves room for a contradicting sentence beside it, the
-    // way the summary once labelled the same file "(full size)" three lines
-    // below a bullet denying it. Nothing here may claim that size at all.
-    expect(screenshotDiffTool.description).not.toMatch(/full[- ]size/);
-    // The capture's resolution cannot be banned outright — it is genuinely
-    // attempted at full resolution — so require every mention to carry the
-    // condition. The reverted sentences ("live at full resolution before
-    // diffing", "always taken at full resolution") are unqualified and land as
-    // an extra unmatched occurrence.
-    const shape = screenshotDiffTool.zodSchema!.shape;
-    for (const text of [
-      screenshotDiffTool.description,
-      shape.captureBaseline.description!,
-      shape.captureCurrent.description!,
-    ]) {
-      expect(text.match(/full[- ]resolution/g) ?? []).toHaveLength(
-        (text.match(/full[- ]resolution when that capture succeeds/g) ?? []).length
-      );
+    // A positive phrase leaves room for a contradicting sentence beside it: a
+    // "(full size)" label three lines below a bullet denying it satisfies every
+    // positive check. So collect the sentences that reach for this vocabulary at
+    // all, across every string this tool puts in front of an agent, and pin that
+    // collection whole. An added claim is an extra element whether it repeats a
+    // pinned phrase verbatim or reaches for a synonym, and a sibling field is not
+    // a place the sweep does not look.
+    const fields = Object.entries(screenshotDiffTool.zodSchema!.shape) as Array<
+      [string, { description?: string }]
+    >;
+    const surfaces: Array<[string, string]> = fields.map(([name, field]) => [
+      name,
+      field.description ?? "",
+    ]);
+    surfaces.push(["description", screenshotDiffTool.description ?? ""]);
+
+    const expected: Record<string, string[]> = {
+      description:
+        // The capture's resolution cannot be banned outright — it is genuinely
+        // attempted at full resolution — so the condition is what gets pinned.
+        [
+          "Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale.",
+        ],
+      captureBaseline: [
+        "Capture the baseline screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback).",
+      ],
+      captureCurrent: [
+        "Capture the current screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback).",
+      ],
+    };
+    for (const [name, text] of surfaces) {
+      expect(sentencesClaimingSize(text), name).toEqual(expected[name] ?? []);
     }
     // Suppression is about where the bytes go, not what resolution they are:
-    // conditioning it on a full-resolution capture is what sent agents at the
-    // call that fails on these emulators. Pinned whole, because the condition
+    // conditioning it on a full-resolution capture sends agents at the call that
+    // fails on these emulators. Pinned whole, because such a condition
     // re-attaches anywhere inside the sentence, including past its last clause.
     expect(createScreenshotTool(registry).zodSchema!.shape.includeImageInContext.description).toBe(
       "Default true. Set false only when capturing a baseline/current PNG for screenshot-diff — the file is still written, but the image bytes are not attached to the agent context."
@@ -308,6 +356,13 @@ describe("screenshotDiffTool", () => {
     const registry = {
       resolveService: vi.fn(),
     } as unknown as import("@argent/registry").Registry;
+    // Both halves: that the two tools are linked at all, and the instruction
+    // that link exists to give. Deleting the second leaves the first satisfied
+    // by the word alone, and the three skills mirror the instruction, not the
+    // mention.
+    expect(createScreenshotTool(registry).zodSchema!.shape.scale.description).toContain(
+      "save it at scale: 1.0 where a full frame streams, and with `scale` omitted where it does not"
+    );
     expect(createScreenshotTool(registry).zodSchema!.shape.scale.description).toContain(
       "screenshot-diff"
     );

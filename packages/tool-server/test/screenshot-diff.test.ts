@@ -5,6 +5,7 @@ import { PNG } from "pngjs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-diff";
+import { linesClaimingSize } from "./helpers/size-claims";
 
 // The two bullets under `size_normalized`, pinned whole: what must not happen is
 // a *prescription* being appended to an otherwise-correct sentence, and no
@@ -188,10 +189,12 @@ describe("diffPngFiles", () => {
     expect(lines).toContain(RESIZE_CAVEAT);
     expect(lines).toContain(RESIZE_REMEDY);
     expect(lines).toContain(DIFF_IMAGES);
-    // The caveat's own "rather than full size" is the only thing in this
-    // summary allowed to mention that size: a second one is a label on an
-    // artifact that is not at it, which is what the diff_images line used to be.
-    expect(result.summary.match(/full size/g)).toHaveLength(1);
+    // The caveat's own denial is the only line here allowed to reach for that
+    // vocabulary at all: a second one is a label on an artifact that is not at
+    // that size — the shape the diff_images line invites. Pinned as the whole
+    // collection, so a synonym ("still written at native resolution") is an
+    // extra element rather than a phrase a substring count walks past.
+    expect(linesClaimingSize(result.summary)).toEqual([RESIZE_CAVEAT]);
     // Exactly one line may reach for the knob, because a prescription creeps
     // back as a second bullet beside the pinned one rather than as an edit to
     // it. The caveat names no knob, so this counts remedies.
