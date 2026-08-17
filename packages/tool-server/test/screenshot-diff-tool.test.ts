@@ -2,11 +2,16 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { PNG } from "pngjs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@argent/registry";
 import { executeScreenshotDiffTool, screenshotDiffTool } from "../src/tools/screenshot-diff";
 
 describe("screenshotDiffTool", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
   it("rejects public tuning options so defaults stay internal", () => {
     const result = screenshotDiffTool.zodSchema!.safeParse({
       baselinePath: "/tmp/baseline.png",
@@ -50,7 +55,7 @@ describe("screenshotDiffTool", () => {
       outputDir: "/tmp",
     };
     expect(screenshotDiffTool.zodSchema!.safeParse(liveParams).success).toBe(true);
-    expect(screenshotDiffTool.services(liveParams)).toEqual({
+    const liveServices = {
       simulatorServer: {
         urn: "SimulatorServer:ABC",
         options: {
@@ -62,7 +67,21 @@ describe("screenshotDiffTool", () => {
           },
         },
       },
-    });
+    };
+    expect(screenshotDiffTool.services(liveParams)).toEqual(liveServices);
+
+    // The other live flag reaches the same captureLiveInput, so it needs the
+    // same service — asserted separately because a condition covering only
+    // captureCurrent satisfies every other test in the suite while leaving
+    // captureBaseline to throw "requires a simulatorServer service".
+    expect(
+      screenshotDiffTool.services({
+        currentPath: "/tmp/current.png",
+        captureBaseline: true,
+        udid: "ABC",
+        outputDir: "/tmp",
+      })
+    ).toEqual(liveServices);
   });
 
   it("returns only the summary and diff artifact paths", async () => {
@@ -178,6 +197,51 @@ describe("screenshotDiffTool", () => {
     expect(result.diffPath).toBeTruthy();
   });
 
+  it("sends the resolved scale on the retry, so the fallback lands at the documented 0.3", async () => {
+    vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-wire-"));
+    const baselinePath = path.join(dir, "baseline.png");
+    const capturedPath = path.join(dir, "captured.png");
+    await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
+    await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+    const bodies = stubEmulatorRejectingFullRes(capturedPath);
+
+    const result = await executeScreenshotDiffTool(
+      { simulatorServer: { apiUrl: "http://127.0.0.1:4949" } },
+      { baselinePath, captureCurrent: true, udid: "emulator-5554", outputDir: dir },
+      { artifacts: new ArtifactStore() }
+    );
+
+    // Asserted on the wire rather than on an injected capture stub, because the
+    // scale the descriptions name is the one httpScreenshot resolves: a 1.0
+    // request carries no `scale` at all, and only the retry reveals the default.
+    expect(bodies).toEqual([{}, { scale: 0.3 }]);
+    expect(result.summary).toContain("Screenshot diff summary");
+  });
+
+  it("has nothing lower to retry when ARGENT_SCREENSHOT_SCALE is 1.0, so the capture fails", async () => {
+    vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "1.0");
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-env1-"));
+    const baselinePath = path.join(dir, "baseline.png");
+    const capturedPath = path.join(dir, "captured.png");
+    await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
+    await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+    const bodies = stubEmulatorRejectingFullRes(capturedPath);
+
+    await expect(
+      executeScreenshotDiffTool(
+        { simulatorServer: { apiUrl: "http://127.0.0.1:4949" } },
+        { baselinePath, captureCurrent: true, udid: "emulator-5554", outputDir: dir },
+        { artifacts: new ArtifactStore() }
+      )
+    ).rejects.toThrow("Screenshot failed: wrong data size, expected 7853760 got 17627328.");
+
+    // httpScreenshot omits an in-band 1.0, so the retry serializes to the same
+    // bytes as the attempt that just failed. Both flags' descriptions promise
+    // this dead end; the same stub succeeds at 0.3 in the test above.
+    expect(bodies).toEqual([{}, {}]);
+  });
+
   it("captures the baseline live against a saved current, naming that side's file", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-baseline-"));
     const currentPath = path.join(dir, "current.png");
@@ -187,10 +251,12 @@ describe("screenshotDiffTool", () => {
     // slot. Equal-sized fixtures pass just as well with the sides swapped.
     await writePng(currentPath, 2, 4, { r: 0, g: 0, b: 0 });
     await writePng(capturedPath, 4, 8, { r: 0, g: 0, b: 0 });
-    const captureScreenshot = vi.fn(async () => ({
-      url: "http://localhost/baseline.png",
-      path: capturedPath,
-    }));
+    const captureScreenshot = vi.fn(
+      async (_api: unknown, _rotation: unknown, _signal: unknown, _scale?: number) => ({
+        url: "http://localhost/baseline.png",
+        path: capturedPath,
+      })
+    );
 
     const result = await executeScreenshotDiffTool(
       { simulatorServer: { apiUrl: "http://localhost:4949" } },
@@ -207,6 +273,8 @@ describe("screenshotDiffTool", () => {
     );
     expect(liveCaptures).toHaveLength(1);
     expect(captureScreenshot).toHaveBeenCalledTimes(1);
+    // Full resolution is tried first on this side too, not only on captureCurrent.
+    expect(captureScreenshot.mock.calls[0]![3]).toBe(1.0);
     expect(result.diffPath).toBeTruthy();
   });
 
@@ -277,6 +345,32 @@ describe("screenshotDiffTool", () => {
     ).rejects.toThrow("Provide either currentPath or captureCurrent, not both.");
   });
 });
+
+/**
+ * Stands in for an Android emulator whose framebuffer cannot stream a full
+ * frame: `httpScreenshot` omits `scale` from the body for a 1.0 capture, and
+ * that is the request this rejects — the way the real server does, HTTP 200
+ * with an in-band `error`. Returns the request bodies as they went out.
+ */
+function stubEmulatorRejectingFullRes(capturedPath: string): Record<string, unknown>[] {
+  const bodies: Record<string, unknown>[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      bodies.push(body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () =>
+          body.scale === undefined
+            ? { error: "wrong data size, expected 7853760 got 17627328" }
+            : { url: "http://127.0.0.1:4949/media/shot.png", path: capturedPath },
+      } as unknown as Response;
+    })
+  );
+  return bodies;
+}
 
 async function writePng(
   filePath: string,
