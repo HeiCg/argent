@@ -318,18 +318,51 @@ describe("redactSecretsFromError", () => {
   });
 
   it("leaves the diagnostic readable around the fragment it redacts", () => {
-    // The fragment search is bounded, or it blanks ordinary words out of the
-    // message the agent has to act on — short runs collide with the message's
-    // own vocabulary (`adb`, `text`, `dev`), and three characters of a
-    // credential is not a disclosure worth that. Here `adb` is a run of the
-    // secret AND the first word of the command.
+    // Only the pieces the backends really send are searched for, not every
+    // substring: a value that merely CONTAINS a word of the diagnostic must not
+    // blank it, or the agent is left with a message it cannot act on. Here the
+    // secret contains `device` and `adb`, and the split yields neither.
     const err = new Error(
       "adb -s emulator-5554 shell input text 'hunter2%' failed: device offline"
     );
-    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "hunter2%adbXY" }]);
+    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "hunter2%mydevice-adb" }]);
     expect(err.message).toBe(
       "adb -s emulator-5554 shell input text '{{secret:APP_PASSWORD}}' failed: device offline"
     );
+  });
+
+  it("does not redact the marker it just wrote", () => {
+    // The marker is text like any other, so a secret sharing a run with
+    // `{{secret:` used to be re-matched inside its own replacement, nesting
+    // markers until the diagnostic was unreadable. Scrubbing in one pass over
+    // the original is what stops it.
+    const err = new Error("uitest uiInput text 'topsecret42' failed: Invalid parameters.");
+    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "topsecret42" }]);
+    expect(err.message).toBe(
+      "uitest uiInput text '{{secret:APP_PASSWORD}}' failed: Invalid parameters."
+    );
+  });
+
+  it("keeps a piece too short to be worth blanking a word for", () => {
+    // A word-per-keyevent backend yields pieces as short as one character.
+    // Redacting those would replace every `a` in the message; three characters
+    // of a credential is not a disclosure worth that. The value never arrives
+    // whole here, so nothing should change at all.
+    const err = new Error("adb -s emulator-5554 shell input text 'a' failed: device offline");
+    const before = err.message;
+    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "a hunter2" }]);
+    expect(err.message).toBe(before);
+  });
+
+  it("scrubs a long secret without stalling the server", () => {
+    // The scrub runs inside a tool's `execute`, so it is on the event loop a
+    // paste of a PEM-sized secret shares with every other call.
+    const value = `-----BEGIN PRIVATE KEY-----\n${"MIIEvQIBADANBg".repeat(200)}\n-----END PRIVATE KEY-----`;
+    const err = new Error(`adb -s emulator-5554 shell input text '${value}' failed`);
+    const startedAt = performance.now();
+    redactSecretsFromError(err, [{ name: "KEY", value }]);
+    expect(performance.now() - startedAt).toBeLessThan(250);
+    expect(err.message).toBe("adb -s emulator-5554 shell input text '{{secret:KEY}}' failed");
   });
 
   it("still scrubs the raw value when nothing quoted it", () => {

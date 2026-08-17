@@ -81,7 +81,8 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
     // HarmonyOS swipes go over hdc; resolving the iOS/Android-only blueprint
-    // would spawn a backend this path never uses and wait on it to come up.
+    // would fail the swipe before it runs — the factory refuses any platform
+    // but those two.
     if (device.platform === "harmony") return {};
     return { simulatorServer: simulatorServerRef(device) };
   },

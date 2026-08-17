@@ -109,50 +109,57 @@ export function resolveSecretPlaceholders(
 }
 
 /**
- * How a secret is spelled by the time it can reach an error message.
+ * The shortest piece of a secret worth searching an error message for.
  *
- * The value itself, plus its POSIX single-quote escaping. The backends that
- * echo their input echo a SHELL LINE (`adb shell input text 'x'`,
- * `hdc shell uitest uiInput text 'x'`), and `shellQuote` rewrites each `'` as
- * `'\''` — so a secret holding an apostrophe is no longer a contiguous
- * substring of the message and a literal search walks straight past it.
+ * A backend that types a value one word at a time yields pieces as short as a
+ * single character, and blanking every `a` in a diagnostic destroys the message
+ * the agent has to act on. Three characters of a credential is not a disclosure
+ * worth that.
  */
-function secretSpellings(value: string): string[] {
-  const shellEscaped = value.replaceAll("'", `'\\''`);
-  return shellEscaped === value ? [value] : [shellEscaped, value];
+const MIN_REDACTED_PIECE = 4;
+
+/** `%`-delimited segments, each keeping its trailing `%`. */
+function percentSegments(text: string): string[] {
+  return text.match(/[^%]*%|[^%]+/g) ?? [];
 }
 
 /**
- * The shortest run of a secret worth blanking a word out of a diagnostic for.
+ * Every spelling of a secret that can reach an error message.
  *
- * Runs this short collide with ordinary message vocabulary (`adb`, `text`,
- * `device`), and three characters of a credential is not a disclosure worth
- * garbling the error the agent has to act on.
- */
-const MIN_LEAKED_RUN = 4;
-
-/**
- * Replace every PARTIAL run of `spelling` left in `message`, longest first.
+ * Two things stand between the resolved value and the message, and both fail
+ * silently — a secret with neither an apostrophe nor a split redacts correctly,
+ * so the gap stays invisible until the one that has them leaks:
  *
- * A whole-value search is not enough, because a backend need not send the
- * secret in one piece: `injectAndroidText` starts a new `adb shell input text`
- * at every `%` so the device never sees a format specifier, and the Android TV
- * remote types a word at a time between space keyevents. Each of those calls
- * carries a FRAGMENT of the secret, and the one that fails is the one quoted
- * back in `formatSubprocessFailure`'s argv — matching neither spelling of the
- * whole. Working down from the longest run keeps a short run inside a longer
- * one from being replaced on its own, which would leave the rest of the longer
- * run sitting beside the marker.
+ * - The backends that echo their input echo a SHELL LINE (`adb shell input text
+ *   'x'`, `hdc shell uitest uiInput text 'x'`), and `shellQuote` rewrites each
+ *   `'` as `'\''`, so an apostrophe breaks the value into non-contiguous text.
+ * - A backend need not send the value in one piece. `injectAndroidText` starts a
+ *   new `adb shell input text` at every `%` so the device never sees a format
+ *   specifier, and the Android TV remote types a word per space keyevent — so
+ *   the call that fails quotes back a PIECE, not the whole.
+ *
+ * The pieces are the ones those splits really produce, not every substring:
+ * searching for arbitrary runs blanks the ordinary words of a diagnostic
+ * whenever a secret happens to contain one.
  */
-function scrubRuns(message: string, spelling: string, marker: string): string {
-  let out = message;
-  for (let length = spelling.length - 1; length >= MIN_LEAKED_RUN; length--) {
-    for (let start = 0; start + length <= spelling.length; start++) {
-      const run = spelling.slice(start, start + length);
-      if (out.includes(run)) out = out.split(run).join(marker);
-    }
+function secretSpellings(value: string): string[] {
+  const pieces = new Set<string>([value, ...percentSegments(value)]);
+  for (const word of value.split(" ")) {
+    pieces.add(word);
+    for (const segment of percentSegments(word)) pieces.add(segment);
   }
-  return out;
+  const spellings = new Set<string>();
+  for (const piece of pieces) {
+    if (piece !== value && piece.length < MIN_REDACTED_PIECE) continue;
+    spellings.add(piece);
+    spellings.add(piece.replaceAll("'", `'\\''`));
+  }
+  return [...spellings];
+}
+
+/** Escaped for literal use in a `RegExp` (`RegExp.escape` needs Node 23). */
+function regExpLiteral(text: string): string {
+  return text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
 /**
@@ -167,26 +174,23 @@ export function redactSecretsFromError(
   err: unknown,
   secrets: Array<{ name: string; value: string }>
 ): unknown {
-  const live = secrets.filter(({ value }) => value);
-  const marker = (name: string) => `${SECRET_PLACEHOLDER_MARKER}${name}}}`;
-  const eachSpelling = (
-    message: string,
-    replace: (msg: string, spelling: string, marker: string) => string
-  ) =>
-    live.reduce(
-      (acc, { name, value }) =>
-        secretSpellings(value).reduce((msg, spelling) => replace(msg, spelling, marker(name)), acc),
-      message
-    );
-  // Whole spellings before partial runs, across every secret: a run of one
-  // spelling can sit inside another that arrived intact — `'t-tell` inside
-  // `don't-tell` — and taking the run first would leave the rest of that intact
-  // secret standing beside the marker.
-  const scrub = (s: string) =>
-    eachSpelling(
-      eachSpelling(s, (msg, spelling, m) => msg.split(spelling).join(m)),
-      scrubRuns
-    );
+  const marked = new Map<string, string>();
+  for (const { name, value } of secrets) {
+    if (!value) continue;
+    for (const spelling of secretSpellings(value)) {
+      if (!marked.has(spelling)) marked.set(spelling, `${SECRET_PLACEHOLDER_MARKER}${name}}}`);
+    }
+  }
+  if (marked.size === 0) return err;
+  // Longest alternative first, because alternation is ordered: at any position
+  // the whole value must win over a piece of it, or the rest of the value is
+  // left standing beside the marker.
+  const spellings = [...marked.keys()].sort((a, b) => b.length - a.length);
+  const pattern = new RegExp(spellings.map(regExpLiteral).join("|"), "g");
+  // One pass over the original. `replace` never rescans what it substituted in,
+  // so a marker cannot itself be matched and redacted into a nest of markers —
+  // which is what a secret sharing any text with `{{secret:` would otherwise do.
+  const scrub = (s: string) => s.replace(pattern, (hit) => marked.get(hit) ?? hit);
   if (err instanceof Error) {
     err.message = scrub(err.message);
     if (err.stack) err.stack = scrub(err.stack);

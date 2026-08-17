@@ -419,6 +419,23 @@ describe("pinch: gating", () => {
     expect(result.calls).toHaveLength(0);
   });
 
+  it("rejects rotate on HarmonyOS for the same reason as pinch", async () => {
+    // The third arm of the same guard, and the one no other test reaches:
+    // `gesture-rotate` needs two contacts exactly as `gesture-pinch` does.
+    await writeFlow("rotate-harmony", {
+      executionPrerequisite: "",
+      steps: [{ kind: "rotate", by: 90 }],
+    });
+
+    const result = await run("rotate-harmony", "harmony-127.0.0.1:5555");
+
+    expect(result.steps[0]).toMatchObject({ kind: "rotate", status: "fail" });
+    expect(result.steps[0].reason).toMatch(/unsupported on HarmonyOS/);
+    expect(result.steps[0].reason).toMatch(/one contact at a time/);
+    expect(result.steps[0].reason).not.toMatch(/does not support platform/);
+    expect(result.calls).toHaveLength(0);
+  });
+
   it("leaves tap on HarmonyOS untouched — it is the one gesture that has a backend", async () => {
     // Positive control: a guard widened to every touch directive would take the
     // one thing a HarmonyOS flow can actually do with it.

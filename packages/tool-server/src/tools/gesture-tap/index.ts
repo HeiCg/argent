@@ -164,8 +164,8 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       return { chromium: chromiumCdpRef(device) };
     }
     // HarmonyOS drives `uitest` over hdc, so resolving the iOS/Android-only
-    // simulator-server blueprint here would spawn a backend the tap never uses
-    // and block on its ready-wait.
+    // simulator-server blueprint here would fail the tap before it runs — the
+    // factory refuses any platform but those two.
     if (device.platform === "harmony") return {};
     return { simulatorServer: simulatorServerRef(device) };
   },

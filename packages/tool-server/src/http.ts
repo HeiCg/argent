@@ -249,11 +249,6 @@ export function platformFromArgs(data: unknown): TelemetryPlatform | null {
   // `harmony` has no runtime kinds to refine into, so this is the whole answer
   // rather than a coarse one.
   if (typeof (data as Record<string, unknown>).harmonyInstance === "string") return "harmony";
-  // Its HarmonyOS twin, and the only shape a harmony boot has: an instance is
-  // named, not addressed, until `hdc` reports the connect key it registered as.
-  // `harmony` has no runtime kinds to refine into, so this is the whole answer
-  // rather than a coarse one.
-
   return null;
 }
 
