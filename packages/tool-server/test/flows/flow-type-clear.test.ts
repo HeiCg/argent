@@ -19,8 +19,16 @@ describe("flow `type` — clear parsing", () => {
   });
 
   it("accepts a clear-only step with no text", () => {
-    // "empty the box, then assert the empty state" is a legitimate step. Before
-    // `clear`, a missing text was an unconditional parse error.
+    // Emptying a field is an end in itself — resetting a search filter, dropping a
+    // restored draft, clearing a box a later step types into — so `clear` with no
+    // text is a legitimate step. Before `clear`, a missing text was an
+    // unconditional parse error.
+    //
+    // What follows it is NOT an assert on the empty state: `equals: ""` and
+    // `contains: ""` are rejected at parse time, and `matches: '^$'` parses but
+    // never fires, because absent or empty text is not a haystack. Such a step is
+    // proved by the OLD value's absence, or by the consequence — tabulated in
+    // `argent-create-flow/references/asserting-field-values.md`.
     const step = parseType(`      into: search\n      clear: true`);
     expect(step.clear).toBe(true);
     expect(step.text).toBeUndefined();
