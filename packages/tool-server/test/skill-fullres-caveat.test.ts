@@ -30,8 +30,25 @@ beforeAll(async () => {
 // across two lines is in neither of them. An unrelated match is to be re-read,
 // not narrowed away.
 describe("agent docs reaching for a full-resolution screenshot", () => {
-  it("finds some, so the check below cannot pass vacuously", () => {
-    expect(docs.filter(({ text }) => sentencesClaimingSize(text).length > 0)).not.toHaveLength(0);
+  it("makes exactly the claims that have been read against the code", () => {
+    // The escort exempts a whole section, and the escorted sections are where
+    // this prose lives — so a claim added beside one that names the rejection is
+    // otherwise never examined, whatever it asserts. Counts, not the sentences:
+    // the split runs over flattened markdown, so renumbering a list item two
+    // steps away rewrites a pinned string without touching a claim. This catches
+    // an added claim; a reworded one is caught on the tool surfaces these pages
+    // mirror. It also floors the sweep, which would otherwise fall to zero
+    // matches with the check below still green.
+    const claims = Object.fromEntries(
+      docs
+        .map(({ name, text }) => [name, sentencesClaimingSize(text).length] as const)
+        .filter(([, count]) => count > 0)
+    );
+    expect(claims).toEqual({
+      "skills/argent-device-interact/SKILL.md": 4,
+      "skills/argent-screenshot-diff/SKILL.md": 3,
+      "skills/argent-test-ui-flow/SKILL.md": 4,
+    });
   });
 
   it("splits at headings, so a claim is escorted by its own section", () => {

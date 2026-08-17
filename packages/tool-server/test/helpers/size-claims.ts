@@ -52,6 +52,35 @@ export function linesClaimingSize(text: string): string[] {
 }
 
 /**
+ * Every `description` in a served JSON Schema, at any depth: array `items` and
+ * nested object properties are advertised in `input_schema` the same as a
+ * top-level parameter, and a tool taking a list of steps or a preview image
+ * describes them there.
+ */
+function schemaDescriptions(node: unknown, path: string): Array<[string, string]> {
+  if (!node || typeof node !== "object") return [];
+  const schema = node as Record<string, unknown>;
+  const here: Array<[string, string]> =
+    path && typeof schema.description === "string" ? [[path, schema.description]] : [];
+  const properties = (schema.properties ?? {}) as Record<string, unknown>;
+  const arms = ["anyOf", "oneOf", "allOf"].flatMap((key) =>
+    Array.isArray(schema[key])
+      ? (schema[key] as unknown[]).flatMap((arm, index) =>
+          schemaDescriptions(arm, `${path}|${index}`)
+        )
+      : []
+  );
+  return [
+    ...here,
+    ...Object.entries(properties).flatMap(([name, child]) =>
+      schemaDescriptions(child, path ? `${path}.${name}` : name)
+    ),
+    ...schemaDescriptions(schema.items, `${path}[]`),
+    ...arms,
+  ];
+}
+
+/**
  * The strings a tool puts in front of an agent: the description, the schema a
  * client is actually served, the search hint, and the progress messages. Read
  * through `advertisedSchema` rather than `zodSchema.shape`, because a
@@ -62,8 +91,6 @@ export function linesClaimingSize(text: string): string[] {
  * constant declared elsewhere hands back only that identifier.
  */
 export function agentFacingText(def: ToolDefinition<any, any>): Array<[string, string]> {
-  const schema = advertisedSchema(def);
-  const properties = (schema?.properties ?? {}) as Record<string, { description?: string }>;
   const interaction = (def.interaction ?? {}) as Record<string, unknown>;
   return [
     ["description", def.description ?? ""],
@@ -72,10 +99,7 @@ export function agentFacingText(def: ToolDefinition<any, any>): Array<[string, s
       name,
       typeof formatter === "function" ? formatter.toString() : "",
     ]),
-    ...Object.entries(properties).map(([name, property]): [string, string] => [
-      name,
-      property.description ?? "",
-    ]),
+    ...schemaDescriptions(advertisedSchema(def), ""),
   ];
 }
 

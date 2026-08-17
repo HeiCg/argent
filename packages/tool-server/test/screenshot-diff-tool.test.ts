@@ -288,6 +288,25 @@ describe("screenshotDiffTool", () => {
     expect(screenshotDiffTool.description).toContain("a requested live capture cannot be taken");
   });
 
+  it("resolves ARGENT_SCREENSHOT_SCALE inside (0,1] and falls back outside it", () => {
+    // The range `screenshot`'s `scale` description names. The wire tests above
+    // send 0.3 and 0.6, so widening the guard puts a scale of 5 on the wire with
+    // every other assertion in this file still passing.
+    for (const [env, resolved] of [
+      ["", 0.3],
+      ["abc", 0.3],
+      ["0", 0.3],
+      ["-0.5", 0.3],
+      ["2", 0.3],
+      ["Infinity", 0.3],
+      ["1", 1],
+      ["0.6", 0.6],
+    ] as const) {
+      vi.stubEnv("ARGENT_SCREENSHOT_SCALE", env);
+      expect(getScreenshotScale(), env).toBe(resolved);
+    }
+  });
+
   it("does not promise a full-resolution capture, or a full-size diff image", () => {
     // Both sentences are pinned as phrases: reword either and this fails, which
     // is the point — a reword has to be checked against captureLiveInput and
