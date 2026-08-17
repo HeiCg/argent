@@ -16,11 +16,10 @@ beforeAll(async () => {
 // any one file's wording — the error string is the source of truth, and a skill
 // that adds a claim satisfies the rule by explaining it rather than by updating
 // a number here. Per file, not per line: a page that already names the rejection
-// is trusted for the claims it makes below. Narrowing the vocabulary to lines
-// that also say `screenshot` or `scale` was measured against the corpus and
-// excluded nothing, while letting "baselines are captured at full resolution"
-// through — so the whole vocabulary counts, and an unrelated `1:1` is expected to
-// fail here and be re-read rather than pattern-matched away.
+// is trusted for the claims it makes below. The whole vocabulary counts, so an
+// unrelated `1:1` is expected to fail here and be re-read rather than narrowed
+// away — narrowing to lines that also say `screenshot` or `scale` excludes
+// nothing in this corpus while letting "captured at full resolution" through.
 describe("agent docs reaching for a full-resolution screenshot", () => {
   it("finds some, so the per-file check below cannot pass vacuously", () => {
     expect(docs.filter(({ text }) => linesClaimingSize(text).length > 0)).not.toHaveLength(0);

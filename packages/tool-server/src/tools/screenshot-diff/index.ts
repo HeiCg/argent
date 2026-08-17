@@ -260,9 +260,10 @@ function validateInputSources(params: Params): void {
 }
 
 // services() declares the simulatorServer for exactly the live branches, so the
-// registry path always has one; this guards the exported direct caller against a
-// TypeError on `.captureScreenshot`. Unreachable through the registry, and so
-// through telemetry, which is why it carries no failure code.
+// registry path always has one; this guards the exported direct caller, whose
+// services map nothing validates, against httpScreenshot dereferencing an
+// undefined api. Unreachable through the registry, and so through telemetry,
+// which is why it carries no failure code.
 function requireSimulatorServer(services: Record<string, unknown>): SimulatorServerApi {
   const api = services.simulatorServer as SimulatorServerApi | undefined;
   if (!api) {

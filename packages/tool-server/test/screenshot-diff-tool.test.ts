@@ -7,6 +7,8 @@ import { ArtifactStore } from "@argent/registry";
 import { executeScreenshotDiffTool, screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { createScreenshotTool } from "../src/tools/screenshot";
 import { getScreenshotScale } from "../src/utils/simulator-client";
+import { createRegistry } from "../src/utils/setup-registry";
+import { definitionsById } from "./helpers/catalog";
 import { agentFacingText, sentencesClaimingSize } from "./helpers/size-claims";
 
 describe("screenshotDiffTool", () => {
@@ -258,8 +260,7 @@ describe("screenshotDiffTool", () => {
     // The prose quotes this number as a literal, so it drifts the moment
     // DEFAULT_SCREENSHOT_SCALE moves; nothing else reads the two together.
     // Whole phrases, not the bare number: `toContain("0.3")` is also satisfied
-    // by "0.35", by the unrelated "0.01" in the same sentence, and by prose that
-    // drops the env var and keeps the digits.
+    // by "0.35", and by prose that drops the env var and keeps the digits.
     const fallback = getScreenshotScale();
     const shape = screenshotDiffTool.zodSchema!.shape;
     const registry = {
@@ -302,8 +303,10 @@ describe("screenshotDiffTool", () => {
       "diffPath is the diff at the size the comparison ran at"
     );
     // A positive phrase leaves room for a contradicting sentence beside it, so
-    // pin the whole collection instead. Both tools, because the claim moves
-    // between them: `screenshot` captures the baseline, and it is alwaysLoad.
+    // pin the whole collection instead. Over the whole catalogue, not the two
+    // tools this PR touches: the claim moves between them — `screenshot`
+    // captures the baseline `screenshot-diff` reads — and there is no reason it
+    // stops there.
     const expected: Record<string, string[]> = {
       // The capture's resolution cannot be banned outright — it is genuinely
       // attempted at full resolution — so the condition is what gets pinned.
@@ -322,7 +325,7 @@ describe("screenshotDiffTool", () => {
       ],
     };
     const swept: string[] = [];
-    for (const def of [screenshotDiffTool, createScreenshotTool(registry)]) {
+    for (const def of definitionsById(createRegistry()).values()) {
       for (const [surface, text] of agentFacingText(def)) {
         const key = `${def.id}.${surface}`;
         swept.push(key);
