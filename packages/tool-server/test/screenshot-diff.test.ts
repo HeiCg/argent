@@ -182,6 +182,10 @@ describe("diffPngFiles", () => {
     const lines = result.summary.split("\n");
     expect(lines).toContain(RESIZE_CAVEAT);
     expect(lines).toContain(RESIZE_REMEDY);
+    // The caveat's own "rather than full size" is the only thing in this
+    // summary allowed to mention that size: a second one is a label on an
+    // artifact that is not at it, which is what the diff_images line used to be.
+    expect(result.summary.match(/full size/g)).toHaveLength(1);
     // Exactly one line may reach for the knob, because a prescription creeps
     // back as a second bullet beside the pinned one rather than as an edit to
     // it. The caveat names no knob, so this counts remedies.
