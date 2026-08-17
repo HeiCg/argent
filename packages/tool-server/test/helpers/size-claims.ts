@@ -17,10 +17,12 @@ import { advertisedSchema } from "./catalog";
  * correctly for h264 frames, which never go through this parameter. A range
  * mention ("`scale` accepts values from 0.01 to 1.0") is not a claim about a
  * capture and does not match; the boundary before `scale` keeps `grayscale = 1`,
- * `upscale: 1` and `ARGENT_SCREENSHOT_SCALE` out.
+ * `upscale: 1` and `ARGENT_SCREENSHOT_SCALE` out. `original resolution` is a
+ * claim only under `at`, because these docs also use it as the denominator of a
+ * fraction — "30% of original resolution" asserts the opposite.
  */
 const CLAIMS_SIZE =
-  /full[- ](?:resolution|res\b|size)|\bunscaled\b|\b1:1\b|never downscaled|not resampled|100%\s*(?:of\s+)?(?:the\s+)?(?:original\s+|device\s+|native\s+)?(?:scale|resolution)|\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b/i;
+  /full[- ](?:resolution|res\b|size)|\bunscaled\b|\b1:1\b|never downscaled|not resampled|100%\s*(?:of\s+)?(?:the\s+)?(?:original\s+|device\s+|native\s+)?(?:scale|resolution)|\bat\s+(?:the\s+)?(?:original|device)(?:'s)?\s+(?:resolution|size|scale)\b|\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b/i;
 
 /** Whitespace is not part of a claim: a wrap inside "full resolution" must not hide it. */
 const flatten = (text: string): string => text.replace(/\s+/g, " ").trim();

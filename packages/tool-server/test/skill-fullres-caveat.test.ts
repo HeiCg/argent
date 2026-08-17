@@ -47,9 +47,8 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
     // The escort excuses a claim about capturing, because the `wrong data size`
     // rejection is what capturing at 1.0 runs into. It says nothing about the
     // size of what the diff writes, so a section carrying it must not be trusted
-    // for that too — which is how the sentence this change removed from the tool
-    // description ("diffPath is the full-size diff image") could come back in a
-    // skill. Subject read off the claim's own vocabulary, so a sentence about a
+    // for that too — which is how a claim about the diff image's size lands in a
+    // skill unchallenged. Subject read off the claim's own vocabulary, so a sentence about a
     // capture keeps the escort's cover however it spells one — but `screenshot-`
     // is the head of a tool name, and naming the tool is not saying the claim is
     // about its capture.
