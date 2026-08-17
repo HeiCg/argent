@@ -2744,8 +2744,9 @@ describe("the flow-add-step schema the CLI tests hand-copy", () => {
 // summarizeStep is the single spelling shared by the recorder's per-step
 // `recorded` line and flow-finish-recording's `summary`. `times` (tap),
 // `duration` (long-press) and `delayMs` (tool) change what replays, so a
-// summary that drops them misdescribes the file. These exercise it through the
-// recording tools; flow-step-definitions.test.ts pins every kind directly.
+// summary that drops them misdescribes the file. flow-step-definitions.test.ts
+// pins one case per kind; these add the `delayMs` shapes only a real YAML parse
+// yields — `soon`, `.nan`, `"2000"`, `0`, `-5`.
 describe("summarizeStep rendering", () => {
   it("renders a tap's times count", () => {
     // A recorded selector spells the id key `identifier`; selectorToYaml maps it

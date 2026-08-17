@@ -42,7 +42,7 @@ const CASES = {
     },
     {
       // One past it sleeps a clamped tick instead, so the summary describes no
-      // delay. Neither bound is hand-edit-only: `flow_add_step`'s `delayMs` is
+      // delay. Neither bound is hand-edit-only: `flow-add-step`'s `delayMs` is
       // `z.number().int().min(0)` with no ceiling, so the recorder's own
       // per-step line renders these too.
       step: { kind: "tool", name: "screenshot", args: {}, delayMs: 2 ** 31 },

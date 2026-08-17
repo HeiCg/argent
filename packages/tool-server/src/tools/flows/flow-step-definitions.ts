@@ -68,9 +68,10 @@ function selectorLabel(sel: FlowSelector): string {
   if (sel.role) parts.push(`role=${sel.role}`);
   // Each relational scope renders after the fields, parenthesized and
   // recursive, so two steps that differ only by scope don't collapse to the
-  // same target label in the report — mirroring `describeSelector`'s
-  // reason-string spelling so the two surfaces stay in lockstep (see
-  // `conditionLabel`).
+  // same target label in the report — the scope shape `describeSelector` gives
+  // reason strings (see `conditionLabel`). Only the shape: field ORDER is fixed
+  // here and follows parsed key order there, so a selector carrying a regex
+  // matcher lists it first in a target and last in a reason.
   for (const relation of SELECTOR_RELATIONS) {
     const scope = sel[relation];
     if (scope !== undefined) parts.push(`${relation} (${selectorLabel(scope)})`);
@@ -184,9 +185,9 @@ const POINT_GESTURE_STEP: FlowStepDefinition<Extract<FlowStep, { kind: "tap" | "
   // `flowFile` beside it. Neither kind carries a `delayMs` (only `tool` steps
   // do), so no delayLabel here.
   //
-  // Four replay-affecting fields are still rendered on neither surface —
-  // `type.submit`, `await.timeout`, `idle.timeout`, `idle.stableFor` — so a
-  // summary line alone does not distinguish two steps differing only in those.
+  // Four replay-affecting fields render on neither surface — `type.submit`,
+  // `await.timeout`, `idle.timeout`, `idle.stableFor` — so a summary line alone
+  // does not distinguish two steps differing only in those.
   summary: (step) => {
     const target = step.selector ? yamlSelectorLabel(step.selector) : `(${step.x}, ${step.y})`;
     // Only ×2..×10 is renderable: `times: 1` is the default and never lands in
