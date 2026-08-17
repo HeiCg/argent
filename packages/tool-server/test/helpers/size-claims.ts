@@ -61,10 +61,17 @@ export function linesClaimingSize(text: string): string[] {
 export function agentFacingText(def: ToolDefinition<any, any>): Array<[string, string]> {
   const schema = advertisedSchema(def);
   const properties = (schema?.properties ?? {}) as Record<string, { description?: string }>;
+  const interaction = (def.interaction ?? {}) as Record<string, unknown>;
   return [
     ["description", def.description ?? ""],
     ["searchHint", def.searchHint ?? ""],
-    ["startedMsg", String(def.interaction?.startedMsg?.({ params: {} } as never) ?? "")],
+    // The progress messages read as source rather than as output: two of the
+    // three need a result or a failure signal to render, and a claim written
+    // into one is a literal in the function either way.
+    ...Object.entries(interaction).map(([name, formatter]): [string, string] => [
+      name,
+      typeof formatter === "function" ? formatter.toString() : "",
+    ]),
     ...Object.entries(properties).map(([name, property]): [string, string] => [
       name,
       property.description ?? "",
