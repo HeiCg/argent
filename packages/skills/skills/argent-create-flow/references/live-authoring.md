@@ -28,7 +28,7 @@ Obey these lifecycle rules:
 3. Give concurrent recordings separate devices. Their files are isolated, but their live device actions are not.
 4. Treat `flow-start-recording` as destructive. It always truncates the named YAML, including a finished or committed flow. `restarted` reports only a displaced live take.
 5. If a call says the recording is inactive, do not restart under that name. The completed take can still be on disk. Copy it aside or record under a fresh name.
-6. Inspect `toolResult`, `message`, and `flowFile` after each call. A call that errors records nothing, but a call that returns normally while reporting an unmet condition **does** append the step, and `message` says the step was added either way. `await-ui-element` is the case that turns up in practice (see [Live waits and checks](#live-waits-and-checks)).
+6. Inspect `toolResult`, `message`, and `recorded` after each call. A call that errors records nothing, but a call that returns normally while reporting an unmet condition **does** append the step, and `message` says the step was added either way. `await-ui-element` is the case that turns up in practice (see [Live waits and checks](#live-waits-and-checks)). Only `flow-start-recording` and `flow-finish-recording` return the whole YAML as `flowFile`. A step call returns `recorded` — one summary line for the step it appended — plus a running `stepCount`. Read `recorded`: the recorder does not always store the tool call you made, and that line is where a rewrite shows up. To see the whole file mid-recording, read it at `savedTo`. A `savedTo` that comes back `null` means the write failed on your side. The step is still in the recording, so continue: the next step rewrites the whole file, and `flow-finish-recording` returns `flowFile` regardless.
 7. Edit or reorder the YAML only after `flow-finish-recording`. An active remote recording can overwrite mid-recording edits.
 
 ## Start in the correct order
@@ -76,7 +76,7 @@ For every action:
 1. **Discover without mutation.** Use `describe`, iOS native discovery, `debugger-component-tree`, or `screenshot`. Do not record discovery or `debugger-*` calls: `port` is not a device-bind key, so a recorded one replays against whatever Metro owns that port.
 2. **Choose a durable target.** Prefer a stable id, then stable text or an accessibility label. On iOS, use native discovery for ids that trimmed accessibility output omits.
 3. **Add an echo.** Name the current state, action, and expected outcome before the action can fail.
-4. **Execute through `flow-add-step`.** Inspect the result and returned YAML immediately.
+4. **Execute through `flow-add-step`.** Inspect the result and the `recorded` line immediately.
 5. **Verify immediately.** Record outcome checks when their states first appear. After navigation, prove identity then readiness: record the identity check live, and add the readiness gate during polish.
 
 ### Record identity, then readiness, after every navigation
@@ -99,7 +99,7 @@ Without step 1, `hidden` also passes for a typo or an element that never existed
 
 ### Taps
 
-`flow-add-step` cannot receive a flow selector directly. Discover the element first, then record `gesture-tap` at its frame center; the live coordinates are transport for the gesture, not a final locator. The recorder reads the pre-tap tree and derives the selector in a fixed order — `id`, then `text`, then `role` — giving three outcomes. Read the returned flow file after every tap, because only two of them warn:
+`flow-add-step` cannot receive a flow selector directly. Discover the element first, then record `gesture-tap` at its frame center; the live coordinates are transport for the gesture, not a final locator. The recorder reads the pre-tap tree and derives the selector in a fixed order — `id`, then `text`, then `role` — giving three outcomes. Read the `recorded` line after every tap, because only two of them warn. It names the derived form — a selector map, or the kept point:
 
 1. **`tap: { id: ... }` or `tap: { text: ... }`** — the good case.
 2. **`tap: { role: ... }`, appended with no warning.** An icon-only button with neither id nor visible label lands here. `role` matches as a case-insensitive substring, so a replay screen holding a second control of that role can win the [ranking](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree) and the tap reports a pass on the wrong control.
@@ -238,5 +238,7 @@ Run `flow-execute` on the complete YAML with the absolute project root. For a fr
 Manual rescue invalidates the pass. An `errored` step was never evaluated: an `idle` wait whose tree source could not be read, a step that threw, an unresolvable `run:` target, or a `launch:` that did not start the app. Read the reason — most name the environment, but a failed `launch:` is a verdict about the app. Unconfirmed focus is not in this class at all: the replay focus poll has no failure return, so a `type:` step whose focus was never confirmed is scored a **pass**, and only the value check after typing catches it.
 
 **A passing step that carries a `warning` is a finding, not noise.** `await: { idle: true }` raises [six different warnings](flow-yaml.md#idle-readiness) and they do not share one meaning. Two say the screen was moving; one says the wait ran out mid-hold and is repaired by raising the step's `timeout:`; one says the tree stayed empty; one says the tree did hold still and only the screenshot pairs were missing, so the capture path is what to check; one says the step ended with no evidence either way. No report separates intended motion from a load that never finished. Read which one it is, look at that screen, disclose what you found, and confirm the following step targets a stable element rather than stillness.
+
+A [selector-less gesture](flow-yaml.md#directives) raises a warning of a different shape, not one of those six: a tree-source outage left it unsettled, so it dispatched blind and the green says only that the gesture was sent. Restore the source, usually by relaunching the app so the instrumentation loads. Accept it only where the app serves no tree at all, such as the [injection-free iOS form](reliability-and-recovery.md#terminally-non-injectable-ios-apps).
 
 One uninterrupted full pass completes a normal flow. `argent-qa-flows` requires two consecutive passes of unchanged YAML. For CI, use `argent flow run <name> [--platform ...]`; it exits non-zero on failure.
