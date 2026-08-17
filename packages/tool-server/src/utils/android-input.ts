@@ -398,6 +398,12 @@ export async function injectAndroidClear(
   // `-t 300` 7/30, worse rather than better. Reading the field back is, and a
   // residue goes to the delete run, which needs no selection to be correct.
   //
+  // Short fields are the ones that fail: 11 of 80 at 6 characters, 0 of 80 at
+  // 160 and 200 (settling time is not the variable — a 4s pause before the chord
+  // left the 6-character rate unchanged). So a residue reaching the delete run
+  // has always been far inside MAX_DELETE_COUNT, and its length refusal below is
+  // a guard, not a limit this path has been seen to hit.
+  //
   // Only a POSITIVE reading redirects. Unreadable is evidence of nothing, and
   // treating it as failure would spend a blind BLIND_DELETE_COUNT run on every
   // clear taken where `measureFocusedTextLength` cannot see. A measurement that
