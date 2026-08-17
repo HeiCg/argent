@@ -146,4 +146,24 @@ describe("a wait that settles", () => {
     expect(result.settled).toBe(true);
     expect(result.note).toBeUndefined();
   });
+
+  // The description is always loaded, so it is what an agent reads BEFORE it
+  // ever sees a note. Two unrelated things produce a note beside `success: true`
+  // and they call for opposite responses — one says re-read the screen, the
+  // other says the check did not really pass — so the description has to name
+  // both. Characterising the pair as only the partial-tree case invites an agent
+  // on iOS or Android, where that case cannot arise, to dismiss the note it does
+  // get as somebody else's platform.
+  it("tells the caller both reasons a passing wait still carries a note", async () => {
+    const description = createAwaitUiElementTool(registry).description;
+
+    // The tree-source caveat, and the two sources that raise it.
+    expect(description).toMatch(/not the whole live\s+screen/);
+    expect(description).toMatch(/HarmonyOS/);
+    expect(description).toMatch(/Chromium/);
+    // The `hidden`-never-matched pass, and what to do about it — without the
+    // remedy the caller is told a true thing it cannot act on.
+    expect(description).toMatch(/never matched\s+anything/);
+    expect(description).toMatch(/fix the\s+selector/);
+  });
 });

@@ -109,6 +109,23 @@ export function resolveSecretPlaceholders(
 }
 
 /**
+ * Every spelling of a secret that can reach an error message.
+ *
+ * The value itself, plus its POSIX single-quote escaping. The backends that
+ * echo their input echo a SHELL LINE (`adb shell input text 'x'`,
+ * `hdc shell uitest uiInput text 'x'`), and `shellQuote` rewrites each `'` as
+ * `'\''` — so a secret holding an apostrophe is no longer a contiguous
+ * substring of the message and a literal search walks straight past it. That is
+ * the whole redaction net for those platforms, and it fails silently: a secret
+ * without an apostrophe redacts correctly, so the gap is invisible until the one
+ * that has one leaks in full.
+ */
+function secretSpellings(value: string): string[] {
+  const shellEscaped = value.replaceAll("'", `'\\''`);
+  return shellEscaped === value ? [value] : [shellEscaped, value];
+}
+
+/**
  * Scrub resolved secret values from an error before it propagates — a backend
  * failure can echo its input (e.g. Android typing surfaces the device-side
  * `input text` command line). Mutates message/stack in place so the error's
@@ -123,7 +140,12 @@ export function redactSecretsFromError(
   const scrub = (s: string) =>
     secrets.reduce(
       (acc, { name, value }) =>
-        value ? acc.split(value).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`) : acc,
+        value
+          ? secretSpellings(value).reduce(
+              (msg, spelling) => msg.split(spelling).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`),
+              acc
+            )
+          : acc,
       s
     );
   if (err instanceof Error) {

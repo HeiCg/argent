@@ -284,9 +284,11 @@ dumpLayout\`) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
 
 Returns { success: boolean, elapsed: number }, plus a \`note\` whenever there is something to say about the
-read — on success=false it explains what was seen before the timeout, and on success=true it qualifies the
-match (the tree it matched is not the whole live screen, e.g. a suspended HarmonyOS panel still serving its
-last frame, or a Chromium page truncated at the walker's node budget), so read it either way. Use this after
+read — on success=false it explains what was seen before the timeout, and on success=true it says why the
+pass is weaker than it looks: either \`hidden\` was satisfied by a selector that never matched anything (so the
+element may have been gone all along, or the selector is wrong — treat that as a failed check and fix the
+selector), or the tree it matched is not the whole live screen (a suspended HarmonyOS panel still serving its
+last frame, a Chromium page truncated at the walker's node budget). Read it either way. Use this after
 a tap/navigation to wait for the next screen, or before tapping an element that appears asynchronously.`,
     alwaysLoad: true,
     searchHint:

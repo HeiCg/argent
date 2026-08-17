@@ -1596,16 +1596,50 @@ const HARMONY_NOT_DRIVABLE =
   "ran out, so `describe`, `screenshot` and the gesture tools may fail for a little longer. " +
   "Retry the first interaction, or give the boot longer with `bootTimeoutMs`.";
 
+/**
+ * Said when `hdc`'s device table could not be read for the whole wait.
+ *
+ * Distinct from {@link HARMONY_NO_TARGET}, which reports that nothing
+ * registered: nothing is known here about whether the instance registered, and
+ * the remedy is argent's own connector rather than a longer budget. The
+ * pre-start snapshot refuses outright on this condition
+ * (`BOOT_HARMONY_TARGET_LIST_FAILED`); by this point the instance has been
+ * started, so here it is a caveat on a boot that did happen.
+ */
+const HARMONY_UNLISTABLE_TARGETS =
+  "`hdc list targets` failed every time argent asked while the instance was booting, so it could " +
+  "not tell whether the instance registered — this says nothing about the instance itself. Check " +
+  "that `hdc` works (`hdc list targets`), then call `list-devices` and drive the " +
+  '`kind: "device"` entry for the instance.';
+
 /** Said when the instance started but the connector that would reach it is missing. */
 const HARMONY_NO_HDC =
   "The instance started, but `hdc` was not found, so argent cannot tell which target it " +
   "registered as and no interaction tool can reach it. Install DevEco Studio's device " +
   "connector (or put `hdc` on PATH), then call `list-devices`.";
 
-/** The targets `hdc` can drive right now. */
-async function connectedHarmonyTargets(timeoutMs?: number) {
-  const targets = await listHarmonyHdcTargets(timeoutMs).catch(() => []);
-  return targets.filter((t) => t.state === "Connected");
+/**
+ * The targets `hdc` can drive right now, and whether the table could be read at
+ * all.
+ *
+ * A failed listing is not an empty one. The pre-start snapshot already makes
+ * that distinction — {@link connectedHarmonyKeys} raises
+ * `BOOT_HARMONY_TARGET_LIST_FAILED` rather than treat an unreadable table as
+ * "nothing connected" — and the wait that polls this needs it for the same
+ * reason: a daemon that dies mid-boot otherwise reads as an instance that never
+ * registered, and the caller is sent to raise `bootTimeoutMs` for a budget that
+ * was never the problem. `ok` stays false only if EVERY attempt failed; one
+ * `hdc` still coming up early in the boot is not a diagnosis.
+ */
+async function connectedHarmonyTargets(
+  timeoutMs?: number
+): Promise<{ ok: boolean; targets: Awaited<ReturnType<typeof listHarmonyHdcTargets>> }> {
+  try {
+    const targets = await listHarmonyHdcTargets(timeoutMs);
+    return { ok: true, targets: targets.filter((t) => t.state === "Connected") };
+  } catch {
+    return { ok: false, targets: [] };
+  }
 }
 
 /**
@@ -1795,18 +1829,35 @@ async function startHarmonyEmulator(
 }
 
 /**
+ * What the boot says when the wait produced no connect key.
+ *
+ * A table rather than a chain of ternaries: keyed by the whole `reason` union,
+ * so a reason added later is a compile error here instead of silently falling
+ * through to "the instance had not registered" — which is the failure
+ * {@link HARMONY_UNLISTABLE_TARGETS} exists because of.
+ */
+const HARMONY_NO_KEY_CAVEAT: Record<NonNullable<HarmonyTargetOutcome["reason"]>, string> = {
+  ambiguous: HARMONY_AMBIGUOUS_TARGET,
+  mismatched: HARMONY_MISMATCHED_TARGET,
+  unprobeable: HARMONY_UNPROBEABLE_TARGET,
+  unlistable: HARMONY_UNLISTABLE_TARGETS,
+  none: HARMONY_NO_TARGET,
+};
+
+/**
  * What the wait for a target concluded.
  *
  * `reason` says why there is no key, and is read only when there is none;
  * `unconfirmed` marks a key that arrival alone picked out. Both feed the boot's
  * `note`, and each has to stay distinct there, since they send the caller
  * somewhere different: "ambiguous" and "mismatched" are decisions no budget
- * changes, while "none" and "unprobeable" can both be a boot still in progress.
+ * changes, while "none" and "unprobeable" can both be a boot still in progress,
+ * and "unlistable" is argent's own connector rather than the instance at all.
  */
 type HarmonyTargetOutcome = {
   key: string | null;
   unconfirmed?: boolean;
-  reason?: "ambiguous" | "mismatched" | "unprobeable" | "none";
+  reason?: "ambiguous" | "mismatched" | "unprobeable" | "unlistable" | "none";
 };
 
 /**
@@ -1898,6 +1949,22 @@ async function waitForHarmonyTarget(
 ): Promise<HarmonyTargetOutcome> {
   let sawMismatch = false;
   let sawUnprobeable = false;
+  // Every listing so far having failed is a different answer from none having
+  // arrived, and it is latched rather than sampled: `hdc` is often still coming
+  // up on the first poll of a cold boot, so only a table that was never readable
+  // is worth reporting as one.
+  let listedOnce = false;
+  // What was seen beats what was not: a target that registered and was declined
+  // says more than an unreadable table, which in turn says more than nothing
+  // having arrived.
+  const noKeyReason = (): HarmonyTargetOutcome["reason"] =>
+    sawMismatch
+      ? "mismatched"
+      : sawUnprobeable
+        ? "unprobeable"
+        : listedOnce
+          ? "none"
+          : "unlistable";
   for (;;) {
     // The listing is bounded by the budget too, not just the probes it feeds:
     // `hdc list targets` carries its own 8s ceiling, so a daemon slow enough to
@@ -1906,12 +1973,11 @@ async function waitForHarmonyTarget(
     // names the key this whole wait exists to find.
     const budget = deadline - Date.now();
     if (budget <= 0) {
-      return {
-        key: null,
-        reason: sawMismatch ? "mismatched" : sawUnprobeable ? "unprobeable" : "none",
-      };
+      return { key: null, reason: noKeyReason() };
     }
-    const arrived = (await connectedHarmonyTargets(Math.min(HDC_LIST_TIMEOUT_MS, budget))).filter(
+    const listing = await connectedHarmonyTargets(Math.min(HDC_LIST_TIMEOUT_MS, budget));
+    if (listing.ok) listedOnce = true;
+    const arrived = listing.targets.filter(
       (t) => !before.has(t.connectKey) && couldBeHarmonyEmulator(t)
     );
     const confirmed: string[] = [];
@@ -1951,10 +2017,7 @@ async function waitForHarmonyTarget(
       // A target that registered and was declined, or one that registered and
       // never answered, are both distinct from nothing arriving at all — the
       // budget is not what failed, so the caller must not be sent to raise it.
-      return {
-        key: null,
-        reason: sawMismatch ? "mismatched" : sawUnprobeable ? "unprobeable" : "none",
-      };
+      return { key: null, reason: noKeyReason() };
     }
     await new Promise((r) => setTimeout(r, Math.min(HARMONY_TARGET_POLL_MS, remaining)));
   }
@@ -2288,15 +2351,7 @@ async function bootHarmonyImpl(params: {
   } else if (!hdcAvailable) {
     caveats.push(HARMONY_NO_HDC);
   } else {
-    caveats.push(
-      outcome.reason === "ambiguous"
-        ? HARMONY_AMBIGUOUS_TARGET
-        : outcome.reason === "mismatched"
-          ? HARMONY_MISMATCHED_TARGET
-          : outcome.reason === "unprobeable"
-            ? HARMONY_UNPROBEABLE_TARGET
-            : HARMONY_NO_TARGET
-    );
+    caveats.push(HARMONY_NO_KEY_CAVEAT[outcome.reason ?? "none"]);
   }
   const note = caveats.length > 0 ? caveats.join(" ") : undefined;
 

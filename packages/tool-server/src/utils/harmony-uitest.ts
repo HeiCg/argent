@@ -172,9 +172,24 @@ async function runUitest(connectKey: string, args: string, timeoutMs: number): P
 interface HarmonyDisplay {
   width: number;
   height: number;
-  /** False when the display is suspended — injected touches land nowhere. */
+  /** False unless the panel is fully on — see {@link INTERACTIVE_POWER_STATUS}. */
   screenOn: boolean;
 }
+
+/**
+ * The `ScreenPowerStatus` values that mean a touch can land.
+ *
+ * An allowlist, because the enum is long and mostly not interactive: the
+ * HarmonyOS 6.1.1 system image also names `STANDBY`, `SUSPEND`, `OFF`,
+ * `OFF_ADVANCED`, `OFF_FAKE`, `DOZE`, `DOZE_SUSPEND`, `ERROR` and `BUTT`
+ * (read out of `system.img`). `uitest uiInput` answers `No Error` on every one
+ * of them, so naming the two that are on makes an unmeasured state refuse
+ * rather than report a touch that reached nothing.
+ *
+ * `ON_ADVANCED` is the pre-power-on state a wake passes through. Refusing it
+ * would fail exactly the retry this guard's own message prescribes.
+ */
+const INTERACTIVE_POWER_STATUS = new Set(["POWER_STATUS_ON", "POWER_STATUS_ON_ADVANCED"]);
 
 /**
  * Display geometry and power state, read from the render service.
@@ -210,7 +225,10 @@ export async function harmonyDisplay(
     throw new FailureError(
       `Could not read the display size and power state of HarmonyOS device '${connectKey}' from the render service.`,
       {
-        error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
+        // The display, not `uitest`: this is a `hidumper` dump, and no `uitest`
+        // ran. `failure_stage` is what separates a dump that could not be parsed
+        // from one that parsed and reported nothing usable.
+        error_code: FAILURE_CODES.HARMONY_DISPLAY_UNREADABLE,
         failure_stage: "harmony_display_size",
         failure_area: "tool_server",
         error_kind: "subprocess",
@@ -221,7 +239,7 @@ export async function harmonyDisplay(
   return {
     width: Number.parseInt(res[1], 10),
     height: Number.parseInt(res[2], 10),
-    screenOn: power[1] !== "POWER_STATUS_OFF" && power[1] !== "POWER_STATUS_SUSPEND",
+    screenOn: INTERACTIVE_POWER_STATUS.has(power[1]),
   };
 }
 

@@ -735,6 +735,32 @@ describe("boot-device — HarmonyOS emulator path", () => {
     expect(result.note).not.toMatch(/had not registered/);
   });
 
+  it("says the device table was unreadable rather than that nothing registered", async () => {
+    // `hdc` dying mid-boot (a killed server, a client/server version mismatch)
+    // makes every poll throw. Swallowed into an empty listing it reads as an
+    // instance that never registered, which sends the caller to raise a budget
+    // that was never the problem and to look at an emulator that may be fine —
+    // argent could not ask. The snapshot before the start already refuses this
+    // condition outright; the wait after it has to name it too.
+    //
+    // The snapshot succeeds (it is the strict listing, and it is what decides
+    // the boot may proceed at all), so the failure below is only ever the wait's.
+    listHarmonyHdcTargetsStrict.mockResolvedValue([PHONE]);
+    listHarmonyHdcTargets.mockRejectedValue(new Error("[Fail]Connect server failed"));
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = (await pending) as { udid: string; note?: string };
+
+    // The boot still happened and still answers with the instance id.
+    expect(result.udid).toBe(`harmony-emulator-${INSTANCE}`);
+    expect(result.note).toMatch(/`hdc list targets` failed every time/);
+    // Not the wrong diagnosis, and not the wrong remedy.
+    expect(result.note).not.toMatch(/had not registered/);
+    expect(result.note).not.toMatch(/bootTimeoutMs/);
+  });
+
   it("carries both caveats when the key is neither checked nor answering", async () => {
     // One `note` field, two independent things left unproven. Dropping either
     // for the other has the payload assert something the boot did not establish.

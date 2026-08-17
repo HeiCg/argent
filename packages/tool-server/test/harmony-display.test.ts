@@ -85,6 +85,38 @@ describe("harmonyDisplay", () => {
     });
   });
 
+  it("treats every power state but the two on ones as unable to receive input", async () => {
+    // The whole `ScreenPowerStatus` enum, read out of the HarmonyOS 6.1.1
+    // `system.img`. A denylist of the two obvious ones (`OFF`, `SUSPEND`) lets a
+    // dozing, standby or fake-off panel through, and `uitest uiInput` answers
+    // `No Error` on all of them — so the tool reports a tap that reached nothing
+    // on a screen the user is not even looking at.
+    //
+    // `ON_ADVANCED` is on the other side deliberately: a wake passes through it,
+    // and refusing it would fail the retry the refusal itself prescribes.
+    const states: Array<[status: string, screenOn: boolean]> = [
+      ["POWER_STATUS_ON", true],
+      ["POWER_STATUS_ON_ADVANCED", true],
+      ["POWER_STATUS_OFF", false],
+      ["POWER_STATUS_OFF_ADVANCED", false],
+      ["POWER_STATUS_OFF_FAKE", false],
+      ["POWER_STATUS_SUSPEND", false],
+      ["POWER_STATUS_STANDBY", false],
+      ["POWER_STATUS_DOZE", false],
+      ["POWER_STATUS_DOZE_SUSPEND", false],
+      ["POWER_STATUS_ERROR", false],
+      ["POWER_STATUS_BUTT", false],
+      // Not in the enum at all: an unlisted state has to refuse, which is the
+      // reason this is an allowlist rather than a longer denylist.
+      ["POWER_STATUS_SOMETHING_NEW", false],
+    ];
+
+    for (const [status, screenOn] of states) {
+      answer(dump(screenLine(0, status, "1320x2856")));
+      await expect(harmonyDisplay(CONNECT_KEY), status).resolves.toMatchObject({ screenOn });
+    }
+  });
+
   it("takes the size and the power state off the SAME panel", async () => {
     // A foldable's second half, or a cast display, sleeping while the panel
     // being driven is awake. Scanning the whole dump for `POWER_STATUS_OFF`
@@ -112,6 +144,11 @@ describe("harmonyDisplay", () => {
       (e: unknown) => e as Error
     );
     expect(getFailureSignal(err)?.failure_stage).toBe("harmony_display_size");
+    // The DISPLAY code, not `HARMONY_UITEST_FAILED`: this read is a `hidumper`
+    // dump and no `uitest` ran, so blaming `uitest` sends an agent looking at
+    // the wrong binary. `failure_stage` is what separates this from the 0x0
+    // read, which shares the code.
+    expect(getFailureSignal(err)?.error_code).toBe("HARMONY_DISPLAY_UNREADABLE");
     expect(err.message).toContain(CONNECT_KEY);
   });
 

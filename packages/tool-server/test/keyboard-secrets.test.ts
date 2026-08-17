@@ -263,6 +263,40 @@ describe("redactSecretsFromError", () => {
     redactSecretsFromError(err, [{ name: "EMPTY", value: "" }]);
     expect(err.message).toBe("boom");
   });
+
+  it("scrubs a secret the shell rewrote on its way to the device", () => {
+    // The message every backend that shells out produces is a COMMAND LINE, and
+    // `shellQuote` (utils/adb.ts, utils/harmony-hdc.ts — the same POSIX escape)
+    // turns each `'` into `'\''`. A literal search for the raw value walks past
+    // that, so an apostrophe in a password was the difference between a redacted
+    // message and the credential handed to the agent in full. Fixtures are the
+    // real command lines: `adb shell input text …` and `hdc … uitest uiInput …`.
+    const value = "don't-tell";
+    const quoted = `'${value.replaceAll("'", `'\\''`)}'`;
+    expect(quoted).toBe(`'don'\\''t-tell'`); // the escaping this defends against
+
+    for (const line of [
+      `adb shell input text ${quoted} failed`,
+      `uitest uiInput text ${quoted} failed on 127.0.0.1:5555: Invalid parameters.`,
+    ]) {
+      const err = new Error(line);
+      redactSecretsFromError(err, [{ name: "APP_PASSWORD", value }]);
+      expect(err.message, line).not.toContain("don't-tell");
+      // Not just absent — absent because it was REPLACED. A scrub that dropped
+      // the fragments would leave `t-tell` behind and still pass the line above.
+      expect(err.message, line).toContain("{{secret:APP_PASSWORD}}");
+      expect(err.message, line).not.toMatch(/t-tell/);
+    }
+  });
+
+  it("still scrubs the raw value when nothing quoted it", () => {
+    // Positive control for the pair above: the backends that inject over HID or
+    // CDP never build a shell line, so the value reaches an error message
+    // verbatim. A scrub narrowed to the escaped spelling would miss those.
+    const err = new Error("No keycode for character in don't-tell");
+    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "don't-tell" }]);
+    expect(err.message).toBe("No keycode for character in {{secret:APP_PASSWORD}}");
+  });
 });
 
 describe("keyboard tool with secret placeholders", () => {
