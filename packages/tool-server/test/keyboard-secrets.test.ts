@@ -362,12 +362,13 @@ describe("redactSecretsFromError", () => {
   });
 
   it("does not redact the marker it just wrote", () => {
-    // The marker is text like any other, so a secret sharing a run with
-    // `{{secret:` used to be re-matched inside its own replacement, nesting
-    // markers until the diagnostic was unreadable. Scrubbing in one pass over
-    // the original is what stops it.
-    const err = new Error("uitest uiInput text 'topsecret42' failed: Invalid parameters.");
-    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "topsecret42" }]);
+    // The marker is text like any other, so a secret with a piece inside
+    // `{{secret:` gets re-matched within its own replacement unless the scrub
+    // reads only the original — nesting markers until the diagnostic is
+    // unreadable. The value has to be one whose SPELLINGS meet the marker for
+    // this to bite: `secret pass` splits into `secret`, which does.
+    const err = new Error("uitest uiInput text 'secret pass' failed: Invalid parameters.");
+    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "secret pass" }]);
     expect(err.message).toBe(
       "uitest uiInput text '{{secret:APP_PASSWORD}}' failed: Invalid parameters."
     );

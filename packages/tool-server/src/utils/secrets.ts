@@ -182,10 +182,12 @@ export function redactSecretsFromError(
   // it is left standing beside the marker.
   //
   // Matched by hand rather than by an alternation `RegExp`, which a secret can
-  // be too long to compile into: past 32768 characters the constructor throws a
-  // `SyntaxError` QUOTING THE PATTERN, so the one call that exists to keep the
+  // be too long to compile into: from 32768 characters V8 refuses the pattern
+  // with a `SyntaxError` QUOTING IT, so the one call that exists to keep the
   // credential out of the message would hand over the whole of it. A PEM bundle
   // or a base64 keystore reaches that size, and `paste` invites exactly those.
+  // The throw comes at the first match attempt, not from the constructor —
+  // compilation is lazy — so guarding `new RegExp` would not have caught it.
   const byFirstChar = new Map<string, string[]>();
   for (const spelling of [...marked.keys()].sort((a, b) => b.length - a.length)) {
     const bucket = byFirstChar.get(spelling[0]!);

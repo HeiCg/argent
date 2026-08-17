@@ -244,10 +244,11 @@ export function platformFromArgs(data: unknown): TelemetryPlatform | null {
   // AVD to `android-tv` — from the call after describe/launch has warmed the cache,
   // not the first (see `refineTvPlatform`).
   if (typeof (data as Record<string, unknown>).avdName === "string") return "android";
-  // Its HarmonyOS twin, and the only shape a harmony boot has: an instance is
-  // named, not addressed, until `hdc` reports the connect key it registered as.
-  // `harmony` has no runtime kinds to refine into, so this is the whole answer
-  // rather than a coarse one.
+  // Its HarmonyOS twin: an instance is named, not addressed, until `hdc`
+  // reports the connect key it registered as. The other spelling of a harmony
+  // boot — the `harmony-emulator-<name>` id `list-devices` reports — is a
+  // `udid`, and classifies by shape above. `harmony` has no runtime kinds to
+  // refine into, so this is the whole answer rather than a coarse one.
   if (typeof (data as Record<string, unknown>).harmonyInstance === "string") return "harmony";
   return null;
 }

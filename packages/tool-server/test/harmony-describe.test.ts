@@ -55,6 +55,23 @@ describe("describeHarmony", () => {
     expect(result.hint).toMatch(/display is off/);
   });
 
+  it("blames the panel, not a slow app, when the screen is off AND nothing dumped", async () => {
+    // The one case the two hints both claim. Telling the caller to describe
+    // again or take a screenshot is a loop that never resolves on a panel that
+    // is off, and the screenshot comes back a stale frame (#792) — so the wake
+    // has to come first.
+    vi.mocked(harmonyDisplay).mockResolvedValue({ width: 1216, height: 2688, screenOn: false });
+    vi.mocked(harmonyDumpLayout).mockResolvedValue({
+      attributes: { bounds: "[0,0][1216,2688]" },
+      children: [],
+    });
+
+    const result = await describeHarmony(CONNECT_KEY);
+
+    expect(result.hint).toMatch(/display is off/);
+    expect(result.hint).not.toMatch(/no windows/);
+  });
+
   it("says nothing extra when the screen is on and the dump has windows", async () => {
     vi.mocked(harmonyDisplay).mockResolvedValue({ width: 1216, height: 2688, screenOn: true });
     vi.mocked(harmonyDumpLayout).mockResolvedValue(lockScreenDump());

@@ -148,6 +148,23 @@ describe("harmonyDisplay", () => {
       height: 2856,
       screenOn: true,
     });
+
+    // The awake panel first is the ordering where a whole-dump scan happens to
+    // agree, so it cannot tell the two apart on its own. A sizeless panel ahead
+    // of the driven one can: it is the shape the size clause of the line search
+    // exists to skip, and its power state is the one a wider scan would take.
+    answer(
+      dump(
+        "screen[0]: id=0, powerStatus=POWER_STATUS_OFF, isVirtual=true",
+        screenLine(1, "POWER_STATUS_ON", "1320x2856")
+      )
+    );
+
+    await expect(harmonyDisplay(CONNECT_KEY)).resolves.toEqual({
+      width: 1320,
+      height: 2856,
+      screenOn: true,
+    });
   });
 
   it("refuses a dump whose panel line carries no power state", async () => {
