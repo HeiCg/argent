@@ -25,9 +25,13 @@ export interface StepReport {
   status: "pass" | "fail" | "skip" | "error";
   reason?: string;
   /**
-   * Legacy: older tool-servers passed a snapshot that adopted a missing
-   * baseline and annotated it with this caveat (a missing baseline now fails
-   * the step). Rendered for wire compat with a not-yet-updated server.
+   * A step that passed in a way that weakens it as proof — raised today by
+   * `await: { idle: true }`, which never fails a run and says here what its
+   * green actually bought (see StepReport.warning in the tool-server's
+   * flow-run). Also carries the caveat older tool-servers put on a snapshot
+   * that adopted a missing baseline, which now fails the step instead. Live
+   * either way: dropping the field would silently delete the only thing the
+   * readiness check reports.
    */
   warning?: string;
   tool?: string;
@@ -36,7 +40,7 @@ export interface StepReport {
   /** Human-readable step target (selector / snapshot name), set by the runner. */
   target?: string;
   /**
-   * Nesting depth: absent/0 at top level, +1 inside each block directive
+   * Nesting depth: absent/0 at top level, +1 inside each nesting step
    * (`when:` guarded steps, `run:` fragment steps). Renderers indent by it; a
    * pre-depth tool-server sends none and the report renders flat, as before.
    */
@@ -111,7 +115,11 @@ filename (minus .yaml) names the run's report and artifacts, so it must
 contain only letters, numbers, "_", or "-" — the same charset a name must
 match. A flow that begins with a \`launch\` step runs its app from scratch; any
 other flow (a fragment) runs against the device's current state — handy while
-authoring one.
+authoring one. Exception: a fragment whose first step \`run:\`s a chromium e2e
+flow boots that flow's app before step 1 — when that launch is unambiguously
+chromium (a lone \`{ chromium: ... }\` target, or --platform chromium); a
+multi-platform launch auto-detects a device instead. Pass --device to attach to
+a running instance.
 
 A directory run prints only failing steps plus a final flow summary;
 --recursive walks subdirectories too (dot-directories and node_modules are
@@ -297,9 +305,12 @@ export function renderSummary(report: FlowReport, opts: { withDevice?: boolean }
   const warnings = report.steps.filter((s) => s.warning).length;
   const warningsNote = warnings ? `, ${warnings} warning${warnings === 1 ? "" : "s"}` : "";
   // The live renderer prints its header before the runner has resolved a
-  // device, so its summary carries the device instead. Empty when the flow
-  // needed none.
-  const where = opts.withDevice && report.device ? ` on ${report.device}` : "";
+  // device, so its summary carries the device instead — the one the run
+  // STARTED on: a chromium run can move onto runner-booted instances, each
+  // move marked on its launch step's reason, so "on <id>" would blame the
+  // wrong instance for any step that ran after a move. Empty when the flow
+  // needed no device.
+  const where = opts.withDevice && report.device ? ` (started on ${report.device})` : "";
   // Four zeros on a passing run read as though nothing happened. Say why:
   // narration is not counted, so a flow of only narration counts nothing.
   // Only on a pass — on a failure the counts are not what needs explaining.
@@ -333,6 +344,11 @@ export function renderArtifactLines(report: FlowReport): string[] {
  * Batch mode prints only what needs attention: each fail/error step with its
  * under-lines, numbered by walking the full step list so the numbers match a
  * single-mode rerun of the same flow.
+ *
+ * A PASSING step carrying a warning needs attention too. `await: { idle: true }`
+ * only ever warns on a step that passed, and renderSummary counts every warning
+ * whatever its status — so skipping those here printed "1 warning" with the
+ * text nowhere on screen, which is the whole of what the step reports.
  */
 export function renderFailedSteps(report: FlowReport): string[] {
   const lines: string[] = [];
@@ -340,7 +356,7 @@ export function renderFailedSteps(report: FlowReport): string[] {
   for (const s of report.steps) {
     if (s.kind === "echo") continue;
     n++;
-    if (s.status !== "fail" && s.status !== "error") continue;
+    if (s.status !== "fail" && s.status !== "error" && !s.warning) continue;
     lines.push(renderStepLine(s, n, report.flow));
     if (s.warning) lines.push(renderUnderStepLine(s, n, `⚠ ${s.warning}`));
     if (s.artifacts && typeof s.artifacts === "object") {
@@ -781,8 +797,7 @@ export function exitAfterFlush(
 export function renderReport(report: FlowReport): string {
   const lines: string[] = [];
   lines.push(`Flow "${report.flow}"${report.device ? ` on ${report.device}` : ""}`);
-  // A fragment runs against the device's current state — remind the operator
-  // what it assumes was already set up.
+  // Remind the operator what the flow assumes was already set up.
   if (report.executionPrerequisite) {
     lines.push(`  assumes: ${report.executionPrerequisite}`);
   }

@@ -247,8 +247,10 @@ describe("flow report rendering", () => {
   it("renderSummary carries the device only when asked (live tail)", () => {
     const report = mkReport(STEPS);
     expect(renderSummary(report)).toBe("FAIL — 2 passed, 1 failed, 0 errored, 1 skipped");
+    // "started on": a chromium run can move onto runner-booted instances, so
+    // the summary must not claim the whole run happened on the starting device.
     expect(renderSummary(report, { withDevice: true })).toBe(
-      "FAIL on UDID-1 — 2 passed, 1 failed, 0 errored, 1 skipped"
+      "FAIL (started on UDID-1) — 2 passed, 1 failed, 0 errored, 1 skipped"
     );
   });
 
@@ -292,6 +294,21 @@ describe("flow report rendering", () => {
 
   it("renderFailedSteps is empty for a clean pass", () => {
     expect(renderFailedSteps(mkReport([{ index: 0, kind: "tap", status: "pass" }]))).toEqual([]);
+  });
+
+  it("renderFailedSteps prints a passing step's warning, which renderSummary counts", () => {
+    // `await: { idle: true }` only ever warns on a step that PASSED, and the
+    // summary counts warnings whatever the status — so a directory run used to
+    // report "1 warning" with the text nowhere on screen.
+    const report = mkReport([
+      { index: 0, kind: "tap", status: "pass" },
+      { index: 1, kind: "idle", status: "pass", warning: "the screen never held still" },
+    ]);
+    expect(renderFailedSteps(report)).toEqual([
+      "  ⚠  2 idle",
+      "       ⚠ the screen never held still",
+    ]);
+    expect(renderSummary(report)).toContain("1 warning");
   });
 
   it("renderBatchSummary mirrors the step summary's verdict shape", () => {
