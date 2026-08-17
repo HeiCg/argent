@@ -76,7 +76,7 @@ export interface ActionEnv {
   launchedNativeApp?: string;
   /**
    * Run-scoped memo of a tree source that answered nothing: set by a
-   * {@link settleTree} whose whole window failed, cleared by the next
+   * {@link settleTree} that failed every read attempt, cleared by the next
    * DIRECTIVE read that comes back. One holder per run (built in flow-run's
    * ExecState and shared by every `deviceEnv`), so the evidence one step
    * gathered is the evidence the next one acts on.
@@ -89,30 +89,43 @@ export interface ActionEnv {
    * ordered against the step that is running: `idle` hands its read to
    * `settleWithin` and stops waiting at the round budget, so that read can land
    * during a later step and retire a verdict minted after it was issued. Safe
-   * direction - that only ever costs a later gesture a window it would have
+   * direction - that only ever costs a later gesture a settle it would have
    * skipped - but it is a clear by arrival, not by sequence.
    *
-   * Only {@link settleForGesture} READS it, and only to skip a window it has
+   * Only {@link settleForGesture} READS it, and only to skip a settle it has
    * already been shown is unaffordable - never a read whose answer is
    * dispatched rather than waited on, which is why {@link fetchScreenAspect}
    * does not consult it. The skip is not silent: the gesture warns its step
    * report that it dispatched unsettled, so the memo never makes an outage
    * cheaper to miss than it was to prove. It is written by the one place that
-   * can prove a source dead (a {@link settleTree} whose whole window failed),
-   * whichever directive asked for that window. `waitForFrame` and
+   * can prove a source dead (a {@link settleTree} that failed every read
+   * attempt), whichever directive asked for that settle. `waitForFrame` and
    * `scrollToVisible` error the step on it, so a verdict of theirs is never
-   * spent; `runSnapshot` is the one producer whose step then passes reporting
-   * nothing, since it captures pixels regardless and has no warning to carry.
-   * Deliberate, but it means a snapshot's outage is heard about on the gesture
-   * that spends the verdict, or not at all if no gesture follows. It is cleared
-   * by {@link readFlowTree}, which every directive's reads go through, since a
-   * read that came back is evidence of health whichever directive asked for it.
-   * A relaunch clears it too, whether spelled `launch` or as one of flow-run's
-   * `FOREGROUND_CHANGING_TOOLS`: it is the repair the commonest of these errors
-   * asks for, and no read need follow it before a gesture does. So does a
-   * nested orchestrator step, which can do either out of this holder's sight.
-   * Absent for a caller that builds an `ActionEnv` by hand, which simply leaves
-   * every settle on its own budget.
+   * spent; `runSnapshot` captures pixels regardless and `VisualOutcome` has
+   * no `warning` field, so its step passes in silence: the outage surfaces on
+   * the gesture that spends the verdict, or not at all if none follows.
+   *
+   * That same silence keeps `runSnapshot` deliberately off the reading side,
+   * though not on {@link fetchScreenAspect}'s grounds, since a snapshot's
+   * settle IS waited on. A capture taken on a stale verdict lands as a
+   * mid-animation pixel mismatch that reads as a visual regression, with
+   * nothing to say the screen was never settled: being wrong there costs a
+   * step, where the gesture risks only a settle. The price is that on a source
+   * failing by timeout, every snapshot step re-buys the whole settle, window
+   * and floor reads alike, two reads where the window alone ended on one. In
+   * exchange the settle reads through {@link readFlowTree}, so a snapshot
+   * re-tests the verdict instead of trusting it, and with a rotate's
+   * {@link fetchScreenAspect} it is one of the two reads left that can retire a
+   * wrong one in a flow of nothing but snapshots and coordinate gestures.
+   *
+   * It is cleared by {@link readFlowTree}, which every directive's reads go
+   * through, since a read that came back is evidence of health whichever
+   * directive asked for it. A relaunch clears it too, whether spelled `launch`
+   * or as one of flow-run's `FOREGROUND_CHANGING_TOOLS`: it is the repair the
+   * commonest of these errors asks for, and no read need follow it before a
+   * gesture does. So does a nested orchestrator step, which can do either out
+   * of this holder's sight. Absent for a caller that builds an `ActionEnv` by
+   * hand, which simply leaves every settle on its own budget.
    *
    * The write carries the device it was proven against: a verdict about a
    * device the run has left says nothing about the one it moved onto (a
@@ -120,7 +133,7 @@ export interface ActionEnv {
    * move is behind `runLaunch`, which clears the verdict first - but it keeps
    * the property from resting on where that clear sits in another file. The
    * clear is deliberately NOT keyed: it only ever costs a later gesture a
-   * window it would otherwise have skipped, and that is the side to err on.
+   * settle it would otherwise have skipped, and that is the side to err on.
    */
   treeOutage?: { proven?: { deviceId: string; error: Error } };
 }
@@ -218,7 +231,37 @@ const FOCUS_REPORTING_SOURCES: ReadonlySet<DescribeSource> = new Set([
 // Settle detection: re-read the tree until two consecutive reads match, so a tap
 // never lands mid-fling and a resolved frame can't go stale before we act.
 const SETTLE_POLL_MS = 250;
-const SETTLE_TIMEOUT_MS = 3000;
+/**
+ * How long that re-reading gets. Exported for flow-settle-min-reads.test.ts,
+ * which sizes its slow reads past this window: a hand-copied number there would
+ * survive this one being raised above it, and the read counts it prices would
+ * quietly stop measuring the floor below.
+ */
+export const SETTLE_TIMEOUT_MS = 3000;
+
+// Read attempts every settle makes before it may conclude anything, enforced
+// even once the window has closed. A read can fail by TIMING OUT, and every
+// tree source's RPC timeout outlasts the 3s window: 5s is the shortest tier any
+// of them allows, and a whole read chains several of those (an iOS read spends
+// up to 5s resolving the target app before a 15s `getFullHierarchy`), so the
+// window fits only one such read. Without a floor, "every read in the window
+// failed", which the throw below reports as a tree-source outage, would
+// collapse into "the first read was slow", erroring a step on one transient
+// blip with no retry at all. The second read is not bounded by the window
+// either, so a wedged source costs two full reads and tens of seconds, and a
+// source that answers slowly pays a second read where it used to end on one.
+// Slower than the window is not the exceptional case: `HUNG_TREE_READ_MS`
+// reasons from 5400ms Android reads, so ending a window on a single read is
+// the ordinary outcome there and the second read an ordinary cost, not a
+// degraded one. `scroll-to` multiplies that: it settles once per round,
+// bounded by `MAX_SCROLL_ITERATIONS` rather than a wall clock, so the added
+// read lands on every round and a slow source turns one step's tens of seconds
+// into minutes.
+// `await`/`assert` never had this hole: `waitForCondition` takes a poll at its
+// deadline unconditionally, however many reads preceded it. The floor here is
+// narrower, firing only when the window closed on fewer than two reads, but it
+// covers the same case: a first read that outlasts the window on its own.
+const SETTLE_MIN_READS = 2;
 
 // `scroll-to`: a bounded number of momentum-free increments. Each travels half
 // the clip window along the scroll axis (half the screen when no `within`
@@ -428,32 +471,45 @@ function readFlowTree(env: ActionEnv): Promise<DescribeTreeData> {
  * from landing mid-deceleration (where a scroll view swallows it) or acting on a
  * frame that has already moved.
  *
- * Throws when EVERY read in the window failed: that is a tree-source outage
+ * Throws when EVERY read attempt failed: that is a tree-source outage
  * (e.g. native devtools disconnected mid-run — `fetchFlowTree` refuses to
  * degrade to a trimmed tree), not a mid-animation blip, and swallowing it would
  * convert the outage into a misleading "element not found" downstream. The
  * throw lands in the step's structured report via `execLeafStep`'s catch.
  *
+ * "Every attempt" is at least {@link SETTLE_MIN_READS} of them: the deadline
+ * bounds the polling, never the number of reads taken, so a read slow enough to
+ * outlast the window on its own is retried rather than treated as the whole
+ * evidence. The price lands on the best-effort return: if that retry then
+ * fails, `prevTree` is the first read's tree handed back a read-duration later
+ * (bounded by the tree source's own RPC ceiling), older than what the bare
+ * deadline would have returned. Paid for what the retry buys, which differs by
+ * branch. After a failed first read it buys evidence: the outage throw rests on
+ * two failed attempts rather than on one slow read, and a retry that succeeds
+ * there still returns a lone tree matched against nothing. After a successful
+ * first read it buys a fresher sample, since the retry's tree comes back
+ * whether or not the fingerprints match, and with it the settle's only chance
+ * to converge. The best-effort return also reaches `snapshot: { cropOn }`
+ * through {@link waitForFrame}, where the whole retry widens the gap between
+ * the read the crop rectangle comes from and the capture, so the crop can be
+ * measured against a layout the pixels no longer show.
+ *
  * `skipProvenOutage` rethrows {@link ActionEnv.treeOutage} instead of buying
- * that window again. Not a shorter budget: a threshold low enough to spare a
- * source serving no tree at all would also abandon the mid-navigation blip the
- * retry above exists for. But the memo is a prediction: one window mints it,
- * nothing re-tests it, and on iOS a window can be one stalled read. The
- * deadline below is only tested after a read RETURNS, and the read a window
- * issues is `ViewHierarchy.getFullHierarchy` on the 15s RPC tier #778 gave it,
- * behind a serial 5s `Application.getState` probe, so a 3000ms window can spend
- * ~20s on the single sample it then mints the verdict from. Being wrong costs a
+ * that whole settle again, window and floor reads alike. Not a shorter budget:
+ * a threshold low enough to spare a source serving no tree at all would also
+ * abandon the mid-navigation blip the retry above exists for. But the memo is a
+ * prediction: one settle mints it and nothing re-tests it. Being wrong costs a
  * settle, not a step: {@link settleForGesture} swallows the throw - and says
  * so, warning every gesture it spares, so a run whose prediction was wrong
  * reports which greens went out unsettled. Any directive read that comes back
  * retires it, as does a relaunch.
  *
- * What it costs: an outage that lasted a full window, in a run that then never
- * reads the tree again and never relaunches, leaves later gestures unsettled
- * even once it clears. That is a flow of nothing but coordinate gestures giving
- * up a best-effort settle it never had before this directive existed, against
- * every one of those gestures otherwise paying the window for a settle that is
- * not coming.
+ * What it costs: an outage that failed every read attempt, in a run that then
+ * never reads the tree again and never relaunches, leaves later gestures
+ * unsettled even once it clears. That is a flow of nothing but coordinate
+ * gestures giving up a best-effort settle it never had before this directive
+ * existed, against every one of those gestures otherwise paying a whole settle,
+ * window and floor reads alike, for a tree that is not coming.
  */
 export async function settleTree(
   env: ActionEnv,
@@ -463,6 +519,7 @@ export async function settleTree(
   let prevFp: string | undefined;
   let prevTree: DescribeNode | undefined;
   let lastError: Error | undefined;
+  let reads = 0;
   for (;;) {
     if (env.signal?.aborted) return undefined;
     // Inside the loop so the abort above still wins, but only ever true on the
@@ -481,6 +538,7 @@ export async function settleTree(
       // transient describe failure mid-navigation — retry until the deadline
       lastError = read.cause;
     }
+    reads += 1;
     // The abort can land while the read above is in flight (e.g. the HTTP
     // client disconnecting mid-flow trips the run's AbortController). Without
     // this re-check the two-identical-reads return below — or the deadline's
@@ -495,6 +553,10 @@ export async function settleTree(
       prevTree = tree;
     }
     if (Date.now() >= deadline) {
+      // Owed another attempt: retry back-to-back rather than sleeping out a
+      // poll interval the window no longer has (`waitForCondition`'s final
+      // poll does the same). Bounded — `reads` rises on every pass.
+      if (reads < SETTLE_MIN_READS) continue;
       if (prevTree === undefined && lastError !== undefined) {
         if (env.treeOutage) env.treeOutage.proven = { deviceId: env.device.id, error: lastError };
         throw lastError;
@@ -1100,8 +1162,8 @@ async function runPinch(
  * the tree several times per step, so the extra fetch is noise, and the
  * resolution path every other directive shares stays untouched.
  *
- * The one read {@link ActionEnv.treeOutage} must not spare, unlike the settle
- * window {@link settleForGesture} skips: this answer is DISPATCHED, not waited
+ * The one read {@link ActionEnv.treeOutage} must not spare, unlike the whole
+ * settle {@link settleForGesture} skips: this answer is DISPATCHED, not waited
  * on. A stale verdict would degrade a centre rotate on a phone from the
  * edge-safe vertical placement the real aspect picks (Down points at
  * y = 0.278 / 0.722) to the aspect-1 fallback, which puts both fingers 0.48 off
@@ -1112,9 +1174,11 @@ async function runPinch(
  *
  * A true verdict costs one failed read instead, which the caller degrades past
  * exactly as it degrades past a skip - but not for free: this read carries no
- * budget and no signal, so on iOS it is the 15s hierarchy tier, longer than the
- * 3s window the memo saved. That is the price of never dispatching geometry off
- * a prediction, and it is what every rotate paid before the memo existed.
+ * budget and no signal, so on iOS it is the 15s hierarchy tier. Less than the
+ * whole settle the memo saved - window and floor reads alike, two reads on that
+ * same tier when the source fails by timing out - but still the price of never
+ * dispatching geometry off a prediction, and what every rotate paid before the
+ * memo existed.
  */
 async function fetchScreenAspect(env: ActionEnv): Promise<number | undefined> {
   try {
