@@ -926,7 +926,7 @@ export interface ClearedTarget {
  * `keptFocus: undefined` means the page could not be read, so nothing is known —
  * the same best-effort branch the emptiness check falls to.
  */
-export interface ClearOutcome {
+interface ClearOutcome {
   keptFocus?: boolean;
   /** The element label the probe reported, for the caller's error message. */
   label?: string;

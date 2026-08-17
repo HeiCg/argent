@@ -235,7 +235,7 @@ function clearLegTimeout(deadline: number, reserveMs = 0): number {
   return Math.max(1_000, deadline - Date.now() - reserveMs);
 }
 
-export interface AndroidClearOptions {
+interface AndroidClearOptions {
   /**
    * Read the view hierarchy the way `describe` prefers to, or return undefined
    * when that source is not available right now.
