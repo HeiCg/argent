@@ -78,7 +78,7 @@ function nearestExistingDir(dir: string): string | null {
   }
 }
 
-export interface GlobalInstallTarget {
+interface GlobalInstallTarget {
   /** Existing directory the global install has to write into. */
   dir: string;
   /** Proven unwritable — see {@link probeGlobalInstallTarget} on why not "not writable". */

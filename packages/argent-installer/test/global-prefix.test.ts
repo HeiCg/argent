@@ -142,10 +142,10 @@ describe("isNixStorePath", () => {
 describe("unwritableGlobalTargetMessage", () => {
   const nixTarget = {
     dir: "/nix/store/abc-nodejs-22.16.0/lib/node_modules",
-    writable: false,
+    blocked: true,
     nixStore: true,
   };
-  const plainTarget = { dir: "/usr/local/lib/node_modules", writable: false, nixStore: false };
+  const plainTarget = { dir: "/usr/local/lib/node_modules", blocked: true, nixStore: false };
 
   it("names the Nix store, rules out sudo, and offers the per-project install", () => {
     const message = plain(unwritableGlobalTargetMessage(nixTarget, "npm", "update"));
