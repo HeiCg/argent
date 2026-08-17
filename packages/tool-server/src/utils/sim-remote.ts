@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
  */
 
 import { stripRemotePrefix } from "./device-info";
+import { isIosOrTvOsRuntimeId } from "./ios-devices";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -97,6 +98,9 @@ export async function getRemoteSimulatorRuntimeKind(
   }
   for (const [runtimeId, devices] of Object.entries(byRuntime)) {
     if (!Array.isArray(devices)) continue;
+    // Mirror the local classifier's runtime filter, so a watchOS / xrOS sim comes
+    // back unverifiable instead of falling into the `mobile` default below.
+    if (!isIosOrTvOsRuntimeId(runtimeId)) continue;
     // Mirror `listRemoteIosSimulators`' availability filter, so a simulator
     // `list-devices` hides can't be the one that answers here.
     if (!devices.some((d: SimRemoteDevice) => d.udid === bare && d.isAvailable !== false)) continue;

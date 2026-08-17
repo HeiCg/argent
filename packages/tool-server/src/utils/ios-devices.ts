@@ -33,6 +33,16 @@ interface SimctlOutput {
   devices: Record<string, SimctlDevice[]>;
 }
 
+/**
+ * The simctl runtime ids argent can drive. watchOS / xrOS (visionOS) simulators
+ * share the same listing but have no supported interaction surface, so every reader
+ * of a `simctl list devices` payload (local or remote) filters on this before
+ * classifying a runtime kind.
+ */
+export function isIosOrTvOsRuntimeId(runtimeId: string): boolean {
+  return runtimeId.includes("iOS") || runtimeId.includes("tvOS");
+}
+
 /** List one device set's iOS/tvOS simulators; [] on any failure. */
 async function listDeviceSetSimulators(deviceSet: DeviceSetPath): Promise<IosSimulator[]> {
   // simctl materializes a missing `--set` directory as a side effect, so a
@@ -47,7 +57,7 @@ async function listDeviceSetSimulators(deviceSet: DeviceSetPath): Promise<IosSim
     const data: SimctlOutput = JSON.parse(stdout);
     const out: IosSimulator[] = [];
     for (const [runtimeId, devices] of Object.entries(data.devices)) {
-      if (!runtimeId.includes("iOS") && !runtimeId.includes("tvOS")) continue;
+      if (!isIosOrTvOsRuntimeId(runtimeId)) continue;
       for (const d of devices) {
         if (!d.isAvailable) continue;
         const runtimeKind = runtimeId.includes("tvOS") ? "tv" : "mobile";
