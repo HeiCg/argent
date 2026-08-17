@@ -93,6 +93,8 @@ const pageMarks = (handle: string) => ({
   embed: `${handle}_embed`,
   count: `${handle}_ins`,
   listener: `${handle}_insFn`,
+  applied: `${handle}_app`,
+  appliedListener: `${handle}_appFn`,
   wasValue: `${handle}_was`,
 });
 
@@ -276,29 +278,69 @@ const countEmbedsFns = (mark: string) => `
  * signal, because the characters it swallowed the events for still landed in the
  * field. `-1` means the count could not be read at all (a page that refused the
  * property), and the caller falls back to the focus sample it used before.
+ *
+ * Arrival is not the same question as EFFECT, and a capture listener on
+ * `beforeinput` can only answer the first. A field whose own handler cancels
+ * every insertion in place — a controlled input rejecting the value, a validating
+ * one — lets the event reach this listener first (that is what capture buys) and
+ * then refuses it, so the arrival count reads full while nothing enters the
+ * field. Measured on Chrome 148 against `<input value="old-value-seeded">` whose
+ * `beforeinput` handler `preventDefault()`s every `insert*`, focus retained:
+ * `{ clear: true, text: "abc" }` returned `{ typed: "abc", keys: 3,
+ * cleared: true }` with the field EMPTY. Both signals agreed the wrong way — the
+ * value was wrong, the arrivals were complete — so neither guard fired.
+ *
+ * So a second listener counts the `input` events, which Blink fires only once an
+ * insertion HAS taken effect. Arrivals stay the focus evidence (unchanged by
+ * whether the page then cancels); effects answer "did any of it land". The pair
+ * is read in `platforms/chromium.ts`, which fires on the one corner where they
+ * disagree completely: everything arrived, nothing took effect, the field is
+ * empty. A page refusing SOME insertions is normalising, which is the
+ * false-failure class this measurement exists to keep out.
  */
-const deliveryFns = (marks: { count: string; listener: string; wasValue: string }) => `
+const deliveryFns = (marks: {
+  count: string;
+  listener: string;
+  applied: string;
+  appliedListener: string;
+  wasValue: string;
+}) => `
   const DELIVERY_COUNT = ${JSON.stringify(marks.count)};
   const DELIVERY_LISTENER = ${JSON.stringify(marks.listener)};
+  const APPLIED_COUNT = ${JSON.stringify(marks.applied)};
+  const APPLIED_LISTENER = ${JSON.stringify(marks.appliedListener)};
   const VALUE_BEFORE = ${JSON.stringify(marks.wasValue)};
-  // BEFORE: start counting what arrives IN this element, and remember what it
-  // holds. Armed on the element rather than on the document so an insertion into
-  // a different field is not counted — that is the whole measurement.
+  // BEFORE: start counting what arrives IN this element and what takes effect in
+  // it, and remember what it holds. Armed on the element rather than on the
+  // document so an insertion into a different field is not counted — that is the
+  // whole measurement.
   const watchDeliveries = (el, isFormControl) => {
     try {
       el[DELIVERY_COUNT] = 0;
+      el[APPLIED_COUNT] = 0;
+      // The clear's own edit is a \`deleteContentBackward\`, so filtering to the
+      // insertions keeps it out of either count without any bookkeeping.
+      const isInsert = (ev) => String((ev && ev.inputType) || "").indexOf("insert") === 0;
       const onInsert = (ev) => {
         try {
-          // The clear's own edit is a \`deleteContentBackward\`, so filtering to
-          // the insertions keeps it out of the count without any bookkeeping.
-          if (String((ev && ev.inputType) || "").indexOf("insert") !== 0) return;
+          if (!isInsert(ev)) return;
           el[DELIVERY_COUNT] = (el[DELIVERY_COUNT] || 0) + 1;
         } catch (e) {}
       };
+      const onApplied = (ev) => {
+        try {
+          if (!isInsert(ev)) return;
+          el[APPLIED_COUNT] = (el[APPLIED_COUNT] || 0) + 1;
+        } catch (e) {}
+      };
       el[DELIVERY_LISTENER] = onInsert;
-      // Capture, so a handler on the element itself cannot stop the event
-      // reaching this one first.
+      el[APPLIED_LISTENER] = onApplied;
+      // Capture on both, so a handler on the element itself cannot stop either
+      // event reaching these first. \`input\` is not dispatched at all for an
+      // insertion the page cancelled, which is exactly the difference being
+      // measured.
       el.addEventListener("beforeinput", onInsert, true);
+      el.addEventListener("input", onApplied, true);
       if (isFormControl) el[VALUE_BEFORE] = String(el.value || "");
     } catch (e) {}
   };
@@ -312,6 +354,20 @@ const deliveryFns = (marks: { count: string; listener: string; wasValue: string 
         if (el[DELIVERY_LISTENER]) el.removeEventListener("beforeinput", el[DELIVERY_LISTENER], true);
         delete el[DELIVERY_LISTENER];
         delete el[DELIVERY_COUNT];
+      }
+    } catch (e) {}
+    return held;
+  };
+  // AFTER: how many of those insertions actually took effect, or -1 when that
+  // cannot be read. Released alongside its sibling.
+  const appliedTo = (el, release) => {
+    let held = -1;
+    try {
+      if (typeof el[APPLIED_COUNT] === "number") held = el[APPLIED_COUNT];
+      if (release) {
+        if (el[APPLIED_LISTENER]) el.removeEventListener("input", el[APPLIED_LISTENER], true);
+        delete el[APPLIED_LISTENER];
+        delete el[APPLIED_COUNT];
       }
     } catch (e) {}
     return held;
@@ -607,12 +663,14 @@ export const focusedEditableProbe = (handle: string) => `(() => {
       el = host;
       window[${JSON.stringify(handle)}] = el;
       watchDeliveries(el, false);
+      // Stamps every embed it finds, so the verdict can tell content that
+      // SURVIVED the clear from an empty-state placeholder the page inserts once
+      // emptied — by identity, not by comparing counts. Called for that side
+      // effect only: the after-probe reports the surviving stamps as \`residue\`,
+      // so this count has no consumer and is not sent back.
+      stampEmbeds(el, false);
       return JSON.stringify({
         verdict: "editable", label: hostLabel, mac, parked: window[${JSON.stringify(handle)}] === el,
-        // Stamps every embed it finds, so the verdict can tell content that
-        // SURVIVED the clear from an empty-state placeholder the page inserts
-        // once emptied — by identity, not by comparing counts.
-        nodes: stampEmbeds(el, false),
       });
     }
     // Anything else is refused, INCLUDING a custom element whose shadow root is
@@ -799,9 +857,11 @@ export const clearedTargetProbe = (handle: string, keep = false) => `(() => {
       // field's own cap explains a short value, and a password field's capacity
       // is one more thing about a credential not to echo back.
       full: limit >= 0 && value.length >= limit,
-      // How many characters were delivered INTO this element, and whether it
-      // ended up holding the very value the clear removed — see \`deliveryFns\`.
+      // How many characters were delivered INTO this element, how many of those
+      // actually took effect in it, and whether it ended up holding the very
+      // value the clear removed — see \`deliveryFns\`.
       delivered: deliveriesTo(el, ${keep ? "false" : "true"}),
+      applied: appliedTo(el, ${keep ? "false" : "true"}),
       reverted: heldValueAgain(el, form, value, ${keep ? "false" : "true"}),
     });
   } catch (e) {
@@ -817,8 +877,6 @@ export interface FocusedEditable {
   secret?: boolean;
   /** False when the page refused the slot assignment — then nothing was parked. */
   parked?: boolean;
-  /** Embedded content held BEFORE the clear, now stamped — see `countEmbedsFns`. */
-  nodes?: number;
 }
 
 export interface ClearedTarget {
@@ -847,6 +905,14 @@ export interface ClearedTarget {
    * afterwards answers in neither direction. See `deliveryFns`.
    */
   delivered?: number;
+  /**
+   * How many of those deliveries actually TOOK EFFECT in this element, or -1 when
+   * the count could not be read. `delivered` cannot answer that: a page that
+   * cancels an insertion in place still lets the `beforeinput` reach the capture
+   * listener, so a field that refuses everything reads as fully delivered. Blink
+   * fires `input` only for an insertion it applied. See `deliveryFns`.
+   */
+  applied?: number;
   /**
    * The field holds the very value the clear removed, so it was not replaced
    * however many characters were dispatched at it. See `deliveryFns`.

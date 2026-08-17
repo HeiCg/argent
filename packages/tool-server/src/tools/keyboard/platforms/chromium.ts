@@ -5,11 +5,16 @@ import { InvalidToolInputError } from "../../../utils/capability";
 import { clearChromiumField, newTargetHandle, releaseParkedTarget } from "../chromium-clear";
 import { CHROMIUM_NAMED_KEYS, charToChromiumKey } from "../chromium-keys";
 import { deviceChainKey, serializePerDevice } from "../device-chain";
+import { sleepOrAbort } from "../../../utils/timing";
 import type { KeyboardParams, KeyboardResult } from "../types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise<KeyboardResult> {
+async function runChromium(
+  api: ChromiumCdpApi,
+  params: KeyboardParams,
+  signal?: AbortSignal
+): Promise<KeyboardResult> {
   const delay = params.delayMs ?? 50;
   let keysPressed = 0;
 
@@ -123,6 +128,12 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
 
   try {
     if (handle) {
+      // Checked before the clear and never inside it, for the same reason the iOS
+      // backend keeps its own clear atomic: the chord selects the field's whole
+      // value, so stopping between the select-all and the delete would leave that
+      // selection armed for whatever types next, and a cancelled request has no
+      // reader to be told so.
+      signal?.throwIfAborted();
       // The clear settles between its key dispatch and its read-back, so the
       // focus answer is the last thing before the loop below. `delay` is passed
       // only as a FLOOR on that settle — a caller asking for a slower cadence
@@ -168,7 +179,14 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
       }
     }
 
+    // The signal is checked BETWEEN characters and the cadence wait yields to it,
+    // so a client that hangs up mid-call stops within about one keypress instead
+    // of typing the whole `text` out and holding this device's chain for the rest
+    // of the run. Never between a character's own three events: CDP is only awaits
+    // and sleeps, so there is nothing to interrupt there except the delivery of
+    // the `char` this keyDown already announced.
     for (const { desc } of descs) {
+      signal?.throwIfAborted();
       await api.dispatchKeyEvent({
         type: "keyDown",
         key: desc!.key,
@@ -185,7 +203,7 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
         windowsVirtualKeyCode: desc!.windowsVirtualKeyCode,
       });
       keysPressed++;
-      await sleep(delay);
+      await sleepOrAbort(delay, signal);
     }
 
     // One sample before the loop cannot cover a blur that lands DURING it: the
@@ -314,6 +332,60 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
           }
         );
       }
+
+      // The one shape the pair above cannot see, because both halves agree the
+      // WRONG way. `delivered` is provenance — a capture listener sees the
+      // `beforeinput` whether or not the element's own handler then cancels it,
+      // which is exactly what makes it the right evidence for "did focus move".
+      // It says nothing about EFFECT: a field that refuses every insertion in
+      // place reads as fully delivered while nothing enters it, so
+      // `shortDelivery` is false and the throw above cannot fire. Measured on
+      // Chrome 148 against `<input value="old-value-seeded">` whose `beforeinput`
+      // handler `preventDefault()`s every `insert*`, focus retained:
+      // `{ clear: true, text: "abc" }` returned `{ typed: "abc", keys: 3,
+      // cleared: true }` over an EMPTY field.
+      //
+      // `applied` is the effect half — Blink fires `input` only for an insertion
+      // it carried out. The condition is deliberately the total corner: every
+      // character arrived, not one took effect, and the field holds nothing. A
+      // page that refuses SOME insertions is normalising (stripping separators,
+      // rejecting a character class), which is the false-failure class this whole
+      // measurement is narrowed to keep out, and a page that writes the value
+      // itself after cancelling the event leaves the field non-empty, so neither
+      // reaches here.
+      //
+      // Reported as its own outcome rather than through the focus message above:
+      // focus never moved, so nothing was split across fields, and the caller
+      // needs to know the field is EMPTY rather than go looking for the value in
+      // a neighbour.
+      const applied =
+        after?.applied !== undefined && after.applied >= 0 ? after.applied : undefined;
+      const refusedInPlace =
+        after?.tracked === true &&
+        !after.full &&
+        delivered !== undefined &&
+        delivered >= guaranteed &&
+        applied === 0 &&
+        landed === 0;
+      if (refusedInPlace) {
+        throw new FailureError(
+          `keyboard: ${clearedLabel ?? "the field"} was emptied, but the page refused every ` +
+            `character that was then typed into it — each one was delivered to that field and ` +
+            `cancelled there, so the field is now EMPTY rather than holding the requested value. ` +
+            `This is a field that rejects what it is given (a controlled or validating input). ` +
+            `Nothing about it is retryable by typing again; read the screen and enter the value ` +
+            `the way the app expects.`,
+          {
+            // Not FOCUS_LOST — focus was retained throughout, and not INEFFECTIVE,
+            // which means the clear itself did not take. The clear worked; what
+            // was refused is the typing.
+            error_code: FAILURE_CODES.KEYBOARD_TEXT_REFUSED,
+            failure_stage: "keyboard_text_refused_chromium",
+            failure_area: "tool_server",
+            error_kind: "unsupported",
+          }
+        );
+      }
     }
 
     // Key after the CLEAR — not after the text, which never accompanies it: the
@@ -322,6 +394,9 @@ async function runChromium(api: ChromiumCdpApi, params: KeyboardParams): Promise
     // `{ clear, key: "enter" }`, where pressing the key before the field is
     // emptied would submit the value the caller asked to be replaced.
     if (named) {
+      // Checked before the press, not inside it: cutting the wait between the key's
+      // Down and its Up would leave the page holding a key nothing releases.
+      signal?.throwIfAborted();
       await api.dispatchKeyEvent({
         type: "keyDown",
         key: named.key,
@@ -370,9 +445,14 @@ export function makeChromiumImpl(
       // has to be established does not hold the chain while it connects.
       return serializePerDevice(deviceChainKey(device.id), () => {
         // Checked HERE, as this call's turn comes round, so a request the client
-        // has already abandoned does not spend the device's keyboard.
+        // has already abandoned does not spend the device's keyboard — and then
+        // carried INTO the run, which is the rest of the same abandonment window:
+        // a long `{ clear, text }` that starts a moment before the hang-up would
+        // otherwise type every remaining character and hold the chain for all of
+        // it. The CDP transport is only awaits and sleeps, so it is fully
+        // cancellable, as the iOS backend's per-character checks already are.
         options?.signal?.throwIfAborted();
-        return runChromium(chromium, params);
+        return runChromium(chromium, params, options?.signal);
       });
     },
   };

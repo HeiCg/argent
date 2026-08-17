@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runInNewContext } from "node:vm";
 import {
   clearedTargetProbe,
@@ -275,13 +275,13 @@ describe("chromium clear — focused-element probe", () => {
     }
   );
 
-  it("finds and STAMPS the embeds the survival rule is decided on", () => {
-    // `FakeEl` has no `querySelectorAll`, so the embed pass short-circuits to 0
-    // in every other focused-probe fixture and this field is silently absent —
-    // deleting it from the probe kept the suite green. The stamp it leaves is
-    // what lets the re-read tell the `<img>` whose delete the page cancelled
-    // from a placeholder the page inserted in its place; see the residue block
-    // below for the pair of verdicts that rests on it.
+  it("STAMPS the embeds the survival rule is decided on", () => {
+    // The stamp is the whole point of the before-pass: it is what lets the
+    // re-read tell the `<img>` whose delete the page cancelled from a placeholder
+    // the page inserted in its place — see the residue block below for the pair of
+    // verdicts that rests on it. The count is NOT reported back (the after-probe
+    // reports the surviving stamps as `residue`), so the marks these embeds carry
+    // are the only observable the pass has, and the only thing that can pin it.
     const embeds = [{ tagName: "IMG" }, { tagName: "HR" }];
     const el = {
       tagName: "DIV",
@@ -290,7 +290,7 @@ describe("chromium clear — focused-element probe", () => {
       querySelectorAll: (sel: string) => (sel.includes("img") ? embeds : []),
     } as unknown as FakeEl;
 
-    expect(focused(el).result).toMatchObject({ verdict: "editable", nodes: 2 });
+    expect(focused(el).result).toMatchObject({ verdict: "editable" });
     // Every embed carries exactly one per-call mark, and nothing else.
     for (const embed of embeds) {
       expect(Object.keys(embed).filter((key) => key.startsWith(HANDLE))).toHaveLength(1);
@@ -300,17 +300,23 @@ describe("chromium clear — focused-element probe", () => {
   it("never asks a form control for its embed count", () => {
     // A <textarea>'s child nodes are its DEFAULT value and never track `value`,
     // so counting them would report a cleared field as still full.
+    //
+    // Asserted by counting the calls, not by a field on the result: the probe
+    // swallows a throwing `querySelectorAll` (`embedsIn` catches, and returns an
+    // empty list), so a stub that throws is not on its own evidence the pass was
+    // skipped.
+    const querySelectorAll = vi.fn(() => {
+      throw new Error("must not be asked");
+    });
     const el = {
       tagName: "TEXTAREA",
       id: "t",
       value: "draft",
-      querySelectorAll: () => {
-        throw new Error("must not be asked");
-      },
+      querySelectorAll,
     } as unknown as FakeEl;
 
     expect(focused(el).result).toMatchObject({ verdict: "editable" });
-    expect(focused(el).result.nodes).toBeUndefined();
+    expect(querySelectorAll).not.toHaveBeenCalled();
   });
 
   it("accepts a plain contenteditable element", () => {
@@ -665,6 +671,86 @@ describe("chromium clear — release probe", () => {
 
   it("reports untracked when nothing was parked", () => {
     expect(release({}).result).toEqual({ tracked: false });
+  });
+
+  // `delivered` and `applied` answer two different questions about the same
+  // insertion, and the split guard in `platforms/chromium.ts` needs both. A
+  // capture listener on `beforeinput` sees an insertion ARRIVE whether or not the
+  // element's own handler then cancels it, which is what makes it evidence about
+  // focus; `input` is dispatched only for an insertion Blink APPLIED. A field that
+  // refuses everything in place therefore reads `delivered: N, applied: 0`, and
+  // without the second listener the two signals agreed the wrong way and the call
+  // came back as a clean replacement (Chrome 148, `preventDefault()` on every
+  // `insert*`).
+  describe("the two insertion counts", () => {
+    /** A fake element with a working `addEventListener`, so events can be fired at it. */
+    function listening(el: Record<string, unknown>) {
+      const armed: Array<{ type: string; fn: (ev: unknown) => void; capture: unknown }> = [];
+      return {
+        armed,
+        el: Object.assign(el, {
+          addEventListener: (type: string, fn: (ev: unknown) => void, capture: unknown) =>
+            void armed.push({ type, fn, capture }),
+          removeEventListener: () => {},
+        }) as unknown as FakeEl,
+        fire: (type: string, inputType: string) => {
+          for (const l of armed) if (l.type === type) l.fn({ inputType });
+        },
+      };
+    }
+
+    it("counts arrivals and effects separately, in capture, on the parked element", () => {
+      const target = listening({ tagName: "INPUT", value: "", isConnected: true });
+      // The before-probe is what arms them.
+      focused(target.el);
+      expect(target.armed.map((l) => l.type)).toEqual(["beforeinput", "input"]);
+      // Capture on both, so a handler on the element itself cannot stop either
+      // event reaching these first.
+      expect(target.armed.every((l) => l.capture === true)).toBe(true);
+
+      // Three characters arrive; the page cancels every one, so no `input` follows.
+      for (let i = 0; i < 3; i++) target.fire("beforeinput", "insertText");
+
+      expect(release({ [HANDLE]: target.el }).result).toMatchObject({
+        delivered: 3,
+        applied: 0,
+      });
+    });
+
+    it("counts an insertion that took effect on both", () => {
+      const target = listening({ tagName: "INPUT", value: "ab", isConnected: true });
+      focused(target.el);
+      for (let i = 0; i < 2; i++) {
+        target.fire("beforeinput", "insertText");
+        target.fire("input", "insertText");
+      }
+      expect(release({ [HANDLE]: target.el }).result).toMatchObject({
+        delivered: 2,
+        applied: 2,
+      });
+    });
+
+    it("keeps the clear's own delete out of both counts", () => {
+      // The filter is the `insert` prefix, so no bookkeeping is needed to exclude
+      // the `deleteContentBackward` the clear itself dispatches — which would
+      // otherwise inflate the arrivals by one per clear and mask a total refusal.
+      const target = listening({ tagName: "INPUT", value: "", isConnected: true });
+      focused(target.el);
+      target.fire("beforeinput", "deleteContentBackward");
+      target.fire("input", "deleteContentBackward");
+      expect(release({ [HANDLE]: target.el }).result).toMatchObject({
+        delivered: 0,
+        applied: 0,
+      });
+    });
+
+    it("reports -1 for both when the element was never armed", () => {
+      // A page that refused the property, or an element parked by an older probe.
+      // -1 is "cannot tell", which the guards must not read as "nothing landed".
+      expect(
+        release({ [HANDLE]: { tagName: "INPUT", value: "", isConnected: true } }).result
+      ).toMatchObject({ delivered: -1, applied: -1 });
+    });
   });
 
   it("reports untracked for a node the page detached", () => {

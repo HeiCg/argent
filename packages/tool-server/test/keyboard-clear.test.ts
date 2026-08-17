@@ -1734,6 +1734,27 @@ describe("keyboard clear — tool schema", () => {
     expect(tool.zodSchema!.safeParse({ udid: IOS_SIM.id, delayMs: 600_000 }).success).toBe(false);
     expect(tool.zodSchema!.safeParse({ udid: IOS_SIM.id, delayMs: 5000 }).success).toBe(true);
   });
+
+  it("pins the ceiling AT the boundary, not merely far above it", () => {
+    // 5000-accepted plus 600 000-rejected leaves the number itself free: raising
+    // `.max(5000)` to `.max(10000)` in a scratch copy kept the whole keyboard
+    // suite green. `5001` is the only probe that holds the value a future change
+    // could otherwise relax silently — and the reason it must not be relaxed is
+    // above the `.max()` itself.
+    expect(tool.zodSchema!.safeParse({ udid: IOS_SIM.id, delayMs: 5001 }).success).toBe(false);
+  });
+
+  it('rejects `{ clear: true, key: "" }` before the clear can empty the field', () => {
+    // The empty key is a name no backend has, and every backend dispatches `key`
+    // by truthiness — so before it was rejected in `execute` (#579) this ran the
+    // clear, emptied the field and reported `cleared: true, keys: 0`: a
+    // destructive call reported as a success, without the key it announced.
+    // Driven through the tool rather than a backend, because that is where the
+    // guard sits and `clear` is the reason it matters here.
+    return expect(
+      tool.execute({}, { udid: ANDROID.id, clear: true, key: "" } as never)
+    ).rejects.toThrow(/names no key/);
+  });
 });
 
 describe("keyboard clear — Chromium (CDP)", () => {
@@ -2148,6 +2169,114 @@ describe("keyboard clear — Chromium (CDP)", () => {
     expect(trace.lastIndexOf("probe")).toBeGreaterThan(trace.indexOf("key:keyDown:Enter"));
   });
 
+  // The chain-head check stops a request the client abandoned BEFORE its turn
+  // comes round, but the abandonment window does not close there: a long
+  // `{ clear, text }` that starts a moment before the hang-up would otherwise
+  // type every remaining character out and hold this device's chain for all of
+  // it. The CDP transport is only awaits and sleeps, so it is fully cancellable —
+  // and the iOS backend, which faces the same window, already checks per
+  // character.
+  describe("giving up when the client does", () => {
+    it("stops an in-flight run within about one keypress of the abort", async () => {
+      const { events, api } = recordingApi();
+      const controller = new AbortController();
+      const run = makeChromiumImpl(registryWith(api)).handler(
+        {},
+        { udid: CHROMIUM.id, clear: true, text: "abcdefghij", delayMs: 20 },
+        CHROMIUM,
+        { signal: controller.signal }
+      );
+      // Let a couple of characters go out, then hang up.
+      await new Promise((r) => setTimeout(r, 70));
+      controller.abort();
+
+      await expect(run).rejects.toThrow();
+      const chars = events.filter((e) => e.type === "char").length;
+      // Some characters really went out — this is a live run, not a no-op — but
+      // not all ten.
+      expect(chars).toBeGreaterThan(0);
+      expect(chars).toBeLessThan(10);
+    });
+
+    it("never leaves a character's own events half-dispatched", async () => {
+      // The signal is checked BETWEEN characters and the cadence wait yields to
+      // it, never inside a character's keyDown/char/keyUp — cutting there would
+      // leave the page holding a key nothing releases.
+      const { events, api } = recordingApi();
+      const controller = new AbortController();
+      const run = makeChromiumImpl(registryWith(api)).handler(
+        {},
+        { udid: CHROMIUM.id, clear: true, text: "abcdefghij", delayMs: 20 },
+        CHROMIUM,
+        { signal: controller.signal }
+      );
+      await new Promise((r) => setTimeout(r, 70));
+      controller.abort();
+      await expect(run).rejects.toThrow();
+
+      const held = new Set<string>();
+      for (const event of events) {
+        if (event.type === "keyDown") held.add(String(event.key));
+        if (event.type === "keyUp") held.delete(String(event.key));
+      }
+      expect([...held]).toEqual([]);
+    });
+
+    it("still releases the parked element when it stops", async () => {
+      // The `finally` is what guarantees it, and an abort is the path most likely
+      // to skip it: the slot is the sole retainer of the parked node, and a
+      // per-call name means a leaked one is never overwritten by the next clear.
+      const { probes, api } = recordingApi();
+      const controller = new AbortController();
+      const run = makeChromiumImpl(registryWith(api)).handler(
+        {},
+        { udid: CHROMIUM.id, clear: true, text: "abcdefghij", delayMs: 20 },
+        CHROMIUM,
+        { signal: controller.signal }
+      );
+      await new Promise((r) => setTimeout(r, 70));
+      controller.abort();
+      await expect(run).rejects.toThrow();
+
+      expect(probes.at(-1)).toContain("delete window[");
+    });
+
+    it("dispatches nothing at all when the abort lands before the clear", async () => {
+      // The chain-head check covers a call still queued; this covers the same
+      // request once its turn HAS come but the signal is already aborted, which
+      // is where the clear's own select-all would otherwise go out and leave the
+      // field's whole value selected for whatever types next.
+      const { events, probes, api } = recordingApi();
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        makeChromiumImpl(registryWith(api)).handler(
+          {},
+          { udid: CHROMIUM.id, clear: true, text: "abc", delayMs: 0 },
+          CHROMIUM,
+          { signal: controller.signal }
+        )
+      ).rejects.toThrow();
+      expect(events).toEqual([]);
+      expect(probes).toEqual([]);
+    });
+
+    it("leaves a run with no signal alone", async () => {
+      // Positive control: `options` is optional on this handler, so a guard that
+      // read an absent signal as aborted would break every ordinary call.
+      const { events, api } = recordingApi();
+      await expect(
+        makeChromiumImpl(registryWith(api)).handler(
+          {},
+          { udid: CHROMIUM.id, clear: true, text: "abc", delayMs: 0 },
+          CHROMIUM
+        )
+      ).resolves.toMatchObject({ typed: "abc", keys: 3, cleared: true });
+      expect(events.filter((e) => e.type === "char")).toHaveLength(3);
+    });
+  });
+
   it("reports how much of the text landed when the value really was split", async () => {
     const { api } = splitApi({ tracked: true, length: 1, focused: false });
 
@@ -2243,6 +2372,148 @@ describe("keyboard clear — Chromium (CDP)", () => {
 
     expect(result).toMatchObject({ typed: "+1 555-0", keys: 8, cleared: true });
     expect(events.filter((e) => e.type === "char")).toHaveLength(8);
+  });
+
+  // `delivered` counts ARRIVALS, from a capture listener that sees each
+  // `beforeinput` before the element's own handler can cancel it — which is what
+  // makes it the right evidence for "did focus move", and leaves it unable to say
+  // whether anything took EFFECT. A field that refuses every insertion IN PLACE
+  // therefore reads as fully delivered while holding nothing, so both halves of
+  // the split rule agree the wrong way and it comes back as a clean replacement.
+  // Reproduced on Chrome 148 against `<input value="old-value-seeded">` whose
+  // `beforeinput` handler `preventDefault()`s every `insert*`, focus retained:
+  // `{ clear: true, text: "abc" }` returned `{ typed: "abc", keys: 3,
+  // cleared: true }` over an EMPTY field.
+  //
+  // `applied` counts the `input` events, which Blink fires only for an insertion
+  // it carried out, and the guard fires on the corner where the two disagree
+  // completely.
+  describe("a page that REFUSES the characters in place", () => {
+    it("reports the field as empty rather than replaced", async () => {
+      const { api, events } = splitApi({
+        tracked: true,
+        length: 0,
+        focused: true,
+        delivered: 3,
+        applied: 0,
+      });
+
+      await expect(
+        makeChromiumImpl(registryWith(api)).handler(
+          {},
+          { udid: CHROMIUM.id, clear: true, text: "abc", delayMs: 0 },
+          CHROMIUM
+        )
+      ).rejects.toThrow(/refused every character/);
+      // The characters really did go out — the failure reports what happened
+      // rather than pretending the call did nothing.
+      expect(events.filter((e) => e.type === "char")).toHaveLength(3);
+    });
+
+    it("carries its own code, not the focus-lost one", async () => {
+      // Focus never moved, so nothing was split across fields: a client keying on
+      // the signal has to tell "go and look in the neighbouring field" from "the
+      // field you cleared is empty and this page will not take the value".
+      const { api } = splitApi({
+        tracked: true,
+        length: 0,
+        focused: true,
+        delivered: 3,
+        applied: 0,
+      });
+
+      const err = await makeChromiumImpl(registryWith(api))
+        .handler({}, { udid: CHROMIUM.id, clear: true, text: "abc", delayMs: 0 }, CHROMIUM)
+        .then(
+          () => undefined,
+          (e: unknown) => e
+        );
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_TEXT_REFUSED);
+    });
+
+    it("leaves a page that refuses only SOME insertions alone", async () => {
+      // Refusing a character class is how a page normalises — the false-failure
+      // class this whole measurement is narrowed to keep out. Only the total
+      // corner is unambiguous.
+      const { api } = splitApi({
+        tracked: true,
+        length: 5,
+        focused: true,
+        delivered: 8,
+        applied: 5,
+      });
+
+      await expect(
+        makeChromiumImpl(registryWith(api)).handler(
+          {},
+          { udid: CHROMIUM.id, clear: true, text: "+1 555-0", delayMs: 0 },
+          CHROMIUM
+        )
+      ).resolves.toMatchObject({ typed: "+1 555-0", keys: 8, cleared: true });
+    });
+
+    it("leaves a page that cancels the event and writes the value ITSELF alone", async () => {
+      // The input-mask pattern: `preventDefault()` on `beforeinput`, then assign
+      // `el.value`. No `input` fires for the insertion, so `applied` is 0 — and
+      // the field is NOT empty, which is what separates it from a refusal.
+      const { api } = splitApi({
+        tracked: true,
+        length: 12,
+        focused: true,
+        delivered: 8,
+        applied: 0,
+      });
+
+      await expect(
+        makeChromiumImpl(registryWith(api)).handler(
+          {},
+          { udid: CHROMIUM.id, clear: true, text: "15550123", delayMs: 0 },
+          CHROMIUM
+        )
+      ).resolves.toMatchObject({ cleared: true });
+    });
+
+    it("does not fire when the effect count is unreadable", async () => {
+      // -1 is "the page would not give up the count", which is not evidence that
+      // nothing landed. Without this the guard would fail every clear on a page
+      // that refuses the property.
+      const { api } = splitApi({
+        tracked: true,
+        length: 0,
+        focused: true,
+        delivered: 3,
+        applied: -1,
+      });
+
+      await expect(
+        makeChromiumImpl(registryWith(api)).handler(
+          {},
+          { udid: CHROMIUM.id, clear: true, text: "abc", delayMs: 0 },
+          CHROMIUM
+        )
+      ).resolves.toMatchObject({ cleared: true });
+    });
+
+    it("does not fire when the ARRIVALS were short — that is the split", async () => {
+      // The two guards partition the same window: a shortfall in arrivals means
+      // the characters went somewhere else, which is the focus message's job and
+      // has to keep its own wording.
+      const { api } = splitApi({
+        tracked: true,
+        length: 0,
+        focused: false,
+        delivered: 1,
+        applied: 0,
+      });
+
+      await expect(
+        makeChromiumImpl(registryWith(api)).handler(
+          {},
+          { udid: CHROMIUM.id, clear: true, text: "abc", delayMs: 0 },
+          CHROMIUM
+        )
+      ).rejects.toThrow(/the page moved focus away from it/);
+    });
   });
 
   it("falls back to the focus sample when the delivery count is unreadable", async () => {
