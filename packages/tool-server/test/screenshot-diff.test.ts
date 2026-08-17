@@ -254,10 +254,10 @@ describe("diffPngFiles", () => {
   });
 
   it("names the size outcomes the summary actually emits in the pre-flight description", async () => {
-    // A caller gates on these literals before it ever sees a summary, and three
-    // surfaces quote them — this description and two skills. Renaming one in
-    // screenshotDiffStatus reaches none of them, so read the words back out of
-    // real summaries instead of restating them here.
+    // A caller gates on these literals before it ever sees a summary, and prose
+    // quotes them: this description, and two skills for `resized_no_change`.
+    // Renaming one in screenshotDiffStatus reaches none of them, so read the
+    // words back out of real summaries instead of restating them here.
     const dir = await makeTempDir();
     const summaryOf = async (
       baseline: [number, number],

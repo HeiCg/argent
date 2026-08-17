@@ -18,19 +18,31 @@ beforeAll(async () => {
   docs = await readAgentDocs();
 });
 
-// `screenshot` passes `scale` straight through and simulator-client turns the
-// emulator's in-band rejection into a hard SIMULATOR_SCREENSHOT_FAILED, so a page
+// `screenshot` has no fallback of its own — it hands the simulator-server
+// whatever `scale` it was given, and simulator-client turns the emulator's
+// in-band rejection into a hard SIMULATOR_SCREENSHOT_FAILED — so a page
 // that sends an agent at a full-resolution capture without naming that failure
 // sends it at a call it cannot recover from. The claim keeps being copied into
 // new pages, so pin the pairing rather than any one file's wording — the error
 // string is the source of truth. Per section, because a page that names the
 // rejection once would otherwise be trusted for everything else it ever says;
-// and by sentence, because these pages hard-wrap and a claim split across two
-// lines is in neither of them. An unrelated match is to be re-read, not narrowed
-// away.
+// and by sentence, because the `agents/` pages hard-wrap and a claim split
+// across two lines is in neither of them. An unrelated match is to be re-read,
+// not narrowed away.
 describe("agent docs reaching for a full-resolution screenshot", () => {
   it("finds some, so the check below cannot pass vacuously", () => {
     expect(docs.filter(({ text }) => sentencesClaimingSize(text).length > 0)).not.toHaveLength(0);
+  });
+
+  it("splits at headings, so a claim is escorted by its own section", () => {
+    // The floor above counts docs while the check below counts sections, so a
+    // splitter returning one whole-file section would exempt every claim in the
+    // corpus with both still green.
+    expect(sections("intro\n\n## A\n\nclaim\n\n## B\n\nother")).toEqual([
+      "intro\n",
+      "## A\n\nclaim\n",
+      "## B\n\nother",
+    ]);
   });
 
   it("every one of them names the emulators that reject it", () => {
@@ -44,8 +56,8 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
   });
 
   it("reaches all three published directories", () => {
-    // Narrowing the walk is otherwise invisible: the claims in rules/ and
-    // agents/ just stop being read.
+    // Narrowing the walk is otherwise invisible: rules/ and agents/ simply stop
+    // being read.
     expect(new Set(docs.map(({ name }) => name.split("/")[0]))).toEqual(
       new Set(["skills", "rules", "agents"])
     );
