@@ -7,13 +7,11 @@ import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-diff";
 import { linesClaimingSize, readAgentDocs } from "./helpers/size-claims";
 
-// The two bullets under `size_normalized`, pinned whole: what must not happen is
-// a *prescription* being appended to an otherwise-correct sentence, and no
-// pattern separates prescribing a resolution from mentioning one. Constraints to
-// keep when editing them: the caveat cuts both ways, because a downscale erases
-// fine differences as readily as it invents them; and the remedy prescribes no
-// scale, because the formatter is handed only sizes — it never learns which side
-// was captured live, or whether either was.
+// The two bullets under `size_normalized`, pinned whole. Constraints to keep
+// when editing them: the caveat cuts both ways, because a downscale erases fine
+// differences as readily as it invents them; and the remedy prescribes no scale,
+// because the formatter is handed only sizes — it never learns which side was
+// captured live, or whether either was.
 const RESIZE_CAVEAT =
   "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; the differences below may include resampling artifacts, and differences finer than the downscale — hairlines, subpixel text — can be erased by it, so a clean result here is weaker evidence than an unnormalized one; the diff image is at compared_at rather than full size";
 const RESIZE_REMEDY =
@@ -217,9 +215,7 @@ describe("diffPngFiles", () => {
     // …and the rescale is still disclosed, so the figures can be read correctly.
     expect(result.summary).toContain("- size_normalized:");
     // The remedy belongs here most of all: these pixel differences may be the
-    // resampling artifacts, so the reader needs the way to rule that out. Pinned
-    // the same way as on the no-change path, since the block renders on both and
-    // a prescription can be added to either one alone.
+    // resampling artifacts, so the reader needs the way to rule that out.
     const changedLines = result.summary.split("\n");
     expect(changedLines).toContain(RESIZE_CAVEAT);
     expect(changedLines).toContain(RESIZE_REMEDY);

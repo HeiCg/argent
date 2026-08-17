@@ -4,6 +4,15 @@ import { readAgentDocs, sentencesClaimingSize } from "./helpers/size-claims";
 
 let docs: Array<{ name: string; text: string }> = [];
 
+/**
+ * The size claims of one markdown region, swept a block at a time. Whole-text
+ * flattening would run a sentence from the end of a code fence into the
+ * paragraph after it, so a claim would inherit the `"scale": 1.0` of a JSON
+ * example it merely sits below.
+ */
+const claimsIn = (text: string): string[] =>
+  text.split(/\n\s*\n/).flatMap((block) => sentencesClaimingSize(block));
+
 /** Split at markdown headings, so an escort three sections away cannot cover a claim. */
 const sections = (text: string): string[] => {
   const out: string[] = [];
@@ -30,25 +39,37 @@ beforeAll(async () => {
 // across two lines is in neither of them. An unrelated match is to be re-read,
 // not narrowed away.
 describe("agent docs reaching for a full-resolution screenshot", () => {
-  it("makes exactly the claims that have been read against the code", () => {
-    // The escort exempts a whole section, and the escorted sections are where
-    // this prose lives — so a claim added beside one that names the rejection is
-    // otherwise never examined, whatever it asserts. Counts, not the sentences:
-    // the split runs over flattened markdown, so renumbering a list item two
-    // steps away rewrites a pinned string without touching a claim. This catches
-    // an added claim; a reworded one is caught on the tool surfaces these pages
-    // mirror. It also floors the sweep, which would otherwise fall to zero
-    // matches with the check below still green.
-    const claims = Object.fromEntries(
-      docs
-        .map(({ name, text }) => [name, sentencesClaimingSize(text).length] as const)
-        .filter(([, count]) => count > 0)
+  it("finds some, so the checks below cannot pass vacuously", () => {
+    expect(docs.flatMap(({ text }) => claimsIn(text))).not.toHaveLength(0);
+  });
+
+  it("makes no size claim about anything but a capture", () => {
+    // The escort excuses a claim about capturing, because the `wrong data size`
+    // rejection is what capturing at 1.0 runs into. It says nothing about the
+    // size of what the diff writes, so a section carrying it must not be trusted
+    // for that too — which is how the sentence this change removed from the tool
+    // description ("diffPath is the full-size diff image") could come back in a
+    // skill. Subject read off the claim's own vocabulary, so a sentence about a
+    // capture keeps the escort's cover however it spells one.
+    const offTopic = docs.flatMap(({ name, text }) =>
+      claimsIn(text)
+        .filter((claim) => !/screenshot|\bscale\b|\bcaptur|\bframe\b/i.test(claim))
+        .map((claim) => `${name}: ${claim}`)
     );
-    expect(claims).toEqual({
-      "skills/argent-device-interact/SKILL.md": 4,
-      "skills/argent-screenshot-diff/SKILL.md": 3,
-      "skills/argent-test-ui-flow/SKILL.md": 4,
-    });
+    expect(offTopic).toEqual([]);
+  });
+
+  it("states every claim as a condition, never an absolute", () => {
+    // The escort excuses a claim because the capture is conditional, so a claim
+    // asserting it never fails contradicts the very sentence exempting it —
+    // "always captures at full resolution" is both the most natural way to write
+    // the falsehood and the one the escort cannot be evidence for.
+    const absolute = docs.flatMap(({ name, text }) =>
+      claimsIn(text)
+        .filter((claim) => /\balways\b|\bwhatever\b|\bregardless\b|\bno matter\b/i.test(claim))
+        .map((claim) => `${name}: ${claim}`)
+    );
+    expect(absolute).toEqual([]);
   });
 
   it("splits at headings, so a claim is escorted by its own section", () => {
@@ -66,7 +87,7 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
     const unescorted = docs.flatMap(({ name, text }) =>
       sections(text)
         .filter((section) => !section.includes("wrong data size"))
-        .flatMap((section) => sentencesClaimingSize(section))
+        .flatMap((section) => claimsIn(section))
         .map((claim) => `${name}: ${claim}`)
     );
     expect(unescorted).toEqual([]);

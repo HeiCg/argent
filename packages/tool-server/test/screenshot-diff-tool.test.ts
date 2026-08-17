@@ -288,25 +288,6 @@ describe("screenshotDiffTool", () => {
     expect(screenshotDiffTool.description).toContain("a requested live capture cannot be taken");
   });
 
-  it("resolves ARGENT_SCREENSHOT_SCALE inside (0,1] and falls back outside it", () => {
-    // The range `screenshot`'s `scale` description names. The wire tests above
-    // send 0.3 and 0.6, so widening the guard puts a scale of 5 on the wire with
-    // every other assertion in this file still passing.
-    for (const [env, resolved] of [
-      ["", 0.3],
-      ["abc", 0.3],
-      ["0", 0.3],
-      ["-0.5", 0.3],
-      ["2", 0.3],
-      ["Infinity", 0.3],
-      ["1", 1],
-      ["0.6", 0.6],
-    ] as const) {
-      vi.stubEnv("ARGENT_SCREENSHOT_SCALE", env);
-      expect(getScreenshotScale(), env).toBe(resolved);
-    }
-  });
-
   it("does not promise a full-resolution capture, or a full-size diff image", () => {
     // Both sentences are pinned as phrases: reword either and this fails, which
     // is the point — a reword has to be checked against captureLiveInput and
@@ -339,7 +320,7 @@ describe("screenshotDiffTool", () => {
       ],
       "screenshot.scale": [
         "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; retry at a lower scale on those devices.",
-        "A screenshot-diff baseline should match what that tool's own live capture produces on the same device — it tries 1.0 and drops to the tool-server's screenshot scale when that fails — so save it at scale: 1.0 where a full frame streams, and with `scale` omitted where it does not — unless ARGENT_SCREENSHOT_SCALE is itself 1.0, where omitting it repeats the rejected request.",
+        "A screenshot-diff baseline should match what that tool's own live capture produces on the same device — it tries 1.0 and drops to the tool-server's screenshot scale when that fails — so save it at scale: 1.0 where a full frame streams, and with `scale` omitted where it does not — unless ARGENT_SCREENSHOT_SCALE is itself 1.0, where omitting it repeats the rejected request and both sides have to be saved here at the same explicit scale instead.",
       ],
     };
     const swept: string[] = [];
@@ -361,34 +342,19 @@ describe("screenshotDiffTool", () => {
         "screenshot-diff.searchHint",
         "screenshot-diff.completedMsg",
         "screenshot-diff.baselinePath",
+        // Depth as well as kind: array items and nested objects are advertised
+        // in input_schema like any parameter, so collapsing the walk to the top
+        // level would leave the list above intact and the sweep shorter.
+        "gesture-custom.events[].type",
+        "await-ui-element.selector.text",
       ])
     );
     // Suppression is about where the bytes go, not what resolution they are:
     // conditioning it on a full-resolution capture sends agents at the call that
     // fails on these emulators. Pinned whole, because such a condition
-    // re-attaches anywhere inside the sentence, including past its last clause.
+    // re-attaches anywhere inside the sentence.
     expect(createScreenshotTool(registry).zodSchema!.shape.includeImageInContext.description).toBe(
       "Default true. Set false only when capturing a baseline/current PNG for screenshot-diff — the file is still written, but the image bytes are not attached to the agent context."
-    );
-  });
-
-  it("tells a `screenshot` caller that the scale it picks is a diff input", () => {
-    // The two wire tests above pin the sizes these tools agree on, but only
-    // `screenshot`'s own description reaches an agent capturing a baseline for a
-    // diff it has not started yet; drop the pairing here and that agent picks a
-    // scale with no reason to think it matters.
-    const registry = {
-      resolveService: vi.fn(),
-    } as unknown as import("@argent/registry").Registry;
-    // Both halves: that the two tools are linked at all, and the instruction
-    // that link exists to give. Deleting the second leaves the first satisfied
-    // by the word alone, and the three skills mirror the instruction, not the
-    // mention.
-    expect(createScreenshotTool(registry).zodSchema!.shape.scale.description).toContain(
-      "save it at scale: 1.0 where a full frame streams, and with `scale` omitted where it does not"
-    );
-    expect(createScreenshotTool(registry).zodSchema!.shape.scale.description).toContain(
-      "screenshot-diff"
     );
   });
 

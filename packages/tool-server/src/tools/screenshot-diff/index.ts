@@ -54,7 +54,7 @@ const zodSchema = z
       .min(1)
       .optional()
       .describe(
-        "Directory where diff artifacts should be written. Optional — defaults to a temp directory, and wherever they land the result carries them, on every status that produces them."
+        "Directory where diff artifacts should be written. Optional — defaults to a temp directory, and is itself replaced by one when the path does not exist yet. The result carries the artifact paths on every status that writes them; dimension_mismatch writes none."
       ),
   })
   .strict();
@@ -100,7 +100,7 @@ export const screenshotDiffTool: ToolDefinition<Params, ScreenshotDiffResult> = 
     failedMsg: ({ failureSignal }) => `Failed to compare screenshots: ${failureSignal.error_code}`,
   },
   description: `Compare two PNG screenshots and return a compact visual-diff summary.
-Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale. Sides that share an aspect ratio but not a resolution are downscaled to the smaller before comparing; the summary reports that as size_normalized, and a clean result there is status resized_no_change rather than unchanged; sides whose aspect ratios differ are not compared at all, reported as dimension_mismatch. Always provide udid — a live capture resolves the simulator-server from it.
+Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale. Sides whose aspect ratios agree to within about 1% but whose resolutions differ are resampled to the smaller-area side before comparing; the summary reports that as size_normalized, and a clean result there is status resized_no_change rather than unchanged; sides whose aspect ratios differ by more than that are not compared at all, reported as dimension_mismatch. Always provide udid — a live capture resolves the simulator-server from it.
 Use when stable before/after screenshots exist and the expected result is pixel-visible: layout, spacing, color, typography, image/icon rendering, clipping, overflow, or text rendering.
 For live captures, set exactly one of captureBaseline or captureCurrent; use baselinePath + captureCurrent for the common visual-regression flow.
 Returns { summary, diffPath, contextDiffPath } — both images are omitted on dimension_mismatch, where nothing was compared. The summary uses normalized [0,1] screen locations matching describe coordinates; diffPath is the diff at the size the comparison ran at and contextDiffPath is a downscaled image for MCP/agent display.

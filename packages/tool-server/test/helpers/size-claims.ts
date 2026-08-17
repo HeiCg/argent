@@ -11,8 +11,7 @@ import { advertisedSchema } from "./catalog";
  * has to be checked against `captureLiveInput` and `writeDiffArtifacts`.
  *
  * A vocabulary, not a paraphrase detector: a claim that shares no token here
- * ("the diff keeps the capture's own dimensions") goes unseen. One list for both
- * surfaces, since two lists each miss what the other catches.
+ * ("the diff keeps the capture's own dimensions") goes unseen.
  *
  * `native resolution` is deliberately absent: argent-screen-recording uses it
  * correctly for h264 frames, which never go through this parameter. A range

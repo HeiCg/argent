@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatScreenshotDiffSummary } from "../src/tools/screenshot-diff/screenshot-diff-summary";
+import { linesClaimingSize } from "./helpers/size-claims";
 
 describe("formatScreenshotDiffSummary", () => {
   it("emits overview, text, and region sections for unchanged screenshots", () => {
@@ -77,6 +78,86 @@ describe("formatScreenshotDiffSummary", () => {
     expect(summary).toContain("  - appearance: color, contrast, size/layout, shape/rendering");
     expect(summary).not.toContain("reason_codes");
     expect(summary).not.toContain("confidence=");
+  });
+
+  it("labels no text change with a resolution, in any of its five shapes", () => {
+    // The bounds these lines carry are rescaled out of each image's own
+    // coordinate space, so they are the stretch of the summary most tempting to
+    // label with one — and the sweeps in screenshot-diff.test.ts run on fixtures
+    // that detect no text at all, leaving every branch below unrendered.
+    const bounds = { x: 10, y: 20, width: 100, height: 24 };
+    const summary = formatScreenshotDiffSummary({
+      totalPixels: 100,
+      differentPixels: 12,
+      mismatchPercentage: 12,
+      imageSize: { width: 1200, height: 2400 },
+      regions: [],
+      textAnalysis: {
+        status: "ok",
+        provider: "ocr",
+        changes: [
+          {
+            kind: "moved",
+            text: "Moved",
+            baselineBounds: bounds,
+            currentBounds: { ...bounds, y: 40 },
+            delta: { x: 0, y: 20, width: 0, height: 0 },
+            confidence: 0.9,
+            source: "ocr",
+            reasonCodes: ["position_delta"],
+          },
+          {
+            kind: "appeared",
+            text: "Appeared",
+            currentBounds: bounds,
+            confidence: 0.9,
+            source: "ocr",
+            reasonCodes: [],
+          },
+          {
+            kind: "disappeared",
+            text: "Disappeared",
+            baselineBounds: bounds,
+            confidence: 0.9,
+            source: "ocr",
+            reasonCodes: [],
+          },
+          {
+            kind: "content_changed",
+            baselineText: "Before",
+            currentText: "After",
+            baselineBounds: bounds,
+            currentBounds: bounds,
+            confidence: 0.9,
+            source: "ocr",
+            reasonCodes: [],
+          },
+          {
+            kind: "font_changed",
+            text: "Restyled",
+            baselineBounds: bounds,
+            currentBounds: { ...bounds, height: 28 },
+            confidence: 0.9,
+            source: "ocr",
+            reasonCodes: ["stroke_width_delta"],
+          },
+        ],
+      },
+    });
+
+    // Each branch actually rendered, or the sweep below passes over prose that
+    // was never produced.
+    expect(summary).toContain("- text_analysis: status=ok provider=ocr shown=5 total=5 omitted=0");
+    for (const label of [
+      "- Moved:",
+      "- Appeared:",
+      "- Disappeared:",
+      "- Changed:",
+      "- Restyled:",
+    ]) {
+      expect(summary).toContain(label);
+    }
+    expect(linesClaimingSize(summary)).toEqual([]);
   });
 
   it("summarizes font evidence with semantic labels", () => {
