@@ -59,7 +59,7 @@ Apple system apps cannot load the instrumentation, and nothing in the launch pat
 
 - Raw `tool: await-ui-element` accessibility checks.
 - Point taps or long-presses derived from `describe`, each named by an echo.
-- A point focus tap plus raw keyboard with `delayMs: 500`.
+- A point focus tap plus a raw text-only `keyboard` with `delayMs: 500`, and a second raw `keyboard` with `key: "enter"` to submit.
 - Raw swipes with `settle: true` because `scroll-to` needs the missing flow tree. Momentum-free scrolling keeps later coordinate taps valid.
 
 Every point tap or long-press in such a flow passes **carrying a warning**. The app loads no instrumentation, so every tree read fails and each [selector-less gesture](flow-yaml.md#directives) dispatches unsettled. Nothing here repairs it. Accept the warnings, read each green as "the gesture was sent, not that it landed", and put an explicit `wait:` or a raw `tool: await-ui-element` before a gesture that follows a transition. Raw `tool:` steps never take that settle, so they never warn.
