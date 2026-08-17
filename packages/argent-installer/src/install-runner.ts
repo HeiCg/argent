@@ -63,16 +63,36 @@ export async function runInstall(args: {
   fromTar: string | null;
   nonInteractive: boolean;
   version: string;
+  /**
+   * Where a fresh global install would land, probed by the caller so the
+   * install-mode prompt and the install itself agree without querying the
+   * package manager twice. Null when no fresh global install is in play.
+   */
+  globalTarget: GlobalInstallTarget | null;
+  /**
+   * The install-mode step already showed that `globalTarget` cannot be written
+   * and named what argent would do about it, and the user chose global anyway.
+   * That choice is the answer, so the recovery carries the remedy out instead
+   * of asking the same question a second time.
+   */
+  globalBlockAcknowledged: boolean;
   tel: InitTelemetry;
 }): Promise<InstallOutcome> {
-  const { installMode, fromTar, nonInteractive, tel } = args;
+  const { installMode, fromTar, nonInteractive, globalTarget, globalBlockAcknowledged, tel } = args;
 
   if (installMode === "local") {
     await installLocally({ fromTar, tel });
     return { version: localVersion(args.version), installMode: "local" };
   }
 
-  return runGlobal({ fromTar, nonInteractive, version: args.version, tel });
+  return runGlobal({
+    fromTar,
+    nonInteractive,
+    version: args.version,
+    globalTarget,
+    globalBlockAcknowledged,
+    tel,
+  });
 }
 
 function localVersion(fallback: string): string {
@@ -264,52 +284,66 @@ async function recoverBlockedGlobalInstall(opts: {
   target: GlobalInstallTarget;
   pm: PackageManager;
   nonInteractive: boolean;
+  acknowledged: boolean;
   tel: InitTelemetry;
 }): Promise<boolean> {
-  const { target, pm, nonInteractive, tel } = opts;
+  const { target, pm, nonInteractive, acknowledged, tel } = opts;
 
-  if (nonInteractive) {
-    p.log.error(unwritableGlobalTargetMessage(target, pm, "install"));
+  const failWithAdvice = async (blocked: GlobalInstallTarget): Promise<never> => {
+    p.log.error(unwritableGlobalTargetMessage(blocked, pm, "install"));
     await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
     process.exit(1);
-  }
+  };
 
-  p.log.warn(blockedGlobalTargetCause(target, pm, "install"));
+  // npm is the only manager whose global directory argent can relocate: the
+  // equivalent knob differs for every other one, and yarn berry has no global
+  // install at all.
+  const canMovePrefix = pm === "npm";
+  // A local install needs a package.json to add the devDependency to.
+  const canInstallLocally = hasProjectPackageJson(resolveProjectRoot(process.cwd()));
 
-  const options: Array<{ value: "local" | "prefix" | "cancel"; label: string; hint?: string }> = [];
-  // Offered only where it can succeed — the local install needs a package.json
-  // to add the devDependency to.
-  if (hasProjectPackageJson(resolveProjectRoot(process.cwd()))) {
-    options.push({
-      value: "local",
-      label: "Install into this project instead",
-      hint: "a devDependency — no global directory needed",
-    });
-  }
-  // npm only: the equivalent knob differs for every other manager (and yarn
-  // berry has no global install at all), so they get the choices argent can
-  // actually carry out.
-  if (pm === "npm") {
-    options.push({
-      value: "prefix",
-      label: `Point npm at ${suggestedNpmPrefix()} and install there`,
-      hint: "its bin directory has to be on your PATH",
-    });
-  }
-  options.push({ value: "cancel", label: "Cancel" });
+  // Nobody to ask, or nothing to offer them — spell the ways out as commands
+  // instead of opening a prompt whose only option is to give up.
+  if (nonInteractive || !(canMovePrefix || canInstallLocally)) return failWithAdvice(target);
 
-  const choice = await p.select({ message: "How would you like to proceed?", options });
+  if (acknowledged) {
+    // Chosen knowing the block, but for a manager whose directory argent
+    // cannot relocate — there is nothing left to carry out.
+    if (!canMovePrefix) return failWithAdvice(target);
+  } else {
+    p.log.warn(blockedGlobalTargetCause(target, pm, "install"));
 
-  if (p.isCancel(choice) || choice === "cancel") {
-    track("installation:global_install_decision", { decision: "cancel" });
-    p.cancel("Nothing was installed.");
-    await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
-    process.exit(1);
-  }
+    const options: Array<{ value: "local" | "prefix" | "cancel"; label: string; hint?: string }> =
+      [];
+    if (canInstallLocally) {
+      options.push({
+        value: "local",
+        label: "Install into this project instead",
+        hint: "a devDependency — no global directory needed",
+      });
+    }
+    if (canMovePrefix) {
+      options.push({
+        value: "prefix",
+        label: `Point npm at ${suggestedNpmPrefix()} and install there`,
+        hint: "its bin directory has to be on your PATH",
+      });
+    }
+    options.push({ value: "cancel", label: "Cancel" });
 
-  if (choice === "local") {
-    track("installation:global_install_decision", { decision: "install_local" });
-    return true;
+    const choice = await p.select({ message: "How would you like to proceed?", options });
+
+    if (p.isCancel(choice) || choice === "cancel") {
+      track("installation:global_install_decision", { decision: "cancel" });
+      p.cancel("Nothing was installed.");
+      await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
+      process.exit(1);
+    }
+
+    if (choice === "local") {
+      track("installation:global_install_decision", { decision: "install_local" });
+      return true;
+    }
   }
 
   track("installation:global_install_decision", { decision: "set_prefix" });
@@ -329,11 +363,7 @@ async function recoverBlockedGlobalInstall(opts: {
   // Confirm rather than assume: a prefix npm accepted but still cannot write to
   // would fail the install a step later, with npm's error instead of ours.
   const moved = probeGlobalInstallTarget(pm);
-  if (moved?.blocked) {
-    p.log.error(unwritableGlobalTargetMessage(moved, pm, "install"));
-    await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
-    process.exit(1);
-  }
+  if (moved?.blocked) await failWithAdvice(moved);
 
   const binDir = path.join(prefix, "bin");
   if (!(process.env.PATH ?? "").split(path.delimiter).includes(binDir)) {
@@ -355,9 +385,11 @@ async function runGlobal(opts: {
   fromTar: string | null;
   nonInteractive: boolean;
   version: string;
+  globalTarget: GlobalInstallTarget | null;
+  globalBlockAcknowledged: boolean;
   tel: InitTelemetry;
 }): Promise<InstallOutcome> {
-  const { fromTar, nonInteractive, tel } = opts;
+  const { fromTar, nonInteractive, globalTarget, globalBlockAcknowledged, tel } = opts;
   let version = opts.version;
   const globallyInstalled = isGloballyInstalled();
 
@@ -367,7 +399,6 @@ async function runGlobal(opts: {
     // are things init can carry out, so ask rather than stop here.
     const pm = detectPackageManager();
     const preflightStartedAt = performance.now();
-    const globalTarget = probeGlobalInstallTarget(pm);
     if (globalTarget?.blocked) {
       await tel.trackPackageAction(
         "fresh_install",
@@ -375,7 +406,15 @@ async function runGlobal(opts: {
         false,
         INSTALL_GLOBAL_PREFIX_UNWRITABLE
       );
-      if (await recoverBlockedGlobalInstall({ target: globalTarget, pm, nonInteractive, tel })) {
+      if (
+        await recoverBlockedGlobalInstall({
+          target: globalTarget,
+          pm,
+          nonInteractive,
+          acknowledged: globalBlockAcknowledged,
+          tel,
+        })
+      ) {
         await installLocally({ fromTar, tel });
         return { version: localVersion(version), installMode: "local" };
       }

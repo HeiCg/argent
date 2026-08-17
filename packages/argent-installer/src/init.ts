@@ -11,6 +11,7 @@ import {
   resolveInstallModeFromFlags,
   InstallModeFlagError,
   isDeclaredLocally,
+  isGloballyInstalled,
   readInstallRecord,
   writeInstallRecord,
   removeInstallRecord,
@@ -24,7 +25,8 @@ import {
   INSTALL_MODE_FLAG_CONFLICT,
   INSTALL_UNCLASSIFIED_FAILED,
 } from "./init-telemetry.js";
-import { promptInstallMode } from "./init-mode-prompt.js";
+import { promptInstallMode, type BlockedGlobalInstall } from "./init-mode-prompt.js";
+import { probeGlobalInstallTarget } from "./global-prefix.js";
 import { runInstall } from "./install-runner.js";
 import { chooseAdapters } from "./init-adapters.js";
 import { chooseScope, type Scope } from "./init-scope.js";
@@ -112,7 +114,19 @@ export async function init(args: string[]): Promise<void> {
       throw err;
     }
 
-    tel.installMode = modeFromFlags ?? (await promptInstallMode(recordedMode ?? "global"));
+    // Probed once and used both to describe the choice and to carry it out, so
+    // the prompt cannot promise something the install then refuses. Skipped
+    // where no global install can happen — it costs a package-manager query.
+    const globalTarget =
+      modeFromFlags !== "local" && !isGloballyInstalled()
+        ? probeGlobalInstallTarget(detectPackageManager())
+        : null;
+    const blockedGlobal: BlockedGlobalInstall | null = globalTarget?.blocked
+      ? { target: globalTarget, pm: detectPackageManager() }
+      : null;
+
+    tel.installMode =
+      modeFromFlags ?? (await promptInstallMode(recordedMode ?? "global", blockedGlobal));
     track("installation:install_mode_decision", { install_mode: tel.installMode });
 
     // ── Step 0: Install / Update Check ──────────────────────────────────────────
@@ -122,6 +136,8 @@ export async function init(args: string[]): Promise<void> {
       fromTar: parsed.fromTar,
       nonInteractive: parsed.nonInteractive,
       version,
+      globalTarget,
+      globalBlockAcknowledged: modeFromFlags === null && blockedGlobal !== null,
       tel,
     });
     version = installed.version;

@@ -17,6 +17,8 @@ on:
       - main
     paths:
       - "packages/argent-installer/src/global-prefix.ts"
+      - "packages/argent-installer/src/init.ts"
+      - "packages/argent-installer/src/init-mode-prompt.ts"
       - "packages/argent-installer/src/install-runner.ts"
       - "packages/argent-installer/src/update.ts"
       - "packages/argent-installer/src/uninstall.ts"
