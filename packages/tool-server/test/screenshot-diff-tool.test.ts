@@ -7,7 +7,7 @@ import { ArtifactStore } from "@argent/registry";
 import { executeScreenshotDiffTool, screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { createScreenshotTool } from "../src/tools/screenshot";
 import { getScreenshotScale } from "../src/utils/simulator-client";
-import { sentencesClaimingSize } from "./helpers/size-claims";
+import { agentFacingText, sentencesClaimingSize } from "./helpers/size-claims";
 
 describe("screenshotDiffTool", () => {
   afterEach(() => {
@@ -309,35 +309,34 @@ describe("screenshotDiffTool", () => {
     // A positive phrase leaves room for a contradicting sentence beside it: a
     // "(full size)" label three lines below a bullet denying it satisfies every
     // positive check. So collect the sentences that reach for this vocabulary at
-    // all, across every string this tool puts in front of an agent, and pin that
-    // collection whole. An added claim is an extra element whether it repeats a
-    // pinned phrase verbatim or reaches for a synonym, and a sibling field is not
-    // a place the sweep does not look.
-    const fields = Object.entries(screenshotDiffTool.zodSchema!.shape) as Array<
-      [string, { description?: string }]
-    >;
-    const surfaces: Array<[string, string]> = fields.map(([name, field]) => [
-      name,
-      field.description ?? "",
-    ]);
-    surfaces.push(["description", screenshotDiffTool.description ?? ""]);
-
+    // all, across every string either tool puts in front of an agent, and pin
+    // that collection whole. An added claim is an extra element whether it
+    // repeats a pinned phrase verbatim or reaches for a synonym, and a sibling
+    // field is not a place the sweep does not look. Both tools together, because
+    // the claim moves between them: `screenshot` is what captures a diff
+    // baseline, and it is alwaysLoad, so it reaches an agent with no skill open.
     const expected: Record<string, string[]> = {
-      description:
-        // The capture's resolution cannot be banned outright — it is genuinely
-        // attempted at full resolution — so the condition is what gets pinned.
-        [
-          "Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale.",
-        ],
-      captureBaseline: [
+      // The capture's resolution cannot be banned outright — it is genuinely
+      // attempted at full resolution — so the condition is what gets pinned.
+      "screenshot-diff.description": [
+        "Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale.",
+      ],
+      "screenshot-diff.captureBaseline": [
         "Capture the baseline screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback).",
       ],
-      captureCurrent: [
+      "screenshot-diff.captureCurrent": [
         "Capture the current screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback).",
       ],
+      "screenshot.scale": [
+        "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; retry at a lower scale on those devices.",
+        "A screenshot-diff baseline should match what that tool's own live capture produces on the same device — it tries 1.0 and drops to the tool-server's screenshot scale when that fails — so save it at scale: 1.0 where a full frame streams, and with `scale` omitted where it does not, which yields a smaller frame only while ARGENT_SCREENSHOT_SCALE resolves below 1.0 and repeats the rejected request when it does not.",
+      ],
     };
-    for (const [name, text] of surfaces) {
-      expect(sentencesClaimingSize(text), name).toEqual(expected[name] ?? []);
+    for (const def of [screenshotDiffTool, createScreenshotTool(registry)]) {
+      for (const [surface, text] of agentFacingText(def)) {
+        const key = `${def.id}.${surface}`;
+        expect(sentencesClaimingSize(text), key).toEqual(expected[key] ?? []);
+      }
     }
     // Suppression is about where the bytes go, not what resolution they are:
     // conditioning it on a full-resolution capture sends agents at the call that

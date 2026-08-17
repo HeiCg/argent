@@ -1,79 +1,36 @@
-import fs from "fs";
-import path from "path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { getScreenshotScale } from "../src/utils/simulator-client";
+import { linesClaimingSize, readSkillDocs } from "./helpers/size-claims";
 
-const SKILLS_DIR = path.join(__dirname, "../../skills/skills");
+let docs: Array<{ name: string; text: string }> = [];
 
-// Assigning 1.0 (or 1) to `scale`, in the spellings the skills actually use —
-// JSON, a fenced pseudo-call, backticked prose, "a `scale` of 1.0", "set
-// `scale` to 1.0", a bare "`scale` 1.0" — plus the spellings that name no
-// parameter at all, which already ship in two of these files. Those are matched
-// as vocabulary rather than as an imperative, because the claim arrives just as
-// often as an assertion about what already happens ("baselines are captured at
-// full resolution") as it does as an instruction, and an inflected verb is not
-// a weaker prescription than a bare one.
-//
-// A range mention ("`scale` accepts values from 0.01 to 1.0") is not a claim
-// about a capture and deliberately does not match; the leading boundary keeps
-// `grayscale = 1` and `upscale: 1` out. "native resolution" is deliberately
-// absent: argent-screen-recording uses it correctly for h264 frames, which do
-// not go through this parameter at all.
-const REACHES_FOR_FULL_RES =
-  /full[- ](?:resolution|res\b)|\bunscaled\b|100% scale|\b1:1\b|\bscale["'`]?\s*(?:[:=]|\s+(?:of|to)\s+)?\s*1(?:\.0+)?\b/i;
-
-function markdownUnder(dir: string): string[] {
-  return fs
-    .readdirSync(dir, { withFileTypes: true })
-    .flatMap((entry) =>
-      entry.isDirectory()
-        ? markdownUnder(path.join(dir, entry.name))
-        : entry.name.endsWith(".md")
-          ? [path.join(dir, entry.name)]
-          : []
-    );
-}
-
-const docs = fs
-  .readdirSync(SKILLS_DIR, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory())
-  .flatMap((entry) => markdownUnder(path.join(SKILLS_DIR, entry.name)))
-  .map((file) => ({ name: path.relative(SKILLS_DIR, file), text: fs.readFileSync(file, "utf8") }));
+beforeAll(async () => {
+  docs = await readSkillDocs();
+});
 
 // `screenshot` passes `scale` straight through and simulator-client turns the
 // emulator's in-band rejection into a hard SIMULATOR_SCREENSHOT_FAILED, so a
 // skill that sends an agent at a full-resolution capture without naming that
 // failure sends it at a call it cannot recover from. The claim is spread across
 // skills and keeps being copied into new ones, so pin the pairing rather than
-// any one file's wording.
+// any one file's wording — the error string is the source of truth, and a skill
+// that adds a claim satisfies the rule by explaining it rather than by updating
+// a number here.
+//
+// Same vocabulary as the tool descriptions, deliberately: two lists that each
+// miss what the other catches is how `full size` stayed legal in markdown while
+// being banned in the description that ships beside it.
 describe("skill docs reaching for a full-resolution screenshot", () => {
-  const reaching = docs.filter(({ text }) => REACHES_FOR_FULL_RES.test(text));
-
   it("finds some, so the per-file check below cannot pass vacuously", () => {
-    expect(reaching.length).toBeGreaterThan(0);
+    expect(docs.filter(({ text }) => linesClaimingSize(text).length > 0)).not.toHaveLength(0);
   });
 
-  it.each(reaching)("$name names the emulators that reject it", ({ text }) => {
-    expect(text).toContain("wrong data size");
-  });
-
-  // Carrying the caveat somewhere in the file says nothing about a line added
-  // later, and the claim these files get wrong arrives as an extra sentence
-  // rather than an edit to an existing one. So count them: a new line reaching
-  // for this vocabulary has to be checked against captureLiveInput and
-  // writeDiffArtifacts, and updating the count here is where that happens.
-  it("holds the size claims to the lines that were checked against the code", () => {
-    const perFile = Object.fromEntries(
-      reaching.map(({ name, text }) => [
-        name,
-        text.split("\n").filter((line) => REACHES_FOR_FULL_RES.test(line)).length,
-      ])
-    );
-    expect(perFile).toEqual({
-      "argent-device-interact/SKILL.md": 4,
-      "argent-screenshot-diff/SKILL.md": 3,
-      "argent-test-ui-flow/SKILL.md": 3,
-    });
+  it("every one of them names the emulators that reject it", () => {
+    const unescorted = docs
+      .filter(({ text }) => linesClaimingSize(text).length > 0)
+      .filter(({ text }) => !text.includes("wrong data size"))
+      .map(({ name, text }) => `${name}: ${linesClaimingSize(text)[0]}`);
+    expect(unescorted).toEqual([]);
   });
 });
 
@@ -81,27 +38,40 @@ describe("skill docs quoting the tool-server's screenshot scale", () => {
   // Spelled as a percentage in prose ("30% of original resolution") rather than
   // as the 0.3 the tool descriptions quote, so it drifts out of reach of the
   // cross-surface check in screenshot-diff-tool.test.ts.
-  const quoting = docs.filter(({ text }) => text.includes("of original resolution"));
-
-  it("finds some, so the per-file check below cannot pass vacuously", () => {
-    expect(quoting.length).toBeGreaterThan(0);
-  });
+  const quotes = (text: string): string[] =>
+    text.split("\n").filter((line) => line.includes("of original resolution"));
 
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it.each(quoting)("$name quotes the scale getScreenshotScale falls back to", ({ text }) => {
+  it("finds some, so the per-file check below cannot pass vacuously", () => {
+    expect(docs.filter(({ text }) => quotes(text).length > 0)).not.toHaveLength(0);
+  });
+
+  it("every such line quotes the scale getScreenshotScale falls back to, for named platforms", () => {
     // Markdown ships as a static file, so it can only ever quote the default —
     // read the ambient env instead and the assertion fails on correct prose for
     // every developer who exports the var these same docs tell them about.
     vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
-    const quote = text.split("\n").find((line) => line.includes("of original resolution"))!;
-    expect(quote).toContain(`${getScreenshotScale() * 100}% of original resolution`);
-    // …and the same paragraph says which platforms that is the default for.
-    // Chromium passes no scale of its own, so an unqualified claim is false
-    // there, which is how this line read before. Scoped to the line, since
-    // these files name Chromium in a dozen unrelated places.
-    expect(quote).toContain("Chromium");
+    const wrong: string[] = [];
+    for (const { name, text } of docs) {
+      // Every such line, not the first: a second one is where a stale figure
+      // sits unread while the first keeps the check green.
+      for (const line of quotes(text)) {
+        if (!line.includes(`${getScreenshotScale() * 100}% of original resolution`)) {
+          wrong.push(`${name}: stale figure — ${line.trim()}`);
+        }
+        // …and it says which platforms that is the default for. Chromium passes
+        // no scale of its own, so a claim that names no platform is false there,
+        // which is how one of these lines read. Any platform, not Chromium
+        // specifically: a page about one device class is entitled to describe
+        // only that class.
+        if (!/iOS|Android|Apple TV|Vega|Chromium/.test(line)) {
+          wrong.push(`${name}: names no platform — ${line.trim()}`);
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
   });
 });

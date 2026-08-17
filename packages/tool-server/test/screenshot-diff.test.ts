@@ -5,7 +5,7 @@ import { PNG } from "pngjs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-diff";
-import { linesClaimingSize } from "./helpers/size-claims";
+import { linesClaimingSize, readSkillDocs } from "./helpers/size-claims";
 
 // The two bullets under `size_normalized`, pinned whole: what must not happen is
 // a *prescription* being appended to an otherwise-correct sentence, and no
@@ -249,6 +249,10 @@ describe("diffPngFiles", () => {
     // The resize remedy rides with that block. Nothing was resampled here, so
     // telling the reader to re-capture a side would send them after a no-op.
     expect(result.summary).not.toContain("`scale`");
+    // The caveat that denies the size is on the other path, so this one may
+    // claim it nowhere at all. This is the common path — a claim added here
+    // reaches every caller whose sizes already agreed.
+    expect(linesClaimingSize(result.summary)).toEqual([]);
   });
 
   it("names the size outcomes the summary actually emits in the pre-flight description", async () => {
@@ -298,20 +302,9 @@ describe("diffPngFiles", () => {
     // this status is not a plain pass goes quietly inert. Selected by what the
     // caveat says rather than by the word under test, so the check cannot pass
     // by matching itself — and floored, so a reword cannot empty it silently.
-    const skillsDir = path.join(__dirname, "../../skills/skills");
-    const skills = await Promise.all(
-      (await fs.readdir(skillsDir, { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory())
-        .map(async (entry) => ({
-          name: entry.name,
-          // A directory carrying no SKILL.md is not this test's subject; the
-          // floor below is what keeps skipping one from going unnoticed.
-          text: await fs
-            .readFile(path.join(skillsDir, entry.name, "SKILL.md"), "utf8")
-            .catch(() => ""),
-        }))
+    const caveats = (await readSkillDocs()).filter(({ text }) =>
+      text.includes("downscale can erase")
     );
-    const caveats = skills.filter(({ text }) => text.includes("downscale can erase"));
     expect(caveats.length).toBeGreaterThanOrEqual(2);
     for (const { name, text } of caveats) {
       expect(text, name).toMatch(names(statusIn(normalized)));
