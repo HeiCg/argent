@@ -1085,8 +1085,8 @@ async function exportAndResolveArtifacts(
  * Why a flow the server rejected never ran, for the stdout ledger either
  * runner keeps. `error_kind: "validation"` marks any rejection scoped to the
  * one call, so it says nothing about the flow file — device resolution rejects
- * that way too (nothing booted, or several booted and no --device/--platform),
- * and blaming perfectly good YAML on a simulator nobody started sends the
+ * that way too (nothing matched the run, or several did and none was singled
+ * out), and blaming perfectly good YAML on a simulator nobody started sends the
  * reader to the wrong file. Only a code whose subject IS the file licenses
  * "invalid flow"; an unrecognized one stays neutral and leaves the reason to
  * the stderr line beside it.
@@ -1105,13 +1105,15 @@ function rejectionVerdict(code: string | undefined): string {
 }
 
 /**
- * Whether a wire value is a report the renderers can walk. `data` is `unknown`
- * and every renderer iterates `steps`, so a value carrying a non-array `steps`
- * reaches `for (… of report.steps)` and throws where no verdict can be printed
- * — it has to classify as "no report" here, like a primitive does.
+ * Whether a wire value is a report the renderers can walk. They run past the
+ * try on both runners, so a value this admits and they then throw on takes
+ * down the whole ledger rather than one line of it — hence the elements are
+ * checked too: a non-array `steps` throws on `for (… of report.steps)`, a
+ * nullish element on the first field read off it.
  */
 function isFlowReport(data: unknown): data is FlowReport {
-  return !!data && typeof data === "object" && Array.isArray((data as FlowReport).steps);
+  const steps = (data as FlowReport | undefined)?.steps;
+  return Array.isArray(steps) && steps.every((step) => !!step && typeof step === "object");
 }
 
 /** One flow's outcome in a directory run — also the --json aggregate entry. */

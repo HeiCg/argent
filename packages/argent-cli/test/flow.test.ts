@@ -1405,12 +1405,14 @@ describe("argent flow run", () => {
     ]);
   });
 
-  // A signalled failure the server did NOT scope to this call: the run died,
-  // so it reads as one that did not finish, never as a rejection.
-  it("does not call a server error the signal leaves unclassified a rejection", async () => {
-    toolsClientMock.callTool.mockRejectedValue(
-      new ToolInvocationError("simulator boot failed", { errorKind: "subprocess" })
-    );
+  // A failure the server did NOT scope to this call: the run died, so it reads
+  // as one that did not finish, never as a rejection. Two signals reach here —
+  // a kind other than validation, and the absent kind a pre-signal server sends.
+  it.each([
+    ["marks as something other than validation", { errorKind: "subprocess" }],
+    ["leaves unset, as a pre-signal server does", {}],
+  ])("does not read a server error the signal %s as a rejection", async (_case, signal) => {
+    toolsClientMock.callTool.mockRejectedValue(new ToolInvocationError("boot failed", signal));
 
     await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:1");
 
@@ -1420,15 +1422,19 @@ describe("argent flow run", () => {
     ]);
   });
 
-  // Shapes the renderers cannot walk. Each one used to reach them anyway and
-  // die where no verdict can be printed — a primitive throws on `in`, and a
-  // non-array `steps` throws on the first iteration, both surfacing through
-  // the CLI's top-level catch as a raw TypeError with stdout left empty.
+  // Shapes the renderers cannot walk, each throwing somewhere the guard is the
+  // only thing standing between it and the CLI's top-level catch: a nullish
+  // value on the `steps` read, a non-array `steps` on the first iteration, a
+  // nullish element on the first field read off it — a raw TypeError with
+  // stdout left empty.
   it.each([
+    ["a null", null],
+    ["an absent", undefined],
     ["a primitive", "flow-execute is not implemented"],
     ["a numeric steps", { flow: "checkout", ok: true, steps: 42 }],
     ["a null steps", { flow: "checkout", ok: true, steps: null }],
     ["an object steps", { flow: "checkout", ok: true, steps: {} }],
+    ["a null-element steps", { flow: "checkout", ok: true, steps: [null] }],
   ])("treats %s wire value as no report rather than crashing", async (_case, data) => {
     toolsClientMock.callTool.mockResolvedValue({ data });
 
@@ -1821,13 +1827,14 @@ describe("argent flow run <dir>", () => {
     expect(JSON.parse(logs[0])).toMatchObject({ ok: false, failed: 1, skipped: 1 });
   });
 
-  // The batch used to pay twice for a report the renderers cannot walk: the
-  // throw landed past the try, so the flow got no verdict AND the run ended
-  // with no batch summary and no tally — the whole ledger, not one line of it.
-  it("treats a flow whose steps are not a list as one that produced no report", async () => {
-    toolsClientMock.callTool.mockResolvedValueOnce({
-      data: { flow: "a-login", ok: true, steps: 42 },
-    });
+  // A report the renderers cannot walk costs the batch twice over: the throw
+  // lands past the try, so the flow gets no verdict AND the run ends with no
+  // batch summary and no tally — the whole ledger, not one line of it.
+  it.each([
+    ["are not a list", { flow: "a-login", ok: true, steps: 42 }],
+    ["hold a null entry", { flow: "a-login", ok: true, steps: [null] }],
+  ])("treats a flow whose steps %s as one that produced no report", async (_case, data) => {
+    toolsClientMock.callTool.mockResolvedValueOnce({ data });
 
     await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:1");
 
