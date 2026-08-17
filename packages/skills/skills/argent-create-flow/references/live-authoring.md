@@ -119,20 +119,18 @@ Record the focus tap, then record `keyboard` with `text`. A `keyboard` call carr
 
 If characters are lost, restore the field with direct calls. Do not record a duplicate typing step.
 
-**Polish the recorded steps into `type:` as a group, not one at a time.** A submit is always its own recorded step, because a `keyboard` call cannot carry `text` and `key` together. Read the whole run of `keyboard` steps on one field, then apply the row that matches:
+Convert all `keyboard` steps for one field together. A submit is always a separate recorded Enter step.
 
-| Recorded steps on the field                      | Finished `type:`                             |
-| ------------------------------------------------ | -------------------------------------------- |
-| `{ text }`, then `{ key: "enter" }`              | `{ into, text }` — delete the Enter step     |
-| `{ text }` alone                                 | `{ into, text, submit: false }`              |
-| `{ clear: true, text }`, then `{ key: "enter" }` | `{ into, text, clear: true }`                |
-| `{ clear: true, text }` alone                    | `{ into, text, clear: true, submit: false }` |
-| `{ clear: true }`, then `{ key: "enter" }`       | `{ into, clear: true, submit: true }`        |
-| `{ clear: true }` alone                          | `{ into, clear: true }`                      |
+| Recorded input                | Followed by Enter                                             | No following Enter                                    |
+| ----------------------------- | ------------------------------------------------------------- | ----------------------------------------------------- |
+| `text`, with optional `clear` | Preserve `text` and any `clear`. Omit `submit`. Delete Enter. | Preserve `text` and any `clear`. Set `submit: false`. |
+| `clear` only                  | Use `{ into, clear: true, submit: true }`. Delete Enter.      | Use `{ into, clear: true }`.                          |
 
-Two mistakes the rows above prevent. Keeping the Enter step next to a submitting `type:` submits twice. Dropping `clear: true` turns a replace back into typing on top of the old value — a data bug the cleaned flow only reveals at a later `assert`.
+Keep every recorded `clear`. Otherwise, replay can insert text into the old value. Delete each converted Enter step. Otherwise, `type` submits twice.
 
-The replay focus wait reads the runner's own tree, which reports focus on iOS, Android, and Chromium. A `clear` step **fails** rather than typing anyway whenever that wait reported focus somewhere the step did not name, or stopped answering before it ended. The one poll it still clears on is a window where every read succeeded and none reported focus at all — an iOS build without `firstResponder` looks exactly like that, and a clear with nothing focused loses no data (see the residual in [flow-yaml.md](flow-yaml.md)). A plain `type` falls through on all of them. Retain the committed-value check either way. Store credentials as `{{secret:NAME}}`. Never record a literal credential.
+Replay checks focus on iOS, Android, and Chromium. A clear fails if focus points elsewhere or the check becomes unreadable. It proceeds when successful reads report no focus. Read the residual risk in [Flow YAML](flow-yaml.md). Plain typing remains best effort. Keep the value check.
+
+Store credentials as `{{secret:NAME}}`. Never record a literal credential.
 
 ### Scrolling and swiping
 
@@ -159,15 +157,16 @@ Stop immediately. Restore the last valid screen with direct MCP calls, not `flow
 
 Call `flow-finish-recording`, then read the saved YAML. Apply only meaning-preserving conversions:
 
-| Recorded form                            | Finished form                                                                          |
-| ---------------------------------------- | -------------------------------------------------------------------------------------- |
-| focus tap + the field's `keyboard` steps | one `type:` — see the table in [Typing](#typing) for the exact `clear` / `submit` pair |
-| `tool: await-ui-element`                 | `await:` or `assert:`                                                                  |
-| element-seeking movement                 | `scroll-to:`                                                                           |
-| coordinate tap or long-press             | strict selector after the fallback gate                                                |
-| `tool: gesture-pinch`                    | selector-based `pinch:` with `scale = endDistance / startDistance`                     |
-| `tool: gesture-rotate`                   | selector-based `rotate:` with `by = endAngle - startAngle`                             |
-| sibling `tool: flow-execute`             | recorder-captured `run:`                                                               |
+| Recorded form                             | Finished form                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| focus tap + `tool: keyboard`              | `type:` from the [Typing](#typing) table with the same `clear`     |
+| text `keyboard` + `key: enter` `keyboard` | submitted `type:` without Enter in its text                        |
+| `tool: await-ui-element`                  | `await:` or `assert:`                                              |
+| element-seeking movement                  | `scroll-to:`                                                       |
+| coordinate tap or long-press              | strict selector after the fallback gate                            |
+| `tool: gesture-pinch`                     | selector-based `pinch:` with `scale = endDistance / startDistance` |
+| `tool: gesture-rotate`                    | selector-based `rotate:` with `by = endAngle - startAngle`         |
+| sibling `tool: flow-execute`              | recorder-captured `run:`                                           |
 
 Only these unrecorded insertions are allowed, at states observed live:
 
@@ -175,7 +174,7 @@ Only these unrecorded insertions are allowed, at states observed live:
 - `await: { idle: true }` after a navigation identity check.
 - The Chromium launch that packages the live boot.
 
-Keep raw forms only when conversion changes behavior. Examples include point-anchored or panning pinch, velocity-sensitive swipe, or rotation with a tested start angle, radius, pivot, duration, or speed. A recorded `clear` is **not** one of them: `type:` carries `clear` through, and the raw `tool: keyboard` form is the unsafe one — it replays with no focus tap and no focus check, so it empties whatever holds focus at that moment. Converting it is the whole point. Keep screenshots for human evidence. Use `snapshot:` for automated visual comparison. Read [Flow YAML](flow-yaml.md) for syntax.
+Keep raw forms only when conversion changes behavior. Examples include point-anchored pinch, velocity-sensitive swipe, or rotation with tested gesture parameters. Always convert a recorded `clear`. Raw `keyboard` clear steps do not focus or verify their target. Keep screenshots for human evidence. Use `snapshot:` for automated visual comparison. Read [Flow YAML](flow-yaml.md) for syntax.
 
 If polish reveals a missing action or structural check, restore its preceding state and record it. Do not add remembered behavior directly to YAML.
 
@@ -249,7 +248,9 @@ Run `flow-execute` on the complete YAML with the absolute project root. For a fr
 
 `flow-execute` takes exactly one flow source: `name`, for a flow saved under `.argent/flows/`, or `flow_path`, an absolute path to any flow `.yaml`. `run:` targets and baselines resolve on the tool server's filesystem, beside the YAML it actually reads. `flow_path` therefore requires the agent and the tool server to share a filesystem and is refused when they do not. `name` still runs remotely, but the server receives only that one YAML in a fresh temp directory, so a `run:` target fails as a missing fragment and a `snapshot` fails for a missing baseline. Replay self-contained flows remotely; a composing or snapshotting flow needs one shared filesystem.
 
-Manual rescue invalidates the pass. An `errored` step was never evaluated: an `idle` wait whose tree source could not be read, a step that threw, an unresolvable `run:` target, or a `launch:` that did not start the app. Read the reason — most name the environment, but a failed `launch:` is a verdict about the app. Unconfirmed focus is not in this class either, but it is not always a pass: a plain `type:` whose focus was never confirmed is scored a **pass**, and only the value check after typing catches it, while the same step with `clear: true` **fails** — the clear is not dispatched at all. See [flow-yaml.md](flow-yaml.md) for the findings it does clear on.
+Manual rescue invalidates the pass. An `errored` step was not evaluated. Examples include an unreadable tree, a thrown step, a missing `run:` target, or a failed `launch:`. Read the reason. Most reasons identify the environment, but a failed `launch:` identifies an app failure.
+
+A plain `type:` with unconfirmed focus passes as best effort. A clear fails when focus points elsewhere or becomes unreadable. See [Flow YAML](flow-yaml.md) for accepted focus results.
 
 **A passing step that carries a `warning` is a finding, not noise.** `await: { idle: true }` raises [six different warnings](flow-yaml.md#idle-readiness) and they do not share one meaning. Two say the screen was moving; one says the wait ran out mid-hold and is repaired by raising the step's `timeout:`; one says the tree stayed empty; one says the tree did hold still and only the screenshot pairs were missing, so the capture path is what to check; one says the step ended with no evidence either way. No report separates intended motion from a load that never finished. Read which one it is, look at that screen, disclose what you found, and confirm the following step targets a stable element rather than stillness.
 

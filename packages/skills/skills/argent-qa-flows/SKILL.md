@@ -15,7 +15,7 @@ Load `argent-create-flow` as the authoring engine. Follow its required reference
 
 A QA flow is complete only when:
 
-1. The first non-echo step is `launch:`. In-flow setup proves a deterministic data baseline. Repeated runs do not accumulate artifacts or require manual cleanup. Every `type:` into a field that pass 1 can leave filled — a remembered login, a restored draft, a form the flow re-enters — carries `clear: true`, or pass 2 types on top of pass 1's value and fails at a later `assert`. Check its refusals in [flow-yaml.md](../argent-create-flow/references/flow-yaml.md): a `clear` fails the step outright when the focus wait cannot place the caret in the element you named.
+1. The first non-echo step is `launch:`. In-flow setup proves a deterministic data baseline. Repeated runs need no manual cleanup. Use `clear: true` when an earlier run can leave a field filled. A clear can fail when focus points elsewhere. See [Flow YAML](../argent-create-flow/references/flow-yaml.md).
 2. The first walkthrough recorded every action and live structural check. Only the three documented polish insertions are unrecorded.
 3. Every requirement maps to a hard `await:`, `assert:`, or reviewed `snapshot:`. Echoes and screenshots are not verdicts. A negative check needs the same stable selector established as visible earlier.
 4. Every screen change has destination identity followed by `idle` readiness.

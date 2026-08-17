@@ -145,7 +145,7 @@ Starting again under the same name truncates the YAML. Copy any working prefix b
 
 State the added proof before rerunning.
 
-Read [Asserting a field's value](asserting-field-values.md) before adding that last one. A field's contents reach the flow tree unevenly — never on iOS, never for a password, and on Chromium an `<input>` only as its accessible name — so the direct assert on the field's own text hard-fails on a perfectly good value. Assert the consequence where the contents are invisible.
+Before asserting a typed value, read [Field value assertions](asserting-field-values.md). Assert an app consequence when the tree hides the value.
 
 ### Correction limit
 
