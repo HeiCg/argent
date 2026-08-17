@@ -3,6 +3,7 @@ import os from "os";
 import path from "path";
 import { PNG } from "pngjs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { screenshotDiffTool } from "../src/tools/screenshot-diff";
 import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-diff";
 
 // The two bullets under `size_normalized`, pinned whole: what must not happen is
@@ -235,6 +236,38 @@ describe("diffPngFiles", () => {
     // The resize remedy rides with that block. Nothing was resampled here, so
     // telling the reader to re-capture a side would send them after a no-op.
     expect(result.summary).not.toContain("`scale`");
+  });
+
+  it("names the size outcomes the summary actually emits in the pre-flight description", async () => {
+    // A caller gates on these literals before it ever sees a summary, and three
+    // surfaces quote them — this description and two skills. Renaming one in
+    // screenshotDiffStatus reaches none of them, so read the words back out of
+    // real summaries instead of restating them here.
+    const dir = await makeTempDir();
+    const summaryOf = async (
+      baseline: [number, number],
+      current: [number, number]
+    ): Promise<string> => {
+      const baselinePath = path.join(dir, `b-${baseline.join("x")}.png`);
+      const currentPath = path.join(dir, `c-${current.join("x")}.png`);
+      await writePng(baselinePath, baseline[0], baseline[1], { r: 30, g: 60, b: 90 });
+      await writePng(currentPath, current[0], current[1], { r: 30, g: 60, b: 90 });
+      return (await diffPngFiles({ baselinePath, currentPath, outputDir: dir })).summary;
+    };
+
+    const normalized = await summaryOf([20, 40], [10, 20]);
+    const aspectMismatch = await summaryOf([20, 40], [20, 20]);
+    const statusIn = (summary: string): string => /^- status: (\S+)$/m.exec(summary)![1]!;
+
+    const emitted = [
+      statusIn(normalized),
+      statusIn(aspectMismatch),
+      /^- (\w+): baseline=/m.exec(normalized)![1]!,
+    ];
+    expect(new Set(emitted).size).toBe(emitted.length);
+    for (const word of emitted) {
+      expect(screenshotDiffTool.description).toContain(word);
+    }
   });
 
   it("hard-fails same-aspect resolution differences when normalizeSizes is false", async () => {

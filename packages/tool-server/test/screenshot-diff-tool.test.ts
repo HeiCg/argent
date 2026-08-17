@@ -270,14 +270,6 @@ describe("screenshotDiffTool", () => {
     );
   });
 
-  it("states both normalized-comparison statuses before the call, not only in the summary", () => {
-    // The pre-flight contract has to name them: a gate keyed on `unchanged`
-    // reads `resized_no_change` as a failure to match, and a caller that never
-    // learns sizes are reconciled has no reason to check which one it got.
-    expect(screenshotDiffTool.description).toContain("size_normalized");
-    expect(screenshotDiffTool.description).toContain("resized_no_change");
-  });
-
   it("has nothing lower to retry when ARGENT_SCREENSHOT_SCALE is 1.0, so the capture fails", async () => {
     vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "1.0");
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-env1-"));
