@@ -90,6 +90,11 @@ const zodSchema = z.object({
     // PR's own Chromium tests pass — and a fractional or negative value is
     // harmless to `setTimeout`. Verified: `delayMs: -1000` and `delayMs: 2.5` are
     // both accepted, only `5001` is rejected.
+    //
+    // The number itself is pinned AT the boundary (`keyboard-clear.test.ts`
+    // probes `5001`), because `5000`-accepted and `600000`-rejected left it free:
+    // raising this to `.max(10000)` kept the whole keyboard suite green, which is
+    // how a ceiling whose reason is written above it gets relaxed unnoticed.
     .max(5000)
     .optional()
     .describe(
