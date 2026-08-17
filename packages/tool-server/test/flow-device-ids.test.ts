@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { vi } from "vitest";
-import type { Registry } from "@argent/registry";
+import { getFailureSignal, type Registry } from "@argent/registry";
 
 const invokeSubTool = vi.fn();
 
@@ -19,7 +19,11 @@ const HARMONY_ENTRY = {
   state: "Connected",
 };
 
-/** A remote simulator: also keyed by `udid`, and also no platform a flow runs on. */
+/**
+ * A remote simulator: also keyed by `udid`. Unlike harmony a flow DOES run on
+ * one — `flow-pixels` masks its status bar and a `when:` guard folds it to
+ * `ios` — it is simply not auto-resolvable, since `isBooted` has no arm for it.
+ */
 const IOS_REMOTE_ENTRY = {
   platform: "ios-remote",
   udid: "remote-6DBF83B4-0000-0000-0000-000000000000",
@@ -48,5 +52,33 @@ describe("flow device resolution — ids of platforms no flow runs on", () => {
     await expect(resolveFlowDevice({} as Registry, undefined, {})).rejects.toThrow(
       /No booted device found/
     );
+  });
+
+  it("refuses an explicitly named harmony device instead of running into the pixel path", async () => {
+    // Auto-resolution is not the only way in: an explicit `device` returns
+    // before anything is listed. Without a check here the run reached the first
+    // step needing pixels and died inside the simulator-server blueprint
+    // factory with a bare `Error` — no `error_code`, no `failure_stage`, and
+    // advice aimed at whoever wires a tool's `services()`. The invitation ships
+    // with the dead end: the id is one `list-devices` hands the agent.
+    invokeSubTool.mockClear();
+    const err = await resolveFlowDevice({} as Registry, undefined, {
+      device: HARMONY_ENTRY.udid,
+    }).catch((e: unknown) => e);
+
+    expect(getFailureSignal(err as Error)?.error_code).toBe("FLOW_DEVICE_RESOLUTION");
+    expect((err as Error).message).toContain("Flows do not run on harmony devices");
+    expect(invokeSubTool).not.toHaveBeenCalled();
+  });
+
+  it("does not refuse a remote simulator, which the engine does have an arm for", async () => {
+    // The guard must name the platform that has no arm, not every platform
+    // `list-devices` reports beside it: `ios-remote` runs a flow through the
+    // whole iOS path, and refusing it here would break a supported target.
+    await expect(
+      resolveFlowDevice({} as Registry, undefined, {
+        device: "remote:00000000-0000-0000-0000-0000000000ab",
+      })
+    ).resolves.toMatchObject({ platform: "ios-remote" });
   });
 });

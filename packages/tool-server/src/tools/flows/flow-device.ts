@@ -2,7 +2,7 @@ import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import { resolveDevice } from "../../utils/device-info";
 import { invokeSubTool } from "../../utils/sub-invoke";
-import type { FlowStep, WhenPlatform } from "./flow-utils";
+import { LAUNCH_PLATFORMS, type FlowStep, type WhenPlatform } from "./flow-utils";
 
 /**
  * Device resolution + binding for the flow runner. Flows store no device id
@@ -83,9 +83,10 @@ interface RawDevice {
 }
 
 function deviceEntryId(d: RawDevice): string | undefined {
-  // `ios-remote` and `harmony` key their entries by `udid` as iOS does, though a
-  // flow runs on neither: the id still reaches the caller through the "available
-  // devices" line, which names what there is rather than only what would run.
+  // `ios-remote` and `harmony` key their entries by `udid` as iOS does. A flow
+  // runs on `ios-remote` (see {@link FLOW_RUN_PLATFORMS}) but not on `harmony`;
+  // the harmony id still reaches the caller through the "available devices"
+  // line, which names what there is rather than only what would run.
   if (d.platform === "ios" || d.platform === "ios-remote" || d.platform === "harmony") {
     return d.udid;
   }
@@ -112,6 +113,40 @@ function describeDevice(d: RawDevice): string {
   return `${deviceEntryId(d) ?? "?"} (${d.platform}${d.state ? `, ${d.state}` : ""})`;
 }
 
+/**
+ * Platforms a flow can name as its run device: the ones a `when:` guard accepts,
+ * plus `ios-remote`, which is an iOS simulator over sim-remote and carries the
+ * whole iOS arm behind it (`flow-pixels` masks its status bar, and a platform
+ * guard folds it to `ios`).
+ */
+const FLOW_RUN_PLATFORMS: ReadonlySet<string> = new Set([...LAUNCH_PLATFORMS, "ios-remote"]);
+
+/**
+ * Refuse a device on a platform the flow engine has no arm for.
+ *
+ * Auto-resolution already keeps `harmony` out — {@link isBooted} returns false
+ * for it — but an explicit `device` short-circuits ahead of it, and nothing
+ * downstream re-checks: `LAUNCH_PLATFORMS` gates `when.platform` in the YAML
+ * rather than the run device. Such a run therefore reached the first step
+ * needing pixels and died inside the blueprint factory with a bare `Error` — no
+ * `error_code`, no `failure_stage`, and advice addressed to whoever wires a
+ * tool's `services()`. The id itself is legitimately in reach: `list-devices`
+ * lists every platform, and {@link deviceEntryId} names harmony's there.
+ */
+function assertFlowPlatform(device: DeviceInfo): DeviceInfo {
+  if (FLOW_RUN_PLATFORMS.has(device.platform)) return device;
+  throw new FailureError(
+    `Flows do not run on ${device.platform} devices — '${device.id}' cannot be a flow's run ` +
+      `device. Supported: ${[...FLOW_RUN_PLATFORMS].join(", ")}.`,
+    {
+      error_code: FAILURE_CODES.FLOW_DEVICE_RESOLUTION,
+      failure_stage: "flow_device_resolution",
+      failure_area: "tool_server",
+      error_kind: "validation",
+    }
+  );
+}
+
 function deviceResolutionError(message: string, all: RawDevice[]): FailureError {
   const list = all.length ? all.map(describeDevice).join(", ") : "none";
   return new FailureError(`${message} Available devices: ${list}.`, {
@@ -132,7 +167,7 @@ export async function resolveFlowDevice(
   ctx: ToolContext | undefined,
   opts: { device?: string; platform?: FlowPlatform }
 ): Promise<DeviceInfo> {
-  if (opts.device) return resolveDevice(opts.device);
+  if (opts.device) return assertFlowPlatform(resolveDevice(opts.device));
 
   const { devices } = (await invokeSubTool(registry, ctx, "list-devices", {})) as {
     devices: RawDevice[];
