@@ -258,13 +258,13 @@ Optional rotation parameter: `{ "udid": "<UDID>", "rotation": "LandscapeLeft" }`
 
 Screenshots are downscaled by default (30% of original resolution) to reduce context size. Use the normal downscaled screenshot for UI context and state checks. `scale` accepts values from 0.01 to 1.0, but do not use `scale: 1.0` as a general readability or tapping aid.
 
-Use full-resolution screenshots only when saving baseline/current PNG files for comparison. In that case, suppress the image block so the full-size PNG is not loaded into agent context:
+Use full-resolution screenshots only when saving baseline/current PNG files for comparison. Suppress the image block for any such capture, so the PNG is saved without being loaded into agent context:
 
 ```json
 { "udid": "<UDID>", "scale": 1.0, "includeImageInContext": false }
 ```
 
-Some Android emulators cannot stream a full-resolution frame and reject `scale: 1.0` with a `wrong data size` error. Omit `scale` there: these captures are destined for a comparison, and that is the size `screenshot-diff` captures its own live side at on those devices.
+Some Android emulators cannot stream a full-resolution frame and reject `scale: 1.0` with a `wrong data size` error. Omit `scale` on those devices: that is where `screenshot-diff`'s own live capture lands once its full-resolution attempt fails, so both sides match.
 
 For visual regression checks, before/after screenshot comparisons, and detailed `screenshot-diff` parameter guidance, use the `argent-screenshot-diff` skill. Keep this skill focused on device interaction mechanics and screenshot capture.
 

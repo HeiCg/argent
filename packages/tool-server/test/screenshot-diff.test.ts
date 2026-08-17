@@ -8,14 +8,16 @@ import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-
 // The two bullets under `size_normalized`, pinned whole: what must not happen is
 // a *prescription* being appended to an otherwise-correct sentence, and no
 // pattern separates prescribing a resolution from mentioning one. Constraints to
-// preserve when editing the remedy: point at the printed sizes rather than naming
-// a scale — the formatter never learns which side was captured live, or whether
-// either was, so every fixed scale it could name is wrong somewhere — and name
-// the knob, since the reader has to reach for it.
+// preserve when editing them: the caveat cuts both ways, because a downscale
+// erases fine differences as readily as it invents them (a 1px hairline shifting
+// shade goes from 1179 changed pixels to 0 at the 0.3 fallback, taking the
+// text pass with it — it is gated on a non-zero pixel diff); and the remedy
+// names no fixed scale, because the formatter never learns which side was
+// captured live, or whether either was.
 const RESIZE_CAVEAT =
-  "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; any pixel or text differences below may include resampling artifacts, and the diff images are at compared_at rather than full size";
+  "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; the differences below may include resampling artifacts, and differences finer than the downscale — hairlines, subpixel text — can be erased by it, so a clean result here is weaker evidence than an unnormalized one; the diff images are at compared_at rather than full size";
 const RESIZE_REMEDY =
-  "  - to compare without resampling, re-capture one side at the other's printed size — `screenshot` takes a `scale`, and omitting it uses the tool-server's own setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default)";
+  "  - to compare without resampling, re-capture so both sides come out the same size — `screenshot` takes a `scale`, a fraction of the device's own resolution rather than a target size, and a live side captured here uses 1.0, or the tool-server's setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default) where that fails";
 
 const analyzeScreenshotTextChangesMock = vi.hoisted(() =>
   vi.fn(async () => ({
