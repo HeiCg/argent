@@ -37,13 +37,13 @@ const zodSchema = z
       .boolean()
       .optional()
       .describe(
-        "Capture the baseline screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default). Cannot be combined with captureCurrent."
+        "Capture the baseline screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, so the capture fails). Cannot be combined with captureCurrent."
       ),
     captureCurrent: z.coerce
       .boolean()
       .optional()
       .describe(
-        "Capture the current screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default). Cannot be combined with captureBaseline."
+        "Capture the current screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, so the capture fails). Cannot be combined with captureBaseline."
       ),
     rotation: z
       .enum(["Portrait", "LandscapeLeft", "LandscapeRight", "PortraitUpsideDown"])
@@ -100,7 +100,7 @@ export const screenshotDiffTool: ToolDefinition<Params, ScreenshotDiffResult> = 
     failedMsg: ({ failureSignal }) => `Failed to compare screenshots: ${failureSignal.error_code}`,
   },
   description: `Compare two PNG screenshots and return a compact visual-diff summary.
-Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale. Always provide udid — a live capture resolves the simulator-server from it.
+Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale. Sides that share an aspect ratio but not a resolution are downscaled to the smaller before comparing; the summary reports that as size_normalized, and a clean result there is status resized_no_change rather than unchanged. Always provide udid — a live capture resolves the simulator-server from it.
 Use when stable before/after screenshots exist and the expected result is pixel-visible: layout, spacing, color, typography, image/icon rendering, clipping, overflow, or text rendering.
 For live captures, set exactly one of captureBaseline or captureCurrent; use baselinePath + captureCurrent for the common visual-regression flow.
 Returns { summary, diffPath, contextDiffPath }. The summary uses normalized [0,1] screen locations matching describe coordinates; diffPath is the full-size diff image and contextDiffPath is a downscaled image for MCP/agent display.
