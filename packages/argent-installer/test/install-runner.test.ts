@@ -256,13 +256,11 @@ describe("a global install whose target directory cannot be written", () => {
   it("moves the npm prefix, then installs globally, when that recovery is chosen", async () => {
     vi.mocked(select).mockResolvedValue("prefix" as never);
     // Blocked when asked about the store, writable once the prefix has moved.
-    vi.mocked(probeGlobalInstallTarget)
-      .mockReturnValueOnce(blocked)
-      .mockReturnValue({
-        dir: "/home/dev/.npm-global/lib/node_modules",
-        blocked: false,
-        nixStore: false,
-      });
+    vi.mocked(probeGlobalInstallTarget).mockReturnValueOnce(blocked).mockReturnValue({
+      dir: "/home/dev/.npm-global/lib/node_modules",
+      blocked: false,
+      nixStore: false,
+    });
 
     const outcome = await globalInstall(makeTel());
 
