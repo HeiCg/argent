@@ -199,6 +199,19 @@ describe("parseHarmonyLayout", () => {
       expect(target.children[0].label).toBe("Wi-Fi");
     });
 
+    it("takes `key` when there is no `id`, and prefers `id` when there is", () => {
+      // ArkUI has two automation strings, `.id()` and `.key()`, and a component
+      // routinely carries only the second. The fixture above sets both to the
+      // same value, so the `id` half alone satisfies it — dropping the `key`
+      // fallback loses every such component's identifier silently, and swapping
+      // the two makes `key` win a component that declares both.
+      const identifierOf = (attrs: Record<string, string>): string | undefined =>
+        wrapping(attrs).children[0].children[0].identifier;
+
+      expect(identifierOf({ type: "Column", key: "wifi_key" })).toBe("wifi_key");
+      expect(identifierOf({ type: "Column", id: "wifi_id", key: "wifi_key" })).toBe("wifi_id");
+    });
+
     it("costs one attribute, not the whole tree, when a dump value is not a string", () => {
       // The dump is `JSON.parse`d and asserted to be all-strings — measured on
       // 6.1.1, promised by nothing. Unguarded, one numeric `description` threw a

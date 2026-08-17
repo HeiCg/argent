@@ -192,6 +192,49 @@ describe("resolveHarmonyEntry", () => {
       /no launchable main ability/
     );
   });
+
+  // `bm` serialises `mainAbility` on EVERY bundle, so a module with no launcher
+  // entry reports `""` rather than omitting the key — 14 of the 73 bundles
+  // installed on a 6.1.1 emulator. Accepting it sends `aa start -a ''`, which
+  // `aa` reads as an implicit start: it answers `10103101 Failed to find a
+  // matching application for implicit launch` and leaves a "No options to open
+  // with" modal on the device. The test above uses an ABSENT key, which a plain
+  // presence check already rejects; these two are the empty-string half.
+  it("skips a mainEntry module whose ability is empty and takes the one that has it", async () => {
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        JSON.stringify({
+          mainEntry: "phone",
+          hapModuleInfos: [
+            { name: "phone", mainAbility: "", abilityInfos: [] },
+            {
+              name: "feature",
+              mainAbility: "FeatureAbility",
+              abilityInfos: [{ name: "FeatureAbility" }],
+            },
+          ],
+        })
+      )
+    );
+    expect(await resolveHarmonyEntry("dev", "x")).toEqual({
+      mainAbility: "FeatureAbility",
+      module: "feature",
+    });
+  });
+
+  it("reports a bundle whose only module has an empty ability, rather than starting it", async () => {
+    runHdcShell.mockResolvedValueOnce(
+      ok(
+        JSON.stringify({
+          mainEntry: "svc",
+          hapModuleInfos: [{ name: "svc", mainAbility: "", abilityInfos: [] }],
+        })
+      )
+    );
+    await expect(resolveHarmonyEntry("dev", "com.svc")).rejects.toThrow(
+      /no launchable main ability/
+    );
+  });
 });
 
 describe("launchHarmonyApp", () => {

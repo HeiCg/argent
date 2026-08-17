@@ -298,7 +298,14 @@ describe("a caller's own ceiling reaches the device", () => {
     const displayTimeouts: (number | undefined)[] = [];
     runHdcShell.mockImplementation(async (_key, command, timeoutMs) => {
       displayTimeouts.push(timeoutMs);
-      return { stdout: "render resolution=1320x2856\npowerStatus=POWER_STATUS_ON\n", exitCode: 0 };
+      // The measured line shape: one `screen[N]:` per panel, carrying the power
+      // state and the size together (see harmony-display.test.ts).
+      return {
+        stdout:
+          "-- ScreenInfo\nscreen[0]: id=0, powerStatus=POWER_STATUS_ON, backlight=1, " +
+          "render resolution=1320x2856, physical resolution=1320x2856\n",
+        exitCode: 0,
+      };
     });
 
     await expect(harmonyDisplay("dev-a")).resolves.toEqual({

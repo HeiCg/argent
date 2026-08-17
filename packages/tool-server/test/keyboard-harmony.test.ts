@@ -140,9 +140,9 @@ describe("keyboard on HarmonyOS", () => {
     // `Object.prototype.constructor` and interpolate it, unquoted, into the
     // remote `uiInput keyEvent ${key}` line.
     for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
-      await expect(
-        harmonyImpl.handler({}, { udid: HARMONY.id, key }, HARMONY)
-      ).rejects.toThrow(/is not available on HarmonyOS/);
+      await expect(harmonyImpl.handler({}, { udid: HARMONY.id, key }, HARMONY)).rejects.toThrow(
+        /is not available on HarmonyOS/
+      );
     }
     expect(harmonyKeyEvent).not.toHaveBeenCalled();
   });

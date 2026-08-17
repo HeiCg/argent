@@ -195,10 +195,20 @@ export async function harmonyDisplay(
     "hidumper -s RenderService -a screen",
     timeoutMs
   );
-  const res = /render resolution=(\d+)x(\d+)/.exec(stdout);
-  if (!res) {
+  // One line per panel, carrying both fields — measured on HarmonyOS 6.1.1:
+  //   screen[0]: id=0, powerStatus=POWER_STATUS_ON, ..., render resolution=1320x2856, ...
+  // Both read off the SAME line: scanning the whole dump for POWER_STATUS_OFF
+  // refuses every gesture on an awake foldable the moment its other half sleeps.
+  const screen = stdout
+    .split("\n")
+    .find((line) => /^\s*screen\[\d+\]:/.test(line) && /render resolution=\d+x\d+/.test(line));
+  const res = screen ? /render resolution=(\d+)x(\d+)/.exec(screen) : null;
+  const power = screen ? /powerStatus=(\w+)/.exec(screen) : null;
+  // Both or neither: defaulting an unparsed power state to "on" is the one
+  // answer that lets a suspended panel through every input tool.
+  if (!res || !power) {
     throw new FailureError(
-      `Could not read the display size of HarmonyOS device '${connectKey}' from the render service.`,
+      `Could not read the display size and power state of HarmonyOS device '${connectKey}' from the render service.`,
       {
         error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
         failure_stage: "harmony_display_size",
@@ -211,7 +221,7 @@ export async function harmonyDisplay(
   return {
     width: Number.parseInt(res[1], 10),
     height: Number.parseInt(res[2], 10),
-    screenOn: !/powerStatus=POWER_STATUS_(OFF|SUSPEND)/.test(stdout),
+    screenOn: power[1] !== "POWER_STATUS_OFF" && power[1] !== "POWER_STATUS_SUSPEND",
   };
 }
 
@@ -257,10 +267,11 @@ export function assertHarmonyDisplayReady(display: HarmonyDisplay, action: strin
   if (display.width <= 0 || display.height <= 0) {
     throw new FailureError(
       `Cannot ${action} on a HarmonyOS device whose render service reports a ` +
-        `${display.width}x${display.height} display: there are no coordinates to aim at, and ` +
-        `every position would collapse onto the top-left pixel. The panel has not composited ` +
-        `yet, or the render service answered with nothing usable — retry once the device has ` +
-        `finished booting.`,
+        `${display.width}x${display.height} display: the panel has not composited yet, or the ` +
+        `render service answered with nothing usable. \`uitest uiInput\` answers \`No Error\` ` +
+        `either way, so the call would report input that reached nothing — and a tap or swipe ` +
+        `would additionally collapse onto the top-left pixel, having no size to scale against. ` +
+        `Retry once the device has finished booting.`,
       {
         error_code: FAILURE_CODES.HARMONY_DISPLAY_UNREADABLE,
         failure_stage: "harmony_display_zero",

@@ -1718,9 +1718,9 @@ function sameHarmonyPanel(
  * An emulator runs on the host and `hdc` reaches it over TCP loopback
  * (`127.0.0.1:5555`, measured), so a target the connector reports as `USB` is a
  * cable-attached handset and cannot be it. Anything else — including a null
- * connection, which is what a `hdc list targets` without `-v` yields — is left
- * eligible rather than filtered out, so an image that registers in some shape
- * not seen here still boots.
+ * connection, which is what a row too short to carry that column parses to — is
+ * left eligible rather than filtered out, so an image that registers in some
+ * shape not seen here still boots.
  */
 function couldBeHarmonyEmulator(target: { connection: string | null }): boolean {
   return target.connection !== "USB";

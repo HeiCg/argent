@@ -131,6 +131,26 @@ describe("assertHarmonyDisplayReady", () => {
     expect(err.message).toContain("Cannot tap");
   });
 
+  it("does not blame coordinates for an action that has none", () => {
+    // `keyboard` and `button` reach this same guard, and neither takes a
+    // coordinate. Opening with "there are no coordinates to aim at" states a
+    // reason that is false for both — the panel not having composited is the
+    // one that holds for all four actions.
+    const err = (() => {
+      try {
+        assertHarmonyDisplayReady({ width: 0, height: 0, screenOn: true }, "type");
+      } catch (e) {
+        return e as Error;
+      }
+      throw new Error("expected a 0x0 display to be refused");
+    })();
+
+    expect(err.message).not.toMatch(/display: there are no coordinates to aim at/);
+    // The coordinate consequence is still recorded, scoped to the actions that
+    // have coordinates rather than given as the reason this call was refused.
+    expect(err.message).toMatch(/a tap or swipe would additionally/);
+  });
+
   it("refuses a half-read panel too", () => {
     // One dimension is enough: a 1216x0 read makes every y collapse onto the top
     // row while x still scales, which reads as a working tap on the wrong element

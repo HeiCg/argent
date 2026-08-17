@@ -50,16 +50,27 @@ const DISPLAY_HEIGHT = 2000;
 // exactly 1000px, which keeps every expected velocity below a whole number.
 const base = { udid: HARMONY_UDID, fromX: 0.25, fromY: 0.9, toX: 0.75, toY: 0.5 };
 
+/**
+ * What `hidumper -s RenderService -a screen` prints, in the shape measured on a
+ * HarmonyOS 6.1.1 guest: one `screen[N]:` line per panel carrying BOTH the power
+ * state and the size. `harmonyDisplay` reads the pair off that one line, so a
+ * fixture that split them across two would exercise a format no device emits.
+ */
+function screenDump(width: number, height: number, power = "POWER_STATUS_ON"): string {
+  return (
+    `-- ScreenInfo\nscreen[0]: id=0, powerStatus=${power}, backlight=1, ` +
+    `screenType=EXTERNAL_TYPE, render resolution=${width}x${height}, ` +
+    `physical resolution=${width}x${height}, isVirtual=false`
+  );
+}
+
 beforeEach(() => {
   vi.mocked(sendCommand).mockClear();
   vi.mocked(ensureDep).mockClear();
   runHdcShell.mockReset();
   runHdcShell.mockImplementation(async (_connectKey, command) =>
     command.startsWith("hidumper")
-      ? {
-          stdout: `render resolution=${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}\npowerStatus=POWER_STATUS_ON`,
-          exitCode: 0,
-        }
+      ? { stdout: screenDump(DISPLAY_WIDTH, DISPLAY_HEIGHT), exitCode: 0 }
       : { stdout: "No Error", exitCode: 0 }
   );
 });
@@ -145,7 +156,7 @@ describe("gesture-swipe on HarmonyOS", () => {
     runHdcShell.mockImplementation(async (_connectKey, command) =>
       command.startsWith("hidumper")
         ? {
-            stdout: `render resolution=${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}\npowerStatus=POWER_STATUS_SUSPEND`,
+            stdout: screenDump(DISPLAY_WIDTH, DISPLAY_HEIGHT, "POWER_STATUS_SUSPEND"),
             exitCode: 0,
           }
         : { stdout: "No Error", exitCode: 0 }
@@ -173,7 +184,7 @@ describe("gesture-swipe on HarmonyOS", () => {
     // corner to itself, reported as `{ swiped: true }`.
     runHdcShell.mockImplementation(async (_connectKey, command) =>
       command.startsWith("hidumper")
-        ? { stdout: `render resolution=0x0\npowerStatus=POWER_STATUS_ON`, exitCode: 0 }
+        ? { stdout: screenDump(0, 0), exitCode: 0 }
         : { stdout: "No Error", exitCode: 0 }
     );
 
@@ -201,10 +212,7 @@ describe("gesture-swipe on HarmonyOS", () => {
     runHdcShell.mockImplementation(async (_connectKey, command) => {
       if (!command.startsWith("hidumper")) return { stdout: "No Error", exitCode: 0 };
       await new Promise((r) => setTimeout(r, READ_MS));
-      return {
-        stdout: `render resolution=${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}\npowerStatus=POWER_STATUS_ON`,
-        exitCode: 0,
-      };
+      return { stdout: screenDump(DISPLAY_WIDTH, DISPLAY_HEIGHT), exitCode: 0 };
     });
 
     await gestureSwipeTool.execute(services, { ...base, durationMs: 500 });
