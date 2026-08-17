@@ -83,13 +83,22 @@ describe("hdc reporting a failure instead of listing targets", () => {
 
   it("never displaces a listing that did print rows", async () => {
     // The guard keys on prose being space-delimited where a row is tabbed, so a
-    // real listing must survive it — including one a diagnostic trails.
+    // real listing must survive it — including one a diagnostic trails, on
+    // EITHER form. The prefixed form is the one that had no guard of its own:
+    // `hdcFailure` was consulted ahead of the rows-were-printed check, so a
+    // `[Fail]` line beside a real listing emptied it for a polling caller and
+    // refused the boot for a strict one. `parseAdbDevices` holds the same line.
     for (const [out, err] of [
       [REAL_ROW, ""],
       [REAL_ROW, PROSE_ERR],
+      [REAL_ROW, PREFIXED],
+      [`${PREFIXED}${REAL_ROW}`, ""],
     ]) {
       said(out!, err!);
       await expect(listHarmonyHdcTargetsStrict()).resolves.toEqual([
+        { connectKey: "025DEK236V035771", connection: "USB", state: "Connected" },
+      ]);
+      await expect(listHarmonyHdcTargets()).resolves.toEqual([
         { connectKey: "025DEK236V035771", connection: "USB", state: "Connected" },
       ]);
     }

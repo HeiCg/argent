@@ -97,9 +97,12 @@ export function parseHarmonyInstances(stdout: string): HarmonyInstance[] {
   const text = stdout.trim();
   if (text.length === 0 || text.startsWith(HARMONY_EMPTY_SENTINEL)) return [];
   // A malformed instance directory makes the manager print `Config file not
-  // found: …` *before* the JSON body, so parse from the first bracket rather
-  // than the first byte.
-  const start = text.indexOf("[");
+  // found: …` *before* the JSON body, so parse from the body's own opening
+  // bracket rather than the first byte. Anchored to the start of a line: that
+  // prose quotes an instance directory path, so a bracket inside it would
+  // otherwise start the slice mid-sentence, and the parse failure that follows
+  // reads to `boot-device` as a host with no instances at all.
+  const start = text.search(/^\[/m);
   if (start === -1) return [];
   let raw: unknown;
   try {
@@ -187,16 +190,15 @@ export function parseHdcTargets(stdout: string): HarmonyHdcTarget[] {
     if (trimmed.startsWith("[")) continue;
     // Prose, not a row. `hdc` prints some diagnostics with no `[Fail]` prefix
     // and still exits 0 — `Connect server failed` is three words, i.e. the
-    // shape of a `-v` row, and became a target named `Connect`. The delimiter
-    // is what the two never share: a row is tab-separated, or a lone connect
-    // key when `-v` is absent.
-    if (!trimmed.includes("\t") && /\s/.test(trimmed)) continue;
+    // shape of a `-v` row, and became a target named `Connect`. The tab is what
+    // the two never share, and it is sufficient on its own because `listTargets`
+    // is the only caller and always passes `-v`. Tolerating a tab-less line as
+    // a bare connect key instead would readmit the same class through any
+    // ONE-word diagnostic: a phantom target for the boot's arrival wait to
+    // adopt, and — since a parsed row means "a listing was printed" — the
+    // diagnostic swallowed rather than reported.
+    if (!trimmed.includes("\t")) continue;
     const cols = trimmed.split(/\s+/);
-    if (cols.length === 1) {
-      // `hdc list targets` without `-v` prints the bare connect key.
-      out.push({ connectKey: cols[0], connection: null, state: "Connected" });
-      continue;
-    }
     out.push({ connectKey: cols[0], connection: cols[1] ?? null, state: cols[2] ?? "Unknown" });
   }
   return out;
@@ -231,26 +233,21 @@ export async function listHarmonyHdcTargetsStrict(
   return listTargets(true, timeoutMs);
 }
 
-/**
- * What `hdc` said instead of listing targets, or null if it listed any.
- *
- * A parsed row means a listing really was printed, and nothing here
- * second-guesses it — a diagnostic alongside real targets is not a refusal.
- * That is the only part specific to listing; what counts as a diagnostic at all
- * is {@link hdcProse}, which every hdc caller needs.
- */
-function hdcDiagnostic(result: { stdout: string; stderr: string }): string | null {
-  if (parseHdcTargets(result.stdout).length > 0) return null;
-  return hdcProse(result);
-}
-
 async function listTargets(strict: boolean, timeoutMs: number): Promise<HarmonyHdcTarget[]> {
   if (!(await resolveHdc())) return [];
+  // `-v` is what makes every row tab-separated, which is the delimiter
+  // {@link parseHdcTargets} tells a row from a diagnostic by.
   const result = await runHdc(["list", "targets", "-v"], timeoutMs);
-  const failure = hdcFailure(result) ?? hdcDiagnostic(result);
+  // A parsed row means a listing really was printed, so nothing said beside it
+  // voids it — `parseAdbDevices` holds the same line. Asked BEFORE either
+  // classifier rather than only before `hdcProse`: `hdcFailure` has no such
+  // guard of its own, so a `[Fail]` line arriving next to real rows would empty
+  // the listing for a polling caller and refuse the boot for a strict one.
+  const targets = parseHdcTargets(result.stdout);
+  if (targets.length > 0) return targets;
+  const failure = hdcFailure(result) ?? hdcProse(result);
   if (failure) {
     if (strict) throw new Error(failure);
-    return [];
   }
-  return parseHdcTargets(result.stdout);
+  return [];
 }

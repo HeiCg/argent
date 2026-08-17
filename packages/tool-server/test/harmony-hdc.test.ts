@@ -33,6 +33,12 @@ describe("hdcFailure", () => {
     // Matched at the start of a line, not as a substring: a device log or a test
     // name containing the token must not read as hdc losing the connection.
     expect(hdcFailure({ stdout: "test case [Fail]ing on purpose\n", stderr: "" })).toBeNull();
+    // Nor an INDENTED one. `hdc` writes its own `[Fail]…` flush left (measured
+    // on 3.2.0d), while `runHdcShell` passes the remote command's combined
+    // output through here — where a padded log line is ordinary, and trimming
+    // before the prefix check handed it the meaning of a lost connection.
+    expect(hdcFailure({ stdout: "    [Fail] assertion 3 of 7\n", stderr: "" })).toBeNull();
+    expect(hdcFailure({ stdout: "\t[Fail]ed to open cache\n", stderr: "" })).toBeNull();
   });
 });
 
@@ -117,6 +123,10 @@ describe("assertHarmonyDisplayReady", () => {
     })();
 
     expect(getFailureSignal(err)?.failure_stage).toBe("harmony_display_zero");
+    // Its own code, not `uitest`'s: `failedMsg` renders the bare code to the
+    // agent, and a panel that has not composited is neither a `uitest` that ran
+    // and failed nor the same condition as a screen the user switched off.
+    expect(getFailureSignal(err)?.error_code).toBe("HARMONY_DISPLAY_UNREADABLE");
     expect(err.message).toContain("0x0 display");
     expect(err.message).toContain("Cannot tap");
   });
@@ -141,6 +151,7 @@ describe("assertHarmonyDisplayReady", () => {
     })();
 
     expect(getFailureSignal(err)?.failure_stage).toBe("harmony_screen_off");
+    expect(getFailureSignal(err)?.error_code).toBe("HARMONY_SCREEN_OFF");
     expect(err.message).toMatch(/Wake it with `button` \(power\)/);
   });
 });

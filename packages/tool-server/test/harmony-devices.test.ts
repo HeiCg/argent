@@ -43,7 +43,7 @@ const EMULATOR_NO_INSTANCES = "[Empty]\n";
 /**
  * Printed once per directory under ~/.Huawei/Emulator/deployed/ that lacks a
  * config.ini — ahead of the JSON body, which is why the parser scans forward to
- * the first bracket instead of parsing from byte zero.
+ * the body's own line-leading bracket instead of parsing from byte zero.
  */
 const EMULATOR_CONFIG_NOT_FOUND =
   'Config file not found: "/Users/u/.Huawei/Emulator/deployed/zz_broken/config.ini"\n';
@@ -157,6 +157,19 @@ describe("parseHarmonyInstances", () => {
     ).toEqual(["argent_probe"]);
   });
 
+  it("keeps them when that diagnostic quotes a path containing a bracket", () => {
+    // The prose names an instance DIRECTORY, so its content is whatever the
+    // user called the folder. Scanning to the first `[` anywhere would start
+    // the slice inside the sentence, and the parse failure that follows reads
+    // to `boot-device` as a host with no instances at all — so a boot of a
+    // perfectly good instance is refused because a sibling folder is misnamed.
+    const bracketed =
+      'Config file not found: "/Users/u/.Huawei/Emulator/deployed/zz[1]/config.ini"\n';
+    expect(
+      parseHarmonyInstances(`${bracketed}${EMULATOR_ONE_INSTANCE}`).map((i) => i.name)
+    ).toEqual(["argent_probe"]);
+  });
+
   it("returns both instances when two are deployed", () => {
     expect(parseHarmonyInstances(EMULATOR_TWO_INSTANCES).map((i) => i.name)).toEqual([
       "argent_probe",
@@ -184,10 +197,15 @@ describe("parseHdcTargets", () => {
     ]);
   });
 
-  it("reads the bare non-verbose form as a connected target", () => {
-    expect(parseHdcTargets("025DEK236V035771\n")).toEqual([
-      { connectKey: "025DEK236V035771", connection: null, state: "Connected" },
-    ]);
+  it("does not read a one-word line as a connected target", () => {
+    // The two prose checks above turn on a line holding a space, so a one-word
+    // diagnostic passed both and was emitted as `{ state: "Connected" }`: a
+    // target that does not exist for the boot's arrival wait to adopt, and —
+    // since a parsed row means "a listing was printed" — the diagnostic itself
+    // swallowed instead of reported. Every real row is tab-separated, which is
+    // what `-v` buys and why the listing always passes it.
+    expect(parseHdcTargets("Timeout\n")).toEqual([]);
+    expect(parseHdcTargets("025DEK236V035771\n")).toEqual([]);
   });
 
   it("reports a non-connected target's real state", () => {

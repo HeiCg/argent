@@ -155,10 +155,13 @@ export async function runHdc(
  *
  * Matched on the prefix rather than a substring so a remote command that merely
  * prints the token — a log line, a test name — cannot forge a transport failure.
+ * Anchored at column 0 for the same reason: `hdc` writes `[Fail]…` flush left
+ * (measured on 3.2.0d), while {@link runHdcShell} passes the REMOTE command's
+ * own combined output through here, where an indented line is ordinary.
  */
 export function hdcFailure(result: HdcRunResult): string | null {
   const text = `${result.stdout}\n${result.stderr}`;
-  const line = text.split(/\r?\n/).find((l) => l.trimStart().startsWith(HDC_FAILURE_PREFIX));
+  const line = text.split(/\r?\n/).find((l) => l.startsWith(HDC_FAILURE_PREFIX));
   return line ? line.trim() : null;
 }
 
