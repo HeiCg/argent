@@ -157,18 +157,23 @@ export function evaluateMatches(params: Params, matches: DescribeNode[]): boolea
 // trustworthy evidence the element is gone, so we must not let `hidden` (the only
 // condition that resolves true on an empty tree) resolve positively off it. Two
 // ways an empty tree is untrustworthy:
-//   - the adapter flagged it as unreliable: iOS AX down or native injection
-//     pending → `describeIos` returns an empty tree plus a hint / should_restart
-//     instead of throwing, and HarmonyOS hints a dump that listed no windows.
-//     Android never sets either flag.
+//   - the adapter flagged it as unreliable: iOS AX down, native injection
+//     pending, or a native hierarchy that could not be read at all (nothing
+//     connected to auto-target, the service down, the query failing) →
+//     `describeIos` returns an empty tree plus a hint / should_restart instead
+//     of throwing, and HarmonyOS hints a dump that listed no windows. Android
+//     sets a hint only on a TV (leanback) target, where it rides every read and
+//     so reaches this arm as well; a phone or tablet sets neither. Chromium's
+//     one hint marks a TRUNCATED tree, which has children by definition, and an
+//     empty one throws — so it never arrives here.
 //   - the selector matched on an EARLIER poll (`everMatched`) yet the whole tree
 //     is now empty. A genuinely-hidden element leaves the rest of the screen
 //     behind; a wholly empty tree after we'd already read content is a transient
 //     blank frame mid-navigation, not the element being hidden. This is the only
-//     guard that fires on Android, where an empty tree is otherwise taken at
-//     face value — without it an `everMatched` `hidden` wait would falsely
-//     resolve on a one-frame blink and release a gated tap against a screen
-//     that only briefly went blank.
+//     guard that fires on an Android phone or tablet, and on Chromium, where an
+//     empty tree is otherwise taken at face value — without it an `everMatched`
+//     `hidden` wait would falsely resolve on a one-frame blink and release a
+//     gated tap against a screen that only briefly went blank.
 function isBlindRead(data: DescribeTreeData, everMatched: boolean): boolean {
   if (data.tree.children.length > 0) return false;
   return Boolean(data.hint || data.should_restart || everMatched);

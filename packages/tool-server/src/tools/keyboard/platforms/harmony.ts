@@ -105,12 +105,13 @@ function resolveHarmonyKeycode(key: string): number {
 }
 
 async function typeHarmony(connectKey: string, params: KeyboardParams): Promise<KeyboardResult> {
+  // The tool rejects a request carrying both `text` and `key` (see ../index.ts),
+  // so at most one of the two injection branches below runs.
+  //
   // Both checks are pure and both precede the first device round trip: an
   // unsupported key or an un-typeable character is the caller's mistake, and
   // asking the device first lets an unreachable one rewrite that 400 into a
-  // connection error about a key that will never be supported. Nothing is
-  // injected until both pass, so a combined key+text call with an unknown key
-  // rejects having typed nothing.
+  // connection error about a key that will never be supported.
   const keycode = params.key ? resolveHarmonyKeycode(params.key) : null;
   if (params.text) assertTypeableHarmonyText(params.text);
   // Neither key nor text is schema-valid (both are optional, with no refinement)
@@ -118,8 +119,8 @@ async function typeHarmony(connectKey: string, params: KeyboardParams): Promise<
   // sibling backend follows. Reaching the device first would let a suspended
   // panel fail a step that was never going to type anything.
   if (keycode === null && !params.text) return { typed: "", keys: 0 };
-  // One deadline for the display read and both injections, so a type-then-submit
-  // call stays under the MCP layer's abort-and-replay cap.
+  // One deadline for the display read and the injection it feeds, so the pair
+  // stays under the MCP layer's abort-and-replay cap.
   const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
   // Typing into a panel that is suspended, or that the render service could not
   // size, reports `No Error` and lands nowhere, so a dead screen fails the same
@@ -133,8 +134,6 @@ async function typeHarmony(connectKey: string, params: KeyboardParams): Promise<
     await harmonyTypeText(connectKey, params.text, deadline - Date.now());
     keysPressed += [...params.text].length;
   }
-  // Key after text, so a combined call means "type, then submit". Pressing first
-  // would submit an empty field.
   if (keycode !== null) {
     await harmonyKeyEvent(connectKey, String(keycode), deadline - Date.now());
     keysPressed++;
