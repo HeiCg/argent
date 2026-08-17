@@ -20,6 +20,11 @@ const RESIZE_CAVEAT =
   "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; the differences below may include resampling artifacts, and differences finer than the downscale — hairlines, subpixel text — can be erased by it, so a clean result here is weaker evidence than an unnormalized one; the diff image is at compared_at rather than full size";
 const RESIZE_REMEDY =
   "  - to compare without resampling, both sides have to come out the same size — `screenshot` takes a `scale`, a fraction of the device's own resolution rather than a target size, and its own description covers which scale a diff baseline needs on which device";
+// Which artifact is which size. The sizes themselves are asserted elsewhere, so
+// what is left to drift is the pairing — and a swapped pair reads as fluently
+// as a correct one.
+const DIFF_IMAGES =
+  "- diff_images: see diffPath (compared size) and contextDiffPath (downscaled) in this result";
 
 const analyzeScreenshotTextChangesMock = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -182,6 +187,7 @@ describe("diffPngFiles", () => {
     const lines = result.summary.split("\n");
     expect(lines).toContain(RESIZE_CAVEAT);
     expect(lines).toContain(RESIZE_REMEDY);
+    expect(lines).toContain(DIFF_IMAGES);
     // The caveat's own "rather than full size" is the only thing in this
     // summary allowed to mention that size: a second one is a label on an
     // artifact that is not at it, which is what the diff_images line used to be.
@@ -268,9 +274,13 @@ describe("diffPngFiles", () => {
       statusIn(aspectMismatch),
       /^- (\w+): baseline=/m.exec(normalized)![1]!,
     ];
+    // Whole words: a rename to a prefix of the old name (resized_no_change ->
+    // resized) leaves every stale quote satisfying a substring check, which is
+    // the one direction a rename is actually likely to take.
+    const names = (word: string): RegExp => new RegExp(`\\b${word}\\b`);
     expect(new Set(emitted).size).toBe(emitted.length);
     for (const word of emitted) {
-      expect(screenshotDiffTool.description).toContain(word);
+      expect(screenshotDiffTool.description).toMatch(names(word));
     }
 
     // The skills are the third surface, and the one a rename reaches last: a
@@ -291,7 +301,7 @@ describe("diffPngFiles", () => {
     const caveats = skills.filter(({ text }) => text.includes("downscale can erase"));
     expect(caveats.length).toBeGreaterThanOrEqual(2);
     for (const { name, text } of caveats) {
-      expect(text, name).toContain(statusIn(normalized));
+      expect(text, name).toMatch(names(statusIn(normalized)));
     }
   });
 
