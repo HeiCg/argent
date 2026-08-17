@@ -17,7 +17,7 @@ import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-
 // learns which side was captured live, or whether either was, so any scale it
 // named would be wrong for some reader.
 const RESIZE_CAVEAT =
-  "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; the differences below may include resampling artifacts, and differences finer than the downscale — hairlines, subpixel text — can be erased by it, so a clean result here is weaker evidence than an unnormalized one; the diff images are at compared_at rather than full size";
+  "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; the differences below may include resampling artifacts, and differences finer than the downscale — hairlines, subpixel text — can be erased by it, so a clean result here is weaker evidence than an unnormalized one; the diff image is at compared_at rather than full size";
 const RESIZE_REMEDY =
   "  - to compare without resampling, both sides have to come out the same size — `screenshot` takes a `scale`, a fraction of the device's own resolution rather than a target size, and its own description covers which scale a diff baseline needs on which device";
 
