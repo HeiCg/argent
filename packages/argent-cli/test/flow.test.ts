@@ -1422,11 +1422,12 @@ describe("argent flow run", () => {
     ]);
   });
 
-  // Shapes the renderers cannot walk, each throwing somewhere the guard is the
-  // only thing standing between it and the CLI's top-level catch: a nullish
-  // value on the `steps` read, a non-array `steps` on the first iteration, a
-  // nullish element on the first field read off it — a raw TypeError with
-  // stdout left empty.
+  // Shapes the renderers cannot walk, all of which the guard is the only thing
+  // turning away. Three reach the CLI's top-level catch as a raw TypeError with
+  // stdout left empty — a nullish value on the `steps` read, a non-array
+  // `steps` on the first iteration, a nullish element on the first field read
+  // off it. The fourth is quieter and worse: a primitive element throws
+  // nowhere, so the run reports PASS and exits 0 on a report it never got.
   it.each([
     ["a null", null],
     ["an absent", undefined],
@@ -1435,6 +1436,7 @@ describe("argent flow run", () => {
     ["a null steps", { flow: "checkout", ok: true, steps: null }],
     ["an object steps", { flow: "checkout", ok: true, steps: {} }],
     ["a null-element steps", { flow: "checkout", ok: true, steps: [null] }],
+    ["a primitive-element steps", { flow: "checkout", ok: true, steps: ["tap"] }],
   ])("treats %s wire value as no report rather than crashing", async (_case, data) => {
     toolsClientMock.callTool.mockResolvedValue({ data });
 
@@ -1829,10 +1831,13 @@ describe("argent flow run <dir>", () => {
 
   // A report the renderers cannot walk costs the batch twice over: the throw
   // lands past the try, so the flow gets no verdict AND the run ends with no
-  // batch summary and no tally — the whole ledger, not one line of it.
+  // batch summary and no tally — the whole ledger, not one line of it. The
+  // primitive-entry row is the shape that does not throw at all, and would
+  // otherwise be counted a pass.
   it.each([
     ["are not a list", { flow: "a-login", ok: true, steps: 42 }],
     ["hold a null entry", { flow: "a-login", ok: true, steps: [null] }],
+    ["hold a primitive entry", { flow: "a-login", ok: true, steps: ["tap"] }],
   ])("treats a flow whose steps %s as one that produced no report", async (_case, data) => {
     toolsClientMock.callTool.mockResolvedValueOnce({ data });
 

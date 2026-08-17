@@ -1108,8 +1108,10 @@ function rejectionVerdict(code: string | undefined): string {
  * Whether a wire value is a report the renderers can walk. They run past the
  * try on both runners, so a value this admits and they then throw on takes
  * down the whole ledger rather than one line of it — hence the elements are
- * checked too: a non-array `steps` throws on `for (… of report.steps)`, a
- * nullish element on the first field read off it.
+ * checked too. A non-array `steps` throws on `for (… of report.steps)` and a
+ * nullish element on the first field read off it; a primitive element throws
+ * nowhere, which is worse — every field reads `undefined`, so the run renders
+ * a step line of them, summarises as PASS and exits 0.
  */
 function isFlowReport(data: unknown): data is FlowReport {
   const steps = (data as FlowReport | undefined)?.steps;
