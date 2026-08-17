@@ -159,15 +159,16 @@ export function evaluateMatches(params: Params, matches: DescribeNode[]): boolea
 // ways an empty tree is untrustworthy:
 //   - the adapter flagged it as unreliable: iOS AX down or native injection
 //     pending → `describeIos` returns an empty tree plus a hint / should_restart
-//     instead of throwing. Android / Chromium never set these flags.
+//     instead of throwing, and HarmonyOS hints a dump that listed no windows.
+//     Android never sets either flag.
 //   - the selector matched on an EARLIER poll (`everMatched`) yet the whole tree
 //     is now empty. A genuinely-hidden element leaves the rest of the screen
 //     behind; a wholly empty tree after we'd already read content is a transient
 //     blank frame mid-navigation, not the element being hidden. This is the only
-//     guard that fires on Android / Chromium, where an empty tree is otherwise
-//     taken at face value — without it an `everMatched` `hidden` wait would
-//     falsely resolve on a one-frame blink and release a gated tap against a
-//     screen that only briefly went blank.
+//     guard that fires on Android, where an empty tree is otherwise taken at
+//     face value — without it an `everMatched` `hidden` wait would falsely
+//     resolve on a one-frame blink and release a gated tap against a screen
+//     that only briefly went blank.
 function isBlindRead(data: DescribeTreeData, everMatched: boolean): boolean {
   if (data.tree.children.length > 0) return false;
   return Boolean(data.hint || data.should_restart || everMatched);

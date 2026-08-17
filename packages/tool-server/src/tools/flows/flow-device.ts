@@ -86,11 +86,12 @@ function deviceEntryId(d: RawDevice): string | undefined {
   // `ios-remote` and `harmony` key their entries by `udid` as iOS does. Neither
   // is AUTO-resolvable — `isBooted` has no arm for either — but both are
   // legitimate to name explicitly, which is why the id has to reach the caller
-  // through the "available devices" line. `ios-remote` is an iOS simulator over
-  // sim-remote and runs the whole iOS path; a harmony run degrades per step
-  // (measured on 6.1.1: a coordinate `tap` passes, `snapshot` captures and keys
-  // a baseline, a selector step errors with "ui-tree matching is not supported
-  // on platform harmony"), which is more use to a caller than a blanket refusal.
+  // through the "available devices" line. `fetchFlowTree` has an arm for neither,
+  // so a run on either degrades per step rather than dead-ending: coordinate steps
+  // work and `snapshot` captures (measured on harmony 6.1.1 — a `tap` passes, a
+  // `snapshot` keys a baseline), while a selector step errors with "ui-tree
+  // matching is not supported on platform <p>". That is more use to a caller than
+  // a blanket refusal.
   if (d.platform === "ios" || d.platform === "ios-remote" || d.platform === "harmony") {
     return d.udid;
   }

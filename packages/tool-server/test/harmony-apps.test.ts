@@ -297,10 +297,9 @@ describe("terminateHarmonyApp", () => {
   });
 
   it("fails a stop that printed nothing recognisable", async () => {
-    // The success line is the only evidence the stop happened. `aa`'s `error:`
-    // headline is not a reliable stand-in for its absence: `runHdcShell` returns
-    // stdout only, so a diagnostic written to stderr arrives here as an empty
-    // string, and reading that as success hands `restart-app` a live process.
+    // The success line is the only evidence the stop happened, so an `aa` that
+    // printed nothing at all — killed mid-run, or a shell that never reached it —
+    // has to fail. Reading silence as success hands `restart-app` a live process.
     runHdcShell.mockResolvedValueOnce(ok(""));
     await expect(terminateHarmonyApp("dev", "c")).rejects.toThrow(
       "Failed to stop 'c' on HarmonyOS device 'dev': the ability assistant printed nothing"

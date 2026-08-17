@@ -7,7 +7,9 @@ import {
   harmonyDisplay,
   harmonyDumpLayout,
   remainingBudget,
+  HARMONY_DISPLAY_TIMEOUT_MS,
   HARMONY_INTERACTION_TIMEOUT_MS,
+  UITEST_TIMEOUT_MS,
 } from "../../../../utils/harmony-uitest";
 import { parseHarmonyLayout } from "./layout-parser";
 
@@ -47,6 +49,8 @@ const EMPTY_HINT =
  * on every auto-screenshot that follows an interaction. Killing the client
  * frees the queue at once: the on-device `uitest` goes with it (measured — a
  * dump run 0.3s after one was killed mid-flight costs the same as a cold one).
+ * Each leg is still capped at its own ceiling on top of that, so a wait handing
+ * this its whole 120s buys retries rather than one 120s round trip.
  */
 export async function describeHarmony(
   connectKey: string,
@@ -56,13 +60,13 @@ export async function describeHarmony(
   const deadline = Date.now() + timeoutMs;
   const display = await harmonyDisplay(
     connectKey,
-    remainingBudget(connectKey, deadline, "the display read")
+    Math.min(HARMONY_DISPLAY_TIMEOUT_MS, remainingBudget(connectKey, deadline, "the display read"))
   );
   try {
     const raw = await harmonyDumpLayout(
       connectKey,
       localPath,
-      remainingBudget(connectKey, deadline, "the layout dump")
+      Math.min(UITEST_TIMEOUT_MS, remainingBudget(connectKey, deadline, "the layout dump"))
     );
     const { tree, screen } = parseHarmonyLayout(raw, {
       width: display.width,

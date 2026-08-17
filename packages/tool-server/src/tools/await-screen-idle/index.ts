@@ -164,9 +164,10 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
 Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (default ${DEFAULT_POLL_INTERVAL_MS}ms) until it
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
 ${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls }, plus a note whenever the wait ended somewhere
-other than a screen that plainly settled. On settled=false the note says the tree read failed (a device that went away,
-not a screen that never went still) or what the last read said about itself — a degraded accessibility tree, a panel
-that is off, an app needing a restart before native inspection can see it. On settled=true it instead means the tree it
+other than a screen that plainly settled. A settled=false without a note is the ordinary one: the screen kept changing
+for the whole timeout. With one, the note says the tree read failed (a device that went away, not a screen that never
+went still) or what the last read said about itself — a degraded accessibility tree, a panel that is off, an app
+needing a restart before native inspection can see it. On settled=true it instead means the tree it
 settled on is not the whole live screen: a suspended HarmonyOS panel settles instantly on its last composited frame and
 taps land nowhere until it is woken, and a Chromium page past the walker's node budget settles on a partial tree. Read
 the note before acting on what settled.

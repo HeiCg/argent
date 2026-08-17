@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   harmonyDisplay,
   harmonyDumpLayout,
+  HARMONY_DISPLAY_TIMEOUT_MS,
+  UITEST_TIMEOUT_MS,
   type HarmonyLayoutNode,
 } from "../src/utils/harmony-uitest";
 import { createAwaitUiElementTool } from "../src/tools/await-ui-element";
@@ -334,6 +336,30 @@ describe("await-screen-idle on HarmonyOS", () => {
       expect(budget).toBeLessThanOrEqual(500);
     }
     expect(harmonyDisplay).toHaveBeenCalledWith(CONNECT_KEY, expect.any(Number));
+  });
+
+  it("caps each leg at its own ceiling, so a long wait buys retries not one long round trip", async () => {
+    // The other direction of the same rule: a wait may hand a read far MORE than
+    // one `hdc` round trip is allowed to take (120s is the schema max). Passing
+    // that through would spend the whole wait inside a single wedged call, and
+    // the loop would poll exactly once.
+    const dumpBudgets: (number | undefined)[] = [];
+    vi.mocked(harmonyDumpLayout).mockImplementation(async (_key, _path, timeoutMs) => {
+      dumpBudgets.push(timeoutMs);
+      return dumpWith("Content");
+    });
+    const tool = createAwaitScreenIdleTool(harmonyRegistry());
+
+    await tool.execute(
+      {},
+      { udid: HARMONY_ID, timeoutMs: 120_000, pollIntervalMs: 5, minStableMs: 10 }
+    );
+
+    expect(dumpBudgets.length).toBeGreaterThan(0);
+    for (const budget of dumpBudgets) expect(budget).toBeLessThanOrEqual(UITEST_TIMEOUT_MS);
+    for (const [, budget] of vi.mocked(harmonyDisplay).mock.calls) {
+      expect(budget).toBeLessThanOrEqual(HARMONY_DISPLAY_TIMEOUT_MS);
+    }
   });
 
   it("does not settle while the dump keeps changing (times out)", async () => {

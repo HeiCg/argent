@@ -322,7 +322,10 @@ describe("button tool — a suspended HarmonyOS panel", () => {
     await buttonTool.execute(services, { udid: harmonyUdid, button: "home" });
 
     const budget = vi.mocked(harmonyKeyEvent).mock.calls[0][2];
-    expect(budget).toBeLessThanOrEqual(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS);
+    // Not pinned to the millisecond — `setTimeout` can fire a touch early, and
+    // under a loaded suite this boundary has come back 1ms over. What has to
+    // discriminate is a press handed a FRESH ceiling, which arrives as 20000.
+    expect(budget).toBeLessThan(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS / 2);
     expect(budget).toBeGreaterThan(0);
   });
 });

@@ -20,9 +20,9 @@ const HARMONY_ENTRY = {
 };
 
 /**
- * A remote simulator: also keyed by `udid`, and also not auto-resolvable. It is
- * NOT a platform flows lack an arm for, though — it is an iOS simulator over
- * sim-remote, and a flow named against one runs the whole iOS path.
+ * A remote simulator: also keyed by `udid`, also not auto-resolvable, and — like
+ * harmony — a platform `fetchFlowTree` has no arm for, so a flow named against
+ * one runs its coordinate steps and fails its selector steps.
  */
 const IOS_REMOTE_ENTRY = {
   platform: "ios-remote",

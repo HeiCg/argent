@@ -196,11 +196,11 @@ const AA_NO_SUCH_PACKAGE = "Error Code:10104002";
  * — there is nothing to resolve. Stopping an app that is not running is not a
  * failure to it: measured on 6.0.1 against three never-launched bundles, it
  * answers `force stop process successfully.` So {@link AA_STOP_SUCCESS} is the
- * whole verdict, read the way the launch path reads its own — a coded refusal, a
- * diagnostic `runHdcShell` never saw because `aa` wrote it to stderr, or nothing
- * at all are equally a stop that did not happen. `restart-app` exists to
- * guarantee a fresh process, and reporting `restarted: true` for an app still
- * running with its old state is the one outcome it must not produce.
+ * whole verdict, read the way the launch path reads its own — a coded refusal, an
+ * uncoded diagnostic, or nothing at all are equally a stop that did not happen.
+ * `restart-app` exists to guarantee a fresh process, and reporting
+ * `restarted: true` for an app still running with its old state is the one
+ * outcome it must not produce.
  *
  * The bundle name is positional: `aa force-stop -b <bundle>` answers `10104002
  * … not installed` even for an installed, running app.
