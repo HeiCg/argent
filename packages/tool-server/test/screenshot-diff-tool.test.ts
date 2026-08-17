@@ -17,6 +17,49 @@ describe("screenshotDiffTool", () => {
     vi.unstubAllEnvs();
   });
 
+  it("reads schema descriptions at every depth an input_schema advertises", () => {
+    // Depth as well as kind of surface: the sweep above is only as wide as this
+    // walk, and narrowing it is invisible from the outside — the catalogue check
+    // goes on passing over a shorter list. Pinned against a schema written here
+    // rather than a live tool's nested fields, so renaming one of those is not a
+    // failure in a file about screenshot-diff prose.
+    const def = {
+      id: "synthetic",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: {
+          top: { type: "string", description: "top-level" },
+          nested: {
+            type: "object",
+            properties: { inner: { type: "string", description: "nested object" } },
+          },
+          list: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { field: { type: "string", description: "array item" } },
+            },
+          },
+          either: {
+            anyOf: [
+              { type: "string", description: "first arm" },
+              { type: "number", description: "second arm" },
+            ],
+          },
+        },
+      },
+    } as unknown as Parameters<typeof agentFacingText>[0];
+
+    expect(agentFacingText(def).filter(([, text]) => text !== "")).toEqual([
+      ["top", "top-level"],
+      ["nested.inner", "nested object"],
+      ["list[].field", "array item"],
+      ["either|0", "first arm"],
+      ["either|1", "second arm"],
+    ]);
+  });
+
   it("rejects public tuning options so defaults stay internal", () => {
     const result = screenshotDiffTool.zodSchema!.safeParse({
       baselinePath: "/tmp/baseline.png",
@@ -345,11 +388,6 @@ describe("screenshotDiffTool", () => {
         "screenshot-diff.searchHint",
         "screenshot-diff.completedMsg",
         "screenshot-diff.baselinePath",
-        // Depth as well as kind: array items and nested objects are advertised
-        // in input_schema like any parameter, so collapsing the walk to the top
-        // level would leave the list above intact and the sweep shorter.
-        "gesture-custom.events[].type",
-        "await-ui-element.selector.text",
       ])
     );
     // Suppression is about where the bytes go, not what resolution they are:
