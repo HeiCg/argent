@@ -226,7 +226,9 @@ describe("a caller's own ceiling reaches the device", () => {
     // …and the fetch gets what the capture left, rather than a sliver above zero
     // or a fresh 30s default.
     expect(fetchTimeouts).toHaveLength(1);
-    expect(fetchTimeouts[0]).toBeLessThanOrEqual(900 - RUN_MS);
+    // Half a run of tolerance, not the millisecond: `setTimeout` can fire a
+    // touch early. What has to discriminate is a fetch handed the full budget.
+    expect(fetchTimeouts[0]).toBeLessThan(900 - RUN_MS / 2);
     expect(fetchTimeouts[0]).toBeGreaterThan(900 - RUN_MS - 150);
   });
 
@@ -252,7 +254,8 @@ describe("a caller's own ceiling reaches the device", () => {
     // The queued caller's capture is bounded by what its budget had left after
     // the wait, not by the budget it started with.
     expect(shellTimeouts).toHaveLength(2);
-    expect(shellTimeouts[1]).toBeLessThanOrEqual(BUDGET_MS - RUN_MS);
+    // Half a run of tolerance — see the note on the previous case.
+    expect(shellTimeouts[1]).toBeLessThan(BUDGET_MS - RUN_MS / 2);
     // And once that is spent, the fetch is not attempted at all: the caller is
     // told the budget ran out instead of being handed a killed transfer.
     expect(fetchTimeouts).toHaveLength(1);

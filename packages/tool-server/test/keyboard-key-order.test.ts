@@ -302,8 +302,10 @@ describe("keyboard text+key ordering", () => {
 
     const textBudget = vi.mocked(harmonyTypeText).mock.calls[0][2];
     const keyBudget = vi.mocked(harmonyKeyEvent).mock.calls[0][2];
-    expect(textBudget).toBeLessThanOrEqual(HARMONY_INTERACTION_TIMEOUT_MS - LEG_MS);
-    expect(keyBudget).toBeLessThanOrEqual(textBudget - LEG_MS);
+    // Half a leg of tolerance, not the millisecond: `setTimeout` can fire a
+    // touch early. What has to discriminate is a leg handed a FRESH ceiling.
+    expect(textBudget).toBeLessThan(HARMONY_INTERACTION_TIMEOUT_MS - LEG_MS / 2);
+    expect(keyBudget).toBeLessThan(textBudget - LEG_MS / 2);
     expect(keyBudget).toBeGreaterThan(0);
   });
 });

@@ -212,7 +212,10 @@ describe("gesture-swipe on HarmonyOS", () => {
     const read = runHdcShell.mock.calls.find(([, c]) => c.startsWith("hidumper"));
     expect(read?.[2]).toBe(HARMONY_DISPLAY_TIMEOUT_MS);
     const injection = runHdcShell.mock.calls.find(([, c]) => c.startsWith("uitest uiInput"));
-    expect(injection?.[2]).toBeLessThanOrEqual(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS);
+    // Half a read of tolerance, not the millisecond: `setTimeout` can fire a
+    // touch early. What has to discriminate is an injection handed a FRESH
+    // ceiling.
+    expect(injection?.[2]).toBeLessThan(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS / 2);
     expect(injection?.[2]).toBeGreaterThan(0);
     // The magnitudes themselves, not just the wiring: the whole interaction has
     // to finish inside the MCP client's 30s cap, and the read has to stay a

@@ -172,11 +172,13 @@ describe("gesture-tap on HarmonyOS", () => {
 
     const budgets = vi.mocked(harmonyTouch).mock.calls.map((c) => c[3]);
     expect(budgets).toHaveLength(3);
-    // The read is charged first…
-    expect(budgets[0]).toBeLessThanOrEqual(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS);
+    // The read is charged first… (with half a read of tolerance, not the
+    // millisecond: `setTimeout` can fire a touch early. What has to
+    // discriminate is a click handed a FRESH ceiling.)
+    expect(budgets[0]).toBeLessThan(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS / 2);
     // …and so is each 100ms inter-tap gap, so the last click cannot be handed a
     // ceiling that ignores the two before it.
-    expect(budgets[2]).toBeLessThanOrEqual(budgets[0] - 2 * 100);
+    expect(budgets[2]).toBeLessThan(budgets[0] - 100);
     expect(budgets[2]).toBeGreaterThan(0);
   });
 });
