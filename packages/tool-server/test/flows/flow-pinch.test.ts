@@ -399,6 +399,42 @@ describe("pinch: gating", () => {
     expect(result.calls).toHaveLength(0);
   });
 
+  it("rejects pinch on HarmonyOS before it reaches a service it has no backend for", async () => {
+    // `gesture-pinch` declares no harmony capability, and a flow step goes
+    // through `invokeTool`, which does not run the capability gate — so without
+    // the upfront arm the run stops on the simulator-server blueprint's "does
+    // not support platform" line, which names nothing an author can change.
+    await writeFlow("pinch-harmony", {
+      executionPrerequisite: "",
+      steps: [{ kind: "pinch", scale: 2 }],
+    });
+
+    const result = await run("pinch-harmony", "harmony-127.0.0.1:5555");
+
+    expect(result.steps[0]).toMatchObject({ kind: "pinch", status: "fail" });
+    expect(result.steps[0].reason).toMatch(/unsupported on HarmonyOS/);
+    expect(result.steps[0].reason).toMatch(/one contact at a time/);
+    // The authoring guidance, not a dispatch trace.
+    expect(result.steps[0].reason).not.toMatch(/does not support platform/);
+    expect(result.calls).toHaveLength(0);
+  });
+
+  it("leaves tap on HarmonyOS untouched — it is the one gesture that has a backend", async () => {
+    // Positive control: a guard widened to every touch directive would take the
+    // one thing a HarmonyOS flow can actually do with it.
+    currentTree = () =>
+      screen([n({ label: "Zoom in", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.1 } })]);
+    await writeFlow("tap-harmony-coord", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tap", x: 0.5, y: 0.5 }],
+    });
+
+    const result = await run("tap-harmony-coord", "harmony-127.0.0.1:5555");
+
+    expect(result.ok).toBe(true);
+    expect(result.calls.map((c) => c.tool)).toEqual(["gesture-tap"]);
+  });
+
   it("leaves tap on chromium untouched", async () => {
     currentTree = () =>
       screen([n({ label: "Zoom in", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.1 } })]);
