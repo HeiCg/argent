@@ -50,7 +50,7 @@ describe("probeGlobalInstallTarget", () => {
     }
   });
 
-  it("reports a writable directory as writable", () => {
+  it("leaves a writable directory unblocked", () => {
     mockExecFileSync.mockReturnValue(`${tmpRoot}\n`);
 
     expect(probeGlobalInstallTarget("npm")).toEqual({
