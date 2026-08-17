@@ -3,7 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { FAILURE_CODES, getFailureSignal, type Registry } from "@argent/registry";
+import { FAILURE_CODES, FailureError, getFailureSignal, type Registry } from "@argent/registry";
 
 const runHarmonyEmulator = vi.fn();
 const resolveHarmonyEmulator = vi.fn();
@@ -1154,6 +1154,48 @@ describe("boot-device — HarmonyOS emulator path", () => {
       error_code: FAILURE_CODES.BOOT_HARMONY_TARGET_LIST_FAILED,
       failure_command: "hdc",
     });
+  });
+
+  it("reports a wedged `hdc` as the timeout its own wrapper classified it as", async () => {
+    // `runHdc` is the frame that can tell a client SIGKILLed at its ceiling from
+    // one that failed, and it does. Stamping a kind here instead of carrying
+    // that one up re-buckets the single case those wrappers were taught to
+    // separate, and `getFailureSignal` takes the OUTERMOST signal — so the
+    // telemetry keeps this frame's answer, not the true one.
+    listHarmonyHdcTargetsStrict.mockRejectedValue(
+      new FailureError("hdc list targets timed out", {
+        error_code: FAILURE_CODES.HARMONY_HDC_COMMAND_FAILED,
+        failure_stage: "harmony_hdc_run",
+        failure_area: "tool_server",
+        error_kind: "timeout",
+      })
+    );
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    const settled = expect(pending).rejects.toThrow(/Could not read `hdc`'s device table/);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await settled;
+
+    expect(getFailureSignal(await pending.catch((e: unknown) => e))).toMatchObject({
+      error_code: FAILURE_CODES.BOOT_HARMONY_TARGET_LIST_FAILED,
+      error_kind: "timeout",
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("still calls a listing that merely failed a subprocess failure", async () => {
+    // The fallback has to stay: `listHarmonyHdcTargetsStrict` refuses a
+    // diagnostic with a plain `Error`, which carries no signal to inherit.
+    listHarmonyHdcTargetsStrict.mockRejectedValue(new Error("Connect server failed"));
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    const settled = expect(pending).rejects.toThrow(/Could not read `hdc`'s device table/);
+    await vi.advanceTimersByTimeAsync(31_000);
+    await settled;
+
+    expect(getFailureSignal(await pending.catch((e: unknown) => e))?.error_kind).toBe("subprocess");
   });
 
   it("stops probing arrivals once the budget is spent, rather than once per arrival", async () => {

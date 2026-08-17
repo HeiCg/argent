@@ -215,7 +215,7 @@ export async function terminateHarmonyApp(connectKey: string, bundleId: string):
   throw new FailureError(
     `Failed to stop '${bundleId}' on HarmonyOS device '${connectKey}': ${firstLine(stdout)}`,
     {
-      error_code: FAILURE_CODES.HARMONY_ABILITY_START_FAILED,
+      error_code: FAILURE_CODES.HARMONY_ABILITY_STOP_FAILED,
       failure_stage: "harmony_force_stop",
       failure_area: "tool_server",
       error_kind: stdout.includes(AA_NO_SUCH_PACKAGE) ? "not_found" : "subprocess",

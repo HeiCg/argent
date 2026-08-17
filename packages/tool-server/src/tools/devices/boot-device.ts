@@ -9,6 +9,7 @@ import {
   FAILURE_CODES,
   FailureError,
   ServiceNotFoundError,
+  getFailureSignal,
   type Registry,
   type ToolCapability,
   type ToolDefinition,
@@ -1697,7 +1698,12 @@ async function connectedHarmonyKeys(
             error_code: FAILURE_CODES.BOOT_HARMONY_TARGET_LIST_FAILED,
             failure_stage: "boot_harmony_target_snapshot",
             failure_area: "tool_server",
-            error_kind: "subprocess",
+            // Carried up from whatever `hdc` did, not asserted: `runHdc` is the
+            // frame that can tell a client SIGKILLed at its ceiling from one
+            // that failed, and `getFailureSignal` takes the OUTERMOST signal —
+            // so stamping `subprocess` here re-buckets the timeout it just
+            // classified.
+            error_kind: getFailureSignal(err)?.error_kind ?? "subprocess",
             failure_command: "hdc",
           },
           { cause: err instanceof Error ? err : new Error(String(err)) }

@@ -277,6 +277,10 @@ describe("terminateHarmonyApp", () => {
     );
     const err = await terminateHarmonyApp("dev", "c").catch((e: unknown) => e);
     expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
+    // The STOP's own code. `failedMsg` renders the bare code, so sharing the
+    // launch path's told an agent whose `restart-app` failed to go and look at
+    // an ability start that never ran.
+    expect(getFailureSignal(err as Error)?.error_code).toBe("HARMONY_ABILITY_STOP_FAILED");
   });
 
   it("cannot be talked into not_found by a bundle id carrying the digits", async () => {

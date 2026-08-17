@@ -262,7 +262,7 @@ export function assertHarmonyDisplayReady(display: HarmonyDisplay, action: strin
         `yet, or the render service answered with nothing usable — retry once the device has ` +
         `finished booting.`,
       {
-        error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
+        error_code: FAILURE_CODES.HARMONY_DISPLAY_UNREADABLE,
         failure_stage: "harmony_display_zero",
         failure_area: "tool_server",
         error_kind: "validation",
@@ -274,7 +274,7 @@ export function assertHarmonyDisplayReady(display: HarmonyDisplay, action: strin
     `Cannot ${action} on a HarmonyOS device whose display is off: injected input lands nowhere ` +
       `while the panel is suspended. Wake it with \`button\` (power), then retry.`,
     {
-      error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
+      error_code: FAILURE_CODES.HARMONY_SCREEN_OFF,
       failure_stage: "harmony_screen_off",
       failure_area: "tool_server",
       error_kind: "validation",
