@@ -12,7 +12,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export interface IosSimulator {
+interface IosSimulator {
   udid: string;
   name: string;
   state: string;
@@ -22,7 +22,7 @@ export interface IosSimulator {
   deviceSet?: string;
 }
 
-export interface IosPhysicalDevice {
+interface IosPhysicalDevice {
   udid: string;
   name: string;
   /** Apple product type, e.g. "iPhone15,4". Null when devicectl omits it. */
