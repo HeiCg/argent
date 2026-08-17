@@ -12,12 +12,13 @@ import { diffPngFiles, type Rgb } from "../src/tools/screenshot-diff/screenshot-
 // erases fine differences as readily as it invents them (a 1px hairline shifting
 // shade goes from 1179 changed pixels to 0 at the 0.3 fallback, taking the
 // text pass with it — it is gated on a non-zero pixel diff); and the remedy
-// names no fixed scale, because the formatter never learns which side was
-// captured live, or whether either was.
+// prescribes no scale, because the formatter is handed only sizes — it never
+// learns which side was captured live, or whether either was, so any scale it
+// named would be wrong for some reader.
 const RESIZE_CAVEAT =
   "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; the differences below may include resampling artifacts, and differences finer than the downscale — hairlines, subpixel text — can be erased by it, so a clean result here is weaker evidence than an unnormalized one; the diff images are at compared_at rather than full size";
 const RESIZE_REMEDY =
-  "  - to compare without resampling, re-capture so both sides come out the same size — `screenshot` takes a `scale`, a fraction of the device's own resolution rather than a target size, and a live side captured here uses 1.0, or the tool-server's setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default) where that fails";
+  "  - to compare without resampling, both sides have to come out the same size — `screenshot` takes a `scale`, a fraction of the device's own resolution rather than a target size, and its own description covers which scale a diff baseline needs on which device";
 
 const analyzeScreenshotTextChangesMock = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -113,7 +114,7 @@ describe("diffPngFiles", () => {
 
     // Nothing was resampled and the aspect ratios differ, so there is no size
     // to re-capture toward — the resize remedy must not appear here.
-    expect(result.summary).not.toContain("re-capture");
+    expect(result.summary).not.toContain("`scale`");
     expect(result).toMatchObject({
       totalPixels: 2,
       differentPixels: 0,
@@ -180,9 +181,10 @@ describe("diffPngFiles", () => {
     const lines = result.summary.split("\n");
     expect(lines).toContain(RESIZE_CAVEAT);
     expect(lines).toContain(RESIZE_REMEDY);
-    // Exactly one, because a prescription creeps back as a second bullet beside
-    // the pinned one rather than as an edit to it.
-    expect(lines.filter((line) => line.includes("re-capture"))).toHaveLength(1);
+    // Exactly one line may reach for the knob, because a prescription creeps
+    // back as a second bullet beside the pinned one rather than as an edit to
+    // it. The caveat names no knob, so this counts remedies.
+    expect(lines.filter((line) => line.includes("`scale`"))).toHaveLength(1);
   });
 
   it("still reports a real difference as `changed` when sizes were normalized", async () => {
@@ -209,7 +211,7 @@ describe("diffPngFiles", () => {
     // a prescription can be added to either one alone.
     const changedLines = result.summary.split("\n");
     expect(changedLines).toContain(RESIZE_REMEDY);
-    expect(changedLines.filter((line) => line.includes("re-capture"))).toHaveLength(1);
+    expect(changedLines.filter((line) => line.includes("`scale`"))).toHaveLength(1);
   });
 
   it("says nothing about normalization when the sizes already matched", async () => {
@@ -226,7 +228,7 @@ describe("diffPngFiles", () => {
     expect(result.summary).toContain("- status: unchanged");
     // The resize remedy rides with that block. Nothing was resampled here, so
     // telling the reader to re-capture a side would send them after a no-op.
-    expect(result.summary).not.toContain("re-capture");
+    expect(result.summary).not.toContain("`scale`");
   });
 
   it("hard-fails same-aspect resolution differences when normalizeSizes is false", async () => {

@@ -100,12 +100,12 @@ export const screenshotDiffTool: ToolDefinition<Params, ScreenshotDiffResult> = 
     failedMsg: ({ failureSignal }) => `Failed to compare screenshots: ${failureSignal.error_code}`,
   },
   description: `Compare two PNG screenshots and return a compact visual-diff summary.
-Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale. Sides that share an aspect ratio but not a resolution are downscaled to the smaller before comparing; the summary reports that as size_normalized, and a clean result there is status resized_no_change rather than unchanged. Always provide udid — a live capture resolves the simulator-server from it.
+Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale. Sides that share an aspect ratio but not a resolution are downscaled to the smaller before comparing; the summary reports that as size_normalized, and a clean result there is status resized_no_change rather than unchanged; sides whose aspect ratios differ are not compared at all, reported as dimension_mismatch. Always provide udid — a live capture resolves the simulator-server from it.
 Use when stable before/after screenshots exist and the expected result is pixel-visible: layout, spacing, color, typography, image/icon rendering, clipping, overflow, or text rendering.
 For live captures, set exactly one of captureBaseline or captureCurrent; use baselinePath + captureCurrent for the common visual-regression flow.
 Returns { summary, diffPath, contextDiffPath }. The summary uses normalized [0,1] screen locations matching describe coordinates; diffPath is the full-size diff image and contextDiffPath is a downscaled image for MCP/agent display.
 Ignores the fixed top status-bar band for both pixel and OCR text comparisons.
-Fails if the input sources are invalid, PNG files cannot be read, outputDir cannot be written, or the simulator-server / emulator backend is not reachable.`,
+Fails if the input sources are invalid, PNG files cannot be read, outputDir cannot be written, the simulator-server / emulator backend is not reachable, or a requested live capture cannot be taken.`,
   searchHint:
     "compare screenshots png diff visual UI changes UI regression visual regression screenshot diff changed regions text ocr live capture",
   zodSchema,

@@ -49,7 +49,7 @@ export function formatScreenshotDiffSummary(result: ScreenshotDiffSummaryInput):
     lines.push(
       `- size_normalized: baseline=${formatSize(baseline)} current=${formatSize(current)} compared_at=${formatSize(comparedAt)}`,
       "  - the inputs share an aspect ratio but not a resolution, so the larger was downscaled before comparing; the differences below may include resampling artifacts, and differences finer than the downscale — hairlines, subpixel text — can be erased by it, so a clean result here is weaker evidence than an unnormalized one; the diff images are at compared_at rather than full size",
-      "  - to compare without resampling, re-capture so both sides come out the same size — `screenshot` takes a `scale`, a fraction of the device's own resolution rather than a target size, and a live side captured here uses 1.0, or the tool-server's setting (ARGENT_SCREENSHOT_SCALE, 0.3 by default) where that fails"
+      "  - to compare without resampling, both sides have to come out the same size — `screenshot` takes a `scale`, a fraction of the device's own resolution rather than a target size, and its own description covers which scale a diff baseline needs on which device"
     );
   }
 

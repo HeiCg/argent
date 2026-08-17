@@ -35,7 +35,7 @@ const zodSchema = z.object({
     .describe(
       "Scale factor (0.01-1.0). Defaults to ARGENT_SCREENSHOT_SCALE env var, or 0.3 if unset for iOS/Android. " +
         "On Chromium the default is 1.0 (no downscale); pass <1 to opt in. Downscaling on Chromium requires the optional `sharp` dependency. " +
-        "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; retry at a lower scale on those devices. For a screenshot-diff baseline on one of them, omit `scale` — that is where screenshot-diff's own live capture lands once its full-resolution attempt fails, so both sides match. Elsewhere its live side succeeds at 1.0, and a baseline captured any other way is resampled to match."
+        "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; retry at a lower scale on those devices. A screenshot-diff baseline should match what that tool's own live capture produces on the same device — it tries 1.0 and drops to the tool-server's screenshot scale when that fails — so save it at scale: 1.0 where a full frame streams, and with `scale` omitted where it does not."
     ),
   includeImageInContext: z
     .boolean()
@@ -134,7 +134,7 @@ export function createScreenshotTool(registry: Registry): ToolDefinition<Params,
     },
     description: `Capture a screenshot of the device screen (iOS simulator, Android emulator, Apple TV simulator, Vega, or Chromium app). Returns { image }; the MCP adapter renders it as a visible image unless the caller passed includeImageInContext: false.
 Use when you need a baseline image before an interaction or to inspect the current screen state after a delay.
-Fails if the simulator-server / emulator backend / Chromium CDP is not reachable for the given device, or if the device cannot stream a frame at the requested scale.`,
+Fails if the simulator-server / emulator backend / Chromium CDP is not reachable for the given device, or if the device rejects a capture at the requested scale.`,
     alwaysLoad: true,
     searchHint: "device simulator emulator chromium screen image capture baseline tvos apple tv",
     zodSchema,

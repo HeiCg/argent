@@ -5,7 +5,6 @@ import { PNG } from "pngjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@argent/registry";
 import { executeScreenshotDiffTool, screenshotDiffTool } from "../src/tools/screenshot-diff";
-import { formatScreenshotDiffSummary } from "../src/tools/screenshot-diff/screenshot-diff-summary";
 import { createScreenshotTool } from "../src/tools/screenshot";
 import { getScreenshotScale } from "../src/utils/simulator-client";
 
@@ -190,10 +189,11 @@ describe("screenshotDiffTool", () => {
       captureScreenshot as never
     );
 
-    // Full-res attempted first, then a retry that passes no scale at all.
+    // Full-res attempted first, then a retry at the tool-server's own scale.
+    // Which argument carries that scale is not asserted — passing it explicitly
+    // produces the same request, and the wire tests below pin the value itself.
     expect(captureScreenshot).toHaveBeenCalledTimes(2);
     expect(captureScreenshot.mock.calls[0]![3]).toBe(1.0);
-    expect(captureScreenshot.mock.calls[1]![3]).toBeUndefined();
     const liveCaptures = (await fs.readdir(dir)).filter((name) =>
       /^current-[a-f0-9]{8}\.live\.png$/.test(name)
     );
@@ -235,31 +235,47 @@ describe("screenshotDiffTool", () => {
     vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
     // The prose quotes this number as a literal, so it drifts the moment
     // DEFAULT_SCREENSHOT_SCALE moves; nothing else reads the two together.
-    const fallback = String(getScreenshotScale());
+    // Whole phrases, not the bare number: `toContain("0.3")` is also satisfied
+    // by "0.35", by the unrelated "0.01" in the same sentence, and by prose that
+    // drops the env var and keeps the digits.
+    const fallback = getScreenshotScale();
     const shape = screenshotDiffTool.zodSchema!.shape;
     const registry = {
       resolveService: vi.fn(),
     } as unknown as import("@argent/registry").Registry;
-    const quoted = [
-      shape.captureBaseline.description,
-      shape.captureCurrent.description,
-      createScreenshotTool(registry).zodSchema!.shape.scale.description,
-      formatScreenshotDiffSummary({
-        totalPixels: 4,
-        differentPixels: 0,
-        mismatchPercentage: 0,
-        regions: [],
-        sizeNormalization: {
-          baseline: { width: 4, height: 8 },
-          current: { width: 2, height: 4 },
-          comparedAt: { width: 2, height: 4 },
-        },
-      }),
-    ];
+    const scaleDescription = createScreenshotTool(registry).zodSchema!.shape.scale.description;
 
-    for (const text of quoted) {
-      expect(text).toContain(fallback);
-    }
+    expect(shape.captureBaseline.description).toContain(
+      `ARGENT_SCREENSHOT_SCALE, ${fallback} by default`
+    );
+    expect(shape.captureCurrent.description).toContain(
+      `ARGENT_SCREENSHOT_SCALE, ${fallback} by default`
+    );
+    expect(scaleDescription).toContain(`ARGENT_SCREENSHOT_SCALE env var, or ${fallback} if unset`);
+    // The hazard the rest of that paragraph exists for, on the one surface an
+    // agent reads with no skill loaded — `screenshot` is alwaysLoad.
+    expect(scaleDescription).toContain("wrong data size");
+  });
+
+  it("tells a `screenshot` caller that the scale it picks is a diff input", () => {
+    // The two wire tests above pin the sizes these tools agree on, but only
+    // `screenshot`'s own description reaches an agent capturing a baseline for a
+    // diff it has not started yet; drop the pairing here and that agent picks a
+    // scale with no reason to think it matters.
+    const registry = {
+      resolveService: vi.fn(),
+    } as unknown as import("@argent/registry").Registry;
+    expect(createScreenshotTool(registry).zodSchema!.shape.scale.description).toContain(
+      "screenshot-diff"
+    );
+  });
+
+  it("states both normalized-comparison statuses before the call, not only in the summary", () => {
+    // The pre-flight contract has to name them: a gate keyed on `unchanged`
+    // reads `resized_no_change` as a failure to match, and a caller that never
+    // learns sizes are reconciled has no reason to check which one it got.
+    expect(screenshotDiffTool.description).toContain("size_normalized");
+    expect(screenshotDiffTool.description).toContain("resized_no_change");
   });
 
   it("has nothing lower to retry when ARGENT_SCREENSHOT_SCALE is 1.0, so the capture fails", async () => {

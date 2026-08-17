@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@argent/registry";
 import { createScreenshotTool } from "../src/tools/screenshot";
+import { getScreenshotScale } from "../src/utils/simulator-client";
 
 describe("screenshot tool", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("returns an image artifact handle; includeImageInContext is an input-only flag handled by the MCP adapter", async () => {
@@ -47,5 +49,37 @@ describe("screenshot tool", () => {
     });
     expect(result).not.toHaveProperty("includeImageInContext");
     expect(result).not.toHaveProperty("url");
+  });
+
+  it("omitting `scale` puts the tool-server's own scale on the wire", async () => {
+    // Half of an equality several tool descriptions and skills rest on: a
+    // baseline captured here with `scale` omitted has to come out at the size
+    // screenshot-diff's live capture falls back to. That side is asserted in
+    // screenshot-diff-tool.test.ts; this is the one that would go stale if this
+    // path ever resolved a default of its own.
+    vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body: string }) => {
+        bodies.push(JSON.parse(init.body));
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ url: "http://localhost/s.png", path: "/tmp/s.png" }),
+        } as unknown as Response;
+      })
+    );
+    const registry = {
+      resolveService: vi.fn().mockResolvedValue({ apiUrl: "http://localhost:4949" }),
+    } as unknown as import("@argent/registry").Registry;
+
+    await createScreenshotTool(registry).execute(
+      {},
+      { udid: "ABC", includeImageInContext: false },
+      { artifacts: new ArtifactStore() }
+    );
+
+    expect(bodies).toEqual([{ scale: getScreenshotScale() }]);
   });
 });
