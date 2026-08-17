@@ -193,7 +193,7 @@ export function findFocusedTextField(xml: string): FocusedField | null {
  * reads as a focus change, which declines the repair and reports the field as
  * unmatched rather than as verified — which is why the note names both causes.
  */
-export function isSameField(a: FocusedField, b: FocusedField): boolean {
+function isSameField(a: FocusedField, b: FocusedField): boolean {
   if (a.className !== b.className) return false;
   if (a.resourceId !== "" || b.resourceId !== "") return a.resourceId === b.resourceId;
   return a.origin === b.origin;
@@ -208,7 +208,7 @@ export function isSameField(a: FocusedField, b: FocusedField): boolean {
  * and changes nothing; typing it into the same field and having every key event
  * dropped also changes nothing. Retyping on that evidence enters the text twice.
  */
-export type TypedTextVerdict = "landed" | "not-landed" | "indeterminate";
+type TypedTextVerdict = "landed" | "not-landed" | "indeterminate";
 
 /**
  * Whether every character of `before` is still present in `after` as a single
