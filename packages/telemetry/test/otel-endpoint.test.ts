@@ -14,6 +14,7 @@ const otelMock = vi.hoisted(() => ({
       url: string;
       headers: Record<string, string>;
       timeoutMillis: number;
+      compression?: string;
       httpAgentOptions?: { timeout?: number };
     };
   }>,
@@ -155,6 +156,14 @@ describe("otel endpoint invariance", () => {
     getClient();
     expect(otelMock.exporters[0]!.opts.timeoutMillis).toBe(1_500);
     expect(otelMock.processors[0]!.opts.exportTimeoutMillis).toBe(1_500);
+  });
+
+  it("decides the request encoding in code rather than leaving it to the SDK", () => {
+    // Absent, the SDK resolves compression from OTEL_EXPORTER_OTLP_COMPRESSION.
+    // otel-endpoint-live.test.ts is what proves the explicit value actually wins
+    // there; this is the constructor half, next to the other options.
+    getClient();
+    expect(otelMock.exporters[0]!.opts.compression).toBe("none");
   });
 
   it("identifies itself as the service and scope the collector's schema keys on", () => {

@@ -3,8 +3,8 @@
  * exporter rather than a mock of it.
  *
  * `otel-endpoint.test.ts` mocks `@opentelemetry/exporter-logs-otlp-http`, so it
- * can only show that `otel.ts` passes `url` and `headers` to the constructor —
- * it cannot show what the SDK then does with `OTEL_EXPORTER_OTLP_*`. An SDK
+ * can only show what `otel.ts` passes to the constructor — it cannot show what
+ * the SDK then does with `OTEL_EXPORTER_OTLP_*`. An SDK
  * upgrade that changed that handling would keep every assertion there green
  * while telemetry started going somewhere else, or carrying something extra.
  *
@@ -153,16 +153,21 @@ describe("what reaches the collector, against the real OTLP exporter", () => {
     expect(code.requests[0]!.headers["content-encoding"]).toBeUndefined();
   }, 15_000);
 
-  it("leaves the OTLP header environment as it found it", () => {
-    // Clearing the variables is a means, not a side effect to inflict on the
-    // rest of the process — anything else in this CLI that reads them later
-    // must still see what the user set.
+  it("leaves the OTLP environment as it found it", () => {
+    // Clearing the header variables is a means, not a side effect to inflict on
+    // the rest of the process — anything else in this CLI that reads them later
+    // must still see what the user set. The compression variable is here for the
+    // opposite reason: the explicit option already beats it, so winning by
+    // clobbering it would be a strictly worse implementation this suite would
+    // otherwise be unable to tell from the shipped one.
     process.env.OTEL_EXPORTER_OTLP_HEADERS = "x-vendor=keep-me";
     delete process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS;
+    process.env.OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
 
     createExporter({ endpoint: code.url, token: "real-ingest-token", isUsable: true });
 
     expect(process.env.OTEL_EXPORTER_OTLP_HEADERS).toBe("x-vendor=keep-me");
     expect("OTEL_EXPORTER_OTLP_LOGS_HEADERS" in process.env).toBe(false);
+    expect(process.env.OTEL_EXPORTER_OTLP_COMPRESSION).toBe("gzip");
   });
 });

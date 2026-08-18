@@ -142,11 +142,21 @@ function captureExportErrors(): string[] {
   return errors;
 }
 
-/** Poll until `condition` holds, or the `performance.now()` `deadline` passes. */
-async function settle(condition: () => boolean, deadline: number): Promise<void> {
-  while (!condition() && performance.now() < deadline) {
+/**
+ * Poll until `condition` holds, returning how long that took measured from
+ * `started` - or Infinity if it still did not hold within `budgetMs`, so the
+ * caller asserts on one number rather than on a flag plus a clock.
+ */
+async function settle(
+  condition: () => boolean,
+  started: number,
+  budgetMs: number
+): Promise<number> {
+  while (performance.now() - started < budgetMs) {
+    if (condition()) return performance.now() - started;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  return Infinity;
 }
 
 /**
@@ -201,19 +211,21 @@ describe("a collector that cannot take the batch", () => {
 
     await exportAndDrain(silent.url);
     // The client closes; the server observes it on a later turn of its loop.
-    await settle(() => silent.connections.every((c) => c.closed), started + FAILURE_BUDGET_MS);
+    const closedAfter = await settle(
+      () => silent.connections.every((c) => c.closed),
+      started,
+      FAILURE_BUDGET_MS
+    );
 
     expect(silent.connections).not.toHaveLength(0);
-    for (const connection of silent.connections) expect(connection.closed).toBe(true);
-    expect(performance.now() - started).toBeLessThan(FAILURE_BUDGET_MS);
+    expect(closedAfter).toBeLessThan(FAILURE_BUDGET_MS);
   }, 30_000);
 
   it("bounds the retry loop when the collector refuses the connection", async () => {
     // ECONNREFUSED is retryable to the exporter, which backs off and tries
-    // again. Two things can stop it - the transport's 5-attempt cap and the
-    // export deadline - and at this backoff (1s, x1.5) the deadline is the one
-    // that fires, on the second attempt. A drain that outlives the budget means
-    // the cap is gone.
+    // again. At a 1s initial backoff the transport's own retry cap never binds -
+    // the export deadline is what ends the loop, on the second attempt - so a
+    // drain that outlives the budget means that deadline is gone.
     const errors = captureExportErrors();
     const url = await unusedUrl();
 

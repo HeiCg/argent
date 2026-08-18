@@ -14,9 +14,9 @@
  *
  * `otel-endpoint.test.ts` mocks the SDK and so sees only the options passed to
  * the constructor; `otel-endpoint-live.test.ts` drives the real SDK but reads
- * only the request line and headers. Neither one looks at the body, which is
- * where an SDK upgrade would show up - switching the default serialization to
- * protobuf, or turning compression on, keeps both of those green.
+ * only the request line and headers. Neither looks at the body, so where each
+ * field sits inside it - which is what every column downstream is keyed on - is
+ * pinned here and nowhere else.
  *
  * The emitted record mirrors what `OtelClient.emit` builds. It has to be a
  * mirror rather than a call: `getClient()` resolves its endpoint from the
@@ -146,9 +146,11 @@ describe("the OTLP request Argent sends", () => {
     expect(request.method).toBe("POST");
     expect(request.path).toBe("/v1/logs");
 
-    // JSON, not protobuf. The SDK ships both encoders and this package depends
-    // on the http exporter for the JSON one; a bump that changed the default
-    // would keep every other assertion in this suite green.
+    // JSON, not protobuf. @opentelemetry/otlp-transformer ships both
+    // serializers, but the exporter package this one depends on hardcodes the
+    // JSON one and sends this content-type alongside it; protobuf-over-HTTP for
+    // logs is a separate package. So this pins a dependency choice rather than a
+    // default anything could flip.
     expect(request.headers["content-type"]).toBe("application/json");
 
     // No compression - which `createExporter` has to pin, because the SDK
@@ -203,10 +205,11 @@ describe("the OTLP request Argent sends", () => {
   }, 15_000);
 
   it("never puts more than one batch of records in a single request", async () => {
-    // maxExportBatchSize is what keeps a request small enough that the 4 MiB cap
-    // at the edge is unreachable in normal operation. A batch that grew past it
-    // would be refused by the proxy, and a refusal at the edge is invisible from
-    // here.
+    // maxExportBatchSize is what keeps a request small enough that the body caps
+    // in front of ClickHouse - 4 MB at the proxy, 4 MiB at the collector behind
+    // it - are unreachable in normal operation. A batch that grew past the
+    // proxy's would be refused there, and a refusal at the edge is invisible
+    // from here.
     const events = Array.from({ length: 25 }, (_, index) => ({
       event: `tool:invoke:${index}`,
       attributes: {},
