@@ -66,10 +66,11 @@ interface CapturedRequest {
 }
 
 interface Capture {
-  server: http.Server;
   url: string;
   requests: CapturedRequest[];
 }
+
+const closers: Array<() => Promise<void>> = [];
 
 async function startCapture(): Promise<Capture> {
   const requests: CapturedRequest[] = [];
@@ -88,7 +89,8 @@ async function startCapture(): Promise<Capture> {
     });
   });
   const port = await listenLoopback(server);
-  return { server, url: `http://127.0.0.1:${port}/v1/logs`, requests };
+  closers.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  return { url: `http://127.0.0.1:${port}/v1/logs`, requests };
 }
 
 /**
@@ -134,7 +136,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await new Promise<void>((resolve) => capture.server.close(() => resolve()));
+  await Promise.all(closers.splice(0).map((close) => close()));
 });
 
 describe("the OTLP request Argent sends", () => {

@@ -24,10 +24,11 @@ import { createExporter } from "../src/otel.js";
 import { listenLoopback, snapshotEnv } from "./helpers.js";
 
 interface Capture {
-  server: http.Server;
   url: string;
   requests: Array<{ path: string; headers: http.IncomingHttpHeaders }>;
 }
+
+const closers: Array<() => Promise<void>> = [];
 
 async function startCapture(): Promise<Capture> {
   const requests: Capture["requests"] = [];
@@ -40,7 +41,8 @@ async function startCapture(): Promise<Capture> {
     });
   });
   const port = await listenLoopback(server);
-  return { server, url: `http://127.0.0.1:${port}/v1/logs`, requests };
+  closers.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  return { url: `http://127.0.0.1:${port}/v1/logs`, requests };
 }
 
 const OTLP_ENV_VARS = [
@@ -71,9 +73,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   restoreEnv();
-  await Promise.all(
-    [code, hostile].map((c) => new Promise<void>((resolve) => c.server.close(() => resolve())))
-  );
+  await Promise.all(closers.splice(0).map((close) => close()));
 });
 
 /** Emit one record through the same provider wiring `OtelClient` builds. */
