@@ -88,7 +88,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  delete process.env.ARGENT_SCREENSHOT_SCALE;
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
@@ -108,13 +108,13 @@ function opts(overrides: Record<string, unknown> = {}) {
 
 describe("snapshot fallback capture scale", () => {
   it("keys a fallback baseline on the device, not on ARGENT_SCREENSHOT_SCALE", async () => {
-    process.env.ARGENT_SCREENSHOT_SCALE = "0.3";
+    vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "0.3");
     const seeded = await runSnapshot(env, opts({ updateBaselines: true }));
     expect(seeded.status).toBe("pass");
 
     // Same emulator, same flow, a tool-server started with a different value of
     // an unrelated agent-detail knob.
-    process.env.ARGENT_SCREENSHOT_SCALE = "0.5";
+    vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "0.5");
     const rerun = await runSnapshot(env, opts());
 
     // A clean comparison names the key it compared against in its reason.
@@ -123,7 +123,7 @@ describe("snapshot fallback capture scale", () => {
   });
 
   it("asks for full resolution first, then for a scale of its own", async () => {
-    process.env.ARGENT_SCREENSHOT_SCALE = "0.5";
+    vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "0.5");
 
     await runSnapshot(env, opts({ updateBaselines: true }));
 
