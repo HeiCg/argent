@@ -208,11 +208,11 @@ describe("sweepDeadStateFiles", () => {
   it("does not signal a process that merely mentions the bundle path", async () => {
     const marker = join(TEST_HOME, "gone-install/dist/tool-server.cjs");
     const watcher = join(TEST_HOME, "watcher.cjs");
+    expect(existsSync(marker)).toBe(false);
     // Carries the recorded path in its argv, but is not running it: the guard
     // requires a following `start`, so this must survive untouched.
     const child = await spawnFakeServer(watcher, { args: [marker] });
     const file = writeRecord(marker, child.pid!);
-    expect(existsSync(marker)).toBe(false);
     try {
       await launcher.sweepDeadStateFiles();
       expect(await waitForExit(child, 1_000)).toBe(false);
@@ -229,10 +229,10 @@ describe("sweepDeadStateFiles", () => {
     // session is using.
     const marker = "/retired-install/dist/tool-server.cjs";
     const impostor = TEST_HOME + marker;
+    expect(existsSync(marker)).toBe(false);
     mkdirSync(dirname(impostor), { recursive: true });
     const child = await spawnFakeServer(impostor);
     const file = writeRecord(marker, child.pid!);
-    expect(existsSync(marker)).toBe(false);
     try {
       await launcher.sweepDeadStateFiles();
       expect(await waitForExit(child, 1_000)).toBe(false);
