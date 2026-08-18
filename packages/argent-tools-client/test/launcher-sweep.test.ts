@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // The launcher captures STATE_DIR from `homedir()` at module load. Redirect
 // HOME to a per-file temp dir BEFORE the dynamic import runs so the entire
@@ -51,10 +51,12 @@ function writeRecord(bundlePath: string, pid: number): string {
  * command shape the launcher's identity check requires. Resolves once the
  * child has printed its ready marker, so callers may delete the bundle file
  * without racing node's module load. With `trapSigterm`, the child installs a
- * no-op SIGTERM handler BEFORE printing ready, simulating a wedged server. */
+ * no-op SIGTERM handler BEFORE printing ready, simulating a wedged server.
+ * `args` replaces the trailing `start`, for the processes the guard must NOT
+ * mistake for a server. */
 async function spawnFakeServer(
   bundlePath: string,
-  opts?: { trapSigterm?: boolean }
+  opts?: { trapSigterm?: boolean; args?: string[] }
 ): Promise<ChildProcess> {
   writeFileSync(
     bundlePath,
@@ -62,7 +64,9 @@ async function spawnFakeServer(
       'process.stdout.write("ready\\n"); setInterval(() => {}, 1000);\n',
     "utf8"
   );
-  const child = spawn("node", [bundlePath, "start"], { stdio: ["ignore", "pipe", "ignore"] });
+  const child = spawn("node", [bundlePath, ...(opts?.args ?? ["start"])], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
   await new Promise<void>((resolve, reject) => {
     child.stdout!.once("data", () => resolve());
     child.once("exit", () => reject(new Error("fake server exited before becoming ready")));
@@ -138,10 +142,17 @@ describe("sweepDeadStateFiles", () => {
     // does not fit the width must still match its own marker; otherwise the
     // guard fails safe and the sweep leaves the server running forever.
     const NARROW_COLUMNS = 40;
-    const bundle = join(TEST_HOME, "a-bundle-path-far-wider-than-a-narrow-terminal.cjs");
-    // Precondition, not decoration: a marker short enough to survive truncation
-    // matches however `ps` is invoked, which would make this test vacuous.
-    expect(bundle.length).toBeGreaterThan(NARROW_COLUMNS);
+    // procps's single `-w` widens to max($COLUMNS, 132) rather than lifting the
+    // limit, so an argv under that floor cannot tell `-ww` from a one-character
+    // regression to `-w`. Size the fixture past it.
+    const PS_SINGLE_W_FLOOR = 132;
+    const bundle = join(
+      TEST_HOME,
+      "a-bundle-path-wider-than-both-a-narrow-terminal-and-the-column-floor-that-a-single-w-widens-to-instead-of-lifting.cjs"
+    );
+    // Precondition, not decoration: a command line short enough to survive
+    // truncation matches however `ps` is invoked, making this test vacuous.
+    expect(`node ${bundle} start`.length).toBeGreaterThan(PS_SINGLE_W_FLOOR);
     const child = await spawnFakeServer(bundle);
     const file = writeRecord(bundle, child.pid!);
     rmSync(bundle);
@@ -184,6 +195,45 @@ describe("sweepDeadStateFiles", () => {
     } finally {
       if (ambientPath === undefined) delete process.env.PATH;
       else process.env.PATH = ambientPath;
+      child.kill("SIGKILL");
+    }
+  }, 20_000);
+
+  // `-ww` hands the guard command lines that width truncation used to cut off
+  // before they could collide, so the structural match is what keeps a
+  // look-alike safe. Both halves of it are pinned here.
+
+  it("does not signal a process that merely mentions the bundle path", async () => {
+    const marker = join(TEST_HOME, "retired-install/dist/tool-server.cjs");
+    const watcher = join(TEST_HOME, "watcher.cjs");
+    // Carries the recorded path in its argv, but is not running it: the guard
+    // requires a following `start`, so this must survive untouched.
+    const child = await spawnFakeServer(watcher, { args: [marker] });
+    const file = writeRecord(marker, child.pid!);
+    try {
+      await launcher.sweepDeadStateFiles();
+      expect(await waitForExit(child, 1_000)).toBe(false);
+      expect(existsSync(file)).toBe(true);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  }, 20_000);
+
+  it("does not signal a different install whose bundle path ends with ours", async () => {
+    // A second install nested under a longer prefix: its command line contains
+    // the recorded path followed by `start`, and only the leading argument
+    // boundary tells the two apart. Killing it would take down a server another
+    // session is using.
+    const marker = "/retired-install/dist/tool-server.cjs";
+    const impostor = TEST_HOME + marker;
+    mkdirSync(dirname(impostor), { recursive: true });
+    const child = await spawnFakeServer(impostor);
+    const file = writeRecord(marker, child.pid!);
+    try {
+      await launcher.sweepDeadStateFiles();
+      expect(await waitForExit(child, 1_000)).toBe(false);
+      expect(existsSync(file)).toBe(true);
+    } finally {
       child.kill("SIGKILL");
     }
   }, 20_000);
