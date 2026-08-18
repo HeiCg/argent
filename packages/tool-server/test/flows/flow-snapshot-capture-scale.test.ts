@@ -32,8 +32,8 @@ let registry: Registry;
 let env: ActionEnv;
 /** Scales the fake server was asked for, in call order. */
 let requested: (number | undefined)[];
-/** How the fake server answers a full-resolution request. */
-let fullResFailure: { status: number; error: string };
+/** How the fake server answers a full-resolution request; null serves one. */
+let fullResFailure: { status: number; error: string } | null;
 
 async function writePng(file: string, w: number, h: number): Promise<void> {
   const png = new PNG({ width: w, height: h });
@@ -56,13 +56,14 @@ beforeEach(async () => {
     expect(url).toBe(`${API_URL}/api/screenshot`);
     const body = JSON.parse(init.body) as { scale?: number };
     requested.push(body.scale);
-    if (body.scale === undefined) {
+    if (body.scale === undefined && fullResFailure !== null) {
       return new Response(JSON.stringify({ error: fullResFailure.error }), {
         status: fullResFailure.status,
       });
     }
     const file = path.join(shotDir, `shot-${requested.length}.png`);
-    await writePng(file, Math.round(SCREEN_W * body.scale), Math.round(SCREEN_H * body.scale));
+    const scale = body.scale ?? 1.0;
+    await writePng(file, Math.round(SCREEN_W * scale), Math.round(SCREEN_H * scale));
     return new Response(JSON.stringify({ url: `file://${file}`, path: file }), { status: 200 });
   });
 
@@ -130,6 +131,22 @@ describe("snapshot fallback capture scale", () => {
     // entry is the full-res attempt; the second is the retry's own scale, not
     // the env var's.
     expect(requested).toEqual([undefined, 0.3]);
+  });
+
+  it("keys a reduced-scale capture apart from a full-res baseline", async () => {
+    // A host that streams full-res seeds the strict baseline...
+    fullResFailure = null;
+    const seeded = await runSnapshot(env, opts({ updateBaselines: true }));
+    expect(seeded.snapshotKey).toBe("home__android-1080x2424");
+
+    // ...and a host that cannot seeds its own rather than passing a downscaled
+    // capture off against it. Same message any new device class gets.
+    fullResFailure = { status: 200, error: "wrong data size, expected 7853760 got 17627328" };
+    const constrained = await runSnapshot(env, opts());
+
+    expect(constrained.snapshotKey).toBe("home__android-324x727");
+    expect(constrained.status).toBe("fail");
+    expect(constrained.reason).toContain('no baseline for "home" on this device class');
   });
 
   it("leaves a capture failure that is not the framebuffer limit alone", async () => {
