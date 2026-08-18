@@ -192,7 +192,7 @@ describe("the OTLP request Argent sends", () => {
 
     const attributes = attributeMap(record.attributes);
     expect(attributes["event.name"]?.stringValue).toBe("tool:invoke");
-    expect(attributes["distinct_id"]?.stringValue).toHaveLength(64);
+    expect(attributes["distinct_id"]?.stringValue).toBe("a".repeat(64));
 
     // Attributes keep their OTLP type on the wire and are flattened to strings
     // only on the way into ClickHouse's Map(LowCardinality(String), String),

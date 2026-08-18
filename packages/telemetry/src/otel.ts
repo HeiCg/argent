@@ -124,23 +124,40 @@ function toAttributes(record: EmitRecord): LogAttributes {
 }
 
 /**
- * OTLP header environment variables, cleared while the exporter is built.
+ * OTLP environment variables cleared while the exporter is built — the ones the
+ * SDK acts on whatever the code passes.
  *
- * The SDK merges these into every request, keeping any key the code does not
- * set itself. Out in the world that variable holds the developer's OWN
- * observability credential — `x-honeycomb-team`, a Dynatrace `Api-Token`,
- * Grafana Cloud basic auth — so a machine that already runs OpenTelemetry would
- * ship that third-party secret to this collector on every batch, without it
- * ever passing the sanitizer. Argent's telemetry needs no caller-supplied
- * header, so drop the whole channel rather than filter it.
+ * Headers it MERGES, keeping any key the code does not set itself. Out in the
+ * world that variable holds the developer's OWN observability credential —
+ * `x-honeycomb-team`, a Dynatrace `Api-Token`, Grafana Cloud basic auth — so a
+ * machine that already runs OpenTelemetry would ship that third-party secret to
+ * this collector on every batch, without it ever passing the sanitizer. Argent's
+ * telemetry needs no caller-supplied header, so drop the whole channel rather
+ * than filter it.
  *
- * The exporter resolves its header set synchronously inside the constructor, so
- * clearing the variables across that single call is enough, and no other code
- * can observe the gap.
+ * The certificate paths never reach the wire: the https agent the SDK builds
+ * from them loses to the explicit httpAgentOptions below. But it reads them to
+ * build it, with a synchronous fs.readFileSync — so a path that never answers,
+ * a dead network mount or a fifo with no writer, hangs the command that emitted
+ * the event, on a read whose result is then discarded.
+ *
+ * Everything else the SDK takes from the environment only when the code passes
+ * nothing — compression, timeout — so an explicit value settles those and they
+ * are not listed here.
+ *
+ * All of this is resolved synchronously inside the constructor, so clearing the
+ * variables across that single call is enough, and no other code can observe
+ * the gap.
  */
-const OTLP_HEADER_ENV_VARS = [
+const CLEARED_OTLP_ENV_VARS = [
   "OTEL_EXPORTER_OTLP_HEADERS",
   "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+  "OTEL_EXPORTER_OTLP_CERTIFICATE",
+  "OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE",
+  "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
+  "OTEL_EXPORTER_OTLP_LOGS_CLIENT_CERTIFICATE",
+  "OTEL_EXPORTER_OTLP_CLIENT_KEY",
+  "OTEL_EXPORTER_OTLP_LOGS_CLIENT_KEY",
 ] as const;
 
 /**
@@ -153,20 +170,20 @@ const NO_COMPRESSION = "none" as NonNullable<
 >["compression"];
 
 export function createExporter(config: ResolvedConfig): OTLPLogExporter {
-  const saved = OTLP_HEADER_ENV_VARS.map((name) => [name, process.env[name]] as const);
-  for (const name of OTLP_HEADER_ENV_VARS) delete process.env[name];
+  const saved = CLEARED_OTLP_ENV_VARS.map((name) => [name, process.env[name]] as const);
+  for (const name of CLEARED_OTLP_ENV_VARS) delete process.env[name];
   try {
     return new OTLPLogExporter({
       url: config.endpoint,
       headers: { authorization: `Bearer ${config.token}` },
       timeoutMillis: EXPORT_TIMEOUT_MS,
-      // The last OTLP knob the environment could still reach. Left unset, the
-      // SDK reads OTEL_EXPORTER_OTLP_COMPRESSION (or its _LOGS_ variant), so a
-      // machine that already runs OpenTelemetry would gzip argent's batches -
-      // a request shaped differently from the one the ingestion side is sized
-      // and tested against, decided by a variable set for something else.
-      // Unlike the headers above, one explicit value settles it: the SDK takes
-      // user-provided over env for this option rather than merging the two.
+      // Left unset, the SDK takes this from OTEL_EXPORTER_OTLP_COMPRESSION (or
+      // its _LOGS_ variant), so a machine that already runs OpenTelemetry would
+      // gzip argent's batches - a request shaped differently from the one the
+      // ingestion side is sized and tested against, decided by a variable set
+      // for something else. Unlike the variables cleared above, one explicit
+      // value settles it: the SDK takes user-provided over env here rather than
+      // merging the two or reading anything to decide.
       compression: NO_COMPRESSION,
       // The exporter bounds a request with `req.setTimeout()`, which Node only
       // arms once the socket is CONNECTED — so a collector whose address drops

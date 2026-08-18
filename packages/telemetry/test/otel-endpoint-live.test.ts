@@ -19,8 +19,9 @@ import http from "node:http";
 import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SeverityNumber } from "@opentelemetry/api-logs";
+import { diag, DiagLogLevel } from "@opentelemetry/api";
 import { createExporter } from "../src/otel.js";
-import { listenLoopback } from "./helpers.js";
+import { listenLoopback, snapshotEnv } from "./helpers.js";
 
 interface Capture {
   server: http.Server;
@@ -50,23 +51,23 @@ const OTLP_ENV_VARS = [
   "OTEL_EXPORTER_OTLP_PROTOCOL",
   "OTEL_EXPORTER_OTLP_COMPRESSION",
   "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION",
-] as const;
+  "OTEL_EXPORTER_OTLP_CERTIFICATE",
+  "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
+  "OTEL_EXPORTER_OTLP_CLIENT_KEY",
+];
 
-let saved: Record<string, string | undefined> = {};
+let restoreEnv: () => void;
 let code: Capture;
 let hostile: Capture;
 
 beforeEach(async () => {
-  saved = Object.fromEntries(OTLP_ENV_VARS.map((name) => [name, process.env[name]]));
+  restoreEnv = snapshotEnv(OTLP_ENV_VARS);
   code = await startCapture();
   hostile = await startCapture();
 });
 
 afterEach(async () => {
-  for (const [name, value] of Object.entries(saved)) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
+  restoreEnv();
   await Promise.all(
     [code, hostile].map((c) => new Promise<void>((resolve) => c.server.close(() => resolve())))
   );
@@ -139,11 +140,10 @@ describe("what reaches the collector, against the real OTLP exporter", () => {
   }, 15_000);
 
   it("posts the encoding the code chose when an env var asks for gzip", async () => {
-    // Compression is the one OTLP knob the SDK reads straight from the
-    // environment - a machine that already runs OpenTelemetry sets this for its
-    // own collector - and the encoding argent posts is not that machine's to
-    // pick. otel-wire.test.ts captures the uncompressed request the ingestion
-    // side is sized and smoke-tested against.
+    // A machine that already runs OpenTelemetry sets this for its own collector,
+    // and the encoding argent posts is not that machine's to pick.
+    // otel-wire.test.ts captures the uncompressed request the ingestion side is
+    // sized and smoke-tested against.
     process.env.OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
     process.env.OTEL_EXPORTER_OTLP_LOGS_COMPRESSION = "gzip";
 
@@ -152,6 +152,37 @@ describe("what reaches the collector, against the real OTLP exporter", () => {
     expect(code.requests).toHaveLength(1);
     expect(code.requests[0]!.headers["content-encoding"]).toBeUndefined();
   }, 15_000);
+
+  it("reads no file an OTLP certificate variable names", () => {
+    // The SDK resolves these with a synchronous fs.readFileSync while the
+    // exporter is constructed, and only then discards the https agent it built
+    // from them in favour of the explicit httpAgentOptions. So the file is read
+    // for nothing - and a path that never answers, a dead network mount or a
+    // fifo with no writer, hangs the command that emitted the event instead
+    // (measured: the constructor never returned).
+    const warnings: string[] = [];
+    diag.setLogger(
+      {
+        error: () => {},
+        warn: (message) => warnings.push(String(message)),
+        info: () => {},
+        debug: () => {},
+        verbose: () => {},
+      },
+      DiagLogLevel.WARN
+    );
+    process.env.OTEL_EXPORTER_OTLP_CERTIFICATE = "/nonexistent/argent-probe-ca.pem";
+    process.env.OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE = "/nonexistent/argent-probe-cert.pem";
+    process.env.OTEL_EXPORTER_OTLP_CLIENT_KEY = "/nonexistent/argent-probe-key.pem";
+
+    try {
+      createExporter({ endpoint: code.url, token: "real-ingest-token", isUsable: true });
+    } finally {
+      diag.disable();
+    }
+
+    expect(warnings).toEqual([]);
+  });
 
   it("leaves the OTLP environment as it found it", () => {
     // Clearing the header variables is a means, not a side effect to inflict on
@@ -162,12 +193,14 @@ describe("what reaches the collector, against the real OTLP exporter", () => {
     // otherwise be unable to tell from the shipped one.
     process.env.OTEL_EXPORTER_OTLP_HEADERS = "x-vendor=keep-me";
     delete process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS;
+    process.env.OTEL_EXPORTER_OTLP_CERTIFICATE = "/etc/ssl/corp-ca.pem";
     process.env.OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
 
     createExporter({ endpoint: code.url, token: "real-ingest-token", isUsable: true });
 
     expect(process.env.OTEL_EXPORTER_OTLP_HEADERS).toBe("x-vendor=keep-me");
     expect("OTEL_EXPORTER_OTLP_LOGS_HEADERS" in process.env).toBe(false);
+    expect(process.env.OTEL_EXPORTER_OTLP_CERTIFICATE).toBe("/etc/ssl/corp-ca.pem");
     expect(process.env.OTEL_EXPORTER_OTLP_COMPRESSION).toBe("gzip");
   });
 });

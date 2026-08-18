@@ -32,7 +32,7 @@ import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { createExporter } from "../src/otel.js";
-import { listenLoopback } from "./helpers.js";
+import { listenLoopback, snapshotEnv } from "./helpers.js";
 
 /** `exportTimeoutMillis` as `otel.ts` sets it, so the wiring below mirrors `OtelClient`'s. */
 const EXPORT_TIMEOUT_MS = 1_500;
@@ -189,6 +189,18 @@ async function exportAndDrain(endpoint: string): Promise<number> {
 
 describe("a collector that cannot take the batch", () => {
   it("gives up on a silent collector instead of waiting on it", async () => {
+    // Under an environment naming a far longer deadline, because the SDK
+    // resolves OTEL_EXPORTER_OTLP_TIMEOUT the way it resolves compression - from
+    // the environment only when the code passes nothing - and a flipped
+    // precedence there is the worse payload: a short-lived command would sit on
+    // a dead collector for 30s after its shutdown() already resolved.
+    const restoreEnv = snapshotEnv([
+      "OTEL_EXPORTER_OTLP_TIMEOUT",
+      "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+    ]);
+    track(async () => restoreEnv());
+    process.env.OTEL_EXPORTER_OTLP_TIMEOUT = "30000";
+    process.env.OTEL_EXPORTER_OTLP_LOGS_TIMEOUT = "30000";
     const silent = await startSilent();
 
     const elapsed = await exportAndDrain(silent.url);
@@ -233,6 +245,21 @@ describe("a collector that cannot take the batch", () => {
 
     expect(elapsed).toBeLessThan(FAILURE_BUDGET_MS);
     expect(errors.join("\n")).toContain("ECONNREFUSED");
+  }, 30_000);
+
+  it("re-sends once on a retryable status and still stops inside the budget", async () => {
+    // 503 is a collector behind a restarting load balancer, and the only case
+    // where it receives the same batch twice. The status never reaches the error
+    // channel - the SDK reports the class, not the code - so a retried failure
+    // and a rejected one are told apart by the request count, not the message.
+    const errors = captureExportErrors();
+    const collector = await startResponding(503);
+
+    const elapsed = await exportAndDrain(collector.url);
+
+    expect(elapsed).toBeLessThan(FAILURE_BUDGET_MS);
+    expect(collector.requests).toEqual(["/v1/logs", "/v1/logs"]);
+    expect(errors.join("\n")).toContain("retryable");
   }, 30_000);
 
   it("swallows a rejected ingest token", async () => {
