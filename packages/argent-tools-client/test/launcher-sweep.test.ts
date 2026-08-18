@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +70,21 @@ async function spawnFakeServer(
   return child;
 }
 
+/** Does this platform's `ps` clip `-o command=` to $COLUMNS? procps-ng does;
+ * BSD `ps` clips only to a terminal width, and the guard never hands `ps` a
+ * terminal — so the width regression is unobservable on macOS. Probed against a
+ * live pid through the guard's own invocation rather than assumed from
+ * `process.platform`. */
+function psClipsToColumns(pid: number, columns: number): boolean {
+  const width = (widen: string[]): number =>
+    execFileSync("ps", [...widen, "-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      env: { ...process.env, COLUMNS: String(columns) },
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim().length;
+  return width([]) < width(["-ww"]);
+}
+
 function waitForExit(child: ChildProcess, timeoutMs = 8_000): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
   return new Promise((resolve) => {
@@ -117,7 +132,7 @@ describe("sweepDeadStateFiles", () => {
     }
   });
 
-  it("terminates a live server whose bundle path is longer than the terminal is wide", async () => {
+  it("terminates a live server whose bundle path is longer than the terminal is wide", async (ctx) => {
     // The identity guard reads the process command line with `ps`, and procps-ng
     // clips `-o command=` to $COLUMNS unless `-ww` is passed. A bundle path that
     // does not fit the width must still match its own marker; otherwise the
@@ -135,6 +150,9 @@ describe("sweepDeadStateFiles", () => {
     const ambientColumns = process.env.COLUMNS;
     process.env.COLUMNS = String(NARROW_COLUMNS);
     try {
+      // Skip rather than pass vacuously: where `ps` ignores $COLUMNS the
+      // assertions below hold against the un-fixed guard too.
+      if (!psClipsToColumns(child.pid!, NARROW_COLUMNS)) ctx.skip();
       await launcher.sweepDeadStateFiles();
       expect(await waitForExit(child)).toBe(true);
       expect(existsSync(file)).toBe(false);
@@ -146,6 +164,28 @@ describe("sweepDeadStateFiles", () => {
     // waitForExit's own window exceeds vitest's 5 s default, so a server the
     // guard failed to identify reports as an unterminated server rather than
     // as a bare test timeout.
+  }, 20_000);
+
+  it("terminates a live server when PATH omits every directory holding `ps`", async () => {
+    // An MCP server launched from a GUI / launchd context inherits a sanitized
+    // PATH without `/bin`, where a bare `ps` spawn ENOENTs. The identity guard
+    // must still read the command line there, or it fails safe and the sweep
+    // leaves the server running forever.
+    const bundle = join(TEST_HOME, "sanitized-path-bundle.cjs");
+    const child = await spawnFakeServer(bundle);
+    const file = writeRecord(bundle, child.pid!);
+    rmSync(bundle);
+    const ambientPath = process.env.PATH;
+    process.env.PATH = join(TEST_HOME, "no-such-bin");
+    try {
+      await launcher.sweepDeadStateFiles();
+      expect(await waitForExit(child)).toBe(true);
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      if (ambientPath === undefined) delete process.env.PATH;
+      else process.env.PATH = ambientPath;
+      child.kill("SIGKILL");
+    }
   }, 20_000);
 
   it("returns without waiting out the kill grace window on a SIGTERM-ignoring orphan", async () => {

@@ -703,6 +703,13 @@ export async function killToolServerForInstallDir(packageDir: string): Promise<n
   return killed;
 }
 
+// Absolute path to `ps`, resolved once. An MCP server launched from a GUI /
+// launchd context inherits a sanitized PATH that omits `/bin`, so a bare `"ps"`
+// spawn ENOENTs — and the guard below reads that as "not one of ours" for every
+// live server, skipping the kill and orphaning it. Same pin as tool-server's
+// PS_BIN; bare `"ps"` stays the fallback for an atypical layout.
+const PS_BIN = ["/bin/ps", "/usr/bin/ps"].find((p) => fs.existsSync(p)) ?? "ps";
+
 /**
  * Best-effort check that `pid` is one of OUR tool-server processes, by matching
  * its command line against `marker` (the bundle path recorded in state when we
@@ -719,7 +726,7 @@ function processCommandMatches(pid: number, marker: string | undefined): boolean
     // than that never matches its own marker, this returns false, and the
     // kill-before-respawn below is skipped — orphaning the live server.
     // Same flag tool-server's vega-process PS_ARGS uses.
-    const cmd = execFileSync("ps", ["-ww", "-p", String(pid), "-o", "command="], {
+    const cmd = execFileSync(PS_BIN, ["-ww", "-p", String(pid), "-o", "command="], {
       encoding: "utf8",
       timeout: 2_000,
       stdio: ["ignore", "pipe", "ignore"],
