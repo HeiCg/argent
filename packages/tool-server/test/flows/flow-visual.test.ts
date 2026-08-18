@@ -769,5 +769,8 @@ describe("runSnapshot capture scale", () => {
       scale: 1.0,
       includeImageInContext: false,
     });
+    // And no reduced-scale note: it qualifies the baselines that carry the
+    // caveat, so a run that never fell back must not be labelled as one.
+    expect(r.reason).toBe("baseline written (home__ios-390x844.png)");
   });
 });
