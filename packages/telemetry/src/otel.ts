@@ -165,7 +165,7 @@ export function createExporter(config: ResolvedConfig): OTLPLogExporter {
       // machine that already runs OpenTelemetry would gzip argent's batches -
       // a request shaped differently from the one the ingestion side is sized
       // and tested against, decided by a variable set for something else.
-      // Unlike the headers below, one explicit value settles it: the SDK takes
+      // Unlike the headers above, one explicit value settles it: the SDK takes
       // user-provided over env for this option rather than merging the two.
       compression: NO_COMPRESSION,
       // The exporter bounds a request with `req.setTimeout()`, which Node only
@@ -254,9 +254,11 @@ class OtelClient implements TelemetryClient {
 
   async shutdown(_timeoutMs: number): Promise<void> {
     // LoggerProvider.shutdown() force-flushes the batch processor and then tears
-    // it down. The overall time bound is enforced by the caller's Promise.race
-    // and by the processor's exportTimeoutMillis, so the argument is part of the
-    // TelemetryClient contract rather than something this implementation reads.
+    // it down. The time bound comes from the caller's Promise.race and from the
+    // exporter's timeoutMillis — NOT from exportTimeoutMillis, which the
+    // force-flush awaits straight past (otel-unreachable.test.ts measures it) —
+    // so the argument is part of the TelemetryClient contract rather than
+    // something this implementation reads.
     await this.provider.shutdown();
   }
 }
