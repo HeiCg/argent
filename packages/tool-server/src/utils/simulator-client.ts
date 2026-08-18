@@ -35,9 +35,9 @@ const FIRST_FRAME_POLL_MS = 250;
 
 // Some Android emulator configurations answer a full-resolution request with a
 // framebuffer size mismatch: the frame they stream is not the size the server
-// computed for the device, and it refuses to export it. The same device serves
-// every scale below full, so this is the one capture failure a caller can
-// answer by asking for less.
+// computed for the device, so it refuses to export it. The same device serves
+// every scale below full, which is what makes this the one capture failure a
+// caller can answer by asking for less.
 const FRAMEBUFFER_SIZE_MISMATCH = /wrong data size/i;
 
 /**

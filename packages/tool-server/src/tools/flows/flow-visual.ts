@@ -22,12 +22,11 @@ export const DEFAULT_MAX_MISMATCH = 0.5;
 /**
  * Scale a snapshot retries at when the device cannot stream a full-res frame.
  *
- * Stated here rather than left to the screenshot tool's own default, which
+ * Stated here rather than left to the screenshot tool's default, which
  * `ARGENT_SCREENSHOT_SCALE` overrides: the baseline key carries the dimensions
- * the capture came back at, so an unscaled retry would key every committed
- * baseline on that env var — a knob for how much detail the *agent* sees — and
- * a host that set it differently would be told it has no baseline for a device
- * class it does have one for.
+ * the capture came back at, so an unscaled retry keys every committed baseline
+ * on that env var, and a host that set it differently is told it has no
+ * baseline for a device class it does have one for.
  */
 const FALLBACK_CAPTURE_SCALE = 0.3;
 
@@ -219,9 +218,9 @@ export async function runSnapshot(
 
   const store = requireArtifacts(env.ctx);
 
-  // Full-resolution capture, not attached to any agent context — a baseline.
-  // The screenshot tool already registers the capture, so `shot.image` is a
-  // ready-made handle for the `current` artifact.
+  // The capture, not attached to any agent context — a baseline. The
+  // screenshot tool already registers it, so `shot.image` is a ready-made
+  // handle for the `current` artifact.
   //
   // Full-res is preferred: it is the strictest comparison available. But some
   // Android emulator configurations cannot stream a full-res frame — the
@@ -233,13 +232,12 @@ export async function runSnapshot(
   // came back, so a fallback capture keys its own baseline instead of being
   // compared against a full-res one.
   //
-  // Only that mismatch is retried. Every other capture failure — an unreachable
-  // server, a frame stream that has not warmed up — would answer a smaller
-  // request the same way, so retrying one buys nothing and costs the baseline's
-  // identity: a transient that happened to clear would key the step off a
-  // resolution the device does not otherwise produce, and the miss would be
-  // reported as the device class having no baseline. Those propagate as
-  // themselves, which is what the step reports.
+  // Only that mismatch is retried. Any other capture failure — an unreachable
+  // server, a frame stream that has not warmed up — answers a smaller request
+  // the same way, so a retry buys nothing and costs the baseline's identity: a
+  // transient that happened to clear would key the step off a resolution the
+  // device does not otherwise produce, and the miss would surface as the device
+  // class having no baseline. Those propagate instead.
   let shot: { image: ArtifactHandle };
   let reducedScale = false;
   try {
@@ -339,9 +337,9 @@ export async function runSnapshot(
       const baseline = await store.register(baselinePath, { mimeType: "image/png" });
       return {
         status: "pass",
-        // Said where the baseline is adopted, not on every later comparison:
-        // the fidelity of the gate is what the reviewer is deciding to commit,
-        // and on an affected device every run would otherwise carry it.
+        // Said where the baseline is adopted — what the gate checks is what the
+        // reviewer is deciding to commit — rather than on every later
+        // comparison, which on an affected device is every run.
         reason:
           (exists ? `baseline updated (${key})` : `baseline written (${key})`) +
           (reducedScale ? ` at reduced scale — this device cannot stream a full-res frame` : ""),
