@@ -49,6 +49,8 @@ const OTLP_ENV_VARS = [
   "OTEL_EXPORTER_OTLP_HEADERS",
   "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
   "OTEL_EXPORTER_OTLP_PROTOCOL",
+  "OTEL_EXPORTER_OTLP_COMPRESSION",
+  "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION",
 ] as const;
 
 let saved: Record<string, string | undefined> = {};
@@ -135,6 +137,21 @@ describe("what reaches the collector, against the real OTLP exporter", () => {
     expect(headers["x-honeycomb-team"]).toBeUndefined();
     expect(headers["x-dt-api-token"]).toBeUndefined();
     expect(headers.authorization).toBe("Bearer real-ingest-token");
+  }, 15_000);
+
+  it("posts the encoding the code chose when an env var asks for gzip", async () => {
+    // Compression is the one OTLP knob the SDK reads straight from the
+    // environment - a machine that already runs OpenTelemetry sets this for its
+    // own collector - and the encoding argent posts is not that machine's to
+    // pick. otel-wire.test.ts captures the uncompressed request the ingestion
+    // side is sized and smoke-tested against.
+    process.env.OTEL_EXPORTER_OTLP_COMPRESSION = "gzip";
+    process.env.OTEL_EXPORTER_OTLP_LOGS_COMPRESSION = "gzip";
+
+    await exportOneRecord(code.url, "real-ingest-token");
+
+    expect(code.requests).toHaveLength(1);
+    expect(code.requests[0]!.headers["content-encoding"]).toBeUndefined();
   }, 15_000);
 
   it("leaves the OTLP header environment as it found it", () => {

@@ -106,9 +106,11 @@ export interface TelemetryClient {
   shutdown(timeoutMs: number): Promise<void>;
 }
 
-// OTel attribute values may not be null/undefined, and e.g. `cloud_agent` is
-// null on the common non-cloud path. Drop those keys — for every property here,
-// absence carries the same meaning an explicit null would.
+// The SDK accepts a null attribute and serializes it as an empty OTLP value,
+// which is stored as, and unrecoverable from, a property that really was empty.
+// Drop those keys instead — for every property here (e.g. `cloud_agent`, null on
+// the common non-cloud path), absence carries the same meaning an explicit null
+// would.
 function toAttributes(record: EmitRecord): LogAttributes {
   const attributes: LogAttributes = {
     "distinct_id": record.distinctId,
@@ -141,6 +143,15 @@ const OTLP_HEADER_ENV_VARS = [
   "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
 ] as const;
 
+/**
+ * `CompressionAlgorithm.NONE`, spelled as its wire value: the enum lives in
+ * @opentelemetry/otlp-exporter-base, which reaches this package only as a
+ * transitive dependency of the http exporter.
+ */
+const NO_COMPRESSION = "none" as NonNullable<
+  ConstructorParameters<typeof OTLPLogExporter>[0]
+>["compression"];
+
 export function createExporter(config: ResolvedConfig): OTLPLogExporter {
   const saved = OTLP_HEADER_ENV_VARS.map((name) => [name, process.env[name]] as const);
   for (const name of OTLP_HEADER_ENV_VARS) delete process.env[name];
@@ -149,6 +160,14 @@ export function createExporter(config: ResolvedConfig): OTLPLogExporter {
       url: config.endpoint,
       headers: { authorization: `Bearer ${config.token}` },
       timeoutMillis: EXPORT_TIMEOUT_MS,
+      // The last OTLP knob the environment could still reach. Left unset, the
+      // SDK reads OTEL_EXPORTER_OTLP_COMPRESSION (or its _LOGS_ variant), so a
+      // machine that already runs OpenTelemetry would gzip argent's batches -
+      // a request shaped differently from the one the ingestion side is sized
+      // and tested against, decided by a variable set for something else.
+      // Unlike the headers below, one explicit value settles it: the SDK takes
+      // user-provided over env for this option rather than merging the two.
+      compression: NO_COMPRESSION,
       // The exporter bounds a request with `req.setTimeout()`, which Node only
       // arms once the socket is CONNECTED — so a collector whose address drops
       // packets (corporate egress filter, dead host behind a firewall) leaves a

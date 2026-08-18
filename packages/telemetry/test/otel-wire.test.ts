@@ -86,7 +86,17 @@ async function startCapture(): Promise<Capture> {
       res.end("{}");
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // A bind that fails has to reject: listen's callback fires only on success, so
+  // awaiting it alone turns EADDRNOTAVAIL into a test that hangs to its timeout
+  // while the unhandled 'error' event surfaces against whichever test vitest
+  // happens to be running.
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve();
+    });
+  });
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("no port");
   return { server, url: `http://127.0.0.1:${address.port}/v1/logs`, requests };
@@ -152,10 +162,12 @@ describe("the OTLP request Argent sends", () => {
     // would keep every other assertion in this suite green.
     expect(request.headers["content-type"]).toBe("application/json");
 
-    // No compression. The collector's body cap and the proxy's `max_size` in
-    // front of it are sized against the decompressed payload, and a gzip
-    // content-encoding the collector was not configured to accept is a 400 that
-    // never reaches this side as an error.
+    // No compression - which `createExporter` has to pin, because the SDK
+    // otherwise takes it from OTEL_EXPORTER_OTLP_COMPRESSION and any machine
+    // that already runs OpenTelemetry sets that. Nothing here would notice: the
+    // exporter treats a gzipped 2xx as delivered just the same, and the request
+    // this suite and the deploy-time smoke test are written against silently
+    // stops being the request argent sends.
     expect(request.headers["content-encoding"]).toBeUndefined();
 
     expect(request.headers.authorization).toBe("Bearer wire-probe-token");
@@ -192,9 +204,10 @@ describe("the OTLP request Argent sends", () => {
     expect(attributes["distinct_id"]?.stringValue).toHaveLength(64);
 
     // Attributes keep their OTLP type on the wire and are flattened to strings
-    // only on the way into ClickHouse's Map(String, String) - which is why a
-    // query that aggregates a numeric property has to cast it. Sending them
-    // pre-stringified would be indistinguishable there and wrong everywhere else.
+    // only on the way into ClickHouse's Map(LowCardinality(String), String),
+    // which is why a query that aggregates a numeric property has to cast it.
+    // Sending them pre-stringified would be indistinguishable there and wrong
+    // everywhere else.
     expect(attributes["tool"]?.stringValue).toBe("screenshot");
     expect(attributes["is_ci"]?.boolValue).toBe(false);
     expect(String(attributes["duration_ms"]?.intValue)).toBe("412");
