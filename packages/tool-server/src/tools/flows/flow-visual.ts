@@ -241,6 +241,7 @@ export async function runSnapshot(
   // reported as the device class having no baseline. Those propagate as
   // themselves, which is what the step reports.
   let shot: { image: ArtifactHandle };
+  let reducedScale = false;
   try {
     shot = (await invokeOnDevice(env, "screenshot", {
       scale: 1.0,
@@ -252,6 +253,7 @@ export async function runSnapshot(
       scale: FALLBACK_CAPTURE_SCALE,
       includeImageInContext: false,
     })) as { image: ArtifactHandle };
+    reducedScale = true;
   }
 
   // The key stays on the FULL capture's dimensions even under cropOn: its job
@@ -337,7 +339,12 @@ export async function runSnapshot(
       const baseline = await store.register(baselinePath, { mimeType: "image/png" });
       return {
         status: "pass",
-        reason: exists ? `baseline updated (${key})` : `baseline written (${key})`,
+        // Said where the baseline is adopted, not on every later comparison:
+        // the fidelity of the gate is what the reviewer is deciding to commit,
+        // and on an affected device every run would otherwise carry it.
+        reason:
+          (exists ? `baseline updated (${key})` : `baseline written (${key})`) +
+          (reducedScale ? ` at reduced scale — this device cannot stream a full-res frame` : ""),
         snapshotKey,
         artifacts: { baseline },
       };

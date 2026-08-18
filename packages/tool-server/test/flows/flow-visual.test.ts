@@ -720,6 +720,12 @@ describe("runSnapshot capture scale", () => {
     // The key follows the dimensions actually captured, so a fallback capture
     // keys its own baseline instead of diffing against a full-res one.
     expect(r.snapshotKey).toBe("home__ios-324x727");
+    // The reviewer deciding whether to commit this baseline is told what it
+    // gates on — the filename's dimensions alone do not say the screen is
+    // bigger than they are.
+    expect(r.reason).toBe(
+      "baseline written (home__ios-324x727.png) at reduced scale — this device cannot stream a full-res frame"
+    );
   });
 
   it("surfaces the retry's error when the device is genuinely unreachable", async () => {

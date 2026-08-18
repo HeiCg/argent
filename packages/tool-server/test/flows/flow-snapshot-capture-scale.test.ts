@@ -1,6 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import * as http from "node:http";
-import type { AddressInfo } from "node:net";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,9 +10,12 @@ import { SIMULATOR_SERVER_NAMESPACE } from "../../src/blueprints/simulator-serve
 import { runSnapshot } from "../../src/tools/flows/flow-visual";
 import type { ActionEnv } from "../../src/tools/flows/flow-actions";
 
-// Only the settle is stubbed: this test drives the REAL invokeOnDevice, the
-// REAL screenshot tool and the REAL differ against a fake simulator-server, so
-// the scale the capture lands at is resolved exactly as it is in production.
+// Everything from `runSnapshot` down to the request body is the real thing —
+// the real `invokeOnDevice`, the real `screenshot` tool, the real
+// `httpScreenshot` — so the scale each capture lands at is resolved exactly as
+// it is in production, and the baseline key is the one a run would write. Only
+// the settle above the capture and the simulator-server below it are stood in
+// for; the stand-in replies at `fetch`, which needs no socket to bind.
 vi.mock("../../src/tools/flows/flow-actions", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/flows/flow-actions")>();
   return { ...actual, settleTree: vi.fn(async () => ({})) };
@@ -23,8 +24,8 @@ vi.mock("../../src/tools/flows/flow-actions", async (importOriginal) => {
 const SCREEN_W = 1080;
 const SCREEN_H = 2424;
 
-let server: http.Server;
-let apiUrl: string;
+const API_URL = "http://127.0.0.1:65500";
+
 let tmpDir: string;
 let shotDir: string;
 let registry: Registry;
@@ -50,33 +51,27 @@ beforeEach(async () => {
   // Fake simulator-server: an Android emulator that cannot stream a full-res
   // frame. `httpScreenshot` omits `scale` from the body only when it resolves
   // to 1.0, so "no scale" IS the full-res request — answer it the way the
-  // emulator does, with an HTTP 200 carrying a framebuffer size mismatch.
-  server = http.createServer((req, res) => {
-    let raw = "";
-    req.on("data", (c) => (raw += c));
-    req.on("end", async () => {
-      const body = JSON.parse(raw || "{}") as { scale?: number };
-      requested.push(body.scale);
-      res.setHeader("Content-Type", "application/json");
-      if (body.scale === undefined) {
-        res.writeHead(fullResFailure.status, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: fullResFailure.error }));
-        return;
-      }
-      const file = path.join(shotDir, `shot-${requested.length}.png`);
-      await writePng(file, Math.round(SCREEN_W * body.scale), Math.round(SCREEN_H * body.scale));
-      res.end(JSON.stringify({ url: `http://127.0.0.1/media/${path.basename(file)}`, path: file }));
-    });
+  // emulator does, with a body carrying a framebuffer size mismatch.
+  vi.stubGlobal("fetch", async (url: string, init: { body: string }) => {
+    expect(url).toBe(`${API_URL}/api/screenshot`);
+    const body = JSON.parse(init.body) as { scale?: number };
+    requested.push(body.scale);
+    if (body.scale === undefined) {
+      return new Response(JSON.stringify({ error: fullResFailure.error }), {
+        status: fullResFailure.status,
+      });
+    }
+    const file = path.join(shotDir, `shot-${requested.length}.png`);
+    await writePng(file, Math.round(SCREEN_W * body.scale), Math.round(SCREEN_H * body.scale));
+    return new Response(JSON.stringify({ url: `file://${file}`, path: file }), { status: 200 });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  apiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   registry = new Registry();
   registry.registerBlueprint({
     namespace: SIMULATOR_SERVER_NAMESPACE,
     getURN: (id: string) => `${SIMULATOR_SERVER_NAMESPACE}:${id}`,
     factory: async () => ({
-      api: { apiUrl, streamUrl: "", pressKey: () => {} },
+      api: { apiUrl: API_URL, streamUrl: "", pressKey: () => {} },
       dispose: async () => {},
       events: new TypedEventEmitter<ServiceEvents>(),
     }),
@@ -93,7 +88,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   delete process.env.ARGENT_SCREENSHOT_SCALE;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  vi.unstubAllGlobals();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
