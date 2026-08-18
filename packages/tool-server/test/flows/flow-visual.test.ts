@@ -710,10 +710,12 @@ describe("runSnapshot capture scale", () => {
     const r = await runSnapshot(env, opts({ updateBaselines: true }));
 
     expect(r.status).toBe("pass");
-    // The retry omits `scale`, leaving the server on the scale it can capture at.
+    // The retry names its own scale rather than leaving it to the screenshot
+    // tool's env-overridable default, so the key below stays a function of the
+    // device alone.
     expect(vi.mocked(invokeOnDevice).mock.calls).toEqual([
       [env, "screenshot", { scale: 1.0, includeImageInContext: false }],
-      [env, "screenshot", { includeImageInContext: false }],
+      [env, "screenshot", { scale: 0.3, includeImageInContext: false }],
     ]);
     // The key follows the dimensions actually captured, so a fallback capture
     // keys its own baseline instead of diffing against a full-res one.

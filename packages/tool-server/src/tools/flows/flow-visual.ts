@@ -19,6 +19,18 @@ import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 export const DEFAULT_MAX_MISMATCH = 0.5;
 
 /**
+ * Scale a snapshot retries at when the device cannot stream a full-res frame.
+ *
+ * Stated here rather than left to the screenshot tool's own default, which
+ * `ARGENT_SCREENSHOT_SCALE` overrides: the baseline key carries the dimensions
+ * the capture came back at, so an unscaled retry would key every committed
+ * baseline on that env var — a knob for how much detail the *agent* sees — and
+ * a host that set it differently would be told it has no baseline for a device
+ * class it does have one for.
+ */
+const FALLBACK_CAPTURE_SCALE = 0.3;
+
+/**
  * Files a snapshot step produced, keyed by role so a renderer can pick what to
  * surface (e.g. inline only `diff` on failure). Artifact handles — not host
  * paths — so a client on another machine can materialize them. Present only
@@ -214,12 +226,12 @@ export async function runSnapshot(
   // Android emulator configurations cannot stream a full-res frame — the
   // simulator-server rejects it with a "wrong data size" framebuffer mismatch —
   // so demanding one makes `snapshot` unusable on those devices, including
-  // under --update-baselines, where there is nothing to compare yet. Fall back
-  // to the server's default scale, which captures reliably; `screenshot-diff`
-  // resolves the same limitation the same way. The baseline key is built from
-  // the dimensions that came back, so a fallback capture keys its own baseline
-  // instead of being compared against a full-res one. If the device is
-  // genuinely unreachable the retry fails too, and its error is what surfaces.
+  // under --update-baselines, where there is nothing to compare yet. Retry at a
+  // reduced scale, which captures reliably; `screenshot-diff` resolves the same
+  // limitation the same way. The baseline key is built from the dimensions that
+  // came back, so a fallback capture keys its own baseline instead of being
+  // compared against a full-res one. If the device is genuinely unreachable the
+  // retry fails too, and its error is what surfaces.
   let shot: { image: ArtifactHandle };
   try {
     shot = (await invokeOnDevice(env, "screenshot", {
@@ -228,6 +240,7 @@ export async function runSnapshot(
     })) as { image: ArtifactHandle };
   } catch {
     shot = (await invokeOnDevice(env, "screenshot", {
+      scale: FALLBACK_CAPTURE_SCALE,
       includeImageInContext: false,
     })) as { image: ArtifactHandle };
   }
