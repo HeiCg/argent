@@ -198,10 +198,12 @@ describe("otel endpoint invariance", () => {
   });
 
   it("drops properties with no value instead of sending them as null", () => {
-    // OTLP attribute values may not be null or undefined, and the SDK rejects
-    // the whole attribute if given one. Every property here means the same thing
-    // absent as it would explicitly null - `cloud_agent` is null on any machine
-    // that is not a cloud agent, which is nearly all of them.
+    // The SDK does not reject a null attribute - it serializes one as an empty
+    // OTLP value (`{"key":"cloud_agent","value":{}}`, droppedAttributesCount 0),
+    // which is stored as, and unrecoverable from, a property that really was
+    // empty. Every property here means the same thing absent as it would
+    // explicitly null - `cloud_agent` is null on any machine that is not a cloud
+    // agent, which is nearly all of them.
     const client = getClient();
     client!.emit({
       distinctId: "d".repeat(64),

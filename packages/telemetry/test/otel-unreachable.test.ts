@@ -5,31 +5,39 @@
  * Telemetry is a side effect of commands people are waiting on, so the property
  * that matters is not that an export succeeds - it is that a failing one is
  * bounded and invisible. `otel-endpoint.test.ts` pins the options that are meant
- * to deliver that (`timeoutMillis`, `exportTimeoutMillis`, the agent's socket
- * timeout); these drive the real exporter against real sockets and check that
- * the behaviour follows, because an option the SDK stops honouring keeps every
- * constructor assertion green.
+ * to deliver that; these drive the real exporter against real sockets and check
+ * that the behaviour follows, because an option the SDK stops honouring keeps
+ * every constructor assertion green.
  *
- * Three of the four states a collector address can be in are reproducible here:
- * healthy (`otel-wire.test.ts`), refused, and connected-but-silent. The fourth -
- * an address whose packets are dropped outright, which is what leaves a socket
- * stuck in connect where a request-level deadline cannot reach it - depends on
- * routing this suite cannot arrange portably. `otel-endpoint.test.ts` pins the
- * `httpAgentOptions.timeout` that covers it, since a socket timeout is armed at
- * socket creation rather than on connect.
+ * What bounds a drain is the exporter's `timeoutMillis`: the retrying
+ * transport's deadline, plus the `req.setTimeout()` armed per attempt. The
+ * processor's `exportTimeoutMillis` does not - `LoggerProvider.shutdown()`
+ * awaits the in-flight export through `forceFlush()`, and the processor's timer
+ * only reports into the global error handler rather than cancelling anything.
+ * So every budget below is a claim about what `createExporter` passed.
+ *
+ * Three of the four states a collector address can be in are reachable from a
+ * test: healthy (in `otel-wire.test.ts`), refused, and connected-but-silent. The
+ * fourth - an address whose packets are dropped outright, which is what leaves a
+ * socket stuck in connect where a request-level deadline cannot reach it -
+ * depends on routing this suite cannot arrange portably. `otel-endpoint.test.ts`
+ * pins the `httpAgentOptions.timeout` that covers it, since a socket timeout is
+ * armed at socket creation rather than on connect.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import http from "node:http";
 import net from "node:net";
+import { diag, DiagLogLevel } from "@opentelemetry/api";
 import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { createExporter } from "../src/otel.js";
 
 /**
- * The export deadline `otel.ts` configures. A failing export has to end within
- * a small multiple of it; the SDK's own default is 10s, which is what these
- * bounds are chosen to exclude.
+ * `exportTimeoutMillis` as `otel.ts` sets it, so the wiring below mirrors
+ * `OtelClient`'s. A failing export has to end within a small multiple of it -
+ * a budget the exporter's equal `timeoutMillis` is what actually enforces; the
+ * SDK's own default is 10s, which is what these bounds are chosen to exclude.
  */
 const EXPORT_TIMEOUT_MS = 1_500;
 const FAILURE_BUDGET_MS = 6_000;
@@ -44,20 +52,45 @@ function track(close: () => Promise<void>): void {
   closers.push(close);
 }
 
+/**
+ * Bind a listener on a free loopback port. A bind that fails has to reject:
+ * `listen`'s callback fires only on success, so awaiting it alone turns
+ * EADDRNOTAVAIL into a test that hangs to its timeout while the unhandled
+ * 'error' event surfaces against whichever test vitest happens to be running.
+ */
+async function listen(server: net.Server): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("no port");
+  return address.port;
+}
+
+interface RespondingServer {
+  url: string;
+  /** Paths of the requests the collector actually received. */
+  requests: string[];
+}
+
 /** An HTTP server that reads the request and answers with `status`. */
-async function startResponding(status: number): Promise<string> {
+async function startResponding(status: number): Promise<RespondingServer> {
+  const requests: string[] = [];
   const server = http.createServer((req, res) => {
     req.resume();
     req.on("end", () => {
+      requests.push(req.url ?? "");
       res.writeHead(status, { "content-type": "application/json" });
       res.end("{}");
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("no port");
+  const port = await listen(server);
   track(() => new Promise<void>((resolve) => server.close(() => resolve())));
-  return `http://127.0.0.1:${address.port}/v1/logs`;
+  return { url: `http://127.0.0.1:${port}/v1/logs`, requests };
 }
 
 interface SilentServer {
@@ -84,9 +117,7 @@ async function startSilent(): Promise<SilentServer> {
     });
     socket.resume();
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("no port");
+  const port = await listen(server);
   track(
     () =>
       new Promise<void>((resolve) => {
@@ -94,18 +125,45 @@ async function startSilent(): Promise<SilentServer> {
         server.close(() => resolve());
       })
   );
-  return { url: `http://127.0.0.1:${address.port}/v1/logs`, connections };
+  return { url: `http://127.0.0.1:${port}/v1/logs`, connections };
 }
 
 /** A port with nothing on it, for the refused case. */
 async function unusedUrl(): Promise<string> {
   const probe = net.createServer();
-  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-  const address = probe.address();
-  if (address === null || typeof address === "string") throw new Error("no port");
-  const { port } = address;
+  const port = await listen(probe);
   await new Promise<void>((resolve) => probe.close(() => resolve()));
   return `http://127.0.0.1:${port}/v1/logs`;
+}
+
+/**
+ * Collect what the SDK says about an export. A failure never reaches the
+ * caller - the batch processor hands it to OpenTelemetry's global error
+ * handler, which logs it through `diag` - so this channel is the only thing
+ * that tells "the collector answered and the answer was rejected" apart from
+ * "no request was ever made", both of which resolve `shutdown()` in ~1ms.
+ */
+function captureExportErrors(): string[] {
+  const errors: string[] = [];
+  diag.setLogger(
+    {
+      error: (message, ...args) => errors.push([message, ...args.map(String)].join(" ")),
+      warn: () => {},
+      info: () => {},
+      debug: () => {},
+      verbose: () => {},
+    },
+    DiagLogLevel.ERROR
+  );
+  track(async () => diag.disable());
+  return errors;
+}
+
+/** Poll until `condition` holds, or the `performance.now()` `deadline` passes. */
+async function settle(condition: () => boolean, deadline: number): Promise<void> {
+  while (!condition() && performance.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 /**
@@ -152,26 +210,34 @@ describe("a collector that cannot take the batch", () => {
     // normal and wanted - for a request that COMPLETED. One abandoned at the
     // deadline has to be destroyed instead: it is attached to a request nothing
     // is waiting for any more, and a live handle is what holds a short-lived
-    // command open after its shutdown() already resolved.
+    // command open after its shutdown() already resolved. Which makes WHEN the
+    // teardown happens the whole point - the SDK's own 10s default also gets
+    // there eventually, and eventually is the failure.
     const silent = await startSilent();
+    const started = performance.now();
 
     await exportAndDrain(silent.url);
+    // The client closes; the server observes it on a later turn of its loop.
+    await settle(() => silent.connections.every((c) => c.closed), started + FAILURE_BUDGET_MS);
 
-    // The client closes; the server observes it on the next turn of its loop.
-    await new Promise((resolve) => setTimeout(resolve, 250));
     expect(silent.connections).not.toHaveLength(0);
     for (const connection of silent.connections) expect(connection.closed).toBe(true);
+    expect(performance.now() - started).toBeLessThan(FAILURE_BUDGET_MS);
   }, 30_000);
 
   it("bounds the retry loop when the collector refuses the connection", async () => {
     // ECONNREFUSED is retryable to the exporter, which backs off and tries
-    // again; the export timeout is the only thing that stops it. A drain that
-    // outlives the budget means the cap is gone.
+    // again. Two things can stop it - the transport's 5-attempt cap and the
+    // export deadline - and at this backoff (1s, x1.5) the deadline is the one
+    // that fires, on the second attempt. A drain that outlives the budget means
+    // the cap is gone.
+    const errors = captureExportErrors();
     const url = await unusedUrl();
 
     const elapsed = await exportAndDrain(url);
 
     expect(elapsed).toBeLessThan(FAILURE_BUDGET_MS);
+    expect(errors.join("\n")).toContain("ECONNREFUSED");
   }, 30_000);
 
   it("swallows a rejected ingest token", async () => {
@@ -181,9 +247,13 @@ describe("a collector that cannot take the batch", () => {
     // so shutdown() resolves exactly as it does for a delivered batch and the
     // caller is told nothing. Asserted so the day someone wants that surfaced,
     // the test says where the silence is.
-    const url = await startResponding(401);
+    const errors = captureExportErrors();
+    const collector = await startResponding(401);
 
-    await expect(exportAndDrain(url)).resolves.toBeLessThan(FAILURE_BUDGET_MS);
+    await expect(exportAndDrain(collector.url)).resolves.toBeLessThan(FAILURE_BUDGET_MS);
+
+    expect(collector.requests).toEqual(["/v1/logs"]);
+    expect(errors.join("\n")).toContain("401");
   }, 30_000);
 
   it("treats any 2xx as delivered, including one that stored nothing", async () => {
@@ -192,9 +262,14 @@ describe("a collector that cannot take the batch", () => {
     // captive portal - returns 200, the exporter counts the batch as delivered
     // and drops it. There is no client-side signal to distinguish this from a
     // real ingest, which is why the check has to live at deploy time, against
-    // the endpoint, rather than here.
-    const url = await startResponding(204);
+    // the endpoint, rather than here. The empty error channel IS that missing
+    // signal: it is what a delivered batch and a discarded one both look like.
+    const errors = captureExportErrors();
+    const collector = await startResponding(204);
 
-    await expect(exportAndDrain(url)).resolves.toBeLessThan(FAILURE_BUDGET_MS);
+    await expect(exportAndDrain(collector.url)).resolves.toBeLessThan(FAILURE_BUDGET_MS);
+
+    expect(collector.requests).toEqual(["/v1/logs"]);
+    expect(errors).toEqual([]);
   }, 30_000);
 });
