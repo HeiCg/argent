@@ -10,17 +10,19 @@ import type { PackageManager } from "./package-manager.js";
 // there. Nix-managed toolchains are the motivating case: npm derives its global
 // prefix from the node binary's own location, so under Nix it resolves inside
 // the store — whose paths are mode 0555 and, on NixOS / nix-darwin, on a
-// read-only mount. Every `npm install -g` there dies with EACCES, sudo
-// included, so init and update preflight it rather than run the install and
-// hand the user npm's stack trace.
+// read-only mount. `npm install -g` there dies with EACCES for anyone but root,
+// and what root writes Nix undoes, so init and update preflight it rather than
+// run the install and hand the user npm's stack trace.
 
-/** Argument vector that makes each manager print its global install directory. */
+// Argument vector that makes each manager print a directory its global installs
+// live under. Only npm's and pnpm's name the node_modules itself; yarn classic
+// prints its parent and bun the bin directory it links shims into — near enough
+// to answer "can this user write there", which is all the probe asks.
 const GLOBAL_DIR_QUERY: Record<PackageManager, readonly string[]> = {
   npm: ["root", "-g"],
   pnpm: ["root", "-g"],
-  // yarn classic's global folder (berry has no `global add` at all).
+  // berry has no `global add` at all.
   yarn: ["global", "dir"],
-  // bun links global shims here; it never uses node's own prefix.
   bun: ["pm", "bin", "-g"],
 };
 
@@ -32,9 +34,6 @@ function queryGlobalInstallDir(pm: PackageManager): string | null {
     stdout = execFileSync(pm, [...GLOBAL_DIR_QUERY[pm]], {
       encoding: "utf8",
       timeout: QUERY_TIMEOUT_MS,
-      // Same Windows handling as shell.ts: npm/yarn/pnpm are .cmd shims Node
-      // refuses to spawn shell-less, and PATHEXT resolves the .exe managers too.
-      shell: process.platform === "win32",
       stdio: ["ignore", "pipe", "ignore"],
     });
   } catch {
@@ -113,9 +112,13 @@ export function probeGlobalInstallTarget(
   if (process.platform === "win32") return null;
 
   const queried = queryGlobalInstallDir(pm);
-  const target = queried ?? (installedPackageRoot ? path.dirname(installedPackageRoot) : null);
-  if (target === null) return null;
-  const dir = nearestExistingDir(target);
+  // What the install writes into is the package's own PARENT: npm stages the
+  // new copy beside the old one and renames, so a prefix whose `@swmansion`
+  // came from an earlier `sudo npm install -g` fails with EACCES on the rename
+  // while `node_modules` above it stays writable.
+  const packagePath = queried ? path.join(queried, PACKAGE_NAME) : installedPackageRoot;
+  if (packagePath === null) return null;
+  const dir = nearestExistingDir(path.dirname(packagePath));
   if (dir === null) return null;
 
   const describe = (blocked: boolean): GlobalInstallTarget => ({
@@ -138,6 +141,18 @@ export function suggestedNpmPrefix(): string {
 }
 
 /**
+ * Drop the prefix npm exports into everything it spawns. `npx @swmansion/argent
+ * init` inherits the OLD prefix that way, and an environment variable outranks
+ * the `~/.npmrc` that `npm config set prefix` writes — so without this, the
+ * install that follows a prefix move lands right back in the directory that
+ * could not be written.
+ */
+export function forgetInheritedNpmPrefix(): void {
+  delete process.env.npm_config_prefix;
+  delete process.env.NPM_CONFIG_PREFIX;
+}
+
+/**
  * Why a global install or update cannot proceed — the cause and the directory,
  * with no advice. The interactive recovery offers the ways out as choices it
  * carries out itself, so it prints this instead of the full message.
@@ -150,37 +165,46 @@ export function blockedGlobalTargetCause(
   const cause = target.nixStore
     ? "its global package directory is inside the read-only Nix store"
     : "its global package directory is not writable by this user";
+  // Only the store's own note belongs here: this text also prefaces the prompt
+  // that offers the ways out, before anything has been attempted.
   const note = target.nixStore
-    ? `Nix store paths are immutable, so ${pc.cyan("sudo")} does not help either.`
-    : "Nothing was installed or changed.";
+    ? `Nix owns that directory — a ${pc.cyan("sudo")} install into it is undone by the next rebuild or garbage-collect.`
+    : null;
 
   return (
     `${pc.cyan(pm)} cannot ${verb} ${PACKAGE_NAME} globally: ${cause}.\n` +
-    `  ${pc.dim(target.dir)}\n` +
-    note
+    `  ${pc.dim(target.dir)}` +
+    (note === null ? "" : `\n${note}`)
   );
 }
 
-/**
- * The cause plus the ways out, spelled as commands to run. For flows that
- * cannot ask: `--yes`/CI runs, and update.
- */
+/** The per-project install, as the command that gets there. */
+export function localInstallRemedy(): string {
+  return (
+    `  Use ${PACKAGE_NAME} per project instead — no global directory needed:\n` +
+    `    ${pc.cyan("argent init --local")}`
+  );
+}
+
+// Written as $HOME rather than the expanded suggestedNpmPrefix() so it can be
+// pasted into any shell — the two name the same directory.
+function writablePrefixRemedy(pm: PackageManager): string {
+  if (pm !== "npm")
+    return `  Point ${pc.cyan(pm)} at a global directory you can write to, then retry.`;
+  return (
+    `  Point npm at a writable prefix, then retry:\n` +
+    `    ${pc.cyan('npm config set prefix "$HOME/.npm-global"')}\n` +
+    `    ${pc.cyan('export PATH="$HOME/.npm-global/bin:$PATH"')}  ${pc.dim("(add to your shell profile)")}`
+  );
+}
+
+/** The cause plus the ways out, spelled as commands to run. */
 export function unwritableGlobalTargetMessage(
   target: GlobalInstallTarget,
   pm: PackageManager,
   verb: "install" | "update"
 ): string {
-  // Written as $HOME rather than the expanded suggestedNpmPrefix() so it can be
-  // pasted into any shell — the two name the same directory.
-  const remedies: string[] = [
-    pm === "npm"
-      ? `  Point npm at a writable prefix, then retry:\n` +
-        `    ${pc.cyan('npm config set prefix "$HOME/.npm-global"')}\n` +
-        `    ${pc.cyan('export PATH="$HOME/.npm-global/bin:$PATH"')}  ${pc.dim("(add to your shell profile)")}`
-      : `  Point ${pc.cyan(pm)} at a global directory you can write to, then retry.`,
-    `  Or use ${PACKAGE_NAME} per project instead — no global directory needed:\n` +
-      `    ${pc.cyan("argent init --local")}`,
-  ];
+  const remedies = [writablePrefixRemedy(pm), localInstallRemedy()];
 
   return `${blockedGlobalTargetCause(target, pm, verb)}\n\n${remedies.join("\n\n")}`;
 }

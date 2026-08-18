@@ -116,7 +116,8 @@ export async function init(args: string[]): Promise<void> {
 
     // Probed once and used both to describe the choice and to carry it out, so
     // the prompt cannot promise something the install then refuses. Skipped
-    // where no global install can happen — it costs a package-manager query.
+    // where no FRESH global install can happen — it costs a package-manager
+    // query, and the reinstall and update paths probe for themselves.
     const globalTarget =
       modeFromFlags !== "local" && !isGloballyInstalled()
         ? probeGlobalInstallTarget(detectPackageManager())
@@ -308,6 +309,7 @@ export async function init(args: string[]): Promise<void> {
 
     printSummary({
       installMode: tel.installMode,
+      pathHint: installed.pathHint,
       selectedAdapters: writtenAdapters,
       scope,
       allowlistEnabled: allowlist.enabled,
@@ -364,6 +366,8 @@ function sanitizeEditorName(raw: string): string {
 
 interface SummaryArgs {
   installMode: InstallMode;
+  /** Bin directory the configured `argent` command lives in but PATH lacks. */
+  pathHint: string | null;
   selectedAdapters: McpConfigAdapter[];
   scope: Scope;
   allowlistEnabled: boolean;
@@ -373,6 +377,7 @@ interface SummaryArgs {
 
 function printSummary({
   installMode,
+  pathHint,
   selectedAdapters,
   scope,
   allowlistEnabled,
@@ -388,6 +393,15 @@ function printSummary({
     `${pc.green("Skills")} ${skillsMethod === "manual" ? "instructions printed" : "installed"}`,
     `${pc.green("Rules & agents")} ${copiedRules ? "copied" : "n/a"}`,
   ];
+
+  if (pathHint !== null) {
+    // The configs above run a bare `argent`, and an editor started from the
+    // desktop never sees this run's PATH — so this is the step between a
+    // finished init and a server that actually starts.
+    summaryLines.push(
+      `${pc.yellow("PATH")} add ${pc.cyan(pathHint)} to your shell profile — the configured ${pc.cyan("argent")} command lives there`
+    );
+  }
 
   p.note(summaryLines.join("\n"), "Summary");
 

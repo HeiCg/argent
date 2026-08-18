@@ -3,17 +3,20 @@
 #
 # npm derives its global prefix from the node binary's own location. Under Nix
 # that is a store path — root-owned, mode 0555, and a read-only mount on NixOS
-# and nix-darwin — so `npm install -g` can never succeed there, sudo included.
-# Without the preflight in packages/argent-installer/src/global-prefix.ts, both
-# `argent init --global` and `argent update` run the install anyway and hand the
-# user npm's raw EACCES stack trace.
+# and nix-darwin — so `npm install -g` there dies with EACCES for the developer
+# running it. Without the preflight in
+# packages/argent-installer/src/global-prefix.ts, both `argent init --global`
+# and `argent update` run the install anyway and hand the user npm's raw EACCES
+# stack trace.
 #
-# Two phases, because one of them needs a global install sitting in the store
-# and only root can put it there. The provisioner owns that escalation:
+# Two phases, because one of them needs a global install sitting in the store,
+# which takes the root the store's mode bits reserve. The provisioner owns that
+# escalation:
 #
 #   run-e2e.sh preinstall   # scenarios A-C, no global argent must exist yet
+#                           # (A2 covers the same command with no terminal)
 #   <root> npm install -g --omit=optional --ignore-scripts "$ARGENT_TGZ"
-#   run-e2e.sh update       # scenario D, against the store-resident install
+#   run-e2e.sh update       # scenarios D-E, against the store-resident install
 #
 # Preconditions are re-asserted in both phases so the suite can never pass
 # vacuously on a machine whose node did not come from Nix.
@@ -128,6 +131,19 @@ if [[ "$PHASE" == "preinstall" ]]; then
   contains "$out" "argent init --local"
   absent "$out" "npm error"
   absent "$out" "EACCES"
+
+  # A Dockerfile or CI step runs the same command with no terminal behind it.
+  # A menu there would never be answered: the run would end at a rendered
+  # prompt, exit 0, and have installed nothing.
+  begin "A2. argent init --global with no terminal to prompt on"
+  home="$(new_home a2)"
+  project="$(new_project a2)"
+  out="$WORK/a2.log"
+  (cd "$project" && HOME="$home" node "$CLI" init --global --no-telemetry </dev/null) >"$out" 2>&1
+  exit_is "$?" 1
+  contains "$out" "cannot install @swmansion/argent globally"
+  contains "$out" "argent init --local"
+  absent "$out" "How would you like to proceed"
 
   # The writable prefix argent tells the user to configure has to actually
   # work, and the preflight must not stand in its way once it is set.

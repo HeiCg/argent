@@ -18,9 +18,9 @@ export interface BlockedGlobalInstall {
 // Step-0 selector: global (default) vs local (committable devDependency). Used
 // only when neither --local/--global nor --yes fixed the mode. `defaultMode`
 // seeds the highlight (the committed record's mode, so re-running init in a
-// local repo stays local). `blockedGlobal` says a global install would land in
-// a directory this user cannot write — the prompt then explains that and
-// steers to local instead of recommending the option that cannot work.
+// local repo stays local) unless `blockedGlobal` overrides it: a global install
+// would land in a directory this user cannot write, so the prompt explains that
+// and steers to local instead of recommending the option that cannot work.
 // Throws InitCancelled("install_mode") on cancel.
 export async function promptInstallMode(
   defaultMode: InstallMode = "global",

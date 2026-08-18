@@ -26,6 +26,8 @@ import type { PackageManager } from "./package-manager.js";
 import { runShellCommand, runTrustingDisk, ShellCommandError } from "./shell.js";
 import {
   blockedGlobalTargetCause,
+  forgetInheritedNpmPrefix,
+  localInstallRemedy,
   probeGlobalInstallTarget,
   suggestedNpmPrefix,
   unwritableGlobalTargetMessage,
@@ -34,6 +36,7 @@ import {
 import { PACKAGE_NAME } from "./constants.js";
 import { reportSkillRefresh } from "./skills.js";
 import type { InstallMode } from "./install-record.js";
+import { InitCancelled } from "./init-args.js";
 import {
   InitTelemetry,
   INSTALL_GLOBAL_PACKAGE_FAILED,
@@ -53,6 +56,13 @@ export interface InstallOutcome {
    * the mode originally asked for.
    */
   installMode: InstallMode;
+  /**
+   * Directory the argent binary now lives in that the user's shells do not
+   * know about yet. Set only by the prefix recovery, whose global MCP config
+   * names a bare `argent` — so until this is on PATH, the editors init just
+   * configured cannot start it.
+   */
+  pathHint: string | null;
 }
 
 // Step 0 — ensure argent is installed and report the version and mode the rest
@@ -82,7 +92,7 @@ export async function runInstall(args: {
 
   if (installMode === "local") {
     await installLocally({ fromTar, tel });
-    return { version: localVersion(args.version), installMode: "local" };
+    return { version: localVersion(args.version), installMode: "local", pathHint: null };
   }
 
   return runGlobal({
@@ -272,28 +282,40 @@ async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry
 
 /**
  * Offer the two ways out of a global directory that cannot be written, and
- * carry out the chosen one. Returns true when the caller should install
- * locally instead; false once the npm prefix has been moved somewhere writable
- * and the global install can proceed. Cancelling exits.
+ * carry out the chosen one: install into the project instead, or move npm's
+ * prefix somewhere writable and carry on with the global install (reporting
+ * the bin directory that has to reach the user's PATH). Cancelling throws
+ * InitCancelled.
  *
- * `--yes`/CI runs never reach the prompt: rewriting the user's npm prefix and
- * changing where argent gets installed are both decisions to make with them,
- * not while nobody is watching.
+ * Runs with nobody to ask never reach the prompt: rewriting the user's npm
+ * prefix and changing where argent gets installed are both decisions to make
+ * with them, not while nobody is watching.
  */
+type BlockedGlobalRecovery = { local: true } | { local: false; pathHint: string | null };
+
 async function recoverBlockedGlobalInstall(opts: {
   target: GlobalInstallTarget;
   pm: PackageManager;
   nonInteractive: boolean;
   acknowledged: boolean;
+  startedAt: number;
   tel: InitTelemetry;
-}): Promise<boolean> {
-  const { target, pm, nonInteractive, acknowledged, tel } = opts;
+}): Promise<BlockedGlobalRecovery> {
+  const { target, pm, nonInteractive, acknowledged, startedAt, tel } = opts;
 
-  const failWithAdvice = async (blocked: GlobalInstallTarget): Promise<never> => {
-    p.log.error(unwritableGlobalTargetMessage(blocked, pm, "install"));
+  const failWith = async (message: string): Promise<never> => {
+    p.log.error(message);
+    await tel.trackPackageAction(
+      "fresh_install",
+      startedAt,
+      false,
+      INSTALL_GLOBAL_PREFIX_UNWRITABLE
+    );
     await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
     process.exit(1);
   };
+  const failWithAdvice = (blocked: GlobalInstallTarget): Promise<never> =>
+    failWith(unwritableGlobalTargetMessage(blocked, pm, "install"));
 
   // npm is the only manager whose global directory argent can relocate: the
   // equivalent knob differs for every other one, and yarn berry has no global
@@ -301,10 +323,13 @@ async function recoverBlockedGlobalInstall(opts: {
   const canMovePrefix = pm === "npm";
   // A local install needs a package.json to add the devDependency to.
   const canInstallLocally = hasProjectPackageJson(resolveProjectRoot(process.cwd()));
+  // A prompt with no terminal behind it never settles: the run would end at a
+  // rendered menu, exit 0, and have installed nothing.
+  const canAsk = !nonInteractive && process.stdin.isTTY === true;
 
   // Nobody to ask, or nothing to offer them — spell the ways out as commands
   // instead of opening a prompt whose only option is to give up.
-  if (nonInteractive || !(canMovePrefix || canInstallLocally)) return failWithAdvice(target);
+  if (!canAsk || !(canMovePrefix || canInstallLocally)) return failWithAdvice(target);
 
   if (acknowledged) {
     // Chosen knowing the block, but for a manager whose directory argent
@@ -335,14 +360,12 @@ async function recoverBlockedGlobalInstall(opts: {
 
     if (p.isCancel(choice) || choice === "cancel") {
       track("installation:global_install_decision", { decision: "cancel" });
-      p.cancel("Nothing was installed.");
-      await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
-      process.exit(1);
+      throw new InitCancelled("global_install");
     }
 
     if (choice === "local") {
       track("installation:global_install_decision", { decision: "install_local" });
-      return true;
+      return { local: true };
     }
   }
 
@@ -353,32 +376,38 @@ async function recoverBlockedGlobalInstall(opts: {
   try {
     await runShellCommand({ bin: "npm", args: ["config", "set", "prefix", prefix] });
   } catch (err) {
+    // Reachable where this recovery exists: home-manager can own ~/.npmrc as a
+    // read-only store symlink, leaving the project install as the way forward.
     spinner.stop(pc.red("Could not set the npm prefix."));
-    p.log.error(`${err}`);
-    await tel.finalize(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
-    process.exit(1);
+    await failWith(`${err}\n\n${localInstallRemedy()}`);
   }
   spinner.stop(`npm prefix set to ${prefix}.`);
+  forgetInheritedNpmPrefix();
 
   // Confirm rather than assume: a prefix npm accepted but still cannot write to
   // would fail the install a step later, with npm's error instead of ours.
+  // Repeating "point npm at a writable prefix" here would only send the user
+  // back through the step that just ran.
   const moved = probeGlobalInstallTarget(pm);
-  if (moved?.blocked) await failWithAdvice(moved);
+  if (moved?.blocked) {
+    await failWith(`${blockedGlobalTargetCause(moved, pm, "install")}\n\n${localInstallRemedy()}`);
+  }
 
   const binDir = path.join(prefix, "bin");
-  if (!(process.env.PATH ?? "").split(path.delimiter).includes(binDir)) {
-    // Put it on PATH for the rest of THIS run so the install can be verified
-    // and the configs written here name a binary that resolves. The user's own
-    // shells still need the line — and argent does not add it for them: on the
-    // Nix-managed machines this exists for, the shell profile is itself a
-    // read-only store symlink.
-    process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
-    p.log.warn(
-      `Add ${pc.cyan(binDir)} to your PATH so new shells find ${PACKAGE_NAME}:\n` +
-        `    ${pc.cyan(`export PATH="${binDir}:$PATH"`)}  ${pc.dim("(add to your shell profile)")}`
-    );
-  }
-  return false;
+  if ((process.env.PATH ?? "").split(path.delimiter).includes(binDir))
+    return { local: false, pathHint: null };
+
+  // Put it on PATH for the rest of THIS run so the install can be verified and
+  // the configs written here name a binary that resolves. The user's own shells
+  // still need the line — and argent does not add it for them: on the
+  // Nix-managed machines this exists for, the shell profile is itself a
+  // read-only store symlink.
+  process.env.PATH = `${binDir}${path.delimiter}${process.env.PATH ?? ""}`;
+  p.log.warn(
+    `Add ${pc.cyan(binDir)} to your PATH so new shells find ${PACKAGE_NAME}:\n` +
+      `    ${pc.cyan(`export PATH="${binDir}:$PATH"`)}  ${pc.dim("(add to your shell profile)")}`
+  );
+  return { local: false, pathHint: binDir };
 }
 
 async function runGlobal(opts: {
@@ -391,6 +420,7 @@ async function runGlobal(opts: {
 }): Promise<InstallOutcome> {
   const { fromTar, nonInteractive, globalTarget, globalBlockAcknowledged, tel } = opts;
   let version = opts.version;
+  let pathHint: string | null = null;
   const globallyInstalled = isGloballyInstalled();
 
   if (!globallyInstalled) {
@@ -400,25 +430,20 @@ async function runGlobal(opts: {
     const pm = detectPackageManager();
     const preflightStartedAt = performance.now();
     if (globalTarget?.blocked) {
-      await tel.trackPackageAction(
-        "fresh_install",
-        preflightStartedAt,
-        false,
-        INSTALL_GLOBAL_PREFIX_UNWRITABLE
-      );
-      if (
-        await recoverBlockedGlobalInstall({
-          target: globalTarget,
-          pm,
-          nonInteractive,
-          acknowledged: globalBlockAcknowledged,
-          tel,
-        })
-      ) {
+      const recovery = await recoverBlockedGlobalInstall({
+        target: globalTarget,
+        pm,
+        nonInteractive,
+        acknowledged: globalBlockAcknowledged,
+        startedAt: preflightStartedAt,
+        tel,
+      });
+      if (recovery.local) {
         await installLocally({ fromTar, tel });
-        return { version: localVersion(version), installMode: "local" };
+        return { version: localVersion(version), installMode: "local", pathHint: null };
       }
       // The prefix now points somewhere writable — fall through and install.
+      pathHint = recovery.pathHint;
     }
 
     // No consent prompt here: the install-mode step directly above is where
@@ -452,7 +477,7 @@ async function runGlobal(opts: {
       await tel.finalize(INSTALL_GLOBAL_PACKAGE_FAILED);
       process.exit(1);
     }
-    return { version, installMode: "global" };
+    return { version, installMode: "global", pathHint };
   }
 
   if (fromTar) {
@@ -481,7 +506,7 @@ async function runGlobal(opts: {
       await tel.finalize(INSTALL_FROM_TAR_PACKAGE_FAILED);
       process.exit(1);
     }
-    return { version, installMode: "global" };
+    return { version, installMode: "global", pathHint };
   }
 
   // Already installed → offer an interactive update.
@@ -538,6 +563,11 @@ async function runGlobal(opts: {
       // only produces an EACCES dump. init's real work still succeeds against
       // the installed version, so this warns rather than aborting.
       p.log.warn(unwritableGlobalTargetMessage(globalTarget, updatePm, "update"));
+      track("installation:update_decision", {
+        from_major: fromMajor,
+        to_major: toMajor,
+        decision: "skip",
+      });
       await tel.trackPackageAction(
         "update_failed",
         packageActionStartedAt,
@@ -608,5 +638,5 @@ async function runGlobal(opts: {
     await tel.trackPackageAction("no_update", packageActionStartedAt, true);
   }
 
-  return { version, installMode: "global" };
+  return { version, installMode: "global", pathHint };
 }

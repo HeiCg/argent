@@ -3,11 +3,23 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const { mockExecFileSync } = vi.hoisted(() => ({ mockExecFileSync: vi.fn() }));
+const { mockExecFileSync, mockAccessSync } = vi.hoisted(() => ({
+  mockExecFileSync: vi.fn(),
+  mockAccessSync: vi.fn(),
+}));
 
 vi.mock("node:child_process", () => ({ execFileSync: mockExecFileSync }));
 
+// Real fs everywhere except accessSync, whose errno is the whole verdict and
+// whose interesting values (a read-only mount) no chmod can produce.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  mockAccessSync.mockImplementation(actual.accessSync);
+  return { ...actual, accessSync: mockAccessSync };
+});
+
 import {
+  blockedGlobalTargetCause,
   isNixStorePath,
   probeGlobalInstallTarget,
   unwritableGlobalTargetMessage,
@@ -87,21 +99,47 @@ describe("probeGlobalInstallTarget", () => {
     // `<prefix>/lib/node_modules` exists long before the `@swmansion` scope dir
     // under it; the verdict has to be about the directory that really gets the
     // mkdir, not about a path that is simply absent.
-    const existing = path.join(tmpRoot, "lib", "node_modules");
-    fs.mkdirSync(existing, { recursive: true });
-    mockExecFileSync.mockReturnValue(`${path.join(existing, "@swmansion", "argent")}\n`);
+    const globalDir = path.join(tmpRoot, "lib", "node_modules");
+    fs.mkdirSync(globalDir, { recursive: true });
+    mockExecFileSync.mockReturnValue(`${globalDir}\n`);
 
-    expect(probeGlobalInstallTarget("npm")?.dir).toBe(existing);
+    expect(probeGlobalInstallTarget("npm")?.dir).toBe(globalDir);
   });
+
+  it.skipIf(!canTestUnwritable)(
+    "blocks on a read-only scope directory under a writable global root",
+    () => {
+      // What `sudo npm install -g` leaves behind: node_modules still belongs to
+      // the user, `@swmansion` under it does not — and that is the directory
+      // npm renames inside, so the install dies there with EACCES.
+      const globalDir = path.join(tmpRoot, "lib", "node_modules");
+      const scopeDir = path.join(globalDir, "@swmansion");
+      fs.mkdirSync(scopeDir, { recursive: true });
+      fs.chmodSync(scopeDir, 0o555);
+      mockExecFileSync.mockReturnValue(`${globalDir}\n`);
+
+      try {
+        expect(probeGlobalInstallTarget("npm")).toEqual({
+          dir: scopeDir,
+          blocked: true,
+          nixStore: false,
+        });
+      } finally {
+        fs.chmodSync(scopeDir, 0o755);
+      }
+    }
+  );
 
   it("falls back to the installed package's parent when the manager query fails", () => {
     mockExecFileSync.mockImplementation(() => {
       throw new Error("npm not found");
     });
-    const scopeDir = path.join(tmpRoot, "lib", "node_modules", "@swmansion");
-    fs.mkdirSync(scopeDir, { recursive: true });
+    // The installed package's own directory exists, and is not the answer: an
+    // install replaces that entry, which takes write access to the parent.
+    const packageDir = path.join(tmpRoot, "lib", "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(packageDir, { recursive: true });
 
-    expect(probeGlobalInstallTarget("npm", path.join(scopeDir, "argent"))?.dir).toBe(scopeDir);
+    expect(probeGlobalInstallTarget("npm", packageDir)?.dir).toBe(path.dirname(packageDir));
   });
 
   it("returns null when neither the query nor a fallback yields a directory", () => {
@@ -110,6 +148,56 @@ describe("probeGlobalInstallTarget", () => {
     });
 
     expect(probeGlobalInstallTarget("npm")).toBeNull();
+  });
+
+  // The store is a read-only MOUNT on NixOS and nix-darwin, where access(W_OK)
+  // answers EROFS rather than EACCES — the motivating case, and root is no
+  // more exempt from it than anyone else.
+  it("treats a read-only filesystem as blocked", () => {
+    mockExecFileSync.mockReturnValue(`${tmpRoot}\n`);
+    mockAccessSync.mockImplementationOnce(() => {
+      throw Object.assign(new Error("EROFS"), { code: "EROFS" });
+    });
+
+    expect(probeGlobalInstallTarget("npm")?.blocked).toBe(true);
+  });
+
+  it("blocks on EPERM, which is what a protected directory answers", () => {
+    mockExecFileSync.mockReturnValue(`${tmpRoot}\n`);
+    mockAccessSync.mockImplementationOnce(() => {
+      throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+    });
+
+    expect(probeGlobalInstallTarget("npm")?.blocked).toBe(true);
+  });
+
+  it("stays silent when the directory cannot be read for some other reason", () => {
+    mockExecFileSync.mockReturnValue(`${tmpRoot}\n`);
+    mockAccessSync.mockImplementationOnce(() => {
+      throw Object.assign(new Error("EIO"), { code: "EIO" });
+    });
+
+    expect(probeGlobalInstallTarget("npm")).toBeNull();
+  });
+
+  it("reads the path off the last line, past whatever the manager printed first", () => {
+    mockExecFileSync.mockReturnValue(` WARN  deprecated config\n${tmpRoot}\n`);
+
+    expect(probeGlobalInstallTarget("npm")?.dir).toBe(tmpRoot);
+  });
+
+  it("bounds the query and keeps the manager's own chatter off the screen", () => {
+    mockExecFileSync.mockReturnValue(`${tmpRoot}\n`);
+
+    probeGlobalInstallTarget("npm");
+
+    const [, , options] = mockExecFileSync.mock.calls[0] as [
+      string,
+      string[],
+      { timeout: number; stdio: string[] },
+    ];
+    expect(options.timeout).toBeGreaterThan(0);
+    expect(options.stdio).toEqual(["ignore", "pipe", "ignore"]);
   });
 
   it("ignores a relative path from the manager rather than resolving it against cwd", () => {
@@ -153,8 +241,17 @@ describe("unwritableGlobalTargetMessage", () => {
     expect(message).toContain("cannot update @swmansion/argent globally");
     expect(message).toContain("read-only Nix store");
     expect(message).toContain(nixTarget.dir);
-    expect(message).toContain("sudo does not help");
+    // Root can write a single-user store's 0555 paths — Nix undoing the write
+    // is what actually rules sudo out, and it rules it out everywhere.
+    expect(message).toContain("sudo install into it is undone");
     expect(message).toContain("argent init --local");
+  });
+
+  it("claims nothing about a run that has not happened yet", () => {
+    // Also printed as the preamble to the prompt offering the ways out.
+    expect(plain(blockedGlobalTargetCause(plainTarget, "npm", "install"))).not.toContain(
+      "Nothing was installed"
+    );
   });
 
   it("offers the writable-prefix fix for npm only", () => {

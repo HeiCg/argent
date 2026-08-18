@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { update } from "../src/update.js";
+import { killToolServerForInstallDir } from "@argent/tools-client";
 
 // Declining the update prompt must cancel + exit 0 without the config refresh
 // (entry rewrites, allowlists, stale-config sweep, rules/agents, skills)
@@ -150,6 +151,33 @@ describe("update — interactive decline", () => {
     // The config refresh never ran: the file the refresh would rewrite is
     // byte-identical.
     expect(fs.readFileSync(mcpJson, "utf8")).toBe(before);
+  });
+
+  // The reported Nix bug: the global directory belongs to the store. Asking
+  // "update?" there only leads to npm's EACCES, and stopping the tool server
+  // for it costs the user a restart for nothing.
+  it("refuses a global update it cannot perform, before asking and before stopping the server", async () => {
+    const globalRoot = path.join(tmpDir, "store", "lib", "node_modules");
+    fs.mkdirSync(globalRoot, { recursive: true });
+    fs.chmodSync(globalRoot, 0o555);
+    childProcessMock.execFileSync.mockImplementation(((_bin: string, args: string[]) =>
+      args[0] === "root" ? `${globalRoot}\n` : undefined) as never);
+
+    await expect(update([])).rejects.toThrow(ExitSentinel);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(promptsMock.confirm).not.toHaveBeenCalled();
+    expect(killToolServerForInstallDir).not.toHaveBeenCalled();
+    expect(npmInstallCalls()).toHaveLength(0);
+    const errors = promptsMock.log.error.mock.calls.map(([m]) => m as string);
+    expect(errors.some((m) => m.includes("cannot update @swmansion/argent globally"))).toBe(true);
+    expect(telemetryMock.track).toHaveBeenCalledWith(
+      "installation:package_action",
+      expect.objectContaining({
+        action: "update_failed",
+        error_code: "UPDATE_GLOBAL_PREFIX_UNWRITABLE",
+      })
+    );
   });
 
   it("accepting the prompt still proceeds to the install", async () => {
