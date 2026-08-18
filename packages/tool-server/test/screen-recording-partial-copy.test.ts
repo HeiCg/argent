@@ -62,8 +62,7 @@ describe("a copy out of simulator-server that fails part-way", () => {
     await fs.writeFile(serverFile, Buffer.from("a whole finished mp4 payload"));
 
     const server: ServerRecordingControl = {
-      start: async () => true,
-      stop: async () => ({
+      start: async () => async () => ({
         path: serverFile,
         sizeBytes: 28,
         durationMs: 2_000,

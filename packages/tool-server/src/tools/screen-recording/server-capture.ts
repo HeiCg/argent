@@ -35,18 +35,23 @@ import { disablePointer, type PointerControl } from "./pointer-control";
  */
 export interface ServerRecordingControl {
   /**
-   * Begin recording. Resolves false when this simulator-server build has no
-   * recording endpoint, which is the caller's cue to capture the frame stream
-   * host-side instead.
+   * Begin recording. Resolves the call that finalizes *this* recording, or null
+   * when this simulator-server build has no recording endpoint — the caller's
+   * cue to capture the frame stream host-side instead.
+   *
+   * It hands the finalizer back rather than exposing a bare `stop` because
+   * simulator-server keys the stop to the id start returned, and refuses one
+   * that names anything else.
    */
   start(opts: {
     watermark: boolean;
     trimStatic: boolean;
     timeLimitSeconds: number;
-  }): Promise<boolean>;
-  /** Finalize and hand back the muxed video. */
-  stop(): Promise<ServerRecordingResult>;
+  }): Promise<ServerRecordingStop | null>;
 }
+
+/** Finalizes one server-side recording and hands back the muxed video. */
+export type ServerRecordingStop = () => Promise<ServerRecordingResult>;
 
 /**
  * Start a server-side recording and stamp the session, or return null if this
@@ -65,19 +70,19 @@ export async function startServerCapture(
   }
 ): Promise<StartRecordingResult | null> {
   assertNotDisposed(api, "screen_recording_start");
-  const started = await params.server.start({
+  const stop = await params.server.start({
     watermark: params.watermark,
     trimStatic: params.trimStatic,
     timeLimitSeconds: params.timeLimitSeconds,
   });
-  if (!started) return null;
+  if (!stop) return null;
 
   // The recording now exists inside simulator-server, which outlives this
   // process. If shutdown ran while that request was in flight, dispose's
   // teardown has already been and gone and will never see it — so end it here,
   // the way the fallback path reaps a child spawned in the same window.
   if (api.disposed) {
-    await params.server.stop().catch(() => {});
+    await stop().catch(() => {});
     assertNotDisposed(api, "screen_recording_start");
   }
 
@@ -94,7 +99,7 @@ export async function startServerCapture(
   api.lastExitInfo = null;
   api.lastFrameStreamError = null;
   api.outputFile = params.outputFile;
-  api.serverStop = params.server.stop;
+  api.serverStop = stop;
   api.trimStatic = params.trimStatic;
   api.recordingActive = true;
   api.wallClockStartMs = Date.now();
@@ -129,7 +134,7 @@ export async function startServerCapture(
   api.recordingTimeout = setTimeout(() => {
     api.recordingTimeout = null;
     // Ownership guard: a newer capture may have stamped the session already.
-    if (api.serverStop !== params.server.stop) return;
+    if (api.serverStop !== stop) return;
     api.recordingTimedOut = true;
     api.recordingActive = false;
     api.wallClockEndMs = Date.now();

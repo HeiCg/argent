@@ -172,7 +172,11 @@ export interface ServerRecordingResult {
  * onto a constant 30fps timeline, trims static stretches and stamps the
  * watermark, then muxes an h264 mp4 when `stopServerRecording` is called.
  *
- * Returns false when this build exposes no recording route (HTTP 404), so the
+ * Returns the id simulator-server keys the recording to; `stopServerRecording`
+ * has to present it, so a second client sharing this server cannot collect (and
+ * end) a recording it did not start.
+ *
+ * Returns null when this build exposes no recording route (HTTP 404), so the
  * caller can fall back to capturing the frame stream itself. The route is
  * compiled out of the software-encoder builds, and absent from every
  * simulator-server predating it — including the one argent currently pins — so
@@ -182,8 +186,8 @@ export async function startServerRecording(
   api: SimulatorServerApi,
   opts: { watermark: boolean; trimStatic: boolean; timeLimitSeconds: number },
   signal?: AbortSignal
-): Promise<boolean> {
-  const body = await recordingPost<{ status?: string; error?: string }>(
+): Promise<string | null> {
+  const body = await recordingPost<{ status?: string; id?: string; error?: string }>(
     api,
     "start",
     {
@@ -193,10 +197,11 @@ export async function startServerRecording(
     },
     signal
   );
-  if (body === null) return false;
-  if (body.status !== "ok") {
+  if (body === null) return null;
+  if (body.status !== "ok" || typeof body.id !== "string") {
     // Neither the success reply nor a recognized rejection, so whether a
-    // recording is now running is unknown. Fail instead of falling back: a
+    // recording is now running is unknown — and a success without an id is no
+    // better, since nothing could ever stop it. Fail instead of falling back: a
     // second capture over one that did start would record the screen twice and
     // strand the server's copy with nothing left to stop it.
     throw new FailureError(
@@ -211,12 +216,16 @@ export async function startServerRecording(
       }
     );
   }
-  return true;
+  return body.id;
 }
 
-/** Finalize the recording started by {@link startServerRecording}. */
+/**
+ * Finalize the recording {@link startServerRecording} began, identified by the
+ * id it returned. simulator-server refuses a stop that names anything else.
+ */
 export async function stopServerRecording(
   api: SimulatorServerApi,
+  id: string,
   signal?: AbortSignal
 ): Promise<ServerRecordingResult> {
   const body = await recordingPost<{
@@ -227,7 +236,7 @@ export async function stopServerRecording(
     trimmed_ms?: number | null;
     warning?: string | null;
     error?: string;
-  }>(api, "stop", {}, signal);
+  }>(api, "stop", { id }, signal);
   if (body === null) {
     // `serverStop` is only ever stamped by a start that the route answered, so
     // the same server answering 404 now means it stopped serving that route

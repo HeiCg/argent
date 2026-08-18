@@ -1092,7 +1092,8 @@ describe("touch visualizer wire protocol", () => {
 
   it("setPointerVisible POSTs {show} and reads status ok", async () => {
     const fetchMock = vi.fn(
-      async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ status: "ok" }))
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ status: "ok", id: "18f0c2b1e4a" }))
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1106,7 +1107,8 @@ describe("touch visualizer wire protocol", () => {
 
   it("setPointerTrail POSTs {trail}", async () => {
     const fetchMock = vi.fn(
-      async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ status: "ok" }))
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ status: "ok", id: "18f0c2b1e4a" }))
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1481,7 +1483,6 @@ describe("server-side recording", () => {
     const serverDir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-test-simserver-"));
     const serverFile = path.join(serverDir, "recording-123.mp4");
     await fs.writeFile(serverFile, overrides.bytes ?? Buffer.from("fake mp4 payload"));
-    const start = vi.fn(async () => overrides.supported ?? true);
     const stop = vi.fn(async () => ({
       path: serverFile,
       sizeBytes: 16,
@@ -1490,7 +1491,9 @@ describe("server-side recording", () => {
       trimmedMs: overrides.trimmedMs === undefined ? null : overrides.trimmedMs,
       warning: overrides.warning ?? null,
     }));
+    const start = vi.fn(async () => ((overrides.supported ?? true) ? stop : null));
     return { start, stop, serverFile, serverDir } satisfies ServerRecordingControl & {
+      stop: typeof stop;
       serverFile: string;
       serverDir: string;
     };
@@ -1731,7 +1734,7 @@ describe("server-side recording", () => {
     const parked = new Promise<void>((resolve) => (admit = resolve));
     server.start.mockImplementationOnce(async () => {
       await parked;
-      return true;
+      return server.stop;
     });
 
     const promise = startOnServer(instance.api, server, {});
@@ -1880,13 +1883,14 @@ describe("server recording wire protocol", () => {
 
   it("start POSTs the recording options and reports success", async () => {
     const fetchMock = vi.fn(
-      async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ status: "ok" }))
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ status: "ok", id: "18f0c2b1e4a" }))
     );
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
       startServerRecording(fakeApi, { watermark: true, trimStatic: false, timeLimitSeconds: 30 })
-    ).resolves.toBe(true);
+    ).resolves.toBe("18f0c2b1e4a");
 
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe("http://127.0.0.1:65500/api/recording/start");
@@ -1908,7 +1912,7 @@ describe("server recording wire protocol", () => {
 
     await expect(
       startServerRecording(fakeApi, { watermark: true, trimStatic: true, timeLimitSeconds: 60 })
-    ).resolves.toBe(false);
+    ).resolves.toBeNull();
   });
 
   it("falls back only on a 404 the router itself produced, not one from a handler", async () => {
@@ -1973,13 +1977,15 @@ describe("server recording wire protocol", () => {
       "fetch",
       vi.fn(async (_url: string, init?: RequestInit) => {
         signals.push(init?.signal);
-        return new Response(JSON.stringify({ status: "ok", path: "/tmp/x.mp4", duration_ms: 1 }));
+        return new Response(
+          JSON.stringify({ status: "ok", id: "rec-1", path: "/tmp/x.mp4", duration_ms: 1 })
+        );
       })
     );
 
     const control = makeServerRecordingControl(fakeApi);
-    await control.start({ watermark: true, trimStatic: true, timeLimitSeconds: 60 });
-    await control.stop();
+    const stop = await control.start({ watermark: true, trimStatic: true, timeLimitSeconds: 60 });
+    await stop!();
 
     expect(signals).toHaveLength(2);
     for (const signal of signals) expect(signal).toBeInstanceOf(AbortSignal);
@@ -2031,7 +2037,7 @@ describe("server recording wire protocol", () => {
       )
     );
 
-    await expect(stopServerRecording(fakeApi)).resolves.toEqual({
+    await expect(stopServerRecording(fakeApi, "rec-1")).resolves.toEqual({
       path: "/tmp/simserver-x/media/recording-1.mp4",
       sizeBytes: 4096,
       durationMs: 967,
@@ -2041,13 +2047,52 @@ describe("server recording wire protocol", () => {
     });
   });
 
+  it("stops the recording by the id the start returned", async () => {
+    // simulator-server keys `stop` to that id and refuses anything else, so a
+    // stop that omits it never finalizes: the video stays inside the server,
+    // and the recording it left running blocks every later start on the device
+    // until that simulator-server exits.
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        bodies.push(JSON.parse(init!.body as string));
+        return new Response(
+          JSON.stringify({ status: "ok", id: "18f0c2b1e4a", path: "/tmp/x.mp4", duration_ms: 1 })
+        );
+      })
+    );
+
+    const stop = await makeServerRecordingControl(fakeApi).start({
+      watermark: true,
+      trimStatic: true,
+      timeLimitSeconds: 60,
+    });
+    await stop!();
+
+    expect(bodies[1]).toEqual({ id: "18f0c2b1e4a" });
+  });
+
+  it("fails a start that reports success but names no recording", async () => {
+    // Without an id nothing can ever stop the recording, so treating the reply
+    // as success would strand it inside simulator-server.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ status: "ok" })))
+    );
+
+    await expect(
+      startServerRecording(fakeApi, { watermark: true, trimStatic: true, timeLimitSeconds: 60 })
+    ).rejects.toMatchObject({ message: expect.stringContaining("instead of a status") });
+  });
+
   it("fails a stop that comes back without a video path", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response(JSON.stringify({ duration_ms: 100 })))
     );
 
-    await expect(stopServerRecording(fakeApi)).rejects.toMatchObject({
+    await expect(stopServerRecording(fakeApi, "rec-1")).rejects.toMatchObject({
       message: expect.stringContaining("no video path"),
     });
   });

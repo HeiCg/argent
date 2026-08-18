@@ -220,13 +220,21 @@ export function makePointerControl(simulator: SimulatorServerApi): PointerContro
 
 /**
  * Bind simulator-server's recording endpoints to the resolved server. `start`
- * reports whether this build has them at all; `startCapture` records host-side
- * when it does not.
+ * reports whether this build has them at all — `startCapture` records host-side
+ * when it does not — and otherwise hands back the finalizer for the recording it
+ * just began, which carries the id simulator-server requires at stop.
  */
 export function makeServerRecordingControl(simulator: SimulatorServerApi): ServerRecordingControl {
   return {
-    start: (opts) =>
-      startServerRecording(simulator, opts, AbortSignal.timeout(RECORDING_START_TIMEOUT_MS)),
-    stop: () => stopServerRecording(simulator, AbortSignal.timeout(RECORDING_STOP_TIMEOUT_MS)),
+    async start(opts) {
+      const id = await startServerRecording(
+        simulator,
+        opts,
+        AbortSignal.timeout(RECORDING_START_TIMEOUT_MS)
+      );
+      if (id === null) return null;
+      return () =>
+        stopServerRecording(simulator, id, AbortSignal.timeout(RECORDING_STOP_TIMEOUT_MS));
+    },
   };
 }

@@ -59,7 +59,6 @@ describe("screen-recording start — platform parity", () => {
     // as "this build cannot record" and never surfaces as an error.
     expect(params.server).toBeDefined();
     expect(typeof params.server?.start).toBe("function");
-    expect(typeof params.server?.stop).toBe("function");
   });
 
   it("gives every platform the same stream url and touch control", async () => {
