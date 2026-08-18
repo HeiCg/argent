@@ -106,8 +106,9 @@ describe("a flow step whose native-devtools precheck blocked", () => {
     expect(gate.tool).toBe("native-full-hierarchy");
     expect(gate.status).toBe("fail");
     expect(gate.reason).toContain(status);
-    // The message is the only field carrying the remedy — and for the two new
-    // statuses, the only thing saying NOT to restart the app.
+    // The message is the only field carrying the remedy — and for every status
+    // whose remedy is not a relaunch, the only thing saying NOT to restart the
+    // app.
     expect(gate.reason).toContain(message);
     expect(gate.result).toEqual({ status, message });
     expect(run.steps[1].status).toBe("skip");

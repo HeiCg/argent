@@ -81,6 +81,11 @@ export interface DescribeIosOptions {
   // Pre-resolved tvOS verdict, passed by poll/retry callers so the hot path
   // skips re-shelling `xcrun` each iteration. Omitted callers probe once.
   isTvOs?: boolean;
+  // Whether this read's `hint` is rendered to an agent. Only the `describe`
+  // tool's own handlers set it; the poll, tree-match and preview callers keep
+  // the tree and drop the hint, and a relaunch remedy recorded for prose nobody
+  // read is one a later reading would treat as spent.
+  hintReachesAgent?: boolean;
 }
 
 // describe on iOS resolves the ax-service via Registry; the blueprint factory
@@ -189,7 +194,8 @@ export async function describeIos(
         nativeApi,
         target.bundleId,
         state,
-        INJECTION_FAILED_DESCRIBE_RECOVERY
+        INJECTION_FAILED_DESCRIBE_RECOVERY,
+        { recordAdvice: options.hintReachesAgent === true }
       );
       const merged = hint ? `${hint} ${advice.message}` : advice.message;
       return state === "unregistered" || state === "connecting"

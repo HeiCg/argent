@@ -94,7 +94,7 @@ If state is unregistered: do NOT restart the app again — it already launched u
 If state is connecting: do NOT restart the app — launching it is what starts the connection, so a relaunch discards the one in progress and returns this same state. Wait a few seconds and repeat this call.
 If state is indeterminate: the process could not be inspected, so restart-app is worth one attempt. If this call still reports it after that restart, do NOT restart the app again — the service is stale rather than the app uninjected, so restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. Remote simulators can never inspect the process, so this is the only unconnected state a running app reaches there.
 Returns { status: "init_failed", message, attempts } instead when the simulator's native-devtools environment failed to initialize.
-Returns { status: "injection_failed", message } instead once this app has been told to restart, has done so, and the fresh process still never connected — the dylib is being inserted but dyld is not loading it. This is a TERMINAL state: do NOT restart the app again, read the message for the likely cause and use \`describe\` or \`screenshot\` instead.
+Returns { status: "injection_failed", message } instead once this app has been told to restart, has done so, and the fresh process still never connected — the dylib reaches the process but nothing ever dials. This is a TERMINAL state: do NOT restart the app again and do NOT restart the tool-server, read the message for the likely cause and use \`describe\` or \`screenshot\` instead.
 Fails if the simulator server is not running for the given UDID.`,
   zodSchema,
   services: (params) => ({

@@ -109,6 +109,7 @@ import { nativeDevtoolsStatusTool } from "../src/tools/native-devtools/native-de
 import { nativeDescribeScreenTool } from "../src/tools/native-devtools/native-describe-screen";
 import { queryFullHierarchyTree } from "../src/tools/flows/flow-ios-tree";
 import { createDescribeTool } from "../src/tools/describe";
+import { describeIos } from "../src/tools/describe/platforms/ios";
 
 const UDID = "DD1D0000-1111-2222-3333-444444444444";
 const SOCKET = "/tmp/argent-nd-DD1D0000.sock";
@@ -328,19 +329,40 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
   });
 
   it("clears the spent remedy when the app connects", async () => {
-    // A bundle that connects has had its relaunch work. A later stale launch of
-    // the same app is a fresh problem and gets the remedy again rather than
-    // inheriting a verdict from the previous process.
+    // The handshake is what retires a hand-out, and the app that drops its
+    // socket afterwards is the case that needs it: the relaunch worked, so the
+    // silence that follows is a fresh problem rather than the load failure the
+    // terminal diagnosis asserts. Every reading here goes through
+    // `appConnectionState` — the pid the verdict compares against is only
+    // recorded there, so advising on a bundle this service has never inspected
+    // compares one absent pid with another and cannot tell the two apart.
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
     let socket: net.Socket | undefined;
+    advance(10_000);
     try {
       const api = instance.api as NativeDevtoolsApi;
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("stale_process");
       adviseOnUninjectedApp(api, BUNDLE, "stale_process", INJECTION_FAILED_RECOVERY);
 
+      // The relaunch the remedy asked for, into a fresh pid — and this one does
+      // register, which is the remedy converging.
+      advance(2_000);
+      world.execAt = Date.now();
+      world.pid += 1;
       socket = await connectApp(api, BUNDLE);
 
+      // Then it drops the socket and goes silent again, on the same process.
+      socket.destroy();
+      for (let i = 0; i < 200 && api.isConnected(BUNDLE); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(api.isConnected(BUNDLE)).toBe(false);
+      advance(PAST_CONNECT_BUDGET_MS);
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("unregistered");
+
       expect(
-        adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY).terminal
+        adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY).terminal,
+        "an app that answered the relaunch must not inherit its verdict"
       ).toBe(false);
     } finally {
       socket?.destroy();
@@ -380,7 +402,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
     }
   });
 
-  it("names the tool-server as still in scope when nothing has connected", async () => {
+  it("names the tool-server as still in scope when nothing is connected", async () => {
     const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
     advance(10_000);
     try {
@@ -397,7 +419,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
       const advice = adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY);
 
       expect(advice.terminal).toBe(true);
-      expect(advice.message).toContain("No app on this simulator has connected");
+      expect(advice.message).toContain("No app on this simulator is connected");
       expect(advice.message).toContain("boot-device with force=true");
     } finally {
       await instance.dispose();
@@ -464,6 +486,106 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
       await expect(queryFullHierarchyTree(registry, device, BUNDLE)).rejects.toThrow(
         /takes a point directly and reads no tree/
       );
+    } finally {
+      await instance.dispose();
+    }
+  });
+
+  it("reports the terminal status from native-devtools-status itself", async () => {
+    // The surface the flow-recovery ladder sends an author to, and the only one
+    // whose terminal block is its own rather than the shared precheck's. Without
+    // it the tool falls through to `state: "unregistered"`, whose message is the
+    // tool-server remedy — the half of the cycle this file exists to retire.
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      const api = instance.api as NativeDevtoolsApi;
+      advance(10_000);
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("stale_process");
+      adviseOnUninjectedApp(api, BUNDLE, "stale_process", INJECTION_FAILED_RECOVERY);
+
+      advance(2_000);
+      world.execAt = Date.now();
+      world.pid += 1;
+      advance(PAST_CONNECT_BUDGET_MS);
+
+      const result = await nativeDevtoolsStatusTool.execute(
+        { nativeDevtools: api },
+        { udid: UDID, bundleId: BUNDLE }
+      );
+
+      expect("status" in result && result.status).toBe("injection_failed");
+      expect("state" in result, "the terminal block carries no state to act on").toBe(false);
+      expect("message" in result && result.message).toContain(
+        "was told to relaunch, and the process now running is a different one"
+      );
+      expect("message" in result && result.message).not.toContain("argent server stop");
+    } finally {
+      await instance.dispose();
+    }
+  });
+
+  it("ends the precheck's terminal message on the uninjected dead-end, not the non-injectable one", async () => {
+    // The two tails are one identifier apart at the call site and only one is
+    // true here: these tools answer `injection_failed`, they do not throw
+    // NATIVE_DEVTOOLS_NOT_INJECTABLE the way a com.apple.* bundle id does.
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      const api = instance.api as NativeDevtoolsApi;
+      advance(10_000);
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("stale_process");
+      adviseOnUninjectedApp(api, BUNDLE, "stale_process", INJECTION_FAILED_RECOVERY);
+
+      advance(2_000);
+      world.execAt = Date.now();
+      world.pid += 1;
+      advance(PAST_CONNECT_BUDGET_MS);
+
+      const feature = await nativeDescribeScreenTool.execute(
+        { nativeDevtools: api },
+        { udid: UDID, bundleId: BUNDLE }
+      );
+
+      expect(feature.status).toBe("injection_failed");
+      const message = (feature as { message?: string }).message;
+      // `endsWith`, not `toContain`: the swap replaces the tail, so a
+      // containment check on the diagnosis ahead of it passes either way.
+      expect(message, "the terminal block carries no message").toBeTypeOf("string");
+      expect(message!.endsWith(INJECTION_FAILED_RECOVERY), "wrong dead-end warning").toBe(true);
+    } finally {
+      await instance.dispose();
+    }
+  });
+
+  it("does not record the relaunch hand-out for a read whose hint no agent sees", async () => {
+    // `describeIos` is also await-ui-element's and await-screen-idle's per-poll
+    // tree read, whose non-final hints are dropped. A record written there would
+    // let any later process replacement — a crash, a Metro reload, another agent
+    // — pass as the relaunch the terminal diagnosis opens by asserting.
+    const instance = await nativeDevtoolsBlueprint.factory({}, device, { device });
+    try {
+      const api = instance.api as NativeDevtoolsApi;
+      const registry = {
+        resolveService: async (urn: string) => {
+          if (urn.startsWith("NativeDevtools:")) return api;
+          throw new Error("ax-service unavailable in this test");
+        },
+      } as unknown as Parameters<typeof describeIos>[0];
+
+      advance(10_000);
+      const polled = await describeIos(registry, device, { bundleId: BUNDLE }, { isTvOs: false });
+      expect(polled.hint).toContain("call restart-app then retry");
+
+      // Something other than the agent replaces the process.
+      advance(2_000);
+      world.execAt = Date.now();
+      world.pid += 1;
+      advance(PAST_CONNECT_BUDGET_MS);
+
+      await expect(api.appConnectionState(BUNDLE)).resolves.toBe("unregistered");
+      expect(
+        adviseOnUninjectedApp(api, BUNDLE, "unregistered", INJECTION_FAILED_RECOVERY).terminal,
+        "a hint nobody read is not a relaunch anybody was told to perform"
+      ).toBe(false);
     } finally {
       await instance.dispose();
     }

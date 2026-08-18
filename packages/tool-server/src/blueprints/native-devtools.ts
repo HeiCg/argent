@@ -293,7 +293,7 @@ function buildInjectionFailedDiagnosis(bundleId: string, connectedPeers: string[
   const localisation =
     connectedPeers.length > 0
       ? `Other apps on this simulator are connected (${connectedPeers.join(", ")}), so the launchd environment, the dylib and this service's listener all work — the fault is specific to this app's binary: check that it is a simulator build for this platform and that it does not enforce library validation. `
-      : `No app on this simulator has connected to this tool-server, so a dylib dyld never loads and a listener nothing can reach still read the same. Re-boot the simulator (boot-device with force=true) and confirm argent's native binaries are installed. A tool-server restart does not help here either: it leaves this app older than the new listener, which reads as the restart-app prompt again, and a second, freshly bound listener would see nothing too. `;
+      : `No app on this simulator is connected to this tool-server, so a dylib dyld never loads and a listener nothing can reach still read the same. Re-boot the simulator (boot-device with force=true) and confirm argent's native binaries are installed. A tool-server restart does not help here either: it leaves this app older than the new listener, which reads as the restart-app prompt again, and a second, freshly bound listener would see nothing too. `;
 
   return (
     `${bundleId} was told to relaunch, and the process now running is a different one, so the relaunch happened — and it still never connected. ` +
@@ -321,8 +321,13 @@ interface NativeDevtoolsUninjectedAdvice {
 /**
  * Turn a measured state into the guidance every surface shares, recording the
  * one hand-out that lets a later reading tell a spent remedy from a fresh one.
- * Side-effecting on that record: call it exactly where the advice is emitted to
- * an agent.
+ * Side-effecting on that record, so `recordAdvice` exists for the reader whose
+ * message an agent may never see: `describeIos` doubles as the per-poll tree
+ * read behind await-ui-element and await-screen-idle, and a record written for
+ * a discarded hint would let any later process replacement — a crash, a Metro
+ * reload, another agent — satisfy a relaunch nobody was asked to perform.
+ * Withholding it only ever delays the verdict, so a caller that cannot tell
+ * should not record.
  *
  * Only `stale_process` and `unregistered` take part. Their remedies are the two
  * halves of a cycle: `stale_process` prescribes restart-app, which leaves the
@@ -358,10 +363,11 @@ export function adviseOnUninjectedApp(
   api: NativeDevtoolsApi,
   bundleId: string,
   state: Exclude<NativeDevtoolsAppState, "connected">,
-  terminalRecovery: string
+  terminalRecovery: string,
+  options: { recordAdvice?: boolean } = {}
 ): NativeDevtoolsUninjectedAdvice {
   if (state === "stale_process") {
-    api.noteRelaunchAdvice(bundleId);
+    if (options.recordAdvice ?? true) api.noteRelaunchAdvice(bundleId);
   } else if (state === "unregistered" && api.wasAdvisedToRelaunch(bundleId)) {
     return {
       terminal: true,
@@ -419,8 +425,11 @@ export type NativeDevtoolsPrecheckBlock =
 /**
  * Every tool whose handler answers a blocked precheck with one of these status
  * objects instead of doing its work. The six feature tools run the 3-arg
- * overload and can return any of the five; the rest run the 2-arg one and can
- * only return `init_failed`.
+ * overload and can return any of the five; the rest run the 2-arg one, which
+ * blocks on `init_failed` alone. `native-devtools-status` also reports
+ * `injection_failed`, which it measures for itself after the precheck lets it
+ * through — so membership here is what a tool CAN answer with, not which
+ * overload produced it.
  */
 const NATIVE_DEVTOOLS_PRECHECK_TOOLS = new Set([
   "native-describe-screen",

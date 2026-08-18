@@ -448,12 +448,13 @@ export function flowLaunchGateReason(
       //
       // This is the one reader that does NOT fall back to the terminal
       // injection diagnosis `adviseOnUninjectedApp` produces for this state.
-      // That diagnosis rests on a relaunch this reader did not perform — the
-      // state flipping from `stale_process` to `unregistered` is what proves the
-      // process was replaced — whereas here the relaunch is the step's own and
-      // the reading arrives one window later, where a cold start produces the
-      // identical one. So a re-run stays worth its cost instead of terminal, and
-      // the sentence below is what keeps it from being read as "restart things".
+      // That diagnosis rests on a relaunch this reader did not perform — it
+      // needs a `stale_process` hand-out recorded against one pid and a later
+      // reading against a different one — whereas here the relaunch is the
+      // step's own and the reading arrives one window later, where a cold start
+      // produces the identical one. So a re-run stays worth its cost instead of
+      // terminal, and the sentence below is what keeps it from being read as
+      // "restart things".
       return (
         `${measured} A cold start slower than the ${LAUNCH_TO_VERDICT_MS} ms this step waited reads the ` +
         `same way — if that is likely, re-run the flow to relaunch and wait again before restarting anything.`

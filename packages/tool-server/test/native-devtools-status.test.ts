@@ -1411,6 +1411,22 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     }
   });
 
+  // The six feature tools' arm is pinned verbatim below, but native-devtools-status
+  // carries its own wording and is the surface the flow-recovery ladder sends an
+  // author to (argent-create-flow/references/reliability-and-recovery.md step 3).
+  // Unpinned, the arm can be dropped while that doc keeps promising it — and the
+  // prohibition it has to carry is the tool-server one, since this description
+  // prescribes exactly that restart four lines above for `state: unregistered`.
+  it("routes injection_failed on native-devtools-status, forbidding both restarts", () => {
+    const line = nativeDevtoolsStatusTool
+      .description!.split("\n")
+      .find((l) => l.startsWith('Returns { status: "injection_failed"'));
+    expect(line, "description has no injection_failed line").toBeTypeOf("string");
+    expect(line).toBe(
+      'Returns { status: "injection_failed", message } instead once this app has been told to restart, has done so, and the fresh process still never connected — the dylib reaches the process but nothing ever dials. This is a TERMINAL state: do NOT restart the app again and do NOT restart the tool-server, read the message for the likely cause and use `describe` or `screenshot` instead.'
+    );
+  });
+
   it("routes exactly the five precheck statuses on every native-* tool", () => {
     // The clause pins below bound each slice by the next clause or the line's
     // end, so a SIXTH clause is what would be unconstrained on all six at once.
@@ -1467,7 +1483,7 @@ describe("native-* tool descriptions document every precheck outcome", () => {
     ],
     [
       "injection_failed",
-      "If status is injection_failed: the app was told to restart, did, and the fresh process still never connected — the dylib is being inserted but dyld is not loading it, so this is TERMINAL. Do NOT restart the app again and do NOT restart the tool-server; read the message for the likely cause and use the standard `describe` tool or `screenshot` instead.",
+      "If status is injection_failed: the app was told to restart, did, and the fresh process still never connected — the dylib reaches the process but nothing ever dials, so this is TERMINAL. Do NOT restart the app again and do NOT restart the tool-server; read the message for the likely cause and use the standard `describe` tool or `screenshot` instead.",
     ],
   ])("routes %s identically on all six native-* tools", (status, clause) => {
     for (const tool of tools) {
