@@ -2926,7 +2926,7 @@ function* launchesInScope(
  * named so a refusal can point at the file whose launch broke it. `flow` is
  * absent for a single-file judgement, whose message needs no attribution.
  */
-export interface CoverageScope {
+interface CoverageScope {
   flow?: string;
   steps: FlowStep[];
 }
@@ -3117,7 +3117,7 @@ export function assertComposedLaunchCoverage(
 }
 
 /** One leading-chain file's requires block, named so a fold conflict can point at it. */
-export interface RequiresContribution {
+interface RequiresContribution {
   flow: string;
   requires: FlowRequires;
 }
