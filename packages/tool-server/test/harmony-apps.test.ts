@@ -264,11 +264,23 @@ describe("launchHarmonyApp", () => {
     );
   });
 
-  it("succeeds only on the success line", async () => {
+  it("succeeds on the success line", async () => {
     runHdcShell
       .mockResolvedValueOnce(ok(CALCULATOR))
       .mockResolvedValueOnce(ok("start ability successfully."));
     await expect(launchHarmonyApp("dev", "c")).resolves.toBeUndefined();
+  });
+
+  it("fails a launch that printed nothing recognisable", async () => {
+    // Every other failing fixture here carries an `error:` headline, so they
+    // cannot tell reading the success line apart from scanning for `error:`.
+    // `runHdcShell` echoes its own exit-code sentinel, so an `aa` killed mid-run
+    // still returns exitCode 0 with empty stdout — and this module ignores the
+    // code by design, since `aa` reports failure through stdout.
+    runHdcShell.mockResolvedValueOnce(ok(CALCULATOR)).mockResolvedValueOnce(ok(""));
+    await expect(launchHarmonyApp("dev", "c")).rejects.toThrow(
+      "Failed to launch 'c' on HarmonyOS device 'dev': the ability assistant printed nothing"
+    );
   });
 
   it("passes the resolved ability and module to `aa start`", async () => {
@@ -507,5 +519,15 @@ describe("openHarmonyUrl", () => {
     );
     const err = await openHarmonyUrl("dev", "app://x").catch((e: unknown) => e);
     expect(getFailureSignal(err as Error)?.error_kind).toBe("subprocess");
+  });
+
+  it("fails an open that printed nothing recognisable", async () => {
+    // Same silence the launch and stop paths refuse, on the third verb that
+    // reads its verdict off stdout. Reporting it as opened leaves the agent
+    // waiting on a screen that never changed.
+    runHdcShell.mockResolvedValueOnce(ok(""));
+    await expect(openHarmonyUrl("dev", "app://x")).rejects.toThrow(
+      "could not open 'app://x': the ability assistant printed nothing"
+    );
   });
 });
