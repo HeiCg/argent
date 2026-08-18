@@ -20,6 +20,7 @@ import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { createExporter } from "../src/otel.js";
+import { listenLoopback } from "./helpers.js";
 
 interface Capture {
   server: http.Server;
@@ -37,10 +38,8 @@ async function startCapture(): Promise<Capture> {
       res.end("{}");
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("no port");
-  return { server, url: `http://127.0.0.1:${address.port}/v1/logs`, requests };
+  const port = await listenLoopback(server);
+  return { server, url: `http://127.0.0.1:${port}/v1/logs`, requests };
 }
 
 const OTLP_ENV_VARS = [

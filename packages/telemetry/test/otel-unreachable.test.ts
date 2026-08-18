@@ -32,14 +32,16 @@ import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { createExporter } from "../src/otel.js";
+import { listenLoopback } from "./helpers.js";
+
+/** `exportTimeoutMillis` as `otel.ts` sets it, so the wiring below mirrors `OtelClient`'s. */
+const EXPORT_TIMEOUT_MS = 1_500;
 
 /**
- * `exportTimeoutMillis` as `otel.ts` sets it, so the wiring below mirrors
- * `OtelClient`'s. A failing export has to end within a small multiple of it -
- * a budget the exporter's equal `timeoutMillis` is what actually enforces; the
- * SDK's own default is 10s, which is what these bounds are chosen to exclude.
+ * What a failing export gets. Wide enough for the exporter's 1.5s deadline plus
+ * a backoff, narrow enough to exclude the SDK's own 10s default - the bound
+ * every case here would otherwise fall back to without saying so.
  */
-const EXPORT_TIMEOUT_MS = 1_500;
 const FAILURE_BUDGET_MS = 6_000;
 
 const closers: Array<() => Promise<void>> = [];
@@ -50,25 +52,6 @@ afterEach(async () => {
 
 function track(close: () => Promise<void>): void {
   closers.push(close);
-}
-
-/**
- * Bind a listener on a free loopback port. A bind that fails has to reject:
- * `listen`'s callback fires only on success, so awaiting it alone turns
- * EADDRNOTAVAIL into a test that hangs to its timeout while the unhandled
- * 'error' event surfaces against whichever test vitest happens to be running.
- */
-async function listen(server: net.Server): Promise<number> {
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.removeListener("error", reject);
-      resolve();
-    });
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("no port");
-  return address.port;
 }
 
 interface RespondingServer {
@@ -88,7 +71,7 @@ async function startResponding(status: number): Promise<RespondingServer> {
       res.end("{}");
     });
   });
-  const port = await listen(server);
+  const port = await listenLoopback(server);
   track(() => new Promise<void>((resolve) => server.close(() => resolve())));
   return { url: `http://127.0.0.1:${port}/v1/logs`, requests };
 }
@@ -117,7 +100,7 @@ async function startSilent(): Promise<SilentServer> {
     });
     socket.resume();
   });
-  const port = await listen(server);
+  const port = await listenLoopback(server);
   track(
     () =>
       new Promise<void>((resolve) => {
@@ -131,7 +114,7 @@ async function startSilent(): Promise<SilentServer> {
 /** A port with nothing on it, for the refused case. */
 async function unusedUrl(): Promise<string> {
   const probe = net.createServer();
-  const port = await listen(probe);
+  const port = await listenLoopback(probe);
   await new Promise<void>((resolve) => probe.close(() => resolve()));
   return `http://127.0.0.1:${port}/v1/logs`;
 }

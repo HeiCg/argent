@@ -30,6 +30,7 @@ import { BatchLogRecordProcessor, LoggerProvider } from "@opentelemetry/sdk-logs
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SeverityNumber } from "@opentelemetry/api-logs";
 import { createExporter } from "../src/otel.js";
+import { listenLoopback } from "./helpers.js";
 
 /** The subset of OTLP/JSON these assertions read. */
 interface OtlpAnyValue {
@@ -86,20 +87,8 @@ async function startCapture(): Promise<Capture> {
       res.end("{}");
     });
   });
-  // A bind that fails has to reject: listen's callback fires only on success, so
-  // awaiting it alone turns EADDRNOTAVAIL into a test that hangs to its timeout
-  // while the unhandled 'error' event surfaces against whichever test vitest
-  // happens to be running.
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.removeListener("error", reject);
-      resolve();
-    });
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("no port");
-  return { server, url: `http://127.0.0.1:${address.port}/v1/logs`, requests };
+  const port = await listenLoopback(server);
+  return { server, url: `http://127.0.0.1:${port}/v1/logs`, requests };
 }
 
 /**
