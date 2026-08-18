@@ -702,7 +702,14 @@ describe("keyboard clear — Android (adb input)", () => {
             setText: async (text: string) => {
               calls.push(text);
               if (setText) return setText(text);
-              return { applied, matched, length: text.length, ...(reason ? { reason } : {}) };
+              // `length` is the REQUEST's on a match and -1 otherwise, which is
+              // what the helper sends; a mismatch never measures the field.
+              return {
+                applied,
+                matched,
+                length: matched ? text.length : -1,
+                ...(reason ? { reason } : {}),
+              };
             },
             getHierarchy: async () => ({ xml: "<hierarchy/>", windowCount: 1, truncated: false }),
           };
