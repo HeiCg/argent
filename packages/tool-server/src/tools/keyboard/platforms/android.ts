@@ -25,22 +25,27 @@ async function typeAndroidPhone(
 ): Promise<KeyboardResult> {
   let keysPressed = 0;
   let verification: KeyboardVerification = {};
-  // Validate the text up front (a pure check, re-run harmlessly inside
-  // `injectAndroidText`): a combined key+text request with un-typeable text
-  // must reject with NO on-device side effect, not press the key and then 400.
-  if (params.text) assertTypeableAndroidText(params.text);
+  // The tool rejects a request carrying both `text` and `key` (see ../index.ts),
+  // so at most one of these two branches runs — there is no ordering to get right
+  // here, and no combined request whose halves could disagree.
+  if (params.text) {
+    // Validate before anything else (a pure check, re-run harmlessly inside
+    // `injectAndroidText`): `typeAndroidTextVerified` resolves the
+    // android-devtools helper — up to an `adb install -t` of its APK — before it
+    // injects, and text this backend cannot type must be rejected without
+    // installing anything to find that out.
+    assertTypeableAndroidText(params.text);
+    verification = await typeAndroidTextVerified(registry, device, params.text);
+    // `assertTypeableAndroidText` above has already rejected any non-ASCII, so
+    // every character here is a single codepoint and a single UTF-16 unit —
+    // `.length` is the codepoint count (matching the tv / simulator-server
+    // backends) without a spread. It counts the characters the call asked to
+    // type, not the presses a repair re-sent.
+    keysPressed += params.text.length;
+  }
   if (params.key) {
     await injectAndroidNamedKey(device.id, params.key);
     keysPressed++;
-  }
-  if (params.text) {
-    verification = await typeAndroidTextVerified(registry, device, params.text);
-    // The up-front `assertTypeableAndroidText` above has already rejected any
-    // non-ASCII, so every character here is a single codepoint and a single
-    // UTF-16 unit — `.length` is the codepoint count (matching the tv /
-    // simulator-server backends) without a spread. It counts the characters the
-    // call asked to type, not the presses a repair re-sent.
-    keysPressed += params.text.length;
   }
   return { typed: params.text ?? params.key ?? "", keys: keysPressed, ...verification };
 }
