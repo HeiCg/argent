@@ -183,7 +183,7 @@ Special keys: `enter`, `escape`, `backspace`, `tab`, `space`, `arrow-up`, `arrow
 
 `clear` combines with `text` or `key`, never both. The tool clears first. Omit both to clear only. To clear, type, and press Enter, use two `run-sequence` steps: `{ "clear": true, "text": "..." }`, then `{ "key": "enter" }`.
 
-Clearing supports iOS, Android, and Chromium. It does not support Vega or other TV targets. Focus an editable field first. A `"cleared": true` result does not prove the field is empty. Verify the value or an app result when the clear matters.
+Clearing supports iOS, Android, and Chromium. It does not support Vega or other TV targets. Focus an editable field first.
 
 **Typing secrets.** To enter a credential without its plaintext ever entering your context, transcript, or logs, use a secret placeholder in `text` (works in `keyboard`, `paste`, `run-sequence` keyboard steps, and flow `type` steps):
 

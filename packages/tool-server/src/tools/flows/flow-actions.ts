@@ -257,13 +257,47 @@ async function dispatchOrAbort(
   tool: string,
   args: Record<string, unknown>
 ): Promise<boolean> {
+  return (await dispatchForResult(env, tool, args)) !== undefined;
+}
+
+/**
+ * `dispatchOrAbort`, but handing the tool's own result back instead of a bare
+ * "it ran".
+ *
+ * Returns undefined for the same cancellation `dispatchOrAbort` reports as
+ * false, which is why that one is written in terms of this rather than beside
+ * it: two functions with the same catch would be two places to keep the
+ * cancellation rule.
+ *
+ * It exists because a tool can report that it succeeded in a WEAKER way than
+ * asked — the Android `keyboard` clear does, when the verified accessibility
+ * replace was unavailable and a chord that nothing can check ran instead — and a
+ * step report that drops that says the clear was proven when it was not.
+ */
+async function dispatchForResult(
+  env: ActionEnv,
+  tool: string,
+  args: Record<string, unknown>
+): Promise<unknown | undefined> {
   try {
-    await invokeOnDevice(env, tool, args);
+    return (await invokeOnDevice(env, tool, args)) ?? null;
   } catch (err) {
-    if (env.signal?.aborted) return false;
+    if (env.signal?.aborted) return undefined;
     throw err;
   }
-  return true;
+}
+
+/**
+ * The `note` a tool result carries, when it carries one.
+ *
+ * Structural rather than typed against `KeyboardResult`: `invokeOnDevice`
+ * returns `unknown` for every tool, and the directive layer deliberately does
+ * not import a backend's result types.
+ */
+function resultNote(result: unknown): string | undefined {
+  if (typeof result !== "object" || result === null) return undefined;
+  const note = (result as { note?: unknown }).note;
+  return typeof note === "string" && note.length > 0 ? note : undefined;
 }
 
 const DEFAULT_ACTION_TIMEOUT_MS = 7500;
@@ -2359,7 +2393,11 @@ async function runType(
   // Pixel 3a, `{ into: field, text: "José", clear: true }` destroyed the field's
   // value as two calls, where the same arguments as one call left it intact.
   //
-  // No read-back check follows the clear. Re-reading the focused node and
+  // No read-back check follows the clear HERE. The keyboard tool does one of its
+  // own on Android — the accessibility replace compares the field it wrote, and
+  // the injected chord re-reads for a residue — and reports the answer as a
+  // `note`, which this directive surfaces as the step's `warning` below. What
+  // this layer cannot add is a check of its own: re-reading the focused node and
   // failing if it still holds text cannot be made to work against the flow
   // trees: on iOS a field's contents never reach them at all (`flow-ios-tree`
   // projects {role, frame, children, label, identifier, focused}), and where the
@@ -2372,12 +2410,18 @@ async function runType(
   // depends on it. The focus refusal above — plus the keyboard tool rejecting
   // `clear` outright on backends that cannot perform it — is where that risk is
   // actually handled.
+  let warning: string | undefined;
   if (step.clear || step.text !== undefined) {
-    const sent = await dispatchOrAbort(env, "keyboard", {
+    const sent = await dispatchForResult(env, "keyboard", {
       ...(step.clear ? { clear: true } : {}),
       ...(step.text !== undefined ? { text: step.text } : {}),
     });
-    if (!sent) return ABORTED_OUTCOME;
+    if (sent === undefined) return ABORTED_OUTCOME;
+    // Carried, not discarded: this is the one signal saying whether the clear
+    // was the verified kind, and a QA flow's whole value is knowing what its
+    // green bought. `warning` is the slot for exactly that — the step still
+    // passes.
+    warning = resultNote(sent);
   }
   // Outside the submit gate, not inside it. `dispatchOrAbort` reclassifies only
   // a dispatch that REJECTS while the signal is aborted, and the Android keyboard
@@ -2423,7 +2467,7 @@ async function runType(
   // `pass` arm is the one where the submit really was sent after the caller gave
   // up, which is exactly what the check above says must not happen.
   if (env.signal?.aborted) return ABORTED_OUTCOME;
-  return { ok: true };
+  return warning === undefined ? { ok: true } : { ok: true, warning };
 }
 
 /**

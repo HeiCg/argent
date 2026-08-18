@@ -56,7 +56,10 @@ vi.mock("../src/utils/ios-devices", async (importOriginal) => ({
 }));
 
 import { injectVegaNamedKey, injectVegaText } from "../src/utils/vega-input";
-import { makeAndroidImpl } from "../src/tools/keyboard/platforms/android";
+import {
+  __resetAtomicClearCooldown,
+  makeAndroidImpl,
+} from "../src/tools/keyboard/platforms/android";
 import { MAX_DELETE_COUNT } from "../src/utils/android-input";
 import { makeIosImpl, makeIosRemoteImpl } from "../src/tools/keyboard/platforms/ios";
 import { createKeyboardTool } from "../src/tools/keyboard";
@@ -441,7 +444,14 @@ describe("keyboard clear — iOS (simulator-server)", () => {
     ).handler({}, { udid: CHROMIUM.id, clear: true, text: "abc", delayMs: 0 }, CHROMIUM);
 
     expect(ios).toEqual({ typed: "abc", keys: 3, cleared: true });
-    expect(android).toEqual(ios);
+    // `note` is compared out rather than asserted equal: it is an Android-only
+    // advisory about WHICH of that platform's three clear paths ran, and this
+    // registry offers no devtools helper, so the weakest one did. The claim
+    // being pinned here is the `keys` accounting, which must not vary by
+    // platform — a note that does is not a divergence in it.
+    const { note, ...androidCounts } = android;
+    expect(note).toBeTypeOf("string");
+    expect(androidCounts).toEqual(ios);
     expect(chromium).toEqual(ios);
   });
 
@@ -535,6 +545,11 @@ describe("keyboard clear — Android (adb input)", () => {
     adbExecOutBinary.mockImplementation(async () => Buffer.from(""));
     isAndroidTv.mockReset();
     isAndroidTv.mockImplementation(async () => false);
+    // The atomic path remembers a device whose helper refused to start, so that
+    // one clear does not pay the start budget again on the next keystroke. It is
+    // keyed by serial and every test here uses the same one, so without this a
+    // test that refuses leaves the following tests silently on the injected path.
+    __resetAtomicClearCooldown();
   });
 
   /** The `input` command lines, in order. The dump is not one of them. */
@@ -550,19 +565,82 @@ describe("keyboard clear — Android (adb input)", () => {
   const seedDump = (xml: string) =>
     adbExecOutBinary.mockImplementationOnce(async () => Buffer.from(xml));
 
-  it("selects all then deletes, before typing any text", async () => {
+  it("replaces the selection with the text instead of emptying the field first", async () => {
+    // No DEL between the two: the text lands on the SELECTION, so the field is
+    // replaced in one edit and is never observed empty. Emptying it first
+    // corrupted the value on a real device — an app reacts to the empty field
+    // and its reaction lands mid-typing, wiping everything typed so far and
+    // leaving a proper suffix of the request (measured 4/10 on a Pixel 3a
+    // against Bluesky's search box). See AndroidClearOptions.keepSelection.
     const result = await makeAndroidImpl(registryWith({})).handler(
       {},
       { udid: ANDROID.id, clear: true, text: "abc" },
       ANDROID
     );
 
-    expect(adbShell.mock.calls.map((c) => c[1])).toEqual([
-      SELECT_ALL_CMD,
-      DEL_CMD,
-      "input text 'abc'",
-    ]);
+    expect(adbShell.mock.calls.map((c) => c[1])).toEqual([SELECT_ALL_CMD, "input text 'abc'"]);
     expect(result.cleared).toBe(true);
+  });
+
+  it("still deletes when the text that would replace the selection is empty", async () => {
+    // `{ clear: true, text: "" }` types nothing — `injectAndroidText` produces no
+    // segments for an empty string — so a kept selection would be left standing
+    // and the field never emptied, which is the one thing this request asks for.
+    const result = await makeAndroidImpl(registryWith({})).handler(
+      {},
+      { udid: ANDROID.id, clear: true, text: "" },
+      ANDROID
+    );
+
+    expect(adbShell.mock.calls.map((c) => c[1])).toEqual([SELECT_ALL_CMD, DEL_CMD]);
+    expect(result.cleared).toBe(true);
+  });
+
+  it("reports a kept selection the text never replaced, not a bare transport failure", async () => {
+    // The select-all landed and survives, so the field still holds its whole
+    // value with all of it selected — the next character typed into it replaces
+    // the lot. `adbShell`'s own error says only that `input text` failed, which
+    // a caller reads as "nothing happened".
+    adbShell.mockImplementationOnce(async () => ""); // select-all succeeds
+    adbShell.mockImplementationOnce(async () => {
+      throw new FailureError("adb -s emulator-5554 shell input text 'abc' failed (killed=true)", {
+        error_code: FAILURE_CODES.ANDROID_ADB_COMMAND_FAILED,
+        failure_stage: "adb_command",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+      });
+    });
+
+    const err = await makeAndroidImpl(registryWith({}))
+      .handler({}, { udid: ANDROID.id, clear: true, text: "abc" }, ANDROID)
+      .then(
+        () => {
+          throw new Error("expected the call to reject, but it resolved");
+        },
+        (e: unknown) => e as Error
+      );
+
+    expect(err.message).toMatch(/still holds its whole value with all of it SELECTED/);
+    // Both states are named, because `%`-carrying text goes out as several
+    // `input text` calls and this catch cannot see how many of them landed.
+    expect(err.message).toMatch(/part of the text landed and replaced that selection/);
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_INTERRUPTED);
+    expect(getFailureSignal(err)?.failure_stage).toBe("keyboard_clear_replace_android");
+    // The argv the transport error quoted carries the value being typed, which a
+    // `{{secret:…}}` request makes credential material.
+    expect(err.message).not.toMatch(/input text/);
+  });
+
+  it("leaves a text-only failure alone, since no selection is being held", async () => {
+    // Without `clear` there is nothing selected, so the transport error is the
+    // whole story and rewrapping it would describe a state that cannot exist.
+    adbShell.mockImplementationOnce(async () => {
+      throw new Error("device offline");
+    });
+
+    await expect(
+      makeAndroidImpl(registryWith({})).handler({}, { udid: ANDROID.id, text: "abc" }, ANDROID)
+    ).rejects.toThrow(/device offline/);
   });
 
   it("orders clear → key in a single call", async () => {
@@ -589,6 +667,428 @@ describe("keyboard clear — Android (adb input)", () => {
     `<node index="0" text="${text}" resource-id="email" class="android.widget.EditText" ` +
     `password="${password}" focused="true" bounds="[0,0][100,50]" />` +
     `</hierarchy>`;
+
+  describe("atomic clear via the devtools helper (ACTION_SET_TEXT)", () => {
+    /**
+     * A live helper answering `setText`.
+     *
+     * `protocol` and the result are the two dials, because they are the two ways
+     * the atomic path declines from the device side: a helper too old to know
+     * the method, and a widget whose field did not end up holding the value.
+     * `resolve` covers the third — a helper that cannot be started at all.
+     */
+    const registryWithSetText = ({
+      protocol = "2",
+      applied = true,
+      matched = true,
+      reason,
+      setText,
+      resolve,
+    }: {
+      protocol?: string;
+      applied?: boolean;
+      matched?: boolean;
+      reason?: string;
+      setText?: (text: string) => Promise<unknown>;
+      resolve?: () => Promise<unknown>;
+    } = {}) => {
+      const calls: string[] = [];
+      const registry = {
+        getServiceState: () => ServiceState.RUNNING,
+        resolveService: vi.fn(async () => {
+          if (resolve) return resolve();
+          return {
+            ping: async () => ({ ok: true, idleMs: 0, protocol }),
+            setText: async (text: string) => {
+              calls.push(text);
+              if (setText) return setText(text);
+              return { applied, matched, length: text.length, ...(reason ? { reason } : {}) };
+            },
+            getHierarchy: async () => ({ xml: "<hierarchy/>", windowCount: 1, truncated: false }),
+          };
+        }),
+      } as never;
+      return { registry, calls };
+    };
+
+    it("replaces the value in one accessibility edit, injecting nothing", async () => {
+      // The whole point: no select-all chord for a widget to swallow, and no
+      // per-character `input text` for the app to react in the middle of.
+      const { registry, calls } = registryWithSetText();
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(calls).toEqual(["abc"]);
+      expect(inputCmds()).toEqual([]);
+      // No `note`: the verified path ran, so there is nothing to warn about, and
+      // its ABSENCE is what tells a caller the clear was the strong one.
+      expect(result).toEqual({ typed: "abc", keys: 3, cleared: true });
+    });
+
+    it("empties a field with the same one edit when no text follows", async () => {
+      const { registry, calls } = registryWithSetText();
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(calls).toEqual([""]);
+      expect(inputCmds()).toEqual([]);
+      expect(result.cleared).toBe(true);
+      expect(result.note).toBeUndefined();
+    });
+
+    it("still presses a following key, which the helper cannot send", async () => {
+      const { registry } = registryWithSetText();
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, key: "enter" },
+        ANDROID
+      );
+
+      expect(inputCmds()).toEqual(["input keyevent 66"]);
+      expect(result.keys).toBe(1);
+    });
+
+    it("never consults the helper for a bare `text`, which must stay key events", async () => {
+      // Typing at the caret is not a replace, and routing it through the helper
+      // would silently drop the key events an app's onKeyPress handler depends
+      // on — and overwrite the value the caller meant to append to.
+      const { registry, calls } = registryWithSetText();
+
+      await makeAndroidImpl(registry).handler({}, { udid: ANDROID.id, text: "abc" }, ANDROID);
+
+      expect(calls).toEqual([]);
+      expect(inputCmds()).toEqual(["input text 'abc'"]);
+    });
+
+    // Each of these is a device fact, not an error: the caller's answer to all of
+    // them is the injected path, so the request must still succeed with exactly
+    // the command stream it produced before the helper existed.
+    const fallbackCases: Array<[string, Parameters<typeof registryWithSetText>[0], RegExp]> = [
+      [
+        "the field did not end up holding the value",
+        { matched: false, reason: "action_refused" },
+        /refused the accessibility replace/,
+      ],
+      [
+        "the widget claims to have applied it but the field reads back different",
+        { applied: true, matched: false },
+        /refused the accessibility replace/,
+      ],
+      [
+        "the write could not be verified",
+        { matched: false, reason: "unverifiable" },
+        /could not be read back to confirm/,
+      ],
+      [
+        "no field holds focus",
+        { matched: false, reason: "no_focused_input" },
+        /no focused input field/,
+      ],
+      ["the helper predates the method", { protocol: "1" }, /too old to know the method/],
+      [
+        "the helper's protocol does not parse",
+        { protocol: "not-a-number" },
+        /too old to know the method/,
+      ],
+      [
+        "the focused element is not editable",
+        { matched: false, reason: "not_editable" },
+        /not an editable text field/,
+      ],
+      [
+        "the focused node died mid-call",
+        { matched: false, reason: "action_threw" },
+        /went away while the replace was being applied/,
+      ],
+      [
+        "the field read back holding something else",
+        { matched: false, reason: "value_mismatch" },
+        /read back holding something else/,
+      ],
+      [
+        "the helper cannot be started at all",
+        {
+          resolve: () => Promise.reject(new Error("adb not found")),
+        },
+        /is not running on this device and could not be started/,
+      ],
+      [
+        "the RPC rejects outright",
+        {
+          setText: () => Promise.reject(new Error("AndroidDevtools client closed")),
+        },
+        /call to the devtools helper failed/,
+      ],
+    ];
+
+    it.each(fallbackCases)(
+      "falls back to the injected path when %s",
+      async (_label, opts, whyPattern) => {
+        const { registry } = registryWithSetText(opts);
+
+        const result = await makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true, text: "abc" },
+          ANDROID
+        );
+
+        expect(inputCmds()).toEqual([SELECT_ALL_CMD, "input text 'abc'"]);
+        expect(result.typed).toBe("abc");
+        expect(result.keys).toBe(3);
+        expect(result.cleared).toBe(true);
+        // The note is the whole point of the fallback being silent: the request
+        // succeeds, so nothing else tells the caller a weaker clear ran.
+        expect(result.note).toMatch(whyPattern);
+        expect(result.note).toMatch(/select-all chord/);
+      }
+    );
+
+    it("rejects un-typeable text before reaching the helper, as the injected path does", async () => {
+      // The atomic path COULD carry non-ASCII, but accepting it here would make
+      // the same request succeed or fail depending on whether the helper happened
+      // to be up. The validation stays above the branch.
+      const { registry, calls } = registryWithSetText();
+
+      await expect(
+        makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true, text: "café" },
+          ANDROID
+        )
+      ).rejects.toThrow();
+      expect(calls).toEqual([]);
+    });
+
+    it("gives up on a helper that never starts, instead of hanging the clear on it", async () => {
+      // The registry has no cancel path and the blueprint's own limits are a 60s
+      // `adb install` plus a 30s readiness wait. Waiting them out before every
+      // clear would turn a working `keyboard` into an unusable one on a device
+      // where the helper cannot run at all.
+      vi.useFakeTimers();
+      try {
+        const { registry } = registryWithSetText({
+          resolve: () => new Promise(() => {}),
+        });
+
+        const run = makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true, text: "abc" },
+          ANDROID
+        );
+
+        await vi.advanceTimersByTimeAsync(7_900);
+        // Still waiting on the helper: nothing has been injected yet.
+        expect(inputCmds()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(200);
+        await vi.runAllTimersAsync();
+
+        const result = await run;
+        expect(inputCmds()).toEqual([SELECT_ALL_CMD, "input text 'abc'"]);
+        expect(result.note).toMatch(/could not be started/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([["unverifiable"], ["value_mismatch"]])(
+      "warns that %s may have left the value in the field already",
+      async (reason) => {
+        // These are the two reasons where the widget ACCEPTED the replace. The
+        // fallback still runs — the field has to end up right and nothing can
+        // roll the first write back — but on a widget that swallows the
+        // select-all it puts its text on top of a value the tool itself wrote.
+        // A caller told only "a weaker path ran" would not know to look for that.
+        const { registry } = registryWithSetText({ matched: false, reason });
+
+        const result = await makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true, text: "abc" },
+          ANDROID
+        );
+
+        expect(result.note).toMatch(/already been ACCEPTED by the widget/);
+        expect(result.note).toMatch(/added to it/);
+      }
+    );
+
+    it("does not warn about a doubled value when nothing was written", async () => {
+      // The counterpart: a refusal wrote nothing, so the fallback is the FIRST
+      // write and the doubling caveat would be noise on every ordinary fallback.
+      const { registry } = registryWithSetText({ matched: false, reason: "no_focused_input" });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).not.toMatch(/already been ACCEPTED/);
+    });
+
+    it("renders a reason it has never heard of instead of the word `undefined`", async () => {
+      // The protocol gate only rejects a helper that is too OLD, so a NEWER one
+      // can answer with a reason this build's table has no row for. Interpolating
+      // the miss produced a note reading "was not used (undefined)".
+      const { registry } = registryWithSetText({ matched: false, reason: "some_future_reason" });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).not.toMatch(/undefined/);
+      expect(result.note).toMatch(/a reason this version does not recognise/);
+    });
+
+    it("empties the field through the helper when the text is empty", async () => {
+      // `{ clear: true, text: "" }` on the atomic path is one edit with an empty
+      // value — no selection to leave standing, so none of the injected path's
+      // empty-text special case applies here.
+      const { registry, calls } = registryWithSetText();
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "" },
+        ANDROID
+      );
+
+      expect(calls).toEqual([""]);
+      expect(inputCmds()).toEqual([]);
+      expect(result).toEqual({ typed: "", keys: 0, cleared: true });
+    });
+
+    it("echoes the key as `typed` after an atomic clear, as the injected path does", async () => {
+      const { registry } = registryWithSetText();
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, key: "enter" },
+        ANDROID
+      );
+
+      expect(result).toEqual({ typed: "enter", keys: 1, cleared: true });
+    });
+
+    it("stops asking a device whose helper refused, instead of paying the budget every call", async () => {
+      // The registry keeps no memory of a failed service — it walks an ERROR node
+      // straight back into a fresh STARTING — so without a cooldown a device that
+      // can never run the helper turns every clear into an 8s wait, forever.
+      const { registry } = registryWithSetText({
+        resolve: () => Promise.reject(new Error("adb not found")),
+      });
+      const impl = makeAndroidImpl(registry);
+
+      await impl.handler({}, { udid: ANDROID.id, clear: true, text: "a" }, ANDROID);
+      const afterFirst = (registry as unknown as { resolveService: { mock: { calls: unknown[] } } })
+        .resolveService.mock.calls.length;
+      await impl.handler({}, { udid: ANDROID.id, clear: true, text: "b" }, ANDROID);
+      const afterSecond = (
+        registry as unknown as { resolveService: { mock: { calls: unknown[] } } }
+      ).resolveService.mock.calls.length;
+
+      // The second clear never reached the registry at all.
+      expect(afterFirst).toBe(1);
+      expect(afterSecond).toBe(1);
+    });
+
+    it("keeps trying a start that merely ran out of budget, which is still running", async () => {
+      // A slow start is not a refusal: the registry hands the next caller the
+      // same in-flight `initPromise`, so it is on course to succeed. Marking it
+      // would skip the atomic path on exactly the device the budget was widened
+      // for.
+      vi.useFakeTimers();
+      try {
+        const { registry } = registryWithSetText({ resolve: () => new Promise(() => {}) });
+        const impl = makeAndroidImpl(registry);
+
+        const first = impl.handler({}, { udid: ANDROID.id, clear: true, text: "a" }, ANDROID);
+        await vi.advanceTimersByTimeAsync(8_100);
+        await vi.runAllTimersAsync();
+        await first;
+
+        const second = impl.handler({}, { udid: ANDROID.id, clear: true, text: "b" }, ANDROID);
+        await vi.advanceTimersByTimeAsync(8_100);
+        await vi.runAllTimersAsync();
+        await second;
+
+        const calls = (registry as unknown as { resolveService: { mock: { calls: unknown[] } } })
+          .resolveService.mock.calls.length;
+        expect(calls).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("leaves the chain when the client hangs up mid-ladder, rather than typing anyway", async () => {
+      // `adb shell input` is not cancellable, so the injected clear cannot be
+      // interrupted once it starts — which is exactly why the check belongs
+      // between the tiers. Before it, the whole atomic budget could be spent on a
+      // request the client had already dropped and the field written afterwards.
+      //
+      // The signal must fire DURING the atomic attempt, not before it: the
+      // pre-existing check runs as the call's turn on the device chain comes
+      // round, so an already-aborted controller would never reach the new one.
+      const controller = new AbortController();
+      const { registry } = registryWithSetText({
+        matched: false,
+        reason: "no_focused_input",
+        setText: async () => {
+          controller.abort();
+          return { applied: false, matched: false, length: -1, reason: "no_focused_input" };
+        },
+      });
+
+      await expect(
+        makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true, text: "abc" },
+          ANDROID,
+          { signal: controller.signal }
+        )
+      ).rejects.toThrow();
+      // The point: nothing was injected after the hang-up.
+      expect(inputCmds()).toEqual([]);
+    });
+
+    it("swallows the abandoned resolve's rejection rather than leaving it unhandled", async () => {
+      // The loser of the budget race is abandoned, not cancelled, and an
+      // unhandled rejection from it would surface as a process-level warning
+      // (and fail this suite) long after the request it belonged to returned.
+      vi.useFakeTimers();
+      try {
+        const { registry } = registryWithSetText({
+          resolve: () =>
+            new Promise((_resolve, reject) => {
+              setTimeout(() => reject(new Error("instrumentation never announced a port")), 30_000);
+            }),
+        });
+
+        const run = makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true },
+          ANDROID
+        );
+        await vi.advanceTimersByTimeAsync(8_000);
+        await vi.runAllTimersAsync();
+        await run;
+        // Let the abandoned rejection settle where an unhandled one would be
+        // reported.
+        await vi.advanceTimersByTimeAsync(30_000);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 
   it("falls back to a measured delete run when `keycombination` is unavailable", async () => {
     // An older level has no `keycombination` subcommand — and still EXITS 0,
@@ -622,6 +1122,96 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(adbExecOutBinary).toHaveBeenCalledTimes(1);
     expect(adbExecOutBinary.mock.calls[0]![1]).toMatch(/^uiautomator dump /);
     expect(inputCmds().some((c) => c.includes("uiautomator"))).toBe(false);
+  });
+
+  it("deletes what the select-all left behind, instead of trusting the chord", async () => {
+    // `input keycombination` exits 0 whether or not the selection took, and on a
+    // React Native `TextInput` it repeatedly does not: 15 of 85 clears driven
+    // through this tool on a Pixel 6 / API 34 left the field short by exactly
+    // the one character the DEL removed, every one of them reporting
+    // `cleared: true` over a value the next `text` then appended to. Nothing in
+    // the command's own output separates that from a clear that worked.
+    seedDump(dumpWith("Monda")); // "Monday", less the character the DEL took
+
+    await makeAndroidImpl(registryWith({})).handler({}, { udid: ANDROID.id, clear: true }, ANDROID);
+
+    const cmds = inputCmds();
+    expect(cmds[0]).toBe(SELECT_ALL_CMD);
+    expect(cmds[1]).toBe(DEL_CMD);
+    // The rescue is the same selection-free run the legacy level uses — it is
+    // the ONE clear that needs no selection to be correct.
+    expect(deleteRun(cmds[2]!)).toHaveLength(5 + 8);
+  });
+
+  it("leaves a clear that worked alone, rather than always running the delete run", async () => {
+    // The read-back has to discriminate, not merely fire: an empty focused field
+    // is the ordinary outcome, and appending a run to every clear would put a
+    // second `input` invocation and its key events on the wire for nothing.
+    seedDump(dumpWith(""));
+
+    await makeAndroidImpl(registryWith({})).handler({}, { udid: ANDROID.id, clear: true }, ANDROID);
+
+    expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
+  });
+
+  it("leaves the fast path alone when the field cannot be read back at all", async () => {
+    // Not the same as measuring zero. An unreadable dump — a refused screen
+    // reports this in-band, exit 0 — is evidence in neither direction, and
+    // reading it as a failed clear would spend a blind MAX_DELETE_COUNT run on
+    // every clear taken on a screen uiautomator will not capture.
+    seedDump("ERROR: could not get idle state.");
+
+    await makeAndroidImpl(registryWith({})).handler({}, { udid: ANDROID.id, clear: true }, ANDROID);
+
+    expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
+  });
+
+  it("does not retry the read-back dump the way the sizing read does", async () => {
+    // The sizing read retries past DUMP_RETRY_BACKOFF_MS because losing the
+    // UiAutomation race there means the blind count and a truncated field. The
+    // read-back's stake is only whether a rescue runs, so a retry would buy
+    // nothing and charge 2.5s to every clear on a screen that will not dump —
+    // including the one below, which never produces a hierarchy at all.
+    const started = Date.now();
+
+    await makeAndroidImpl(registryWith({})).handler({}, { udid: ANDROID.id, clear: true }, ANDROID);
+
+    expect(adbExecOutBinary).toHaveBeenCalledTimes(1);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("measures the residue once, instead of dumping again inside the delete run", async () => {
+    // The rescue hands its measurement down. Re-measuring would cost a second
+    // dump — and read a field the first `MOVE_END` may already have moved on.
+    seedDump(dumpWith("Monda"));
+
+    await makeAndroidImpl(registryWith({})).handler({}, { udid: ANDROID.id, clear: true }, ANDROID);
+
+    expect(adbExecOutBinary).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the field WAS modified when the residue is too long to backspace away", async () => {
+    // The legacy path refuses before sending anything, so its message says
+    // nothing was modified and offers a newer API level as the remedy. Reached
+    // from the select-all path both are wrong: the DEL has already taken a
+    // character, and the level demonstrably HAS `keycombination` — it just did
+    // not select. A caller told the field is untouched retries against a value
+    // that is one character down.
+    seedDump(dumpWith("x".repeat(MAX_DELETE_COUNT + 1)));
+
+    const err: unknown = await makeAndroidImpl(registryWith({}))
+      .handler({}, { udid: ANDROID.id, clear: true }, ANDROID)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect(err).toBeInstanceOf(InvalidToolInputError);
+    expect((err as Error).message).toContain("The field HAS been modified");
+    expect((err as Error).message).not.toContain("Nothing was modified");
+    expect((err as Error).message).not.toContain("newer API level");
+    // Refused rather than half-deleted: no run was started.
+    expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
   });
 
   it("shares one deadline across the clear's legs instead of a timeout each", async () => {
@@ -714,6 +1304,11 @@ describe("keyboard clear — Android (adb input)", () => {
     // fault and retries against a field it believes is untouched. The legacy
     // path's delete run has been rewrapped for this since it shipped; this leg
     // had no equivalent.
+    //
+    // Driven with `key` rather than `text`: a `{ clear, text }` no longer issues
+    // this DEL at all — the text replaces the selection instead (see
+    // `keepSelection`) — so `key` is the request shape that still reaches it
+    // with an injection queued behind it that must not run.
     adbShell.mockImplementationOnce(async () => ""); // the level supports the chord
     adbShell.mockImplementationOnce(async () => {
       throw new FailureError("adb -s emulator-5554 shell input keyevent 67 failed (killed=true)", {
@@ -725,7 +1320,7 @@ describe("keyboard clear — Android (adb input)", () => {
     });
 
     const err = await makeAndroidImpl(registryWith({}))
-      .handler({}, { udid: ANDROID.id, clear: true, text: "replacement" }, ANDROID)
+      .handler({}, { udid: ANDROID.id, clear: true, key: "enter" }, ANDROID)
       .then(
         () => {
           throw new Error("expected the call to reject, but it resolved");
@@ -738,8 +1333,9 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(getFailureSignal(err)?.error_kind).toBe("timeout");
     expect(err.message).toMatch(/all of it SELECTED/);
     expect(err.message).not.toMatch(/input keyevent/);
-    // Refused before the typing: the replacement must not land on a selection.
-    expect(inputCmds().some((cmd) => cmd.includes("input text"))).toBe(false);
+    // Refused before the key: Enter must not submit a field still holding its
+    // whole value, with that value selected.
+    expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
   });
 
   it("floors an overrun leg at 1s rather than handing adb no timeout at all", async () => {
@@ -1626,6 +2222,168 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(cmds[0]).toBe(SELECT_ALL_CMD);
     expect(cmds[1]!.startsWith("input keyevent 123 67")).toBe(true);
     expect(cmds[2]).toBe("input text 'new'");
+  });
+
+  describe("the note that says which clear actually ran", () => {
+    // Every case here drives a registry with NO usable helper, so the atomic
+    // path always declines and the note's second half — which injected path ran
+    // — is the thing under test.
+    it("names the kept selection, and what it cannot promise about the field", async () => {
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/select-all chord alone/);
+      // The concrete failure a caller has to be able to recognise: this is the
+      // shape a Flutter field leaves, and nothing in the result contradicts it.
+      expect(result.note).toMatch(/spliced in at the caret/);
+      expect(result.note).toMatch(/Read the field back/);
+    });
+
+    it("names the delete run, and its line scope, on a level without the chord", async () => {
+      seedLegacyLevel();
+      seedDump(dumpWith("abcdefghij"));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/no `input keycombination`/);
+      expect(result.note).toMatch(/end-of-LINE/);
+      // Sized from the dump, so the blind-run caveat must NOT be claimed.
+      expect(result.note).not.toMatch(/fixed run of backspaces/);
+    });
+
+    it("flags a delete run that had no length to size itself with", async () => {
+      // A password field's dump reports the mask, not the value, so the run is
+      // the fixed blind count — which truncates a field longer than it.
+      seedLegacyLevel();
+      seedDump(dumpWith("••••", true));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/fixed run of backspaces/);
+      expect(result.note).toMatch(/keeps its head/);
+    });
+
+    it("names the chord-then-delete path when the field read back empty", async () => {
+      // The ordinary modern fallback, and the one note arm whose text nothing
+      // else pins. It must NOT claim a rescue happened.
+      seedDump(dumpWith(""));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/select-all chord followed by a delete/);
+      expect(result.note).not.toMatch(/chord did NOT take/);
+    });
+
+    it("does not invent a failed chord out of a field it could not measure", async () => {
+      // A focused PASSWORD field is not absent from the measurement — it is
+      // floored to the blind count. Reading that floor as a residue rescued every
+      // clear on such a field whether or not the chord took, and then reported
+      // `the chord did NOT take on this field`, a claim the device never made.
+      // The rescue must fire on a SIZED reading only.
+      seedDump(dumpWith("••••", true));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).not.toMatch(/chord did NOT take/);
+      // And no delete run was started off that floor.
+      expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
+    });
+
+    it("says the chord did NOT take when the read-back had to rescue it", async () => {
+      // The one case where the injected path DID observe its own failure. A
+      // caller that reads this knows the chord is unreliable on this field and
+      // that a second, selection-free pass is what emptied it.
+      seedDump(dumpWith("Monda")); // "Monday", less the character the DEL took
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/chord did NOT take/);
+    });
+
+    it("never quotes the field's contents or its length", async () => {
+      // The note travels into the agent's transcript and the tool-server's log,
+      // and a `{{secret:…}}` request is aimed at the box that already holds a
+      // credential. `redactSecretsFromError` substitutes the resolved value and
+      // could not redact a count, so nothing read off the field may appear here.
+      seedLegacyLevel();
+      seedDump(dumpWith("hunter2hunter2"));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true, secretText: true },
+        ANDROID
+      );
+
+      expect(result.note).not.toMatch(/hunter2/);
+      expect(result.note).not.toMatch(/\d/);
+    });
+
+    it("carries no note when no clear was requested", async () => {
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).toBeUndefined();
+    });
+  });
+
+  it("does not claim a kept selection on a legacy level, where the field really was emptied", async () => {
+    // `keepSelection` is requested from the PARAMS (`{ clear, text }`), but this
+    // level has no `keycombination`, so the fallback backspaced the field empty
+    // and no selection exists. Reporting the failure off the request instead of
+    // off what the clear actually did told the caller its whole value survived
+    // SELECTED and warned it not to assume the field was empty — the exact
+    // opposite of the state it is in. The transport error stands on its own here.
+    seedLegacyLevel();
+    seedDump(dumpWith("old"));
+    adbShell.mockImplementationOnce(async () => ""); // the delete run succeeds
+    adbShell.mockImplementationOnce(async () => {
+      throw new FailureError("adb -s emulator-5554 shell input text 'new' failed (killed=true)", {
+        error_code: FAILURE_CODES.ANDROID_ADB_COMMAND_FAILED,
+        failure_stage: "adb_command",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+      });
+    });
+
+    const err = await makeAndroidImpl(registryWith({}))
+      .handler({}, { udid: ANDROID.id, clear: true, text: "new" }, ANDROID)
+      .then(
+        () => {
+          throw new Error("expected the call to reject, but it resolved");
+        },
+        (e: unknown) => e as Error
+      );
+
+    expect(err.message).not.toMatch(/SELECTED/);
+    expect(err.message).not.toMatch(/do not send a replacement that assumes it is empty/);
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.ANDROID_ADB_COMMAND_FAILED);
+    expect(getFailureSignal(err)?.failure_stage).not.toBe("keyboard_clear_replace_android");
   });
 
   it("takes the fallback on a level that words the complaint as `Unknown command`", async () => {
