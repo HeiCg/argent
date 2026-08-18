@@ -58,7 +58,9 @@ export interface HierarchyResult {
 /**
  * Why a `setText` failure is a RESULT rather than a throw: every outcome below
  * is a device fact the caller acts on by falling back to `adb shell input`, not
- * an error. Only a broken RPC throws.
+ * an error. A broken RPC throws, and so does a `params.text` that is not a
+ * string — a caller bug rather than a device fact, which the helper names
+ * instead of coercing into the user's field.
  *
  * - `no_focused_input` — nothing holds input focus, so there is no field to set.
  * - `not_editable` — the focused node refused and does not claim to be editable.
@@ -91,7 +93,15 @@ export interface SetTextResult {
    * This is the only flag worth trusting: `applied` is the widget's own claim.
    */
   matched: boolean;
-  /** Length of the value read back, or -1 when it could not be read. */
+  /**
+   * Length of the REQUESTED value on a match, and -1 on every other outcome.
+   *
+   * Not the length of what the field holds. The one case where the two differ
+   * is `value_mismatch`, where by definition the field holds something the
+   * caller did not send — and by the threat model on
+   * {@link AndroidDevtoolsApi.setText}, that something can be the credential a
+   * `{{secret:…}}` clear was aimed at. So it is never measured.
+   */
   length: number;
   reason?: SetTextReason;
 }
@@ -102,23 +112,17 @@ export interface SetTextResult {
  * method", which the RPC surfaces as a rejection — so callers ask `ping` first
  * rather than reading a fallback out of an error path.
  *
- * A device can be running an older helper than the one this tool-server bundles,
- * for two separate reasons — and the common one is not a race.
+ * A device provisioned before this method existed is moved onto the new helper
+ * by the install path: the manifest's `versionCode` went to 2 alongside it, and
+ * `ensureAndroidDevtoolsInstalled` pushes new bytes whenever the device reports
+ * less than that. The two numbers have to move together — the APK is linked
+ * with its code in argent-private's `build-native-binaries.yml`, and a bump
+ * here without one there leaves the gate unsatisfiable, reinstalling on every
+ * tool-server process.
  *
- * The bundled APK's `versionCode` did not move when this method was added, so
- * `ensureAndroidDevtoolsInstalled` never pushes the new bytes to a device that
- * already has the helper: it returns early whenever the device's code is `>=`
- * the manifest's. Every device provisioned before this method existed therefore
- * answers `1` here, permanently, and takes the injected fallback with its
- * `note`. Measured on a Pixel 3a (API 36): the same `{ clear, text }` that the
- * current helper applies as one edit leaves a Flutter field holding
- * `MondayFriends` over seven edits with the old one — reported honestly, but
- * reported. `adb uninstall com.argent.androiddevtools` (or a manual
- * `adb install -r -t`) is what moves such a device onto the new build.
- *
- * The second reason is the race: the process holding the UiAutomation
- * connection is whatever started first, possibly from another argent install,
- * so even a correctly-provisioned device can answer with an older protocol.
+ * What can still answer with an older protocol is the race: the process holding
+ * the UiAutomation connection is whatever started first, possibly from another
+ * argent install, so even a correctly-provisioned device can report `1`.
  */
 export const SET_TEXT_MIN_PROTOCOL = 2;
 
