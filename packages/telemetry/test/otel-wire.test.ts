@@ -184,7 +184,8 @@ describe("the OTLP request Argent sends", () => {
     );
     // -> ScopeName.
     expect(scopeLogs.scope?.name).toBe("@argent/telemetry");
-    // -> Body. The event name is the record body; there is no separate name field.
+    // -> Body. Where argent puts the event name - OTLP's own eventName field is
+    // left unset.
     expect(record.body?.stringValue).toBe("tool:invoke");
     // -> SeverityNumber. 9 is INFO.
     expect(record.severityNumber).toBe(SeverityNumber.INFO);
