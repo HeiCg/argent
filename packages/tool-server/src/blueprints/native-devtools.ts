@@ -323,11 +323,11 @@ interface NativeDevtoolsUninjectedAdvice {
  * one hand-out that lets a later reading tell a spent remedy from a fresh one.
  * Side-effecting on that record, so `recordAdvice` exists for the reader whose
  * message an agent may never see: `describeIos` doubles as the per-poll tree
- * read behind await-ui-element and await-screen-idle, and a record written for
- * a discarded hint would let any later process replacement — a crash, a Metro
- * reload, another agent — satisfy a relaunch nobody was asked to perform.
- * Withholding it only ever delays the verdict, so a caller that cannot tell
- * should not record.
+ * read behind the wait tools, which discard every hint on a wait that succeeds.
+ * A record written for a hint nobody read would let any later process
+ * replacement — a crash, a Metro reload, another agent — satisfy a relaunch
+ * nobody was asked to perform. Withholding it only ever delays the verdict, so
+ * a caller that cannot promise the hint is rendered should not record.
  *
  * Only `stale_process` and `unregistered` take part. Their remedies are the two
  * halves of a cycle: `stale_process` prescribes restart-app, which leaves the

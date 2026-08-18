@@ -81,10 +81,13 @@ export interface DescribeIosOptions {
   // Pre-resolved tvOS verdict, passed by poll/retry callers so the hot path
   // skips re-shelling `xcrun` each iteration. Omitted callers probe once.
   isTvOs?: boolean;
-  // Whether this read's `hint` is rendered to an agent. Only the `describe`
-  // tool's own handlers set it; the poll, tree-match and preview callers keep
-  // the tree and drop the hint, and a relaunch remedy recorded for prose nobody
-  // read is one a later reading would treat as spent.
+  // Whether this read's `hint` is certain to reach an agent, which only the
+  // `describe` tool's own handlers can promise. await-ui-element renders one
+  // too — see the timeout note below — but one poll's worth, and only when the
+  // wait times out, while the record is written per read. Opting it in would
+  // arm a relaunch hand-out on waits that go on to succeed, and a later process
+  // replacement would then read as a relaunch nobody was asked to perform. The
+  // remaining callers never render it at all.
   hintReachesAgent?: boolean;
 }
 

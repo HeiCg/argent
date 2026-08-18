@@ -547,10 +547,22 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
 
       expect(feature.status).toBe("injection_failed");
       const message = (feature as { message?: string }).message;
-      // `endsWith`, not `toContain`: the swap replaces the tail, so a
-      // containment check on the diagnosis ahead of it passes either way.
       expect(message, "the terminal block carries no message").toBeTypeOf("string");
-      expect(message!.endsWith(INJECTION_FAILED_RECOVERY), "wrong dead-end warning").toBe(true);
+      // Spelled out rather than compared against INJECTION_FAILED_RECOVERY:
+      // composing the expectation from the constant under test passes just as
+      // happily when the constant itself is rebuilt from the wrong warning.
+      // `endsWith`, not `toContain`, because the swap replaces the tail — a
+      // containment check on the diagnosis ahead of it holds either way.
+      expect(
+        message!.endsWith(
+          "Do not fall back to the native-devtools feature tools (native-describe-screen, " +
+            "native-find-views, native-full-hierarchy, native-network-logs, native-view-at-point, " +
+            "native-user-interactable-view-at-point) — they read the same connection state and " +
+            "return the same injection_failed status."
+        ),
+        "wrong dead-end warning"
+      ).toBe(true);
+      expect(message).not.toContain("fail with the same non-injectable error");
     } finally {
       await instance.dispose();
     }
