@@ -60,7 +60,7 @@ export function snapshotEnv(keys: string[]): () => void {
 }
 
 /**
- * Bind a server on a free loopback port and return it. A bind that fails has to
+ * Bind a server on a free loopback port and return the port. A bind that fails has to
  * reject: `listen`'s callback fires only on success, so awaiting it alone turns
  * an EADDRNOTAVAIL into a test that hangs to its timeout while the unhandled
  * 'error' event surfaces against whichever test vitest happens to be running.

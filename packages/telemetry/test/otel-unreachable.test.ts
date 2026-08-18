@@ -123,7 +123,7 @@ async function unusedUrl(): Promise<string> {
  * Collect what the SDK says about an export. A failure never reaches the
  * caller - the batch processor hands it to OpenTelemetry's global error handler,
  * which logs it through `diag` - so without this channel every case below is
- * just a `shutdown()` that resolved in ~1ms. It is what says WHY: the collector
+ * just a `shutdown()` that resolved without complaint. It is what says WHY: the collector
  * count says a request was answered, this says whether the answer was taken.
  */
 function captureExportErrors(): string[] {
@@ -193,7 +193,7 @@ describe("a collector that cannot take the batch", () => {
     // resolves OTEL_EXPORTER_OTLP_TIMEOUT the way it resolves compression - from
     // the environment only when the code passes nothing - and a flipped
     // precedence there is the worse payload: a short-lived command would sit on
-    // a dead collector for 30s after its shutdown() already resolved.
+    // a dead collector for 12s after its shutdown() already resolved.
     // Well over FAILURE_BUDGET_MS and well under this test's own timeout, so a
     // flipped precedence fails on the budget rather than as a harness timeout.
     const restoreEnv = snapshotEnv([
