@@ -121,10 +121,10 @@ async function unusedUrl(): Promise<string> {
 
 /**
  * Collect what the SDK says about an export. A failure never reaches the
- * caller - the batch processor hands it to OpenTelemetry's global error
- * handler, which logs it through `diag` - so this channel is the only thing
- * that tells "the collector answered and the answer was rejected" apart from
- * "no request was ever made", both of which resolve `shutdown()` in ~1ms.
+ * caller - the batch processor hands it to OpenTelemetry's global error handler,
+ * which logs it through `diag` - so without this channel every case below is
+ * just a `shutdown()` that resolved in ~1ms. It is what says WHY: the collector
+ * count says a request was answered, this says whether the answer was taken.
  */
 function captureExportErrors(): string[] {
   const errors: string[] = [];
@@ -194,13 +194,15 @@ describe("a collector that cannot take the batch", () => {
     // the environment only when the code passes nothing - and a flipped
     // precedence there is the worse payload: a short-lived command would sit on
     // a dead collector for 30s after its shutdown() already resolved.
+    // Well over FAILURE_BUDGET_MS and well under this test's own timeout, so a
+    // flipped precedence fails on the budget rather than as a harness timeout.
     const restoreEnv = snapshotEnv([
       "OTEL_EXPORTER_OTLP_TIMEOUT",
       "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
     ]);
     track(async () => restoreEnv());
-    process.env.OTEL_EXPORTER_OTLP_TIMEOUT = "30000";
-    process.env.OTEL_EXPORTER_OTLP_LOGS_TIMEOUT = "30000";
+    process.env.OTEL_EXPORTER_OTLP_TIMEOUT = "12000";
+    process.env.OTEL_EXPORTER_OTLP_LOGS_TIMEOUT = "12000";
     const silent = await startSilent();
 
     const elapsed = await exportAndDrain(silent.url);

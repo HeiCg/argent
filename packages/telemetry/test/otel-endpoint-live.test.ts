@@ -52,8 +52,11 @@ const OTLP_ENV_VARS = [
   "OTEL_EXPORTER_OTLP_COMPRESSION",
   "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION",
   "OTEL_EXPORTER_OTLP_CERTIFICATE",
+  "OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE",
   "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
+  "OTEL_EXPORTER_OTLP_LOGS_CLIENT_CERTIFICATE",
   "OTEL_EXPORTER_OTLP_CLIENT_KEY",
+  "OTEL_EXPORTER_OTLP_LOGS_CLIENT_KEY",
 ];
 
 let restoreEnv: () => void;
@@ -171,9 +174,16 @@ describe("what reaches the collector, against the real OTLP exporter", () => {
       },
       DiagLogLevel.WARN
     );
+    // Both spellings: the SDK reads `signalSpecific ?? nonSignalSpecific`, so
+    // the _LOGS_ form wins - and it is the one a machine already exporting logs
+    // elsewhere has set.
     process.env.OTEL_EXPORTER_OTLP_CERTIFICATE = "/nonexistent/argent-probe-ca.pem";
+    process.env.OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE = "/nonexistent/argent-probe-logs-ca.pem";
     process.env.OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE = "/nonexistent/argent-probe-cert.pem";
+    process.env.OTEL_EXPORTER_OTLP_LOGS_CLIENT_CERTIFICATE =
+      "/nonexistent/argent-probe-logs-cert.pem";
     process.env.OTEL_EXPORTER_OTLP_CLIENT_KEY = "/nonexistent/argent-probe-key.pem";
+    process.env.OTEL_EXPORTER_OTLP_LOGS_CLIENT_KEY = "/nonexistent/argent-probe-logs-key.pem";
 
     try {
       createExporter({ endpoint: code.url, token: "real-ingest-token", isUsable: true });
