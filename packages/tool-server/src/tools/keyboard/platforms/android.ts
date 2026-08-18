@@ -29,11 +29,10 @@ async function typeAndroidPhone(
   // so at most one of these two branches runs — there is no ordering to get right
   // here, and no combined request whose halves could disagree.
   if (params.text) {
-    // Validate before anything else (a pure check, re-run harmlessly inside
-    // `injectAndroidText`): `typeAndroidTextVerified` resolves the
-    // android-devtools helper — up to an `adb install -t` of its APK — before it
-    // injects, and text this backend cannot type must be rejected without
-    // installing anything to find that out.
+    // `typeAndroidTextVerified` resolves the android-devtools helper — up to an
+    // `adb install -t` of its APK — before it injects, so text this backend
+    // cannot type has to be rejected ahead of that. `injectAndroidText` re-runs
+    // the same pure check harmlessly.
     assertTypeableAndroidText(params.text);
     verification = await typeAndroidTextVerified(registry, device, params.text);
     // `assertTypeableAndroidText` above has already rejected any non-ASCII, so

@@ -445,12 +445,10 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
   });
 
   it("rejects un-typeable text without resolving the read-back helper", async () => {
-    // The read-back resolves android-devtools before it injects, and resolving
-    // it can `adb install -t` the helper APK. So the up-front check in
-    // `typeAndroidPhone` is what keeps "no on-device side effect" true: without
-    // it the rejection still happens, but only after an install. The test above
-    // cannot see that — its bare `Registry` has no android-devtools blueprint,
-    // so nothing resolves either way.
+    // The read-back resolves android-devtools — up to an `adb install -t` of the
+    // helper APK — before it injects, so the check ahead of it is what keeps "no
+    // on-device side effect" true. The test above cannot see that: its bare
+    // `Registry` has no android-devtools blueprint, so nothing resolves either way.
     const resolveService = vi.fn(async () => ({ getHierarchy: vi.fn() }));
     const spied = makeAndroidImpl({ resolveService } as unknown as Registry);
     await expect(
