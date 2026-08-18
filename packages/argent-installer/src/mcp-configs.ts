@@ -85,8 +85,8 @@ export interface McpConfigAdapter {
   // Report argent state outside the projectPath/globalPath pair that can keep
   // the entry written at `writtenScope` from taking effect.
   findShadowingConfigs?(root: string, writtenScope: "local" | "global"): ShadowingConfigFinding[];
-  // Returns a short note when the rule was deliberately NOT added (or an
-  // earlier one was undone) so init can say so instead of claiming a write.
+  // Returns a short note when the rule was deliberately NOT added so init can
+  // say so instead of claiming a write.
   addAllowlist?(root: string, scope: "local" | "global"): string | void;
   removeAllowlist?(root: string, scope: "local" | "global"): void;
 }
@@ -716,7 +716,7 @@ const cursorAdapter: McpConfigAdapter = {
     const config = readJsonc(permPath);
     const list = Array.isArray(config.mcpAllowlist) ? (config.mcpAllowlist as string[]) : null;
     if (list === null || list.length === 0) {
-      return `skipped - an mcpAllowlist here would override Cursor's in-app allowlist`;
+      return `skipped - an mcpAllowlist here would turn off Cursor's "Run Everything" mode and override its in-app allowlist`;
     }
     if (list.includes(CURSOR_ALLOWLIST_PATTERN)) return;
     editJsoncFile(permPath, ["mcpAllowlist"], [...list, CURSOR_ALLOWLIST_PATTERN]);
