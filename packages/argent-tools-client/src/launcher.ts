@@ -708,7 +708,7 @@ export async function killToolServerForInstallDir(packageDir: string): Promise<n
 // spawn ENOENTs — and the guard below reads that as "not one of ours" for every
 // live server, skipping the kill and orphaning it. Same pin as tool-server's
 // PS_BIN; bare `"ps"` stays the fallback for an atypical layout.
-const PS_BIN = ["/bin/ps", "/usr/bin/ps"].find((p) => fs.existsSync(p)) ?? "ps";
+export const PS_BIN = ["/bin/ps", "/usr/bin/ps"].find((p) => fs.existsSync(p)) ?? "ps";
 
 /**
  * Best-effort check that `pid` is one of OUR tool-server processes, by matching

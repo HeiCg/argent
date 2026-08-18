@@ -77,12 +77,13 @@ async function spawnFakeServer(
 /** Does this platform's `ps` clip `-o command=` to $COLUMNS? procps-ng does;
  * BSD `ps` clips only to a terminal width, and the guard never hands `ps` a
  * terminal — so the width regression is unobservable on macOS. Probed against a
- * live pid through the guard's own invocation rather than assumed from
+ * live pid through the guard's own binary and options rather than assumed from
  * `process.platform`. */
 function psClipsToColumns(pid: number, columns: number): boolean {
   const width = (widen: string[]): number =>
-    execFileSync("ps", [...widen, "-p", String(pid), "-o", "command="], {
+    execFileSync(launcher.PS_BIN, [...widen, "-p", String(pid), "-o", "command="], {
       encoding: "utf8",
+      timeout: 2_000,
       env: { ...process.env, COLUMNS: String(columns) },
       stdio: ["ignore", "pipe", "ignore"],
     }).trim().length;
@@ -162,7 +163,7 @@ describe("sweepDeadStateFiles", () => {
     process.env.COLUMNS = String(NARROW_COLUMNS);
     try {
       // Skip rather than pass vacuously: where `ps` ignores $COLUMNS the
-      // assertions below hold against the un-fixed guard too.
+      // assertions below hold whether or not the guard passes `-ww`.
       if (!psClipsToColumns(child.pid!, NARROW_COLUMNS)) ctx.skip();
       await launcher.sweepDeadStateFiles();
       expect(await waitForExit(child)).toBe(true);
@@ -199,17 +200,19 @@ describe("sweepDeadStateFiles", () => {
     }
   }, 20_000);
 
-  // `-ww` hands the guard command lines that width truncation used to cut off
-  // before they could collide, so the structural match is what keeps a
-  // look-alike safe. Both halves of it are pinned here.
+  // `-ww` hands the guard whole command lines, so the structural match is the
+  // only thing standing between a look-alike and a SIGTERM. Both halves of it
+  // are pinned below, and each test records a bundle path that is NOT on disk —
+  // the sweep short-circuits on one that is, never reaching the guard.
 
   it("does not signal a process that merely mentions the bundle path", async () => {
-    const marker = join(TEST_HOME, "retired-install/dist/tool-server.cjs");
+    const marker = join(TEST_HOME, "gone-install/dist/tool-server.cjs");
     const watcher = join(TEST_HOME, "watcher.cjs");
     // Carries the recorded path in its argv, but is not running it: the guard
     // requires a following `start`, so this must survive untouched.
     const child = await spawnFakeServer(watcher, { args: [marker] });
     const file = writeRecord(marker, child.pid!);
+    expect(existsSync(marker)).toBe(false);
     try {
       await launcher.sweepDeadStateFiles();
       expect(await waitForExit(child, 1_000)).toBe(false);
@@ -229,6 +232,7 @@ describe("sweepDeadStateFiles", () => {
     mkdirSync(dirname(impostor), { recursive: true });
     const child = await spawnFakeServer(impostor);
     const file = writeRecord(marker, child.pid!);
+    expect(existsSync(marker)).toBe(false);
     try {
       await launcher.sweepDeadStateFiles();
       expect(await waitForExit(child, 1_000)).toBe(false);
