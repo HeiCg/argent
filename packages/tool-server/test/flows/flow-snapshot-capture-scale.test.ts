@@ -31,6 +31,8 @@ let registry: Registry;
 let env: ActionEnv;
 /** Scales the fake server was asked for, in call order. */
 let requested: (number | undefined)[];
+/** How the fake server answers a full-resolution request. */
+let fullResFailure: { status: number; error: string };
 
 async function writePng(file: string, w: number, h: number): Promise<void> {
   const png = new PNG({ width: w, height: h });
@@ -43,6 +45,7 @@ beforeEach(async () => {
   shotDir = path.join(tmpDir, "shots");
   await fs.mkdir(shotDir);
   requested = [];
+  fullResFailure = { status: 200, error: "wrong data size, expected 7853760 got 17627328" };
 
   // Fake simulator-server: an Android emulator that cannot stream a full-res
   // frame. `httpScreenshot` omits `scale` from the body only when it resolves
@@ -56,7 +59,8 @@ beforeEach(async () => {
       requested.push(body.scale);
       res.setHeader("Content-Type", "application/json");
       if (body.scale === undefined) {
-        res.end(JSON.stringify({ error: "wrong data size, expected 7853760 got 17627328" }));
+        res.writeHead(fullResFailure.status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: fullResFailure.error }));
         return;
       }
       const file = path.join(shotDir, `shot-${requested.length}.png`);
@@ -131,5 +135,17 @@ describe("snapshot fallback capture scale", () => {
     // entry is the full-res attempt; the second is the retry's own scale, not
     // the env var's.
     expect(requested).toEqual([undefined, 0.3]);
+  });
+
+  it("leaves a capture failure that is not the framebuffer limit alone", async () => {
+    // Asking for less answers a dead backend the same way, and a transient that
+    // did clear on the retry would key the step off a resolution the device
+    // does not otherwise produce — a committed baseline reported missing.
+    fullResFailure = { status: 500, error: "emulator gRPC bridge closed" };
+
+    await expect(runSnapshot(env, opts({ updateBaselines: true }))).rejects.toThrow(
+      "emulator gRPC bridge closed"
+    );
+    expect(requested).toEqual([undefined]);
   });
 });

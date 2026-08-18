@@ -14,6 +14,7 @@ import {
 import { describeSelector, type FlowSelector } from "./flow-utils";
 import { diffPngFiles } from "../screenshot-diff/screenshot-diff";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
+import { isFramebufferSizeMismatch } from "../../utils/simulator-client";
 
 /** Default visual tolerance (percent of pixels) when a flow/step sets none. */
 export const DEFAULT_MAX_MISMATCH = 0.5;
@@ -227,18 +228,26 @@ export async function runSnapshot(
   // simulator-server rejects it with a "wrong data size" framebuffer mismatch —
   // so demanding one makes `snapshot` unusable on those devices, including
   // under --update-baselines, where there is nothing to compare yet. Retry at a
-  // reduced scale, which captures reliably; `screenshot-diff` resolves the same
-  // limitation the same way. The baseline key is built from the dimensions that
+  // reduced scale, which captures reliably; `screenshot-diff` falls back for
+  // the same limitation. The baseline key is built from the dimensions that
   // came back, so a fallback capture keys its own baseline instead of being
-  // compared against a full-res one. If the device is genuinely unreachable the
-  // retry fails too, and its error is what surfaces.
+  // compared against a full-res one.
+  //
+  // Only that mismatch is retried. Every other capture failure — an unreachable
+  // server, a frame stream that has not warmed up — would answer a smaller
+  // request the same way, so retrying one buys nothing and costs the baseline's
+  // identity: a transient that happened to clear would key the step off a
+  // resolution the device does not otherwise produce, and the miss would be
+  // reported as the device class having no baseline. Those propagate as
+  // themselves, which is what the step reports.
   let shot: { image: ArtifactHandle };
   try {
     shot = (await invokeOnDevice(env, "screenshot", {
       scale: 1.0,
       includeImageInContext: false,
     })) as { image: ArtifactHandle };
-  } catch {
+  } catch (err) {
+    if (!isFramebufferSizeMismatch(err)) throw err;
     shot = (await invokeOnDevice(env, "screenshot", {
       scale: FALLBACK_CAPTURE_SCALE,
       includeImageInContext: false,

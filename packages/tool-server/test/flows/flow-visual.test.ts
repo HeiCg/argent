@@ -694,7 +694,7 @@ describe("runSnapshot capture scale", () => {
     vi.mocked(invokeOnDevice).mockImplementation(async () => ({ image: { hostPath: h.shotPath } }));
   });
 
-  it("falls back to the default scale when a full-res frame cannot be streamed", async () => {
+  it("retries at a lower scale when a full-res frame cannot be streamed", async () => {
     // Some Android emulator configurations reject a full-res frame with a
     // framebuffer size mismatch. Without a fallback every snapshot step errors
     // on those devices — including under --update-baselines, where there is
@@ -731,6 +731,25 @@ describe("runSnapshot capture scale", () => {
       "device not booted"
     );
     expect(vi.mocked(invokeOnDevice)).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a capture failure that asking for less cannot fix", async () => {
+    // A cold frame stream answers a smaller request the same way, so retrying
+    // buys nothing — and a transient that happened to clear on the retry would
+    // key the step off a resolution the device does not otherwise produce,
+    // reporting a device class whose baseline is right there as having none.
+    const scaled = path.join(tmpDir, "scaled.png");
+    await writeFakePng(scaled, 324, 727);
+    vi.mocked(invokeOnDevice).mockClear();
+    vi.mocked(invokeOnDevice).mockRejectedValueOnce(
+      new Error("Screenshot failed: no image to export.")
+    );
+    vi.mocked(invokeOnDevice).mockResolvedValueOnce({ image: { hostPath: scaled } });
+
+    await expect(runSnapshot(env, opts({ updateBaselines: true }))).rejects.toThrow(
+      "no image to export"
+    );
+    expect(vi.mocked(invokeOnDevice)).toHaveBeenCalledTimes(1);
   });
 
   it("captures at full resolution when the device can stream one", async () => {
