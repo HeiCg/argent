@@ -702,12 +702,9 @@ describe("keyboard clear — Android (adb input)", () => {
             setText: async (text: string) => {
               calls.push(text);
               if (setText) return setText(text);
-              // `length` is the REQUEST's on a match and -1 otherwise, which is
-              // what the helper sends; a mismatch never measures the field.
               return {
                 applied,
                 matched,
-                length: matched ? text.length : -1,
                 ...(reason ? { reason } : {}),
               };
             },
@@ -1051,7 +1048,7 @@ describe("keyboard clear — Android (adb input)", () => {
         reason: "no_focused_input",
         setText: async () => {
           controller.abort();
-          return { applied: false, matched: false, length: -1, reason: "no_focused_input" };
+          return { applied: false, matched: false, reason: "no_focused_input" };
         },
       });
 

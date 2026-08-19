@@ -68,7 +68,10 @@ export interface HierarchyResult {
  * - `action_threw` — the node died mid-call, or the connection was severed.
  * - `unverifiable` — the set was applied, but the node could not be re-read to
  *   confirm it. Treated as a miss by the caller: an unverified atomic write is
- *   worth less than a fallback that reports honestly.
+ *   worth less than a fallback that reports honestly. A PASSWORD field is
+ *   always this for a non-empty write — it publishes one bullet per character
+ *   rather than its value, so the read-back cannot confirm anything. Clearing
+ *   one still verifies, because empty is empty whether or not it is masked.
  * - `value_mismatch` — the set was applied AND read back, and the field holds
  *   something else. Distinct from `action_refused` in the one way that matters
  *   downstream: the widget did not refuse, so the write may be sitting in the
@@ -93,16 +96,6 @@ export interface SetTextResult {
    * This is the only flag worth trusting: `applied` is the widget's own claim.
    */
   matched: boolean;
-  /**
-   * Length of the REQUESTED value on a match, and -1 on every other outcome.
-   *
-   * Not the length of what the field holds. The one case where the two differ
-   * is `value_mismatch`, where by definition the field holds something the
-   * caller did not send — and by the threat model on
-   * {@link AndroidDevtoolsApi.setText}, that something can be the credential a
-   * `{{secret:…}}` clear was aimed at. So it is never measured.
-   */
-  length: number;
   reason?: SetTextReason;
 }
 
