@@ -94,6 +94,65 @@ describe("flow script executor — work the module evaluation outlives", () => {
   });
 });
 
+describe("flow script executor — the script is the main module", () => {
+  it("runs a body behind an ESM main-module guard", async () => {
+    const ws = workspace();
+    // The standard shape for a script that is also importable by a test. Under
+    // a runner that imported the script, every one of these answered "no" and
+    // the step passed having run nothing.
+    const script = ws.write(
+      "guard.mjs",
+      `import { fileURLToPath } from "node:url";
+       output.isMain = import.meta.main;
+       output.argvGuard = process.argv[1] === fileURLToPath(import.meta.url);
+       if (output.argvGuard) output.ran = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ isMain: true, argvGuard: true, ran: true });
+  });
+
+  it("runs a body behind a CommonJS require.main guard", async () => {
+    const ws = workspace();
+    const script = ws.write("guard.cjs", `if (require.main === module) output.ran = true;`);
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ ran: true });
+  });
+
+  it("leaves a script's own child process and worker thread alone", async () => {
+    const ws = workspace();
+    // The runner rides in on `execArgv`, which a `fork` and a `new Worker` both
+    // inherit. An inherited copy that thought it was the runner would wait for
+    // a request nobody is sending, and the script would hang on its own child.
+    ws.write("grandchild.mjs", `console.log("grandchild ran");`);
+    ws.write(
+      "worker.mjs",
+      `import { parentPort } from "node:worker_threads";
+       parentPort.postMessage("from the worker");`
+    );
+    const script = ws.write(
+      "spawner.mjs",
+      `import { fork } from "node:child_process";
+       import { Worker } from "node:worker_threads";
+       const child = fork(new URL("grandchild.mjs", import.meta.url).pathname);
+       output.childExit = await new Promise((r) => child.on("exit", r));
+       const worker = new Worker(new URL("worker.mjs", import.meta.url));
+       output.fromWorker = await new Promise((r) => worker.on("message", r));`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 15_000,
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ childExit: 0, fromWorker: "from the worker" });
+  }, 30_000);
+});
+
 describe("flow script executor — module loading", () => {
   it("loads built-ins, relative modules, ESM and CommonJS packages, JSON and top-level await", async () => {
     const ws = workspace();

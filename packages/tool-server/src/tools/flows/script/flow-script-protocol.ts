@@ -21,7 +21,11 @@ export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
 /** Parent → child. Sent once, immediately after the fork. */
 export interface ScriptExecuteRequest {
   type: "execute";
-  /** A file URL, so a path holding a space or a `#` still loads. */
+  /**
+   * The script, as the real-path file URL Node resolved its entry module to.
+   * The runner re-imports it — a cache hit — to tell a script that finished
+   * from one parked inside a top-level `await` that never settles.
+   */
   scriptUrl: string;
   /** The current flow output, already encoded. PR 1 always sends `"{}"`. */
   outputJson: string;

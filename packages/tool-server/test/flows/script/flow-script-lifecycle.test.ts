@@ -80,9 +80,9 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(Date.now() - started).toBeLessThan(8_000);
   });
 
-  it("stops a script waiting on a promise that never resolves", async () => {
+  it("stops a script holding the event loop open at the time limit", async () => {
     const ws = workspace();
-    const script = ws.write("hang.mjs", `await new Promise(() => {});`);
+    const script = ws.write("hang.mjs", `setInterval(() => {}, 1000);`);
     const result = await executor().execute({
       scriptPath: script,
       projectRoot: ws.dir,
@@ -92,11 +92,28 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.failure?.kind).toBe("timeout");
   });
 
+  it("names a top-level await that never settles instead of waiting out the limit", async () => {
+    const ws = workspace();
+    // Nothing is left to run, so the step does not have to occupy its slot
+    // until the time limit to know the script will never produce output.
+    const script = ws.write("unsettled.mjs", `await new Promise(() => {});`);
+    const started = Date.now();
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 20_000,
+    });
+
+    expect(result.failure?.kind).toBe("runtime");
+    expect(result.failure?.message).toContain("never settled");
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
   it("keeps the logs a timed-out script already wrote", async () => {
     const ws = workspace();
     const script = ws.write(
       "noisy-hang.mjs",
-      `console.log("started the seed"); await new Promise(() => {});`
+      `console.log("started the seed"); setInterval(() => {}, 1000);`
     );
     const result = await executor().execute({
       scriptPath: script,

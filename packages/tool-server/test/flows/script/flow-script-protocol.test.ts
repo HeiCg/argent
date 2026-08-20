@@ -38,12 +38,22 @@ function executor() {
   return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 });
 }
 
-/** Run a script against a stand-in runner that misbehaves in a chosen way. */
+/**
+ * Run a script against a stand-in runner that misbehaves in a chosen way.
+ *
+ * The runner is a preload, so a fake one is loaded before the script and parks
+ * instead of returning: Node waits for an `--import` module to finish before it
+ * loads the entry, and none of these cases wants the script to run. That is the
+ * real runner's own shape on a request it cannot honour.
+ */
 async function withFakeRunner(source: string) {
   const ws = workspace();
   const runnerDir = ws.resolve("runner");
   fs.mkdirSync(runnerDir, { recursive: true });
-  fs.writeFileSync(path.join(runnerDir, "flow-script-runner.mjs"), source);
+  fs.writeFileSync(
+    path.join(runnerDir, "flow-script-runner.mjs"),
+    `${source}\nawait new Promise(() => {});\n`
+  );
   const script = ws.write("script.mjs", `output.ok = true;`);
   return executor().execute({
     scriptPath: script,
@@ -203,10 +213,18 @@ describe("flow script executor — the published layout", () => {
 describe("flow script runner — the watchdogs, driven directly", () => {
   /** Fork the real runner the way the executor does, without its time limit. */
   function forkRunner(scriptPath: string, deadlineMs: number) {
-    const child = fork(path.join(SOURCE_RUNNER_DIR, "flow-script-runner.mjs"), [], {
+    const child = fork(scriptPath, [], {
       cwd: path.dirname(scriptPath),
-      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
-      execArgv: ["--max-old-space-size=512"],
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: process.env.HOME ?? "",
+        ARGENT_FLOW_SCRIPT_RUNNER: "1",
+      },
+      execArgv: [
+        "--max-old-space-size=512",
+        "--import",
+        pathToFileURL(path.join(SOURCE_RUNNER_DIR, "flow-script-runner.mjs")).href,
+      ],
       stdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],
       detached: process.platform !== "win32",
     });

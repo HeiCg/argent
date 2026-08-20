@@ -56,6 +56,9 @@ const MAX_BUFFERED_LINE_CHARS = 8 * 1024;
 
 const RUNNER_FILE = "flow-script-runner.mjs";
 
+/** Marks the one process the runner preload may activate in. See `buildChildEnv`. */
+const RUNNER_ACTIVATION_ENV = "ARGENT_FLOW_SCRIPT_RUNNER";
+
 /**
  * Environment names copied from the tool server into a script process.
  *
@@ -150,15 +153,17 @@ const ALLOWED_ENV_PREFIXES: readonly string[] = ["npm_config_"];
  * Names refused in a caller-supplied environment map. Each one breaks the
  * runner rather than the host: `NODE_CHANNEL_FD` and `NODE_UNIQUE_ID` steer the
  * IPC channel this protocol runs on, `NODE_OPTIONS` would silently override the
- * heap limit set through `execArgv`, and `ELECTRON_RUN_AS_NODE` decides whether
- * the child boots as Node at all. This is a reliability rule, not a security
- * one.
+ * heap limit set through `execArgv`, `ELECTRON_RUN_AS_NODE` decides whether the
+ * child boots as Node at all, and the runner activation flag decides which
+ * process the runner preload takes over. This is a reliability rule, not a
+ * security one.
  */
 const RESERVED_ENV_NAMES: readonly string[] = [
   "NODE_CHANNEL_FD",
   "NODE_UNIQUE_ID",
   "NODE_OPTIONS",
   "ELECTRON_RUN_AS_NODE",
+  RUNNER_ACTIVATION_ENV,
 ];
 
 // ── Public shapes ─────────────────────────────────────────────────────────
@@ -502,6 +507,12 @@ export class FlowScriptExecutor {
       request.logBudget
     );
 
+    // The real path, not just the absolute one: Node resolves an entry module
+    // through `realpath`, and the runner re-imports that URL to tell a finished
+    // script from one parked inside a top-level `await`. A different spelling of
+    // the same file would be a second module, and the script would run twice.
+    const scriptPath = realPathOrSelf(path.resolve(cwd, request.scriptPath));
+
     let child: ChildProcess;
     try {
       // `windowsHide` is a documented `fork` option that this @types/node
@@ -513,7 +524,18 @@ export class FlowScriptExecutor {
         // appending would carry a dev-mode parent's ts-node/vitest loaders — and
         // any stack-size or inspector flag it was started with — into every
         // script process.
-        execArgv: [`--max-old-space-size=${bounds.heapLimitMb}`],
+        //
+        // The runner rides in as a preload rather than as the entry module, so
+        // the *script* is what Node runs: `import.meta.main`, `process.argv[1]`
+        // and `require.main` then all name the script, and the ordinary
+        // "am I the main module?" guard runs its body instead of being skipped.
+        // Node awaits an `--import` module before it loads the entry, which is
+        // what leaves room for the runner's handshake.
+        execArgv: [
+          `--max-old-space-size=${bounds.heapLimitMb}`,
+          "--import",
+          pathToFileURL(runnerPath).href,
+        ],
         // Index 4 is the lifeline: a pipe the parent holds open and never uses.
         // Its closing is how a runner learns its parent is gone.
         stdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],
@@ -524,7 +546,7 @@ export class FlowScriptExecutor {
         detached: process.platform !== "win32",
         windowsHide: process.platform === "win32",
       };
-      child = fork(runnerPath, [], forkOptions);
+      child = fork(scriptPath, [], forkOptions);
     } catch (err) {
       return emptyResult(
         { kind: "spawn", message: `Could not start the script process: ${errorMessage(err)}` },
@@ -602,7 +624,7 @@ export class FlowScriptExecutor {
 
     const message: ScriptExecuteRequest = {
       type: "execute",
-      scriptUrl: pathToFileURL(path.resolve(cwd, request.scriptPath)).href,
+      scriptUrl: pathToFileURL(scriptPath).href,
       outputJson: JSON.stringify(request.output ?? {}),
       deadlineMs: timeoutMs,
       maxOutputBytes: SCRIPT_MAX_OUTPUT_BYTES,
@@ -842,6 +864,18 @@ function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): s
   );
 }
 
+/**
+ * The real path of a file, or the path itself when it cannot be resolved —
+ * a missing script is Node's error to report, with the name the author wrote.
+ */
+function realPathOrSelf(candidate: string): string {
+  try {
+    return fs.realpathSync(candidate);
+  } catch {
+    return candidate;
+  }
+}
+
 function isDirectory(candidate: string): boolean {
   try {
     return fs.statSync(candidate).isDirectory();
@@ -917,6 +951,14 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
     }
     env[name] = value;
   }
+
+  // Set last, so a caller cannot shadow it. The runner preload activates only
+  // when it sees this, and clears it before the script runs: `--import` is
+  // inherited by a worker thread the script starts and by a `child_process`
+  // `fork` from the script, and an activated preload in either would wait for a
+  // request that is never sent. A child's environment is copied at spawn time,
+  // so clearing it in this process is what keeps it out of theirs.
+  env[RUNNER_ACTIVATION_ENV] = "1";
   return env;
 }
 

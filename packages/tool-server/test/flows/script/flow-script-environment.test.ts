@@ -122,7 +122,13 @@ describe("flow script executor — execArgv", () => {
       const script = ws.write("argv.mjs", `output.execArgv = process.execArgv;`);
       const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
-      expect(result.output?.execArgv).toEqual(["--max-old-space-size=512"]);
+      // The heap limit and the runner preload, and nothing the parent was
+      // started with.
+      const execArgv = result.output?.execArgv as string[];
+      expect(execArgv[0]).toBe("--max-old-space-size=512");
+      expect(execArgv[1]).toBe("--import");
+      expect(execArgv[2]).toMatch(/^file:\/\/.*flow-script-runner\.mjs$/);
+      expect(execArgv).toHaveLength(3);
     } finally {
       process.execArgv = before;
     }

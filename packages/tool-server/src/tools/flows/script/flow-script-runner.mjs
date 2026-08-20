@@ -1,40 +1,69 @@
-// The child process a `script` flow step runs in. One script, one process, one
-// terminal message back to the executor.
+// The flow `script` step's runner: a preload the executor puts in front of the
+// script with `node --import <this file> <script>`.
 //
-// Node can run a script file without any of this, but it cannot give the script
-// an `output` object and it cannot tell the parent when that output is final. A
-// direct fork of the script itself leaves no reliable send point: `beforeExit`
-// does not run after an explicit `process.exit`, and it can fire more than once.
+// The script is the process's **entry module**, not something this file
+// imports. That is what makes the process behave like `node script.mjs`:
+// `import.meta.main` is true, `process.argv[1]` is the script, `require.main`
+// is the script's own module in CommonJS, and the event loop runs until it
+// empties. A script written with the ordinary `if (this is the main module)
+// main()` guard therefore runs its body, where an imported script silently
+// skipped it and reported a green pass.
+//
+// A preload is what buys that while still giving the script an `output` global
+// and the executor a verdict: `--import` is awaited before the entry module
+// loads, so the handshake below completes first, and this file keeps the send
+// point the entry module cannot have.
 //
 // This file imports nothing from the tool-server, so it needs no build step —
 // it is copied next to the compiled executor and resolves its two watchdogs
 // against its own module URL.
 
-import { Worker } from "node:worker_threads";
+import { isMainThread, Worker } from "node:worker_threads";
 
 const LIFELINE_WATCHDOG = "flow-script-watchdog-lifeline.mjs";
 const DEADLINE_WATCHDOG = "flow-script-watchdog-deadline.mjs";
 
-/** One request per process; a second `message` is ignored rather than obeyed. */
-let handled = false;
+/**
+ * The executor sets this for the one process it starts, and the preload clears
+ * it before the script runs.
+ *
+ * `--import` is inherited twice over: a worker thread the script starts gets
+ * it, and so does a `child_process.fork` from the script, which passes the
+ * parent's `execArgv` on by default. Either would park inside the handshake
+ * below waiting for a request that is never coming, and the script would hang
+ * on its own worker. `isMainThread` covers the thread case; clearing the
+ * variable covers the process case, because a child's environment is copied at
+ * spawn time.
+ */
+const ACTIVATION_ENV = "ARGENT_FLOW_SCRIPT_RUNNER";
+
 /** One terminal message per process; see `finish`. */
 let finished = false;
 
-process.on("message", (raw) => {
-  if (handled) return;
-  handled = true;
-  void run(raw);
-});
+/** The encoded-output ceiling from the request, read again at `beforeExit`. */
+let maxOutputBytes = 0;
 
-// A convenience for a runner whose event loop is still turning: if the parent
-// goes away, stop. This is NOT the orphan control — a synchronous infinite loop
-// never yields to the event loop, so this handler would never run. The lifeline
-// watchdog thread is what covers that case.
-process.on("disconnect", () => {
-  process.exit(0);
-});
+/** One outcome probe per process; `beforeExit` can fire more than once. */
+let probing = false;
 
-async function run(raw) {
+/** How long the entry module gets to prove it finished. See `reportWhenEntrySettled`. */
+const ENTRY_SETTLE_PROBE_MS = 1_000;
+
+if (isMainThread && process.env[ACTIVATION_ENV] === "1") {
+  delete process.env[ACTIVATION_ENV];
+  await prepare();
+}
+
+/**
+ * Everything that has to be true before the script's first line runs.
+ *
+ * Node awaits this module's evaluation before it loads the entry module, so
+ * the `output` global, the watchdogs and the crash handlers are all in place
+ * by then — and a request that never arrives parks here rather than running a
+ * script the executor cannot report on.
+ */
+async function prepare() {
+  const raw = await nextRequest();
   const request = parseRequest(raw);
   if (!request) {
     finish({
@@ -42,9 +71,10 @@ async function run(raw) {
       failureType: "protocol",
       message: `The script runner received a malformed request: ${safeStringify(raw)}`,
     });
-    return;
+    return never();
   }
 
+  maxOutputBytes = request.maxOutputBytes;
   startWatchdogs(request.deadlineMs);
 
   try {
@@ -55,86 +85,127 @@ async function run(raw) {
       failureType: "protocol",
       message: `The script runner could not decode the flow output it was given: ${errorMessage(err)}`,
     });
-    return;
+    return never();
   }
 
-  // Load-bearing. This is the only thing that lets the parent tell "the runner
-  // never began the script" apart from "the script stopped its own process".
-  process.send({ type: "started" });
-
-  // From here on the script owns the process, and a crash it raises after its
-  // module evaluation settled — a rejected promise nobody awaited, a throw
-  // inside a timer callback — would otherwise kill the runner before it could
-  // report anything. Node's default is to print the error and exit 1, which
-  // reaches the parent as "the script stopped its own process", naming an exit
-  // code the author never wrote and losing the error itself. Report it as what
-  // it is instead. An unhandled rejection arrives here too: Node raises it as
-  // an uncaught exception unless an `unhandledRejection` listener claims it.
+  // A crash the script raises — a module that never parsed, a throw at the top
+  // level, a rejected promise nobody awaited, a throw inside a timer callback —
+  // would otherwise end the process before it could report anything. Node's
+  // default is to print the error and exit 1, which reaches the executor as
+  // "the script stopped its own process", naming an exit code the author never
+  // wrote and losing the error itself. Claim it and report what it was. An
+  // unhandled rejection arrives here too: Node raises it as an uncaught
+  // exception unless an `unhandledRejection` listener claims it first.
   process.on("uncaughtException", (err) => {
     finish({
       type: "failure",
-      failureType: "runtime",
+      failureType: classifyScriptError(err),
       message: errorMessage(err),
       stack: errorStack(err),
     });
   });
 
-  try {
-    // A dynamic import of a file URL, never a source read, never an eval, never
-    // a wrapper function. Node opens the file itself, so stack traces keep real
-    // line numbers, a top-level `await` works with no wrapper, and a path
-    // holding a space or a `#` still loads.
-    await import(request.scriptUrl);
-  } catch (err) {
-    finish({
-      type: "failure",
-      failureType: classifyImportError(err),
-      message: errorMessage(err),
-      stack: errorStack(err),
-    });
-    return;
-  }
+  // The script is done when the event loop empties — the same point at which
+  // `node script.mjs` would leave, so a timer, a callback-style read and a
+  // floating `main()` have all finished. A script that leaves a handle open
+  // never reaches it and would not have exited under plain `node` either; the
+  // step's time limit is what bounds that.
+  //
+  // `beforeExit` can fire more than once and does not fire at all after an
+  // explicit `process.exit`. The first is handled by `finish` reporting once;
+  // the second is the executor's `exit` verdict, which is the right one.
+  process.on("beforeExit", () => {
+    if (finished || probing) return;
+    probing = true;
+    reportWhenEntrySettled(request.scriptUrl);
+  });
 
-  // A module's evaluation finishing is not the script finishing. `main()`
-  // called without `await`, a `fs.readFile` callback and a `setTimeout` all
-  // outlive it, and reading `output` here would report a green pass for a
-  // script that has done none of its work yet.
-  await drainEventLoop();
+  // A convenience for a runner whose event loop is still turning: if the parent
+  // goes away, stop. This is NOT the orphan control — a synchronous infinite
+  // loop never yields to the event loop, so this handler would never run. The
+  // lifeline watchdog thread is what covers that case.
+  //
+  // Registered here rather than at module scope because Node references the IPC
+  // channel for as long as a `message` or `disconnect` listener exists. In an
+  // inactive preload — the copy a `child_process.fork` from the script
+  // inherits — that reference alone kept the script's own child alive after its
+  // work was done, and the step ran to its time limit.
+  process.on("disconnect", () => {
+    process.exit(0);
+  });
 
-  // Read the global back rather than a reference captured before the import: a
-  // script may mutate the object (`output.user = user`) or replace the binding
-  // (`output = { user }`, which resolves to this global property), and both are
-  // legal. A captured reference silently loses the replacement.
-  const encoded = encodeOutput(globalThis.output, request.maxOutputBytes);
-  finish(
-    encoded.error
-      ? { type: "failure", failureType: "output", message: encoded.error }
-      : { type: "result", outputJson: encoded.json }
-  );
-}
+  // Load-bearing. This is the only thing that lets the executor tell "the
+  // runner never began the script" apart from "the script stopped its own
+  // process".
+  process.send({ type: "started" });
 
-/**
- * Wait until the script has nothing left to run.
- *
- * `beforeExit` fires when the event loop empties, which is the same point at
- * which `node script.mjs` would exit — so a timer, a callback-style read or a
- * floating `main()` has finished by the time this resolves. A script that
- * leaves a handle open (an interval, a listening server) never reaches it, and
- * would not have exited under plain `node` either; the step's time limit is
- * what bounds that case.
- *
- * The IPC channel has to be unreferenced first: it is a live handle, so the
- * loop is never empty while it counts, and `beforeExit` would never fire.
- * Unreferencing only removes it from the loop's liveness count — the channel
- * stays open and `process.send` still works.
- */
-function drainEventLoop() {
+  // The IPC channel is a live handle, so the event loop is never empty while it
+  // counts and `beforeExit` above would never fire. Unreferencing only removes
+  // it from the loop's liveness count — the channel stays open and
+  // `process.send` still works.
   if (process.channel && typeof process.channel.unref === "function") {
     process.channel.unref();
   }
+}
+
+/**
+ * An empty event loop is not proof that the script finished: a top-level
+ * `await` that never settles leaves nothing to run either, and reading `output`
+ * there would report a green pass for a script stopped halfway.
+ *
+ * Importing the entry module again is what tells the two apart. Node caches it
+ * by URL, so a module that finished evaluating resolves from the cache without
+ * running a second time, while one still parked inside a top-level `await`
+ * awaits the very promise that is not settling. The executor sends the same
+ * real path Node resolved the entry from, so this is always the cache entry and
+ * never a second evaluation. A rejection counts as settled: the script threw,
+ * and `uncaughtException` above has already reported it.
+ *
+ * The timer both holds the loop open while the probe runs — without it the
+ * process could leave before a cache hit resolves — and bounds the wait, so an
+ * unsettled script is reported in about a second instead of occupying its slot
+ * until the step's time limit.
+ */
+function reportWhenEntrySettled(scriptUrl) {
+  const bound = setTimeout(() => {
+    finish({
+      type: "failure",
+      failureType: "runtime",
+      message:
+        "The script stopped at a top-level `await` that never settled: nothing was " +
+        "left to run and no output was produced.",
+    });
+  }, ENTRY_SETTLE_PROBE_MS);
+  const report = () => {
+    clearTimeout(bound);
+    // Read the global back rather than a reference captured earlier: a script
+    // may mutate the object (`output.user = user`) or replace the binding
+    // (`output = { user }`, which resolves to this global property), and both
+    // are legal.
+    const encoded = encodeOutput(globalThis.output, maxOutputBytes);
+    finish(
+      encoded.error
+        ? { type: "failure", failureType: "output", message: encoded.error }
+        : { type: "result", outputJson: encoded.json }
+    );
+  };
+  import(scriptUrl).then(report, report);
+}
+
+/** The one `execute` request. A second message is ignored rather than obeyed. */
+function nextRequest() {
   return new Promise((resolve) => {
-    process.once("beforeExit", resolve);
+    process.once("message", resolve);
   });
+}
+
+/**
+ * Park forever. Used after a verdict that must not be followed by the script
+ * running: `finish` exits from inside a stream callback, so returning here
+ * would let Node load the entry module in the meantime.
+ */
+function never() {
+  return new Promise(() => {});
 }
 
 function parseRequest(raw) {
@@ -166,7 +237,10 @@ function startWatchdogs(deadlineMs) {
 
   function start(url, workerData) {
     try {
-      const worker = new Worker(url, workerData ? { workerData } : undefined);
+      // `execArgv: []` keeps this preload out of the worker: a worker
+      // inherits the process's own `execArgv`, and re-running this file on a
+      // watchdog thread would load it for nothing.
+      const worker = new Worker(url, { execArgv: [], ...(workerData ? { workerData } : {}) });
       // A watchdog that cannot start must not take the run with it: the parent
       // keeps its own copy of the time limit, so the step is still bounded.
       worker.on("error", () => {});
@@ -178,14 +252,14 @@ function startWatchdogs(deadlineMs) {
 }
 
 /**
- * Which side of the import boundary failed.
+ * Which side of the load boundary failed.
  *
- * The distinction is coarse on purpose. An ESM import both resolves and
- * evaluates, so there is no exact line between the two; what a report needs is
- * "the file never ran" versus "your code threw", and a resolution/parse error
- * is a reliable stand-in for the first.
+ * The distinction is coarse on purpose. Loading a module both resolves and
+ * evaluates it, so there is no exact line between the two; what a report needs
+ * is "the file never ran" versus "your code threw", and a resolution/parse
+ * error is a reliable stand-in for the first.
  */
-function classifyImportError(err) {
+function classifyScriptError(err) {
   const code = err && typeof err === "object" ? err.code : undefined;
   if (
     typeof code === "string" &&
