@@ -1477,6 +1477,32 @@ describe("a restart that lands while a step is still running", () => {
     expect(await readMarkers(root, "alpha")).toEqual([]);
   });
 
+  it("does not warn a superseded GUIDANCE return that it already ran on the device", async () => {
+    // The third `ranOnDevice` argument, and the last one unpinned. A `command`
+    // naming a recorder tool is answered with guidance and dispatches NOTHING —
+    // the refusal is raised before the registry is asked — so telling its author
+    // that "the step itself already ran on the device" sends them undoing an
+    // action that never happened. Same queueing trick as the echo above: this
+    // return reads the take's step count under the flow's lock, so holding the
+    // lock and putting the restart in front of it is the whole window.
+    const root = await makeRoot("supersede-guidance");
+    await start(root, "alpha");
+
+    const gate = openGate();
+    const held = withFlowFileLock(root, "alpha", () => gate.promise);
+    const restarting = start(root, "alpha");
+    const guiding = addRawStep(root, "alpha", "flow-add-step", { udid: "ABC" });
+
+    gate.open();
+    await held;
+    expect((await restarting).restarted).toBe(true);
+
+    const err = await captureFailure(guiding);
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
+    expect((err as Error).message).toContain("Nothing was added to the flow file");
+    expect((err as Error).message).not.toContain("already ran on the device");
+  });
+
   it("does not warn a superseded ECHO that it already ran on the device", async () => {
     // The "repeating it repeats that action" caveat is true of a tool step,
     // which executed live before the append was rejected. An echo is a label —
