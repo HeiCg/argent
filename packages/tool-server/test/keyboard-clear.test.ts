@@ -668,6 +668,27 @@ describe("keyboard clear — Android (adb input)", () => {
     `password="${password}" focused="true" bounds="[0,0][100,50]" />` +
     `</hierarchy>`;
 
+  it("does not press the key for a caller that hung up during the injected clear", async () => {
+    // The clear is already on the device and cannot be taken back; the submit
+    // still can be withheld, and it is the side effect an app acts on.
+    const controller = new AbortController();
+    seedDump(dumpWith(""));
+    adbShell.mockImplementation(async (_serial: string, command: string) => {
+      if (command.startsWith("input keycombination")) controller.abort();
+      return "";
+    });
+
+    await expect(
+      makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true, key: "enter" },
+        ANDROID,
+        { signal: controller.signal }
+      )
+    ).rejects.toThrow();
+    expect(inputCmds()).not.toContain("input keyevent 66");
+  });
+
   describe("atomic clear via the devtools helper (ACTION_SET_TEXT)", () => {
     /**
      * A live helper answering `setText`.
@@ -1150,6 +1171,32 @@ describe("keyboard clear — Android (adb input)", () => {
         )
       ).rejects.toThrow();
       // The point: nothing was injected after the hang-up.
+      expect(inputCmds()).toEqual([]);
+    });
+
+    it("does not submit the field for a caller that hung up during the replace", async () => {
+      // The clear stands — it already worked, and nothing is served by throwing
+      // that away — but the key press is a separate side effect. Without a check
+      // of its own, a cancelled `{ clear: true, key: "enter" }` submitted the
+      // field when the helper was present and did not when it was absent: same
+      // request, same hang-up, opposite side effect. Both twins check in exactly
+      // this position.
+      const controller = new AbortController();
+      const { registry } = registryWithSetText({
+        setText: async () => {
+          controller.abort();
+          return { applied: true, matched: true };
+        },
+      });
+
+      await expect(
+        makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true, key: "enter" },
+          ANDROID,
+          { signal: controller.signal }
+        )
+      ).rejects.toThrow();
       expect(inputCmds()).toEqual([]);
     });
 

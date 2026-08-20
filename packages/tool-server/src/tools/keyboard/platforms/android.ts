@@ -370,15 +370,16 @@ async function runAndroidPhoneType(
   // events, so caret-relative typing and an app's `onKeyPress` handlers are
   // untouched by this.
   const atomic = params.clear ? await tryAtomicClear(registry, device, params) : undefined;
-  // The second and last place a hang-up is honoured. `adb shell input` is not
+  // The second place a hang-up is honoured. `adb shell input` is not
   // cancellable, so the injected clear below cannot be interrupted once it
   // starts — but the atomic attempt above can spend ATOMIC_CLEAR_BUDGET_MS plus
   // two RPC timeouts before reaching here, and every one of those seconds used
   // to be spent on a request the client had already dropped, holding this
   // device's keyboard against everything queued behind it.
   //
-  // Checked only on the failing arm because the succeeding one returns below:
-  // there is nothing to save by throwing away a clear that already worked.
+  // Checked only on the failing arm HERE because the succeeding one has nothing
+  // left to skip at this point: there is nothing to save by throwing away a
+  // clear that already worked. Its own `key` press is checked separately, below.
   //
   // This is NOT the "a rejected request never changes the field" guarantee the
   // validation at the top of this function keeps. Two of the reasons that land
@@ -396,6 +397,14 @@ async function runAndroidPhoneType(
     // The helper can set a field's text; it cannot press Enter on it. `key`
     // therefore still goes out over `adb input`, exactly as it would have.
     if (params.key) {
+      // The clear stands, but the key press is a SEPARATE side effect and this
+      // is the last moment it can be withheld. Without the check a cancelled
+      // `{ clear: true, key: "enter" }` submitted the field when the helper was
+      // present and did not when it was absent — same request, same hang-up,
+      // opposite side effect, decided by a path the caller cannot see. Both
+      // twins check in exactly this position (`simulator-server-keys.ts`,
+      // `platforms/chromium.ts`).
+      signal?.throwIfAborted();
       await injectAndroidNamedKey(device.id, params.key);
       keysPressed++;
     }
@@ -464,6 +473,10 @@ async function runAndroidPhoneType(
     keysPressed += params.text.length;
   }
   if (params.key) {
+    // Same reasoning as the atomic arm's own key press: the clear and any text
+    // are already on the device and cannot be taken back, but the submit still
+    // can be withheld.
+    signal?.throwIfAborted();
     await injectAndroidNamedKey(device.id, params.key);
     keysPressed++;
   }
