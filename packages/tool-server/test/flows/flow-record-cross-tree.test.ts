@@ -2558,6 +2558,31 @@ describe("a flow-directive name points at the tool that records it", () => {
     expect((await hint("launch")).message).toContain("rewrites it into the `launch:` step");
   });
 
+  it("names the TOOL that records each directive the recorder stores raw", async () => {
+    // Which tool to call is the one fact these hints exist to convey, and for
+    // these three nothing pinned it: the assertions above hold whichever tool
+    // is named, so swapping `type`'s `keyboard` for `await-ui-element` (and
+    // back) left the whole suite green while the recorder told an author to
+    // record typing with a wait. `tap`, `launch`, `run` and `echo` each have a
+    // test that names theirs; these did not.
+    const named: [string, string][] = [
+      ["type", "keyboard"],
+      ["await", "await-ui-element"],
+      ["assert", "await-ui-element"],
+    ];
+    for (const [command, tool] of named) {
+      const message = (await hint(command)).message;
+      expect(message, command).toContain(`Record it by calling \`${tool}\` through flow-add-step`);
+      expect(message, command).toContain(`stored as a raw \`tool: ${tool}\` step`);
+    }
+    // `type` must not be answered with the wait tool, nor the checks with the
+    // typing one — the mutation that stayed green was exactly that swap.
+    expect((await hint("type")).message).not.toContain("await-ui-element");
+    for (const command of ["await", "assert"]) {
+      expect((await hint(command)).message, command).not.toContain("`keyboard`");
+    }
+  });
+
   it("qualifies a rewrite hint with the delayMs opt-out", async () => {
     // `tap`/`launch`/`run` are rewritten only when the flow-add-step call sets no
     // `delayMs` (a replay delay has no directive form, so the step is kept raw).
