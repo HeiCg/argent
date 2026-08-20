@@ -2,14 +2,11 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FAILURE_CODES, Registry, type FailureSignal, type ToolDefinition } from "@argent/registry";
+import { FAILURE_CODES, Registry, type FailureSignal } from "@argent/registry";
 import { createRegistry } from "../src/utils/setup-registry";
 import { definitionsById, EXPECTED_TOOL_COUNT } from "./helpers/catalog";
 import { flowStartRecordingTool } from "../src/tools/flows/flow-start-recording";
 import { createFlowAddStepTool } from "../src/tools/flows/flow-add-step";
-import { pasteTool } from "../src/tools/paste";
-import { createProposeVariantTool } from "../src/tools/variants/propose-variant";
-import { awaitUserSelectionTool } from "../src/tools/variants/await-user-selection";
 
 const failureSignal: FailureSignal = {
   error_code: FAILURE_CODES.ARGENT_UNCLASSIFIED_FAILURE,
