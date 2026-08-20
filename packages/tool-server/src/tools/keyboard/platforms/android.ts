@@ -42,6 +42,14 @@ import { typeTv } from "./tv";
  * (or installing) the helper: with it down there is no contention, and the dump
  * this falls back to is exactly what ran before.
  *
+ * `isLiveServiceState` counts STARTING as live, which is right when ANOTHER
+ * caller is spawning the helper — joining that init beats racing the holder it
+ * is about to become. It is wrong for the one caller that started it in THIS
+ * call and gave up: the node it would see is its own, the init it would await is
+ * the one the atomic attempt already abandoned, and the premise above ("with it
+ * down there is no contention") does not hold for it. That caller passes no
+ * reader at all — see `runAndroidPhoneType`.
+ *
  * What this costs OTHER tools, which is new with this reader: `keyboard` becomes
  * a client of the same `AndroidDevtools:<serial>` service `describe` uses, and
  * `utils/android-devtools-client.ts` serialises every RPC onto one host-side
@@ -282,7 +290,16 @@ async function tryAtomicClear(
   registry: Registry,
   device: DeviceInfo,
   params: KeyboardParams
-): Promise<{ ok: true } | { ok: false; reason: AndroidClearSkipReason; applied: boolean }> {
+): Promise<
+  | { ok: true }
+  | {
+      ok: false;
+      reason: AndroidClearSkipReason;
+      applied: boolean;
+      /** The budget expired on a start that is STILL RUNNING — see below. */
+      startAbandoned?: true;
+    }
+> {
   const refusedAt = atomicStartRefusedAt.get(device.id);
   if (refusedAt !== undefined && Date.now() - refusedAt < ATOMIC_START_COOLDOWN_MS) {
     return { ok: false, reason: "helper_unavailable", applied: false };
@@ -302,7 +319,11 @@ async function tryAtomicClear(
     return { ok: false, reason: "helper_unavailable", applied: false };
   }
   // Not recorded: this is the budget expiring on a start that is still running.
-  if (!devtools) return { ok: false, reason: "helper_unavailable", applied: false };
+  // Reported, though: the measurement below must not go on to await the very
+  // init this gave up on.
+  if (!devtools) {
+    return { ok: false, reason: "helper_unavailable", applied: false, startAbandoned: true };
+  }
   // Bookkeeping, not a release. The guard above already returned for a mark
   // inside its cooldown, so the only mark that can be here is one that has
   // EXPIRED — which gates nothing. Dropping it keeps the map to devices that
@@ -476,8 +497,17 @@ async function runAndroidPhoneType(
   // advice not to assume the field is empty.
   let outcome: AndroidClearOutcome | undefined;
   if (params.clear) {
+    // No preferred reader when this call started the helper and gave up on it.
+    // The reader's gate counts STARTING as live, so it would resolve the node
+    // this call created and await the init the atomic attempt already abandoned
+    // — a second wait, on top of the budget, for an answer that has already
+    // failed to arrive. With no reader it dumps, which is exactly what ran
+    // before the helper was consulted at all.
     outcome = await injectAndroidClear(device.id, {
-      readHierarchy: devtoolsHierarchyReader(registry, device),
+      readHierarchy:
+        atomic?.ok === false && atomic.startAbandoned
+          ? undefined
+          : devtoolsHierarchyReader(registry, device),
       secretText: params.secretText === true,
       keepSelection: replacesSelection,
       // The over-length refusal below is the one message that would otherwise

@@ -1115,6 +1115,36 @@ describe("keyboard clear — Android (adb input)", () => {
       expect(afterSecond).toBe(1);
     });
 
+    it("does not send the measurement back into the start it just abandoned", async () => {
+      // The reader's gate counts STARTING as live, and on a cold device the node
+      // it finds is the one THIS call created. Awaiting it means a second wait,
+      // on top of the budget, for an init that has already failed to answer once
+      // — measured at the budget plus the reader's whole share.
+      vi.useFakeTimers();
+      try {
+        const { registry } = registryWithSetText({ resolve: () => new Promise(() => {}) });
+        (registry as unknown as { getServiceState: () => ServiceState }).getServiceState = () =>
+          ServiceState.STARTING;
+
+        const run = makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true },
+          ANDROID
+        );
+        await vi.advanceTimersByTimeAsync(8_100);
+        await vi.runAllTimersAsync();
+        await run;
+
+        // One resolve — the atomic attempt's. The measurement did not make a
+        // second one, and the dump is what sized the clear.
+        const calls = (registry as unknown as { resolveService: { mock: { calls: unknown[] } } })
+          .resolveService.mock.calls.length;
+        expect(calls).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("remembers a start that failed LATER than the budget, not only inside it", async () => {
       // Every failure the cooldown exists for is slower than the budget — the
       // blueprint alone allows a 60s install plus a 30s readiness wait — so
