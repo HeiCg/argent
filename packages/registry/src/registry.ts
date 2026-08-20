@@ -142,7 +142,16 @@ export class Registry {
             {
               error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
               failure_stage: "tool_params_parse",
-              failure_area: "tool_server",
+              // "registry", not "tool_server": the area names WHO raised the
+              // signal, and this parse runs before `execute` is entered. The
+              // telemetry listener and the event log both fall back to
+              // "registry" for a registry-raised failure and reserve
+              // "tool_server" for a signal the tool itself attached, so
+              // labelling this one "tool_server" would make every non-HTTP
+              // schema miss — a flow runner `tool:` step, a run-sequence step,
+              // a flow-add-step sub-invoke — read as the tool having rejected
+              // its own arguments.
+              failure_area: "registry",
               error_kind: "validation",
             }
           );
@@ -647,11 +656,18 @@ export function describeParamIssues(
   // never renders a bare leading ".".
   //
   // Drop a part's own trailing full stop before adding this one. A custom
-  // refinement's message survives verbatim and is author-written prose, which
-  // normally ends in a period — so every cross-field rule (both flow tools'
-  // source-count errors, gesture-scroll, gesture-rotate, await-ui-element)
-  // rendered "…/.argent/flows/<name>.yaml.. You sent: …". Only a period is
-  // trimmed: a message ending in "?" or "!" keeps its own punctuation.
+  // refinement's message survives verbatim and is author-written prose, so the
+  // rules that end theirs in a period rendered a double one — both flow tools'
+  // source-count errors ("…/.argent/flows/<name>.yaml.. You sent: …"),
+  // gesture-scroll's zero-delta rule, and gesture-rotate's "Pass radius, or
+  // both radiusX and radiusY.".
+  //
+  // Not every cross-field rule punctuates that way, and the ones that do not
+  // never had the symptom: await-ui-element's "condition `text` requires
+  // expectedText" and gesture-rotate's radius-pair message end on a word and a
+  // closing parenthesis, so the trim is a no-op for them. Only a period is
+  // trimmed either way — a message ending in "?" or "!" keeps its own
+  // punctuation.
   const body = parts.length > 0 ? `${parts.map((p) => p.replace(/\.$/, "")).join("; ")}.` : "";
   return `${body}${sent}`.trim() || "invalid parameters";
 }

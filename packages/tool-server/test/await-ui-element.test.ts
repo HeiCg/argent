@@ -844,8 +844,8 @@ describe("await-ui-element tool", () => {
     //
     // `pollIntervalMs` exceeds `timeoutMs` deliberately: the sleep is clamped
     // to the deadline either way, so the shape is unchanged, but the tolerance
-    // it scales is now 4000ms against a ~600ms tail. At 500 the two were 1000
-    // and 600, and ~400ms of scheduler slip flipped the cause under load.
+    // it buys is the 2000ms ceiling against a ~600ms tail. At 500 the two were
+    // 1000 and 600, and ~400ms of scheduler slip flipped the cause under load.
     const tool = createAwaitUiElementTool(makeMockRegistry({}));
 
     const result = await tool.execute(
@@ -1029,6 +1029,29 @@ describe("await-ui-element tool", () => {
     );
 
     expect(unmetUiWaitCause(result)).toBe(cause);
+  });
+
+  it("stops a long poll interval buying a verdict for a window nobody watched", async () => {
+    // The tolerance is a MULTIPLE of the caller's interval, and `pollIntervalMs`
+    // is caller-supplied up to 5000ms — so two intervals would reach 10s. Here
+    // the source answers once at t≈0 and never again: 2.5s of unbroken silence,
+    // inside the 3000ms the multiple alone would allow. `unmet` is the one
+    // cause that licenses rewriting or deleting the step, so it must not be
+    // reachable by asking to poll rarely.
+    const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 2500,
+        pollIntervalMs: 1500,
+      }
+    );
+
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
   });
 
   it("does not trust a final read that landed but was blind", async () => {

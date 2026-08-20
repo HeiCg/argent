@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Registry, ToolContext } from "@argent/registry";
-import { ArtifactStore, zodObjectToJsonSchema } from "@argent/registry";
+import type { ToolContext } from "@argent/registry";
+import { ArtifactStore, Registry, zodObjectToJsonSchema } from "@argent/registry";
 
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
 import { flowInsertEchoTool } from "../../src/tools/flows/flow-insert-echo";
@@ -2099,6 +2099,65 @@ describe("flow-add-step", () => {
       flowName: "login",
       viaUpload: false,
     });
+  });
+
+  it("names the flow_path the author wrote when the rewritten call is rejected", async () => {
+    // `rewriteSiblingFlowPath` mutates the very object handed to the nested
+    // invoke — `delete args.flow_path; args.name = stem` — so the registry,
+    // which can only describe what it was handed, closes with a `name` the
+    // author never typed and drops the `flow_path` they did. This is the third
+    // dispatcher that rewrites its forwarded args; the other two already
+    // re-render against the authored ones (run-sequence's injected `udid`, the
+    // flow runner's bound device key).
+    //
+    // A REAL registry, because the rejection has to come from the same schema
+    // the live dispatch parses — `platform: "iOS"` misses the lowercase enum,
+    // so flow-execute's own `execute` is never entered and no device is needed.
+    const registry = new Registry();
+    registry.registerTool(createRunFlowTool(registry) as never);
+    const tool = createFlowAddStepTool(registry);
+    registry.registerTool(tool as never);
+
+    await flowStartRecordingTool.execute({}, { name: "reframe", project_root: tmpDir });
+    await writeSiblingFlow("login", "steps:\n  - echo: hi\n");
+    const sibling = path.join(tmpDir, ".argent", "flows", "login.yaml");
+
+    const authored = await tool
+      .execute(
+        {},
+        {
+          name: "reframe",
+          project_root: tmpDir,
+          command: "flow-execute",
+          args: JSON.stringify({ flow_path: sibling, project_root: tmpDir, platform: "iOS" }),
+        }
+      )
+      .then(() => undefined)
+      .catch((err: unknown) => (err as Error).message);
+
+    expect(authored).toContain("`platform`");
+    expect(authored).toContain("You sent: `flow_path`, `project_root`, `platform`.");
+    expect(authored).not.toContain("`name`");
+
+    // The control: a call that named the flow the other way is unaffected, so
+    // the reframe cannot be satisfied by simply never printing `name`.
+    const byName = await tool
+      .execute(
+        {},
+        {
+          name: "reframe",
+          project_root: tmpDir,
+          command: "flow-execute",
+          args: JSON.stringify({ name: "login", project_root: tmpDir, platform: "iOS" }),
+        }
+      )
+      .then(() => undefined)
+      .catch((err: unknown) => (err as Error).message);
+
+    expect(byName).toContain("You sent: `name`, `project_root`, `platform`.");
+
+    // Nothing was recorded either way.
+    expect(parseFlow(await onDisk("reframe")).steps).toEqual([]);
   });
 
   it("rejects a mis-cased sibling flow_path, naming the on-disk spelling", async () => {

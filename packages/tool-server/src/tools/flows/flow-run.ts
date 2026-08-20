@@ -102,7 +102,7 @@ const zodSchema = z
       .string()
       .optional()
       .describe(
-        'Name of a saved flow to run from `.argent/flows` (e.g. "settings-explore"). Omit when flow_path is set; otherwise required, via `name` or its `flow_name` alias. Optional in the schema only so the alias is accepted.'
+        'Name of a saved flow to run from `.argent/flows` (e.g. "settings-explore"). Omit when flow_path is set; otherwise required, via `name` or its `flow_name` alias. Optional in the schema because flow_path can stand in, so a missing name is answered by the tool rather than by zod.'
       ),
     flow_name: z
       .string()

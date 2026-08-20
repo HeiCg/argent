@@ -138,11 +138,11 @@ For every retained raw gesture, add an echo and a recorded result check.
 
 Record `await-ui-element` through `flow-add-step`. The recorder writes the step even when `toolResult.success` is false. Read `success` and `cause` after each check:
 
-- `unmet`: The tree was readable, but the condition was false. Restore the expected state or correct the selector or timeout. Then, record the check again.
-- `unreadable`: The wait ended without a trustworthy read. Restore the tree source and record the check again.
-- `cancelled`: The caller stopped the wait. Record the check again.
+- `unmet`: The tree was readable, but the condition was false. Restore the expected state or correct the selector or timeout. Record the check again, then delete the failed step after `flow-finish-recording`.
+- `unreadable`: The wait ended without a trustworthy read. Restore the tree source and record the check again. Keep the failed step: the condition is unknown, not false.
+- `cancelled`: The caller stopped the wait. Record the check again. Keep the failed step: the condition is unknown, not false.
 
-Delete the old failed step after `flow-finish-recording`. Only `unmet` disproves the condition.
+Only `unmet` disproves the condition. Never delete a step during the recording.
 
 A stale `hidden` whose selector matches nothing replays as a silent pass — the unfalsifiable gate that [Record absence in three steps](#record-absence-in-three-steps) exists to prevent. Never proceed as though the gate passed. See the `await-ui-element` section of `argent-device-interact` for the full live condition and selector reference.
 
@@ -151,7 +151,7 @@ A wait inside `run-sequence` gets no recorder warning. Inspect the nested result
 The live tool and flow runner use [different trees](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree). After a successful wait, the recorder checks the same condition on the runner tree:
 
 - No warning: The condition holds on both trees.
-- Mismatch: Rule out a changed screen first. For `text`, also rule out multiple matches. Otherwise, use a runner-tree selector and replay.
+- Mismatch: For `text`, first rule out a selector that matches more than one element. Then rule out a changed screen. If the trees really differ, use a runner-tree selector and replay.
 - Unreadable, slow, or cancelled check: The conversion is unknown. Restore the source or re-record before conversion.
 
 A warning does not reject the step. `flow-finish-recording` repeats each warning below its step and reports dropped warnings.
