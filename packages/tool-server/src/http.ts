@@ -106,6 +106,21 @@ function findDependencyMissing(err: unknown): DependencyMissingError | null {
  * fault without parsing the message. Signals carry only static allowlisted
  * fields — never paths, hosts, or argv — so they are safe to put on the wire.
  */
+/**
+ * A shallow copy without the named keys — for reading a caller's own parameter
+ * names back to them after the file boundary has added its derived ones.
+ * Absent keys are ignored, and nothing else about the object changes, so the
+ * value every verdict is read from stays exactly what zod parsed.
+ */
+function omitKeys(args: unknown, keys: readonly string[]): unknown {
+  if (keys.length === 0 || args === null || typeof args !== "object" || Array.isArray(args)) {
+    return args;
+  }
+  const copy = { ...(args as Record<string, unknown>) };
+  for (const key of keys) delete copy[key];
+  return copy;
+}
+
 function errorSignalFields(err: unknown): { error_code?: string; error_kind?: string } {
   const signal = getFailureSignal(err);
   return signal ? { error_code: signal.error_code, error_kind: signal.error_kind } : {};
@@ -731,6 +746,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // assigns bodyArgs before it is read, and the catch never falls through.
       let bodyArgs: any;
       let resolvedFileInputs: Record<string, ResolvedFileInput> | undefined;
+      let derivedTargets: string[];
       try {
         const resolved = await resolveFileInputs(def, req.body, (id) => {
           const entry = uploads.get(id);
@@ -739,6 +755,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         });
         bodyArgs = resolved.args;
         resolvedFileInputs = resolved.fileInputs;
+        derivedTargets = resolved.derivedTargets;
         // Materialized uploads are call-scoped: remove them once the response
         // settles, whichever way it ends (success, validation failure, tool
         // error, or client abort).
@@ -770,6 +787,17 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           // names the parameter the tool wanted and never the one the caller
           // actually sent. See describeParamIssues.
           //
+          // Rendered against the caller's own keys, which `bodyArgs` is not:
+          // `resolveFileInputs` has run by here, and `flow_file` — whose
+          // `.describe()` tells callers to leave it unset — is derived by the
+          // client from `project_root` + `name`, so every flow-execute call
+          // built through `prepareFileInputs` carries it. Listing it beside the
+          // misspelling the "You sent:" clause exists to expose names a key the
+          // caller cannot have written, which is the same defect
+          // `describeNestedParamError` keeps the injected `udid` out of on the
+          // other two dispatchers. Dropped from the KEY LIST only — the values
+          // stay `bodyArgs`, so every verdict is still read off what zod parsed.
+          //
           // `issues` carries the machine-readable form alongside it. Prose is
           // right for the agent reading the message, but a programmatic client
           // needs the paths: `argent run` maps each issue back to the FLAG the
@@ -779,7 +807,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           // the message be prose without taking that away, and lets the client
           // recognize input validation STRUCTURALLY rather than by wording.
           res.status(400).json({
-            error: describeParamIssues(parseResult.error, bodyArgs),
+            error: describeParamIssues(parseResult.error, omitKeys(bodyArgs, derivedTargets)),
             issues: parseResult.error.issues,
           });
           return;
