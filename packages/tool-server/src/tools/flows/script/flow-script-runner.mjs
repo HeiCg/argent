@@ -136,19 +136,12 @@ async function prepare() {
 
   closeChannelToScript();
 
-  // A convenience for a runner whose event loop is still turning: if the parent
-  // goes away, stop. This is NOT the orphan control — a synchronous infinite
-  // loop never yields to the event loop, so this handler would never run. The
-  // lifeline watchdog thread is what covers that case.
-  //
   // Registered here rather than at module scope because Node references the IPC
   // channel for as long as a `message` or `disconnect` listener exists. In an
   // inactive preload — the copy a `child_process.fork` from the script
   // inherits — that reference alone kept the script's own child alive after its
   // work was done, and the step ran to its time limit.
-  process.on("disconnect", () => {
-    process.exit(0);
-  });
+  process.on("disconnect", exitOnParentDisconnect);
 
   // Load-bearing. This is the only thing that lets the executor tell "the
   // runner never began the script" apart from "the script stopped its own
@@ -236,9 +229,16 @@ function reportWhenEntrySettled(scriptUrl) {
  *
  * The channel stays open — the runner still needs it — but only the runner may
  * use it. Script code gets a `send` that accepts and drops, which is what "a
- * channel with nobody listening" should look like, and a `disconnect` that does
- * nothing, since closing the channel would leave the run with no way to report
- * at all.
+ * channel with nobody listening" should look like, and a `disconnect` that
+ * leaves the channel alone, since closing it would leave the run with no way to
+ * report at all.
+ *
+ * Both stubs still have to *answer* the way Node does. A guard that only
+ * swallows is a guard that hangs: `await new Promise((r) => process.send(m, r))`
+ * and `process.disconnect()` followed by waiting for the `disconnect` event are
+ * both ordinary code, reached by the very feature detection this guard exists
+ * for, and a script parked on either one empties its event loop — so the step
+ * ends as a pass carrying whatever half-written document the script had reached.
  */
 function closeChannelToScript() {
   const realSend = process.send;
@@ -248,11 +248,46 @@ function closeChannelToScript() {
   const realLowLevelSend = host._send;
   // `send` calls `this._send`, so both names are guarded by the one flag rather
   // than replaced — the runner's own call sets it for the length of that call.
-  process.send = (...args) => (runnerIsSending ? realSend.apply(process, args) : true);
+  process.send = (...args) => {
+    if (runnerIsSending) return realSend.apply(process, args);
+    acknowledge(args);
+    return true;
+  };
   if (typeof realLowLevelSend === "function") {
-    host._send = (...args) => (runnerIsSending ? realLowLevelSend.apply(process, args) : true);
+    host._send = (...args) => {
+      if (runnerIsSending) return realLowLevelSend.apply(process, args);
+      acknowledge(args);
+      return true;
+    };
   }
-  process.disconnect = () => {};
+  process.disconnect = () => {
+    // Node emits `disconnect` once the channel is closed. Nothing is closed
+    // here, so the runner's own handler is skipped — the parent has not gone
+    // anywhere — but the event still has to reach the script's listeners.
+    for (const listener of process.listeners("disconnect")) {
+      if (listener === exitOnParentDisconnect) continue;
+      setImmediate(() => listener.call(process));
+    }
+  };
+}
+
+/**
+ * Call a `process.send` callback the way Node always would: asynchronously,
+ * with no error. It is the last argument of both `send(message[, handle[,
+ * options]][, callback])` and the `_send` behind it.
+ */
+function acknowledge(args) {
+  const callback = args[args.length - 1];
+  if (typeof callback === "function") setImmediate(() => callback(null));
+}
+
+/**
+ * The parent going away ends the run. A convenience for a runner whose event
+ * loop is still turning — a synchronous infinite loop never reaches it, which
+ * is what the lifeline watchdog thread is for.
+ */
+function exitOnParentDisconnect() {
+  process.exit(0);
 }
 
 /** The one `execute` request. A second message is ignored rather than obeyed. */

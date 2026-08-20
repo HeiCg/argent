@@ -235,6 +235,52 @@ describe("flow script executor — the protocol channel is the runner's alone", 
     expect(result.failure).toBeUndefined();
     expect(result.output).toEqual({ ok: true });
   });
+
+  it("answers a send the script awaits instead of leaving it parked", async () => {
+    const ws = workspace();
+    // The guard swallowed the callback Node always calls, so the promise never
+    // settled, the event loop emptied, and the step passed with the document
+    // the script had reached before its second line.
+    const script = ws.write(
+      "awaits-send.mjs",
+      `async function main() {
+         await new Promise((resolve) => process.send({ hello: 1 }, resolve));
+         console.log("past the send");
+         output.done = true;
+       }
+       main();
+       output.started = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ started: true, done: true });
+    expect(result.log).toContain("past the send");
+  });
+
+  it("delivers the disconnect event to the script that asked for it", async () => {
+    const ws = workspace();
+    // Node emits `disconnect` after closing the channel; a stub that closed
+    // nothing and emitted nothing left the same script parked forever.
+    const script = ws.write(
+      "awaits-disconnect.mjs",
+      `async function main() {
+         await new Promise((resolve) => {
+           process.on("disconnect", resolve);
+           process.disconnect();
+         });
+         console.log("past the disconnect");
+         output.done = true;
+       }
+       main();
+       output.started = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ started: true, done: true });
+    expect(result.log).toContain("past the disconnect");
+  });
 });
 
 describe("flow script executor — the published layout", () => {
