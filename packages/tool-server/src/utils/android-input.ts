@@ -190,10 +190,13 @@ const DELETE_RUN_RESERVE_MS = 11_000;
  * read the field back, and the delete run that dump can call for. Legacy: the
  * probe, a `uiautomator dump`, a DUMP_RETRY_BACKOFF_MS wait, a second dump (see
  * {@link readHierarchy}) and the delete run. The two never compose — a rescue
- * carries its measurement down, so it does not dump again. One `text` OR `key` injection still follows it inside the same
- * request — the tool rejects both together — under its own ADB_INPUT_TIMEOUT_MS
- * cap, so a `{ clear, text }` worst case of ~41s still sums past the argent-mcp
- * adapter's 30s per-request fetch timeout
+ * carries its measurement down, so it does not dump again. One `text` OR `key`
+ * injection still follows it inside the same request — the tool rejects both
+ * together — under its own ADB_INPUT_TIMEOUT_MS cap. And the whole injected
+ * clear is itself the SECOND tier: the accessibility replace runs first, under
+ * its own ATOMIC_CLEAR_BUDGET_MS (8s) plus a 5s `ping` and a 15s `setText`. So
+ * an Android `{ clear, text }` worst case sums to 8 + 5 + 15 + 26 + 15 = 69s,
+ * well past the argent-mcp adapter's 30s per-request fetch timeout
  * (`FETCH_TIMEOUT_MS`, mcp-server.ts) — which is why `keyboard` declares
  * `longRunning` and the adapter does not apply that timeout to it. The clear's
  * own legs still share ONE deadline rather than being sized individually: the
