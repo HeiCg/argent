@@ -716,23 +716,27 @@ async function clearByDeleting(
     // Why backspaces are the only clear left, and what the field is holding now,
     // both differ by caller: the legacy path is chosen because the level has no
     // `keycombination` and refuses before sending anything, while the rescue is
-    // reached only after a select-all that did not take and a DEL that did.
-    // Telling a caller nothing was modified there would be false — it is one
-    // character down — and "use a newer API level" would be no remedy at all,
-    // since the level already has the subcommand.
+    // reached after a select-all and a DEL have already gone out.
+    //
+    // The rescue arm states no more than that. The count comes from the same
+    // whole-screen measurement the sentence below warns about, so it does not
+    // prove the chord failed on the field the caller meant: the reading can be
+    // ANOTHER window's focused field, or this field's own placeholder. Naming
+    // the two possible states is what a caller can act on; asserting one of them
+    // is how a message ends up describing a clear that fully worked.
     const why =
       rescueFrom === undefined
         ? `Without \`input keycombination\` (added after API 30) the only available clear is ` +
           `one backspace per character, which is too slow to finish reliably past ` +
           `${MAX_DELETE_COUNT}.`
-        : `The select-all did not take on this field, leaving one backspace per character as ` +
-          `the only clear available, which is too slow to finish reliably past ` +
-          `${MAX_DELETE_COUNT}.`;
+        : `A select-all and a delete were already sent, and a focused field still reports this ` +
+          `much, so one backspace per character is the only clear left — too slow to finish ` +
+          `reliably past ${MAX_DELETE_COUNT}.`;
     const state =
       rescueFrom === undefined
         ? `Nothing was modified and nothing was typed.`
-        : `The field HAS been modified: the delete that followed the select-all removed one ` +
-          `character from it. Nothing was typed.`;
+        : `The field HAS been touched: if the select-all took, the delete emptied it; if it did ` +
+          `not, the delete removed one character. Nothing was typed.`;
     const remedy =
       rescueFrom === undefined
         ? `Clear the field with the app's own affordance, or use an emulator on a newer API ` +

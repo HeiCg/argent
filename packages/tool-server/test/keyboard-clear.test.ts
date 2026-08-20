@@ -1330,13 +1330,13 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(adbExecOutBinary).toHaveBeenCalledTimes(1);
   });
 
-  it("says the field WAS modified when the residue is too long to backspace away", async () => {
+  it("says the field WAS touched when the residue is too long to backspace away", async () => {
     // The legacy path refuses before sending anything, so its message says
     // nothing was modified and offers a newer API level as the remedy. Reached
-    // from the select-all path both are wrong: the DEL has already taken a
-    // character, and the level demonstrably HAS `keycombination` — it just did
-    // not select. A caller told the field is untouched retries against a value
-    // that is one character down.
+    // from the select-all path both are wrong: a select-all and a DEL have
+    // already gone out, and the level demonstrably HAS `keycombination`. A
+    // caller told the field is untouched retries against a value that may be one
+    // character down.
     seedDump(dumpWith("x".repeat(MAX_DELETE_COUNT + 1)));
 
     const err: unknown = await makeAndroidImpl(registryWith({}))
@@ -1347,11 +1347,40 @@ describe("keyboard clear — Android (adb input)", () => {
       );
 
     expect(err).toBeInstanceOf(InvalidToolInputError);
-    expect((err as Error).message).toContain("The field HAS been modified");
+    expect((err as Error).message).toContain("The field HAS been touched");
     expect((err as Error).message).not.toContain("Nothing was modified");
     expect((err as Error).message).not.toContain("newer API level");
     // Refused rather than half-deleted: no run was started.
     expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
+  });
+
+  it("does not assert the chord failed when the long field is in another window", async () => {
+    // `measureFocusedTextLength` is a max over every focused editable in every
+    // window — an IME or overlay contributes its own — so the count that trips
+    // the refusal need not belong to the field the caller meant. Here the target
+    // read back EMPTY, which means the chord took and the delete emptied it, and
+    // a second focused field is what is over the limit.
+    seedDump(
+      `<?xml version='1.0' encoding='UTF-8'?><hierarchy rotation="0">` +
+        `<node index="0" text="" resource-id="email" class="android.widget.EditText" ` +
+        `password="false" focused="true" bounds="[0,0][100,50]" />` +
+        `<node index="1" text="${"x".repeat(MAX_DELETE_COUNT + 1)}" resource-id="other" ` +
+        `class="android.widget.EditText" password="false" focused="true" ` +
+        `bounds="[0,60][100,110]" />` +
+        `</hierarchy>`
+    );
+
+    const err: unknown = await makeAndroidImpl(registryWith({}))
+      .handler({}, { udid: ANDROID.id, clear: true }, ANDROID)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect(err).toBeInstanceOf(InvalidToolInputError);
+    expect((err as Error).message).not.toContain("The select-all did not take");
+    expect((err as Error).message).not.toContain("removed one character from it");
+    expect((err as Error).message).toContain("may belong to a different focused field");
   });
 
   it("shares one deadline across the clear's legs instead of a timeout each", async () => {
