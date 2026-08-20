@@ -18,6 +18,20 @@
 /** 1 MiB of encoded output. The child enforces it; the parent re-checks. */
 export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
 
+/**
+ * Ceilings on the two free-text fields of a `failure`, so that every field that
+ * crosses this channel is bounded. An error message is script-controlled —
+ * `throw new Error(\`Unexpected response: \${await res.text()}\`)` puts a whole
+ * response body in one — and an IPC message is deserialized whole into the
+ * parent's heap before anything can look at it, so the ceiling has to be
+ * applied by the sender. The child enforces both; the parent re-checks, as it
+ * does for the output size, because it must not depend on a child staying
+ * compliant after arbitrary script code has run inside it. `flow-script-runner.mjs`
+ * keeps its own copy of these numbers — it imports nothing from this package.
+ */
+export const SCRIPT_MAX_FAILURE_MESSAGE_CHARS = 8 * 1024;
+export const SCRIPT_MAX_FAILURE_STACK_CHARS = 16 * 1024;
+
 /** Parent → child. Sent once, immediately after the fork. */
 export interface ScriptExecuteRequest {
   type: "execute";

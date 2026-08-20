@@ -30,6 +30,8 @@ import { scrubSecretValues } from "../../../utils/secrets";
 import {
   isTerminalResponse,
   parseScriptResponse,
+  SCRIPT_MAX_FAILURE_MESSAGE_CHARS,
+  SCRIPT_MAX_FAILURE_STACK_CHARS,
   SCRIPT_MAX_OUTPUT_BYTES,
   type ScriptExecuteRequest,
   type ScriptTerminalResponse,
@@ -763,7 +765,13 @@ function classifyOutcome(
 
   if (input.terminal) {
     if (input.terminal.type === "failure") {
-      return failed(input.terminal.failureType, input.terminal.message, input.terminal.stack);
+      // The child bounds both fields before sending; this is the same second
+      // line the output size gets, for a child that stopped being compliant.
+      return failed(
+        input.terminal.failureType,
+        clampText(input.terminal.message, SCRIPT_MAX_FAILURE_MESSAGE_CHARS),
+        clampText(input.terminal.stack, SCRIPT_MAX_FAILURE_STACK_CHARS)
+      );
     }
     return commitOutput(input.terminal.outputJson);
   }
@@ -856,6 +864,14 @@ function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output
     return failed("output", "The script's output was not an object.");
   }
   return { ok: true, output: parsed as Record<string, unknown> };
+}
+
+/** Cut child-controlled text to a ceiling, saying how much was left out. */
+function clampText(text: string, max: number): string;
+function clampText(text: string | undefined, max: number): string | undefined;
+function clampText(text: string | undefined, max: number): string | undefined {
+  if (text === undefined || text.length <= max) return text;
+  return `${text.slice(0, max)}… [${text.length - max} more characters omitted]`;
 }
 
 function failed(

@@ -52,6 +52,17 @@ let runnerIsSending = false;
 /** How long the entry module gets to prove it finished. See `reportWhenEntrySettled`. */
 const ENTRY_SETTLE_PROBE_MS = 1_000;
 
+/**
+ * Ceilings on the free text of a failure, in step with `flow-script-protocol.ts`
+ * (this file imports nothing from the package, so it carries its own copy). An
+ * error message is script-controlled and an IPC message is deserialized whole
+ * into the parent's heap before anything can inspect it, so the sender is the
+ * only side that can bound it: a `throw new Error(\`Unexpected response:
+ * \${await res.text()}\`)` put 8 MiB through the channel and into the result.
+ */
+const MAX_FAILURE_MESSAGE_CHARS = 8 * 1024;
+const MAX_FAILURE_STACK_CHARS = 16 * 1024;
+
 if (isMainThread && process.env[ACTIVATION_ENV] === "1") {
   delete process.env[ACTIVATION_ENV];
   await prepare();
@@ -467,6 +478,15 @@ function finish(response) {
   // one the parent hears.
   if (finished) return;
   finished = true;
+  if (response.type === "failure") {
+    response = {
+      ...response,
+      message: clampText(response.message, MAX_FAILURE_MESSAGE_CHARS),
+      ...(response.stack === undefined
+        ? {}
+        : { stack: clampText(response.stack, MAX_FAILURE_STACK_CHARS) }),
+    };
+  }
   const exit = () => process.exit(0);
   let pending = 2;
   const flushed = () => {
@@ -484,6 +504,12 @@ function finish(response) {
   } catch {
     flush();
   }
+}
+
+/** Cut runner-controlled text to a ceiling, saying how much was left out. */
+function clampText(text, max) {
+  if (typeof text !== "string" || text.length <= max) return text;
+  return `${text.slice(0, max)}… [${text.length - max} more characters omitted]`;
 }
 
 /** The only path onto the protocol channel. See `closeChannelToScript`. */

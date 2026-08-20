@@ -134,4 +134,19 @@ describe("flow script executor — output validation", () => {
     expect(result.failure).toBeUndefined();
     expect((result.output?.blob as string).length).toBe(1024 * 1000);
   });
+
+  it("bounds a failure message and stack, the last unbounded fields on the channel", async () => {
+    // `throw new Error(\`Unexpected response: \${await res.text()}\`)` is how a
+    // whole response body ends up in an error. An IPC message is deserialized
+    // whole into the tool server's heap before anything can inspect it, so the
+    // ceiling has to hold in the child.
+    const result = await run(
+      `throw new Error("Unexpected response: " + "y".repeat(8 * 1024 * 1024));`
+    );
+
+    expect(result.failure?.kind).toBe("runtime");
+    expect(result.failure?.message.length).toBeLessThan(9 * 1024);
+    expect(result.failure?.message).toContain("more characters omitted");
+    expect(result.failure?.stack?.length).toBeLessThan(17 * 1024);
+  }, 30_000);
 });
