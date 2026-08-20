@@ -631,6 +631,38 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(err.message).not.toMatch(/input text/);
   });
 
+  it.each([["timeout"], ["dependency_missing"]])(
+    "carries the cause's %s kind through the kept-selection rewrap",
+    async (kind) => {
+      // The rewrap re-files the error under KEYBOARD_CLEAR_INTERRUPTED but keeps
+      // the transport's own kind, so a killed leg still reads as a timeout and a
+      // missing `adb` still reads as a missing dependency. Both sibling rewraps
+      // in `android-input.ts` are pinned against exactly this; seeding a cause
+      // whose kind already equals the `??` fallback asserts nothing.
+      adbShell.mockImplementationOnce(async () => ""); // select-all succeeds
+      adbShell.mockImplementationOnce(async () => {
+        throw new FailureError("adb -s emulator-5554 shell input text 'abc' failed", {
+          error_code: FAILURE_CODES.ANDROID_ADB_COMMAND_FAILED,
+          failure_stage: "adb_command",
+          failure_area: "tool_server",
+          error_kind: kind as "timeout" | "dependency_missing",
+        });
+      });
+
+      const err = await makeAndroidImpl(registryWith({}))
+        .handler({}, { udid: ANDROID.id, clear: true, text: "abc" }, ANDROID)
+        .then(
+          () => {
+            throw new Error("expected the call to reject, but it resolved");
+          },
+          (e: unknown) => e as Error
+        );
+
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_INTERRUPTED);
+      expect(getFailureSignal(err)?.error_kind).toBe(kind);
+    }
+  );
+
   it("leaves a text-only failure alone, since no selection is being held", async () => {
     // Without `clear` there is nothing selected, so the transport error is the
     // whole story and rewrapping it would describe a state that cannot exist.
