@@ -954,6 +954,27 @@ describe("keyboard clear — Android (adb input)", () => {
       expect(result.note).toMatch(/a reason this version does not recognise/);
     });
 
+    it.each([["constructor"], ["toString"], ["hasOwnProperty"]])(
+      "treats the inherited key %s as a reason it has never heard of",
+      async (reason) => {
+        // The reason is a free string off the wire, so a `??` on a plain object
+        // literal resolves an inherited key through `Object.prototype` and never
+        // reaches the fallback — rendering `function Object() { [native code] }`
+        // into the note, which is worse than the "(undefined)" the guard exists
+        // to stop.
+        const { registry } = registryWithSetText({ matched: false, reason });
+
+        const result = await makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true, text: "abc" },
+          ANDROID
+        );
+
+        expect(result.note).not.toMatch(/native code/);
+        expect(result.note).toMatch(/a reason this version does not recognise/);
+      }
+    );
+
     it("empties the field through the helper when the text is empty", async () => {
       // `{ clear: true, text: "" }` on the atomic path is one edit with an empty
       // value — no selection to leave standing, so none of the injected path's

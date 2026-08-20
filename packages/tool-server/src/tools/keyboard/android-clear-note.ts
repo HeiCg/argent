@@ -106,7 +106,14 @@ export function androidClearNote(
   // from a helper that may be NEWER than this tool-server — a protocol-3 reason
   // this build has never heard of would otherwise render as literal
   // "(undefined)". The gate upstream only checks the helper is not too OLD.
-  const why = WHY[reason] ?? "the helper declined it for a reason this version does not recognise";
+  //
+  // Own-property check, not `??`: `reason` is a free string off the wire, so an
+  // inherited key resolves through `Object.prototype` and never reaches the
+  // fallback — `constructor` rendered the whole native function into the note.
+  // Same guard, for the same reason, as `resolveAndroidNamedKeycode`.
+  const why = Object.hasOwn(WHY, reason)
+    ? WHY[reason]
+    : "the helper declined it for a reason this version does not recognise";
   return (
     `keyboard clear: the atomic accessibility replace was not used (${why}), so the ` +
     `field was cleared with ${WHAT[outcome.path]}.` +
