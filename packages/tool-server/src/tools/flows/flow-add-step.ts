@@ -30,7 +30,7 @@ import {
 } from "../await-ui-element";
 import { probeWhenCondition, type DirectiveOutcome } from "./flow-actions";
 import { stepAnchor, summarizeStep } from "./flow-finish-recording";
-import { invokeSubTool } from "../../utils/sub-invoke";
+import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
 import { resolveDevice } from "../../utils/device-info";
 import { settleWithin } from "../../utils/timing";
 import { stripDeviceKeys } from "./flow-device";
@@ -1635,6 +1635,11 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         throw err;
       }
 
+      // Snapshot before the rewrite below mutates `args` in place, so a schema
+      // miss can be re-rendered against the keys the AUTHOR wrote. Shallow is
+      // enough: `rewriteSiblingFlowPath` only deletes and adds top-level keys.
+      const authoredArgs = { ...args };
+
       // A nested flow-execute must never carry a raw flow_path into the live
       // invoke — it has no boundary metadata there and would be rejected.
       if (params.command === RUN_TARGET_COMMAND) await rewriteSiblingFlowPath(session, args);
@@ -1670,8 +1675,30 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         const hint = isToolNotFound(err, params.command)
           ? directiveCommandHint(params.command)
           : undefined;
-        if (!hint) throw err;
-        return recordNothing(session, hint);
+        if (hint) return recordNothing(session, hint);
+
+        // The third dispatcher that rewrites the args it forwards, and so the
+        // third that must not read the rewrite back to the caller.
+        // `rewriteSiblingFlowPath` swaps a sibling `flow_path` for the
+        // equivalent `name`, so the registry — which can only describe what it
+        // was handed — closes with "You sent: `project_root`, `platform`,
+        // `name`", naming a key the author did not type and dropping the one
+        // they did. Re-render against the snapshot; every other command passes
+        // its args through untouched, where this is the same sentence.
+        const reframed = describeNestedParamError(
+          registry,
+          err,
+          params.command,
+          args,
+          authoredArgs
+        );
+        if (reframed === undefined) throw err;
+        throw new FailureError(reframed, {
+          error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+          failure_stage: "flow_add_step_nested_params",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        });
       }
 
       // A recorded wait that HELD against the tree await-ui-element reads gets
