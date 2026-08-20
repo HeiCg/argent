@@ -76,6 +76,12 @@ async function run(raw) {
     return;
   }
 
+  // A module's evaluation finishing is not the script finishing. `main()`
+  // called without `await`, a `fs.readFile` callback and a `setTimeout` all
+  // outlive it, and reading `output` here would report a green pass for a
+  // script that has done none of its work yet.
+  await drainEventLoop();
+
   // Read the global back rather than a reference captured before the import: a
   // script may mutate the object (`output.user = user`) or replace the binding
   // (`output = { user }`, which resolves to this global property), and both are
@@ -86,6 +92,30 @@ async function run(raw) {
       ? { type: "failure", failureType: "output", message: encoded.error }
       : { type: "result", outputJson: encoded.json }
   );
+}
+
+/**
+ * Wait until the script has nothing left to run.
+ *
+ * `beforeExit` fires when the event loop empties, which is the same point at
+ * which `node script.mjs` would exit — so a timer, a callback-style read or a
+ * floating `main()` has finished by the time this resolves. A script that
+ * leaves a handle open (an interval, a listening server) never reaches it, and
+ * would not have exited under plain `node` either; the step's time limit is
+ * what bounds that case.
+ *
+ * The IPC channel has to be unreferenced first: it is a live handle, so the
+ * loop is never empty while it counts, and `beforeExit` would never fire.
+ * Unreferencing only removes it from the loop's liveness count — the channel
+ * stays open and `process.send` still works.
+ */
+function drainEventLoop() {
+  if (process.channel && typeof process.channel.unref === "function") {
+    process.channel.unref();
+  }
+  return new Promise((resolve) => {
+    process.once("beforeExit", resolve);
+  });
 }
 
 function parseRequest(raw) {

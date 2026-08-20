@@ -58,6 +58,42 @@ describe("flow script executor — a passing run", () => {
   });
 });
 
+describe("flow script executor — work the module evaluation outlives", () => {
+  it("waits for a floating main() to finish before reading output", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "seed.mjs",
+      `async function main() {
+         console.log("seeding");
+         await new Promise((r) => setTimeout(r, 100));
+         output.order = { id: "ord_1" };
+         console.log("seeded");
+       }
+       main();`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ order: { id: "ord_1" } });
+    expect(result.log).toContain("seeded");
+  });
+
+  it("waits for callback-style I/O the script never awaited", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "read.mjs",
+      `import fs from "node:fs";
+       fs.readFile(new URL(import.meta.url), "utf8", (err, text) => {
+         output.bytes = text.length;
+       });`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output?.bytes).toBeGreaterThan(0);
+  });
+});
+
 describe("flow script executor — module loading", () => {
   it("loads built-ins, relative modules, ESM and CommonJS packages, JSON and top-level await", async () => {
     const ws = workspace();
