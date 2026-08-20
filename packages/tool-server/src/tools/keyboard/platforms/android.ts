@@ -247,10 +247,10 @@ async function tryAtomicClear(
   registry: Registry,
   device: DeviceInfo,
   params: KeyboardParams
-): Promise<{ ok: true } | { ok: false; reason: AndroidClearSkipReason }> {
+): Promise<{ ok: true } | { ok: false; reason: AndroidClearSkipReason; applied: boolean }> {
   const refusedAt = atomicStartRefusedAt.get(device.id);
   if (refusedAt !== undefined && Date.now() - refusedAt < ATOMIC_START_COOLDOWN_MS) {
-    return { ok: false, reason: "helper_unavailable" };
+    return { ok: false, reason: "helper_unavailable", applied: false };
   }
   // Bounds the START only — see ATOMIC_CLEAR_BUDGET_MS for why the RPCs below
   // keep the client's own timeout instead of sharing this deadline.
@@ -263,10 +263,10 @@ async function tryAtomicClear(
     // instrumentation never announced a port. All of them are "no helper here",
     // and all of them are worth not re-asking about on the next keystroke.
     atomicStartRefusedAt.set(device.id, Date.now());
-    return { ok: false, reason: "helper_unavailable" };
+    return { ok: false, reason: "helper_unavailable", applied: false };
   }
   // Not recorded: this is the budget expiring on a start that is still running.
-  if (!devtools) return { ok: false, reason: "helper_unavailable" };
+  if (!devtools) return { ok: false, reason: "helper_unavailable", applied: false };
   // A helper that answered clears the mark, so a device that comes good is not
   // held back for the rest of the cooldown.
   atomicStartRefusedAt.delete(device.id);
@@ -285,21 +285,32 @@ async function tryAtomicClear(
     if (!(Number.parseInt(protocol, 10) >= SET_TEXT_MIN_PROTOCOL)) {
       // `!(x >= n)` rather than `x < n` so a helper whose protocol string does
       // not parse (NaN) is treated as too old rather than as new enough.
-      return { ok: false, reason: "helper_outdated" };
+      return { ok: false, reason: "helper_outdated", applied: false };
     }
     // `text ?? ""` is the clear itself: `{ clear: true }` alone asks for an
     // empty field, which is the same one edit with an empty value.
-    const { matched, reason } = await devtools.setText(params.text ?? "");
+    const { applied, matched, reason } = await devtools.setText(params.text ?? "");
     if (matched) return { ok: true };
+    // `applied` is carried, not dropped: it is the helper's own answer to
+    // "is the value already in the field", and the note's doubling warning is
+    // decided from it rather than from the reason's name — see
+    // `androidClearNote`.
+    //
     // A miss always carries a reason EXCEPT when the write landed and the
-    // read-back simply disagreed — the widget wrote something other than what
-    // was asked for, which is the same class of "it refused" as an explicit no.
-    return { ok: false, reason: reason ?? "action_refused" };
+    // read-back simply disagreed. That is `value_mismatch`, not a refusal: the
+    // widget took the action, so naming it `action_refused` would tell the
+    // caller the opposite of what happened on the one shape this `??` exists
+    // for.
+    return {
+      ok: false,
+      reason: reason ?? (applied === true ? "value_mismatch" : "action_refused"),
+      applied: applied === true,
+    };
   } catch {
     // A severed socket, a helper that died between the readiness check and the
     // call, an RPC that timed out. The injected path is the answer to all of
     // them.
-    return { ok: false, reason: "rpc_failed" };
+    return { ok: false, reason: "rpc_failed", applied: false };
   }
 }
 
@@ -462,7 +473,9 @@ async function runAndroidPhoneType(
     ...(params.clear ? { cleared: true } : {}),
     // Only when the verified path did not run, and only from WHICH path did —
     // never from anything it read off the field. See `androidClearNote`.
-    ...(atomic && !atomic.ok && outcome ? { note: androidClearNote(atomic.reason, outcome) } : {}),
+    ...(atomic && !atomic.ok && outcome
+      ? { note: androidClearNote(atomic.reason, outcome, { applied: atomic.applied }) }
+      : {}),
   };
 }
 

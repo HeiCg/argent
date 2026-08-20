@@ -35,21 +35,17 @@ const WHY: Record<AndroidClearSkipReason, string> = {
 };
 
 /**
- * The two reasons where the atomic write MAY ALREADY BE IN THE FIELD, so the
+ * What the caller says when the atomic write MAY ALREADY BE IN THE FIELD, so the
  * injected path that follows is a second write rather than the first.
  *
- * `applied` is true for both: the widget accepted `ACTION_SET_TEXT` and then
- * either could not be re-read (`unverifiable`) or held a different value
- * (`value_mismatch`). Falling back is still right — the field must end up
- * correct and nothing here can roll the first write back — but a caller told
- * only "a weaker path ran" would not know to check for a doubled value, which is
- * what a widget that swallows the select-all leaves behind.
+ * Decided from the helper's own `applied` flag rather than from the reason's
+ * NAME. The two are the same for the reasons this build knows — `unverifiable`
+ * and `value_mismatch` are exactly the pair the helper sets `applied` on — but
+ * not for the two shapes that reach here from outside that table: a reply that
+ * carries `applied: true` with no reason at all, and a reason from a helper
+ * newer than this build. A name-keyed set answers "nothing was written" for
+ * both, which is the one answer that must not be guessed.
  */
-const MAY_HAVE_WRITTEN: ReadonlySet<AndroidClearSkipReason> = new Set([
-  "unverifiable",
-  "value_mismatch",
-]);
-
 const DOUBLED =
   " The accessibility replace had already been ACCEPTED by the widget when this ran, so if it " +
   "landed after all, the field may now hold that value with the fallback's text added to it.";
@@ -100,7 +96,8 @@ const BLIND =
  */
 export function androidClearNote(
   reason: AndroidClearSkipReason,
-  outcome: AndroidClearOutcome
+  outcome: AndroidClearOutcome,
+  { applied = false }: { applied?: boolean } = {}
 ): string {
   // `WHY` is keyed by a closed union, but the reason crosses an RPC boundary
   // from a helper that may be NEWER than this tool-server — a protocol-3 reason
@@ -118,7 +115,7 @@ export function androidClearNote(
     `keyboard clear: the atomic accessibility replace was not used (${why}), so the ` +
     `field was cleared with ${WHAT[outcome.path]}.` +
     (outcome.blindDeleteRun ? BLIND : "") +
-    (MAY_HAVE_WRITTEN.has(reason) ? DOUBLED : "") +
+    (applied ? DOUBLED : "") +
     ` Read the field back if the exact value matters.`
   );
 }

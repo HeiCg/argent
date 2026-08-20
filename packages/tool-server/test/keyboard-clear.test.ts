@@ -677,9 +677,14 @@ describe("keyboard clear — Android (adb input)", () => {
      * the method, and a widget whose field did not end up holding the value.
      * `resolve` covers the third — a helper that cannot be started at all.
      */
+    // The two reasons the helper reports with `applied: true` — it accepted the
+    // action and then either could not re-read the field or read a different
+    // value out of it. Every other reason means nothing was written.
+    const APPLIED_REASONS = new Set(["unverifiable", "value_mismatch"]);
+
     const registryWithSetText = ({
       protocol = "2",
-      applied = true,
+      applied,
       matched = true,
       reason,
       setText,
@@ -692,6 +697,12 @@ describe("keyboard clear — Android (adb input)", () => {
       setText?: (text: string) => Promise<unknown>;
       resolve?: () => Promise<unknown>;
     } = {}) => {
+      // Derived the way the helper derives it, so a case that names a reason
+      // does not have to restate `applied` — and cannot state it wrongly. An
+      // explicit value still wins: a reply carrying `applied` with no reason is
+      // its own case.
+      const appliedFlag =
+        applied ?? (matched || (reason !== undefined && APPLIED_REASONS.has(reason)));
       const calls: string[] = [];
       const registry = {
         getServiceState: () => ServiceState.RUNNING,
@@ -703,7 +714,7 @@ describe("keyboard clear — Android (adb input)", () => {
               calls.push(text);
               if (setText) return setText(text);
               return {
-                applied,
+                applied: appliedFlag,
                 matched,
                 ...(reason ? { reason } : {}),
               };
@@ -785,7 +796,7 @@ describe("keyboard clear — Android (adb input)", () => {
       [
         "the widget claims to have applied it but the field reads back different",
         { applied: true, matched: false },
-        /refused the accessibility replace/,
+        /read back holding something else/,
       ],
       [
         "the write could not be verified",
@@ -927,7 +938,10 @@ describe("keyboard clear — Android (adb input)", () => {
     it("does not warn about a doubled value when nothing was written", async () => {
       // The counterpart: a refusal wrote nothing, so the fallback is the FIRST
       // write and the doubling caveat would be noise on every ordinary fallback.
-      const { registry } = registryWithSetText({ matched: false, reason: "no_focused_input" });
+      const { registry } = registryWithSetText({
+        matched: false,
+        reason: "no_focused_input",
+      });
 
       const result = await makeAndroidImpl(registry).handler(
         {},
@@ -936,6 +950,41 @@ describe("keyboard clear — Android (adb input)", () => {
       );
 
       expect(result.note).not.toMatch(/already been ACCEPTED/);
+    });
+
+    it("warns about a doubled value when the reply says applied and names no reason", async () => {
+      // `reason` is optional on `SetTextResult`, so a reply can say the widget
+      // ACCEPTED the action and leave the miss unnamed. Deciding the warning
+      // from the reason's name reads that as a refusal and drops it — for the
+      // one shape the `??` fallback exists to cover.
+      const { registry } = registryWithSetText({ applied: true, matched: false });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/already been ACCEPTED by the widget/);
+    });
+
+    it("warns about a doubled value for an applied reason it has never heard of", async () => {
+      // A helper newer than this build can name a miss this table has no row
+      // for. `applied` still answers the only question that matters here.
+      const { registry } = registryWithSetText({
+        applied: true,
+        matched: false,
+        reason: "some_future_reason",
+      });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/a reason this version does not recognise/);
+      expect(result.note).toMatch(/already been ACCEPTED by the widget/);
     });
 
     it("renders a reason it has never heard of instead of the word `undefined`", async () => {
