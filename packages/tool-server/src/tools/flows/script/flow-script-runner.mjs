@@ -162,8 +162,23 @@ async function prepare() {
   // `beforeExit` can fire more than once and does not fire at all after an
   // explicit `process.exit`. The first is handled by `finish` reporting once;
   // the second is the executor's `exit` verdict, which is the right one.
+  //
+  // The first firing is spent yielding, because this handler was registered
+  // before the script loaded and therefore runs before the script's own. A
+  // `beforeExit` handler that schedules cleanup — `setTimeout(() => fs.writeFileSync(…))`
+  // is the ordinary shape — had that work thrown away, and one that threw after
+  // an `await` was swallowed while the step still passed; plain `node` writes
+  // the file and exits 1 respectively. Scheduling one empty turn keeps the loop
+  // alive past this round, and Node fires `beforeExit` again once whatever the
+  // script's handlers started has finished and the loop is empty for real.
+  let yielded = false;
   keepListener("beforeExit", () => {
     if (finished || probing) return;
+    if (!yielded) {
+      yielded = true;
+      setImmediate(() => {});
+      return;
+    }
     probing = true;
     reportWhenEntrySettled(request.scriptUrl);
   });

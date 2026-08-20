@@ -89,6 +89,50 @@ describe("flow script executor — work the module evaluation outlives", () => {
     expect(result.failure).toBeUndefined();
     expect(result.output?.bytes).toBeGreaterThan(0);
   });
+
+  it("lets the script's own beforeExit handler finish the work it schedules", async () => {
+    const ws = workspace();
+    // The runner's probe was registered before the script loaded, so it ran
+    // first and exited the process before anything a script's handler scheduled
+    // could run. `setTimeout(() => fs.writeFileSync(…))` in a `beforeExit`
+    // handler is the ordinary cleanup shape, and plain `node` writes the file.
+    const marker = ws.resolve("cleanup.txt");
+    const script = ws.write(
+      "cleanup.mjs",
+      `import fs from "node:fs";
+       let ran = false;
+       process.on("beforeExit", () => {
+         if (ran) return;
+         ran = true;
+         setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, "cleanup done"), 50);
+       });
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ ok: true });
+    expect(fs.readFileSync(marker, "utf8")).toBe("cleanup done");
+  });
+
+  it("fails the step when the script's beforeExit handler throws", async () => {
+    const ws = workspace();
+    // Swallowed entirely, with an empty log and a passing step, where plain
+    // `node` exits 1.
+    const script = ws.write(
+      "bad-cleanup.mjs",
+      `process.on("beforeExit", async () => {
+         await new Promise((r) => setTimeout(r, 10));
+         throw new Error("cleanup failed");
+       });
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.ok).toBe(false);
+    expect(result.failure?.kind).toBe("runtime");
+    expect(result.failure?.message).toBe("cleanup failed");
+  });
 });
 
 describe("flow script executor — the script is the main module", () => {
