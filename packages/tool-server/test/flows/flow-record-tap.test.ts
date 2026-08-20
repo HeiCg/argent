@@ -290,17 +290,30 @@ describe("flow-add-step tap selector capture", () => {
     expect(await recordedSteps()).toEqual([{ kind: "tap", selector: { role: "AXImage" } }]);
   });
 
-  it("does not flag a selector that carries an id or text", async () => {
+  // The warning is withheld for an identifier and for visible text under
+  // separate guards, so an id-only fixture leaves the text half of this claim
+  // unpinned: a regression that flagged every text capture would keep it green.
+  // Each node also carries the specific role `deriveSelector` falls through to,
+  // so the withholding is attributable to the stable field, not to the absence
+  // of a role to name.
+  it.each([
+    {
+      carries: "an id",
+      node: { identifier: "add-to-cart" },
+      selector: { identifier: "add-to-cart" },
+    },
+    { carries: "text", node: { label: "Add to cart" }, selector: { text: "Add to cart" } },
+  ])("does not flag a selector that carries $carries", async ({ node, selector }) => {
     setTree([
-      n({
-        identifier: "add-to-cart",
-        role: "AXButton",
-        frame: { x: 0.3, y: 0.5, width: 0.4, height: 0.06 },
-      }),
+      n({ ...node, role: "AXButton", frame: { x: 0.3, y: 0.5, width: 0.4, height: 0.06 } }),
     ]);
 
     const result = await recordTap({ x: 0.5, y: 0.52 });
 
+    // Assert the step too: a capture that fell back to coordinates would carry
+    // no role-only warning either, and would pass the negative having proved
+    // nothing about it.
+    expect(await recordedSteps()).toEqual([{ kind: "tap", selector }]);
     expect(result.message).not.toContain("matches by role alone");
   });
 
