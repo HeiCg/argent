@@ -1443,6 +1443,101 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("sequence-untouched")).steps).toEqual([]);
   });
 
+  it("stays silent when run-sequence rejected its first step before dispatching it", async () => {
+    // run-sequence has two exits that push an error entry WITHOUT reaching the
+    // registry — a tool outside its allow-list, and one the target platform does
+    // not support — and its entries carry no `status`, so "a step was attempted"
+    // degenerated to "the array is non-empty". A sequence rejected on its first
+    // step touched nothing, yet the refusal said "after 0 of 2 steps" and
+    // "prior nested steps may already have changed the device" in one line.
+    // Driven through the REAL run-sequence, since the marker that settles it is
+    // part of that result shape.
+    const inner = { invokeTool: vi.fn(), getTool: vi.fn(() => undefined) } as unknown as Registry;
+    const runSequence = createRunSequenceTool(inner);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown) =>
+        id === "run-sequence"
+          ? runSequence.execute({}, args as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "sequence-rejected", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "sequence-rejected",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({
+          udid: "ABC",
+          steps: [
+            { tool: "screenshot", args: {}, delayMs: 0 },
+            { tool: "gesture-tap", args: { x: 0.5, y: 0.3 }, delayMs: 0 },
+          ],
+        }),
+      }
+    );
+
+    expect(result.message).toContain("run-sequence stopped at screenshot after 0 of 2 steps");
+    expect(result.message).toContain("step NOT recorded");
+    expect(result.message).not.toContain("may already have");
+    // Nothing reached the registry, which is what makes the silence provable.
+    expect(inner.invokeTool).not.toHaveBeenCalled();
+    expect(parseFlow(await onDisk("sequence-rejected")).steps).toEqual([]);
+  });
+
+  it("still warns when a rejected step follows one that DID run", async () => {
+    // The control: the marker must not silence a sequence whose earlier steps
+    // dispatched. Same reject, moved to second place.
+    const inner = {
+      invokeTool: vi.fn(async () => ({ tapped: true })),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    const runSequence = createRunSequenceTool(inner);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown) =>
+        id === "run-sequence"
+          ? runSequence.execute({}, args as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "sequence-rejected-late", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "sequence-rejected-late",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({
+          udid: "ABC",
+          steps: [
+            { tool: "gesture-tap", args: { x: 0.5, y: 0.3 }, delayMs: 0 },
+            { tool: "screenshot", args: {}, delayMs: 0 },
+          ],
+        }),
+      }
+    );
+
+    expect(result.message).toContain("run-sequence stopped at screenshot after 1 of 2 steps");
+    expect(result.message).toContain("Prior nested steps may already have changed the device");
+    expect(inner.invokeTool).toHaveBeenCalledTimes(1);
+    expect(parseFlow(await onDisk("sequence-rejected-late")).steps).toEqual([]);
+  });
+
   it("does not record run: when flow-execute returned a prerequisite notice", async () => {
     const registry = createMockRegistry({
       "flow-execute": {

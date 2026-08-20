@@ -121,6 +121,23 @@ function createMockRegistry(): Registry {
       // half that matters here — this one ran a nested step at the device, the
       // notice below provably ran nothing.
       if (id === "run-sequence") {
+        // The third shape: run-sequence rejects a tool it does not allow BEFORE
+        // reaching the registry, so this entry proves nothing ran — the same
+        // stake as the notice below, reported by the other orchestrator.
+        const first = (args as { steps?: Array<{ tool?: string }> })?.steps?.[0];
+        if (first?.tool === "screenshot") {
+          return {
+            completed: 0,
+            total: 2,
+            steps: [
+              {
+                tool: "screenshot",
+                error: 'Tool "screenshot" is not allowed in run-sequence.',
+                dispatched: false,
+              },
+            ],
+          };
+        }
         return { completed: 0, total: 2, steps: [{ tool: "keyboard", error: "device went away" }] };
       }
       // The refusal that provably executed NOTHING, keyed on the target name so
@@ -1412,6 +1429,39 @@ describe("a restart that lands while a step is still running", () => {
       name: "needs-prereq",
       project_root: root,
       device: "ABC",
+    });
+    await gate.reached;
+
+    const restarted = await start(root, "alpha");
+    expect(restarted.restarted).toBe(true);
+
+    gate.release();
+    const err = await captureFailure(refusing);
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect((err as Error).message).toContain("restarted while this step was running");
+    expect((err as Error).message).toContain("Nothing was added to the flow file");
+    expect((err as Error).message).not.toContain("already ran on the device");
+    expect(await readMarkers(root, "alpha")).toEqual([]);
+  });
+
+  it("does not warn a superseded refusal whose sequence never dispatched a step", async () => {
+    // The same invariant as the notice above, reached through the other
+    // orchestrator. `run-sequence` rejects a tool outside its allow-list before
+    // handing it to the registry, so a sequence rejected on its FIRST step
+    // touched nothing — and its entries carry no `status`, which is what made
+    // "a step was attempted" read as "the array is non-empty" and hand this
+    // author the wrong half of the recovery clause.
+    const root = await makeRoot("supersede-rejected");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+
+    const gate = gateNextSubTool();
+    const refusing = addRawStep(root, "alpha", "run-sequence", {
+      udid: "ABC",
+      steps: [
+        { tool: "screenshot", args: {} },
+        { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+      ],
     });
     await gate.reached;
 
