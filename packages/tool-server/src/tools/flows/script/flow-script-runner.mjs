@@ -74,6 +74,22 @@ const MAX_FAILURE_STACK_CHARS = 16 * 1024;
 const realSend = typeof process.send === "function" ? process.send : undefined;
 
 /**
+ * `JSON.stringify` and `JSON.parse` as they were before any script code ran.
+ *
+ * The output document is validated and then encoded, and reading the encoder
+ * off the global at that point handed the step's whole result to whatever the
+ * script's dependency tree had installed there — an instrumentation shim, a
+ * polyfill, a serialization wrapper. A patched `JSON.stringify` committed a
+ * document the script never wrote, and one returning `{"__proto__":…}` walked
+ * an own key past the validator that exists to reject it. A script is trusted,
+ * so this is not containment: it is the same rule the parent follows for the
+ * byte limit, that a verdict must not depend on the process staying compliant
+ * after arbitrary code has run inside it.
+ */
+const encodeJson = JSON.stringify;
+const decodeJson = JSON.parse;
+
+/**
  * The listeners the runner cannot lose. `process.removeAllListeners()` with no
  * arguments is ordinary cleanup code, and it took the `beforeExit` probe with
  * it — after which a script that finished normally simply exited, and the step
@@ -110,7 +126,7 @@ async function prepare() {
   startWatchdogs(request.deadlineMs);
 
   try {
-    globalThis.output = JSON.parse(request.outputJson);
+    globalThis.output = decodeJson(request.outputJson);
   } catch (err) {
     finish({
       type: "failure",
@@ -501,7 +517,7 @@ function encodeOutput(value, maxOutputBytes) {
 
   let json;
   try {
-    json = JSON.stringify(checked.value);
+    json = encodeJson(checked.value);
   } catch (err) {
     return { error: `output could not be encoded: ${errorMessage(err)}` };
   }
@@ -602,7 +618,7 @@ function isPlainObject(value) {
 const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 function memberPath(key) {
-  return IDENTIFIER_RE.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`;
+  return IDENTIFIER_RE.test(key) ? `.${key}` : `[${encodeJson(key)}]`;
 }
 
 /** Name the offending value the way its author would recognise it. */
@@ -641,7 +657,7 @@ function errorStack(err) {
 
 function safeStringify(value) {
   try {
-    return JSON.stringify(value) ?? String(value);
+    return encodeJson(value) ?? String(value);
   } catch {
     return String(value);
   }

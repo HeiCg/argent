@@ -189,6 +189,26 @@ describe("flow script executor — output validation", () => {
     expect(result.failure?.message).toContain("__proto__");
   });
 
+  it("encodes with the JSON.stringify that existed before the script ran", async () => {
+    // The realistic trigger is accidental: any instrumentation, polyfill or
+    // serialization shim in the dependency tree that wraps `JSON.stringify`.
+    // Reading it off the global at encode time committed a document the script
+    // never wrote, and carried an own `__proto__` key past both validators.
+    const swapped = await run(
+      `JSON.stringify = () => '{"fake":true}';
+       output.real = "what the script actually wrote";`
+    );
+    expect(swapped.failure).toBeUndefined();
+    expect(swapped.output).toEqual({ real: "what the script actually wrote" });
+
+    const smuggled = await run(
+      `JSON.stringify = () => '{"__proto__":{"polluted":1},"ok":1}';
+       output.real = true;`
+    );
+    expect(smuggled.failure).toBeUndefined();
+    expect(Object.keys(smuggled.output ?? {})).toEqual(["real"]);
+  });
+
   it("reports an output it could not even read", async () => {
     // A throwing getter or a Proxy trap: the walk itself is what fails, and the
     // step must still get a verdict rather than a crash.
