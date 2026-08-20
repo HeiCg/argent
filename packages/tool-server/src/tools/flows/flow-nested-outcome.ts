@@ -85,8 +85,20 @@ function flowExecuteOutcome(result: Record<string, unknown>): NestedOutcome | un
 
   // A cancelled run is a skip, never a failure — the same rule the runner
   // applies to its own steps when the signal fires mid-flight.
+  //
+  // `summarize` folds the abort into the verdict (`ok` is false whenever
+  // `aborted` is set), so a composed step that genuinely FAILED and was then
+  // cancelled reaches this branch rather than the one below. Carry the failing
+  // step with it: `reason` is the whole message the CLI renders and the only
+  // string the RECORDER's refusal has to hand, so dropping it here loses the
+  // one thing that tells two identically-worded cancellations apart — which is
+  // the naming the sibling `run-sequence` reader supplies on the same event.
   if (result.aborted === true) {
-    return { status: "skip", reason: `flow "${flow}" was aborted` };
+    const detail = firstFailingStep(result.steps);
+    return {
+      status: "skip",
+      reason: `flow "${flow}" was aborted${detail ? ` (${detail})` : ""}`,
+    };
   }
 
   if (result.ok === false) {

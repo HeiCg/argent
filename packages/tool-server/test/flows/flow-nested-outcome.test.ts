@@ -136,6 +136,36 @@ describe("a nested flow-execute reports its own verdict", () => {
     expect(result.failed).toBe(0);
   });
 
+  it("still names the failing step when the run was cancelled after it failed", async () => {
+    // `summarize` folds the abort into the verdict, so a composed step that
+    // genuinely failed and was then cancelled takes the abort branch and never
+    // reaches the `ok: false` one that renders the detail. `reason` is the whole
+    // string the CLI prints and the only one the recorder's refusal can render,
+    // so losing the detail here loses it everywhere — while the sibling
+    // `run-sequence` reader names its failing step on the same event.
+    const { result } = await run("flow-execute", { ...FAILED_SUBFLOW, aborted: true });
+
+    expect(result.steps[0].status).toBe("skip");
+    expect(result.steps[0].reason).toBe(
+      'flow "sub" was aborted (await-ui-element: no element matched the selector before timeout)'
+    );
+  });
+
+  it("says only that it was aborted when no composed step failed", async () => {
+    // The other side of the same branch: a cancel that reached no failure has
+    // nothing to name, and must not grow an empty parenthesis.
+    const { result } = await run("flow-execute", {
+      ...FAILED_SUBFLOW,
+      aborted: true,
+      failed: 0,
+      skipped: 1,
+      steps: [{ index: 0, kind: "tap", status: "skip", reason: "run aborted" }],
+    });
+
+    expect(result.steps[0].status).toBe("skip");
+    expect(result.steps[0].reason).toBe('flow "sub" was aborted');
+  });
+
   it("still passes a composed flow that succeeded", async () => {
     const passing = { ...FAILED_SUBFLOW, ok: true, passed: 1, failed: 0, steps: [] };
     const { result, registry } = await run("flow-execute", passing);

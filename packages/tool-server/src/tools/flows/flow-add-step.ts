@@ -22,6 +22,7 @@ import {
   requireRecordingSession,
   appendStepToFlow,
   assertSessionStillLive,
+  withRecordingLock,
   appIdForPlatform,
   parseFlow,
   assertSafeFlowName,
@@ -46,7 +47,7 @@ import { nestedOrchestratorOutcome } from "./flow-nested-outcome";
 import { probeWhenCondition, type DirectiveOutcome } from "./flow-actions";
 import { NATIVE_READY_POLL_MS, NATIVE_READY_TIMEOUT_MS } from "./flow-run";
 import { stepAnchor, summarizeStep } from "./flow-finish-recording";
-import { invokeSubTool } from "../../utils/sub-invoke";
+import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
 import { settleWithin, sleepOrAbort } from "../../utils/timing";
 import { resolveDevice } from "../../utils/device-info";
 import { stripDeviceKeys } from "./flow-device";
@@ -76,9 +77,10 @@ const zodSchema = z.object({
     .string()
     .describe(
       'MCP tool name (e.g. "gesture-tap", "screenshot", "launch-app") — a TOOL, not a flow directive. ' +
-        'A flow-file directive name ("tap", "launch", "run", "type", "await", "assert", "echo", "wait", ' +
-        '"long-press") is answered with guidance, and nothing runs or is recorded: most name the tool ' +
-        'that records the directive, while "wait" and "long-press" have no recording tool at all and ' +
+        'A flow-file directive name ("tap", "launch", "run", "type", "await", "assert", "pinch", ' +
+        '"echo", "wait", "long-press", "scroll-to", "snapshot", "when") is answered with guidance, ' +
+        "and nothing runs or is recorded: most name the tool that records the directive, while " +
+        '"wait", "long-press", "scroll-to", "snapshot" and "when" have no recording tool at all and ' +
         "are answered with what to do instead. A recording tool (flow-add-step, flow-add-echo, " +
         "flow-start-recording, flow-finish-recording) is refused the same way, each for its own " +
         "reason — nesting one would erase this flow at replay, end the take, or write the step twice."
@@ -1297,6 +1299,14 @@ async function captureTapSelector(
  * refusal reports another take's step count as this recording's — the one
  * number the caller relies on to know where its own take stands.
  *
+ * Under the flow's lock, exactly as {@link appendStepToFlow} asserts, because
+ * the assert alone only narrows that window: the assert is synchronous and the
+ * read below is not, and `flow-start-recording` truncates the file and
+ * registers the new session under that same lock. A restart landing between the
+ * two is invisible to a lock-free caller, which then reports the SUPERSEDED
+ * take's count as its own success — worse than missing the takeover, which the
+ * next call on the key reports.
+ *
  * `ranOnDevice` says whether the tool call this return is refusing to RECORD had
  * already been executed, which decides what the liveness error tells the author
  * to undo.
@@ -1305,20 +1315,22 @@ async function activeFlowState(
   session: RecordingSession,
   ranOnDevice: boolean
 ): Promise<{ stepCount: number; note?: string }> {
-  assertSessionStillLive(session, ranOnDevice);
-  if (session.persist === "host") {
-    try {
-      session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"));
-    } catch (err) {
-      return {
-        stepCount: session.flow.steps.length,
-        note:
-          `The persisted flow could not be read and parsed (${err instanceof Error ? err.message : String(err)}); ` +
-          `the step count is from the last valid in-memory snapshot.`,
-      };
+  return withRecordingLock(session, async () => {
+    assertSessionStillLive(session, ranOnDevice);
+    if (session.persist === "host") {
+      try {
+        session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"));
+      } catch (err) {
+        return {
+          stepCount: session.flow.steps.length,
+          note:
+            `The persisted flow could not be read and parsed (${err instanceof Error ? err.message : String(err)}); ` +
+            `the step count is from the last valid in-memory snapshot.`,
+        };
+      }
     }
-  }
-  return { stepCount: session.flow.steps.length };
+    return { stepCount: session.flow.steps.length };
+  });
 }
 
 /**
@@ -1403,18 +1415,33 @@ const DIRECTIVE_COMMAND_HINTS: Record<string, DirectiveHint> = {
   type: { tool: "keyboard", rewritten: false },
   await: { tool: AWAIT_UI_ELEMENT_TOOL_ID, rewritten: false },
   assert: { tool: AWAIT_UI_ELEMENT_TOOL_ID, rewritten: false },
-  // `echo`, `wait` and `long-press` are deliberately absent — each needs an
-  // answer this table cannot express, so `directiveCommandHint` handles them
-  // directly: `echo` is recorded by a tool called on its OWN (routing it
-  // through flow-add-step records a second, replay-breaking step), and neither
-  // `wait` nor `long-press` has a recording tool at all.
+  pinch: { tool: "gesture-pinch", rewritten: false },
+  // Every directive the flow parser accepts is either here or answered
+  // directly by `directiveCommandHint` below, except two that cannot reach
+  // either: `rotate` and `tool` — `rotate` because a real `rotate` tool is
+  // registered (the device-orientation one, NOT the `rotate:` gesture, which
+  // `isToolNotFound`'s docblock calls out), so the not-found this hangs off
+  // never fires; `tool` because it names no action of its own — it IS the raw
+  // escape hatch, and `command` is already the tool name a `tool:` step wants.
+  //
+  // `echo`, `wait`, `long-press`, `scroll-to`, `snapshot` and `when` each need
+  // an answer this table cannot express, so `directiveCommandHint` handles
+  // them directly: `echo` is recorded by a tool called on its OWN (routing it
+  // through flow-add-step records a second, replay-breaking step), and the
+  // other five have no recording tool at all.
 };
 
 /**
  * Recorder tools, which must never be `flow-add-step`'s `command`. Each one
- * mutates the recording itself, so running it as a nested step records the
- * action twice — once as the directive the inner tool wrote, once as a raw
- * `tool:` step that re-runs it at replay, when no recording is open.
+ * mutates the recording itself rather than the device, and this call would
+ * additionally append a raw `tool: <recorder>` step that re-runs that mutation
+ * at replay, when no recording is open.
+ *
+ * The damage differs per entry, which is why each carries its own text rather
+ * than a shared reason. Only `flow-add-echo` writes a directive, so only it
+ * records the action twice; `flow-start-recording` truncates the flow it names
+ * and would erase this one at replay, `flow-finish-recording` would end the
+ * take it is a step in, and `flow-add-step` cannot record itself.
  */
 const NESTED_RECORDER_TOOLS: Record<string, string> = {
   "flow-add-echo":
@@ -1449,7 +1476,22 @@ function isToolNotFound(err: unknown, command: string): boolean {
   return err instanceof ToolNotFoundError && err.toolId === command;
 }
 
-function directiveCommandHint(command: string): string | undefined {
+/**
+ * Directive keys this feature deliberately does NOT answer, with the reason —
+ * held against the parser's own vocabulary by
+ * `flow-record-cross-tree.test.ts`, so a directive added later is either given
+ * an answer or listed here on purpose.
+ */
+export const UNHINTED_DIRECTIVE_KEYS: readonly string[] = [
+  // A real `rotate` tool is registered (device orientation, not the `rotate:`
+  // gesture), so the ToolNotFoundError this hangs off never fires.
+  "rotate",
+  // The raw escape hatch: `command` already IS the tool name a `tool:` step
+  // wants, so there is nothing to redirect.
+  "tool",
+];
+
+export function directiveCommandHint(command: string): string | undefined {
   if (command === "echo") {
     return (
       `"echo" is a flow directive, not a tool. Call \`flow-add-echo\` DIRECTLY — not through ` +
@@ -1469,6 +1511,30 @@ function directiveCommandHint(command: string): string | undefined {
       `"long-press" is a flow directive, not a tool, and no tool records one — there is no ` +
       `gesture-long-press. Record the rest of the path, then add the \`long-press:\` step by ` +
       `hand during polish and prove it with the replay.`
+    );
+  }
+  if (command === "scroll-to") {
+    return (
+      `"scroll-to" is a flow directive, not a tool, and no tool records one — it SEARCHES, ` +
+      `scrolling until the target is visible, which no single recorded gesture reproduces. ` +
+      `Record the movement with \`gesture-swipe\` (\`gesture-scroll\` on chromium) if the path ` +
+      `needs it, then add the \`scroll-to:\` step by hand during polish and prove it with the ` +
+      `replay.`
+    );
+  }
+  if (command === "snapshot") {
+    return (
+      `"snapshot" is a flow directive, not a tool, and no tool records one — it compares the ` +
+      `screen against a stored baseline, which \`screenshot-diff\` does not manage. Add the ` +
+      `\`snapshot:\` step by hand during polish, then adopt its baseline with a run that sets ` +
+      `updateBaselines, and review the PNG before committing it.`
+    );
+  }
+  if (command === "when") {
+    return (
+      `"when" is a flow directive, not a tool, and no tool records one — it GUARDS the steps ` +
+      `nested under it, so there is no action of its own to run. Record those steps, then wrap ` +
+      `them in the \`when:\` block by hand during polish and prove both branches with the replay.`
     );
   }
   // `Object.hasOwn`, not a bare index: `command` is caller-controlled, so a
@@ -1629,11 +1695,19 @@ function nestedRecordRefusal(
   // cancellation as "a failed nested step". Signal first, verdict second, the
   // order the runner uses; `skip` already IS the reader's own abort branch, and
   // the verdict is kept alongside rather than thrown away.
+  //
+  // `attempted` is the third conjunct because a cancel can only have caused an
+  // outcome the nested run actually got far enough to have. A `flow-execute`
+  // prerequisite notice is status `error` and reached no step: the flow was not
+  // runnable AS WRITTEN, which a concurrent cancel neither caused nor changes,
+  // so wrapping it hides the one actionable sentence inside a parenthesis and
+  // reports a cancellation of something that never started.
+  const attempted = nestedStepAttempted(result);
   const reason =
-    aborted && outcome.status !== "skip"
+    aborted && attempted && outcome.status !== "skip"
       ? `${command} was cancelled (${outcome.reason})`
       : outcome.reason;
-  return { reason, mayHaveMutated: nestedStepAttempted(result) };
+  return { reason, mayHaveMutated: attempted };
 }
 
 /**
@@ -1684,12 +1758,20 @@ function nestedStepAttempted(result: unknown): boolean {
     // step ran, since it cannot prove otherwise.
     return !Object.prototype.hasOwnProperty.call(result, "notice");
   }
-  // run-sequence appends one entry per step it ATTEMPTED and stops there, so
-  // every entry is an attempt. The flow runner reports one entry per declared
-  // step and marks the ones it never reached `skip`.
-  return steps.some(
-    (s) => typeof s !== "object" || s === null || (s as { status?: unknown }).status !== "skip"
-  );
+  // The flow runner reports one entry per DECLARED step and marks the ones it
+  // never reached `skip`. `run-sequence` appends one entry per step it got to
+  // and stops there, so its entries are attempts — except the two it rejects
+  // before dispatch (a tool outside its allow-list, one the target platform
+  // does not support), which say so with `dispatched: false`. Those prove the
+  // opposite of an attempt, and a sequence rejected on its FIRST step touched
+  // nothing at all: warning there contradicts the same message's "after 0 of N
+  // steps", and the caller passes this same value as `ranOnDevice`, which then
+  // tells a superseded author to weigh undoing an action never performed.
+  return steps.some((s) => {
+    if (typeof s !== "object" || s === null) return true;
+    const entry = s as { status?: unknown; dispatched?: unknown };
+    return entry.status !== "skip" && entry.dispatched !== false;
+  });
 }
 
 // Replaying a fragment to set up state during recording is done by running it
@@ -2033,12 +2115,18 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
      * was left alone. Those paths are:
      *
      * - a `command` naming a recorder tool, or one naming a flow-file directive
-     *   rather than a tool — those two answer with the call to make instead,
-     *   and are the only ones that also run nothing at the device;
+     *   rather than a tool — those two answer with the call to make instead of
+     *   running anything;
      * - a nested `flow-execute` that failed, was cancelled, or returned a
      *   prerequisite notice instead of running;
      * - a nested `run-sequence` that stopped on a failed step or was cancelled
      *   part-way.
+     *
+     * Deliberately NOT partitioned by whether the call reached the device: the
+     * refusals include shapes that provably ran nothing (a prerequisite notice
+     * executes no step, a `run-sequence` rejected on its first step dispatches
+     * none), so any "these two run nothing, the rest ran" split is false.
+     * `message` carries that half — see {@link partialMutationWarning}.
      *
      * Required while every return appended a step; these returns are what
      * reopened it, and a placeholder would claim a line that is not there. Also
@@ -2071,8 +2159,8 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     },
     description: `Execute a tool call and record it as a step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). Use when recording a flow and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier (otherwise coordinates are kept with a warning); a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow; restart-app has no chromium support, so a chromium flow records as a fragment — add the \`launch: { chromium: <app path> }\` line to the YAML afterward, deleting the executionPrerequisite line if one was recorded: a flow that starts with a launch must not declare it).
 A recorded \`await-ui-element\` that PASSED is re-probed against the tree the RUNNER resolves \`await:\`/\`assert:\` directives against, which is NOT the tree the live call read; a wait that came back \`{ success: false }\` is not probed at all, and its refusal says so; when the condition does not hold there the step is still recorded and \`message\` carries a warning to read before converting — whether the conversion actually breaks depends on WHY the two disagree, since a screen that moved on between the live wait and the re-probe reads the same way. If that tree could not be read at all, the warning says so instead: the conversion is UNKNOWN, not known-bad. The probe judges the selector exactly as recorded, so write the conversion in the strict map spelling (\`{ visible: { text: Continue } }\`, copying the step's \`selector:\`) — the bare-string spelling (\`{ visible: Continue }\`) re-parses as a loose selector that resolves identifier-first and falls back to text, which is a different check. A live wait that came back \`{ success: false }\` is REFUSED instead of recorded — that tool reports a failed wait by returning rather than throwing, so nothing else stops it becoming a step that fails every replay. The refusal names the cause, because only one of them judges the condition: a genuine miss needs the wait fixed, while a wait whose tree source was unreadable, or one that was cancelled, observed nothing and leaves the condition UNKNOWN — do not rewrite the selector on those.
-Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded. Two calls record nothing AND run nothing at the device, omitting \`recorded\` to say so: a \`command\` naming a recording tool, and one naming a flow-file directive rather than a tool. Both answer with the call to make instead and leave the take untouched — read \`recorded\`, not the status, to know whether a step was appended.
-A NORMAL return can also mean "not recorded": \`recorded\` is the discriminator - it is absent, and \`message\` says "step NOT recorded", whenever the call ran but its outcome must not become a step. That covers a nested \`flow-execute\` that failed, was cancelled, or returned a prerequisite notice instead of running, and a nested \`run-sequence\` that stopped on a failed nested step or was cancelled part-way. It covers three checks too, each refused because recording it would bake a gate that cannot do its job: an \`await-ui-element\` whose condition never held (it FAILS the step at replay), an \`await-screen-idle\` (a live diagnostic, green on every replay whatever the screen does), and a \`hidden\` check that held without its selector ever matching in a flow that never established that selector (nothing can falsify it). Read \`message\` before assuming the step landed. When something already ran before the refusal the message also warns that the device may have moved: CHECK it against the state your recorded prefix leaves it in before adding the next step - do not relaunch the app to "reset", which lands on the start screen instead and makes the rest of the recording unreproducible.
+Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded. Two calls record nothing AND run nothing at the device, omitting \`recorded\` to say so: a \`command\` naming a recording tool, and one naming a flow-file directive rather than a tool. Both answer with what to do instead — usually the call to make (the tool that records that directive, or the recording tool called directly), but \`wait\` and \`long-press\` have no recording tool, so those name no call: \`wait\` points at \`await-ui-element\` as the readiness check to record in its place, and \`long-press\` says to add the step by hand during polish. Either way the take is left untouched — read \`recorded\`, not the status, to know whether a step was appended.
+A NORMAL return can also mean "not recorded": \`recorded\` is the discriminator - it is absent, and \`message\` says "step NOT recorded", whenever the call ran but its outcome must not become a step. That covers a nested \`flow-execute\` that failed, was cancelled, or returned a prerequisite notice instead of running, and a nested \`run-sequence\` that stopped on a failed nested step or was cancelled part-way. It covers three checks too, each refused because recording it would bake a gate that cannot do its job: an \`await-ui-element\` whose condition never held (it FAILS the step at replay), an \`await-screen-idle\` (a live diagnostic, green on every replay whatever the screen does), and a \`hidden\` check that held without its selector ever matching in a flow that never established that selector (nothing can falsify it). Read \`message\` before assuming the step landed. Whether anything ran is what \`message\` says, not something to infer from which case it was: it warns that the device may have moved whenever a nested step was reached, and stays silent when the refusal provably reached none (a prerequisite notice, a sequence rejected before its first step could be dispatched, a cancel that landed before it). On the warning, CHECK the device against the state your recorded prefix leaves it in before adding the next step - do not relaunch the app to "reset", which lands on the start screen instead and makes the rest of the recording unreproducible.
 If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-recording\` rather than during the recording: against a remote client the in-memory copy is authoritative and every write serializes it over your edit, and in host mode a mid-recording edit renumbers the steps, which costs the finish the cross-tree verdicts anchored to them.`,
     // The recorded tool RUNS here, so this call is as long as whatever it
     // wraps — and the three it most often wraps (`await-ui-element`,
@@ -2090,13 +2178,14 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
     async execute(_services, params, ctx) {
       const session = await requireRecordingSession(params.project_root, params.name);
 
-      // A recorder tool is not a step. Nesting one appends TWICE — the inner
-      // tool writes its own directive and this call additionally records a
-      // raw `tool: <recorder>` step, which then fails on every replay because
-      // no recording is open then. It reports success either way, so nothing
-      // signals the corruption; refuse before anything is written — and before
-      // parsing `args`, so a malformed `args` payload cannot pre-empt this
-      // guidance with a bare JSON error.
+      // A recorder tool is not a step. Running one here mutates the recording
+      // and this call additionally records a raw `tool: <recorder>` step, which
+      // re-runs that mutation on every replay, when no recording is open —
+      // twice over for `flow-add-echo`, the one entry that writes a directive
+      // of its own. It reports success either way, so nothing signals the
+      // corruption; refuse before anything is written — and before parsing
+      // `args`, so a malformed `args` payload cannot pre-empt this guidance
+      // with a bare JSON error.
       // `Object.hasOwn`, not a bare index: a caller-supplied `command` equal to
       // an inherited member (`"__proto__"`, `"constructor"`, …) would otherwise
       // read truthy off the prototype chain and refuse the call with a garbage
@@ -2127,6 +2216,11 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         }
         throw err;
       }
+
+      // Snapshot before the rewrite below mutates `args` in place, so a schema
+      // miss can be re-rendered against the keys the AUTHOR wrote. Shallow is
+      // enough: `rewriteSiblingFlowPath` only deletes and adds top-level keys.
+      const authoredArgs = { ...args };
 
       // A nested flow-execute must never carry a raw flow_path into the live
       // invoke — it has no boundary metadata there and would be rejected.
@@ -2172,8 +2266,30 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         const hint = isToolNotFound(err, params.command)
           ? directiveCommandHint(params.command)
           : undefined;
-        if (!hint) throw err;
-        return recordNothing(session, hint);
+        if (hint) return recordNothing(session, hint);
+
+        // The third dispatcher that rewrites the args it forwards, and so the
+        // third that must not read the rewrite back to the caller.
+        // `rewriteSiblingFlowPath` swaps a sibling `flow_path` for the
+        // equivalent `name`, so the registry — which can only describe what it
+        // was handed — closes with "You sent: `project_root`, `platform`,
+        // `name`", naming a key the author did not type and dropping the one
+        // they did. Re-render against the snapshot; every other command passes
+        // its args through untouched, where this is the same sentence.
+        const reframed = describeNestedParamError(
+          registry,
+          err,
+          params.command,
+          args,
+          authoredArgs
+        );
+        if (reframed === undefined) throw err;
+        throw new FailureError(reframed, {
+          error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+          failure_stage: "flow_add_step_nested_params",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        });
       }
       invalidateReadinessMissAfterAppStart(session, params.command, args, toolResult);
 
