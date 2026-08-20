@@ -545,7 +545,10 @@ describe("flow-add-step", () => {
       "1. tool: screenshot {} (after 250ms)",
       "2. tap: (0.5, 0.3) ×2",
     ]);
-    // The finished summary and each step's `recorded` line are the same spelling.
+    // The finished summary and each step's `recorded` line are the same
+    // spelling. Comparing the whole array works only because neither step is an
+    // `await-ui-element`: a step carrying a cross-tree verdict adds a second,
+    // indented `warning:` line that no `recorded` line has a counterpart for.
     expect(finished.summary).toEqual([delayed.recorded, doubled.recorded]);
   });
 
@@ -2664,17 +2667,20 @@ describe("flow-read-prerequisite", () => {
     // The pre-flight must offer the same source contract as the run it
     // precedes — a schema still requiring `name` would leave flow_path flows
     // unaddressable and silently answer for a saved flow of the same stem.
-    expect(flowReadPrerequisiteTool.inputSchema).toMatchObject({
+    const schema = zodObjectToJsonSchema(flowReadPrerequisiteTool.zodSchema!);
+    expect(schema).toMatchObject({
       type: "object",
       properties: {
         name: { type: "string" },
         flow_path: { type: "string" },
       },
-      oneOf: [
-        { anyOf: [{ required: ["name"] }, { required: ["flow_name"] }] },
-        { required: ["flow_path"] },
-      ],
     });
+    // Neither source may be `required`: the exactly-one rule cannot be a
+    // top-level oneOf (tool-input-schema-contract.test.ts), so the zod
+    // superRefine enforces it and the description states it.
+    expect(schema.required as string[]).not.toContain("name");
+    expect(schema.required as string[]).not.toContain("flow_path");
+    expect(flowReadPrerequisiteTool.description).toMatch(/one and only one/i);
   });
 
   it("reads a boundary-verified flow_path's prerequisite, not the saved flow of the same stem", async () => {
@@ -2865,6 +2871,21 @@ describe("summarizeStep rendering", () => {
     );
   });
 
+  it("renders a multi-field selector independently of its key order", () => {
+    // This render is also the step ANCHOR, and the anchor compares a selector
+    // the recorder built in memory — key order from the source object —
+    // against one that came back through `parseSelector`, whose key order is
+    // the zod schema's. Two spellings of the same selector rendering
+    // differently drops every verdict in the recording, with no hand edit
+    // involved and nothing in the payload to notice it. Unreachable today only
+    // because `deriveSelector` returns one field on every branch, so nothing
+    // else pins it.
+    const a = summarizeStep({ kind: "tap", selector: { identifier: "b", text: "Go" } }, 1);
+    const b = summarizeStep({ kind: "tap", selector: { text: "Go", identifier: "b" } }, 1);
+    expect(a).toBe(b);
+    expect(a).toBe('1. tap: {"id":"b","text":"Go"}');
+  });
+
   it("renders a long-press hold duration", () => {
     expect(
       summarizeStep({ kind: "long-press", selector: { text: "Row" }, duration: 1200 }, 3)
@@ -2929,7 +2950,8 @@ describe("summarizeStep rendering", () => {
   });
 
   it("renders the delay a quoted number really sleeps", () => {
-    // A quoted numeric is an ordinary slip in the hand-edit workflow, and it is
+    // A quoted numeric is an ordinary slip in the post-finish hand-edit
+    // workflow — the one both recording tools still point at — and it is
     // not inert: the runner's gate is truthiness, and setTimeout coerces the
     // string, so this waits two real seconds on every replay. A `typeof` check
     // rendered nothing at all for it.

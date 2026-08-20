@@ -113,7 +113,7 @@ Never tap the on-screen keyboard through the recorder. Some platforms expose it 
 
 ### Typing
 
-Record the focus tap, then record `keyboard`. Verify the complete value with `describe` or an app validation marker.
+Record the focus tap, then record `keyboard` with `text`. A `keyboard` call carries `text` or `key`, never both. To submit, record a second `keyboard` step with `key: "enter"`. Verify the complete value with `describe` or an app validation marker.
 
 **Never `describe` or `screenshot` a non-secure field you just filled from `{{secret:…}}`.** Only a password field is redacted; a plain text input hands the resolved value back into your context, and an API key or token typed into one is the ordinary case. Submit or navigate away first, then verify the resulting screen.
 
@@ -132,16 +132,27 @@ For every retained raw gesture, add an echo and a recorded result check.
 
 ### Live waits and checks
 
-Record `await-ui-element` through `flow-add-step`. An unmet condition is not an error: the tool returns normally, `message` reports the step was added, and the only sign of failure is `toolResult.success: false` with a `note`. **The step is in the flow file.** Read `toolResult.success` after every recorded check.
+Record `await-ui-element` through `flow-add-step`. The recorder writes the step even when `toolResult.success` is false. Read `success` and `cause` after each check:
 
-When it is false, fix the selector or justified timeout, record the check again, and delete the failed step after `flow-finish-recording`. Do not leave both. A stale `hidden` whose selector matches nothing replays as a silent pass — the unfalsifiable gate that [Record absence in three steps](#record-absence-in-three-steps) exists to prevent. Never proceed as though the gate passed. See the `await-ui-element` section of `argent-device-interact` for the full live condition and selector reference.
+- `unmet`: The tree was readable, but the condition was false. Restore the expected state or correct the selector or timeout. Then, record the check again.
+- `unreadable`: The wait ended without a trustworthy read. Restore the tree source and record the check again.
+- `cancelled`: The caller stopped the wait. Record the check again.
 
-The live tool and flow runner use different trees, and [neither contains the other](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree). A live wait can therefore pass while its converted directive cannot resolve. After a recorded wait passes, the recorder re-probes the same condition against the runner's tree and reports the result in `message`. Read which of the two warnings you got:
+Delete the old failed step after `flow-finish-recording`. Only `unmet` disproves the condition.
 
-- **The condition does not hold there.** Converting to `await:`/`assert:` is what the warning is about. The message names the platform-specific cause. Where the trees genuinely differ, retarget the directive at something the runner tree carries, usually the `id`, and prove it by replay. Where the screen simply moved on between the live wait and the re-probe, the selector was never wrong; re-run the wait instead.
-- **That tree could not be read at all.** Nothing was compared, so the conversion is **unknown, not known-bad**. Re-probe once the tree source is back rather than rewriting a selector that may be fine.
+A stale `hidden` whose selector matches nothing replays as a silent pass — the unfalsifiable gate that [Record absence in three steps](#record-absence-in-three-steps) exists to prevent. Never proceed as though the gate passed. See the `await-ui-element` section of `argent-device-interact` for the full live condition and selector reference.
 
-Neither warning means the step was rejected. A raw `tool:` step replays against the tree it just passed, so treat the warning as a polish-time instruction. Replay every conversion regardless. Keep the raw tool only when its `pollIntervalMs` or `bundleId` is required. Live tools use `identifier`. Flow YAML uses `id`.
+A wait inside `run-sequence` gets no recorder warning. Inspect the nested result. Any `success: false` fails the sequence during replay.
+
+The live tool and flow runner use [different trees](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree). After a successful wait, the recorder checks the same condition on the runner tree:
+
+- No warning: The condition holds on both trees.
+- Mismatch: Rule out a changed screen first. For `text`, also rule out multiple matches. Otherwise, use a runner-tree selector and replay.
+- Unreadable, slow, or cancelled check: The conversion is unknown. Restore the source or re-record before conversion.
+
+A warning does not reject the step. `flow-finish-recording` repeats each warning below its step and reports dropped warnings.
+
+Do not edit YAML before finishing because edits can drop recorded verdicts. If the finish reports drops, record the waits again. Replay every conversion. Keep a raw tool only for `pollIntervalMs` or `bundleId`.
 
 ### Wrong turns
 
@@ -151,18 +162,18 @@ Stop immediately. Restore the last valid screen with direct MCP calls, not `flow
 
 Call `flow-finish-recording`, then read the saved YAML. Apply only meaning-preserving conversions:
 
-| Recorded form                | Finished form                                                      |
-| ---------------------------- | ------------------------------------------------------------------ |
-| focus tap + `tool: keyboard` | `type:`                                                            |
-| keyboard ending in Enter     | submitted `type:` without Enter in its text                        |
-| `tool: await-ui-element`     | `await:` or `assert:`                                              |
-| element-seeking movement     | `scroll-to:`                                                       |
-| coordinate tap or long-press | strict selector after the fallback gate                            |
-| `tool: gesture-pinch`        | selector-based `pinch:` with `scale = endDistance / startDistance` |
-| `tool: gesture-rotate`       | selector-based `rotate:` with `by = endAngle - startAngle`         |
-| sibling `tool: flow-execute` | recorder-captured `run:`                                           |
+| Recorded form                             | Finished form                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| focus tap + `tool: keyboard`              | `type:`                                                            |
+| text `keyboard` + `key: enter` `keyboard` | submitted `type:` without Enter in its text                        |
+| `tool: await-ui-element`                  | `await:` or `assert:`                                              |
+| element-seeking movement                  | `scroll-to:`                                                       |
+| coordinate tap or long-press              | strict selector after the fallback gate                            |
+| `tool: gesture-pinch`                     | selector-based `pinch:` with `scale = endDistance / startDistance` |
+| `tool: gesture-rotate`                    | selector-based `rotate:` with `by = endAngle - startAngle`         |
+| sibling `tool: flow-execute`              | recorder-captured `run:`                                           |
 
-When converting a wait, copy the step's recorded `selector:` map through unchanged — the strict map form, never the bare-string sugar, which re-parses as a loose id-first selector and is a different check. It is also the form the recorder's re-probe judged, so only the strict spelling inherits that answer. The comparator lives in the tool call rather than the YAML: a recorded `text` check with no `textMatch` converts to `contains:`, and only `textMatch: equals` converts to `equals:`.
+Copy the recorded `selector:` map when you convert a wait. Do not use the loose bare-string form. Flow YAML accepts `identifier`; rename it to `id` only for style. Convert `textMatch: equals` to `equals:` and other text checks to `contains:`.
 
 Only these unrecorded insertions are allowed, at states observed live:
 
@@ -247,5 +258,7 @@ Run `flow-execute` on the complete YAML with the absolute project root. For a fr
 Manual rescue invalidates the pass. An `errored` step was never evaluated: an `idle` wait whose tree source could not be read, a step that threw, an unresolvable `run:` target, or a `launch:` that did not start the app. Read the reason — most name the environment, but a failed `launch:` is a verdict about the app. Unconfirmed focus is not in this class at all: the replay focus poll has no failure return, so a `type:` step whose focus was never confirmed is scored a **pass**, and only the value check after typing catches it.
 
 **A passing step that carries a `warning` is a finding, not noise.** `await: { idle: true }` raises [six different warnings](flow-yaml.md#idle-readiness) and they do not share one meaning. Two say the screen was moving; one says the wait ran out mid-hold and is repaired by raising the step's `timeout:`; one says the tree stayed empty; one says the tree did hold still and only the screenshot pairs were missing, so the capture path is what to check; one says the step ended with no evidence either way. No report separates intended motion from a load that never finished. Read which one it is, look at that screen, disclose what you found, and confirm the following step targets a stable element rather than stillness.
+
+A [selector-less gesture](flow-yaml.md#directives) raises a warning of a different shape, not one of those six: a tree-source outage left it unsettled, so it dispatched blind and the green says only that the gesture was sent. Restore the source, usually by relaunching the app so the instrumentation loads. Accept it only where the app serves no tree at all, such as the [injection-free iOS form](reliability-and-recovery.md#terminally-non-injectable-ios-apps).
 
 One uninterrupted full pass completes a normal flow. `argent-qa-flows` requires two consecutive passes of unchanged YAML. For CI, use `argent flow run <name> [--platform ...]`; it exits non-zero on failure.

@@ -11,6 +11,7 @@ import {
 import {
   requireRecordingSession,
   appendStepToFlow,
+  appIdForPlatform,
   parseFlow,
   assertSafeFlowName,
   classifyOnDiskSpelling,
@@ -21,9 +22,14 @@ import {
   type FlowStep,
   type RecordingSession,
 } from "./flow-utils";
-import { AWAIT_UI_ELEMENT_TOOL_ID, isUnmetUiWaitResult } from "../await-ui-element";
+import {
+  AWAIT_UI_ELEMENT_TOOL_ID,
+  isUnmetUiWaitResult,
+  unmetUiWaitCause,
+  type UnmetUiWaitCause,
+} from "../await-ui-element";
 import { probeWhenCondition, type DirectiveOutcome } from "./flow-actions";
-import { summarizeStep } from "./flow-finish-recording";
+import { stepAnchor, summarizeStep } from "./flow-finish-recording";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { resolveDevice } from "../../utils/device-info";
 import { settleWithin } from "../../utils/timing";
@@ -83,6 +89,21 @@ const REPLAY_TREE_SOURCES: Record<string, DescribeSource> = {
   android: "android-devtools",
 };
 
+/**
+ * The app this recording last started, from the `launch` step the recorder
+ * captured for it — the session's stand-in for the runner's
+ * {@link ActionEnv.launchedNativeApp}. Last rather than first: a recording that
+ * relaunches mid-way is about the newer app from that point on, exactly as a
+ * nested `launch:` retargets a run.
+ */
+function recordedLaunchedApp(session: RecordingSession, platform: string): string | undefined {
+  for (let i = session.flow.steps.length - 1; i >= 0; i--) {
+    const step = session.flow.steps[i];
+    if (step.kind === "launch") return appIdForPlatform(step.app, platform) ?? undefined;
+  }
+  return undefined;
+}
+
 function fallbackSourceWarning(source: DescribeSource, platform: string): string | undefined {
   const expected = REPLAY_TREE_SOURCES[platform];
   if (!expected || source === expected) return undefined;
@@ -115,9 +136,26 @@ const UNSUPPORTED_PLATFORM = {
  * The clause naming how to read the tree the RUNNER resolves against — or, on
  * iOS, Android and Chromium, that no read-only tool does.
  *
- * Android's runner tree is the full accessibility hierarchy, and Android
- * `describe` returns the TRIMMED interactables tree the recorder already read —
- * strictly less than the runner resolves against.
+ * Android's runner tree keeps every view with a `resource-id` or a label, and
+ * Android `describe` returns the TRIMMED interactables tree the recorder
+ * already read — the same dump, parsed differently on this host. Mostly less
+ * than the runner resolves against — but not STRICTLY less, and the exception
+ * is routine: the trim BORROWS a descendant's text into an unlabelled
+ * clickable's own label (an everyday `Pressable` over a `Text` renders as one
+ * node labelled "Network & internet / Mobile, Wi-Fi, hotspot"), where the flow
+ * adapter never borrows.
+ *
+ * What that costs is narrower than "the borrowed text is unreachable". Selector
+ * matching does ignore the hoisted `subtreeText` and reads a node's own
+ * label/value only — but the descendants keep their own labels on the runner's
+ * side, so a selector on ONE of them matches there. The divergence is a
+ * selector on the JOIN: the concatenation exists as some node's own label only
+ * on the recorder's side. `flow-tree-flatten` narrows it further, since an
+ * identified descendant SHIELDS — it contributes nothing upward — so the RN
+ * shape this warning most often comes out of, a `testID`'d view under an
+ * unlabelled clickable, produces no hoist to diverge over at all. The
+ * user-facing string below stays right either way: it says each holds elements
+ * the other drops.
  * Chromium's `describe` re-reads the same DOM the flow tree is built from, but
  * on a shorter walk and without the flow tree's projection, so it misses the
  * runner in BOTH directions (see {@link treeDivergenceFor}'s chromium arm): it
@@ -127,14 +165,25 @@ const UNSUPPORTED_PLATFORM = {
  * 12000. Calling it the full DOM, a superset of the runner's tree, is exactly
  * the reading that fails on a dense page: past 5000 nodes `describe` cannot
  * show the element at all. iOS overshoots where Android undershoots: the
- * Apple-only full-hierarchy readers see the raw UIView tree, which is a
- * superset of what
- * `queryFullHierarchyTree` projects (it drops hidden, transparent,
- * scroll-clipped and unlabelled container views), AND they match `identifier` /
- * `label` / `className` EXACTLY — a recorded selector's `text` is a
- * case-insensitive SUBSTRING of a label or value and its `role` a substring of
- * a derived role name, neither of which those tools accept. So they report
- * elements the runner never sees and miss substring matches it does make.
+ * Apple-only full-hierarchy readers see the raw UIView tree, which at equal
+ * depth is a superset of what `queryFullHierarchyTree` projects (it drops
+ * hidden, transparent, scroll-clipped and unlabelled container views), so they
+ * report elements the runner never sees. Neither can be ASKED the question a
+ * selector asks, either, and they fail it differently: `native-find-views`
+ * matches `identifier` / `label` / `className` EXACTLY, where a recorded
+ * selector's `text` is a case-insensitive SUBSTRING of a label or value and its
+ * `role` a substring of a derived role name — so it misses substring matches
+ * the runner does make. `native-full-hierarchy` takes no matcher at all: its
+ * schema is `udid, bundleId, fields, skipClasses, skipClassPrefixes, maxDepth`,
+ * so it dumps a tree to read rather than answering "does this selector
+ * resolve".
+ *
+ * "At equal depth" is load-bearing, and is the iOS analogue of the Chromium
+ * 5000/12000 asymmetry above: `native-full-hierarchy` defaults to `maxDepth: 8`
+ * where `queryFullHierarchyTree` asks for 40. So absent from
+ * `native-full-hierarchy` does NOT imply absent from the runner's tree for
+ * anything nested deeper than 8 levels — real RN scrollers sit well past that
+ * — and reading it as proof needs the depth raised first.
  *
  * Naming any of those three would point the author at the wrong tree under the
  * banner of the runner's — the exact steer this warning exists to prevent.
@@ -149,24 +198,51 @@ const UNSUPPORTED_PLATFORM = {
  * full hierarchy has complete testID/resource-id coverage, so retargeting the
  * directive is both the fix and the thing that finishes that workflow.
  */
-function runnerSideReadClause(udid: unknown): string {
+/**
+ * The remedy half of the iOS/Android clause, which is not the same advice for
+ * every condition.
+ *
+ * On `visible`/`exists`/`text` a determinate verdict means the runner's tree
+ * does NOT have what the check wanted, so "retarget at an id the full hierarchy
+ * definitely carries" is exactly right. On `hidden` it means the opposite: the
+ * verdict fires because that tree still HAS the element, and steering the
+ * author to a stable id makes the directive match MORE surely — the criterion
+ * inverted. {@link awaitStillNeeds} already draws this distinction one clause
+ * earlier; the remedy has to draw it too.
+ */
+function retargetRemedy(idKind: string, condition: WaitCondition): string {
+  if (condition === "hidden") {
+    return (
+      `but this verdict says that tree still HAS the element, so retargeting at ${idKind} it ` +
+      "definitely carries is the wrong direction — either narrow the selector until it matches " +
+      "only what you expect to leave, or gate on something that does leave, and prove it with " +
+      "`flow-execute`; or keep the step raw"
+    );
+  }
+  return (
+    `so retarget the DIRECTIVE at ${idKind} the full hierarchy carries and prove it with ` +
+    "`flow-execute`, or keep the step raw"
+  );
+}
+
+function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
   const platform = platformOf(udid);
   if (platform === "ios") {
     return (
       "No read-only tool reports the runner's projection on iOS — `native-find-views` and " +
-      "`native-full-hierarchy` return the RAW view tree, matching `identifier`/`label`/" +
-      "`className` exactly (neither takes a substring `text` or a `role`) and keeping the " +
-      "hidden, transparent, scroll-clipped and unlabelled container views the runner drops — " +
-      "so retarget the DIRECTIVE at an `id` the full hierarchy carries and prove it with " +
-      "`flow-execute`, or keep the step raw"
+      "`native-full-hierarchy` return the RAW view tree, keeping the hidden, transparent, " +
+      "scroll-clipped and unlabelled container views the runner drops, and neither answers the " +
+      "question a selector asks: `native-find-views` matches `identifier`/`label`/`className` " +
+      "EXACTLY and takes no substring `text` or `role`, and `native-full-hierarchy` takes no " +
+      "matcher at all — it dumps the tree for you to read — " +
+      retargetRemedy("an `id`", condition)
     );
   }
   if (platform === "android") {
     return (
       "No read-only tool exposes the runner's full hierarchy on Android — `describe` returns the " +
-      "trimmed tree the recorder read, not the runner's — so retarget the DIRECTIVE at a " +
-      "`resource-id` the full hierarchy carries and prove it with `flow-execute`, or keep the " +
-      "step raw"
+      "trimmed tree the recorder read, not the runner's — " +
+      retargetRemedy("a `resource-id`", condition)
     );
   }
   if (platform === "chromium") {
@@ -175,14 +251,40 @@ function runnerSideReadClause(udid: unknown): string {
     // `describe` can show a node the runner keeps under a different name (a
     // password field) and can omit one the runner has (past its 5000-node
     // walk). What always settles it is running the conversion.
-    return (
+    const settle =
       "No read-only tool exposes the runner's trimmed tree on Chromium — `describe` re-reads the " +
       "same DOM on a shorter walk, so it both lists nodes the runner drops and omits nodes the " +
       "runner keeps — so settle it by running the conversion: put the directive in a flow and " +
-      "`flow-execute` it. A zero-height frame in `describe` means off-viewport, and the fix " +
-      "there is a `scroll-to` before the check rather than a different selector; a password " +
-      "field reaches the runner under the name `[password]`, so only an `id`/`role` selector " +
-      "can match it"
+      "`flow-execute` it. ";
+    // Both chromium tips make the directive match MORE surely, which is the
+    // right direction only while the check wants the element THERE. On `hidden`
+    // the verdict fires because that tree still has it, so the same advice
+    // works against the author — the distinction the iOS/Android arms draw in
+    // {@link retargetRemedy}.
+    if (condition === "hidden") {
+      return (
+        settle +
+        "This verdict says that tree still HAS the element, so the usual chromium tips are the " +
+        "wrong direction here: a `scroll-to` before the check, or a switch to an `id`/`role` " +
+        "selector, only makes the directive match more surely. Absence from `describe` is not " +
+        "the element having left, either — on a dense page the recorder's walk stops at 5000 " +
+        "nodes where the runner's goes to 12000. Narrow the selector until it matches only what " +
+        "you expect to leave, or gate on something that does leave; or keep the step raw"
+      );
+    }
+    return (
+      settle +
+      // Not "a zero-height frame": `normRect` clamps each edge to the viewport
+      // independently, so a node scrolled above or below comes back zero-HEIGHT
+      // and one scrolled left or right comes back zero-WIDTH. Naming only the
+      // vertical case tells an author with a horizontally scrolled carousel
+      // that their normal-height node is on screen, and they skip the
+      // `scroll-to` that would fix it.
+      "A zero-area frame in `describe` means off-viewport — zero height for a node above or " +
+      "below the viewport, zero width for one left or right of it, since the walker clamps " +
+      "each edge on its own — and the fix there is a `scroll-to` before the check rather than " +
+      "a different selector; a password field reaches the runner under the name `[password]`, " +
+      "so only an `id`/`role` selector can match it"
     );
   }
   if (platform === "vega") {
@@ -217,7 +319,7 @@ const SCREEN_MAY_HAVE_MOVED =
  * reachable, and a message that only ever describes the runner dropping
  * something sends an author to fix the wrong end.
  */
-function treeDivergenceFor(udid: unknown): string {
+function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
   const platform = platformOf(udid);
   if (platform === "ios") {
     return (
@@ -247,20 +349,50 @@ function treeDivergenceFor(udid: unknown): string {
     //     the RECORDER's tree that is short, and `describe` cannot show the
     //     element at all — which also made "`describe` returns the full DOM the
     //     recorder read" false exactly when it mattered.
+    //
+    // Both are reachable, but never at once, and which one it is follows from
+    // the CONDITION — the same distinction {@link retargetRemedy} draws. This
+    // probe runs only after the live wait PASSED, so on `visible`/`exists`/
+    // `text` the recorder demonstrably held a matching element and its own walk
+    // limit is ruled out; on `hidden` the wait passed on ABSENCE and this
+    // verdict says the runner's tree HAS the element, so the flow tree's drops
+    // cannot explain a node it kept. Offering both leaves the author to guess
+    // which half applies, and the half that does not is the expensive guess:
+    // a `visible` password divergence used to arrive with the dense-page
+    // walk-limit story attached.
+    if (condition === "hidden") {
+      return (
+        "Both read the same DOM but project it differently, and here it is the RECORDER that " +
+        "never saw the element: the live wait passed on absence, and this verdict says the " +
+        "runner's tree holds it — so nothing the flow tree DROPS can be the cause. What is " +
+        "left is the recorder's own limit: its walk stops at 5000 nodes where the flow tree's " +
+        "goes to 12000, so on a dense page the element is past the end of what it read." +
+        SCREEN_MAY_HAVE_MOVED
+      );
+    }
     return (
-      "Both read the same DOM but project it differently, and either side can be the one " +
-      "missing the element: the flow tree keeps only addressable nodes (id, label, value, " +
-      "clickable or focused) whose frame the walker did not clamp to zero area for being " +
-      "off-viewport, and it redacts a password field's name to `[password]` — while the " +
-      "recorder's walk stops at 5000 nodes where the flow tree's goes to 12000, so on a dense " +
-      "page it is the recorder that never saw the element." +
+      "Both read the same DOM but project it differently, and here it is the RUNNER's side to " +
+      "check: the live wait passed, so the recorder's tree did hold a matching element and its " +
+      "5000-node walk limit is not what went wrong. The flow tree keeps only addressable nodes " +
+      "(id, label, value, clickable or focused) whose frame the walker did not clamp to zero " +
+      "area for being off-viewport, and it redacts a password field's name to `[password]`." +
       SCREEN_MAY_HAVE_MOVED
     );
   }
   if (platform === "android") {
+    // Not "the runner reads the full hierarchy including not-important views":
+    // both sides call the same `devtools.getHierarchy()` RPC and get the same
+    // dump. What differs is entirely host-side — which parser runs over it, and
+    // the node cap each asks for. The conclusion the author acts on is the same
+    // either way, but an author told the two READ different things looks for a
+    // second source that does not exist.
     return (
-      "The recorder reads the trimmed accessibility tree and the runner reads the full " +
-      "hierarchy including not-important views; each holds elements the other drops." +
+      "Both read the same `getHierarchy` dump from the android-devtools helper; this host then " +
+      "parses it two ways. `describe`'s interactables trim collapses a `testID`-only container " +
+      "into a passthrough and drops the node carrying the id, while borrowing a descendant's " +
+      "text into an unlabelled clickable's own label — where the flow adapter keeps every view " +
+      "with a `resource-id` or a label, and asks for 12000 nodes against the helper's 5000 " +
+      "default. So each holds elements the other drops." +
       SCREEN_MAY_HAVE_MOVED
     );
   }
@@ -274,11 +406,23 @@ function treeDivergenceFor(udid: unknown): string {
     // `text` check MORE likely to hold. So "different projections of the
     // screen" would be plainly wrong here, and so would sending the author to
     // rewrite the selector.
+    //
+    // "Not that the two trees differ" is not the same as "the screen changed",
+    // and on `text` the difference is reachable: the re-shape emits post-order
+    // where `findAll` collects pre-order, so the two sides can elect different
+    // elements from identical nodes ({@link textTieClause}, which this same
+    // message carries). Stating the screen as the only cause would contradict
+    // it two sentences later.
+    const cause =
+      condition === "text"
+        ? "disagreement means either the SCREEN changed between the live wait and this re-probe " +
+          "or the two sides elected different elements, as above — not that the two trees differ."
+        : "disagreement means the SCREEN changed between the live wait and this re-probe, not " +
+          "that the two trees differ.";
     return (
       "Both read the same automation-toolkit page source, and the flow tree only re-shapes it — " +
       "it drops no element and its text hoist can only add matches — so on this platform a " +
-      "disagreement means the SCREEN changed between the live wait and this re-probe, not that " +
-      "the two trees differ."
+      cause
     );
   }
   return UNSUPPORTED_PLATFORM.divergence;
@@ -293,8 +437,63 @@ function treeDivergenceFor(udid: unknown): string {
  */
 function awaitStillNeeds(condition: WaitCondition): string {
   if (condition === "hidden") return "the element LEAVES that tree";
-  if (condition === "text") return "that element's text comes to match on that tree";
+  // Not "that element's": on `text` the two sides need not have judged the same
+  // element at all (see {@link textTieClause}), and naming it as shared
+  // presumes away the one cause a longer timeout cannot fix.
+  if (condition === "text") return "the element THAT tree elects comes to match on it";
   return "the element reaches that tree";
+}
+
+/**
+ * The cause neither tree story can explain, on the one condition that can have
+ * it: the selector matched several elements and the two sides elected different
+ * ones.
+ *
+ * `text` is alone in this. `exists`/`visible`/`hidden` quantify over every match
+ * (`length`, `some`, `!some`), so the order matches arrive in cannot change
+ * their answer. `text` inspects exactly one — `firstInReadingOrder` over the
+ * visible matches — and that helper breaks an EXACT (y, x) tie by encounter
+ * order.
+ *
+ * WHY the two orders differ is per platform, and the usual answer is wrong on
+ * iOS. On Android, Chromium and Vega the recorder reads a NESTED tree and
+ * `findAll` collects it pre-order (a container before its children) while
+ * `flattenHoisting` emits post-order (children before their container) — so a
+ * container and a text child sharing a frame, routine in React Native and the
+ * default for a block-level DOM wrapper, hand the recorder the container and
+ * the runner the child. On iOS neither side has a container to list: the AX
+ * describe path emits every element as a leaf under one synthetic `AXGroup`
+ * (`adaptAXDescribeToDescribeResult`), and the flow tree flattens too. The tie
+ * is still reachable there — the two flat lists are built from different
+ * sources, the accessibility element order and the view-hierarchy walk — but an
+ * author told to look for a container over a child would be hunting a shape
+ * that platform's trees do not have.
+ *
+ * The verdict is still right (the conversion really does fail), but every other
+ * explanation is wrong for it: both trees hold both nodes, so nothing about
+ * MEMBERSHIP applies; nothing moved, so the screen-changed escape does not
+ * either; and the element the runner read already has its final text, so no
+ * longer timeout can rescue it. Worse, the remedy that does work — narrow the
+ * selector until it resolves one node — is the one thing the rest of the
+ * message never suggests.
+ */
+function textTieClause(udid: unknown): string {
+  const order =
+    platformOf(udid) === "ios"
+      ? "and the two are flat lists built from different sources — the accessibility element " +
+        "order and the view-hierarchy walk — so neither order follows from the other"
+      : "and the recorder's lists a container before its children where the runner's lists " +
+        "children before their container";
+  return (
+    " Check FIRST whether the selector matches more than one element, because a `text` check " +
+    "reads only one of them — the first visible match in reading order — and the two sides can " +
+    "elect DIFFERENT ones from the very same nodes: an exact frame tie is settled by which node " +
+    `its tree listed first, ${order}. The reason above quotes whichever element the RUNNER ` +
+    "elected, so compare it against the one you meant. If that is what happened, both trees hold " +
+    "both elements and neither the tree differences nor a changed screen below explains " +
+    "anything — narrow the selector until it resolves a single node, and note that a longer " +
+    "`await:` timeout cannot help, since the text it read is already final."
+  );
 }
 
 /**
@@ -343,26 +542,125 @@ const UNMET_WAIT_WARNING =
   "recorded, but the wait itself never held — `await-ui-element` reports an unmet condition by " +
   "returning success:false instead of failing, so the step was written to the flow anyway. At " +
   "replay an unmet wait FAILS the step and stops the run there, so re-record it once the " +
-  // "Delete it from the .yaml" is only unconditionally true in host mode,
-  // where the recorder re-reads the file before each append. Against a remote
+  // Deleting AFTER the finish, which is the rule the create-flow skill states
+  // in two places and the one this warning used to contradict by authorising a
+  // host-mode delete mid-recording. Two reasons it may not: against a remote
   // client the in-memory copy is authoritative and the next append writes the
-  // step straight back — silently, since nothing reports the restore. The tool
-  // description carries that caveat for mid-recording edits generally; a
-  // warning that tells you to make one has to carry it too.
-  "condition can actually hold, or delete the step from the .yaml — in host (local) mode, where " +
-  "the recorder re-reads the file before each append; against a remote client the in-memory copy " +
-  "is authoritative mid-recording, so delete it after `flow-finish-recording` instead. " +
-  "The cross-tree re-probe was " +
+  // step straight back — silently, since nothing reports the restore; and in
+  // host mode the re-read makes the edit part of the take, renumbering the
+  // steps the finish's verdicts are anchored to, which drops them.
+  "condition can actually hold, and delete the failed step after `flow-finish-recording` rather " +
+  "than mid-recording: against a remote client the in-memory copy is authoritative and the next " +
+  "append writes the step straight back, and in host mode the recorder re-reads the file before " +
+  "each append, so an edit that renumbers the steps costs the finish the verdicts it would " +
+  "otherwise carry. The cross-tree re-probe was " +
   "skipped: it asks whether a check that PASSED would survive conversion to `await:`/`assert:`, " +
   "and this one did not pass";
 
-function abortError(): Error {
-  const err = new Error(
-    "flow-add-step aborted while re-probing the recorded wait against the runner's tree"
-  );
-  err.name = "AbortError";
-  return err;
+/**
+ * The same `success: false` that {@link UNMET_WAIT_WARNING} is written for,
+ * arrived at without a trustworthy read to judge the condition on — the tree
+ * source never answered, or answered blind, or went dark before the deadline;
+ * or the caller cancelled it. {@link unmetUiWaitCause} tells those apart from a
+ * genuine miss.
+ *
+ * Neither may reuse the unmet text. It asserts "the wait itself never held" and
+ * prescribes re-recording or deleting the step; here the condition was not
+ * judged, so it may be perfectly satisfiable and the step perfectly good.
+ * That is the same unknown-vs-known-bad distinction
+ * {@link probeAgainstRunnerTree} draws for an unreadable RUNNER tree, and for
+ * the same reason: do not send an author to rewrite a step on evidence nobody
+ * has.
+ *
+ * What it must not do is overclaim in the other direction either. "Nothing was
+ * ever compared" is true of a wholly blind window and false of one that only
+ * went dark at the end; and the note carries a tree-source ERROR only when a
+ * fetch actually threw — an empty or degraded tree produces no error to read.
+ */
+const UNREADABLE_WAIT_WARNING =
+  "recorded, but this wait reached its deadline without a trustworthy read of the UI tree, so " +
+  "the condition was never judged — `await-ui-element` returns success:false for that too, and " +
+  "the step was written to the flow anyway. Either no read in the window could be trusted, or " +
+  "the reads went dark before the end and what they saw no longer describes it. Whether the " +
+  "condition holds is UNKNOWN, not known-bad: `toolResult.note` names the tree-source error " +
+  "where a fetch threw, and describes what was seen where the tree was merely empty or " +
+  "degraded. Get that source back and re-record the step to find out. Do not delete the step on " +
+  "this warning alone. The cross-tree re-probe was skipped: it asks whether a check that PASSED " +
+  "would survive conversion to `await:`/`assert:`, and this one never got an answer";
+
+const CANCELLED_WAIT_WARNING =
+  "recorded, but this wait was cancelled before its deadline, so the condition was never settled " +
+  "— `await-ui-element` reports a cancelled wait as success:false, and the step was written to " +
+  "the flow anyway. Whether it holds is UNKNOWN, not known-bad: re-record the step to find out. " +
+  "The cross-tree re-probe was skipped for the same reason";
+
+function unmetWaitWarningFor(cause: UnmetUiWaitCause): string {
+  if (cause === "unreadable") return UNREADABLE_WAIT_WARNING;
+  if (cause === "cancelled") return CANCELLED_WAIT_WARNING;
+  return UNMET_WAIT_WARNING;
 }
+
+/**
+ * The indeterminate reason is quoted VERBATIM, and on iOS what it quotes was
+ * written for a different caller. `queryFullHierarchyTree` auto-targets
+ * (`resolveNativeTargetApp(nativeApi, undefined)`), so with no injected app it
+ * throws the shared native-target error — whose recovery text ends "provide
+ * bundleId explicitly", advice aimed at `native-full-hierarchy` and the other
+ * tools that take one.
+ *
+ * `await-ui-element` does take a `bundleId`, which makes that advice look
+ * actionable here. It is not, and forwarding one would be WRONG rather than
+ * merely missing: this probe predicts what an `await:`/`assert:` DIRECTIVE
+ * would do, and no directive carries a bundleId — `fetchFlowTree` auto-targets
+ * on every replay (the raw `tool:` step is the documented escape hatch for a
+ * custom bundleId precisely because the directives have none). A probe told to
+ * target an app the runner will never target would answer a question nobody
+ * asks.
+ *
+ * So correct the quoted advice instead of honouring it. This is not an exotic
+ * state: `references/reliability-and-recovery.md` prescribes exactly this mode
+ * for `com.apple.*` system apps, which cannot load the instrumentation — there
+ * the answer is permanent, and "keep it raw" is the whole workflow rather than
+ * a fallback.
+ */
+function indeterminateReasonCaveat(udid: unknown): string {
+  if (platformOf(udid) !== "ios") return "";
+  return (
+    ". That reason may tell you to pass `bundleId` — it is quoted from the shared native-target " +
+    "error, and it does not apply here: the probe predicts an `await:`/`assert:` directive, and " +
+    "no directive takes a bundleId, so neither this probe nor the runner accepts one (the " +
+    "`bundleId` on this step reached the live wait only). What the runner's iOS tree needs is an " +
+    "app with argent's instrumentation loaded — relaunch it with `launch-app` or a flow `launch:` " +
+    "step. An app that cannot load it at all, such as a `com.apple.*` system app, can never be " +
+    "probed or converted: keep the check as a raw `tool:` step"
+  );
+}
+
+/**
+ * A cancelled re-probe is reported, never thrown.
+ *
+ * The probe runs AFTER the wait ran on the device, which puts it under the
+ * doctrine {@link captureRunTarget} states for the same position: "Every
+ * refusal keeps the raw step rather than throwing — … a throw would discard the
+ * record of a step that already happened." Throwing here lost exactly that, in
+ * the window between the device action and the append.
+ *
+ * It was also out of band. `AbortError` is special-cased nowhere, so the
+ * registry attached the fallback signal and the caller saw
+ * REGISTRY_TOOL_EXECUTION_FAILED with `error_kind: "unknown"`, logged at error
+ * level and counted as `tool:fail`. Every other cancellation in the server is
+ * in band instead: `await-ui-element` returns `{ success: false, note: "wait
+ * was cancelled…" }`, and {@link ABORTED_OUTCOME} is scored as a skip rather
+ * than a step failure.
+ *
+ * A cancelled probe compared nothing, so like an unreadable runner tree it is
+ * UNKNOWN, never known-bad.
+ */
+const CANCELLED_PROBE_WARNING =
+  "recorded, but the re-probe against the tree the RUNNER reads was cancelled before it " +
+  "answered. The step itself ran and is written to the flow; only the verdict is missing, so " +
+  "whether it would convert to `await:`/`assert:` is UNKNOWN, not known-bad — record the wait " +
+  "again, uncancelled, before trusting the conversion";
 
 /**
  * Hard ceiling on the whole re-probe. `probeWhenCondition` polls on the assert
@@ -385,9 +683,38 @@ function abortError(): Error {
  * reported as indeterminate — "unknown", never "known-bad" — exactly like a
  * tree source that could not be read.
  *
- * The budget is the 1s grace plus enough slack for one in-flight read to land.
+ * Sized for the branch this probe EXISTS for, which is the expensive one. The
+ * loop checks its deadline only after a completed read and then fires one more
+ * back-to-back (`finalPoll`), so a determinate "does NOT hold" costs TWO full
+ * reads, not one — while the clean case returns from the first read that
+ * satisfies the condition. Budgeting "the grace plus one in-flight read" gave
+ * the determinate verdict half the per-read tolerance of the clean one, and the
+ * branch that lost is the one carrying the warning.
+ *
+ * So: the grace, plus room for BOTH reads. Below that the divergence warning is
+ * silently replaced by the indeterminate one on a device that was merely slow,
+ * which is why the timeout reason names slowness rather than an absent source
+ * (see {@link probeAgainstRunnerTree}). Android flow-tree reads have been
+ * measured at 3.4-7.4s on a host running several sessions at once, so no
+ * ceiling short of the RPC timeout makes that impossible — the point is to stop
+ * an ordinary slow read from costing the verdict.
+ *
+ * What bounds the OTHER end used to be a ceiling this tool alone opted out of.
+ * The MCP adapter caps a call at `FETCH_TIMEOUT_MS` (30s) unless its tool
+ * declares `longRunning`, and then retries the identical POST up to
+ * `MAX_RETRIES` (4) more times. Every retry re-runs the recorded tool and
+ * appends another step, since an aborted request still appends its first — so
+ * crossing the cap duplicated the step up to five times, not once. The three
+ * tools this one proxies are all `longRunning` (`await-ui-element`,
+ * `run-sequence`, `flow-run`), which made the asymmetry sharp: a
+ * `timeoutMs: 28000` wait ran fine standalone and duplicated once recorded.
+ * This budget was spent from that same ceiling, moving the crossing point down
+ * by up to 6s. `flow-add-step` now declares `longRunning` too, which removes
+ * the class rather than trading against it — see the tool definition below.
  */
-const PROBE_BUDGET_MS = 4000;
+const PROBE_MAX_TREE_READ_MS = 2500;
+const PROBE_ASSERT_GRACE_MS = 1000; // DEFAULT_ASSERT_TIMEOUT_MS, the loop's own window
+const PROBE_BUDGET_MS = PROBE_ASSERT_GRACE_MS + 2 * PROBE_MAX_TREE_READ_MS;
 
 /**
  * Length cap on the probe's own reason before it is quoted back to the agent —
@@ -419,12 +746,33 @@ const MAX_PROBE_REASON_CHARS = 200;
  */
 const PROBE_REASON_TAIL_CHARS = 60;
 
+function elisionMarker(dropped: number): string {
+  return `… (${dropped} more chars) …`;
+}
+
+/**
+ * {@link MAX_PROBE_REASON_CHARS} bounds what is EMITTED, not what is kept.
+ *
+ * Budgeting the kept content instead let the marker push the result past the
+ * cap — and, just over the boundary, past the input it was meant to shorten: a
+ * 201-character reason came out at 218, announcing "(1 more chars)".
+ *
+ * The marker's own width depends on the count it reports, which depends on how
+ * much the marker leaves room for. Size the head against the WIDEST the marker
+ * can be — `dropped` can never exceed the reason's own length, so that digit
+ * count bounds it — and the emitted string fits in one pass, with no loop and
+ * no chance of overshoot.
+ */
 function cappedReason(reason: string): string {
   if (reason.length <= MAX_PROBE_REASON_CHARS) return reason;
-  const head = reason.slice(0, MAX_PROBE_REASON_CHARS - PROBE_REASON_TAIL_CHARS);
-  const tail = reason.slice(reason.length - PROBE_REASON_TAIL_CHARS);
-  const dropped = reason.length - MAX_PROBE_REASON_CHARS;
-  return `${head}… (${dropped} more chars) …${tail}`;
+  const widestMarker = elisionMarker(reason.length).length;
+  const tailChars = Math.max(
+    0,
+    Math.min(PROBE_REASON_TAIL_CHARS, MAX_PROBE_REASON_CHARS - widestMarker)
+  );
+  const headChars = Math.max(0, MAX_PROBE_REASON_CHARS - widestMarker - tailChars);
+  const dropped = reason.length - headChars - tailChars;
+  return `${reason.slice(0, headChars)}${elisionMarker(dropped)}${reason.slice(reason.length - tailChars)}`;
 }
 
 /**
@@ -489,22 +837,31 @@ async function probeAgainstRunnerTree(
   // Whichever way it settled, this call is done with the loop — and on the
   // timeout path the loop is the thing still holding the device.
   giveUp.abort();
-  if (settled.type === "aborted") throw abortError();
+  // Every cancellation arrives HERE, and {@link ABORTED_OUTCOME} never does.
+  // `settleWithin` latches on `ctx.signal`, which is also the only signal that
+  // can reach the loop before this line: `giveUp` is aborted one statement
+  // above, after the await. So a cancelled probe always settles as `aborted`
+  // rather than returning an aborted outcome, and the value arm below has no
+  // `outcome.aborted` case to answer.
+  if (settled.type === "aborted") return { warning: CANCELLED_PROBE_WARNING };
   // A read that outran the budget, and a probe that threw outright, are both
-  // "the runner's tree did not answer" — indeterminate, never a verdict.
+  // "the runner's tree did not answer" — indeterminate, never a verdict. They
+  // are not the same diagnosis, though: on a timeout the source ANSWERED, just
+  // too slowly for an interactive recorder, so the reason must not describe it
+  // as absent (the recovery below turns on this distinction).
+  const timedOut = settled.type === "timeout";
   const outcome: DirectiveOutcome =
     settled.type === "value"
       ? settled.value
       : {
           ok: false,
           indeterminate: true,
-          reason:
-            settled.type === "timeout"
-              ? `the runner's tree did not answer within ${PROBE_BUDGET_MS}ms`
-              : `reading the runner's tree failed: ${settled.error}`,
+          reason: timedOut
+            ? `the runner's tree was still being read ${PROBE_BUDGET_MS}ms in, which is longer ` +
+              `than the recorder waits — the source is slow, not down`
+            : `reading the runner's tree failed: ${settled.error}`,
         };
   if (outcome.ok) return {};
-  if (outcome.aborted) throw abortError();
   if (outcome.indeterminate) {
     return {
       // Deliberately NOT joined with treeDivergenceFor/runnerSideReadClause.
@@ -527,7 +884,17 @@ async function probeAgainstRunnerTree(
         `(${outcome.reason ?? "no reason given"}), so it passed against the tree ` +
         `\`${AWAIT_UI_ELEMENT_TOOL_ID}\` ` +
         `reads and nothing else. Whether it would convert to \`await:\`/\`assert:\` is UNKNOWN, ` +
-        `not known-bad — re-probe once that tree source is back before trusting the conversion`,
+        `not known-bad — ` +
+        // A timeout and an outage need different next moves, and "once that
+        // tree source is back" is nonsense for a source that never left: it
+        // sends the author to wait for a recovery that already happened, on a
+        // device whose only problem is load.
+        (timedOut
+          ? `re-record this step when the device is quieter, or settle the conversion directly by ` +
+            `putting the directive in a flow and running \`flow-execute\`, which has no such ` +
+            `ceiling`
+          : `re-probe once that tree source is back before trusting the conversion` +
+            indeterminateReasonCaveat(args.udid)),
     };
   }
   // Determinate: the runner's tree really was read, and the condition really
@@ -559,10 +926,16 @@ async function probeAgainstRunnerTree(
       `does too unless ${awaitStillNeeds(condition as WaitCondition)} within its longer ` +
       `timeout; if the SCREEN simply moved on since the live wait, this verdict is no evidence ` +
       `against either — at replay the directive runs where that wait ran, not a moment after ` +
-      `it. ` +
+      `it.` +
+      // Ahead of the tree stories, not after them: when it applies it makes
+      // every one of them inapplicable, so an author who reads it last has
+      // already been sent to investigate membership and timing.
+      (condition === "text" ? textTieClause(args.udid) : "") +
+      " " +
       SPELLING_CLAUSE +
       " " +
-      `${treeDivergenceFor(args.udid)} ${runnerSideReadClause(args.udid)}`,
+      `${treeDivergenceFor(args.udid, condition as WaitCondition)} ` +
+      `${runnerSideReadClause(args.udid, condition as WaitCondition)}`,
   };
 }
 
@@ -580,15 +953,25 @@ async function probeAgainstRunnerTree(
  * the testID-only containers the replay tree keeps. A selector derived from
  * the describe tree could fail — or hit a different element — at replay while
  * recording reported success.
+ *
+ * The launched app the read is given plays the part it plays at replay (see
+ * `ActionEnv`): with nothing connected it is the only id the iOS tree source
+ * can measure, and the recorder is where that matters most — a recording
+ * relaunches the app AFTER this tool-server bound its listener, so the first
+ * tap reads during the connect window, whose measured messages say NOT to
+ * restart the app. Without it the kept-coordinates warning quotes
+ * auto-targeting's "Launch or restart the app first" instead.
  */
 async function captureTapSelector(
   registry: Registry,
+  session: RecordingSession,
   udid: string,
   point: { x: number; y: number }
 ): Promise<{ selector?: Selector; warning?: string }> {
   try {
     const device = resolveDevice(udid);
-    const { tree, source } = await fetchFlowTree(registry, device);
+    const launched = recordedLaunchedApp(session, device.platform);
+    const { tree, source } = await fetchFlowTree(registry, device, launched);
     const node = nodeAtPoint(tree, point);
     if (!node) return { warning: "no element found under the tap; kept coordinates (brittle)" };
     const selector = deriveSelector(node);
@@ -1195,9 +1578,20 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
         `Failed to add ${params.command} step to flow ${params.name}: ${failureSignal.error_code}`,
     },
     description: `Execute a tool call and record it as a step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording). Use when recording a flow and you want to run and capture each action. A coordinate \`gesture-tap\` is recorded as a portable \`tap: { selector }\` step when the tapped element has stable text/identifier (otherwise coordinates are kept with a warning); a \`restart-app\` is recorded as a \`launch\` step (record one FIRST to make the flow a self-contained e2e flow; restart-app has no chromium support, so a chromium flow records as a fragment — add the \`launch: { chromium: <app path> }\` line to the YAML afterward, deleting the executionPrerequisite line if one was recorded: a flow that starts with a launch must not declare it).
-A recorded \`await-ui-element\` is re-probed against the tree the RUNNER resolves \`await:\`/\`assert:\` directives against, which is NOT the tree the live call read; when the condition does not hold there the step is still recorded and \`message\` carries a warning to read before converting — whether the conversion actually breaks depends on WHY the two disagree, since a screen that moved on between the live wait and the re-probe reads the same way. If that tree could not be read at all, the warning says so instead: the conversion is UNKNOWN, not known-bad. The probe judges the selector exactly as recorded, so write the conversion in the strict map spelling (\`{ visible: { text: Continue } }\`, copying the step's \`selector:\`) — the bare-string spelling (\`{ visible: Continue }\`) re-parses as a loose selector that resolves identifier-first and falls back to text, which is a different check. \`message\` also warns when the live wait never held — that tool reports an unmet condition by returning \`{ success: false }\` rather than failing, so the step is recorded and will stop the run at replay.
+A recorded \`await-ui-element\` that PASSED is re-probed against the tree the RUNNER resolves \`await:\`/\`assert:\` directives against, which is NOT the tree the live call read; a wait that came back \`{ success: false }\` is not probed at all, and its warning says so; when the condition does not hold there the step is still recorded and \`message\` carries a warning to read before converting — whether the conversion actually breaks depends on WHY the two disagree, since a screen that moved on between the live wait and the re-probe reads the same way. If that tree could not be read at all, the warning says so instead: the conversion is UNKNOWN, not known-bad. The probe judges the selector exactly as recorded, so write the conversion in the strict map spelling (\`{ visible: { text: Continue } }\`, copying the step's \`selector:\`) — the bare-string spelling (\`{ visible: Continue }\`) re-parses as a loose selector that resolves identifier-first and falls back to text, which is a different check. \`message\` also warns when the live wait itself came back \`{ success: false }\` — that tool reports a failed wait by returning rather than throwing, so the step is recorded either way. That warning names the cause, because only one of them judges the condition: a genuine miss will stop the run at replay, while a wait whose tree source was unreadable, or one that was cancelled, observed nothing and leaves the condition UNKNOWN.
 Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded. Two calls SUCCEED while recording nothing, and omit \`recorded\` to say so: a \`command\` naming a recording tool, and one naming a flow-file directive rather than a tool. Both answer with the call to make instead, run nothing at the device, and leave the take untouched — read \`recorded\`, not the status, to know whether a step was appended.
-If a step was recorded by mistake, edit the .yaml to remove it — against a remote client, only after \`flow-finish-recording\`: the in-memory copy is authoritative there, and every write serializes it over your edit.`,
+If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-recording\` rather than during the recording: against a remote client the in-memory copy is authoritative and every write serializes it over your edit, and in host mode a mid-recording edit renumbers the steps, which costs the finish the cross-tree verdicts anchored to them.`,
+    // The recorded tool RUNS here, so this call is as long as whatever it
+    // wraps — and the three it most often wraps (`await-ui-element`,
+    // `run-sequence`, `flow-execute`) all declare this. Without it the MCP
+    // adapter capped the POST at 30s and retried the identical body up to four
+    // more times; every retry re-runs the recorded action on the device and
+    // appends another step, because an aborted request still appends its
+    // first. A `timeoutMs: 28000` wait therefore ran fine standalone and
+    // duplicated itself once recorded, and the re-probe's budget moved that
+    // crossing point down by up to another 6s. The server keeps its own idle
+    // timer warm for the call's duration on this same flag (see http.ts).
+    longRunning: true,
     zodSchema,
     services: () => ({}),
     async execute(_services, params, ctx) {
@@ -1258,7 +1652,7 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
 
       let captured: { selector?: Selector; warning?: string } | undefined;
       if (isTap) {
-        captured = await captureTapSelector(registry, args.udid as string, {
+        captured = await captureTapSelector(registry, session, args.udid as string, {
           x: args.x as number,
           y: args.y as number,
         });
@@ -1283,14 +1677,27 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       // A recorded wait that HELD against the tree await-ui-element reads gets
       // asked the tree the runner resolves DIRECTIVES against too, so the author learns
       // now — rather than after polish — whether the conversion is safe. One
-      // that never held is a step failure at replay and is reported as such
-      // instead (see {@link UNMET_WAIT_WARNING}).
-      let crossTreeWarning: string | undefined;
+      // that came back success:false is reported by CAUSE instead: a genuine
+      // miss is a step failure at replay (see {@link UNMET_WAIT_WARNING}),
+      // while an unreadable tree source or a cancellation observed nothing and
+      // must not be narrated as one (see {@link UNREADABLE_WAIT_WARNING}).
+      //
+      // The two are filed under different kinds. Only the probe's answer is
+      // about converting the step, and `flow-finish-recording` headlines them
+      // separately: a caller told that a never-probed wait "carries a
+      // cross-tree warning about converting" has been handed the opposite of
+      // the actionable fact, and one that is not converting anything reads that
+      // as licence to skip the summary.
+      let waitWarning: { warning: string; kind: "conversion" | "wait" } | undefined;
       if (params.command === AWAIT_UI_ELEMENT_TOOL_ID) {
         if (isUnmetUiWaitResult(params.command, toolResult)) {
-          crossTreeWarning = UNMET_WAIT_WARNING;
+          waitWarning = {
+            warning: unmetWaitWarningFor(unmetUiWaitCause(toolResult)),
+            kind: "wait",
+          };
         } else {
-          crossTreeWarning = (await probeAgainstRunnerTree(registry, ctx, args)).warning;
+          const probed = (await probeAgainstRunnerTree(registry, ctx, args)).warning;
+          if (probed) waitWarning = { warning: probed, kind: "conversion" };
         }
       }
 
@@ -1338,7 +1745,7 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       } else if (runTarget?.flow) {
         step = { kind: "run", flow: runTarget.flow };
       } else {
-        warning = crossTreeWarning ?? runTarget?.warning;
+        warning = waitWarning?.warning ?? runTarget?.warning;
         // The step ran live with the full args (incl. the device id), but the
         // recorded form drops the device id so the flow stays portable — the
         // runner injects whatever device it resolves at replay.
@@ -1351,6 +1758,37 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
       }
 
       const { savedTo, stepCount } = await appendStepToFlow(session, step);
+
+      // Keep the probe's verdict for `flow-finish-recording`. It is a
+      // polish-time answer, and polish starts after the recording closes — by
+      // which point this `message` is many tool results back. Filed under the
+      // step's number and carrying the step itself, so a hand edit the recorder
+      // appends over cannot hand the verdict to whatever inherits that number
+      // (see {@link RecordedStepWarning}).
+      //
+      // ONLY this warning is carried, which is a decision and not an oversight.
+      // The scroll-out-of-reach argument applies to any warning, but the finish
+      // summary already answers the other two by RENDERING what was written:
+      // every `captureTapSelector` refusal ends in kept coordinates, which
+      // reads as `N. tap: (x, y)` instead of `N. tap: {selector}`, and every
+      // `captureRunTarget` refusal keeps the raw step, which reads as
+      // `N. tool: flow-execute {…}` instead of `N. run: name.yaml`. An author
+      // polishing from the summary sees both without being told. The verdict
+      // has no such tell — a step that will break on conversion renders exactly
+      // like one that will not — which is what makes carrying it worth a field
+      // on the session.
+      //
+      // The one warning that is neither carried nor legible is
+      // {@link fallbackSourceWarning}: the selector WAS captured, so the step
+      // renders normally, and the replay risk it names is invisible by the time
+      // it matters. Carrying it needs a third `kind` and its own headline arm
+      // in flow-finish-recording; it is a gap, not this branch's subject.
+      if (waitWarning) {
+        (session.stepWarnings ??= new Map()).set(stepCount, {
+          ...waitWarning,
+          step: stepAnchor(step),
+        });
+      }
 
       return {
         message: `Step added to "${params.name}" flow${warning ? ` — ${warning}` : ""}`,
