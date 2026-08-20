@@ -5,7 +5,9 @@
 // itself cannot be. This driver runs one script through the real executor and
 // then waits; the test kills it and checks that the runner did not survive.
 //
-// Run with: node --import ts-node/esm … or `ts-node -T <this file> <script> <cwd>`.
+// Run through ts-node's own binary, with the workspace tsconfig, which is what
+// `flow-script-lifecycle.test.ts` spawns:
+// `node <ts-node/dist/bin.js> -T -P packages/tool-server/tsconfig.json <this file> <script> <cwd>`.
 import { FlowScriptExecutor } from "../../src/tools/flows/script/flow-script-executor";
 
 const [scriptPath, projectRoot] = process.argv.slice(2);

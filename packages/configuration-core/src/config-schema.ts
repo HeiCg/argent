@@ -200,8 +200,9 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     key: "scripts.heapLimitMb",
     description:
       "Old-space heap limit, in MiB, given to each flow `script` process (default 512). " +
-      "A smaller value is below what a real npm dependency needs at import time; below " +
-      `${MIN_SCRIPT_HEAP_LIMIT_MB} MiB a Node process cannot start at all.`,
+      `Values below ${MIN_SCRIPT_HEAP_LIMIT_MB} MiB are refused: that is already below what ` +
+      "importing a real npm dependency needs, and under about 5 MiB the process dies inside " +
+      "V8's own startup before any script runs.",
     scopes: ["global"],
     // Not just "a positive whole number": under about 5 MiB the process dies
     // inside V8's own startup, before any script runs, and the step failed with

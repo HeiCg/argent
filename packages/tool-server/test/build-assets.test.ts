@@ -15,9 +15,10 @@ const COPY_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "copy-build-assets.mjs");
  * Nothing asserted this. `flow-script-protocol.test.ts` hand-copies the three
  * `.mjs` files into a temporary directory, so it stays green with the copy
  * script deleted, and the CI `test -f` guards only the published bundle, which
- * copies from `src`. A `dist/` missing any of these boots as a tool server that
- * fails every flow `script` step, and `windows-e2e.yml` and the Vega E2E script
- * both boot exactly that `dist/`.
+ * copies from `src`. `windows-e2e.yml` and the Vega E2E script both boot
+ * `packages/tool-server/dist` as a real tool server: no flow `script` step
+ * exists yet, so a short `dist/` boots today, and from the PR that wires the
+ * step up it fails every one of them at flow-execute time.
  */
 const ASSETS = [
   "utils/ios-profiler/Argent.tracetemplate",

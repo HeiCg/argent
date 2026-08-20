@@ -765,11 +765,14 @@ export class FlowScriptExecutor {
     // the process group first closes them in the normal case.
     await Promise.race([closed, sleep(SETTLE_TIMEOUT_MS)]);
     // Idempotent, and on a passing step this is the only cleanup there is: the
-    // runner has exited, and anything it started that is still running is
-    // reaped here rather than left behind holding a port or a database
-    // connection. A descendant that deliberately left the group — `detached` —
-    // is out of reach on purpose, which is how a script starts something meant
-    // to outlive it.
+    // runner has exited, and on POSIX anything it started that is still running
+    // is reaped here rather than left behind holding a port or a database
+    // connection — the process group outlives the runner, so the group stop
+    // still reaches it. A descendant that deliberately left the group —
+    // `detached` — is out of reach on purpose, which is how a script starts
+    // something meant to outlive it. Windows has no such group and `taskkill`
+    // has nothing to walk from once the child is gone, so a descendant of a
+    // normally-returning step survives there; `stopProcessTree` records it.
     await stop();
     capture.end();
     child.stdout?.destroy();

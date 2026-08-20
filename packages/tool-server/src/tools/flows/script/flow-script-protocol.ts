@@ -10,7 +10,7 @@
  * a whole message has been serialized.
  *
  * **Two rules the brief gives the parent are deliberately not implemented, and
- * both are visible here rather than in a plan file.** A response that arrives
+ * this is where that decision is recorded.** A response that arrives
  * after the child's exit is honoured rather than rejected: the message handler
  * stays attached through the settle race, and a verdict the child sent before
  * dying is still that child's verdict — Node simply delivered it late. And

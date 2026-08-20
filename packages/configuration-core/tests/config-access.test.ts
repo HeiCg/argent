@@ -386,9 +386,12 @@ describe("deleteAtPath prunes only what it emptied", () => {
 
 describe("flow script host bounds", () => {
   it("refuses a heap limit too small for a Node process to start", () => {
-    // The likely way in is a unit slip — `heapLimitMb: 2` meaning 2 GB. Below
+    // The likely way in is a unit slip — `heapLimitMb: 2` meaning 2 GB. Under
     // about 5 MiB the script process dies inside V8's own startup, and the step
-    // failed with a message that named neither this key nor the value.
+    // failed with a message that named neither this key nor the value. The
+    // floor sits well above that, at 32 MiB, because a value between the two
+    // starts a process that cannot import a real npm dependency — a failure
+    // just as confusing and one the message would not explain either.
     expect(() => setConfigValue("scripts.heapLimitMb", 2, "global", opts())).toThrow(
       ConfigValidationError
     );

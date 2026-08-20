@@ -1,14 +1,18 @@
 #!/usr/bin/env node
-// Copy the non-TypeScript files `tsc` leaves behind into dist/, preserving their
-// path inside the package.
+// Copy the non-TypeScript files `tsc` leaves behind into dist/, at the same
+// path they have under src/ — `src/` itself is stripped, so `src/a/b.mjs`
+// becomes `dist/a/b.mjs`, mirroring what `tsc` does with a `.ts` beside it.
 //
-// Every one of these is resolved at runtime through `path.join(__dirname, ...)`
-// from the module that sits next to it, so the destination has to mirror the
-// source layout exactly.
+// That layout is what the runtime lookups assume. The runner is resolved from
+// the compiled executor's own `__dirname`, and the two watchdogs from the
+// runner's `import.meta.url`; the Instruments template is looked up by relative
+// depth from the module that needs it, which has two candidates because that
+// depth differs between the bundle and a dev tree.
 //
 // The workspace `build` script runs this, which is what keeps it from being
-// forgotten: `packages/tool-server/dist` is booted as a real tool server by
-// CI, and a dist without these files fails every flow `script` step at
+// forgotten: `packages/tool-server/dist` is booted as a real tool server by CI.
+// No flow `script` step exists yet, so today a short dist ships unreachable
+// payload; from the PR that wires the step up, it fails every one of them at
 // flow-execute time.
 
 import fs from "node:fs";
@@ -21,8 +25,9 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const ASSETS = [
   // Instruments template for iOS native profiling.
   "src/utils/ios-profiler/Argent.tracetemplate",
-  // The flow `script` child process and its two watchdog threads. They import
-  // nothing from this package, so `tsc` never sees them.
+  // The flow `script` child process and its two watchdog threads. The
+  // tool-server package sets no `allowJs`, so `tsc` skips a `.mjs` whether or
+  // not anything imports it.
   "src/tools/flows/script/flow-script-runner.mjs",
   "src/tools/flows/script/flow-script-watchdog-lifeline.mjs",
   "src/tools/flows/script/flow-script-watchdog-deadline.mjs",
