@@ -665,9 +665,49 @@ function describeBytes(bytes) {
   return `${bytes} bytes`;
 }
 
+/**
+ * An error as a message, carrying the causes Node itself would have printed.
+ *
+ * `err.message` alone loses the whole reason for the dominant failure shape of
+ * a seeding script: `fetch("…")` throws `fetch failed` and puts
+ * `connect ECONNREFUSED 127.0.0.1:5432` in `.cause`, and `Promise.any` puts
+ * every attempt in `AggregateError.errors`. Node prints both, but the runner's
+ * `uncaughtException` handler claims the exception, so that printout never
+ * happens and the log is empty beside the message — leaving a report with
+ * strictly less in it than running the script by hand.
+ *
+ * The rendering, the depth bound and the skip-what-is-already-said rule are the
+ * parent's `formatErrorForAgent`; this file imports nothing from the package,
+ * so it carries its own copy. The bound also guards a `.cause` that points back
+ * up its own chain.
+ */
 function errorMessage(err) {
-  if (err instanceof Error) return err.message || String(err);
-  return typeof err === "string" ? err : safeStringify(err);
+  if (!(err instanceof Error)) return typeof err === "string" ? err : safeStringify(err);
+  const parts = [];
+  visitError(err, 0, CAUSED_BY, parts, new Set());
+  return parts.map((part, at) => (at === 0 ? part.text : part.joiner + part.text)).join("");
+}
+
+/** How far {@link errorMessage} follows a chain of causes. */
+const MAX_CAUSE_DEPTH = 8;
+const CAUSED_BY = " — caused by: ";
+/** `AggregateError.errors` are siblings, not a chain: every attempt that failed. */
+const ALSO = "; ";
+
+function visitError(err, depth, joiner, parts, seen) {
+  if (depth > MAX_CAUSE_DEPTH || !(err instanceof Error) || seen.has(err)) return;
+  seen.add(err);
+  const text = err.message || String(err);
+  // Text an earlier part already carries adds nothing: a wrapper that quotes
+  // its own cause is the ordinary shape.
+  if (text && !parts.some((part) => part.text.includes(text))) parts.push({ joiner, text });
+  if (Array.isArray(err.errors)) {
+    const before = parts.length;
+    for (const nested of err.errors) {
+      visitError(nested, depth + 1, parts.length === before ? CAUSED_BY : ALSO, parts, seen);
+    }
+  }
+  visitError(err.cause, depth + 1, CAUSED_BY, parts, seen);
 }
 
 function errorStack(err) {

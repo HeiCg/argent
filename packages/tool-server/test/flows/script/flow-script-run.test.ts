@@ -261,6 +261,40 @@ describe("flow script executor — module loading", () => {
     expect(result.failure?.kind).toBe("runtime");
   });
 
+  it("carries the causes Node would have printed into the failure message", async () => {
+    const ws = workspace();
+    // The dominant failure shape of a seeding script: `fetch` throws
+    // `fetch failed` and puts the real reason in `.cause`. The runner's own
+    // handler claims the exception, so Node's printout — which does show
+    // `[cause]` — never happens, and the report had strictly less in it than
+    // running the script by hand.
+    const chained = ws.write(
+      "chained.mjs",
+      `throw new Error("could not seed the order", {
+         cause: new Error("connect ECONNREFUSED 127.0.0.1:5432"),
+       });`
+    );
+    const fromChain = await executor().execute({ scriptPath: chained, projectRoot: ws.dir });
+    expect(fromChain.failure?.kind).toBe("runtime");
+    expect(fromChain.failure?.message).toBe(
+      "could not seed the order — caused by: connect ECONNREFUSED 127.0.0.1:5432"
+    );
+
+    // `Promise.any` puts every attempt in `errors`; they are siblings, not a
+    // chain, and neither reached the report at all.
+    const aggregate = ws.write(
+      "aggregate.mjs",
+      `throw new AggregateError(
+         [new Error("ipv4 refused"), new Error("ipv6 refused")],
+         "all attempts failed"
+       );`
+    );
+    const fromAggregate = await executor().execute({ scriptPath: aggregate, projectRoot: ws.dir });
+    expect(fromAggregate.failure?.message).toBe(
+      "all attempts failed — caused by: ipv4 refused; ipv6 refused"
+    );
+  });
+
   it("calls the script's own asynchronous failures runtime failures", async () => {
     const ws = workspace();
     // An error raised asynchronously carries the frames of wherever it was
