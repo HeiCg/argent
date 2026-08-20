@@ -129,11 +129,28 @@ describe("foldText", () => {
     expect(equalsCI("Sign\u0085in", "Sign in")).toBe(false);
   });
 
-  it("still collapses a break run to ONE newline, the spaces around it included", () => {
+  it("still collapses a break run to ONE newline PER BREAK, spaces around it included", () => {
     // CRLF is one break, not two, and the incidental indentation either side of
     // a break is as invisible as a doubled space is.
     expect(foldText("Line one\r\nLine two")).toBe(foldText("Line one\nLine two"));
     expect(foldText("Line one \n  Line two")).toBe("line one\nline two");
+  });
+
+  it("keeps a BLANK LINE, which one break does not render as", () => {
+    // Collapsing the whole run to a single newline equated one break with two,
+    // so deleting a visible blank line could not fail an exact check — the same
+    // silently-wrong green the break itself is kept to prevent. The breaks in a
+    // run are counted, and the indentation between them still absorbed.
+    expect(foldText("Line one\n\nLine two")).toBe("line one\n\nline two");
+    expect(equalsCI("Line one\n\nLine two", "Line one\nLine two")).toBe(false);
+    expect(includesCI("Line one\n\nLine two", "one\nLine")).toBe(false);
+    // A blank line spelled with indentation on it is still ONE blank line, and
+    // CRLF still counts once.
+    expect(equalsCI("Line one\n \nLine two", "Line one\n\nLine two")).toBe(true);
+    expect(equalsCI("Line one\r\n\r\nLine two", "Line one\n\nLine two")).toBe(true);
+    // Nothing downstream can rescue this either, so the fold has to: the two
+    // labels differ in a VISIBLE character, which is not what the note names.
+    expect(confusableTextNote("Line one\n\nLine two", "Line one\nLine two")).toBeUndefined();
   });
 
   it("counts only an INTERIOR break, so outer whitespace stays a space", () => {

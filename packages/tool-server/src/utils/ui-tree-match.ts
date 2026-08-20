@@ -196,7 +196,7 @@ export function assertText(node: DescribeNode): string {
 //   - A line break is not one of these controls at all, but the same test
 //     decides it: a run of whitespace collapses to a single character, and a
 //     run that breaks the line collapses to a newline rather than a space (see
-//     {@link LINE_BREAK}). A soft hyphen is kept for a hyphen it MIGHT paint;
+//     {@link LINE_BREAKS_G}). A soft hyphen is kept for a hyphen it MIGHT paint;
 //     a `\n` moves the glyphs after it unconditionally.
 //
 // So the set is split three ways: always safe, safe only while the string has
@@ -207,7 +207,9 @@ const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
 
 /**
  * Whitespace that BREAKS THE LINE, and so is the one part of the whitespace
- * family the run-collapse must not equate with a space.
+ * family the run-collapse must not equate with a space. Global, and matching a
+ * CRLF as the ONE break it renders as, because the collapse COUNTS the breaks
+ * in a run; used only with `String.prototype.match`, which resets `lastIndex`.
  *
  * A soft hyphen is kept because it MIGHT paint a hyphen, if the line happens to
  * break there; `\n` breaks the line unconditionally. Collapsing it let
@@ -218,10 +220,13 @@ const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
  *
  * The horizontal collapse it narrows is still worth having: doubled spaces and
  * a tab used as padding really are invisible, and an NBSP reduced by
- * {@link SPACE_LIKE} next to a plain space has to merge with it. So a run
- * collapses to ONE character either way — a newline when the run breaks the
- * line, a space otherwise — which also folds CRLF onto LF and absorbs the
- * incidental spaces around a break.
+ * {@link SPACE_LIKE} next to a plain space has to merge with it. So a run with
+ * no break in it collapses to one space, while a run that breaks the line
+ * collapses to ONE NEWLINE PER BREAK — which folds CRLF onto LF and absorbs the
+ * incidental spaces around a break, but keeps a blank line. Collapsing the run
+ * to a single newline equated one break with two, so deleting a visible blank
+ * line could not fail an `equals`: the same silently-wrong green this comment's
+ * first paragraph rules out, one line further down.
  *
  * Only an INTERIOR run, though. A break at the very edge of a label separates
  * no glyph from another, and it is the same outer whitespace {@link foldText}
@@ -234,7 +239,7 @@ const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
  * reaches the collapse — which lands on the same conservative answer anyway: it
  * survives folding whole, and a label carrying one equals no label without it.
  */
-const LINE_BREAK = /[\n\r\v\f\u2028\u2029]/;
+const LINE_BREAKS_G = /\r\n|[\n\r\v\f\u2028\u2029]/gu;
 
 /**
  * Invisible formatting that cannot change a glyph or its position in ANY
@@ -319,8 +324,8 @@ const FOLD_CACHE_MAX = 4096;
 /**
  * The comparable form of a piece of UI text: invisible formatting stripped,
  * every space-like codepoint reduced to a plain space, each run of whitespace
- * collapsed to one character (a newline where the run breaks the line — see
- * {@link LINE_BREAK} — a space otherwise), trimmed, lowercased, and only then
+ * collapsed to one space, or to one newline per line break the run holds (see
+ * {@link LINE_BREAKS_G}), trimmed, lowercased, and only then
  * NFC-normalized (composition runs last because `toLowerCase` is not
  * NFC-preserving — see {@link foldLoose}).
  *
@@ -410,14 +415,16 @@ function foldWith(value: string, stripLtr: boolean): string {
   if (stripLtr) stripped = stripped.replace(LTR_BIDI, "");
   const folded = stripped
     .replace(SPACE_LIKE, " ")
-    // One character per whitespace run — a newline when an INTERIOR run breaks
-    // the line, a space otherwise. See {@link LINE_BREAK} for why the two
-    // cannot both collapse to a space, and why only an interior run counts:
-    // `\s+` is greedy, so a run with text on both sides is one with a non-space
-    // neighbour at each end.
-    .replace(/\s+/g, (run, at: number, whole: string) =>
-      LINE_BREAK.test(run) && at > 0 && at + run.length < whole.length ? "\n" : " "
-    )
+    // One space per whitespace run, or one newline per LINE BREAK in an INTERIOR
+    // run. See {@link LINE_BREAKS_G} for why the two cannot both collapse to a
+    // space, why the breaks are counted rather than merged, and why only an
+    // interior run counts: `\s+` is greedy, so a run with text on both sides is
+    // one with a non-space neighbour at each end.
+    .replace(/\s+/g, (run, at: number, whole: string) => {
+      if (at === 0 || at + run.length === whole.length) return " ";
+      const breaks = run.match(LINE_BREAKS_G)?.length ?? 0;
+      return breaks > 0 ? "\n".repeat(breaks) : " ";
+    })
     .toLowerCase()
     // Compose LAST, because `toLowerCase` is not NFC-preserving. Where the
     // uppercase spelling has no precomposed code point, NFC leaves it
