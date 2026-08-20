@@ -537,6 +537,8 @@ const RENDERING_AFFECTING = /[\u00ad\u180e]/u;
  * this note exists for.
  */
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+/** {@link DEFAULT_IGNORABLE}, non-global — for a single-character test. */
+const DEFAULT_IGNORABLE_ONE = new RegExp(DEFAULT_IGNORABLE.source, "u");
 
 /** Every inert ignorable in `text`, in order, sequence-builders excluded. */
 function inertIgnorables(text: string): string[] {
@@ -548,20 +550,87 @@ function withoutInertIgnorables(text: string): string {
   return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) ? ch : ""));
 }
 
-/** Which ignorable characters occur a DIFFERENT number of times in each string? */
-function differingIgnorables(actual: string, expected: string): string[] {
+/** `text` with every inert ignorable removed EXCEPT `keep`. */
+function keepOnlyIgnorable(text: string, keep: string): string {
+  return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) || ch === keep ? ch : ""));
+}
+
+/**
+ * Every inert ignorable in `text`, each tagged with how much VISIBLE text
+ * precedes it — the only position two confusable strings can be compared at,
+ * their visible forms being equal by construction.
+ */
+function placedIgnorables(text: string): string[] {
+  const placed: string[] = [];
+  let before = 0;
+  for (const ch of text) {
+    if (DEFAULT_IGNORABLE_ONE.test(ch) && !isSequenceBuilding(ch)) {
+      placed.push(`${before}\u0000${ch}`);
+    } else {
+      before += 1;
+    }
+  }
+  return placed;
+}
+
+/**
+ * Which ignorable characters sit DIFFERENTLY in the two strings — a different
+ * number of them, or the same number somewhere else?
+ *
+ * Counting alone is blind to a MOVE: `report<RLO>txt.exe` and
+ * `reporttxt.exe<RLO>` hold one RLO each, so the tally came out empty and the
+ * lead below fell through to "differ only in invisible characters" — about an
+ * override that reorders a filename into `reportexe.txt`, the exact false story
+ * this note must never tell. Tagging each character with the visible text
+ * before it makes a move a difference, while a character that sits identically
+ * in both — a wrapper they share — still drops out, which is what keeps it from
+ * picking the lead for a difference elsewhere.
+ */
+function displacedIgnorables(actual: string, expected: string): string[] {
   const tally = (s: string): Map<string, number> => {
     const counts = new Map<string, number>();
-    for (const ch of inertIgnorables(s)) {
-      counts.set(ch, (counts.get(ch) ?? 0) + 1);
+    for (const placed of placedIgnorables(s)) {
+      counts.set(placed, (counts.get(placed) ?? 0) + 1);
     }
     return counts;
   };
   const a = tally(actual);
   const b = tally(expected);
-  return [...new Set([...a.keys(), ...b.keys()])].filter(
-    (ch) => (a.get(ch) ?? 0) !== (b.get(ch) ?? 0)
+  const moved = [...new Set([...a.keys(), ...b.keys()])].filter(
+    (placed) => (a.get(placed) ?? 0) !== (b.get(placed) ?? 0)
   );
+  return [...new Set(moved.map((placed) => placed.slice(placed.indexOf("\u0000") + 1)))];
+}
+
+/**
+ * Which ignorable characters is the comparison actually STUCK on?
+ *
+ * {@link displacedIgnorables} answers "which ones differ", which is the whole
+ * answer under `equals` and too wide under `contains`: there the label also
+ * carries ignorables the needle never reached, and one unrelated RLM elsewhere
+ * in a long label picked the reordering lead for a miss that a CGJ inside the
+ * needle's own region caused.
+ *
+ * So ask the comparator, once per character: keep that one, drop every other
+ * inert ignorable from both sides, and see whether the comparison would have
+ * held. The ones that still block it are the ones responsible — which is the
+ * property {@link confusableTextNoteIn}'s docstring claims and the lead below
+ * relies on.
+ *
+ * When no single character is necessary the answer is every one that differs.
+ * Two candidate regions can each be blocked by a different character, so that
+ * neither alone is load-bearing, and naming both beats naming none.
+ */
+function blockingIgnorables(
+  actual: string,
+  expected: string,
+  holds: (a: string, b: string) => boolean
+): string[] {
+  const displaced = displacedIgnorables(actual, expected);
+  const blocking = displaced.filter(
+    (ch) => !holds(keepOnlyIgnorable(actual, ch), keepOnlyIgnorable(expected, ch))
+  );
+  return blocking.length > 0 ? blocking : displaced;
 }
 
 /**
@@ -606,7 +675,7 @@ export function confusableTextNote(actual: string, expected: string): string | u
   // case-sensitive by design and must not be told otherwise.
   const visible = withoutInertIgnorables;
   if (visible(actual) !== visible(expected)) return undefined;
-  return ignorableDifferenceNote(actual, expected);
+  return ignorableDifferenceNote(actual, expected, equalsCI);
 }
 
 const codepoints = (s: string): string =>
@@ -621,9 +690,18 @@ const codepoints = (s: string): string =>
  * Reordering is the more dramatic claim, so it wins a mixed difference; the
  * rendering-affecting lead then covers everything left that is not simply
  * invisible. Only the last branch is allowed to say "invisible".
+ *
+ * `holds` is the comparator whose failure is being explained — it is what
+ * {@link blockingIgnorables} asks to tell the characters responsible for the
+ * miss from the ones that merely share the string with them.
  */
-function ignorableDifferenceNote(actual: string, expected: string): string | undefined {
-  const differing = differingIgnorables(actual, expected);
+function ignorableDifferenceNote(
+  actual: string,
+  expected: string,
+  holds: (a: string, b: string) => boolean
+): string | undefined {
+  const differing = blockingIgnorables(actual, expected, holds);
+  if (differing.length === 0) return undefined;
   const lead = differing.some((ch) => DIRECTIONAL.test(ch))
     ? "the two strings differ only in directional formatting, which draws nothing itself but " +
       "REORDERS the characters around it, so the screen does not read the way the text does"
@@ -649,6 +727,9 @@ function ignorableDifferenceNote(actual: string, expected: string): string | und
  * and ask `includesCI` again. If the needle is in the label THEN and was not
  * before, those characters are exactly what stopped it — no other difference
  * can be responsible, because everything else the fold handles already matched.
+ * That holds for the SET; {@link blockingIgnorables} is what narrows it to the
+ * members, since under a substring test the label also carries ignorables the
+ * needle never reached.
  *
  * Both whole strings are printed, not the matched region: mapping an index back
  * through the fold is not sound (case and whitespace collapse change lengths),
@@ -659,8 +740,7 @@ export function confusableTextNoteIn(haystack: string, needle: string): string |
   const bareHaystack = withoutInertIgnorables(haystack);
   const bareNeedle = withoutInertIgnorables(needle);
   if (!includesCI(bareHaystack, bareNeedle)) return undefined;
-  if (differingIgnorables(haystack, needle).length === 0) return undefined;
-  return ignorableDifferenceNote(haystack, needle);
+  return ignorableDifferenceNote(haystack, needle, includesCI);
 }
 
 /**

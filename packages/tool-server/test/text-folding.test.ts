@@ -411,6 +411,7 @@ describe("confusableTextNote", () => {
   // classes do NOT list — anything the fold handles compares equal, so the
   // check passes and there is no message to annotate.
   const CGJ = "͏"; // U+034F COMBINING GRAPHEME JOINER
+  const RLM = "‏"; // U+200F RIGHT-TO-LEFT MARK
 
   it("names the differing codepoints when the strings only look equal", () => {
     const note = confusableTextNote(`PLN 42${CGJ}`, "PLN 42")!;
@@ -444,6 +445,26 @@ describe("confusableTextNote", () => {
     // And says nothing when the ignorables are not why the needle missed.
     expect(confusableTextNoteIn("Totally other text", "SaveChanges")).toBeUndefined();
     expect(confusableTextNoteIn("Save Changes now", "Save")).toBeUndefined();
+  });
+
+  it("picks the lead from the character that BLOCKED the needle, not from the label", () => {
+    // Under a substring test the label also carries ignorables the needle never
+    // reached, and the lead was chosen from all of them: one unrelated RLM
+    // elsewhere in the label made a CGJ miss read as a reordering, and told the
+    // author the screen does not read the way the text does when it does.
+    const blocked = `Total ${RLM}42. Save${CGJ}Changes`;
+    // Dropping the CGJ alone rescues the needle; dropping the RLM alone does
+    // not — which is exactly the question the note now asks.
+    expect(includesCI(`Total ${RLM}42. SaveChanges`, "SaveChanges")).toBe(true);
+    expect(includesCI(`Total 42. Save${CGJ}Changes`, "SaveChanges")).toBe(false);
+    const note = confusableTextNoteIn(blocked, "SaveChanges")!;
+    expect(note).toContain("differ only in invisible characters");
+    expect(note).not.toContain("REORDERS");
+    // Both strings are still printed whole, so the RLM is visible in the dump
+    // even though it did not pick the sentence.
+    expect(note).toContain("U+200F");
+    // A directional control that IS the blocker still gets its own lead.
+    expect(confusableTextNoteIn(`Save${RLM}Changes`, "SaveChanges")).toContain("REORDERS");
   });
 
   it("stays silent for a prepended concatenation mark, which is NOT ignorable", () => {
@@ -523,6 +544,19 @@ describe("confusableTextNote", () => {
     const note = confusableTextNote("‪Save​‬", "‪Save‬")!;
     expect(note).toContain("differ only in invisible characters");
     expect(note).toContain("U+200B");
+  });
+
+  it("names a MOVED control, which a count of the two strings cannot see", () => {
+    // Both sides hold exactly one U+202E, so a tally came out empty and the
+    // lead fell through to "invisible" — about an override that renders
+    // `report<RLO>txt.exe` as `reportexe.txt` and the other spelling as itself.
+    const note = confusableTextNote("report\u202Etxt.exe", "reporttxt.exe\u202E")!;
+    expect(note).toContain("REORDERS");
+    expect(note).not.toContain("differ only in invisible characters");
+    // The same blindness covered the other two DELIBERATELY NOT FOLDED members.
+    const shy = confusableTextNote(`kraft${SOFT_HYPHEN}fahrzeug`, `kraftfahrzeug${SOFT_HYPHEN}`)!;
+    expect(shy).toContain("changes what IS drawn");
+    expect(confusableTextNote("\u180Eبب", "بب\u180E")).toContain("changes what IS drawn");
   });
 
   it("says nothing when the strings are equal, or visibly different", () => {
