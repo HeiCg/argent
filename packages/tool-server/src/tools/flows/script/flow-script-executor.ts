@@ -661,17 +661,20 @@ export class FlowScriptExecutor {
     if (child.connected) child.disconnect();
 
     const log = capture.text;
-    const verdict = classifyOutcome({
-      exit,
-      spawnProblem,
-      protocolProblem,
-      terminal,
-      startedSeen,
-      interrupted,
-      timeoutMs,
-      log,
-      heapLimitMb: bounds.heapLimitMb,
-    });
+    const verdict = redactFailure(
+      classifyOutcome({
+        exit,
+        spawnProblem,
+        protocolProblem,
+        terminal,
+        startedSeen,
+        interrupted,
+        timeoutMs,
+        log,
+        heapLimitMb: bounds.heapLimitMb,
+      }),
+      request.secrets ?? []
+    );
 
     return {
       ...verdict,
@@ -771,6 +774,31 @@ function classifyOutcome(
     `The script stopped its own process with exit code ${exit.code ?? 0} instead of returning; ` +
       `no output was captured.`
   );
+}
+
+/**
+ * A failure carries the same redaction the log does.
+ *
+ * The text is not the executor's: a `runtime` failure is the script's own error
+ * message and stack, and a script that resolves a secret puts it there without
+ * ever writing it into a string itself — `assert.equal(returned, process.env.TOK)`
+ * quotes both values, and so does a template literal in a throw. A report that
+ * redacts the log beside it reads as safe while carrying the plaintext.
+ */
+function redactFailure(
+  verdict: Pick<FlowScriptResult, "ok" | "output" | "failure">,
+  secrets: readonly FlowScriptSecret[]
+): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
+  const failure = verdict.failure;
+  if (!failure || secrets.length === 0) return verdict;
+  return {
+    ...verdict,
+    failure: {
+      ...failure,
+      message: scrubSecretValues(failure.message, secrets),
+      ...(failure.stack ? { stack: scrubSecretValues(failure.stack, secrets) } : {}),
+    },
+  };
 }
 
 function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output" | "failure"> {

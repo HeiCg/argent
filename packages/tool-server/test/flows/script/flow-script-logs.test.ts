@@ -125,6 +125,28 @@ describe("flow script executor — redaction", () => {
     expect(result.log).toContain("auth: {{secret:API_KEY}}");
   });
 
+  it("replaces a secret in the failure message and stack, not only in the log", async () => {
+    const ws = workspace();
+    // The author never writes the value into a string: `assert` quotes both
+    // sides for them, and the error is what carries it out of the process.
+    const script = ws.write(
+      "assert.mjs",
+      `import assert from "node:assert/strict";
+       assert.equal("sk-live-WRONG", process.env.API_KEY);`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      env: { API_KEY: SECRET.value },
+      secrets: [SECRET],
+    });
+
+    expect(result.failure?.kind).toBe("runtime");
+    expect(result.failure?.message).not.toContain(SECRET.value);
+    expect(result.failure?.message).toContain("{{secret:API_KEY}}");
+    expect(result.failure?.stack).not.toContain(SECRET.value);
+  });
+
   it("replaces a secret split across two pipe chunks", async () => {
     const ws = workspace();
     // Two writes with a gap between them arrive as two chunks, so a per-chunk
