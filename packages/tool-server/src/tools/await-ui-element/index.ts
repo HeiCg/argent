@@ -209,6 +209,27 @@ interface WaitResult {
 const DARK_TAIL_TOLERANCE_INTERVALS = 2;
 
 /**
+ * The same tolerance in absolute time, past which no poll interval buys any
+ * more of it.
+ *
+ * `pollIntervalMs` is the CALLER's, up to 5000ms, so the multiple above alone
+ * would let the tolerance reach 10s — and a source that answered once and then
+ * went silent for the rest of the window would still come back `unmet`, the one
+ * cause that licenses an author to rewrite or delete the step. Past a couple of
+ * seconds "the trusted reads still describe the deadline" stops being credible
+ * however sparsely the caller chose to poll, so the sleep they asked for is
+ * honoured only up to here. The flow runner's copy of this loop needs no such
+ * cap: its interval is fixed at 300ms, which puts its whole tolerance
+ * (`CONDITION_DARK_TAIL_TOLERANCE_MS`, 600ms) below this ceiling by
+ * construction.
+ *
+ * Set above the default interval's own tolerance (2 × 400ms), so nothing at or
+ * below a 1000ms interval is affected — the routine deadline straddle, which
+ * lies about one interval back, still reads as the blip it is.
+ */
+const DARK_TAIL_TOLERANCE_MAX_MS = 2000;
+
+/**
  * How the loop's LAST fetch attempt ended, which is not a two-way question.
  *
  * - `trusted` — it settled, returned a tree, and the tree could be judged on.
@@ -234,8 +255,9 @@ type FinalRead = "trusted" | "untrusted" | "unsettled";
  *    held to a stricter bar: there the element LEAVING is the transition being
  *    waited on, so a final read that ANSWERED unjudgeably leaves gone-ness
  *    unconfirmable. For the rest, a dark tail beyond
- *    {@link DARK_TAIL_TOLERANCE_INTERVALS} means the trusted reads no longer
- *    describe the deadline.
+ *    {@link DARK_TAIL_TOLERANCE_INTERVALS} — or beyond
+ *    {@link DARK_TAIL_TOLERANCE_MAX_MS}, whichever is shorter — means the
+ *    trusted reads no longer describe the deadline.
  * 3. A dark tail inside the tolerance — a genuine last-poll blip. The trusted
  *    reads still describe the window, so a transient failure on the trailing
  *    poll must not turn a real miss into "nothing was ever compared".
@@ -260,7 +282,11 @@ function timeoutCause(
   if (finalRead === "trusted") return "unmet";
   if (finalRead === "untrusted" && condition === "hidden") return "unreadable";
   const darkTailMs = Date.now() - lastTrustedReadAt;
-  return darkTailMs > DARK_TAIL_TOLERANCE_INTERVALS * pollIntervalMs ? "unreadable" : "unmet";
+  const tolerance = Math.min(
+    DARK_TAIL_TOLERANCE_INTERVALS * pollIntervalMs,
+    DARK_TAIL_TOLERANCE_MAX_MS
+  );
+  return darkTailMs > tolerance ? "unreadable" : "unmet";
 }
 
 const capability: ToolCapability = {
