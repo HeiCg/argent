@@ -73,6 +73,9 @@ const MAX_FAILURE_STACK_CHARS = 16 * 1024;
  */
 const realSend = typeof process.send === "function" ? process.send : undefined;
 
+/** The real `process.exit`, so the runner's own exits skip the guard below. */
+const realExit = process.exit.bind(process);
+
 /**
  * `JSON.stringify` and `JSON.parse` as they were before any script code ran.
  *
@@ -192,6 +195,7 @@ async function prepare() {
   // work was done, and the step ran to its time limit.
   keepListener("disconnect", exitOnParentDisconnect);
   guardRunnerListeners();
+  reportOnScriptExit();
 
   // Load-bearing. This is the only thing that lets the executor tell "the
   // runner never began the script" apart from "the script stopped its own
@@ -296,6 +300,37 @@ function guardRunnerListeners() {
 }
 
 /**
+ * Read the output document when a script ends the process itself successfully.
+ *
+ * `main().then(() => process.exit(0))` is a very common idiom, and it was a
+ * hard failure: `beforeExit` does not fire after an explicit exit, so the
+ * runner never reported, and the parent said "the script stopped its own
+ * process ... no output was captured" about a script whose log proved the work
+ * was done and whose `output` was set. Exiting with zero *is* the script
+ * declaring success, so the document it had is the document it meant.
+ *
+ * A non-zero exit is left alone: that is the script reporting its own failure,
+ * and the parent's `exit` verdict already names the code.
+ */
+function reportOnScriptExit() {
+  process.exit = (...args) => {
+    const code = args.length > 0 ? args[0] : process.exitCode;
+    if (!finished && (code === undefined || code === null || Number(code) === 0)) {
+      const encoded = encodeOutput(globalThis.output, maxOutputBytes);
+      finishSynchronously(
+        encoded.error
+          ? { type: "failure", failureType: "output", message: encoded.error }
+          : { type: "result", outputJson: encoded.json }
+      );
+    }
+    // Forwarded by arity, not by value: `realExit(undefined)` is not the same
+    // call as `realExit()`, and the difference is whether a `process.exitCode`
+    // the script set survives.
+    return realExit(...args);
+  };
+}
+
+/**
  * Take the protocol channel away from the script.
  *
  * `fork` leaves a working `process.send` in the child, and the executor trusts
@@ -366,7 +401,7 @@ function acknowledge(args) {
  * is what the lifeline watchdog thread is for.
  */
 function exitOnParentDisconnect() {
-  process.exit(0);
+  realExit(0);
 }
 
 /** The one `execute` request. A second message is ignored rather than obeyed. */
@@ -754,16 +789,8 @@ function finish(response) {
   // one the parent hears.
   if (finished) return;
   finished = true;
-  if (response.type === "failure") {
-    response = {
-      ...response,
-      message: clampText(response.message, MAX_FAILURE_MESSAGE_CHARS),
-      ...(response.stack === undefined
-        ? {}
-        : { stack: clampText(response.stack, MAX_FAILURE_STACK_CHARS) }),
-    };
-  }
-  const exit = () => process.exit(0);
+  const bounded = boundFailureText(response);
+  const exit = () => realExit(0);
   let pending = 2;
   const flushed = () => {
     if (--pending === 0) exit();
@@ -776,10 +803,42 @@ function finish(response) {
     flushStream(process.stderr, flushed);
   };
   try {
-    sendToParent(response, flush);
+    sendToParent(bounded, flush);
   } catch {
     flush();
   }
+}
+
+/**
+ * The same verdict, sent from inside the script's own `process.exit`.
+ *
+ * There is no turn of the event loop left there to flush a stream in, and there
+ * must not be one: `process.exit` does not return, and a script that continues
+ * past it is not the script its author wrote. The write is the whole of it —
+ * `process.send` puts a small message on the channel before it returns, and the
+ * buffered stdout that a bare `process.exit` discards is discarded under plain
+ * `node` too, which is what the script asked for.
+ */
+function finishSynchronously(response) {
+  if (finished) return;
+  finished = true;
+  try {
+    sendToParent(boundFailureText(response));
+  } catch {
+    // The channel is gone; the parent's exit verdict is what is left.
+  }
+}
+
+/** Both free-text fields of a failure, cut to what may cross the channel. */
+function boundFailureText(response) {
+  if (response.type !== "failure") return response;
+  return {
+    ...response,
+    message: clampText(response.message, MAX_FAILURE_MESSAGE_CHARS),
+    ...(response.stack === undefined
+      ? {}
+      : { stack: clampText(response.stack, MAX_FAILURE_STACK_CHARS) }),
+  };
 }
 
 /** Cut runner-controlled text to a ceiling, saying how much was left out. */

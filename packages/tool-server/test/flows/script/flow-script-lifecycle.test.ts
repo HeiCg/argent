@@ -321,6 +321,37 @@ describe("flow script executor — time limits and cancellation", () => {
 });
 
 describe("flow script executor — exit classification", () => {
+  it("keeps the output of a script that finished and then exited zero", async () => {
+    const ws = workspace();
+    // A very common idiom, and it was a hard failure: `beforeExit` does not
+    // fire after an explicit exit, so the runner never reported and the parent
+    // said "no output was captured" about a script whose log proves the work
+    // was done. Exiting with zero is the script declaring success.
+    const script = ws.write(
+      "exits.mjs",
+      `async function main() { output.orderId = "ord_1"; console.log("seeded"); }
+       main().then(() => process.exit(0));`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ orderId: "ord_1" });
+    expect(result.log).toContain("seeded");
+  });
+
+  it("still fails a script that set process.exitCode and then exited", async () => {
+    const ws = workspace();
+    // `process.exit()` with no argument leaves the code the script set. The
+    // guard above must forward that call by arity: `exit(undefined)` is a
+    // different call from `exit()`, and it loses the code.
+    const script = ws.write("bad.cjs", `output.a = 1; process.exitCode = 3; process.exit();`);
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure?.kind).toBe("exit");
+    expect(result.failure?.message).toContain("exit code 3");
+    expect(result.output).toBeUndefined();
+  });
+
   it("names the exit code when the script stops its own process", async () => {
     const ws = workspace();
     const script = ws.write("bye.mjs", `console.log("leaving"); process.exit(3);`);
