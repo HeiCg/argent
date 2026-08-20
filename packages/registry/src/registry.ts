@@ -142,7 +142,16 @@ export class Registry {
             {
               error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
               failure_stage: "tool_params_parse",
-              failure_area: "tool_server",
+              // "registry", not "tool_server": the area names WHO raised the
+              // signal, and this parse runs before `execute` is entered. The
+              // telemetry listener and the event log both fall back to
+              // "registry" for a registry-raised failure and reserve
+              // "tool_server" for a signal the tool itself attached, so
+              // labelling this one "tool_server" would make every non-HTTP
+              // schema miss — a flow runner `tool:` step, a run-sequence step,
+              // a flow-add-step sub-invoke — read as the tool having rejected
+              // its own arguments.
+              failure_area: "registry",
               error_kind: "validation",
             }
           );
