@@ -2465,6 +2465,44 @@ describe("a flow-directive name points at the tool that records it", () => {
     expect(await recordedSteps("hints")).toEqual([]);
   });
 
+  it("gives each refused recorder tool ITS OWN reason", async () => {
+    // The `command` `.describe()` promises the four are refused "each for its
+    // own reason — nesting one would erase this flow at replay, end the take,
+    // or write the step twice", so the per-entry text IS the contract. Nothing
+    // held it: only `flow-add-echo` had a content assertion, so exchanging the
+    // `flow-start-recording` and `flow-finish-recording` bodies left the suite
+    // green while an author was told that finishing truncates and that
+    // starting ends the take.
+    const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
+    const reasons: [string, string[], string[]][] = [
+      [
+        "flow-add-echo",
+        ["must be called DIRECTLY", "fails on every replay"],
+        ["truncates", "ends the recording"],
+      ],
+      ["flow-add-step", ["cannot record itself"], ["truncates", "ends the recording"]],
+      ["flow-start-recording", ["truncates the flow it names", "erase"], ["ends the recording"]],
+      [
+        "flow-finish-recording",
+        ["ends the recording", "cannot also be a step in it"],
+        ["truncates"],
+      ],
+    ];
+    for (const [command, present, absent] of reasons) {
+      const result = await tool.execute(
+        {},
+        { name: "hints", project_root: tmpDir, command, args: "{}" }
+      );
+      for (const fragment of present) {
+        expect(result.message, `${command} should say "${fragment}"`).toContain(fragment);
+      }
+      for (const fragment of absent) {
+        expect(result.message, `${command} should not say "${fragment}"`).not.toContain(fragment);
+      }
+    }
+    expect(await recordedSteps("hints")).toEqual([]);
+  });
+
   it("refuses a recorder tool BEFORE parsing `args`, so malformed `args` cannot pre-empt the guidance", async () => {
     // The guard runs ahead of `JSON.parse(params.args)` on purpose: a nested
     // recorder tool must be refused even when `args` is malformed, or a bare
