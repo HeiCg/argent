@@ -123,8 +123,8 @@ function devtoolsHierarchyReader(
 const ATOMIC_CLEAR_BUDGET_MS = 8_000;
 
 /**
- * How long a device whose helper REFUSED to start is left alone before the
- * atomic path tries again.
+ * How long a device whose helper could not serve the atomic clear is left alone
+ * before the atomic path tries again.
  *
  * The registry keeps no memory of a failed service: `_initialize` moves the node
  * to ERROR and nulls its `initPromise`, and the next `resolveService` walks
@@ -143,16 +143,46 @@ const ATOMIC_CLEAR_BUDGET_MS = 8_000;
  * of once per call, and short enough that a device which comes good is picked up
  * within the same session.
  *
- * Only a REJECTED start is recorded. A start that merely outran the budget is
- * still running underneath, and the next call joins that same in-flight
- * initialisation (the registry hands back its `initPromise` while the node is
- * STARTING) rather than beginning another — so it is on course to succeed, and
- * penalising it would skip the atomic path on exactly the slow-but-working
- * device the budget was widened for.
+ * Two things are recorded, and one deliberately is not.
+ *
+ * A start that REJECTS is recorded whenever it rejects — including long after
+ * this call gave up on it. Recording only the rejections that beat the budget
+ * would arm the cooldown for the fast failures and leave it unarmed for exactly
+ * the slow ones it exists for: the failures this constant names are all slower
+ * than the budget (the blueprint's own limits are a 60s `adb install` plus a 30s
+ * readiness wait), so a start failing half a second past it left every clear
+ * paying the full budget and starting a fresh install, forever.
+ *
+ * A helper that ANSWERS the socket and then does not answer the call is recorded
+ * too — see WEDGED_RPC_MS. It is the more expensive state, not a cheaper one:
+ * the RPC timeouts it burns are longer than the start budget.
+ *
+ * What is NOT recorded is a start that merely outran the budget and is still
+ * running. The next call joins that same in-flight initialisation (the registry
+ * hands back its `initPromise` while the node is STARTING) rather than beginning
+ * another — so it is on course to succeed, and penalising it would skip the
+ * atomic path on exactly the slow-but-working device the budget was widened for.
  */
 const ATOMIC_START_COOLDOWN_MS = 60_000;
 
-/** Serial → when its helper last refused to start. See ATOMIC_START_COOLDOWN_MS. */
+/**
+ * How slow a FAILED round trip has to be before the helper counts as wedged
+ * rather than gone.
+ *
+ * A live helper answers in well under a second, and a helper that has died or
+ * closed its socket rejects immediately. What sits between is the state
+ * `AndroidClearOptions.readHierarchy` already names — alive, holding the
+ * device's single UiAutomation connection, and not answering — where the only
+ * way out is the RPC client's own timeout: 5s for `ping`, 15s for `setText`.
+ * Nothing else absorbs that, so without a cooldown every clear pays it again.
+ *
+ * Sized between the two rather than at either: far above any real answer, far
+ * below the shortest timeout, so a fast rejection (which costs nothing to retry)
+ * does not arm the cooldown.
+ */
+const WEDGED_RPC_MS = 2_000;
+
+/** Serial → when its helper last failed the atomic clear. See ATOMIC_START_COOLDOWN_MS. */
 const atomicStartRefusedAt = new Map<string, number>();
 
 /**
@@ -187,10 +217,15 @@ async function startedDevtools(
 ): Promise<AndroidDevtoolsApi | undefined> {
   const ref = androidDevtoolsRef(device);
   const resolving = registry.resolveService<AndroidDevtoolsApi>(ref.urn, ref.options);
-  // An abandoned rejection is an unhandled one — `Promise.race` never settles
-  // the loser. The registry files the same failure on its own node, so nothing
-  // is being swallowed here that a caller could have acted on.
-  resolving.catch(() => {});
+  // This is where a refused start is RECORDED, and it is deliberately not the
+  // `catch` below: the race abandons the loser rather than cancelling it, so a
+  // start that fails after the budget never reaches that `catch` at all — and
+  // every failure ATOMIC_START_COOLDOWN_MS names is slower than the budget. The
+  // handler also settles the abandoned rejection, which the race would leave for
+  // nobody once the timer has won.
+  resolving.catch(() => {
+    atomicStartRefusedAt.set(device.id, Date.now());
+  });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -261,8 +296,9 @@ async function tryAtomicClear(
   } catch {
     // The service could not be created — no adb, the APK would not install, the
     // instrumentation never announced a port. All of them are "no helper here",
-    // and all of them are worth not re-asking about on the next keystroke.
-    atomicStartRefusedAt.set(device.id, Date.now());
+    // and all of them are worth not re-asking about on the next keystroke. The
+    // mark itself is written by `startedDevtools`, which sees this rejection
+    // whether or not it beat the budget.
     return { ok: false, reason: "helper_unavailable", applied: false };
   }
   // Not recorded: this is the budget expiring on a start that is still running.
@@ -270,6 +306,7 @@ async function tryAtomicClear(
   // A helper that answered clears the mark, so a device that comes good is not
   // held back for the rest of the cooldown.
   atomicStartRefusedAt.delete(device.id);
+  const rpcStartedAt = Date.now();
   try {
     // `ping` is the liveness check as well as the protocol one, which is why
     // there is no separate `isReady()` gate: that flag is set by the same
@@ -309,7 +346,14 @@ async function tryAtomicClear(
   } catch {
     // A severed socket, a helper that died between the readiness check and the
     // call, an RPC that timed out. The injected path is the answer to all of
-    // them.
+    // them — but only the last one is worth a cooldown, and how long the leg
+    // took is what tells them apart (see WEDGED_RPC_MS). A helper that is up and
+    // silent is re-asked on every clear otherwise, at 5s or 15s a time, and
+    // nothing else remembers it: the mark above was deleted when the service
+    // resolved.
+    if (Date.now() - rpcStartedAt >= WEDGED_RPC_MS) {
+      atomicStartRefusedAt.set(device.id, Date.now());
+    }
     return { ok: false, reason: "rpc_failed", applied: false };
   }
 }

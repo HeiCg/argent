@@ -1115,6 +1115,86 @@ describe("keyboard clear — Android (adb input)", () => {
       expect(afterSecond).toBe(1);
     });
 
+    it("remembers a start that failed LATER than the budget, not only inside it", async () => {
+      // Every failure the cooldown exists for is slower than the budget — the
+      // blueprint alone allows a 60s install plus a 30s readiness wait — so
+      // recording only the rejections that beat the budget arms it for the cheap
+      // failures and leaves it unarmed for the expensive ones. A start failing
+      // half a second past the budget left every clear paying the full budget
+      // and starting a fresh install, forever.
+      vi.useFakeTimers();
+      try {
+        const { registry } = registryWithSetText({
+          resolve: () =>
+            new Promise((_resolve, reject) => {
+              setTimeout(() => reject(new Error("am instrument refused")), 8_500);
+            }),
+        });
+        const impl = makeAndroidImpl(registry);
+
+        const first = impl.handler({}, { udid: ANDROID.id, clear: true, text: "a" }, ANDROID);
+        await vi.advanceTimersByTimeAsync(9_000);
+        await vi.runAllTimersAsync();
+        await first;
+
+        const second = impl.handler({}, { udid: ANDROID.id, clear: true, text: "b" }, ANDROID);
+        await vi.runAllTimersAsync();
+        await second;
+
+        const calls = (registry as unknown as { resolveService: { mock: { calls: unknown[] } } })
+          .resolveService.mock.calls.length;
+        // The second clear never went back to the registry.
+        expect(calls).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops re-asking a helper that answers the socket and then goes silent", async () => {
+      // The other half of the same cost, and the larger one: the mark is deleted
+      // as soon as the service resolves, so a helper that is UP and not
+      // answering was re-asked on every clear forever — at one RPC timeout a
+      // time, which is longer than the start budget it replaces.
+      vi.useFakeTimers();
+      try {
+        const { registry } = registryWithSetText({
+          setText: () => new Promise((_resolve, reject) => setTimeout(reject, 15_000)),
+        });
+        const impl = makeAndroidImpl(registry);
+
+        const first = impl.handler({}, { udid: ANDROID.id, clear: true, text: "a" }, ANDROID);
+        await vi.advanceTimersByTimeAsync(15_100);
+        await vi.runAllTimersAsync();
+        await first;
+
+        const second = impl.handler({}, { udid: ANDROID.id, clear: true, text: "b" }, ANDROID);
+        await vi.runAllTimersAsync();
+        await second;
+
+        const calls = (registry as unknown as { resolveService: { mock: { calls: unknown[] } } })
+          .resolveService.mock.calls.length;
+        expect(calls).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps asking after an RPC that failed too fast to be a wedged helper", async () => {
+      // A closed socket rejects at once and costs nothing to retry; only the
+      // legs that burn an RPC timeout are worth a minute of the weaker clear.
+      const { registry } = registryWithSetText({
+        setText: () => Promise.reject(new Error("AndroidDevtools client closed")),
+      });
+      const impl = makeAndroidImpl(registry);
+
+      await impl.handler({}, { udid: ANDROID.id, clear: true, text: "a" }, ANDROID);
+      await impl.handler({}, { udid: ANDROID.id, clear: true, text: "b" }, ANDROID);
+
+      const calls = (registry as unknown as { resolveService: { mock: { calls: unknown[] } } })
+        .resolveService.mock.calls.length;
+      expect(calls).toBe(2);
+    });
+
     it("keeps trying a start that merely ran out of budget, which is still running", async () => {
       // A slow start is not a refusal: the registry hands the next caller the
       // same in-flight `initPromise`, so it is on course to succeed. Marking it
