@@ -255,6 +255,38 @@ export async function classifyOnDiskSpelling(dir: string, base: string): Promise
  */
 export type FlowPersistMode = "host" | "client";
 
+/**
+ * One recorded step's warning, plus the anchor saying WHICH step it judged.
+ *
+ * The number it is filed under is a position, and a mid-recording hand edit
+ * moves positions. Comparing the finished flow against the recorder's own view
+ * catches an edit made after the last append; carrying the judged step catches
+ * one that moved a step out from under its number — see `anchoredWarnings` in
+ * flow-finish-recording.ts. Neither catches an edit the recorder then appended
+ * OVER: host mode re-reads the file before each append, so deleting a step and
+ * then recording one more leaves the two views agreeing while every key past
+ * the deletion points one step too far, and the anchor cannot tell two waits
+ * recorded with the same condition and selector apart. That one is settled at
+ * the append itself — see {@link dropMovedWarnings}.
+ */
+export interface RecordedStepWarning {
+  /**
+   * The warning text `flow-add-step` raised on that step's `message`.
+   *
+   * Always the cross-tree re-probe's verdict on converting the step to
+   * `await:`/`assert:` — a polish-time question, the raw step replays fine
+   * either way. A wait that came back `success: false` never reaches here: the
+   * recorder refuses the step outright, so there is nothing to file a verdict
+   * against.
+   */
+  warning: string;
+  /**
+   * The judged step as `stepAnchor` renders it: its identity, independent of
+   * where it now sits.
+   */
+  step: string;
+}
+
 export interface RecordingSession {
   /** Flow name, as passed to every recording tool. */
   name: string;
@@ -275,6 +307,29 @@ export interface RecordingSession {
   filePath: string;
   /** In-memory flow content — authoritative in "client" mode. */
   flow: FlowFile;
+  /**
+   * Cross-tree probe verdicts, by 1-based step number.
+   *
+   * The verdict is a POLISH-time decision, and polish begins after
+   * `flow-finish-recording` — but the warning is raised on one step's
+   * `message`, so without this it is gone from every artifact by the time it is
+   * actionable: on a 40-step recording, a warning raised at step 7 has long
+   * scrolled away. Accumulate it here and let the finish payload carry it to
+   * the step it belongs to.
+   */
+  stepWarnings?: Map<number, RecordedStepWarning>;
+  /**
+   * How many verdicts this recording raised and then DROPPED, because a hand
+   * edit moved the step each one judged (see {@link dropMovedWarnings}).
+   *
+   * Dropping is the right answer — a verdict on the wrong step is worse than
+   * none — but it is not the same news as never having raised one, and the
+   * finish payload is otherwise identical either way. An author who reads a
+   * clean `message` after two waits diverged has been told the opposite of
+   * what happened. Counted here because the verdicts themselves are gone by
+   * then: `stepWarnings.size` at the finish is what SURVIVED.
+   */
+  discardedWarnings?: number;
   /** Order of the last touch, for the LRU eviction backstop. See {@link touch}. */
   lastTouchedSeq: number;
 }
@@ -725,6 +780,48 @@ export type FlowFile = {
   executionPrerequisite: string;
   steps: FlowStep[];
 };
+
+/**
+ * The literal child steps of a block directive, or undefined for a leaf step.
+ *
+ * The single predicate for "this step has authored children", read at seven
+ * sites. Four expand a block that will NOT execute into skip lines, so a report
+ * keeps one line per authored step no matter where the run ended: `execSteps`'
+ * three gates — a hard stop, a device-free flow, a cancellation — plus
+ * `reportBlockSkipped` recursing into a nested block. (A guard-unmet `when`
+ * reaches those same skip lines by another route: `execWhenStep` has the block
+ * in hand and passes `step.steps` straight to `reportBlockSkipped`.) The fifth
+ * is the upload preflight's walk, where a block it cannot see hides a nested
+ * `run:`/`snapshot` from validation. The sixth and seventh,
+ * `flowRequiresDevice` and `flowScopesDevice` (flow-device.ts), read children
+ * not to skip them but to resolve the flow's device decisions from a block's
+ * body — the guard against a later block directive whose header reads nothing
+ * off the device, and dead in a run while `when`, whose header already
+ * classifies device-requiring, is the only block kind.
+ *
+ * Six sites asked `kind === "when"` directly before this existed: five for the
+ * children, one for the dispatch (now {@link isBlockStep}/`execBlockStep`);
+ * `flowRequiresDevice`'s walk arrived after the predicate and never had to. A
+ * second block directive would have had to remember all six; a forgotten one
+ * drops a whole block from the report or preflight silently. Now both are one
+ * case here, the same case the PARSER exempts from the single-key sibling
+ * check: the kinds come from {@link BLOCK_DIRECTIVE_KEYS}, not restated.
+ */
+export function blockSteps(step: FlowStep): FlowStep[] | undefined {
+  return isBlockStep(step) ? (step.steps satisfies FlowStep[]) : undefined;
+}
+
+/**
+ * Narrow a step to the kinds {@link BLOCK_DIRECTIVE_KEYS} lists. `Extract` is
+ * what makes the list load-bearing: {@link blockSteps}' `.steps` typechecks
+ * only while EVERY listed kind's step type carries children. The `satisfies`
+ * there pins them to a REQUIRED `steps`; an optional one types as
+ * `FlowStep[] | undefined`, which the return type alone would accept while
+ * every reader sees a childless leaf.
+ */
+export function isBlockStep(step: FlowStep): step is BlockStep {
+  return isBlockDirectiveKey(step.kind);
+}
 
 /**
  * A flow is end-to-end iff it BEGINS by launching an app — its first step
@@ -1422,7 +1519,7 @@ const SELECTOR_KEYS: readonly string[] = [
 /**
  * Total number of scopes one selector may carry, counted across its whole
  * relation TREE rather than down a single branch — the selector analog of
- * MAX_WHEN_DEPTH. A size bound, not a depth bound, because each level can open
+ * MAX_BLOCK_DEPTH. A size bound, not a depth bound, because each level can open
  * three branches: capping depth alone still admits 3^depth scopes, and the
  * runner's loose-alternative expansion is exponential in the number of
  * bare-string scopes (`selectorAlternatives`), so a few hundred bytes of YAML
@@ -1967,6 +2064,72 @@ const STEP_DIRECTIVE_KEYS: readonly string[] = [
 ];
 
 /**
+ * The directive keys that carry a sibling `steps:` list — the single registry
+ * of what a block directive is: {@link blockSteps} reads THIS list rather than
+ * restating the kinds, so parse time and run time cannot answer differently.
+ * Three constraints keep an entry honest. Two judge the keys already listed:
+ * `satisfies` rejects a key that is not a real step kind, and blockSteps'
+ * `.steps` read rejects a kind with no usable `steps` - `Extract` catches a
+ * missing one, its own `satisfies` one that is not a `FlowStep[]`, so a
+ * childless directive listed here is a compile error, not a silent runtime
+ * `undefined`. Neither can force a key IN, which is what
+ * {@link _everyChildBearingKindIsRegistered} does — without it a child-bearing
+ * kind added later is simply absent here, and absent is not an error.
+ *
+ * At parse time these keys are exempt from the single-key sibling check,
+ * because their own parser validates their siblings with pointed messages.
+ */
+export const BLOCK_DIRECTIVE_KEYS = ["when"] as const satisfies readonly FlowStep["kind"][];
+
+/** The step kinds {@link BLOCK_DIRECTIVE_KEYS} names. */
+type BlockDirectiveKind = (typeof BLOCK_DIRECTIVE_KEYS)[number];
+
+/** The step union those kinds select - what {@link isBlockStep} narrows to. */
+export type BlockStep = Extract<FlowStep, { kind: BlockDirectiveKind }>;
+
+/**
+ * Every step kind whose type carries a `steps` property, whatever its spelling:
+ * optional, `readonly`, any element type. Distributes over the union and asks
+ * `keyof` rather than matching structurally, because the obvious
+ * `Extract<FlowStep, { steps: FlowStep[] }>` misses a `steps?` or a
+ * `readonly FlowStep[]` - anything not both required and assignable to
+ * `FlowStep[]` reads as a childless leaf.
+ */
+type ChildBearingKind<S extends FlowStep = FlowStep> = S extends unknown
+  ? "steps" extends keyof S
+    ? S["kind"]
+    : never
+  : never;
+
+/** The child-bearing step kinds {@link BLOCK_DIRECTIVE_KEYS} fails to list. */
+type UnregisteredBlockKind = Exclude<ChildBearingKind, BlockDirectiveKind>;
+
+/**
+ * Forces a child-bearing kind INTO the registry — the direction the two
+ * constraints on {@link BLOCK_DIRECTIVE_KEYS} cannot cover, since both only
+ * judge kinds already listed. An unlisted one parses like any other step and
+ * then reads as `undefined` from {@link blockSteps}, so every reader listed
+ * there silently misses its children. {@link ChildBearingKind} is what makes
+ * this reach every spelling of `steps`, not just the one a structural match
+ * names. Spelled as a conditional rather than a bare `never` so the compile
+ * error names the missing kind.
+ */
+const _everyChildBearingKindIsRegistered: [UnregisteredBlockKind] extends [never]
+  ? true
+  : UnregisteredBlockKind = true;
+
+/**
+ * Is this directive key a block directive? The parser and runner's only
+ * CLASSIFYING read of {@link BLOCK_DIRECTIVE_KEYS} ({@link assertBlockDepth}
+ * reads it to NAME the keys in its message); the widening is the lookup
+ * itself — the const tuple's own `includes` accepts only keys already known to
+ * be block kinds, which is the question being asked.
+ */
+function isBlockDirectiveKey(key: string): key is BlockDirectiveKind {
+  return (BLOCK_DIRECTIVE_KEYS as readonly string[]).includes(key);
+}
+
+/**
  * Parse `times` on a tap body: an integer tap count dispatched as ONE
  * multi-tap gesture (2 = double-tap; the OS may recognize it as such — N
  * *independent* taps are N tap steps). `times: 1` is the default and
@@ -2270,13 +2433,65 @@ function parseWhenCondition(raw: unknown): WhenCondition {
 }
 
 /**
- * Nesting cap for `when` blocks — the parse-side analog of flow-run's
- * MAX_RUN_DEPTH. `when` is the only step kind whose parse recurses into child
- * steps, and the yaml library happily materializes a cyclic alias
- * (`steps: &s … steps: *s`) as a cyclic object; without a cap that cycle
+ * Nesting cap for block directives — the parse-side analog of flow-run's
+ * MAX_RUN_DEPTH. A block directive is the only kind of step whose parse
+ * recurses into child steps, and the yaml library happily materializes a cyclic
+ * alias (`steps: &s … steps: *s`) as a cyclic object; without a cap that cycle
  * escapes parseFlow as a raw RangeError instead of a structured parse error.
+ *
+ * ONE counter shared by every block directive, deliberately: a per-directive
+ * counter would let an alternating chain evade all of them and reopen the hole.
  */
-const MAX_WHEN_DEPTH = 20;
+const MAX_BLOCK_DEPTH = 20;
+
+/**
+ * Guard a block directive's recursion depth. Called FIRST in a block's parse —
+ * before its own key/shape checks — so an entry that has REACHED the cap
+ * reports the depth rather than its second defect: nest `when` to the cap and
+ * give the entry AT it an `else:`, a third sibling key, or an unknown condition
+ * key, and it reports the depth, not that check's message. (A cyclic alias is
+ * NOT that case — the same object repeats at every level, so a shape defect in
+ * it fires at depth 0 and a well-formed cycle reaches the cap with or without
+ * this call.) That early call buys the error PRECEDENCE only, not the cap
+ * itself: {@link parseBlockSteps} asserts again before it recurses, so
+ * forgetting the early call costs a directive the precedence and nothing more.
+ */
+function assertBlockDepth(raw: unknown, depth: number): void {
+  if (depth >= MAX_BLOCK_DEPTH) {
+    const directives = BLOCK_DIRECTIVE_KEYS.map((key) => `\`${key}:\``).join("/");
+    badEntry(
+      raw,
+      `${directives} blocks nest deeper than ${MAX_BLOCK_DEPTH} levels — check for a cyclic YAML alias (\`steps: &s … steps: *s\`)`
+    );
+  }
+}
+
+/**
+ * Parse a block directive's sibling `steps:` list: non-empty, every entry an
+ * object, each parsed one level deeper so the shared depth cap sees the whole
+ * chain. `emptyDetail` is the directive's own message for an absent or empty
+ * list — the one part worth phrasing per directive, since it is where an author
+ * lands when they wrote the guard but not the body.
+ *
+ * Asserts the depth cap here too, on the one path every block directive must go
+ * through to recurse, so no directive can opt out of the cap by forgetting the
+ * early {@link assertBlockDepth} call. `depth` is unchanged between the two
+ * calls, so for a directive that made the early one this is a no-op. While
+ * every registered directive makes that call, no input can make THIS assert the
+ * one that fires, so nothing pins it until one skips the early call.
+ */
+function parseBlockSteps(
+  raw: Record<string, unknown>,
+  depth: number,
+  emptyDetail: string
+): FlowStep[] {
+  assertBlockDepth(raw, depth);
+  if (!Array.isArray(raw.steps) || raw.steps.length === 0) badEntry(raw, emptyDetail);
+  return (raw.steps as unknown[]).map((s) => {
+    if (s !== null && typeof s === "object") return fromYamlStep(s as YamlStep, depth + 1);
+    return badEntry(s, "step must be an object");
+  });
+}
 
 /**
  * Parse a `when` step: `{ when: <condition>, steps: [<step>, …] }` — a guarded
@@ -2285,12 +2500,7 @@ const MAX_WHEN_DEPTH = 20;
  * back on the known path), so paths may only reconverge, never diverge.
  */
 function parseWhenStep(raw: Record<string, unknown>, depth: number): FlowStep {
-  if (depth >= MAX_WHEN_DEPTH) {
-    badEntry(
-      raw,
-      `when blocks nest deeper than ${MAX_WHEN_DEPTH} levels — check for a cyclic YAML alias (\`steps: &s … steps: *s\`)`
-    );
-  }
+  assertBlockDepth(raw, depth);
   if ("else" in raw) {
     badEntry(
       raw,
@@ -2301,13 +2511,7 @@ function parseWhenStep(raw: Record<string, unknown>, depth: number): FlowStep {
     badEntry(raw, "a when step takes exactly { when: <condition>, steps: [...] }");
   }
   const condition = parseWhenCondition(raw.when);
-  if (!Array.isArray(raw.steps) || raw.steps.length === 0) {
-    badEntry(raw, "when needs a non-empty steps list to guard");
-  }
-  const steps = (raw.steps as unknown[]).map((s) => {
-    if (s !== null && typeof s === "object") return fromYamlStep(s as YamlStep, depth + 1);
-    return badEntry(s, "step must be an object");
-  });
+  const steps = parseBlockSteps(raw, depth, "when needs a non-empty steps list to guard");
   return { kind: "when", condition, steps };
 }
 
@@ -2416,7 +2620,7 @@ function completeRunExtension(value: string): string {
   return FLOW_FILE_NAME_PATTERN.test(path.posix.basename(candidate)) ? candidate : value;
 }
 
-function fromYamlStep(raw: YamlStep, whenDepth = 0): FlowStep {
+function fromYamlStep(raw: YamlStep, blockDepth = 0): FlowStep {
   const entry = raw as Record<string, unknown>;
   // There is deliberately no per-step `optional:` — it would have to be
   // re-plumbed into every action directive (and each future gesture
@@ -2453,12 +2657,13 @@ function fromYamlStep(raw: YamlStep, whenDepth = 0): FlowStep {
   }
   // Only a `tool` step carries sibling keys (`args`, `delayMs`); every other
   // directive step is a single-key mapping — its options live INSIDE the
-  // value, so a sibling key is a mis-nested or misspelled option. A `when`
-  // step also carries siblings (`steps`, and the rejected `else`), but
-  // parseWhenStep validates them itself with pointed messages, so the generic
-  // check stays out of its way.
+  // value, so a sibling key is a mis-nested or misspelled option. A block
+  // directive also carries siblings (`steps`, and whatever it rejects beside
+  // it), but its own parser validates them with pointed messages - a promise
+  // flow-utils.test.ts pins per registry entry - so the generic check stays
+  // out of its way.
   const kind = kinds[0]!;
-  if (kind !== "when") {
+  if (!isBlockDirectiveKey(kind)) {
     const siblings = kind === "tool" ? ["tool", "args", "delayMs"] : [kind];
     const extras = Object.keys(entry).filter((k) => !siblings.includes(k));
     if (extras.length > 0) {
@@ -2475,7 +2680,7 @@ function fromYamlStep(raw: YamlStep, whenDepth = 0): FlowStep {
   if ("echo" in raw) return { kind: "echo", message: String(raw.echo) };
   if ("launch" in raw) return { kind: "launch", app: parseLaunch(raw.launch) };
   if ("run" in raw) return { kind: "run", flow: parseRunTarget(raw, raw.run) };
-  if ("when" in raw) return parseWhenStep(entry, whenDepth);
+  if ("when" in raw) return parseWhenStep(entry, blockDepth);
 
   if ("tap" in raw) return parseTap((raw as { tap: unknown }).tap, raw);
 
@@ -3103,9 +3308,12 @@ export async function writeNewFlowFile(filePath: string, content: string): Promi
  * The file — not the session's in-memory `flow` — is the take in "host" mode:
  * {@link appendStep}
  * re-reads it before every append and `flow-finish-recording` reads it back for
- * its summary, so a hand-edit made mid-recording (a documented workflow) is
- * part of the take even though the in-memory copy only catches up on the next
- * append.
+ * its summary, so a hand-edit made mid-recording is part of the take even
+ * though the in-memory copy only catches up on the next append. Both recording
+ * tools now tell the agent to edit only AFTER the finish — that catching-up is
+ * what renumbers the steps the finish anchors its verdicts to — but the file
+ * still wins over the session either way, which is what this count has to
+ * report.
  *
  * Undefined rather than 0 on a failure, because the two are not the same
  * answer: a hand-edit can leave YAML that `parseFlow` rejects, and reporting
@@ -3216,11 +3424,77 @@ export function assertSessionStillLive(session: RecordingSession, ranOnDevice: b
 }
 
 /**
+ * Are the first `n` steps of these two views the same steps?
+ *
+ * Both sides are {@link parseFlow} output — the recorder's previous view came
+ * from parsing the file after the previous append, and `now` from parsing it
+ * after this one — so absent an edit the two parse byte-identical prefixes and
+ * a structural comparison is exact. That is what makes `JSON.stringify` safe
+ * here where it would not be against a raw in-memory step: no key-order or
+ * normalization difference can exist between two parses of the same bytes.
+ */
+function samePrefix(now: FlowStep[], before: FlowStep[], n: number): boolean {
+  if (now.length < n || before.length < n) return false;
+  for (let i = 0; i < n; i += 1) {
+    if (JSON.stringify(now[i]) !== JSON.stringify(before[i])) return false;
+  }
+  return true;
+}
+
+/**
+ * Drop the verdicts a mid-recording hand edit moved, at the one moment the move
+ * is visible.
+ *
+ * A verdict is anchored to a step NUMBER, and host mode re-reads the file
+ * before every append — so an edit becomes part of the take and `session.flow`
+ * catches up to it. After that the finish has nothing left to compare: the
+ * recorder's view and the file agree, and where the moved verdict lands on a
+ * step that renders like the one it judged (two waits recorded with the same
+ * condition and selector), its own anchor agrees too. The verdict is then
+ * reported against a step it never judged, while the step it did judge reads
+ * clean — the false conviction {@link RecordedStepWarning} exists to prevent.
+ *
+ * The append that ABSORBS the edit is where both views still exist, so the
+ * question is asked here. A verdict at number `n` survives exactly when the
+ * first `n` steps are untouched: that is what makes the step at `n` still the
+ * step that was at `n`. Anything else — a delete or an insert at or before it,
+ * a reorder that reaches it, an in-place replacement — moves it or changes it,
+ * and dropping is the only answer that cannot convict an innocent step.
+ *
+ * Verdicts BEHIND the edit keep theirs. An author who deletes a later step and
+ * records on must not lose the warnings on steps the edit never reached, or the
+ * anchor rule would be the length heuristic again under another name.
+ *
+ * Returns how many were dropped, so the finish can report a shortfall rather
+ * than a clean bill of health.
+ */
+function dropMovedWarnings(
+  warnings: Map<number, RecordedStepWarning> | undefined,
+  now: FlowStep[],
+  before: FlowStep[]
+): number {
+  if (!warnings) return 0;
+  let dropped = 0;
+  for (const n of [...warnings.keys()]) {
+    if (samePrefix(now, before, n)) continue;
+    warnings.delete(n);
+    dropped += 1;
+  }
+  return dropped;
+}
+
+/**
  * Append a step to a recording and persist it. In "host" mode the file on disk
  * is re-read first (the original behavior — a manual edit made mid-recording is
  * honored); in "client" mode this process never sees the client's disk, so the
  * in-memory copy is authoritative and the updated YAML travels back in the
  * directive.
+ *
+ * Honoring that edit is also the only chance anyone gets to NOTICE it, so the
+ * re-read is checked against the view it replaces — see
+ * {@link dropMovedWarnings}. Client mode has no such check because it has no
+ * such edit: this host never sees the client's file, and every write serializes
+ * the in-memory copy over whatever is there.
  */
 export async function appendStepToFlow(
   session: RecordingSession,
@@ -3235,8 +3509,15 @@ export async function appendStepToFlow(
     assertSessionStillLive(session, step.kind !== "echo");
     session.lastTouchedSeq = touch();
     if (session.persist === "host") {
+      const before = session.flow.steps;
       const flowFile = await appendStep(session.filePath, step);
       session.flow = parseFlow(flowFile);
+      // `appendStep` adds exactly one step, so everything before the last one
+      // is what the file already held — the recorder's previous view, unless a
+      // hand edit landed in between.
+      session.discardedWarnings =
+        (session.discardedWarnings ?? 0) +
+        dropMovedWarnings(session.stepWarnings, session.flow.steps.slice(0, -1), before);
       // Count inside the lock, off the just-refreshed `session.flow`: a caller
       // reading `session.flow.steps.length` after this returns would be racing
       // a concurrent same-key append, which can reassign `session.flow` between
