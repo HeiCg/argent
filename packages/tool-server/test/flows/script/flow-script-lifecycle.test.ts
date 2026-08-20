@@ -245,6 +245,63 @@ describe("flow script executor — process cleanup", () => {
     expect(await waitForExit(descendant, 8_000)).toBe(true);
   }, 30_000);
 
+  it("stops a descendant that ignores SIGTERM when the step is cancelled", async () => {
+    const ws = workspace();
+    const pidFile = ws.resolve("stubborn.pid");
+    // A descendant with its own SIGTERM handler outlives the polite stop. The
+    // runner does not — it has no handler and dies in milliseconds — so a
+    // forced stop conditioned on the runner alone never happened.
+    const script = ws.write(
+      "stubborn.mjs",
+      `import { spawn } from "node:child_process";
+       import fs from "node:fs";
+       const child = spawn(
+         process.execPath,
+         ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+         { stdio: "ignore" }
+       );
+       fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+       setInterval(() => {}, 1000);`
+    );
+    const controller = new AbortController();
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 20_000,
+      signal: controller.signal,
+    });
+    const descendant = await readPidFile(pidFile);
+    controller.abort();
+    const result = await pending;
+
+    expect(result.failure?.kind).toBe("cancelled");
+    // The step says the process tree was stopped, so it has to be stopped by
+    // the time the step returns — not merely asked to stop.
+    expect(isAlive(descendant)).toBe(false);
+  }, 30_000);
+
+  it("stops a descendant of a step that returned normally", async () => {
+    const ws = workspace();
+    const pidFile = ws.resolve("left-behind.pid");
+    // Nothing interrupted this step: the script started a subprocess, returned
+    // its output and exited, and the subprocess was reparented to init.
+    const script = ws.write(
+      "leaver.mjs",
+      `import { spawn } from "node:child_process";
+       import fs from "node:fs";
+       const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+         stdio: "ignore",
+       });
+       fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+       child.unref();
+       output.started = child.pid;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.ok).toBe(true);
+    expect(isAlive(result.output?.started as number)).toBe(false);
+  }, 30_000);
+
   it("reaps a spinning orphan when its parent is SIGKILLed", async () => {
     const ws = workspace();
     const pidFile = ws.resolve("runner.pid");

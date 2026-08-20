@@ -36,9 +36,18 @@ import net from "node:net";
 const LIFELINE_FD = 4;
 
 const stop = () => {
-  // `process.kill` on our own pid from a worker takes the whole process down,
-  // which is the point: the main thread it has to stop may be in the very
+  // The *group*, not just this process. The runner leads its own group on POSIX
+  // precisely so a signal aimed at the group reaches whatever the script
+  // started, and this is the path where nothing else can: the tool server is
+  // already gone, so its own cleanup will never run and every descendant would
+  // otherwise be left behind. Killing the group takes this process with it,
+  // which is the point — the main thread it has to stop may be in the very
   // synchronous loop this control exists for.
+  try {
+    process.kill(-process.pid, "SIGKILL");
+  } catch {
+    // No process group to name (Windows, or a runner that never led one).
+  }
   process.kill(process.pid, "SIGKILL");
 };
 

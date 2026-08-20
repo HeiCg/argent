@@ -47,6 +47,10 @@ const SCRIPT_RUN_LOG_LIMIT_BYTES = 256 * 1024;
 const SETTLE_TIMEOUT_MS = 500;
 /** Grace between asking a process tree to stop and forcing it. */
 const STOP_GRACE_MS = 1_500;
+/** How often the stop path re-checks whether a process group has emptied. */
+const GROUP_POLL_MS = 50;
+/** How long a forced stop waits for the kernel to finish tearing the tree down. */
+const FORCE_GRACE_MS = 500;
 /** Steps allowed to queue for a slot before a step is refused outright. */
 const QUEUE_DEPTH_LIMIT = 32;
 /** A queue wait longer than this is worth telling the caller about. */
@@ -569,7 +573,6 @@ export class FlowScriptExecutor {
     let protocolProblem: string | null = null;
     let spawnProblem: string | null = null;
     let interrupted: "timeout" | "cancelled" | null = null;
-    let stopping = false;
 
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve) => {
@@ -584,11 +587,11 @@ export class FlowScriptExecutor {
     // it is the point at which no further message or log byte can arrive.
     const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
 
-    const stop = () => {
-      if (stopping) return;
-      stopping = true;
-      void stopProcessTree(child, exited, STOP_GRACE_MS);
-    };
+    // The one cleanup path, whatever ended the step. A script's descendants
+    // outlive it — they are reparented to init, not stopped — so a step that
+    // returned normally has to reap them too, not only one that was interrupted.
+    let stopped: Promise<void> | undefined;
+    const stop = () => (stopped ??= stopProcessTree(child, STOP_GRACE_MS));
 
     child.stdout?.on("data", (chunk: Buffer) => capture.push("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer) => capture.push("stderr", chunk));
@@ -602,7 +605,7 @@ export class FlowScriptExecutor {
       const message = parseScriptResponse(raw);
       if (!message) {
         protocolProblem ??= `The script runner sent a message the executor does not recognise: ${describeUnknown(raw)}`;
-        stop();
+        void stop();
         return;
       }
       if (!isTerminalResponse(message)) {
@@ -614,11 +617,11 @@ export class FlowScriptExecutor {
 
     const timer = setTimeout(() => {
       interrupted = "timeout";
-      stop();
+      void stop();
     }, timeoutMs);
     const onAbort = () => {
       interrupted ??= "cancelled";
-      stop();
+      void stop();
     };
     request.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -636,11 +639,11 @@ export class FlowScriptExecutor {
         // named. The child cannot do anything useful without the request, so
         // stop it rather than wait out its time limit.
         protocolProblem ??= `The script runner closed its channel before the request arrived: ${errorMessage(err)}`;
-        stop();
+        void stop();
       });
     } catch (err) {
       protocolProblem ??= `The script runner could not be given its request: ${errorMessage(err)}`;
-      stop();
+      void stop();
     }
 
     const exit = await exited;
@@ -654,6 +657,13 @@ export class FlowScriptExecutor {
     // descendant that inherited the streams and is holding them open — stopping
     // the process group first closes them in the normal case.
     await Promise.race([closed, delay(SETTLE_TIMEOUT_MS)]);
+    // Idempotent, and on a passing step this is the only cleanup there is: the
+    // runner has exited, and anything it started that is still running is
+    // reaped here rather than left behind holding a port or a database
+    // connection. A descendant that deliberately left the group — `detached` —
+    // is out of reach on purpose, which is how a script starts something meant
+    // to outlive it.
+    await stop();
     capture.end();
     child.stdout?.destroy();
     child.stderr?.destroy();
@@ -1032,20 +1042,15 @@ function configuredNumber(key: string): number | undefined {
  * whose own parent already exited has been re-parented and escapes it. A
  * deliberately detached descendant cannot be promised on either.
  */
-async function stopProcessTree(
-  child: ChildProcess,
-  exited: Promise<unknown>,
-  graceMs: number
-): Promise<void> {
+async function stopProcessTree(child: ChildProcess, graceMs: number): Promise<void> {
   const pid = child.pid;
-  if (!pid || hasExited(child)) return;
+  if (!pid) return;
 
   if (process.platform === "win32") {
-    // Windows has no graceful stop for a console-less child: `kill` is already
-    // TerminateProcess. The grace is still taken so a child that is exiting on
-    // its own is not turned into a tree kill.
-    tryKill(() => child.kill());
-    await Promise.race([exited, delay(graceMs)]);
+    // Windows has no graceful stop for a console-less child, and `child.kill()`
+    // is already `TerminateProcess` — it just does not reach the tree. Aim
+    // `taskkill /t` at the child while its pid is still valid, and keep
+    // `child.kill()` as the fallback for a `taskkill` that could not run.
     if (hasExited(child)) return;
     tryKill(() => {
       spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
@@ -1053,13 +1058,54 @@ async function stopProcessTree(
         stdio: "ignore",
       }).unref();
     });
+    await waitForGroupToEmpty(child, pid, graceMs);
+    if (!hasExited(child)) tryKill(() => child.kill());
     return;
   }
 
+  if (!groupHasMembers(pid)) return;
   killGroup(child, pid, "SIGTERM");
-  await Promise.race([exited, delay(graceMs)]);
-  if (hasExited(child)) return;
+  // What has to be gone is the *group*, not the runner. The runner installs no
+  // SIGTERM handler and dies in milliseconds, so waiting on it alone reported
+  // success while a descendant that ignores SIGTERM — or is simply slower — was
+  // still running, and the escalation below never happened.
+  await waitForGroupToEmpty(child, pid, graceMs);
+  if (!groupHasMembers(pid)) return;
   killGroup(child, pid, "SIGKILL");
+  // A SIGKILL is delivered at once but the kernel still has to tear the process
+  // down, so the step would otherwise return a moment before the tree is
+  // actually gone — which is the difference between "we asked" and "they are
+  // stopped", and the latter is what the verdict claims.
+  await waitForGroupToEmpty(child, pid, FORCE_GRACE_MS);
+}
+
+/** Poll until nothing is left in the runner's process group, or the grace runs out. */
+async function waitForGroupToEmpty(
+  child: ChildProcess,
+  pid: number,
+  graceMs: number
+): Promise<void> {
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    if (process.platform === "win32" ? hasExited(child) : !groupHasMembers(pid)) return;
+    await delay(GROUP_POLL_MS);
+  }
+}
+
+/**
+ * Whether anything is still running in the process group the runner leads.
+ *
+ * Signal 0 checks reachability without delivering anything. `ESRCH` is the only
+ * answer that means "nothing there": `EPERM` means the group exists and this
+ * process may not signal it, which still has to count as alive.
+ */
+function groupHasMembers(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
 }
 
 function killGroup(child: ChildProcess, pid: number, signal: NodeJS.Signals): void {

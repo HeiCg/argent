@@ -17,5 +17,13 @@ const deadlineMs = workerData && workerData.deadlineMs;
 if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
   const slot = new Int32Array(new SharedArrayBuffer(4));
   Atomics.wait(slot, 0, 0, deadlineMs);
+  // The group, so a descendant the script started goes with it — see the same
+  // reasoning in the lifeline watchdog. An orphan's descendants have no other
+  // control: the parent that would have reaped them is gone.
+  try {
+    process.kill(-process.pid, "SIGKILL");
+  } catch {
+    // No process group to name (Windows, or a runner that never led one).
+  }
   process.kill(process.pid, "SIGKILL");
 }
