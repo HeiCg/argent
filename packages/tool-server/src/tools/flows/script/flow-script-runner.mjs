@@ -47,6 +47,14 @@ let maxOutputBytes = 0;
 /** One outcome probe per process; `beforeExit` can fire more than once. */
 let probing = false;
 
+/**
+ * The event loop with nothing the script put in it: the two standard-stream
+ * pipes, measured rather than named. The IPC channel and both watchdog workers
+ * are unreferenced by the time it is read, so Node does not count them. Set at
+ * the end of `prepare`, which is the last point before the script loads.
+ */
+let idleResources = [];
+
 /** Set only while the runner itself is on the channel. See `closeChannelToScript`. */
 let runnerIsSending = false;
 
@@ -177,24 +185,32 @@ async function prepare() {
   // explicit `process.exit`. The first is handled by `finish` reporting once;
   // the second is the executor's `exit` verdict, which is the right one.
   //
-  // The first firing is spent yielding, because this handler was registered
-  // before the script loaded and therefore runs before the script's own. A
+  // Every firing is spent yielding, because this handler was registered before
+  // the script loaded and therefore runs before the script's own. A
   // `beforeExit` handler that schedules cleanup — `setTimeout(() => fs.writeFileSync(…))`
   // is the ordinary shape — had that work thrown away, and one that threw after
   // an `await` was swallowed while the step still passed; plain `node` writes
-  // the file and exits 1 respectively. Scheduling one empty turn keeps the loop
-  // alive past this round, and Node fires `beforeExit` again once whatever the
-  // script's handlers started has finished and the loop is empty for real.
-  let yielded = false;
+  // the file and exits 1 respectively.
+  //
+  // The yield keeps the loop alive past this round; what the script's handlers
+  // scheduled during it is then what decides. Anything at all, and the round
+  // belongs to the script: the loop runs it, empties again, and `beforeExit`
+  // comes round once more — exactly the loop plain `node` runs, so a
+  // `beforeExit` retry that needs three attempts gets three. Spending a fixed
+  // number of rounds instead gave a handler one, and a script whose third
+  // attempt was the one that set the output reported a green pass with an empty
+  // document, its own log showing the attempt it never completed.
   keepListener("beforeExit", () => {
     if (finished || probing) return;
-    if (!yielded) {
-      yielded = true;
-      setImmediate(() => {});
-      return;
-    }
-    probing = true;
-    reportWhenEntrySettled(request.scriptUrl);
+    setImmediate(() => {
+      if (finished || probing) return;
+      // Read after the yield, not during the emission: the handlers have all
+      // run by now, and so have the microtasks an `async` one queued. The yield
+      // itself is the callback running, and Node does not count that.
+      if (scriptScheduledWork()) return;
+      probing = true;
+      reportWhenEntrySettled(request.scriptUrl);
+    });
   });
 
   closeChannelToScript();
@@ -220,6 +236,31 @@ async function prepare() {
   if (process.channel && typeof process.channel.unref === "function") {
     process.channel.unref();
   }
+
+  // Read last, so it is the loop as the script inherits it and nothing the
+  // script scheduled is in it. Node awaits this module before it loads the
+  // entry, so there is no earlier or later point that holds. See
+  // `scriptScheduledWork`.
+  idleResources = process.getActiveResourcesInfo();
+}
+
+/**
+ * Whether anything the script's `beforeExit` handlers just scheduled is still
+ * pending.
+ *
+ * Counted per kind against the idle loop rather than compared by length: a
+ * script is free to close a standard stream — `process.stdout.end()` — and one
+ * that does while also scheduling work would otherwise come out even.
+ */
+function scriptScheduledWork() {
+  const idle = new Map();
+  for (const kind of idleResources) idle.set(kind, (idle.get(kind) ?? 0) + 1);
+  for (const kind of process.getActiveResourcesInfo()) {
+    const left = idle.get(kind) ?? 0;
+    if (left === 0) return true;
+    idle.set(kind, left - 1);
+  }
+  return false;
 }
 
 /**

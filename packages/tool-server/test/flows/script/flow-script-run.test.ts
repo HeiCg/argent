@@ -115,6 +115,58 @@ describe("flow script executor — work the module evaluation outlives", () => {
     expect(fs.readFileSync(marker, "utf8")).toBe("cleanup done");
   });
 
+  it("gives a beforeExit handler every round it asks for, not one", async () => {
+    const ws = workspace();
+    // A retry loop driven from `beforeExit` is the shape: the handler is
+    // entered on each round and stops scheduling when it succeeds. Spending a
+    // fixed number of rounds gave it one — the handler's own log line showed
+    // the last attempt starting, and the work it scheduled was thrown away
+    // while the step reported a green pass with an empty document. Plain `node`
+    // runs all three.
+    const script = ws.write(
+      "retry.mjs",
+      `let attempts = 0;
+       let uploaded = false;
+       process.on("beforeExit", () => {
+         if (uploaded || attempts >= 3) return;
+         attempts += 1;
+         console.log("attempt", attempts);
+         setTimeout(() => {
+           if (attempts === 3) {
+             uploaded = true;
+             output.uploaded = true;
+           }
+         }, 5);
+       });`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ uploaded: true });
+    expect(result.log).toBe("attempt 1\nattempt 2\nattempt 3\n");
+  });
+
+  it("drains a queue a beforeExit handler works through over several rounds", async () => {
+    const ws = workspace();
+    // The partial-loss half of the same defect: the round that was taken away
+    // committed one entry of two, so the document was wrong rather than empty.
+    const script = ws.write(
+      "drain.mjs",
+      `const queue = ["a", "b", "c"];
+       process.on("beforeExit", () => {
+         const next = queue.shift();
+         if (!next) return;
+         setTimeout(() => {
+           output[next] = true;
+         }, 5);
+       });`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ a: true, b: true, c: true });
+  });
+
   it("fails the step when the script's beforeExit handler throws", async () => {
     const ws = workspace();
     // Swallowed entirely, with an empty log and a passing step, where plain
