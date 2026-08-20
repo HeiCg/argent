@@ -443,8 +443,14 @@ function reportWatchdogProblem(url, err) {
  *   never opened, and calling it "your code threw" is the same mistake
  *   mirrored.
  *
- * A stack frame naming a file tells the two apart: code that ran has one,
- * Node's loader failing to parse or open a file has only internal frames.
+ * The loader leaves its own frames on the stack, and that is what tells the two
+ * apart. Asking instead whether *no* file frame is present read absence as
+ * proof: an error raised asynchronously carries the frames of wherever it was
+ * constructed, which for `fs.readFile("/nope", cb)` is nothing at all and for
+ * `await res.json()` is undici — so a script's own I/O failure was reported as
+ * "the module never evaluated", and the same call flipped verdict on whether it
+ * was awaited. `Error.stackTraceLimit = 0`, which any dependency may set, made
+ * even a plain synchronous throw look like a load failure.
  */
 function classifyScriptError(err) {
   const code = err && typeof err === "object" ? err.code : undefined;
@@ -461,7 +467,7 @@ function classifyScriptError(err) {
   ) {
     return "load";
   }
-  const fromLoader = !hasUserFrame(err);
+  const fromLoader = isLoaderFailure(err);
   if (err instanceof SyntaxError) return fromLoader ? "load" : "runtime";
   if (typeof code === "string" && POSIX_ERRNO_RE.test(code)) return fromLoader ? "load" : "runtime";
   return "runtime";
@@ -469,23 +475,36 @@ function classifyScriptError(err) {
 
 const POSIX_ERRNO_RE = /^E[A-Z]+$/;
 
+/** Node's module loader, ESM and CommonJS alike. */
+const LOADER_FRAME_RE = /node:internal\/modules\//;
+
 /**
- * Whether the stack names a file the script owns, rather than only Node's own
- * loader. A `node:` frame is internal however it is written — some carry the
- * function name in parentheses and some do not.
+ * Whether the stack says Node's module loader is what failed.
+ *
+ * A loader frame with no frame naming a file above it: the loader was reading,
+ * parsing or resolving, and nothing the script owns had run yet. A frame naming
+ * a file settles it the other way whatever else is on the stack — a top-level
+ * throw carries `ModuleJob.run` under the script's own frame — and a stack with
+ * no loader frame at all is not evidence of anything, which is the answer for
+ * an error raised asynchronously or with no frames at all. A `node:` frame is
+ * internal however it is written: some carry the function name in parentheses
+ * and some do not.
  */
-function hasUserFrame(err) {
+function isLoaderFailure(err) {
   const stack = errorStack(err);
   if (typeof stack !== "string") return false;
-  return stack
-    .split("\n")
-    .slice(1)
-    .some((line) => {
-      const frame = line.trim();
-      if (!frame.startsWith("at ")) return false;
-      if (frame.includes("node:")) return false;
-      return frame.includes("file:") || /[/\\]/.test(frame);
-    });
+  let loaderSeen = false;
+  for (const line of stack.split("\n").slice(1)) {
+    const frame = line.trim();
+    if (!frame.startsWith("at ")) continue;
+    if (LOADER_FRAME_RE.test(frame)) {
+      loaderSeen = true;
+      continue;
+    }
+    if (frame.includes("node:")) continue;
+    if (frame.includes("file:") || /[/\\]/.test(frame)) return false;
+  }
+  return loaderSeen;
 }
 
 /**

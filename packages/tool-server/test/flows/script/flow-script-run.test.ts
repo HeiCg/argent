@@ -261,6 +261,45 @@ describe("flow script executor — module loading", () => {
     expect(result.failure?.kind).toBe("runtime");
   });
 
+  it("calls the script's own asynchronous failures runtime failures", async () => {
+    const ws = workspace();
+    // An error raised asynchronously carries the frames of wherever it was
+    // constructed — nothing at all for an `fs` callback, undici for a response
+    // body — so reading the *absence* of a file frame as proof of a load
+    // failure made the same call flip verdict on whether it was awaited.
+    const callback = ws.write(
+      "callback.mjs",
+      `import fs from "node:fs";
+       fs.readFile("/nope/missing.csv", (err) => { if (err) throw err; });`
+    );
+    const fromCallback = await executor().execute({ scriptPath: callback, projectRoot: ws.dir });
+    expect(fromCallback.failure?.kind).toBe("runtime");
+
+    // The plan's own canonical example for why the distinction exists.
+    const body = ws.write(
+      "body.mjs",
+      `async function main() { await new Response("<html>").json(); }
+       main();`
+    );
+    const fromBody = await executor().execute({ scriptPath: body, projectRoot: ws.dir });
+    expect(fromBody.failure?.kind).toBe("runtime");
+  });
+
+  it("keeps that verdict when a dependency has set Error.stackTraceLimit to 0", async () => {
+    const ws = workspace();
+    // A global any dependency may set. With no frames at all there is no
+    // evidence either way, and absence-of-a-file-frame read it as a load
+    // failure — for a plain synchronous throw.
+    const script = ws.write(
+      "no-frames.mjs",
+      `Error.stackTraceLimit = 0;
+       JSON.parse("<!doctype html>");`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure?.kind).toBe("runtime");
+  });
+
   it("calls a script file it cannot open a load failure, not a runtime one", async () => {
     const ws = workspace();
     const script = ws.write("locked.mjs", `output.ok = true;`);
