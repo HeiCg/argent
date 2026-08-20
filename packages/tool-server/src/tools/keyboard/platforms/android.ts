@@ -303,8 +303,11 @@ async function tryAtomicClear(
   }
   // Not recorded: this is the budget expiring on a start that is still running.
   if (!devtools) return { ok: false, reason: "helper_unavailable", applied: false };
-  // A helper that answered clears the mark, so a device that comes good is not
-  // held back for the rest of the cooldown.
+  // Bookkeeping, not a release. The guard above already returned for a mark
+  // inside its cooldown, so the only mark that can be here is one that has
+  // EXPIRED — which gates nothing. Dropping it keeps the map to devices that
+  // have actually failed recently, rather than to every device this process has
+  // ever seen fail.
   atomicStartRefusedAt.delete(device.id);
   const rpcStartedAt = Date.now();
   try {
