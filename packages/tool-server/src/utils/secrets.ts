@@ -124,11 +124,14 @@ export function scrubSecretValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>
 ): string {
-  // Longest value first, so the result does not depend on the order the caller
-  // happened to collect its secrets in. One value can contain another — a host
-  // inside a URL that is itself a secret — and replacing the shorter one first
-  // rewrites the middle of the longer one, leaving its tail in the text:
-  // `using {{secret:HOST}}9d3f0a1b2c`.
+  // Longest value first. One value can contain another — a host inside a URL
+  // that is itself a secret — and replacing the shorter one first rewrites the
+  // middle of the longer one, leaving its tail in the text:
+  // `using {{secret:HOST}}9d3f0a1b2c`. Length is what decides, so two values of
+  // the *same* length that overlap still resolve in collection order:
+  // `[A="abcd", B="cdef"]` over `"abcdef"` gives `"{{secret:A}}ef"` and the
+  // reverse order gives `"ab{{secret:B}}"`. Neither leaks a value; which one is
+  // named differs.
   return [...secrets]
     .sort((a, b) => b.value.length - a.value.length)
     .reduce(

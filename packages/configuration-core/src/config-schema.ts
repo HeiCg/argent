@@ -180,11 +180,11 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     example: "~/Movies/argent",
   },
   // ── Flow `script` step host bounds ────────────────────────────────────
-  // All three are global-scope only, and that is the load-bearing part. Each
-  // bounds how much of the developer's machine a script step may occupy, and a
-  // project scope would let a checked-in `.argent/config.json` — a file an
-  // agent writes — raise the ceiling on every flow in that repository.
-  // `merge` is nominal for a global-only key: the project scope is never read.
+  // Both are global-scope only, and that is the load-bearing part. Each bounds
+  // how much of the developer's machine a script step may occupy, and a project
+  // scope would let a checked-in `.argent/config.json` — a file an agent writes
+  // — raise the ceiling on every flow in that repository. `merge` is nominal
+  // for a global-only key: the project scope is never read.
   {
     key: "scripts.maxTimeoutMs",
     description:

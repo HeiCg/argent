@@ -3,11 +3,12 @@
 //
 // The script is the process's **entry module**, not something this file
 // imports. That is what makes the process behave like `node script.mjs`:
-// `import.meta.main` is true, `process.argv[1]` is the script, `require.main`
-// is the script's own module in CommonJS, and the event loop runs until it
-// empties. A script written with the ordinary `if (this is the main module)
-// main()` guard therefore runs its body, where an imported script silently
-// skipped it and reported a green pass.
+// `process.argv[1]` is the script, `require.main` is the script's own module in
+// CommonJS, `import.meta.main` answers whatever it answers under plain `node`
+// on this version — true from Node 24, `undefined` on 20 and 22 — and the event
+// loop runs until it empties. A script written with the ordinary `if (this is
+// the main module) main()` guard therefore runs its body, where an imported
+// script silently skipped it and reported a green pass.
 //
 // A preload is what buys that while still giving the script an `output` global
 // and the executor a verdict: `--import` is awaited before the entry module

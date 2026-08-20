@@ -362,11 +362,14 @@ export class FlowScriptExecutor {
   /**
    * The three host bounds, read once per executor.
    *
-   * All three are global-scope configuration: a project scope would let a
-   * checked-in `.argent/config.json` — a file an agent writes — raise the
-   * ceiling on how much of the developer's machine any flow in that repository
-   * may occupy. Reading once rather than per step keeps a script step off the
-   * filesystem for a value that only changes with a server restart.
+   * Two of them are configuration — `scripts.maxTimeoutMs` and
+   * `scripts.heapLimitMb` — and both are global-scope only: a project scope
+   * would let a checked-in `.argent/config.json`, a file an agent writes, raise
+   * the ceiling on how much of the developer's machine any flow in that
+   * repository may occupy. The third, the concurrency limit, has no key at all;
+   * it is derived from the CPU count, because the CPU count is what decides it.
+   * Reading once rather than per step keeps a script step off the filesystem
+   * for a value that only changes with a server restart.
    */
   private resolveBounds(): ResolvedBounds {
     if (!this.bounds) {
@@ -1269,10 +1272,9 @@ function configuredNumber(key: string): number | undefined {
 /**
  * Request normal termination, wait a short grace, then force.
  *
- * A trusted script may start descendants, and no step — interrupted or not —
- * may leave them running. The two platform mechanisms differ in reach, and the
- * difference is worth being exact about rather than promising the same thing
- * on both:
+ * A trusted script may start descendants, and a step should not leave them
+ * running. The two platform mechanisms differ in reach, and the difference is
+ * worth being exact about rather than promising the same thing on both:
  *
  * - **POSIX** names the runner's process group, which every descendant that
  *   did not deliberately leave it is still in. That is the one this waits on:
@@ -1281,7 +1283,10 @@ function configuredNumber(key: string): number | undefined {
  *   parent-child tree instead — a grandchild whose own parent already exited
  *   has been re-parented and escapes it, and once the child itself is gone
  *   there is nothing left to walk from. It runs while the child is still
- *   alive, which is the only moment it can reach anything.
+ *   alive, which is the only moment it can reach anything. On the clean path
+ *   the child has already exited by the time this runs, so a descendant of a
+ *   normally-returning step survives there; only an interrupted step reaches
+ *   the tree. POSIX has no such gap — the group outlives the runner.
  *
  * A deliberately detached descendant is out of reach on either, which is how a
  * script starts something meant to outlive its step.
@@ -1603,7 +1608,14 @@ function utf8SafeCut(buffer: Buffer, max: number): number {
 }
 
 const V8_FRAME_RE = /^\s*\d+:\s+0x[0-9a-f]+/i;
-/** A fatal error is the only thing a frame dump follows. Until one prints, nothing is collapsed. */
+/**
+ * What a V8 frame dump follows. Until one of these prints, nothing is
+ * collapsed. Coarse on purpose, and coarse enough to match ordinary prose that
+ * happens to contain the words — a script's own `Fatal error in the inferior`
+ * arms it, and four `N: 0xHEX` lines after that are collapsed. The cost of a
+ * false arm is a marker line in place of frame-shaped output; the cost of
+ * missing a real dump is sixty lines of the log budget.
+ */
 const ARM_FRAME_COLLAPSE_RE = /FATAL ERROR|Fatal error in|Fatal JavaScript|# Fatal/i;
 /** Below this many consecutive frame lines, the run is passed through as written. */
 const COLLAPSE_THRESHOLD = 3;
