@@ -196,6 +196,12 @@ export interface StepReport {
    * `pinch`/`rotate`) that a tree-source outage left unsettled: it is dispatched
    * regardless, and the warning is the only thing separating it from one that
    * waited.
+   *
+   * Raised by a THIRD family too: a `keyboard` clear that could not take the
+   * verified path and said so in its own `note`. It reaches a step report both
+   * ways — from the `type` directive, and from a raw `keyboard` tool step, whose
+   * result would otherwise carry the note where no CLI renders it. Only Android
+   * produces one; see `KeyboardResult.note`.
    */
   warning?: string;
   /** Underlying tool id for `tool` steps. */
