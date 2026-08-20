@@ -287,8 +287,11 @@ function parseRequest(raw) {
  * this runs in a child process at all. Both are unref'd so they never hold the
  * process open; an empty script still exits in tens of milliseconds.
  *
- * One thread cannot do both duties: the lifeline's read never returns while the
- * parent lives, so a timer sharing that thread would never fire.
+ * One thread cannot do both duties, and the reason is the deadline's, not the
+ * lifeline's: `Atomics.wait` blocks its thread outright for the whole time
+ * limit, so a lifeline sharing it would not notice the parent going away until
+ * the deadline had already passed. The lifeline itself does not block — it
+ * waits on socket events.
  */
 function startWatchdogs(deadlineMs) {
   const here = import.meta.url;

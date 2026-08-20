@@ -1155,12 +1155,22 @@ function configuredNumber(key: string): number | undefined {
 /**
  * Request normal termination, wait a short grace, then force.
  *
- * A trusted script may start descendants, and a cancelled or timed-out step
- * must not leave them running. The two platform mechanisms differ in reach: a
- * POSIX group stop names the group, so it reaches every descendant that stayed
- * in it, while `taskkill /T` walks the live parent-child tree — a grandchild
- * whose own parent already exited has been re-parented and escapes it. A
- * deliberately detached descendant cannot be promised on either.
+ * A trusted script may start descendants, and no step — interrupted or not —
+ * may leave them running. The two platform mechanisms differ in reach, and the
+ * difference is worth being exact about rather than promising the same thing
+ * on both:
+ *
+ * - **POSIX** names the runner's process group, which every descendant that
+ *   did not deliberately leave it is still in. That is the one this waits on:
+ *   an empty group is the proof that the tree is gone.
+ * - **Windows** has no such group, so `taskkill /T` walks the live
+ *   parent-child tree instead — a grandchild whose own parent already exited
+ *   has been re-parented and escapes it, and once the child itself is gone
+ *   there is nothing left to walk from. It runs while the child is still
+ *   alive, which is the only moment it can reach anything.
+ *
+ * A deliberately detached descendant is out of reach on either, which is how a
+ * script starts something meant to outlive its step.
  */
 async function stopProcessTree(child: ChildProcess, graceMs: number): Promise<void> {
   const pid = child.pid;

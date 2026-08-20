@@ -4,9 +4,12 @@
 //
 // Every one of these is resolved at runtime through `path.join(__dirname, ...)`
 // from the module that sits next to it, so the destination has to mirror the
-// source layout exactly. `fs.cpSync` rather than `cp` because the flow script
-// runner lands in a nested directory that does not exist yet when the build
-// runs — a flat `cp` cannot create it.
+// source layout exactly.
+//
+// The workspace `build` script runs this, which is what keeps it from being
+// forgotten: `packages/tool-server/dist` is booted as a real tool server by
+// CI, and a dist without these files fails every flow `script` step at
+// flow-execute time.
 
 import fs from "node:fs";
 import path from "node:path";

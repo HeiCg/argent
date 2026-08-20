@@ -2,12 +2,22 @@
  * The IPC protocol between the flow script executor (the parent, in this
  * package) and `flow-script-runner.mjs` (the child it forks).
  *
- * Exactly two messages cross the channel in a passing run: the parent's
- * `execute` request, and the child's `started` followed by one terminal
- * response. Script logs never travel here — they ride stdout/stderr, so that
+ * Three messages cross the channel in a passing run: the parent's `execute`
+ * request, and the child's `started` followed by one terminal response. Script
+ * logs never travel here — they ride stdout/stderr, so that
  * console text and any subprocess the script starts land in one stream in
  * written order, and so that a limit can apply while draining rather than after
  * a whole message has been serialized.
+ *
+ * **Two rules the brief gives the parent are deliberately not implemented, and
+ * both are visible here rather than in a plan file.** A response that arrives
+ * after the child's exit is honoured rather than rejected: the message handler
+ * stays attached through the settle race, and a verdict the child sent before
+ * dying is still that child's verdict — Node simply delivered it late. And
+ * there is no `disconnect` handler on the parent's side: with the channel now
+ * out of the script's reach, a channel that closes without the process exiting
+ * has no path left to happen through, and a runner that truly wedges is
+ * reported by the step's time limit.
  *
  * **There is no version field.** Both sides ship in the same package from the
  * same installation, so the two can never disagree, and nothing keeps a message
@@ -41,7 +51,7 @@ export interface ScriptExecuteRequest {
    * from one parked inside a top-level `await` that never settles.
    */
   scriptUrl: string;
-  /** The current flow output, already encoded. PR 1 always sends `"{}"`. */
+  /** The current flow output, already encoded. `"{}"` when the flow has none yet. */
   outputJson: string;
   /** The child's own copy of the hard time limit, for its deadline watchdog. */
   deadlineMs: number;

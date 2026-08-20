@@ -27,8 +27,11 @@
 // timeout. The socket form exits cleanly and preserves the script's exit code
 // (measured: 7).
 //
-// One thread cannot also carry the deadline: this loop stays parked for as long
-// as the parent lives, so a timer sharing it would never fire.
+// One thread cannot also carry the deadline, and it is the deadline that forces
+// the split: `Atomics.wait` blocks its thread outright for the whole time
+// limit, so this watchdog sharing it would not see the parent go away until
+// that limit had already passed. Nothing here is parked — the handlers below
+// wait on socket events and `.resume()` returns at once.
 
 import fs from "node:fs";
 import net from "node:net";
@@ -54,10 +57,12 @@ const stop = () => {
 try {
   const lifeline = new net.Socket({ fd: LIFELINE_FD, readable: true, writable: false });
   // End of file is reported differently by platform and all of the shapes mean
-  // the same thing. On macOS and Linux the socketpair end reports `end`. On
-  // Windows the same condition surfaces as a broken-pipe `error` — libuv maps
-  // ERROR_BROKEN_PIPE to UV_EOF — so treating only the clean shape as the
-  // signal would leave a Windows orphan alive.
+  // the same thing. Measured on macOS and Linux: the socketpair end reports
+  // `end`. Windows is unmeasured — the expectation is that the same condition
+  // surfaces as a broken-pipe `error`, since libuv maps ERROR_BROKEN_PIPE to
+  // UV_EOF, and that was measured for the `fs.readSync` design this replaced —
+  // so all three events are treated as the signal rather than betting on one.
+  // The deadline watchdog is the backstop that does not depend on any of this.
   lifeline.on("end", stop);
   lifeline.on("close", stop);
   lifeline.on("error", stop);
