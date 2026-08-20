@@ -95,9 +95,14 @@ export interface KeyboardResult {
    *
    * Android sets it when a `clear` could not take the atomic accessibility path
    * — naming why, which weaker path ran instead, and what that path cannot
-   * promise about the field. Absent means the clear was the verified one, so
-   * "no note" is itself the strong result rather than the absence of
-   * information.
+   * promise about the field. ON ANDROID, absent therefore means the clear WAS
+   * the verified one, and "no note" is itself the strong result rather than the
+   * absence of information.
+   *
+   * Nowhere else. No other backend can set it: the iOS and Chromium returns are
+   * `{ typed, keys, cleared? }` literals, so an iOS chord nothing observed and a
+   * Chromium clear on a page it could not read are "absent" in exactly the same
+   * way. Read the absence together with the platform, not on its own.
    *
    * Never carries the field's contents or its length: it travels into the
    * agent's transcript and the tool-server's log, and a `{{secret:…}}` request
