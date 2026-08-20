@@ -219,6 +219,47 @@ describe("flow script executor — order", () => {
 
     expect(result.log).toBe("Downloading... [stdout line 1]\ndone\n");
   });
+
+  it("keeps that order when the held tail is a prefix of the secret", async () => {
+    const ws = workspace();
+    // The trigger the fixture above cannot reach: the unterminated write ends
+    // in a character that *starts* a configured value, so the tail really is
+    // held. The hold-back is per stream and the buffer is shared, so the held
+    // text was re-emitted after everything the other stream wrote in between —
+    // one coincidental character was enough to move it to the end of the log.
+    const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       process.stderr.write("Resolving packages: 42% h");
+       await wait(60);
+       process.stdout.write("installed 128 packages\\n");
+       await wait(60);
+       process.stderr.write("\\n");`;
+    const result = await executor().execute({
+      scriptPath: ws.write("prefix-order.mjs", source),
+      projectRoot: ws.dir,
+      secrets: [{ name: "TOK", value: "hunter2-abcdef0123456789" }],
+    });
+
+    expect(result.log).toBe("Resolving packages: 42% hinstalled 128 packages\n\n");
+  });
+
+  it("redacts a value the two streams wrote half of each, in place", async () => {
+    const ws = workspace();
+    // The same hold-back, doing its job across streams. Ten characters of the
+    // value were released to the end of the log while its tail sat in the
+    // middle, so neither the streaming pass nor the final one could match it
+    // and both halves reached the report.
+    const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       process.stdout.write("token=sk-live-9d");
+       await wait(60);
+       process.stderr.write("3f0a1b2c3d4e5f\\n");`;
+    const result = await executor().execute({
+      scriptPath: ws.write("split-order.mjs", source),
+      projectRoot: ws.dir,
+      secrets: [{ name: "TOKEN", value: "sk-live-9d3f0a1b2c3d4e5f" }],
+    });
+
+    expect(result.log).toBe("token={{secret:TOKEN}}\n");
+  });
 });
 
 describe("flow script executor — redaction", () => {

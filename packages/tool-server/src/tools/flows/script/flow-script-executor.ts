@@ -1432,6 +1432,8 @@ function hasExited(child: ChildProcess): boolean {
 interface StreamState {
   decoder: StringDecoder;
   holdback: string;
+  /** The place in the shared buffer the hold-back belongs in. See `release`. */
+  holdbackAt?: number;
   collapser?: V8FrameCollapser;
   /** Only stderr carries V8's fatal banner. */
   watchForHeapFatal?: boolean;
@@ -1573,38 +1575,70 @@ class ScriptLogCapture {
     if (!text && !final) return;
     if (state.watchForHeapFatal) this.watchForHeapFatal(text);
     const secrets = this.secrets();
-    const pending = state.holdback + text;
-    let emit: string;
-    if (final) {
-      emit = scrubSecretValues(pending, secrets);
-      state.holdback = "";
-    } else {
-      // Only a tail that could still grow into a secret is held back. Holding
-      // back a fixed `longest value - 1` characters delayed whole lines that
-      // could never match — with a 32-character secret configured, a 19
-      // character line waited for that stream's next chunk and landed after
-      // text the script wrote later. Adding a secret to a flow must not
-      // reorder its log.
-      //
-      // Measured on the text as written, and scrubbed only after the split.
-      // One secret's value can sit inside another's — a host inside a URL that
-      // is itself a secret, the case the longest-first replacement exists for
-      // — and scrubbing first rewrote the host to `{{secret:HOST}}`, so the
-      // chunk no longer ended in anything that could grow into the URL. The
-      // whole chunk went out, and neither this pass nor the final one could
-      // ever match the URL again.
-      const keep = partialSecretTail(pending, secrets);
-      const split = Math.max(0, pending.length - keep);
-      emit = scrubSecretValues(pending.slice(0, split), secrets);
-      state.holdback = pending.slice(split);
-    }
-    this.append(state.collapser ? state.collapser.write(emit) : emit);
+    const held = state.holdback;
+    const pending = held + text;
+    // Only a tail that could still grow into a secret is held back. Holding
+    // back a fixed `longest value - 1` characters delayed whole lines that
+    // could never match — with a 32-character secret configured, a 19
+    // character line waited for that stream's next chunk and landed after text
+    // the script wrote later. Adding a secret to a flow must not reorder its
+    // log.
+    //
+    // Measured on the text as written, and scrubbed only after the split. One
+    // secret's value can sit inside another's — a host inside a URL that is
+    // itself a secret, the case the longest-first replacement exists for — and
+    // scrubbing first rewrote the host to `{{secret:HOST}}`, so the chunk no
+    // longer ended in anything that could grow into the URL. The whole chunk
+    // went out, and neither this pass nor the final one could ever match the
+    // URL again.
+    const split = final
+      ? pending.length
+      : Math.max(0, pending.length - partialSecretTail(pending, secrets));
+    const emit = scrubSecretValues(pending.slice(0, split), secrets);
+    state.holdback = pending.slice(split);
+    this.release(state, held, emit);
     // A collapsed frame dump is output the report does not carry, which is what
     // `logTruncated` means.
     if (state.collapser?.collapsed) this.truncatedFlag = true;
+    // Where the tail now held back belongs in the shared buffer, taken before
+    // the other stream can append past it. Text still held from an earlier
+    // chunk keeps the place it already had; a tail drawn from this chunk takes
+    // a new one, after everything written before it.
+    if (!state.holdback) state.holdbackAt = undefined;
+    else if (split >= held.length) state.holdbackAt = this.parts.push("") - 1;
   }
 
-  private append(text: string): void {
+  /**
+   * Write what this chunk released, each half where the script wrote it.
+   *
+   * The hold-back is per stream and the buffer is shared, so released text
+   * that was held from an earlier chunk belongs *before* whatever the other
+   * stream wrote in between — appending it now would move it past that text.
+   * One character is enough to trigger it, since any first character of a
+   * secret is a prefix worth holding, and the shape it hits is the one the
+   * hold-back was made short for: an unterminated progress line, then output on
+   * the other stream. The place was reserved when the tail was taken; this
+   * fills it.
+   */
+  private release(state: StreamState, held: string, emit: string): void {
+    const at = state.holdbackAt;
+    if (at === undefined || !emit) {
+      this.append(state.collapser ? state.collapser.write(emit) : emit);
+      return;
+    }
+    // Scrubbing the held text on its own says how much of `emit` is that text,
+    // whenever no value spans the join. A value that does span it has no side
+    // to belong to, so its replacement goes with the chunk that completed it.
+    const head = scrubSecretValues(held, this.secrets());
+    const headText = emit.startsWith(head) ? head : "";
+    // The collapser is a stream transform, so it has to see the two in order.
+    this.append(state.collapser ? state.collapser.write(headText) : headText, at);
+    const tailText = emit.slice(headText.length);
+    this.append(state.collapser ? state.collapser.write(tailText) : tailText);
+  }
+
+  /** Append to the end of the buffer, or into the place reserved at `at`. */
+  private append(text: string, at?: number): void {
     if (!text) return;
     const runRemaining = this.runBudget
       ? Math.max(0, this.runBudget.remainingBytes)
@@ -1617,7 +1651,9 @@ class ScriptLogCapture {
     const buffer = Buffer.from(text, "utf8");
     const taken = buffer.length <= allowed ? buffer.length : utf8SafeCut(buffer, allowed);
     if (taken > 0) {
-      this.parts.push(taken === buffer.length ? text : buffer.subarray(0, taken).toString("utf8"));
+      const kept = taken === buffer.length ? text : buffer.subarray(0, taken).toString("utf8");
+      if (at === undefined) this.parts.push(kept);
+      else this.parts[at] += kept;
       this.stepRemaining -= taken;
       if (this.runBudget) this.runBudget.remainingBytes -= taken;
     }
