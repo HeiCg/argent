@@ -734,6 +734,30 @@ describe("flow script executor — process cleanup", () => {
       }
     }
   }, 60_000);
+
+  // Windows has no process group, so `taskkill /t` is the whole stop path
+  // there, on every timed-out or cancelled step. `spawn` reports a failure to
+  // launch through an `error` event rather than a throw, and an unhandled
+  // `error` event ends the process it fires in — the tool server. Faking the
+  // platform is what makes the branch reachable from here, and `taskkill` is
+  // genuinely absent on a POSIX host, so the launch failure is a real one.
+  it("survives a Windows stop whose taskkill cannot be launched", async () => {
+    const ws = workspace();
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const script = ws.write("hang.mjs", `setInterval(() => {}, 1000);`);
+      const result = await executor().execute({
+        scriptPath: script,
+        projectRoot: ws.dir,
+        timeoutMs: 400,
+      });
+
+      expect(result.failure?.kind).toBe(TIMEOUT);
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+    }
+  }, 30_000);
 });
 
 describe("flow script watchdogs", () => {

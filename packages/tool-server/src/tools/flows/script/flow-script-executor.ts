@@ -1316,10 +1316,21 @@ async function stopProcessTree(child: ChildProcess, graceMs: number): Promise<vo
     // `child.kill()` as the fallback for a `taskkill` that could not run.
     if (hasExited(child)) return;
     tryKill(() => {
-      spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
+      const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
         windowsHide: true,
         stdio: "ignore",
-      }).unref();
+      });
+      // A `spawn` that cannot launch reports it asynchronously, through an
+      // `error` event and not through a throw the `tryKill` above could catch.
+      // With no listener that event is unhandled, and an unhandled `error`
+      // ends the tool server — from the one stop path Windows has, on every
+      // timed-out or cancelled step, over exactly the conditions that make a
+      // step time out in the first place: a `taskkill.exe` the inherited
+      // `PATH` cannot resolve, or a saturated host answering `EAGAIN`.
+      // `child.kill()` below is already the fallback for a `taskkill` that
+      // could not run, so there is nothing further to do here.
+      killer.on("error", () => {});
+      killer.unref();
     });
     await waitForGroupToEmpty(child, pid, graceMs);
     if (!hasExited(child)) tryKill(() => child.kill());
