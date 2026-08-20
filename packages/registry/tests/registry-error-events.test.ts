@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { z } from "zod";
 import { Registry } from "../src/registry";
 import { ServiceState } from "../src/types";
 import {
@@ -175,6 +176,41 @@ describe("Registry — failure signals", () => {
       failure_stage: "failing_tool_execute",
       failure_area: "tool_server",
       error_kind: "unknown",
+    });
+  });
+
+  it("attributes a schema miss to the REGISTRY, not to the tool that never ran", async () => {
+    // The signal names who raised the failure. This parse runs before
+    // `execute` is entered, so the tool has not seen the arguments — and the
+    // test beside it pins the other half of that distinction: a signal the
+    // tool ATTACHED keeps `failure_area: "tool_server"`. Reading a
+    // registry-raised rejection as a tool-raised one leaves a dashboard unable
+    // to tell "the registry rejected the params" from "the tool did", on every
+    // non-HTTP dispatch path (flow runner `tool:` steps, run-sequence steps,
+    // flow-add-step sub-invokes) — which is all of them, since the HTTP layer
+    // parses first and never reaches here.
+    const registry = new Registry();
+    const execute = vi.fn();
+    registry.registerTool({
+      id: "typed-tool",
+      services: () => ({}),
+      zodSchema: z.object({ x: z.number() }),
+      execute,
+    } as never);
+
+    let emittedError: Error | null = null;
+    registry.events.on("toolFailed", (_toolId, _toolInvocationId, error) => {
+      emittedError = error;
+    });
+
+    await expect(registry.invokeTool("typed-tool", { xx: 1 })).rejects.toThrow(/Invalid params/);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(getFailureSignal(emittedError)).toEqual({
+      error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+      failure_stage: "tool_params_parse",
+      failure_area: "registry",
+      error_kind: "validation",
     });
   });
 

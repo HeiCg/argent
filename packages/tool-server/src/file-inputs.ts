@@ -60,6 +60,19 @@ export interface ResolveFileInputsResult {
   /** Per-target outcomes, forwarded to the tool via `InvokeToolOptions.fileInputs`. */
   fileInputs: Record<string, ResolvedFileInput> | undefined;
   /**
+   * Targets the CLIENT synthesized for this call, rather than the caller having
+   * named them — so an error message can leave them out of the keys it reads
+   * back to the caller.
+   *
+   * Nearly every spec interpolates its own target (`path: "${flow_path}"`), so
+   * the wrapper carries the value the caller wrote. `flow_file` is the
+   * exception: its template is built from `project_root` plus `name` /
+   * `flow_name`, and its own `.describe()` tells callers to leave it unset.
+   * Only a target that arrived as a WRAPPER is listed — a plain value on the
+   * same key is a deliberate caller override and stays the caller's own.
+   */
+  derivedTargets: string[];
+  /**
    * Removes every temp file this call materialized. Uploads are call-scoped —
    * the tool reads them during execution and nothing may reference them after
    * the response, so the caller must invoke this once the call settles.
@@ -291,16 +304,27 @@ export async function resolveFileInputs(
 
   const specs = def.fileInputs;
   if (!specs || specs.length === 0 || typeof body !== "object" || body === null) {
-    return { args: (body ?? {}) as Record<string, unknown>, fileInputs: undefined, cleanup };
+    return {
+      args: (body ?? {}) as Record<string, unknown>,
+      fileInputs: undefined,
+      derivedTargets: [],
+      cleanup,
+    };
   }
 
   const args = { ...(body as Record<string, unknown>) };
   let resolved: Record<string, ResolvedFileInput> | undefined;
+  const derivedTargets: string[] = [];
 
   try {
     for (const spec of specs) {
       const value = args[spec.target];
       if (!isFileInputWire(value)) continue;
+      // A template naming anything but its own target was built by the client
+      // out of OTHER params, so this key is the client's, not the caller's.
+      if (spec.path !== `\${${spec.target}}` && !derivedTargets.includes(spec.target)) {
+        derivedTargets.push(spec.target);
+      }
       if (spec.unwrapWhenSet !== undefined && isAnyParamSet(spec.unwrapWhenSet, args)) {
         // Caller-authored dual-source: the superseding source param is also
         // set, so the tool's own exactly-one validation must diagnose the
@@ -334,5 +358,5 @@ export async function resolveFileInputs(
     throw err;
   }
 
-  return { args, fileInputs: resolved, cleanup };
+  return { args, fileInputs: resolved, derivedTargets, cleanup };
 }

@@ -56,13 +56,18 @@ import { parseUiAutomatorDump } from "../../src/tools/describe/platforms/android
 import { adaptChromiumTreeForFlows } from "../../src/tools/flows/flow-chromium-tree";
 import { adaptVegaTreeForFlows } from "../../src/tools/flows/flow-vega-tree";
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
-import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
+import {
+  createFlowAddStepTool,
+  directiveCommandHint,
+  UNHINTED_DIRECTIVE_KEYS,
+} from "../../src/tools/flows/flow-add-step";
 import { flowFinishRecordingTool } from "../../src/tools/flows/flow-finish-recording";
 import { flowInsertEchoTool } from "../../src/tools/flows/flow-insert-echo";
 import {
   __resetRecordingsForTesting,
   parseFlow,
   serializeFlow,
+  STEP_DIRECTIVE_KEYS,
 } from "../../src/tools/flows/flow-utils";
 import { n } from "./harness";
 
@@ -2281,11 +2286,16 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // The other half of the anchor rule: an edit that removes an UNwarned step
     // must not cost the steps before it their verdicts, or the guard would be
     // the length heuristic again under another name.
+    //
+    // The removed step has to be DISTINGUISHABLE from the warned one, and that
+    // is the point rather than a convenience: deleting a step identical to its
+    // neighbour leaves the shortened file matching both alignments, so nothing
+    // in it says which one went — see the test below.
     await startRecording("kept");
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await recordWait("kept", { condition: "visible", selector: { text: "Continue" } });
-    serveTree(iosRunnerTree([iosLabel("Continue")]));
-    await recordWait("kept", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Sign in")]));
+    await recordWait("kept", { condition: "visible", selector: { text: "Sign in" } });
 
     // Delete the clean step 2, then record one more warned step.
     const file = path.join(tmpDir, ".argent", "flows", "kept.yaml");
@@ -2303,6 +2313,122 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect([...verdictsIn(finished.summary).keys()]).toEqual([1, 2]);
     expect(finished.message).toContain("2 steps carry a cross-tree warning");
+  });
+
+  it("drops the verdict when a delete of a twin puts the length back", async () => {
+    // The case a prefix comparison alone cannot see. Step 1 diverges and
+    // carries the verdict, step 2 is the byte-identical wait against a tree
+    // that DOES hold the element, so it agrees. Delete step 1 and record one
+    // more that also agrees: the file is two steps long again, so nothing about
+    // the length says anything, and the survivor at number 1 renders exactly
+    // like the step the verdict judged.
+    //
+    // Every wait left in the flow agreed with the runner's tree. A verdict on
+    // either convicts a check that converts fine, while the one that really
+    // diverges is gone with the step the author deleted.
+    await startRecording("relen");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("relen", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("relen", { condition: "visible", selector: { text: "Continue" } });
+
+    const file = path.join(tmpDir, ".argent", "flows", "relen.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = parsed.steps.slice(1);
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("relen", { condition: "visible", selector: { text: "Continue" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "relen", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(2);
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
+  });
+
+  it("drops the verdict when an inserted twin takes the warned step's number", async () => {
+    // The same blindness the other way round. Hand-inserting a copy of the
+    // warned wait AHEAD of it leaves number 1 holding the copy — which renders
+    // identically and was never probed at all — while the step that diverged
+    // slides to 2.
+    await startRecording("grown");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("grown", { condition: "visible", selector: { text: "Continue" } });
+
+    const file = path.join(tmpDir, ".argent", "flows", "grown.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = [parsed.steps[0], parsed.steps[0]];
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("grown", { condition: "visible", selector: { text: "Continue" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "grown", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(3);
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
+  });
+
+  it("records the next step when a hand edit made an earlier one unserializable", async () => {
+    // The anchor check renders both views of the prefix to compare them, and a
+    // cyclic YAML alias — which `parseFlow` accepts inside a step's `args` —
+    // has no rendering. Throwing there reports a FAILURE for an append that
+    // already wrote the step and already ran on the device, so the documented
+    // retry duplicates both.
+    await startRecording("cyclic");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("cyclic", { condition: "visible", selector: { text: "Continue" } });
+
+    // Alias the step's own `args` map back into itself, the one edit that
+    // survives a re-parse and cannot be stringified.
+    const file = path.join(tmpDir, ".argent", "flows", "cyclic.yaml");
+    await fs.writeFile(
+      file,
+      [
+        "steps:",
+        "  - tool: await-ui-element",
+        "    args: &cyc",
+        `      udid: ${IOS}`,
+        "      condition: visible",
+        "      selector:",
+        "        text: Continue",
+        "      self: *cyc",
+        "executionPrerequisite: on the form",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const echo = await flowInsertEchoTool.execute(
+      {},
+      { name: "cyclic", project_root: tmpDir, message: "form submitted" }
+    );
+
+    expect(echo.stepCount).toBe(2);
+    expect((await recordedSteps("cyclic")).map((s) => s.kind)).toEqual(["tool", "echo"]);
+
+    // The edited step cannot be vouched for, so its verdict goes — and the
+    // finish says so rather than reporting a clean recording.
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "cyclic", project_root: tmpDir }
+    );
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
   });
 
   // ── Cancellation ─────────────────────────────────────────────────────────
@@ -2402,6 +2528,52 @@ describe("a flow-directive name points at the tool that records it", () => {
     return tool.execute({}, { name: "hints", project_root: tmpDir, command });
   };
 
+  it("answers EVERY directive the parser accepts, or lists it as deliberately unanswered", async () => {
+    // The table covered nine names while the flow file's vocabulary is fifteen,
+    // and the ones left out answered with exactly the bare "Tool not found"
+    // this feature exists to replace — `pinch:`, `scroll-to:` and `snapshot:`
+    // are documented directives in flow-execute's own description, and `when:`
+    // is the parser's one nesting form, so none is any less likely a slip than
+    // `assert`. Held against the parser's own registry rather than a copy of
+    // it, so a directive added there is either answered or exempted on
+    // purpose.
+    const unanswered = STEP_DIRECTIVE_KEYS.filter((key) => directiveCommandHint(key) === undefined);
+    expect([...unanswered].sort()).toEqual([...UNHINTED_DIRECTIVE_KEYS].sort());
+  });
+
+  it("names no tool for the directives that have none, and says what to do instead", async () => {
+    // Five directives have no recording tool, each for its own reason, and an
+    // author who is told to "call X" for one of them goes looking for a tool
+    // that does not exist.
+    const cases: [string, string][] = [
+      ["wait", "a fixed sleep is not a readiness signal"],
+      ["long-press", "there is no gesture-long-press"],
+      ["scroll-to", "it SEARCHES"],
+      ["snapshot", "compares the screen against a stored baseline"],
+      ["when", "it GUARDS the steps nested under it"],
+    ];
+    for (const [command, why] of cases) {
+      const result = await hint(command);
+      expect(result.message, command).toContain("is a flow directive, not a tool");
+      expect(result.message, command).toContain("records one");
+      expect(result.message, command).toContain(why);
+      // No "Record it by calling `X` through flow-add-step" — that sentence
+      // is the table's, and following it here sends the author after a tool
+      // that does not exist.
+      expect(result.message, command).not.toContain("Record it by calling");
+      expect(result.message, command).toContain("no step was recorded");
+      expect(result.stepCount, command).toBe(0);
+    }
+    expect(await recordedSteps("hints")).toEqual([]);
+  });
+
+  it("names gesture-pinch for `pinch`, stored raw", async () => {
+    const result = await hint("pinch");
+    expect(result.message).toContain("gesture-pinch");
+    expect(result.message).toContain("stored as a raw `tool: gesture-pinch` step");
+    expect(result.stepCount).toBe(0);
+  });
+
   it("names flow-add-echo for `echo`", async () => {
     const result = await hint("echo");
     expect(result.message).toContain("flow-add-echo");
@@ -2436,6 +2608,44 @@ describe("a flow-directive name points at the tool that records it", () => {
       );
       expect(result.message, command).toContain("no step was recorded");
       expect(result.stepCount, command).toBe(0);
+    }
+    expect(await recordedSteps("hints")).toEqual([]);
+  });
+
+  it("gives each refused recorder tool ITS OWN reason", async () => {
+    // The `command` `.describe()` promises the four are refused "each for its
+    // own reason — nesting one would erase this flow at replay, end the take,
+    // or write the step twice", so the per-entry text IS the contract. Nothing
+    // held it: only `flow-add-echo` had a content assertion, so exchanging the
+    // `flow-start-recording` and `flow-finish-recording` bodies left the suite
+    // green while an author was told that finishing truncates and that
+    // starting ends the take.
+    const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
+    const reasons: [string, string[], string[]][] = [
+      [
+        "flow-add-echo",
+        ["must be called DIRECTLY", "fails on every replay"],
+        ["truncates", "ends the recording"],
+      ],
+      ["flow-add-step", ["cannot record itself"], ["truncates", "ends the recording"]],
+      ["flow-start-recording", ["truncates the flow it names", "erase"], ["ends the recording"]],
+      [
+        "flow-finish-recording",
+        ["ends the recording", "cannot also be a step in it"],
+        ["truncates"],
+      ],
+    ];
+    for (const [command, present, absent] of reasons) {
+      const result = await tool.execute(
+        {},
+        { name: "hints", project_root: tmpDir, command, args: "{}" }
+      );
+      for (const fragment of present) {
+        expect(result.message, `${command} should say "${fragment}"`).toContain(fragment);
+      }
+      for (const fragment of absent) {
+        expect(result.message, `${command} should not say "${fragment}"`).not.toContain(fragment);
+      }
     }
     expect(await recordedSteps("hints")).toEqual([]);
   });
@@ -2490,6 +2700,45 @@ describe("a flow-directive name points at the tool that records it", () => {
     expect(await recordedSteps("hints")).toEqual([]);
   });
 
+  it("reports the step count as the hand-edited file now stands, not the stale snapshot", async () => {
+    // Host mode re-reads the flow on the record-nothing paths so a
+    // mid-recording hand edit is reflected in the count they report — the
+    // stated reason that branch exists. Only its FAILURE half was covered
+    // (the test below writes an unparseable file), and that one's expectation
+    // of 0 matches the in-memory snapshot with or without the refresh: so
+    // deleting `session.flow = parseFlow(...)` while leaving the read in place
+    // kept everything green, and the positive behaviour could regress to a
+    // stale count silently.
+    const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
+    const flowPath = path.join(tmpDir, ".argent", "flows", "hints.yaml");
+
+    // One recorded step, so the in-memory snapshot is a NON-zero number that
+    // differs from what the file will say — a count of 0 either way would not
+    // tell the two sources apart.
+    await tool.execute(
+      {},
+      {
+        name: "hints",
+        project_root: tmpDir,
+        command: "gesture-tap",
+        args: JSON.stringify({ udid: IOS, x: 0.5, y: 0.5 }),
+      }
+    );
+    expect(await recordedSteps("hints")).toHaveLength(1);
+
+    // The author edits the YAML by hand while the recording is open.
+    await fs.writeFile(flowPath, "steps:\n  - echo: one\n  - echo: two\n  - echo: three\n", "utf8");
+
+    const result = await tool.execute(
+      {},
+      { name: "hints", project_root: tmpDir, command: "echo", args: "{}" }
+    );
+
+    expect(result.message).toContain("flow-add-echo");
+    expect(result.message).not.toContain("could not be read");
+    expect(result.stepCount).toBe(3); // the file, not the snapshot's 1
+  });
+
   it("qualifies the step count when the persisted flow can no longer be read", async () => {
     // The record-nothing paths re-read the file so a mid-recording hand edit is
     // reflected in the count they report. When that read (or parse) fails, the
@@ -2531,6 +2780,31 @@ describe("a flow-directive name points at the tool that records it", () => {
     }
     // …while the four that ARE rewritten still say so.
     expect((await hint("launch")).message).toContain("rewrites it into the `launch:` step");
+  });
+
+  it("names the TOOL that records each directive the recorder stores raw", async () => {
+    // Which tool to call is the one fact these hints exist to convey, and for
+    // these three nothing pinned it: the assertions above hold whichever tool
+    // is named, so swapping `type`'s `keyboard` for `await-ui-element` (and
+    // back) left the whole suite green while the recorder told an author to
+    // record typing with a wait. `tap`, `launch`, `run` and `echo` each have a
+    // test that names theirs; these did not.
+    const named: [string, string][] = [
+      ["type", "keyboard"],
+      ["await", "await-ui-element"],
+      ["assert", "await-ui-element"],
+    ];
+    for (const [command, tool] of named) {
+      const message = (await hint(command)).message;
+      expect(message, command).toContain(`Record it by calling \`${tool}\` through flow-add-step`);
+      expect(message, command).toContain(`stored as a raw \`tool: ${tool}\` step`);
+    }
+    // `type` must not be answered with the wait tool, nor the checks with the
+    // typing one — the mutation that stayed green was exactly that swap.
+    expect((await hint("type")).message).not.toContain("await-ui-element");
+    for (const command of ["await", "assert"]) {
+      expect((await hint(command)).message, command).not.toContain("`keyboard`");
+    }
   });
 
   it("qualifies a rewrite hint with the delayMs opt-out", async () => {

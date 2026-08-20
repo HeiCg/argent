@@ -59,7 +59,19 @@ const zodSchema = z.object({
 
 type Params = z.infer<typeof zodSchema>;
 
-type StepResult = { tool: string; result: unknown } | { tool: string; error: string };
+type StepResult =
+  | { tool: string; result: unknown }
+  /**
+   * `dispatched: false` marks a step this tool rejected BEFORE handing it to
+   * the registry — an unlisted tool name, or one the target platform does not
+   * support. Both push an entry and stop, so without the marker a rejection
+   * that provably touched nothing is indistinguishable from a step that ran and
+   * then failed: `completed` is 0 either way, and these entries carry no
+   * `status` of their own. A consumer deciding whether the device may have
+   * moved (the flow recorder does, to decide what to warn about) would have to
+   * assume the worst for a sequence that never dispatched anything.
+   */
+  | { tool: string; error: string; dispatched?: false };
 
 type RunSequenceResult = {
   completed: number;
@@ -98,7 +110,7 @@ export function createRunSequenceTool(
     description: `Execute multiple device interaction steps in a single call (iOS simulator, Android emulator, Apple TV / Android TV, or Chromium app).
 Use when you need sequential actions and do NOT need to observe the screen between them
 (e.g. scrolling multiple times, typing then pressing enter, rotating back and forth).
-Returns { completed, total, steps } with per-step results. Fails if an unrecognised tool name is used in a step (error returned at that step, execution stops).
+Returns { completed, total, steps } with per-step results. Fails if an unrecognised tool name is used in a step (error returned at that step, execution stops). A step rejected before it could run — an unlisted tool name, or one this target does not support — carries \`dispatched: false\`, so a caller can tell "never touched the device" from "ran and then failed".
 One screenshot is captured automatically after the whole sequence (not per step) — call screenshot separately only for a baseline BEFORE it, or to observe an intermediate step.
 That single capture is also why a secret belongs in this call rather than in two bare ones: the skip is decided from the whole request, so a \`{{secret:...}}\` in any step suppresses the capture that would otherwise follow the submit.
 
@@ -186,6 +198,7 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           results.push({
             tool: step.tool,
             error: `Tool "${step.tool}" is not allowed in run-sequence. Allowed: ${[...ALLOWED_TOOLS].join(", ")}`,
+            dispatched: false,
           });
           break;
         }
@@ -201,7 +214,7 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
             assertSupported(step.tool, subTool.capability, device);
           } catch (err) {
             if (err instanceof UnsupportedOperationError) {
-              results.push({ tool: step.tool, error: err.message });
+              results.push({ tool: step.tool, error: err.message, dispatched: false });
               break;
             }
             throw err;

@@ -1194,6 +1194,40 @@ describe("compatibility miss note: what it is scoped to", () => {
     expect(result.steps[0].reason).toMatch(/<U\+202E>/);
   });
 
+  it("neutralises a directional override in the AUTHORED expectation too", async () => {
+    // The label is not the only carrier. The expectation is authored text,
+    // `JSON.stringify` does not escape U+202E, and the note this reason appends
+    // lands AFTER it — so an override in the expectation reverses the very
+    // explanation the failure exists to give. The advice that note carries is
+    // "copy the characters the app renders", and the fold deliberately keeps
+    // the ones that reorder, which is how such a string reaches an expectation.
+    currentFetch = () => ({
+      tree: screen([n({ label: "bedrock", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } })]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("rlo-expect", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { text: "bedrock" },
+          expectedText: "bed\u202Erock",
+          textMatch: "contains",
+        },
+      ],
+    });
+
+    const result = await run("rlo-expect");
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).not.toContain("\u202E");
+    expect(result.steps[0].reason).toMatch(/<U\+202E>/);
+    // And the note it was reversing is still there, the right way round.
+    expect(result.steps[0].reason).toMatch(/REORDERS/);
+  });
+
   it("leaves ordinary quoted text alone, so it stays copy-pasteable", async () => {
     currentFetch = () => ({
       tree: screen([

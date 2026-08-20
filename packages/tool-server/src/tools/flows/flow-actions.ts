@@ -2551,7 +2551,14 @@ function assertReason(
     case "text": {
       const first = firstInReadingOrder(matches.filter(isVisible)) ?? firstInReadingOrder(matches);
       if (!first) return `no element matched selector ${sel}`;
-      const wanted = describeTextExpectation(expectedText, textMatch, "infinitive");
+      // Defused like the label below, and for the same reason: the expectation
+      // is authored text, JSON.stringify does not escape U+202E, and an
+      // unbalanced one here reverses everything printed after it — including
+      // the codepoint note this reason appends, which is the explanation the
+      // failure exists to give. See quoteScreenText.
+      const wanted = quoteScreenText(
+        describeTextExpectation(expectedText, textMatch, "infinitive")
+      );
       // The check accepts the element's own label/value as well as its hoisted
       // subtree text (see evaluateCondition), so when they differ quote both —
       // the author may have been asserting against either.

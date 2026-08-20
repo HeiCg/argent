@@ -81,7 +81,7 @@ A container that aggregates a child's text therefore splits them: `tap` hits the
 
 ### Invisible characters
 
-Type what you see. Every literal comparison — `text` and `role` selectors, `contains`, `equals` — folds both sides first, so invisible differences are ignored: a non-breaking space matches a plain one, a stray zero-width space is dropped, and an LTR bidi wrapper around left-to-right text needs no reproducing. Around right-to-left text that same wrapper reorders what is drawn, so it is kept and must be spelled out.
+Type what you see. Every literal comparison — `text` and `role` selectors, `contains`, `equals` — folds both sides first, so invisible differences are ignored: a non-breaking space matches a plain one, a stray zero-width space is dropped, and an LTR bidi wrapper around left-to-right text needs no reproducing. Around right-to-left text that same wrapper reorders what is drawn, so the comparison keeps it. Spell it out only in an `equals` of the whole label. A substring test — a `text` selector, or `contains` — takes the bare text you see, because a needle that carries half a wrapper puts the closing half mid-label and matches nothing.
 
 Anything that changes the rendering is deliberately not folded: reordering bidi controls, a soft hyphen, emoji joiners and variation selectors, and a line break. A run of spaces or tabs collapses to one space, but no number of spaces matches a label the screen breaks across two lines. `id` is never folded, because it is a machine key. `matches` is never folded either, because a regex carries its own precision.
 
