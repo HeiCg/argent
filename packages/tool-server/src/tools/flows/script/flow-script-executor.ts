@@ -27,7 +27,10 @@ import {
   MIN_SCRIPT_HEAP_LIMIT_MB,
   type ConfigDefinition,
 } from "@argent/configuration-core";
+import { isElectronHostedEnv } from "../../../utils/electron-env";
+import { formatErrorForAgent } from "../../../utils/format-error";
 import { scrubSecretValues } from "../../../utils/secrets";
+import { sleep } from "../../../utils/timing";
 import {
   isTerminalResponse,
   parseScriptResponse,
@@ -285,7 +288,11 @@ export interface FlowScriptResult {
 }
 
 export interface FlowScriptExecutorOptions {
-  /** Overrides `scripts.concurrency`. */
+  /**
+   * How many script processes run at once. Defaults to a CPU-derived limit;
+   * there is no configuration key, because the bound protects the host and the
+   * CPU count is what determines it.
+   */
   concurrency?: number;
   /** Overrides `scripts.maxTimeoutMs`. */
   maxTimeoutMs?: number;
@@ -297,8 +304,6 @@ export interface FlowScriptExecutorOptions {
    * a host already in trouble reaches it.
    */
   queueWaitMs?: number;
-  /** Overrides where the runner and watchdog `.mjs` files are looked up. */
-  runnerDir?: string;
 }
 
 // ── Executor ──────────────────────────────────────────────────────────────
@@ -352,14 +357,10 @@ export class FlowScriptExecutor {
   private resolveBounds(): ResolvedBounds {
     if (!this.bounds) {
       this.bounds = {
-        // `positive` on the option too: `configuredNumber` rejects a
-        // non-positive configured value, but `concurrency: 0` reached `??`
-        // intact — zero is not nullish — and every step then queued until the
-        // wait bound refused it.
-        concurrency:
-          positive(this.options.concurrency) ??
-          configuredNumber("scripts.concurrency") ??
-          defaultConcurrency(),
+        // `positive` rather than `??`: `concurrency: 0` is not nullish, so it
+        // reached the executor intact and every step then queued until the wait
+        // bound refused it.
+        concurrency: positive(this.options.concurrency) ?? defaultConcurrency(),
         // Capped at the largest delay `setTimeout` can hold: past that Node
         // clamps the timer to 1ms, so a maximum of a few weeks made every
         // script "time out" immediately.
@@ -536,7 +537,7 @@ export class FlowScriptExecutor {
     try {
       cwd = resolveWorkingDirectory(request, notes);
       env = buildChildEnv(request.env);
-      runnerPath = resolveRunnerPath(request.runnerDir ?? this.options.runnerDir);
+      runnerPath = resolveRunnerPath(request.runnerDir);
       // Before the fork, and inside this guard: a cyclic or BigInt document
       // makes `JSON.stringify` throw, and doing it after the fork made
       // `execute` reject with a raw TypeError — no `FlowScriptResult` for the
@@ -709,7 +710,7 @@ export class FlowScriptExecutor {
     // arrives *before* the log text of the same script. The bound covers a
     // descendant that inherited the streams and is holding them open — stopping
     // the process group first closes them in the normal case.
-    await Promise.race([closed, delay(SETTLE_TIMEOUT_MS)]);
+    await Promise.race([closed, sleep(SETTLE_TIMEOUT_MS)]);
     // Idempotent, and on a passing step this is the only cleanup there is: the
     // runner has exited, and anything it started that is still running is
     // reaped here rather than left behind holding a port or a database
@@ -1075,11 +1076,12 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   // plain `fork` from it boots as Node today. The allowlist does not carry the
   // name, so it has to be put back deliberately.
   //
-  // The read must be case-insensitive for the same reason the strip in
-  // `electron-env.ts` is: a Windows host may surface `Electron_Run_As_Node`,
-  // and a case-sensitive read here would say the server is not Electron-hosted
-  // when it is — booting a GUI Electron process for every script step.
-  if (Object.keys(process.env).some((name) => name.toLowerCase() === "electron_run_as_node")) {
+  // The read is case-insensitive for the same reason the strip in
+  // `electron-env.ts` is, and is the same predicate: a Windows host may surface
+  // `Electron_Run_As_Node`, and a case-sensitive read here would say the server
+  // is not Electron-hosted when it is — booting a GUI Electron process for
+  // every script step.
+  if (isElectronHostedEnv()) {
     env.ELECTRON_RUN_AS_NODE = "1";
   }
 
@@ -1218,7 +1220,7 @@ async function waitForGroupToEmpty(
   const deadline = Date.now() + graceMs;
   while (Date.now() < deadline) {
     if (process.platform === "win32" ? hasExited(child) : !groupHasMembers(pid)) return;
-    await delay(GROUP_POLL_MS);
+    await sleep(GROUP_POLL_MS);
   }
 }
 
@@ -1589,12 +1591,14 @@ function emptyResult(
   };
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
+/**
+ * An error as a message. `formatErrorForAgent` for the `Error` case, which
+ * walks the `.cause` chain — a `fetch failed` wrapping `connect ECONNREFUSED`
+ * is exactly the shape a script produces. Anything else keeps the capped
+ * rendering, since a value that is not an `Error` can be arbitrarily large.
+ */
 function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message || String(err);
+  if (err instanceof Error) return formatErrorForAgent(err) || String(err);
   return typeof err === "string" ? err : describeUnknown(err);
 }
 

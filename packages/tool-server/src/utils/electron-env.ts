@@ -27,6 +27,16 @@
  * child. (On macOS/Linux the name is always the exact uppercase form, so the
  * loop simply matches that one key.)
  */
+/**
+ * Whether this process was started by an Electron-based MCP host — the same
+ * case-insensitive read the strip below performs, and the reason it has to be
+ * case-insensitive. A caller that needs the flag *set* rather than removed (a
+ * `fork` that must boot as Node, not as a GUI Electron process) asks this.
+ */
+export function isElectronHostedEnv(): boolean {
+  return Object.keys(process.env).some((name) => name.toLowerCase() === "electron_run_as_node");
+}
+
 export function electronGuiChildEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
   for (const key of Object.keys(env)) {

@@ -405,7 +405,7 @@ describe("flow script host bounds", () => {
     expect(describeExpectedValue(def)).toContain(`at least ${MIN_SCRIPT_HEAP_LIMIT_MB}`);
   });
 
-  it.each(["scripts.maxTimeoutMs", "scripts.heapLimitMb", "scripts.concurrency"])(
+  it.each(["scripts.maxTimeoutMs", "scripts.heapLimitMb"])(
     "keeps %s out of project scope, so repository content cannot raise its own ceiling",
     (key) => {
       const def = getConfigDefinition(key)!;

@@ -242,12 +242,15 @@ function reportWhenEntrySettled(scriptUrl) {
  */
 function closeChannelToScript() {
   const realSend = process.send;
-  const realLowLevelSend = process._send;
+  // `_send` is Node's undocumented implementation behind `send`, and not on the
+  // public type — but a script can reach it by name, so it is guarded too.
+  const host = /** @type {{ _send?: Function }} */ (/** @type {unknown} */ (process));
+  const realLowLevelSend = host._send;
   // `send` calls `this._send`, so both names are guarded by the one flag rather
   // than replaced — the runner's own call sets it for the length of that call.
   process.send = (...args) => (runnerIsSending ? realSend.apply(process, args) : true);
   if (typeof realLowLevelSend === "function") {
-    process._send = (...args) => (runnerIsSending ? realLowLevelSend.apply(process, args) : true);
+    host._send = (...args) => (runnerIsSending ? realLowLevelSend.apply(process, args) : true);
   }
   process.disconnect = () => {};
 }

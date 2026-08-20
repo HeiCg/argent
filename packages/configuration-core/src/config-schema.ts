@@ -217,18 +217,6 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     default: 512,
     example: "512",
   },
-  {
-    key: "scripts.concurrency",
-    description:
-      "How many flow `script` processes one tool-server runs at once. Unset ⇒ derived from " +
-      "the CPU count as max(2, min(8, cpus - 2)); a script can spin a core, and eight " +
-      "spinning runners on a four-core laptop stops every other agent on the host.",
-    scopes: ["global"],
-    parse: asPositiveInteger,
-    merge: "prioritize-global",
-    // No `default`: the fallback is CPU-derived, so the executor computes it.
-    example: "4",
-  },
 ] as const;
 
 /** Look up a schema entry by key, or `undefined` when the key is unknown. */
