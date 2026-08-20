@@ -73,8 +73,10 @@ const WHAT: Record<AndroidClearOutcome["path"], string> = {
     "no residue to check, and a widget that swallows the chord (a Flutter `TextField` does) keeps " +
     "its whole value with the new text spliced in at the caret",
   "select-all-rescued":
-    "the select-all chord, a delete, and then a backspace run over what the chord had failed to " +
-    "select — the chord did NOT take on this field",
+    "the select-all chord, a delete, and then a backspace run over what the field still reported " +
+    "afterwards. That reading is not proof the chord failed: the view hierarchy reports an empty " +
+    "field's placeholder in the same attribute as its value, so a field the chord DID empty reads " +
+    "the same as one it did not",
   "delete-run":
     "a backspace run, because this Android level has no `input keycombination`. That deletes " +
     "backwards from end-of-LINE, so a multi-line field keeps whatever sits below the caret",

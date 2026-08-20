@@ -526,9 +526,18 @@ export async function injectAndroidClear(
   // measurement: it is FLOORED to BLIND_DELETE_COUNT (see
   // measureFocusedTextLength), so a bare `chars > 0` reads 150 as a residue and
   // rescues every single clear on such a field, whether or not the chord took.
-  // That is the opposite of "only a positive reading redirects", and it makes
-  // the caller's note assert `the chord did NOT take` about a device that said
-  // no such thing.
+  // That is the opposite of "only a positive reading redirects".
+  //
+  // What a SIZED reading still cannot say is WHICH of the two it is. An empty
+  // field reports its placeholder in the same `text` attribute as a real value,
+  // and neither reader carries a hint attribute to tell them apart on the levels
+  // this path serves (checked on API 34: `uiautomator` emits no `hint`, and the
+  // helper's `captureXml` does not either). So a focused, emptied `EditText` with
+  // a placeholder — a search box, a login field — measures its placeholder's
+  // length and takes the rescue. Sending the run anyway is the right side to err
+  // on: backspace on an empty field is a no-op, while skipping it on a real
+  // residue leaves the value the clear was asked to remove. The note is worded to
+  // match — it reports the reading, and does not claim the chord failed.
   const residue = await measureFocusedTextLength(serial, deadline, options.readHierarchy, 1);
   if (residue?.sized === true && residue.chars > 0) {
     const blind = await clearByDeleting(serial, deadline, options, residue.chars);

@@ -2401,10 +2401,12 @@ describe("keyboard clear — Android (adb input)", () => {
       expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
     });
 
-    it("says the chord did NOT take when the read-back had to rescue it", async () => {
-      // The one case where the injected path DID observe its own failure. A
-      // caller that reads this knows the chord is unreliable on this field and
-      // that a second, selection-free pass is what emptied it.
+    it("names the extra backspace run without asserting the chord failed", async () => {
+      // The reading that triggered the run cannot say WHICH it is: an empty
+      // field reports its placeholder in the same attribute as a real value, and
+      // no reader on these levels carries a hint to tell them apart. So the arm
+      // reports what was read and what the run did, and leaves the device's
+      // behaviour unasserted.
       seedDump(dumpWith("Monda")); // "Monday", less the character the DEL took
 
       const result = await makeAndroidImpl(registryWith({})).handler(
@@ -2413,7 +2415,25 @@ describe("keyboard clear — Android (adb input)", () => {
         ANDROID
       );
 
-      expect(result.note).toMatch(/chord did NOT take/);
+      expect(result.note).toMatch(/backspace run over what the field still reported/);
+      expect(result.note).not.toMatch(/chord did NOT take/);
+    });
+
+    it("does not call a placeholder a residue the chord left behind", async () => {
+      // Measured on a Pixel 7 / API 34 against a hinted native `EditText`: the
+      // chord took, the field ended EMPTY with one text change, and the read-back
+      // returned the placeholder — so the rescue fired and the note asserted a
+      // failure the device never reported.
+      seedDump(dumpWith("type here"));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).not.toMatch(/chord did NOT take/);
+      expect(result.note).toMatch(/placeholder in the same attribute as its value/);
     });
 
     it("never quotes the field's contents or its length", async () => {
