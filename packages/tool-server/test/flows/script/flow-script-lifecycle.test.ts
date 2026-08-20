@@ -292,7 +292,16 @@ describe("flow script executor — time limits and cancellation", () => {
 
   it("refuses a step whose signal is already aborted, without spawning", async () => {
     const ws = workspace();
-    const script = ws.write("never.mjs", `output.ran = true;`);
+    const marker = ws.resolve("ran.txt");
+    // The claim is "without spawning", and the marker is what proves it: a
+    // process that started would have written the file before it could be
+    // stopped. `durationMs` cannot prove it — `emptyResult` hardcodes zero.
+    const script = ws.write(
+      "never.mjs",
+      `import fs from "node:fs";
+       fs.writeFileSync(${JSON.stringify(marker)}, "ran");
+       output.ran = true;`
+    );
     const result = await executor().execute({
       scriptPath: script,
       projectRoot: ws.dir,
@@ -301,10 +310,26 @@ describe("flow script executor — time limits and cancellation", () => {
 
     expect(result.failure?.kind).toBe("cancelled");
     expect(result.output).toBeUndefined();
-    // The claim is "without spawning", and this is what proves it: nothing was
-    // started, so no wall clock was spent.
-    expect(result.durationMs).toBe(0);
+    expect(fs.existsSync(marker)).toBe(false);
   });
+
+  it("bounds a step that asked for nothing by the host maximum, not by the default", async () => {
+    const ws = workspace();
+    // A host that deliberately tightened its ceiling below the 30s default was
+    // getting the default on every step that named no limit of its own.
+    const script = ws.write("hang.mjs", `setInterval(() => {}, 1000);`);
+    const started = Date.now();
+    const result = await executor({ maxTimeoutMs: 700 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+    });
+
+    expect(result.failure?.kind).toBe(TIMEOUT);
+    expect(result.failure?.message).toContain("700ms time limit");
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // Silently bounded: the note is for a caller that asked for more.
+    expect(result.notes).toEqual([]);
+  }, 30_000);
 
   it("clamps a time limit above the host maximum and says so", async () => {
     const ws = workspace();
@@ -377,7 +402,10 @@ describe("flow script executor — exit classification", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failure?.kind).toBe("exit");
-    expect(result.failure?.message).toContain("1");
+    // The code itself, not a substring of it: `toContain("1")` also matches 11.
+    expect(result.failure?.message).toBe(
+      "The script set process.exitCode to 1, which means it failed."
+    );
     expect(result.log).toContain("validation failed");
   });
 
@@ -442,6 +470,24 @@ describe("flow script executor — exit classification", () => {
     expect(result.failure?.message).toBe("The script exceeded its 64 MiB heap limit.");
   }, 60_000);
 
+  it("does not call an abort with no heap banner a heap limit", async () => {
+    const ws = workspace();
+    // `process.abort()` and a native addon's `abort()` both raise SIGABRT
+    // without allocating anything. The signal alone is not the evidence — the
+    // banner beside it is — and naming a limit this process never approached
+    // sends the author to the wrong place.
+    const script = ws.write("aborts.mjs", `console.log("about to abort"); process.abort();`);
+    const result = await executor({ heapLimitMb: 64 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.failure?.kind).toBe("signal");
+    expect(result.failure?.message).toContain("SIGABRT");
+    expect(result.log).toContain("about to abort");
+  }, 30_000);
+
   it("does not call a forwarded 134 exit status a heap limit", async () => {
     const ws = workspace();
     // A wrapper that runs a build through a shell and forwards its status: the
@@ -503,16 +549,20 @@ describe("flow script executor — process cleanup", () => {
     // A descendant with its own SIGTERM handler outlives the polite stop. The
     // runner does not — it has no handler and dies in milliseconds — so a
     // forced stop conditioned on the runner alone never happened.
+    //
+    // The descendant writes its own pid, and only after its handler is
+    // installed. Written by the parent at spawn time, the pid appeared within a
+    // few milliseconds — usually before the handler existed — so an abort that
+    // followed it was answered by a plain SIGTERM, and the test passed with the
+    // escalation under it removed about four times in five.
+    const descendantSource =
+      'process.on("SIGTERM", () => {});' +
+      `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+      "setInterval(() => {}, 1000)";
     const script = ws.write(
       "stubborn.mjs",
       `import { spawn } from "node:child_process";
-       import fs from "node:fs";
-       const child = spawn(
-         process.execPath,
-         ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
-         { stdio: "ignore" }
-       );
-       fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+       spawn(process.execPath, ["-e", ${JSON.stringify(descendantSource)}], { stdio: "ignore" });
        setInterval(() => {}, 1000);`
     );
     const controller = new AbortController();
@@ -598,6 +648,14 @@ describe("flow script executor — process cleanup", () => {
       expect(await waitForExit(runnerPid, 15_000)).toBe(true);
     } finally {
       parent.kill("SIGKILL");
+      // Also when the poll above timed out: the runner is detached and spins,
+      // so without this it outlives the suite until its own deadline reaps it.
+      try {
+        const written = Number(fs.readFileSync(pidFile, "utf8").trim());
+        if (Number.isInteger(written)) strays.push(written);
+      } catch {
+        // Never written, so there is nothing to reap.
+      }
     }
   }, 60_000);
 });

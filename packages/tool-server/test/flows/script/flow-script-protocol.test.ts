@@ -178,6 +178,39 @@ describe("flow script executor — a runner that misbehaves", () => {
     expect(result.failure?.message).toContain("the limit is 1.0 MiB");
   });
 
+  it("re-checks the failure text bounds even though a compliant child already did", async () => {
+    // The same second line the output size gets, for the same reason: a child
+    // that stopped being compliant after arbitrary script code ran in it.
+    const result = await withFakeRunner(
+      `process.on("message", () => {
+         process.send({ type: "started" });
+         process.send(
+           { type: "failure", failureType: "runtime", message: "m".repeat(20000), stack: "s".repeat(40000) },
+           () => process.exit(0)
+         );
+       });`
+    );
+    expect(result.failure?.kind).toBe("runtime");
+    expect(result.failure?.message.length).toBeLessThan(20000);
+    expect(result.failure?.message).toMatch(/… \[\d+ more characters omitted]$/);
+    expect(result.failure?.stack?.length).toBeLessThan(40000);
+    expect(result.failure?.stack).toMatch(/… \[\d+ more characters omitted]$/);
+  });
+
+  it("bounds the unrecognized message it quotes back", async () => {
+    // A misbehaving runner controls this string, so it must not be able to make
+    // the failure message arbitrarily long.
+    const result = await withFakeRunner(
+      `process.on("message", () => {
+         process.send({ type: "progress", blob: "b".repeat(50000) });
+       });`
+    );
+    expect(result.failure?.kind).toBe("protocol");
+    expect(result.failure?.message).toContain("does not recognise");
+    expect(result.failure?.message.length).toBeLessThan(500);
+    expect(result.failure?.message.endsWith("…")).toBe(true);
+  });
+
   it("reports a missing runner rather than spawning nothing", async () => {
     const ws = workspace();
     const script = ws.write("script.mjs", `output.ok = true;`);
@@ -459,6 +492,38 @@ describe("flow script runner — the watchdogs, driven directly", () => {
 
     // One run, from the first request: the second document never reached it.
     expect(results).toEqual([JSON.stringify({ runs: 1 })]);
+  }, 30_000);
+
+  it("does not run the script after refusing a malformed request", async () => {
+    const ws = workspace();
+    const marker = ws.resolve("ran.txt");
+    // `finish` exits from inside a stream callback, so a runner that simply
+    // returned here would let Node load the entry module in the meantime — and
+    // the executor has already been told the run failed.
+    const script = ws.write(
+      "never.mjs",
+      `import fs from "node:fs";
+       fs.writeFileSync(${JSON.stringify(marker)}, "ran");`
+    );
+    const child = forkRunner(script, 20_000, { type: "run" });
+    await exitOf(child);
+
+    expect(fs.existsSync(marker)).toBe(false);
+  }, 30_000);
+
+  it("leaves when the parent closes the protocol channel", async () => {
+    const ws = workspace();
+    // The convenience path for a runner whose loop is still turning: the tool
+    // server is gone, so nothing is waiting for a verdict.
+    const script = ws.write("waits.mjs", `await new Promise(() => {});`);
+    const child = forkRunner(script, 120_000);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    child.disconnect();
+    const exit = await exitOf(child);
+
+    expect(exit.code).toBe(0);
+    expect(exit.signal).toBeNull();
+    expect(exit.at).toBeLessThan(5_000);
   }, 30_000);
 
   it("stops a spinning script on its own deadline, with no help from the parent", async () => {

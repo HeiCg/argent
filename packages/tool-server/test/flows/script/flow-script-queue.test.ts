@@ -128,12 +128,17 @@ describe("flow script executor — concurrency", () => {
       signal: controller.signal,
     });
     const behind = executor.execute({ scriptPath: script, projectRoot: ws.dir });
+    const abortedAt = Date.now();
     controller.abort();
 
     const cancelled = await queued;
+    const answeredAfterMs = Date.now() - abortedAt;
     expect(cancelled.failure?.kind).toBe("cancelled");
-    // The position was given up at once rather than at the end of the queue's
-    // turn, so the step behind it still runs.
+    // "The moment" is the claim, and this is what holds it: the occupier keeps
+    // the only slot for another ~700ms. Without the queue's own abort listener
+    // the waiter simply took a slot later and `runOne`'s guard answered — the
+    // same verdict, that much later — so the kind alone proved nothing.
+    expect(answeredAfterMs).toBeLessThan(300);
     expect((await occupier).ok).toBe(true);
     expect((await behind).ok).toBe(true);
   }, 30_000);
@@ -161,7 +166,7 @@ describe("flow script executor — the default concurrency", () => {
       // from serializing every script step.
       const script = ws.write(
         "slow.mjs",
-        `await new Promise((r) => setTimeout(r, 400)); output.ok = true;`
+        `await new Promise((r) => setTimeout(r, 700)); output.ok = true;`
       );
       const shared = new FlowScriptExecutor({ maxTimeoutMs: 60_000 });
       const started = Date.now();
@@ -173,7 +178,11 @@ describe("flow script executor — the default concurrency", () => {
 
       expect(results.every((r) => r.ok)).toBe(true);
       expect(results.every((r) => r.queuedMs < 200)).toBe(true);
-      expect(elapsed).toBeLessThan(800);
+      // Serialized these take 1400ms and concurrent about 750ms, so the bound
+      // sits between them with room on both sides. Two 400ms scripts under a
+      // 800ms bound left ~350ms of slack against the serialized case — the
+      // tightest timing assertion in the suite, and the likeliest CI flake.
+      expect(elapsed).toBeLessThan(1_200);
     } finally {
       ws.cleanup();
     }

@@ -27,8 +27,12 @@ export interface ScriptWorkspace {
 
 let counter = 0;
 
+/** Fixtures older than this belong to a run that crashed before its cleanup. */
+const STALE_FIXTURE_MS = 60 * 60 * 1000;
+
 export function createScriptWorkspace(label = "ws"): ScriptWorkspace {
   fs.mkdirSync(FIXTURE_ROOT, { recursive: true });
+  pruneStaleFixtures();
   const dir = fs.mkdtempSync(path.join(FIXTURE_ROOT, `${label}-`));
   return {
     dir,
@@ -45,6 +49,34 @@ export function createScriptWorkspace(label = "ws"): ScriptWorkspace {
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Drop what a crashed run left behind.
+ *
+ * Every workspace cleans up after itself, but a killed suite does not — and the
+ * root is under `node_modules`, so nothing else ever sweeps it. The age bound is
+ * what makes this safe beside a concurrent run: an hour is far longer than the
+ * whole suite takes, so a fixture another vitest worker is using now is never
+ * old enough to be taken.
+ */
+function pruneStaleFixtures(): void {
+  const cutoff = Date.now() - STALE_FIXTURE_MS;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(FIXTURE_ROOT);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const candidate = path.join(FIXTURE_ROOT, entry);
+    try {
+      if (fs.statSync(candidate).mtimeMs > cutoff) continue;
+      fs.rmSync(candidate, { recursive: true, force: true });
+    } catch {
+      // Raced with another worker's own cleanup, which is the outcome wanted.
+    }
+  }
 }
 
 /** A name no two concurrent fixtures share. */

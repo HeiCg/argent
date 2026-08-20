@@ -162,6 +162,27 @@ describe("flow script executor — the script is the main module", () => {
     expect(result.output).toEqual({ isMain: plainNode, argvGuard: true, ran: true });
   });
 
+  it("evaluates a script reached through a symlink exactly once", async () => {
+    const ws = workspace();
+    const evaluations = ws.resolve("evaluations.txt");
+    // The runner re-imports the entry module to tell a finished script from one
+    // parked in a top-level `await`. Node caches a module by the real path it
+    // resolved the entry from, so a request that named a different spelling of
+    // the same file was a second module — and the script's body ran twice.
+    const real = ws.write(
+      "real.mjs",
+      `import fs from "node:fs";
+       fs.appendFileSync(${JSON.stringify(evaluations)}, "x");
+       output.ok = true;`
+    );
+    const link = ws.resolve("link.mjs");
+    fs.symlinkSync(real, link);
+    const result = await executor().execute({ scriptPath: link, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(fs.readFileSync(evaluations, "utf8")).toBe("x");
+  });
+
   it("runs a body behind a CommonJS require.main guard", async () => {
     const ws = workspace();
     const script = ws.write("guard.cjs", `if (require.main === module) output.ran = true;`);

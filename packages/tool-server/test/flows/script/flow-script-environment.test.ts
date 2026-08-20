@@ -28,6 +28,15 @@ function withEnv(name: string, value: string): void {
   process.env[name] = value;
 }
 
+/** Remove a tool-server environment variable for one test only. */
+function withoutEnv(name: string): void {
+  const before = process.env[name];
+  restoreEnv.push(() => {
+    if (before !== undefined) process.env[name] = before;
+  });
+  delete process.env[name];
+}
+
 afterEach(() => {
   while (restoreEnv.length) restoreEnv.pop()!();
   while (workspaces.length) workspaces.pop()!.cleanup();
@@ -120,6 +129,10 @@ describe("flow script executor — the environment allowlist", () => {
   );
 
   it("does not set the Electron flag when the server's environment lacks it", async () => {
+    // Explicitly, not by assumption: a developer running the suite from an
+    // Electron-hosted shell has the flag exported already, and the test failed
+    // for a reason that has nothing to do with the executor.
+    withoutEnv("ELECTRON_RUN_AS_NODE");
     const ws = workspace();
     const script = ws.write("env.mjs", reporter(["ELECTRON_RUN_AS_NODE"]));
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
@@ -217,6 +230,23 @@ describe("flow script executor — the working directory", () => {
     expect(fs.realpathSync(result.output?.cwd as string)).toBe(fs.realpathSync(ws.dir));
     expect(result.output?.cwd).not.toBe(process.cwd());
     expect(result.notes.join(" ")).toContain("is not an absolute path");
+  });
+
+  it('refuses an absolute project_root carrying a ".." segment', async () => {
+    const ws = workspace();
+    const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
+    // Absolute and it exists, so the two rules beside it both pass it. The same
+    // rule `assertValidProjectRoot` applies to every other flow path.
+    const result = await executor().execute({
+      scriptPath: script,
+      // Joined by hand: `path.join` would normalise the segment away, and an
+      // unnormalised path is exactly what a caller sends.
+      projectRoot: [ws.dir, "..", path.basename(ws.dir)].join(path.sep),
+      flowDir: ws.dir,
+    });
+
+    expect(result.notes.join(" ")).toContain('contains a ".." segment');
+    expect(fs.realpathSync(result.output?.cwd as string)).toBe(fs.realpathSync(ws.dir));
   });
 
   it("says a project_root that is a file is not a directory", async () => {

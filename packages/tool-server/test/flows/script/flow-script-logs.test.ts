@@ -430,7 +430,10 @@ describe("flow script executor — redaction", () => {
       secrets,
     });
     // The set is run-scoped and grows as the run resolves more placeholders.
-    secrets.push({ name: "LATE", value: "late-value-bbbb" });
+    // Pushed from a later turn of the loop, after the step has read it once:
+    // pushing in the same turn as the call lands before `runOne` ever looks, so
+    // an implementation that snapshotted the array once would pass.
+    setTimeout(() => secrets.push({ name: "LATE", value: "late-value-bbbb" }), 60);
     const result = await pending;
 
     expect(result.log).toContain("first: {{secret:EARLY}}");
