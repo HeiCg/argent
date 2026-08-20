@@ -211,6 +211,57 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.failure?.kind).toBe("cancelled");
   }, 30_000);
 
+  // The ordinary graceful-shutdown shape, and the one that turned a stop into a
+  // pass: the SIGTERM handler releases what was holding the event loop, the
+  // loop empties, and the runner reports the half-written document as a result
+  // — *because* of the stop. `work aborted` in the log is the proof that this
+  // is the shape under test and not a script that simply ignored the signal.
+  const GRACEFUL_SIGTERM = `import { setTimeout as delay } from "node:timers/promises";
+     output.phase = "seeding";
+     const ac = new AbortController();
+     process.on("SIGTERM", () => ac.abort());
+     async function main() {
+       try { await delay(60000, undefined, { signal: ac.signal }); }
+       catch { console.log("work aborted"); return; }
+       output.phase = "done";
+     }
+     main();`;
+
+  it("fails a timed-out script that shuts down gracefully on SIGTERM", async () => {
+    const ws = workspace();
+    const script = ws.write("graceful.mjs", GRACEFUL_SIGTERM);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 700,
+    });
+
+    expect(result.log).toContain("work aborted");
+    expect(result.failure?.kind).toBe(TIMEOUT);
+    expect(result.ok).toBe(false);
+    expect(result.output).toBeUndefined();
+  }, 30_000);
+
+  it("keeps a cancellation a cancellation when the script shuts down gracefully", async () => {
+    const ws = workspace();
+    const script = ws.write("graceful.mjs", GRACEFUL_SIGTERM);
+    const controller = new AbortController();
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 30_000,
+      signal: controller.signal,
+    });
+    await delay(300);
+    controller.abort();
+    const result = await pending;
+
+    expect(result.log).toContain("work aborted");
+    expect(result.failure?.kind).toBe("cancelled");
+    expect(result.ok).toBe(false);
+    expect(result.output).toBeUndefined();
+  }, 30_000);
+
   it("refuses a step whose signal is already aborted, without spawning", async () => {
     const ws = workspace();
     const script = ws.write("never.mjs", `output.ran = true;`);

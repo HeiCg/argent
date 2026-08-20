@@ -621,6 +621,8 @@ export class FlowScriptExecutor {
     let protocolProblem: string | null = null;
     let spawnProblem: string | null = null;
     let interrupted: "timeout" | "cancelled" | null = null;
+    /** See {@link interrupt}. Closes the window in which a verdict still counts. */
+    let interruptionSealed = false;
 
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
       (resolve) => {
@@ -641,6 +643,32 @@ export class FlowScriptExecutor {
     let stopped: Promise<void> | undefined;
     const stop = () => (stopped ??= stopProcessTree(child, STOP_GRACE_MS));
 
+    /**
+     * Record why the step is being stopped, and start stopping it.
+     *
+     * `??=` because the first interruption is the true one: a script that
+     * survives SIGTERM long enough for its deadline to pass during the stop
+     * grace was cancelled, not timed out.
+     *
+     * The seal is what keeps a stop from being reported as a pass. A verdict
+     * the script produced *before* the stop still outranks the interruption —
+     * that message was already on the channel and Node simply delivered it late
+     * — but SIGTERM is a normal shutdown request, and a script with the
+     * ordinary handler for it releases what was holding its event loop, empties
+     * the loop, and lets the runner report a half-written document as a result.
+     * The stop is what produced that verdict, so it is not one. One turn of the
+     * loop is the whole grace an in-flight message needs: the kill above is
+     * synchronous, and a message already readable on the channel is delivered
+     * in this same iteration's poll phase, ahead of this check-phase callback.
+     */
+    const interrupt = (why: "timeout" | "cancelled") => {
+      interrupted ??= why;
+      setImmediate(() => {
+        interruptionSealed = true;
+      });
+      void stop();
+    };
+
     child.stdout?.on("data", (chunk: Buffer) => capture.push("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer) => capture.push("stderr", chunk));
 
@@ -660,20 +688,14 @@ export class FlowScriptExecutor {
         startedSeen = true;
         return;
       }
+      // A verdict the stop had time to produce is the stop's, not the script's.
+      // See `interrupt`.
+      if (interruptionSealed) return;
       terminal = message;
     });
 
-    const timer = setTimeout(() => {
-      // `??=`, like the abort handler: a script that survives SIGTERM long
-      // enough for its deadline to pass during the stop grace was cancelled,
-      // not timed out, and the first interruption is the true one.
-      interrupted ??= "timeout";
-      void stop();
-    }, timeoutMs);
-    const onAbort = () => {
-      interrupted ??= "cancelled";
-      void stop();
-    };
+    const timer = setTimeout(() => interrupt("timeout"), timeoutMs);
+    const onAbort = () => interrupt("cancelled");
     request.signal?.addEventListener("abort", onAbort, { once: true });
     // `addEventListener` never fires for a signal that aborted before it was
     // attached, and nothing else re-reads the flag.
@@ -792,7 +814,9 @@ function classifyOutcome(
   // A verdict the script actually produced outranks an interruption that landed
   // after it — for a cancel exactly as for a timeout, which was already ordered
   // this way. The two are the same narrow race, and the answer to both is that
-  // the work was finished before the stop arrived.
+  // the work was finished before the stop arrived. Only a verdict that reached
+  // the parent before the stop had a turn to take effect is recorded as one;
+  // `interrupt` in `runOne` is where that line is drawn.
   if (input.terminal) {
     if (input.terminal.type === "failure") {
       // The child bounds both fields before sending; this is the same second
