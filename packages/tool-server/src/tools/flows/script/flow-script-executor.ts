@@ -673,17 +673,31 @@ export class FlowScriptExecutor {
      * — but SIGTERM is a normal shutdown request, and a script with the
      * ordinary handler for it releases what was holding its event loop, empties
      * the loop, and lets the runner report a half-written document as a result.
-     * The stop is what produced that verdict, so it is not one. One turn of the
-     * loop is the whole grace an in-flight message needs: the kill above is
-     * synchronous, and a message already readable on the channel is delivered
-     * in this same iteration's poll phase, ahead of this check-phase callback.
+     * The stop is what produced that verdict, so it is not one.
+     *
+     * The seal is armed *and the stop is sent* from the same check-phase
+     * callback, in that order, so no wall-clock reasoning is involved: a
+     * message the child produced in answer to the SIGTERM cannot exist before
+     * the SIGTERM, and the SIGTERM cannot be sent before the seal. Sealing from
+     * a later turn than the kill was what left a window — one turn is enough
+     * grace for an in-flight message only while nothing delays the parent, and
+     * the child answers a SIGTERM in about a millisecond, so a tool server
+     * whose own loop was blocked across that moment (`stop-metro` shells out to
+     * `lsof` and `netstat`; see `CHILD_DEADLINE_MARGIN_MS`) took the stop's
+     * verdict for the script's and reported a stopped step as a pass.
+     *
+     * A message already readable on the channel keeps its grace: it is
+     * delivered in this same iteration's poll phase, ahead of this check-phase
+     * callback. Delaying the kill by that one turn costs nothing — a parent
+     * that could not act sooner is exactly what the child's own deadline
+     * watchdog is the second line for.
      */
     const interrupt = (why: "timeout" | "cancelled") => {
       interrupted ??= why;
       setImmediate(() => {
         interruptionSealed = true;
+        void stop();
       });
-      void stop();
     };
 
     child.stdout?.on("data", (chunk: Buffer) => capture.push("stdout", chunk));

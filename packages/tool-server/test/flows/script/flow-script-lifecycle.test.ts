@@ -290,6 +290,82 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.output).toBeUndefined();
   }, 30_000);
 
+  /**
+   * Block the vitest loop across the moment the stop is sent, the way one
+   * `execFileSync` on the tool server's loop does. A run of overlapping timers
+   * is what makes the stall straddle the limit however the two clocks line up.
+   */
+  function stallAcross(fromMs: number, toMs: number): () => void {
+    const timers: NodeJS.Timeout[] = [];
+    for (let at = fromMs; at <= toMs; at++) {
+      timers.push(
+        setTimeout(() => {
+          const until = Date.now() + 6;
+          while (Date.now() < until) {
+            /* block */
+          }
+        }, at)
+      );
+    }
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
+  }
+
+  // Both halves of the shape together: a script that answers SIGTERM *and* a
+  // parent whose loop is blocked across the stop. Sealing the interruption one
+  // turn after the kill was sent left exactly a stall's worth of room for the
+  // stop's own verdict to arrive unsealed, and the step was reported as a pass
+  // carrying the document the SIGTERM handler wrote.
+  const EXITS_ON_SIGTERM = `output.phase = "half-written";
+     const held = setInterval(() => {}, 1000);
+     process.on("SIGTERM", () => {
+       clearInterval(held);
+       output.phase = "cleaned-up";
+       console.log("work aborted");
+       process.exit(0);
+     });`;
+
+  it("fails a timed-out script that exits zero from its SIGTERM handler while the server stalls", async () => {
+    const ws = workspace();
+    const script = ws.write("graceful-exit.mjs", EXITS_ON_SIGTERM);
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 400,
+    });
+    const endStall = stallAcross(385, 445);
+    const result = await pending;
+    endStall();
+
+    expect(result.log).toContain("work aborted");
+    expect(result.ok).toBe(false);
+    expect(result.failure?.kind).toBe(TIMEOUT);
+    expect(result.output).toBeUndefined();
+  }, 30_000);
+
+  it("keeps a cancellation a cancellation when the server stalls across the stop", async () => {
+    const ws = workspace();
+    const script = ws.write("graceful-exit.mjs", EXITS_ON_SIGTERM);
+    const controller = new AbortController();
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 30_000,
+      signal: controller.signal,
+    });
+    const abort = setTimeout(() => controller.abort(), 400);
+    const endStall = stallAcross(385, 445);
+    const result = await pending;
+    clearTimeout(abort);
+    endStall();
+
+    expect(result.log).toContain("work aborted");
+    expect(result.ok).toBe(false);
+    expect(result.failure?.kind).toBe("cancelled");
+    expect(result.output).toBeUndefined();
+  }, 30_000);
+
   it("refuses a step whose signal is already aborted, without spawning", async () => {
     const ws = workspace();
     const marker = ws.resolve("ran.txt");
