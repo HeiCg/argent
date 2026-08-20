@@ -747,7 +747,7 @@ export class FlowScriptExecutor {
     if (child.connected) child.disconnect();
 
     const log = capture.text;
-    const verdict = redactFailure(
+    const verdict = redactSecrets(
       classifyOutcome({
         exit,
         spawnProblem,
@@ -875,20 +875,26 @@ function classifyOutcome(
 }
 
 /**
- * A failure carries the same redaction the log does.
+ * Every field of a verdict carries the same redaction the log does.
  *
- * The text is not the executor's: a `runtime` failure is the script's own error
- * message and stack, and a script that resolves a secret puts it there without
- * ever writing it into a string itself — `assert.equal(returned, process.env.TOK)`
- * quotes both values, and so does a template literal in a throw. A report that
- * redacts the log beside it reads as safe while carrying the plaintext.
+ * None of this text is the executor's. A `runtime` failure is the script's own
+ * error message and stack, and a script that resolves a secret puts it there
+ * without ever writing it into a string itself — `assert.equal(returned,
+ * process.env.TOK)` quotes both values, and so does a template literal in a
+ * throw. The output document is the same shape one step further on: an API
+ * commonly echoes the credential it was given back in its response, and
+ * `output.session = await res.json()` stores it. A report that redacts the log
+ * beside either one reads as safe while carrying the plaintext — and in a flow
+ * the document outlives the report, because later steps read it.
  */
-function redactFailure(
+function redactSecrets(
   verdict: Pick<FlowScriptResult, "ok" | "output" | "failure">,
   secrets: readonly FlowScriptSecret[]
 ): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
+  if (secrets.length === 0) return verdict;
+  if (verdict.output) scrubDocument(verdict.output, secrets);
   const failure = verdict.failure;
-  if (!failure || secrets.length === 0) return verdict;
+  if (!failure) return verdict;
   return {
     ...verdict,
     failure: {
@@ -897,6 +903,44 @@ function redactFailure(
       ...(failure.stack ? { stack: scrubSecretValues(failure.stack, secrets) } : {}),
     },
   };
+}
+
+/**
+ * Scrub every string in a parsed output document, keys included.
+ *
+ * In place, because the document was just parsed here and nothing else holds
+ * it. Iterative rather than recursive: the value came from a child that ran
+ * arbitrary code, and a megabyte of `[[[[…` is a legal document that would
+ * overflow the stack — inside `execute`, which owes its caller a verdict rather
+ * than a throw.
+ */
+function scrubDocument(root: Record<string, unknown>, secrets: readonly FlowScriptSecret[]): void {
+  const pending: unknown[] = [root];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        const value = node[i];
+        if (typeof value === "string") node[i] = scrubSecretValues(value, secrets);
+        else if (value !== null && typeof value === "object") pending.push(value);
+      }
+      continue;
+    }
+    if (node === null || typeof node !== "object") continue;
+    const record = node as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      const value = record[key];
+      if (typeof value === "string") record[key] = scrubSecretValues(value, secrets);
+      else if (value !== null && typeof value === "object") pending.push(value);
+      // A secret can be the key as easily as the value — `output[apiKey] = …`
+      // is how a script indexes a per-credential result.
+      const scrubbedKey = scrubSecretValues(key, secrets);
+      if (scrubbedKey !== key) {
+        record[scrubbedKey] = record[key];
+        delete record[key];
+      }
+    }
+  }
 }
 
 function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output" | "failure"> {

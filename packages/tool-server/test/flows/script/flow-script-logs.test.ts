@@ -259,6 +259,33 @@ describe("flow script executor — redaction", () => {
     expect(result.failure?.stack).not.toContain(SECRET.value);
   });
 
+  it("replaces a secret in the output document, at any depth and in a key", async () => {
+    const ws = workspace();
+    // The shape that carries a credential furthest: an API echoes back what it
+    // was given, the script stores the response, and the document outlives the
+    // report because later steps read it.
+    const script = ws.write(
+      "echo.mjs",
+      `const key = process.env.API_KEY;
+       console.log("using " + key);
+       output.session = { token: key, scopes: ["read", key] };
+       output[key] = "keyed";`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      env: { API_KEY: SECRET.value },
+      secrets: [SECRET],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(JSON.stringify(result.output)).not.toContain(SECRET.value);
+    expect(result.output).toEqual({
+      "session": { token: "{{secret:API_KEY}}", scopes: ["read", "{{secret:API_KEY}}"] },
+      "{{secret:API_KEY}}": "keyed",
+    });
+  });
+
   it("replaces a secret split across two pipe chunks", async () => {
     const ws = workspace();
     // Two writes with a gap between them arrive as two chunks, so a per-chunk
