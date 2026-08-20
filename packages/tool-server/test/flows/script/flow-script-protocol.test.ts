@@ -79,6 +79,15 @@ describe("script response parsing", () => {
     });
   });
 
+  it("carries a stack when there is one, and drops one that is not a string", () => {
+    expect(
+      parseScriptResponse({ type: "failure", failureType: "runtime", message: "x", stack: "at y" })
+    ).toEqual({ type: "failure", failureType: "runtime", message: "x", stack: "at y" });
+    expect(
+      parseScriptResponse({ type: "failure", failureType: "runtime", message: "x", stack: 7 })
+    ).toEqual({ type: "failure", failureType: "runtime", message: "x" });
+  });
+
   it.each([
     ["a non-object", "started"],
     ["null", null],
@@ -117,6 +126,17 @@ describe("flow script executor — a runner that misbehaves", () => {
     );
     expect(result.failure?.kind).toBe("exit");
     expect(result.failure?.message).toContain("exit code 0");
+  });
+
+  it("rejects a result that is not an object", async () => {
+    const result = await withFakeRunner(
+      `process.on("message", () => {
+         process.send({ type: "started" });
+         process.send({ type: "result", outputJson: "[1,2,3]" }, () => process.exit(0));
+       });`
+    );
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("not an object");
   });
 
   it("rejects a result whose output does not parse", async () => {
@@ -250,14 +270,21 @@ describe("flow script executor — the published layout", () => {
     expect(result.ok).toBe(true);
     expect(result.log).toContain("bundled");
     // Process start cost, measured from the published layout: this is what
-    // decides whether a process pool is ever worth adding. Locally it is ~60ms.
-    expect(roundTripMs).toBeLessThan(3_000);
+    // decides whether a process pool is ever worth adding. Measured at 31-45ms
+    // over ten runs on an M-series laptop, both watchdog threads included, so
+    // the bound below is two orders of magnitude of headroom for a loaded CI
+    // box rather than a real expectation.
+    expect(roundTripMs, `process start cost: ${roundTripMs}ms`).toBeLessThan(3_000);
   }, 30_000);
 });
 
 describe("flow script runner — the watchdogs, driven directly", () => {
-  /** Fork the real runner the way the executor does, without its time limit. */
-  function forkRunner(scriptPath: string, deadlineMs: number) {
+  /**
+   * Fork the real runner the way the executor does, without its time limit.
+   * `request` overrides the well-formed message, for the child-side validation
+   * cases.
+   */
+  function forkRunner(scriptPath: string, deadlineMs: number, request?: unknown) {
     const child = fork(scriptPath, [], {
       cwd: path.dirname(scriptPath),
       env: {
@@ -276,13 +303,15 @@ describe("flow script runner — the watchdogs, driven directly", () => {
     cleanups.push(() => {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     });
-    child.send({
-      type: "execute",
-      scriptUrl: pathToFileURL(scriptPath).href,
-      outputJson: "{}",
-      deadlineMs,
-      maxOutputBytes: 1024 * 1024,
-    });
+    child.send(
+      request ?? {
+        type: "execute",
+        scriptUrl: pathToFileURL(fs.realpathSync(scriptPath)).href,
+        outputJson: "{}",
+        deadlineMs,
+        maxOutputBytes: 1024 * 1024,
+      }
+    );
     return child;
   }
 
@@ -294,6 +323,69 @@ describe("flow script runner — the watchdogs, driven directly", () => {
       }
     );
   }
+
+  it.each([
+    ["a request that is not an execute", { type: "run", scriptUrl: "file:///x", outputJson: "{}" }],
+    [
+      "a request with no script",
+      { type: "execute", outputJson: "{}", deadlineMs: 1, maxOutputBytes: 1 },
+    ],
+    [
+      "a request with a deadline that is not a number",
+      {
+        type: "execute",
+        scriptUrl: "file:///x",
+        outputJson: "{}",
+        deadlineMs: "soon",
+        maxOutputBytes: 1,
+      },
+    ],
+  ])(
+    "refuses %s, from the child's side of the protocol",
+    async (_label, message) => {
+      // Both sides validate every message; only the parent's half was covered.
+      const ws = workspace();
+      const script = ws.write("never.mjs", `output.ran = true;`);
+      const child = forkRunner(script, 20_000, message);
+      const failure = await new Promise<{ failureType?: string; message?: string } | null>(
+        (resolve) => {
+          child.on("message", (raw) => {
+            const m = raw as { type?: string; failureType?: string; message?: string };
+            if (m.type === "failure") resolve(m);
+          });
+          child.once("exit", () => resolve(null));
+        }
+      );
+
+      expect(failure?.failureType).toBe("protocol");
+      expect(failure?.message).toContain("malformed request");
+    },
+    30_000
+  );
+
+  it("obeys the first request and ignores a second", async () => {
+    const ws = workspace();
+    const script = ws.write("once.mjs", `output.runs = (output.runs ?? 0) + 1;`);
+    const child = forkRunner(script, 20_000);
+    child.send({
+      type: "execute",
+      scriptUrl: pathToFileURL(fs.realpathSync(script)).href,
+      outputJson: JSON.stringify({ runs: 40 }),
+      deadlineMs: 20_000,
+      maxOutputBytes: 1024 * 1024,
+    });
+    const results: string[] = [];
+    await new Promise<void>((resolve) => {
+      child.on("message", (raw) => {
+        const m = raw as { type?: string; outputJson?: string };
+        if (m.type === "result") results.push(m.outputJson!);
+      });
+      child.once("exit", () => resolve());
+    });
+
+    // One run, from the first request: the second document never reached it.
+    expect(results).toEqual([JSON.stringify({ runs: 1 })]);
+  }, 30_000);
 
   it("stops a spinning script on its own deadline, with no help from the parent", async () => {
     // The child's copy of the time limit is the platform-neutral backstop: it

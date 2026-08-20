@@ -153,6 +153,33 @@ describe("flow script executor — concurrency", () => {
   }, 30_000);
 });
 
+describe("flow script executor — the default concurrency", () => {
+  it("runs at least two scripts at once on any host", async () => {
+    const ws = createScriptWorkspace("queue");
+    try {
+      // max(2, min(8, cpus - 2)): the floor is what keeps a two-core CI box
+      // from serializing every script step.
+      const script = ws.write(
+        "slow.mjs",
+        `await new Promise((r) => setTimeout(r, 400)); output.ok = true;`
+      );
+      const shared = new FlowScriptExecutor({ maxTimeoutMs: 60_000 });
+      const started = Date.now();
+      const results = await Promise.all([
+        shared.execute({ scriptPath: script, projectRoot: ws.dir }),
+        shared.execute({ scriptPath: script, projectRoot: ws.dir }),
+      ]);
+      const elapsed = Date.now() - started;
+
+      expect(results.every((r) => r.ok)).toBe(true);
+      expect(results.every((r) => r.queuedMs < 200)).toBe(true);
+      expect(elapsed).toBeLessThan(800);
+    } finally {
+      ws.cleanup();
+    }
+  }, 30_000);
+});
+
 describe("flow script executor — bounds that would break every step", () => {
   it("treats concurrency 0 as unset rather than a queue that never drains", async () => {
     const ws = createScriptWorkspace("queue");

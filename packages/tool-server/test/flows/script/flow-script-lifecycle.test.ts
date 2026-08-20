@@ -17,7 +17,20 @@ function workspace(): ScriptWorkspace {
   return ws;
 }
 
+/** Pids a test started outside the executor's reach; killed however it ends. */
+const strays: number[] = [];
+
 afterEach(() => {
+  // A descendant is only stopped by the behaviour under test, so a failing
+  // assertion would otherwise leave a spinning process behind — observed for
+  // real: a `node -e setInterval(...)` still alive 32s after vitest exited.
+  while (strays.length) {
+    try {
+      process.kill(strays.pop()!, "SIGKILL");
+    } catch {
+      // Already gone, which is the outcome the test wanted.
+    }
+  }
   while (workspaces.length) workspaces.pop()!.cleanup();
 });
 
@@ -32,7 +45,11 @@ function delay(ms: number): Promise<void> {
 }
 
 /** Poll until `file` exists and holds a pid, or give up. */
-async function readPidFile(file: string, timeoutMs = 10_000): Promise<number> {
+async function readPidFile(
+  file: string,
+  timeoutMs = 10_000,
+  diagnostics?: () => string
+): Promise<number> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -43,7 +60,8 @@ async function readPidFile(file: string, timeoutMs = 10_000): Promise<number> {
     }
     await delay(50);
   }
-  throw new Error(`No pid appeared in ${file}`);
+  const detail = diagnostics?.().trim();
+  throw new Error(`No pid appeared in ${file}${detail ? `\n${detail}` : ""}`);
 }
 
 function isAlive(pid: number): boolean {
@@ -204,6 +222,9 @@ describe("flow script executor — time limits and cancellation", () => {
 
     expect(result.failure?.kind).toBe("cancelled");
     expect(result.output).toBeUndefined();
+    // The claim is "without spawning", and this is what proves it: nothing was
+    // started, so no wall clock was spent.
+    expect(result.durationMs).toBe(0);
   });
 
   it("clamps a time limit above the host maximum and says so", async () => {
@@ -358,6 +379,7 @@ describe("flow script executor — process cleanup", () => {
       timeoutMs: 1_500,
     });
     const descendant = await readPidFile(pidFile);
+    strays.push(descendant);
     expect(isAlive(descendant)).toBe(true);
 
     const result = await pending;
@@ -391,6 +413,7 @@ describe("flow script executor — process cleanup", () => {
       signal: controller.signal,
     });
     const descendant = await readPidFile(pidFile);
+    strays.push(descendant);
     controller.abort();
     const result = await pending;
 
@@ -417,6 +440,7 @@ describe("flow script executor — process cleanup", () => {
        output.started = child.pid;`
     );
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+    strays.push(result.output?.started as number);
 
     expect(result.ok).toBe(true);
     expect(isAlive(result.output?.started as number)).toBe(false);
@@ -443,10 +467,18 @@ describe("flow script executor — process cleanup", () => {
         script,
         ws.dir,
       ],
-      { cwd: path.resolve(__dirname, "../../.."), stdio: "ignore" }
+      { cwd: path.resolve(__dirname, "../../.."), stdio: ["ignore", "ignore", "pipe"] }
     );
+    // Captured, because everything this test can go wrong about happens inside
+    // that process: without it a driver that failed to start showed up as an
+    // opaque "No pid appeared in …" thirty seconds later.
+    let driverStderr = "";
+    parent.stderr?.on("data", (chunk: Buffer) => {
+      driverStderr += chunk.toString();
+    });
     try {
-      const runnerPid = await readPidFile(pidFile, 30_000);
+      const runnerPid = await readPidFile(pidFile, 30_000, () => driverStderr);
+      strays.push(runnerPid);
       expect(isAlive(runnerPid)).toBe(true);
 
       // The tool server dies without a chance to clean up. A group stop would
@@ -461,20 +493,28 @@ describe("flow script executor — process cleanup", () => {
 });
 
 describe("flow script watchdogs", () => {
-  it("costs a fast script very little", async () => {
+  it("never hold a finished script open, and cost it very little", async () => {
     const ws = workspace();
     const script = ws.write("empty.mjs", `output.ok = true;`);
     // Warm the module cache so the number reflects process start, not the
     // first-import cost of this test file.
     const shared = executor();
-    await shared.execute({ scriptPath: script, projectRoot: ws.dir });
-    const result = await shared.execute({ scriptPath: script, projectRoot: ws.dir });
+    await shared.execute({ scriptPath: script, projectRoot: ws.dir, timeoutMs: 40_000 });
+    const result = await shared.execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 40_000,
+    });
 
     expect(result.ok).toBe(true);
-    // Both watchdog threads run for this whole window; it is still well under a
-    // second on a loaded CI box.
+    // The deadline watchdog is parked in `Atomics.wait` for that whole 40s and
+    // the lifeline is waiting on a socket that will not close: an un-unref'd
+    // worker would hold the process to the deadline, and the step would return
+    // a timeout 40 seconds from now instead of an output in tens of
+    // milliseconds. Both threads run for this whole window, and it is still
+    // well under a second on a loaded CI box.
     expect(result.durationMs).toBeLessThan(3_000);
-  });
+  }, 60_000);
 });
 
 describe("flow script executor — the configured maximum", () => {

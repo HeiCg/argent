@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   FlowScriptExecutor,
   flowScriptExecutor,
-  type FlowScriptResult,
 } from "../../../src/tools/flows/script/flow-script-executor";
 import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 
@@ -21,10 +20,6 @@ afterEach(() => {
 
 function executor(): FlowScriptExecutor {
   return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 });
-}
-
-async function run(ws: ScriptWorkspace, source: string): Promise<FlowScriptResult> {
-  return executor().execute({ scriptPath: ws.write("script.mjs", source), projectRoot: ws.dir });
 }
 
 describe("flow script executor — a passing run", () => {
@@ -299,7 +294,14 @@ describe("flow script executor — the tool server's one executor", () => {
   });
 
   it("runs a script through the shared instance", async () => {
-    const result = await run(workspace(), `output.viaShared = true;`);
+    const ws = workspace();
+    // Through `flowScriptExecutor()` itself, not a local executor: the point of
+    // the test is that the shared instance works, and a local one would pass
+    // even if the singleton were replaced by a fresh instance per call.
+    const result = await flowScriptExecutor().execute({
+      scriptPath: ws.write("shared.mjs", `output.viaShared = true;`),
+      projectRoot: ws.dir,
+    });
     expect(result.output).toEqual({ viaShared: true });
   });
 });

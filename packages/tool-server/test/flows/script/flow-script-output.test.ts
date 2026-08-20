@@ -169,6 +169,17 @@ describe("flow script executor — output validation", () => {
     expect(result.failure?.message).toContain("__proto__");
   });
 
+  it("reports an output it could not even read", async () => {
+    // A throwing getter or a Proxy trap: the walk itself is what fails, and the
+    // step must still get a verdict rather than a crash.
+    const result = await run(
+      `output.account = { get id() { throw new Error("lazy field exploded"); } };`
+    );
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("could not be read");
+    expect(result.failure?.message).toContain("lazy field exploded");
+  });
+
   it("bounds a failure message and stack, the last unbounded fields on the channel", async () => {
     // `throw new Error(\`Unexpected response: \${await res.text()}\`)` is how a
     // whole response body ends up in an error. An IPC message is deserialized

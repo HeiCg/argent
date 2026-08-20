@@ -109,6 +109,26 @@ describe("flow script executor — log capture", () => {
   });
 });
 
+describe("flow script executor — cutting the log", () => {
+  it("never cuts a multi-byte character in half", async () => {
+    const ws = workspace();
+    // Every other log fixture is ASCII, where a naive byte cut is
+    // indistinguishable from a correct one.
+    const script = ws.write(
+      "wide.mjs",
+      `console.log("日本語テキスト".repeat(20000));
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.logTruncated).toBe(true);
+    expect(result.log).not.toContain("\uFFFD");
+    // A cut inside a 3-byte character would decode to a replacement character
+    // and change the length; the kept text is whole characters only.
+    expect(Buffer.byteLength(result.log, "utf8")).toBeLessThanOrEqual(SCRIPT_STEP_LOG_LIMIT_BYTES);
+  }, 30_000);
+});
+
 describe("flow script executor — the V8 frame collapser", () => {
   it("marks the log truncated when it drops frames", async () => {
     const ws = workspace();
@@ -127,6 +147,24 @@ describe("flow script executor — the V8 frame collapser", () => {
     // this flag means; it stayed false and nothing told the caller.
     expect(result.logTruncated).toBe(true);
   }, 60_000);
+
+  it("keeps a short run of frame lines verbatim, even after a fatal error", async () => {
+    const ws = workspace();
+    // Fewer than the collapse threshold: the documented guarantee is that an
+    // ordinary log line that happens to look like a frame survives as written.
+    const script = ws.write(
+      "short-run.mjs",
+      `console.error("FATAL ERROR: something the script printed itself");
+       console.error(" 1: 0x104941aec first");
+       console.error(" 2: 0x104b94314 second");
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.log).toContain("1: 0x104941aec first");
+    expect(result.log).toContain("2: 0x104b94314 second");
+    expect(result.log).not.toContain("frames omitted");
+  });
 
   it("leaves frame-shaped lines from the script alone", async () => {
     const ws = workspace();

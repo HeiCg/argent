@@ -64,6 +64,17 @@ describe("flow script executor — the environment allowlist", () => {
     expect(env.HOME).toBe(process.env.HOME);
   });
 
+  it("copies every npm_config_ value, so a project's npm settings survive", async () => {
+    withEnv("npm_config_registry", "https://registry.example.com/");
+    const ws = workspace();
+    const script = ws.write("env.mjs", reporter(["npm_config_registry"]));
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect((result.output?.env as Record<string, string>).npm_config_registry).toBe(
+      "https://registry.example.com/"
+    );
+  });
+
   it("copies the caller's own environment values on top", async () => {
     const ws = workspace();
     const script = ws.write("env.mjs", reporter(["API_URL", "API_KEY"]));
@@ -124,7 +135,15 @@ describe("flow script executor — execArgv", () => {
     try {
       const ws = workspace();
       const script = ws.write("argv.mjs", `output.execArgv = process.execArgv;`);
-      const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+      // Explicit, because `resolveBounds` falls back to the real
+      // `~/.argent/config.json`: `test/setup/clear-argent-env.ts` strips
+      // ARGENT_* environment variables but cannot strip a config file, so a
+      // developer who has set `scripts.heapLimitMb` — the key this ships —
+      // would read this assertion as a source regression.
+      const result = await executor({ heapLimitMb: 512 }).execute({
+        scriptPath: script,
+        projectRoot: ws.dir,
+      });
 
       // The heap limit and the runner preload, and nothing the parent was
       // started with.
@@ -225,6 +244,15 @@ describe("flow script executor — the working directory", () => {
 
     expect(result.failure?.kind).toBe("invalid");
     expect(result.failure?.message).toContain("No working directory exists");
+  });
+
+  it("refuses a step given no working directory at all", async () => {
+    const ws = workspace();
+    const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
+    const result = await executor().execute({ scriptPath: script });
+
+    expect(result.failure?.kind).toBe("invalid");
+    expect(result.failure?.message).toContain("No working directory was given");
   });
 
   it("never inherits the tool server's own working directory", async () => {
