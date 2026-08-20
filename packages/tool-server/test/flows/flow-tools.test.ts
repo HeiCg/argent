@@ -1146,6 +1146,61 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("compose-cancelled")).steps).toEqual([]);
   });
 
+  it("names the failing composed step even when the run was then cancelled", async () => {
+    // `summarize` folds the abort into the verdict, so a composed run whose step
+    // genuinely failed before the cancel takes the reader's abort branch. The
+    // refusal message has only `reason` to render — the run report's own detail
+    // never reaches it — so without the detail there the author is told a flow
+    // was cancelled and nothing about what broke, on the one path this change
+    // exists to name.
+    const registry = createMockRegistry({
+      "flow-execute": {
+        result: {
+          flow: "login",
+          device: "ABC",
+          executionPrerequisite: "",
+          ok: false,
+          aborted: true,
+          passed: 0,
+          failed: 0,
+          skipped: 1,
+          errored: 1,
+          steps: [
+            {
+              index: 0,
+              kind: "tool",
+              tool: "gesture-tap",
+              status: "error",
+              reason: "gesture-tap failed: device went away",
+            },
+            { index: 1, kind: "tap", status: "skip", reason: "run aborted" },
+          ],
+        },
+      },
+    });
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "compose-cancelled-failure", project_root: tmpDir }
+    );
+    await writeSiblingFlow("login", "steps:\n  - echo: hi\n");
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-cancelled-failure",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify({ name: "login", project_root: tmpDir, device: "ABC" }),
+      }
+    );
+
+    expect(result.message).toContain('flow "login" was aborted');
+    expect(result.message).toContain("gesture-tap: gesture-tap failed: device went away");
+    expect(result.message).toContain("NOT recorded");
+    expect(parseFlow(await onDisk("compose-cancelled-failure")).steps).toEqual([]);
+  });
+
   it("does not record run: when the composed flow failed, and names the failing step", async () => {
     const registry = createMockRegistry({
       "flow-execute": {

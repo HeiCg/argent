@@ -2590,10 +2590,16 @@ async function execLeafStep(
         //
         // Deliberately not a broader "the signal is set, so this step is a
         // skip": every other cancellation here already lands correctly without
-        // one. A nested orchestrator cut short reports its own `skip` verdict
-        // below, worded with the progress it made; a nested step that genuinely
-        // FAILED under the cancel keeps its `fail` and the detail naming it; and
-        // a tool that ran to completion before the cancel arrived did run —
+        // one. A nested orchestrator cut short reports the cancel IN ITS OWN
+        // WORDS below, naming how far the run got and which step failed — a
+        // generic skip would replace all of that with "run aborted during
+        // tool" and drop the sub-report with it. Which verdict the two readers
+        // pick for that differs, and neither is this guard's business:
+        // `flow-execute` carries an `aborted` flag and reads it first, so it
+        // says `skip`; `run-sequence` has no such flag — a nested tool cancelled
+        // mid-flight returns or throws and becomes an ordinary error entry — so
+        // it says `fail`, which the RECORDER re-labels from the signal. And a
+        // tool that ran to completion before the cancel arrived did run:
         // scoring that `skip` would contradict the recorder, which records
         // exactly that step, and would use `skip` for something other than "did
         // not run", which is what it means everywhere else in this file.
