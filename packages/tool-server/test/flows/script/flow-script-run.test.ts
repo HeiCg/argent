@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -96,17 +97,25 @@ describe("flow script executor — the script is the main module", () => {
     // The standard shape for a script that is also importable by a test. Under
     // a runner that imported the script, every one of these answered "no" and
     // the step passed having run nothing.
+    //
+    // `import.meta.main` is compared against what plain `node script.mjs`
+    // reports on this Node rather than against `true`: the property landed in
+    // Node 24 and is `undefined` on 20 and 22, both inside the supported range.
+    // The claim under test is the equivalence, and pinning the value instead
+    // made the suite red on the version CI runs.
+    const probe = ws.write("probe.mjs", `process.stdout.write(String(import.meta.main));`);
+    const plainNode = execFileSync(process.execPath, [probe], { encoding: "utf8" }).trim();
     const script = ws.write(
       "guard.mjs",
       `import { fileURLToPath } from "node:url";
-       output.isMain = import.meta.main;
+       output.isMain = String(import.meta.main);
        output.argvGuard = process.argv[1] === fileURLToPath(import.meta.url);
        if (output.argvGuard) output.ran = true;`
     );
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
     expect(result.failure).toBeUndefined();
-    expect(result.output).toEqual({ isMain: true, argvGuard: true, ran: true });
+    expect(result.output).toEqual({ isMain: plainNode, argvGuard: true, ran: true });
   });
 
   it("runs a body behind a CommonJS require.main guard", async () => {
