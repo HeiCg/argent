@@ -433,6 +433,10 @@ async function runAndroidPhoneType(
       readHierarchy: devtoolsHierarchyReader(registry, device),
       secretText: params.secretText === true,
       keepSelection: replacesSelection,
+      // The over-length refusal below is the one message that would otherwise
+      // tell a caller "Nothing was modified" after the widget had ACCEPTED a
+      // replace — the same fact the note's doubling warning is built on.
+      atomicWriteApplied: atomic !== undefined && !atomic.ok && atomic.applied,
     });
   }
   if (params.text) {

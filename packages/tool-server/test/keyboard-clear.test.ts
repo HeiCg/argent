@@ -1354,6 +1354,32 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
   });
 
+  it("does not say nothing was modified after a replace the widget accepted", async () => {
+    // Nothing ties the helper's protocol to the API level, so a protocol-2
+    // helper on a level with no `keycombination` is an ordinary configuration:
+    // `value_mismatch` falls through with `applied: true`, straight into the
+    // legacy arm. "Nothing was modified" is the sentence that makes a retry
+    // against the original value look safe, and it is false there.
+    seedLegacyLevel();
+    seedDump(dumpWith("x".repeat(MAX_DELETE_COUNT + 1)));
+
+    const helper = {
+      ping: async () => ({ ok: true, idleMs: 0, protocol: "2" }),
+      setText: async () => ({ applied: true, matched: false, reason: "value_mismatch" }),
+    };
+
+    const err: unknown = await makeAndroidImpl(registryWith(helper))
+      .handler({}, { udid: ANDROID.id, clear: true, text: "abc" }, ANDROID)
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect(err).toBeInstanceOf(InvalidToolInputError);
+    expect((err as Error).message).not.toContain("Nothing was modified");
+    expect((err as Error).message).toContain("ACCEPTED by the widget before this ran");
+  });
+
   it("does not assert the chord failed when the long field is in another window", async () => {
     // `measureFocusedTextLength` is a max over every focused editable in every
     // window — an IME or overlay contributes its own — so the count that trips

@@ -330,6 +330,17 @@ interface AndroidClearOptions {
    */
   keepSelection?: boolean;
   /**
+   * An accessibility replace was ACCEPTED by the widget before this ran, so the
+   * field may already hold the value the caller asked for.
+   *
+   * Only the over-length refusal reads it, and only to stop saying "Nothing was
+   * modified" — a sentence that makes a retry against the original value look
+   * safe. The caller sets it for the two `setText` outcomes where `applied` is
+   * true and the write could not be confirmed (`unverifiable`, `value_mismatch`),
+   * which is exactly when the injected path is a SECOND write.
+   */
+  atomicWriteApplied?: boolean;
+  /**
    * The value the caller is about to type came from a `{{secret:…}}`
    * placeholder, so the over-length refusal must not quote the field's exact
    * character count.
@@ -732,11 +743,23 @@ async function clearByDeleting(
         : `A select-all and a delete were already sent, and a focused field still reports this ` +
           `much, so one backspace per character is the only clear left — too slow to finish ` +
           `reliably past ${MAX_DELETE_COUNT}.`;
+    // "Nothing was modified" is only true when nothing reached the field at all.
+    // The legacy arm can be entered after an accessibility replace the widget
+    // ACCEPTED — nothing ties the helper's protocol to the API level, so a
+    // protocol-2 helper on a level without `keycombination` is an ordinary
+    // configuration — and there the sentence is what makes a retry against the
+    // original value look safe.
+    const prior = options.atomicWriteApplied
+      ? ` An accessibility replace was ACCEPTED by the widget before this ran, so the field may ` +
+        `already hold the value you asked for.`
+      : ``;
     const state =
       rescueFrom === undefined
-        ? `Nothing was modified and nothing was typed.`
+        ? options.atomicWriteApplied
+          ? `Nothing was typed.${prior}`
+          : `Nothing was modified and nothing was typed.`
         : `The field HAS been touched: if the select-all took, the delete emptied it; if it did ` +
-          `not, the delete removed one character. Nothing was typed.`;
+          `not, the delete removed one character. Nothing was typed.${prior}`;
     const remedy =
       rescueFrom === undefined
         ? `Clear the field with the app's own affordance, or use an emulator on a newer API ` +
