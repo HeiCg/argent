@@ -1653,16 +1653,21 @@ describe("flow-add-step", () => {
     // `mayHaveMutated: false` already says nothing ran, so the two halves of
     // one message would contradict each other.
     const controller = new AbortController();
-    controller.abort();
-    const registry = createMockRegistry({
-      "flow-execute": {
-        result: {
+    // Cancel WHILE the composed run is in flight, which is the only way a
+    // notice and a cancel coexist: a signal already aborted when the call
+    // arrives is refused before anything is invoked, so it never produces a
+    // notice to mis-narrate.
+    const registry = {
+      invokeTool: vi.fn(async () => {
+        controller.abort();
+        return {
           flow: "login",
           notice: "This flow has an execution prerequisite",
           executionPrerequisite: "On login screen",
-        },
-      },
-    });
+        };
+      }),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
     const tool = createFlowAddStepTool(registry);
     await flowStartRecordingTool.execute(
       {},
