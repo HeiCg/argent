@@ -1507,6 +1507,53 @@ describe("a restart that lands while a step is still running", () => {
     expect((err as Error).message).not.toContain("already ran on the device");
   });
 
+  it("reads a refusal's step count only once the flow's lock is free", async () => {
+    // The liveness assert alone only NARROWS this window: it is synchronous and
+    // the file read that follows it is not, while `flow-start-recording`
+    // truncates and re-registers under this same lock. A refusal that reads
+    // outside the lock can pass the assert, have the restart land, and then
+    // report the superseded take's count as its own success — which is worse
+    // than missing the takeover, since the next call reports that.
+    const root = await makeRoot("refusal-lock");
+    await start(root, "alpha");
+    await addStep(root, "alpha", "a1");
+
+    // Stand in for another writer mid read-modify-write on alpha's file.
+    const lock = openGate();
+    const held = withFlowFileLock(root, "alpha", () => lock.promise);
+
+    const order: string[] = [];
+    const refusing = addRawStep(root, "alpha", "run-sequence", {
+      udid: "ABC",
+      steps: [
+        { tool: "keyboard", args: { text: "x" } },
+        { tool: "keyboard", args: { text: "y" } },
+      ],
+    }).then((r) => {
+      order.push("refusal-returned");
+      return r;
+    });
+
+    await settle();
+    // The live sub-tool has long returned; what it is waiting on is the lock.
+    expect(order).toEqual([]);
+
+    // Queued behind the refusal, so it can only truncate AFTER the read — the
+    // interleaving the lock exists to forbid.
+    const restarting = start(root, "alpha");
+
+    order.push("lock-released");
+    lock.open();
+    await held;
+
+    const result = await refusing;
+    expect(order).toEqual(["lock-released", "refusal-returned"]);
+    // Its own take's count, not the truncated one the restart leaves behind.
+    expect(result.stepCount).toBe(1);
+    expect(result.recorded).toBeUndefined();
+    expect((await restarting).discardedSteps).toBe(1);
+  });
+
   it("truncates and re-registers only once the flow's lock is free", async () => {
     const root = await makeRoot("restart-lock");
     await start(root, "alpha");

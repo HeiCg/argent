@@ -420,6 +420,23 @@ export async function withFlowFileLock<T>(
 }
 
 /**
+ * The same lock, for a critical section that already holds a session — the
+ * returns that record NOTHING and still report the recording's step count read
+ * the file back, and that read must not straddle a restart.
+ *
+ * Keyed off `session.key` rather than re-resolved from (projectRoot, name):
+ * {@link resolveFlowKey} touches the filesystem, so re-deriving it would put
+ * another await inside the window this lock exists to close, and would answer
+ * differently if the path stopped resolving mid-recording.
+ */
+export async function withRecordingLock<T>(
+  session: RecordingSession,
+  fn: () => Promise<T>
+): Promise<T> {
+  return withFlowLock(session.key, fn);
+}
+
+/**
  * Leak backstop only. Sessions are small and auto-spawned servers idle out
  * after 30 min, but a long-lived server could accumulate recordings an agent
  * started and never finished. Well past any realistic concurrent-agent count,

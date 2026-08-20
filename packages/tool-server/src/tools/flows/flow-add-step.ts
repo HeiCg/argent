@@ -12,6 +12,7 @@ import {
   requireRecordingSession,
   appendStepToFlow,
   assertSessionStillLive,
+  withRecordingLock,
   appIdForPlatform,
   parseFlow,
   assertSafeFlowName,
@@ -1025,6 +1026,14 @@ async function captureTapSelector(
  * refusal reports another take's step count as this recording's — the one
  * number the caller relies on to know where its own take stands.
  *
+ * Under the flow's lock, exactly as {@link appendStepToFlow} asserts, because
+ * the assert alone only narrows that window: the assert is synchronous and the
+ * read below is not, and `flow-start-recording` truncates the file and
+ * registers the new session under that same lock. A restart landing between the
+ * two is invisible to a lock-free caller, which then reports the SUPERSEDED
+ * take's count as its own success — worse than missing the takeover, which the
+ * next call on the key reports.
+ *
  * `ranOnDevice` says whether the tool call this return is refusing to RECORD had
  * already been executed, which decides what the liveness error tells the author
  * to undo.
@@ -1033,20 +1042,22 @@ async function activeFlowState(
   session: RecordingSession,
   ranOnDevice: boolean
 ): Promise<{ stepCount: number; note?: string }> {
-  assertSessionStillLive(session, ranOnDevice);
-  if (session.persist === "host") {
-    try {
-      session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"));
-    } catch (err) {
-      return {
-        stepCount: session.flow.steps.length,
-        note:
-          `The persisted flow could not be read and parsed (${err instanceof Error ? err.message : String(err)}); ` +
-          `the step count is from the last valid in-memory snapshot.`,
-      };
+  return withRecordingLock(session, async () => {
+    assertSessionStillLive(session, ranOnDevice);
+    if (session.persist === "host") {
+      try {
+        session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"));
+      } catch (err) {
+        return {
+          stepCount: session.flow.steps.length,
+          note:
+            `The persisted flow could not be read and parsed (${err instanceof Error ? err.message : String(err)}); ` +
+            `the step count is from the last valid in-memory snapshot.`,
+        };
+      }
     }
-  }
-  return { stepCount: session.flow.steps.length };
+    return { stepCount: session.flow.steps.length };
+  });
 }
 
 /**
