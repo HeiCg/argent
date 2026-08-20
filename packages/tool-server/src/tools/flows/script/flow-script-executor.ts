@@ -1184,6 +1184,14 @@ interface StreamState {
  * The cost is that a report shows the stream rather than the four console
  * levels. That matches what a developer sees running the script by hand.
  *
+ * Order is arrival order, and it is faithful to written order for anything the
+ * script writes in separate turns of its event loop. What it cannot reproduce
+ * is a burst written to *both* streams inside one turn: those arrive as two
+ * `data` events, one per pipe, and nothing in the bytes says which write came
+ * first. Merging the two descriptors in the child would need `dup2`, which
+ * Node does not expose. Nothing else here is allowed to add reordering on top
+ * of that — see the hold-back and the frame collapser below.
+ *
  * Redaction runs on the live stream, ahead of both limits, because each
  * boundary leaks a secret into a report if it runs last:
  *
@@ -1289,9 +1297,13 @@ class ScriptLogCapture {
       emit = scrubbed;
       state.holdback = "";
     } else {
-      // One byte short of the longest value: any shorter hold-back could let a
-      // value straddle the boundary with neither half matching.
-      const keep = Math.max(0, longestSecret(secrets) - 1);
+      // Only a tail that could still grow into a secret is held back. Holding
+      // back a fixed `longest value - 1` characters delayed whole lines that
+      // could never match — with a 32-character secret configured, a 19
+      // character line waited for that stream's next chunk and landed after
+      // text the script wrote later. Adding a secret to a flow must not
+      // reorder its log.
+      const keep = partialSecretTail(scrubbed, secrets);
       const split = Math.max(0, scrubbed.length - keep);
       emit = scrubbed.slice(0, split);
       state.holdback = scrubbed.slice(split);
@@ -1320,12 +1332,23 @@ class ScriptLogCapture {
   }
 }
 
-function longestSecret(secrets: readonly FlowScriptSecret[]): number {
-  let longest = 0;
-  for (const secret of secrets) {
-    if (secret.value.length > longest) longest = secret.value.length;
+/**
+ * How many characters at the end of `text` are a proper prefix of some secret
+ * value — the only tail a later chunk could complete into a whole value, and so
+ * the only tail worth holding back.
+ */
+function partialSecretTail(text: string, secrets: readonly FlowScriptSecret[]): number {
+  let keep = 0;
+  for (const { value } of secrets) {
+    const longest = Math.min(value.length - 1, text.length);
+    for (let n = longest; n > keep; n--) {
+      if (text.endsWith(value.slice(0, n))) {
+        keep = n;
+        break;
+      }
+    }
   }
-  return longest;
+  return keep;
 }
 
 /** Back off to the start of a UTF-8 sequence so a cut never splits a character. */
@@ -1336,6 +1359,8 @@ function utf8SafeCut(buffer: Buffer, max: number): number {
 }
 
 const V8_FRAME_RE = /^\s*\d+:\s+0x[0-9a-f]+/i;
+/** A fatal error is the only thing a frame dump follows. Until one prints, nothing is collapsed. */
+const ARM_FRAME_COLLAPSE_RE = /FATAL ERROR|Fatal error in|Fatal JavaScript|# Fatal/i;
 /** Below this many consecutive frame lines, the run is passed through as written. */
 const COLLAPSE_THRESHOLD = 3;
 
@@ -1359,9 +1384,22 @@ class V8FrameCollapser {
   private partial = "";
   private held: string[] = [];
   private heldCount = 0;
+  private armed = false;
+  private armWindow = "";
 
   write(text: string): string {
     if (!text) return "";
+    if (!this.armed) {
+      // Until V8 has printed a fatal error there is no frame dump to collapse,
+      // and line buffering would only hold text back: an unterminated write —
+      // a progress indicator — waited for its newline while stdout written
+      // afterwards was appended first. Pass everything straight through, and
+      // watch a window wide enough to catch a banner split across two chunks.
+      const armed = ARM_FRAME_COLLAPSE_RE.test(this.armWindow + text);
+      this.armWindow = armed ? "" : (this.armWindow + text).slice(-HEAP_FATAL_WINDOW_CHARS);
+      if (!armed) return text;
+      this.armed = true;
+    }
     this.partial += text;
     let out = "";
     const lines = this.partial.split("\n");
@@ -1377,6 +1415,7 @@ class V8FrameCollapser {
   }
 
   end(): string {
+    if (!this.armed) return "";
     let out = "";
     if (this.partial) {
       out += this.classify(this.partial);

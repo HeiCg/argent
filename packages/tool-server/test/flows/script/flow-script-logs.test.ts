@@ -108,6 +108,43 @@ describe("flow script executor — log capture", () => {
   });
 });
 
+describe("flow script executor — order", () => {
+  const WRITES = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+     process.stderr.write("Downloading... ");
+     await wait(60);
+     process.stdout.write("[stdout line 1]\\n");
+     await wait(60);
+     process.stderr.write("done\\n");
+     output.ok = true;`;
+
+  it("keeps what the script wrote in the order it wrote it", async () => {
+    const ws = workspace();
+    // An unterminated stderr write — a progress indicator — must not park
+    // until its newline arrives while stdout written afterwards goes first.
+    const result = await executor().execute({
+      scriptPath: ws.write("order.mjs", WRITES),
+      projectRoot: ws.dir,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.log).toBe("Downloading... [stdout line 1]\ndone\n");
+  });
+
+  it("keeps that order when a secret is configured", async () => {
+    const ws = workspace();
+    // The hold-back that protects a value split across two chunks must not
+    // delay text that could never be part of one: adding a secret to a flow
+    // cannot reorder its log.
+    const result = await executor().execute({
+      scriptPath: ws.write("order.mjs", WRITES),
+      projectRoot: ws.dir,
+      secrets: [{ name: "TOK", value: "0123456789abcdef0123456789abcdef" }],
+    });
+
+    expect(result.log).toBe("Downloading... [stdout line 1]\ndone\n");
+  });
+});
+
 describe("flow script executor — redaction", () => {
   const SECRET: FlowScriptSecret = { name: "API_KEY", value: "s3cr3t-token-value" };
 
