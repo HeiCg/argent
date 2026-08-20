@@ -17,6 +17,8 @@ const DEADLINE_WATCHDOG = "flow-script-watchdog-deadline.mjs";
 
 /** One request per process; a second `message` is ignored rather than obeyed. */
 let handled = false;
+/** One terminal message per process; see `finish`. */
+let finished = false;
 
 process.on("message", (raw) => {
   if (handled) return;
@@ -59,6 +61,23 @@ async function run(raw) {
   // Load-bearing. This is the only thing that lets the parent tell "the runner
   // never began the script" apart from "the script stopped its own process".
   process.send({ type: "started" });
+
+  // From here on the script owns the process, and a crash it raises after its
+  // module evaluation settled — a rejected promise nobody awaited, a throw
+  // inside a timer callback — would otherwise kill the runner before it could
+  // report anything. Node's default is to print the error and exit 1, which
+  // reaches the parent as "the script stopped its own process", naming an exit
+  // code the author never wrote and losing the error itself. Report it as what
+  // it is instead. An unhandled rejection arrives here too: Node raises it as
+  // an uncaught exception unless an `unhandledRejection` listener claims it.
+  process.on("uncaughtException", (err) => {
+    finish({
+      type: "failure",
+      failureType: "runtime",
+      message: errorMessage(err),
+      stack: errorStack(err),
+    });
+  });
 
   try {
     // A dynamic import of a file URL, never a source read, never an eval, never
@@ -334,6 +353,11 @@ function safeStringify(value) {
  * parent's classification depends on the message, not the code.
  */
 function finish(response) {
+  // One verdict per process. `beforeExit` can fire more than once, and a script
+  // can crash while the runner is already reporting; the first outcome is the
+  // one the parent hears.
+  if (finished) return;
+  finished = true;
   const exit = () => process.exit(0);
   let pending = 2;
   const flushed = () => {

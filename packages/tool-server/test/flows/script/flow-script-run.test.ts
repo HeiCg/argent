@@ -156,6 +156,36 @@ describe("flow script executor — module loading", () => {
     expect(result.failure?.stack).toContain("throws.mjs:1");
   });
 
+  it("reports a rejection nobody awaited as a runtime failure, with its stack", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "async-crash.mjs",
+      `Promise.reject(new Error("upstream 503 from the metrics API"));
+       await new Promise((r) => setTimeout(r, 200));
+       output.done = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    // Not "the script stopped its own process with exit code 1": it did not,
+    // and that message points the author at a `process.exit` that is not there.
+    expect(result.failure?.kind).toBe("runtime");
+    expect(result.failure?.message).toBe("upstream 503 from the metrics API");
+    expect(result.failure?.stack).toContain("async-crash.mjs:1");
+  });
+
+  it("reports a throw from a timer callback as a runtime failure", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "late-throw.mjs",
+      `setTimeout(() => { throw new Error("late boom"); }, 50);`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure?.kind).toBe("runtime");
+    expect(result.failure?.message).toBe("late boom");
+    expect(result.failure?.stack).toContain("late-throw.mjs:1");
+  });
+
   it("loads a script whose path holds a space and a #", async () => {
     const ws = workspace();
     const script = ws.write("a dir #1/odd name.mjs", `output.loaded = true;`);
