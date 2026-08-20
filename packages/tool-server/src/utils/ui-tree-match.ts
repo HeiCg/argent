@@ -319,7 +319,20 @@ const BIDI_SENSITIVE =
 //   {@link LTR_BIDI} and {@link BIDI_SENSITIVE}.
 
 const foldCache = new Map<string, string>();
-const FOLD_CACHE_MAX = 4096;
+/**
+ * Sized to hold ONE WORST-CASE TREE, which is what makes the plain
+ * clear-at-the-cap below cost a single refill rather than thrash.
+ *
+ * The bound this file works to elsewhere is 12k nodes on Android and Chromium
+ * (see the containment-grid comment), and `includesCI` folds a node's label and
+ * its value separately, so one `findAll` over such a tree inserts up to ~24k
+ * distinct keys. At 4096 that pass cleared the map six times over — the refill
+ * was per pass, not once — and the cost stepped exactly at the cap: measured
+ * over 20 passes on a label-only tree, 0.19 µs/node at 4,090 nodes against
+ * 0.54 µs/node at 4,200, and 6.24 ms against 2.46 ms per `findAll` over the
+ * full 12k. Holding that tree costs about 4 MB of heap, measured.
+ */
+const FOLD_CACHE_MAX = 32_768;
 
 /**
  * The comparable form of a piece of UI text: invisible formatting stripped,
@@ -437,8 +450,10 @@ function foldWith(value: string, stripLtr: boolean): string {
     // neither space-like nor whitespace.
     .normalize("NFC");
   // Trees are re-read on every poll, so the same strings recur constantly.
-  // A plain size cap (rather than an LRU) is enough: the working set is one
-  // screen's labels, and blowing it away wholesale costs one refill.
+  // A plain size cap (rather than an LRU) is enough BECAUSE the cap holds a
+  // whole tree: the working set is one screen's labels, so blowing it away
+  // wholesale costs one refill. See FOLD_CACHE_MAX for the arithmetic — a cap
+  // under the working set turns that one refill into several per pass.
   if (foldCache.size >= FOLD_CACHE_MAX) foldCache.clear();
   foldCache.set(key, folded);
   return folded;
@@ -1004,6 +1019,10 @@ export function identifierMatches(actual: string | undefined, needle: string): b
 export const uiTreeMatchInternals = {
   createRegExp(pattern: string): RegExp {
     return new RegExp(pattern);
+  },
+  /** How many folds are cached right now — for pinning {@link FOLD_CACHE_MAX}. */
+  foldCacheSize(): number {
+    return foldCache.size;
   },
 };
 

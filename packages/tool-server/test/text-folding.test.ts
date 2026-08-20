@@ -13,6 +13,7 @@ import {
   includesCI,
   selectorToFrame,
   textMatches,
+  uiTreeMatchInternals,
 } from "../src/utils/ui-tree-match";
 import type { DescribeNode } from "../src/tools/describe/contract";
 
@@ -903,6 +904,18 @@ describe("end-to-end: a plain selector matches a bidi-wrapped label through find
   it("but a genuinely different name still fails, so the fold has not gone blind", () => {
     const matches = findAll(root, { text: "Eddie Robson" });
     expect(evaluateCondition("text", "Eddie Robertson", matches, "equals")).toBe(false);
+  });
+});
+
+describe("the fold cache holds a whole worst-case tree", () => {
+  it("does not clear before one tree's labels are in it", () => {
+    // A cap under the working set turns the wholesale clear from one refill
+    // into several per pass: the file bounds a tree at 12k nodes, includesCI
+    // folds a node's label and value separately, so one findAll inserts up to
+    // ~24k keys. At 4096 the per-node cost stepped exactly at the cap.
+    const KEYS = 24_000;
+    for (let i = 0; i < KEYS; i++) foldText(`Row label number ${i}`);
+    expect(uiTreeMatchInternals.foldCacheSize()).toBeGreaterThanOrEqual(KEYS);
   });
 });
 
