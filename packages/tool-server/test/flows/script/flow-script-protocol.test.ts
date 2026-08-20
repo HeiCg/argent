@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   FlowScriptExecutor,
   type FlowScriptFailure,
+  type FlowScriptRequest,
 } from "../../../src/tools/flows/script/flow-script-executor";
 import {
   parseScriptResponse,
@@ -46,7 +47,7 @@ function executor() {
  * loads the entry, and none of these cases wants the script to run. That is the
  * real runner's own shape on a request it cannot honour.
  */
-async function withFakeRunner(source: string) {
+async function withFakeRunner(source: string, extra: Partial<FlowScriptRequest> = {}) {
   const ws = workspace();
   const runnerDir = ws.resolve("runner");
   fs.mkdirSync(runnerDir, { recursive: true });
@@ -60,6 +61,7 @@ async function withFakeRunner(source: string) {
     projectRoot: ws.dir,
     runnerDir,
     timeoutMs: 5_000,
+    ...extra,
   });
 }
 
@@ -342,6 +344,57 @@ describe("flow script executor — the runner's reporting path survives the scri
       expect(result.log).toContain("did the work");
     });
   }
+
+  it("puts its listeners back in front of the ones a script registers after", async () => {
+    const ws = workspace();
+    // Order, not just presence. The runner re-registers inside
+    // `removeAllListeners`, so its `uncaughtException` handler is first again —
+    // and that handler decides whether the script has one of its own by asking
+    // whether there is more than one. Put back *after* the script's, it would
+    // see itself alone, claim the exception, and fail a step the script
+    // recovered from; plain `node` runs the script's handler and exits 0.
+    const script = ws.write(
+      "reclaims.mjs",
+      `process.removeAllListeners();
+       process.on("uncaughtException", (err) => {
+         console.log("script handled", err.message);
+         output.recovered = true;
+       });
+       setTimeout(() => { throw new Error("late boom"); }, 10);`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ recovered: true });
+    expect(result.log).toContain("script handled late boom");
+  });
+});
+
+describe("flow script executor — redacting a document from a runner", () => {
+  it("scrubs a document too deep for a recursive walk", async () => {
+    // The output document came from a child that ran arbitrary code, so its
+    // shape is not the parent's to assume: a nest of twenty thousand objects is
+    // a legal document that `JSON.parse` reads without complaint and a
+    // recursive scrub cannot walk — measured, a recursive walk gives up around
+    // five thousand. `execute` owes its caller a verdict, not a stack overflow,
+    // and the scrub is what stands between the secret and a document later
+    // steps read.
+    const depth = 20_000;
+    let json = JSON.stringify("token sk-live-9d3f0a1b2c3d4e5f");
+    for (let i = 0; i < depth; i++) json = `{"nested":${json}}`;
+    const result = await withFakeRunner(
+      `process.on("message", () => {
+         process.send({ type: "started" });
+         process.send({ type: "result", outputJson: ${JSON.stringify(json)} }, () => process.exit(0));
+       });`,
+      { secrets: [{ name: "TOKEN", value: "sk-live-9d3f0a1b2c3d4e5f" }] }
+    );
+
+    expect(result.failure).toBeUndefined();
+    let node: unknown = result.output;
+    for (let i = 0; i < depth; i++) node = (node as Record<string, unknown>).nested;
+    expect(node).toBe("token {{secret:TOKEN}}");
+  }, 30_000);
 });
 
 describe("flow script executor — the published layout", () => {

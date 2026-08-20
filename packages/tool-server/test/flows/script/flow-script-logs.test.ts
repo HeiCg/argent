@@ -130,6 +130,38 @@ describe("flow script executor — cutting the log", () => {
   }, 30_000);
 });
 
+describe("flow script executor — the heap verdict", () => {
+  it("recognises a heap banner split across two pipe chunks", async () => {
+    const ws = workspace();
+    // The banner is matched on the live stream, and a pipe hands over whatever
+    // the kernel had rather than whatever the script wrote — so the phrase can
+    // arrive in halves. Without the rolling window the abort below degrades
+    // from the heap verdict, which names the limit and the value, to the
+    // signal one, which says only that something killed the process.
+    //
+    // The banner is written by the script rather than provoked, because the
+    // point under test is the window and not V8: a real exhaustion prints its
+    // banner in one write.
+    const script = ws.write(
+      "split-heap.mjs",
+      `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       process.stderr.write("\\n<--- Last few GCs --->\\n\\nFATAL ERROR: Reached ");
+       await wait(60);
+       process.stderr.write("heap limit Allocation failed - JavaScript heap out of memory\\n");
+       await wait(60);
+       process.abort();`
+    );
+    const result = await executor({ heapLimitMb: 64 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 20_000,
+    });
+
+    expect(result.failure?.kind).toBe("heap");
+    expect(result.failure?.message).toContain("64 MiB");
+  }, 30_000);
+});
+
 describe("flow script executor — the V8 frame collapser", () => {
   it("marks the log truncated when it drops frames", async () => {
     const ws = workspace();
@@ -166,6 +198,49 @@ describe("flow script executor — the V8 frame collapser", () => {
     expect(result.log).toContain("2: 0x104b94314 second");
     expect(result.log).not.toContain("frames omitted");
   });
+
+  it("arms on a banner split across two pipe chunks", async () => {
+    const ws = workspace();
+    // A pipe hands over whatever the kernel had, not whatever the script
+    // wrote, so the phrase that arms the collapser can arrive in halves. The
+    // await between the two writes is what guarantees two `data` events.
+    // Without the window the collapser never arms and roughly sixty frame lines
+    // flood a step budget that is 64 KiB for the whole log.
+    const script = ws.write(
+      "split-banner.mjs",
+      `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       process.stderr.write("FATAL ");
+       await wait(60);
+       process.stderr.write("ERROR: build step failed\\n");
+       for (let i = 1; i <= 6; i++) process.stderr.write(\` \${i}: 0x1049\${i}1aec some symbol\\n\`);
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.log).toContain("FATAL ERROR: build step failed");
+    expect(result.log).toMatch(/\[6 V8 stack frames omitted]/);
+    expect(result.log).not.toContain("0x104931aec");
+  }, 30_000);
+
+  it("flushes a partial line the collapser cannot classify rather than holding it", async () => {
+    const ws = workspace();
+    // Once armed the collapser buffers by line, so an unterminated write has to
+    // be let go at some length or it parks until the step ends — and text the
+    // script wrote *afterwards*, on the other stream, goes into the log first.
+    const script = ws.write(
+      "long-partial.mjs",
+      `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       process.stderr.write("FATAL ERROR: build step failed\\n");
+       await wait(60);
+       process.stderr.write("p".repeat(10 * 1024));
+       await wait(60);
+       process.stdout.write("[upload finished]\\n");
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.log.indexOf("ppp")).toBeLessThan(result.log.indexOf("[upload finished]"));
+  }, 30_000);
 
   it("leaves frame-shaped lines from the script alone", async () => {
     const ws = workspace();

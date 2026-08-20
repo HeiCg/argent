@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FlowScriptExecutor,
@@ -235,6 +236,38 @@ describe("flow script executor — output validation", () => {
     expect(result.failure?.message).toContain("more characters omitted");
     expect(result.failure?.stack?.length).toBeLessThan(17 * 1024);
   }, 30_000);
+
+  it("refuses a caller output document that cannot be encoded, without spawning", async () => {
+    const ws = workspace();
+    // The document the flow hands *in*, not the one the script hands back. It
+    // is encoded before the fork and inside the setup guard, because doing it
+    // after made `execute` reject with a raw TypeError — no result for the
+    // caller at all — and left a child running until the time limit reaped it.
+    // The marker is what proves nothing was started.
+    const marker = ws.resolve("ran.txt");
+    const script = ws.write(
+      "noop.mjs",
+      `import fs from "node:fs";
+       fs.writeFileSync(${JSON.stringify(marker)}, "ran");`
+    );
+    const cyclic: Record<string, unknown> = { flow: "seed" };
+    cyclic.itself = cyclic;
+
+    const fromCyclic = await new FlowScriptExecutor({
+      concurrency: 4,
+      maxTimeoutMs: 60_000,
+    }).execute({ scriptPath: script, projectRoot: ws.dir, output: cyclic });
+    expect(fromCyclic.failure?.kind).toBe("invalid");
+    expect(fromCyclic.failure?.message).toContain("could not be encoded for the script");
+
+    const fromBigInt = await new FlowScriptExecutor({
+      concurrency: 4,
+      maxTimeoutMs: 60_000,
+    }).execute({ scriptPath: script, projectRoot: ws.dir, output: { total: 42n } });
+    expect(fromBigInt.failure?.kind).toBe("invalid");
+
+    expect(fs.existsSync(marker)).toBe(false);
+  });
 
   it("says how much of a clamped message was really dropped", async () => {
     // The number, not just the marker. The child clamps and marks honestly, and

@@ -96,21 +96,29 @@ describe("flow script executor — the environment allowlist", () => {
     expect(result.output?.env).toEqual({ API_URL: "https://api.example.com", API_KEY: "abc" });
   });
 
-  it.each(["NODE_OPTIONS", "NODE_CHANNEL_FD", "NODE_UNIQUE_ID", "ELECTRON_RUN_AS_NODE"])(
-    "refuses %s in a caller-supplied environment",
-    async (name) => {
-      const ws = workspace();
-      const script = ws.write("env.mjs", `output.ok = true;`);
-      const result = await executor().execute({
-        scriptPath: script,
-        projectRoot: ws.dir,
-        env: { [name]: "1" },
-      });
+  // Spelled out rather than imported: the constant is private, and a literal is
+  // what catches a rename of the name the runner preload actually reads. The
+  // activation variable belongs here with the rest — a caller that sets it
+  // steers which process the preload activates in, and it was the one reserved
+  // name no case enumerated.
+  it.each([
+    "NODE_OPTIONS",
+    "NODE_CHANNEL_FD",
+    "NODE_UNIQUE_ID",
+    "ELECTRON_RUN_AS_NODE",
+    "ARGENT_FLOW_SCRIPT_RUNNER",
+  ])("refuses %s in a caller-supplied environment", async (name) => {
+    const ws = workspace();
+    const script = ws.write("env.mjs", `output.ok = true;`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      env: { [name]: "1" },
+    });
 
-      expect(result.failure?.kind).toBe("invalid");
-      expect(result.failure?.message).toContain(name);
-    }
-  );
+    expect(result.failure?.kind).toBe("invalid");
+    expect(result.failure?.message).toContain(name);
+  });
 
   it.each(["ELECTRON_RUN_AS_NODE", "Electron_Run_As_Node"])(
     "boots the child as Node when the server's environment carries %s",
@@ -185,6 +193,55 @@ describe("flow script executor — the heap limit", () => {
 
     expect(result.ok).toBe(true);
     expect(result.output?.execArgv).toContain(`--max-old-space-size=${MIN_SCRIPT_HEAP_LIMIT_MB}`);
+  });
+});
+
+describe("flow script executor — the host's configured bounds", () => {
+  /**
+   * A global `~/.argent/config.json` this test alone owns.
+   *
+   * Both variables, because the global scope resolves from `HOME` on POSIX and
+   * `USERPROFILE` on Windows — and pointing them at a fixture is also what
+   * keeps the assertion off the configuration of the machine running the suite.
+   */
+  function configuredHome(ws: ScriptWorkspace, config: Record<string, unknown>): void {
+    const home = ws.resolve("home");
+    fs.mkdirSync(path.join(home, ".argent"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".argent", "config.json"), JSON.stringify(config));
+    withEnv("HOME", home);
+    withEnv("USERPROFILE", home);
+  }
+
+  // Neither key was wired end to end: the schema has its own tests, and every
+  // executor test injects the bound as an option, so the one path that reads
+  // the host's configuration was never taken. Misspelling either key string
+  // left both suites green while a host's configured ceiling was ignored.
+  it("bounds a step by the configured scripts.maxTimeoutMs", async () => {
+    const ws = workspace();
+    configuredHome(ws, { scripts: { maxTimeoutMs: 700 } });
+    const script = ws.write("hang.mjs", `setInterval(() => {}, 1000);`);
+    // No `maxTimeoutMs` option, so the configured value is the ceiling.
+    const result = await new FlowScriptExecutor({ concurrency: 4 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.failure?.kind).toBe("timeout");
+    expect(result.notes.join(" ")).toContain("this host's maximum of 700ms");
+    expect(result.durationMs).toBeLessThan(15_000);
+  }, 30_000);
+
+  it("gives a script the configured scripts.heapLimitMb", async () => {
+    const ws = workspace();
+    configuredHome(ws, { scripts: { heapLimitMb: 96 } });
+    const script = ws.write("argv.mjs", `output.execArgv = process.execArgv;`);
+    const result = await new FlowScriptExecutor({ concurrency: 4 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+    });
+
+    expect(result.output?.execArgv).toContain("--max-old-space-size=96");
   });
 });
 
@@ -275,6 +332,41 @@ describe("flow script executor — the working directory", () => {
     expect(result.failure?.kind).toBe("invalid");
     expect(result.failure?.message).toContain("No working directory exists");
   });
+
+  // `chmod` is a no-op on Windows and root ignores the mode, so the trigger is
+  // only reachable where the mode is enforced.
+  const enforcesMode = process.platform !== "win32" && process.getuid?.() !== 0;
+
+  it.skipIf(!enforcesMode)(
+    "reports a working directory the child cannot enter as a verdict, not a hang",
+    async () => {
+      const ws = workspace();
+      // The directory passes every check the executor can make — absolute, no
+      // `..`, and `stat` says it is a directory — so the failure lands in the
+      // fork itself, which reports it asynchronously through an `error` event
+      // rather than a throw. Nothing else covers that listener, and a step that
+      // lost it would wait out its whole time limit instead of answering.
+      const locked = ws.resolve("locked");
+      fs.mkdirSync(locked, { recursive: true });
+      const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
+      fs.chmodSync(locked, 0o000);
+      try {
+        const started = Date.now();
+        const result = await executor().execute({
+          scriptPath: script,
+          projectRoot: locked,
+          timeoutMs: 30_000,
+        });
+
+        expect(result.failure?.kind).toBe("spawn");
+        expect(result.failure?.message).toContain("Could not start the script process");
+        expect(Date.now() - started).toBeLessThan(10_000);
+      } finally {
+        fs.chmodSync(locked, 0o700);
+      }
+    },
+    30_000
+  );
 
   it("refuses a step given no working directory at all", async () => {
     const ws = workspace();

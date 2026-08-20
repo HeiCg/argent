@@ -481,6 +481,34 @@ describe("flow script executor — module loading", () => {
     expect(fromPlain.failure?.message).toBe("plain failure");
   });
 
+  it("bounds a chain of causes, and survives one that points back at itself", async () => {
+    const ws = workspace();
+    // Both guards on the walk, neither of which the happy paths reach. A
+    // re-wrapped error whose `.cause` climbs back up its own chain is the shape
+    // the cycle guard exists for; without it the walk never returns and the
+    // step runs to its time limit with no verdict at all.
+    const cyclic = ws.write(
+      "cyclic.mjs",
+      `const outer = new Error("outer failed");
+       const inner = new Error("inner failed", { cause: outer });
+       outer.cause = inner;
+       throw outer;`
+    );
+    const fromCyclic = await executor().execute({ scriptPath: cyclic, projectRoot: ws.dir });
+    expect(fromCyclic.failure?.message).toBe("outer failed — caused by: inner failed");
+
+    // And the depth bound: a long chain is cut rather than rendered whole.
+    const deep = ws.write(
+      "deep-chain.mjs",
+      `let err = new Error("d11");
+       for (let level = 10; level >= 0; level--) err = new Error("d" + level, { cause: err });
+       throw err;`
+    );
+    const fromDeep = await executor().execute({ scriptPath: deep, projectRoot: ws.dir });
+    expect(fromDeep.failure?.message).toContain("d8");
+    expect(fromDeep.failure?.message).not.toContain("d9");
+  });
+
   it("calls the script's own asynchronous failures runtime failures", async () => {
     const ws = workspace();
     // An error raised asynchronously carries the frames of wherever it was

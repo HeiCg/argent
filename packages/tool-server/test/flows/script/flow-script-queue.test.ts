@@ -164,25 +164,33 @@ describe("flow script executor — the default concurrency", () => {
     try {
       // max(2, min(8, cpus - 2)): the floor is what keeps a two-core CI box
       // from serializing every script step.
+      //
+      // Each script records the interval it ran in, and two intervals that
+      // overlap ran at the same time. Elapsed wall clock cannot say that: the
+      // bound has to sit between the concurrent time and the serialized one,
+      // which left 200ms of slack and made this the likeliest flake in the
+      // suite — a loaded runner crosses it while running both scripts at once.
       const script = ws.write(
         "slow.mjs",
-        `await new Promise((r) => setTimeout(r, 700)); output.ok = true;`
+        `output.startedAt = Date.now();
+         await new Promise((r) => setTimeout(r, 700));
+         output.finishedAt = Date.now();`
       );
       const shared = new FlowScriptExecutor({ maxTimeoutMs: 60_000 });
-      const started = Date.now();
       const results = await Promise.all([
         shared.execute({ scriptPath: script, projectRoot: ws.dir }),
         shared.execute({ scriptPath: script, projectRoot: ws.dir }),
       ]);
-      const elapsed = Date.now() - started;
+      const spans = results.map((result) => ({
+        from: result.output?.startedAt as number,
+        to: result.output?.finishedAt as number,
+      }));
 
       expect(results.every((r) => r.ok)).toBe(true);
+      expect(Math.min(spans[0]!.to, spans[1]!.to)).toBeGreaterThan(
+        Math.max(spans[0]!.from, spans[1]!.from)
+      );
       expect(results.every((r) => r.queuedMs < 200)).toBe(true);
-      // Serialized these take 1400ms and concurrent about 750ms, so the bound
-      // sits between them with room on both sides. Two 400ms scripts under a
-      // 800ms bound left ~350ms of slack against the serialized case — the
-      // tightest timing assertion in the suite, and the likeliest CI flake.
-      expect(elapsed).toBeLessThan(1_200);
     } finally {
       ws.cleanup();
     }
