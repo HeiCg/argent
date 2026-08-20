@@ -154,6 +154,26 @@ describe("flow script executor — output validation", () => {
     expect(smuggled.failure?.kind).toBe("output");
   });
 
+  it("commits the value it validated, not the one a second read returns", async () => {
+    // Every accessor on the document is free to answer differently the second
+    // time. Validating the live object and then encoding it again read each of
+    // these twice, so the value that shipped was never the value that passed —
+    // the silent-`null` corruption the validator exists to prevent.
+    const getter = await run(
+      `let n = 0;
+       output.data = { get id() { n++; return n === 1 ? 1 : NaN; } };`
+    );
+    expect(getter.failure).toBeUndefined();
+    expect(getter.output).toEqual({ data: { id: 1 } });
+
+    const toJson = await run(
+      `let n = 0;
+       output.wrapped = { toJSON() { n++; return n === 1 ? { fine: true } : { swapped: true }; } };`
+    );
+    expect(toJson.failure).toBeUndefined();
+    expect(toJson.output).toEqual({ wrapped: { fine: true } });
+  });
+
   it("still rejects a Date, which has a toJSON of its own", async () => {
     const result = await run(`output.at = new Date();`);
     expect(result.failure?.kind).toBe("output");

@@ -425,7 +425,7 @@ function hasUserFrame(err) {
 }
 
 /**
- * Validate the output document, then encode it once.
+ * Validate the output document, then encode what was validated.
  *
  * Validation cannot happen in the parent. The IPC channel serializes as JSON,
  * so it changes the value before the parent ever sees it: a function and an
@@ -433,20 +433,27 @@ function hasUserFrame(err) {
  * BigInt or a cyclic value throws inside `send` — so the parent sees a crash
  * rather than a verdict. A silent `null` is worse than a rejection, because the
  * flow keeps running on a value the script never wrote.
+ *
+ * What is encoded is the copy the walk built, not the live object read a second
+ * time. Reading twice is what let the corruption back in: every accessor on the
+ * document — a getter, a Proxy trap, a `toJSON`, a queue that drains as it is
+ * read — is free to answer differently the second time, and the second answer
+ * was the one that shipped. `output.data = { get id() { … } }` returning `1`
+ * and then `NaN` passed validation and committed `{"data":{"id":null}}`.
  */
 function encodeOutput(value, maxOutputBytes) {
-  let problem;
+  let checked;
   try {
-    problem = validate(value);
+    checked = validate(value);
   } catch (err) {
     // A throwing getter, a Proxy trap — anything the walk itself provoked.
     return { error: `output could not be read: ${errorMessage(err)}` };
   }
-  if (problem) return { error: problem };
+  if (checked.problem) return { error: checked.problem };
 
   let json;
   try {
-    json = JSON.stringify(value);
+    json = JSON.stringify(checked.value);
   } catch (err) {
     return { error: `output could not be encoded: ${errorMessage(err)}` };
   }
@@ -459,72 +466,84 @@ function encodeOutput(value, maxOutputBytes) {
   return { json };
 }
 
+/** Either `{ problem }` naming what cannot be encoded, or `{ value }` to encode. */
 function validate(root) {
   // The root is what later steps read paths out of, so it has to be a document.
   // A replaced `output = "done"` has nothing to merge and no path to address.
   if (root === null || typeof root !== "object" || Array.isArray(root) || !isPlainObject(root)) {
-    return `output is ${describeValue(root)}; output must be a plain object`;
+    return { problem: `output is ${describeValue(root)}; output must be a plain object` };
   }
   return walk(root, "output", new Set());
 }
 
+/** Same shape as {@link validate}: the walked copy is what gets encoded. */
 function walk(value, path, ancestors) {
-  if (value === null) return null;
+  if (value === null) return { value: null };
   const type = typeof value;
-  if (type === "string" || type === "boolean") return null;
+  if (type === "string" || type === "boolean") return { value };
   if (type === "number") {
     return Number.isFinite(value)
-      ? null
-      : `${path} is ${describeValue(value)}; output numbers must be finite`;
+      ? { value }
+      : { problem: `${path} is ${describeValue(value)}; output numbers must be finite` };
   }
   if (type !== "object") {
-    return `${path} is ${describeValue(value)}; output must be JSON-compatible data`;
+    return { problem: `${path} is ${describeValue(value)}; output must be JSON-compatible data` };
   }
   // Ancestors only, not every value seen: a value referenced twice in different
   // branches encodes fine, it is a reference back *up* the tree that cannot.
-  if (ancestors.has(value)) return `${path} is a cyclic reference; output must be a tree`;
+  if (ancestors.has(value)) {
+    return { problem: `${path} is a cyclic reference; output must be a tree` };
+  }
 
   if (Array.isArray(value)) {
     ancestors.add(value);
+    const copy = [];
     for (let i = 0; i < value.length; i++) {
       // A hole is not `undefined` written by the author — `JSON.stringify`
       // encodes it as null, and rejecting it named an index nobody wrote.
-      const problem = walk(i in value ? value[i] : null, `${path}[${i}]`, ancestors);
-      if (problem) return problem;
+      const walked = walk(i in value ? value[i] : null, `${path}[${i}]`, ancestors);
+      if (walked.problem) return walked;
+      copy.push(walked.value);
     }
     ancestors.delete(value);
-    return null;
+    return { value: copy };
   }
   if (value instanceof Date) {
     // Checked before `toJSON` below, which a Date has: it encodes to an opaque
     // string a later step cannot read back as a date.
-    return `${path} is a Date; output must be JSON-compatible data (use an ISO string)`;
+    return {
+      problem: `${path} is a Date; output must be JSON-compatible data (use an ISO string)`,
+    };
   }
   if (typeof value.toJSON === "function") {
-    // `JSON.stringify` will call this and encode what it returns, so that is
-    // what has to be validated. Walking the object instead let a `toJSON` on
-    // the root smuggle a function through as null, and refused a plain object
-    // whose `toJSON` encodes perfectly well.
+    // What `JSON.stringify` would have encoded, so that is what is walked — and
+    // now also what is kept. Walking the object instead let a `toJSON` on the
+    // root smuggle a function through as null, and refused a plain object whose
+    // `toJSON` encodes perfectly well.
     return walk(value.toJSON(), path, ancestors);
   }
   if (!isPlainObject(value)) {
     // A Map, a Set, a class instance: each encodes to something a later step
     // cannot read back — `{}` for a Map.
-    return `${path} is ${describeValue(value)}; output must be JSON-compatible data`;
+    return { problem: `${path} is ${describeValue(value)}; output must be JSON-compatible data` };
   }
   ancestors.add(value);
+  const copy = {};
   for (const key of Object.keys(value)) {
     if (key === "__proto__") {
       // `JSON.parse` creates this as an own key, so `output.settings =
       // JSON.parse(body)` carries it into flow state, where a later
       // `Object.assign` would write a prototype rather than a property.
-      return `${path} has an own "__proto__" key; output must be JSON-compatible data`;
+      return {
+        problem: `${path} has an own "__proto__" key; output must be JSON-compatible data`,
+      };
     }
-    const problem = walk(value[key], `${path}${memberPath(key)}`, ancestors);
-    if (problem) return problem;
+    const walked = walk(value[key], `${path}${memberPath(key)}`, ancestors);
+    if (walked.problem) return walked;
+    copy[key] = walked.value;
   }
   ancestors.delete(value);
-  return null;
+  return { value: copy };
 }
 
 function isPlainObject(value) {
