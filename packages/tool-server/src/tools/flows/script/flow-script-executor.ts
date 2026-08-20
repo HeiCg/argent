@@ -499,6 +499,16 @@ export class FlowScriptExecutor {
   ): Promise<FlowScriptResult> {
     const notes: string[] = [];
     const startedAt = Date.now();
+    // An abort raised between the queue's check and this one — `const p =
+    // execute(…); if (bad) controller.abort();` is an ordinary synchronous
+    // cancellation — lands in the gap that the promise the queue returns opens
+    // up. Nothing spawns for it.
+    if (request.signal?.aborted) {
+      return emptyResult(
+        { kind: "cancelled", message: "The run was cancelled before the script started." },
+        { notes }
+      );
+    }
     let cwd: string;
     let env: NodeJS.ProcessEnv;
     let runnerPath: string;
@@ -634,6 +644,9 @@ export class FlowScriptExecutor {
       void stop();
     };
     request.signal?.addEventListener("abort", onAbort, { once: true });
+    // `addEventListener` never fires for a signal that aborted before it was
+    // attached, and nothing else re-reads the flag.
+    if (request.signal?.aborted) onAbort();
 
     const message: ScriptExecuteRequest = {
       type: "execute",

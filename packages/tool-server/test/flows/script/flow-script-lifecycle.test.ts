@@ -143,6 +143,33 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.durationMs).toBeLessThan(10_000);
   });
 
+  it("honours an abort raised in the same tick as the call", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "slow.mjs",
+      `await new Promise((r) => setTimeout(r, 2000));
+       console.log("finished work");
+       output.done = true;`
+    );
+    const controller = new AbortController();
+    // The queue reads the signal, then hands back a promise; the run's own
+    // listener is attached a microtask later. An abort landing in between fires
+    // no listener, and nothing else re-read the flag — so the cancellation was
+    // lost for the whole life of the step.
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 30_000,
+      signal: controller.signal,
+    });
+    controller.abort();
+    const result = await pending;
+
+    expect(result.failure?.kind).toBe("cancelled");
+    expect(result.log).not.toContain("finished work");
+    expect(result.durationMs).toBeLessThan(1_000);
+  });
+
   it("refuses a step whose signal is already aborted, without spawning", async () => {
     const ws = workspace();
     const script = ws.write("never.mjs", `output.ran = true;`);
