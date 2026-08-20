@@ -1125,9 +1125,15 @@ const DIRECTIVE_COMMAND_HINTS: Record<string, DirectiveHint> = {
 
 /**
  * Recorder tools, which must never be `flow-add-step`'s `command`. Each one
- * mutates the recording itself, so running it as a nested step records the
- * action twice — once as the directive the inner tool wrote, once as a raw
- * `tool:` step that re-runs it at replay, when no recording is open.
+ * mutates the recording itself rather than the device, and this call would
+ * additionally append a raw `tool: <recorder>` step that re-runs that mutation
+ * at replay, when no recording is open.
+ *
+ * The damage differs per entry, which is why each carries its own text rather
+ * than a shared reason. Only `flow-add-echo` writes a directive, so only it
+ * records the action twice; `flow-start-recording` truncates the flow it names
+ * and would erase this one at replay, `flow-finish-recording` would end the
+ * take it is a step in, and `flow-add-step` cannot record itself.
  */
 const NESTED_RECORDER_TOOLS: Record<string, string> = {
   "flow-add-echo":
@@ -1597,13 +1603,14 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
     async execute(_services, params, ctx) {
       const session = await requireRecordingSession(params.project_root, params.name);
 
-      // A recorder tool is not a step. Nesting one appends TWICE — the inner
-      // tool writes its own directive and this call additionally records a
-      // raw `tool: <recorder>` step, which then fails on every replay because
-      // no recording is open then. It reports success either way, so nothing
-      // signals the corruption; refuse before anything is written — and before
-      // parsing `args`, so a malformed `args` payload cannot pre-empt this
-      // guidance with a bare JSON error.
+      // A recorder tool is not a step. Running one here mutates the recording
+      // and this call additionally records a raw `tool: <recorder>` step, which
+      // re-runs that mutation on every replay, when no recording is open —
+      // twice over for `flow-add-echo`, the one entry that writes a directive
+      // of its own. It reports success either way, so nothing signals the
+      // corruption; refuse before anything is written — and before parsing
+      // `args`, so a malformed `args` payload cannot pre-empt this guidance
+      // with a bare JSON error.
       // `Object.hasOwn`, not a bare index: a caller-supplied `command` equal to
       // an inherited member (`"__proto__"`, `"constructor"`, …) would otherwise
       // read truthy off the prototype chain and refuse the call with a garbage
