@@ -172,6 +172,51 @@ describe("flow script executor — a runner that misbehaves", () => {
   });
 });
 
+describe("flow script executor — the protocol channel is the runner's alone", () => {
+  it("ignores a readiness ping from the script instead of failing the run", async () => {
+    const ws = workspace();
+    // What a file written to double as a forked worker does on startup, itself
+    // or through a dependency. `typeof process.send === "function"` steers it
+    // straight into this, and under plain `node` the same check is a no-op.
+    const script = ws.write(
+      "pings.mjs",
+      `if (process.send) process.send("ready");
+       console.log("did the real work");
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ ok: true });
+    expect(result.log).toContain("did the real work");
+  });
+
+  it("ignores a verdict the script sends for itself", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "forges.mjs",
+      `process.send({ type: "result", outputJson: '{"forged":true}' });
+       process._send?.({ type: "result", outputJson: '{"forgedLowLevel":true}' });
+       output.real = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.output).toEqual({ real: true });
+  });
+
+  it("ignores a script disconnecting the channel", async () => {
+    const ws = workspace();
+    // Closing the channel would leave the run with no way to report at all,
+    // and the runner's own disconnect handler made it look like the script had
+    // stopped its own process.
+    const script = ws.write("disconnects.mjs", `process.disconnect(); output.ok = true;`);
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ ok: true });
+  });
+});
+
 describe("flow script executor — the published layout", () => {
   it("runs from a directory holding only the three .mjs files", async () => {
     // In the published bundle the runner sits flat in dist/ beside

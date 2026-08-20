@@ -46,6 +46,9 @@ let maxOutputBytes = 0;
 /** One outcome probe per process; `beforeExit` can fire more than once. */
 let probing = false;
 
+/** Set only while the runner itself is on the channel. See `closeChannelToScript`. */
+let runnerIsSending = false;
+
 /** How long the entry module gets to prove it finished. See `reportWhenEntrySettled`. */
 const ENTRY_SETTLE_PROBE_MS = 1_000;
 
@@ -120,6 +123,8 @@ async function prepare() {
     reportWhenEntrySettled(request.scriptUrl);
   });
 
+  closeChannelToScript();
+
   // A convenience for a runner whose event loop is still turning: if the parent
   // goes away, stop. This is NOT the orphan control — a synchronous infinite
   // loop never yields to the event loop, so this handler would never run. The
@@ -137,7 +142,7 @@ async function prepare() {
   // Load-bearing. This is the only thing that lets the executor tell "the
   // runner never began the script" apart from "the script stopped its own
   // process".
-  process.send({ type: "started" });
+  sendToParent({ type: "started" });
 
   // The IPC channel is a live handle, so the event loop is never empty while it
   // counts and `beforeExit` above would never fire. Unreferencing only removes
@@ -190,6 +195,36 @@ function reportWhenEntrySettled(scriptUrl) {
     );
   };
   import(scriptUrl).then(report, report);
+}
+
+/**
+ * Take the protocol channel away from the script.
+ *
+ * `fork` leaves a working `process.send` in the child, and the executor trusts
+ * whatever arrives on it. A script that pings its parent on startup — the
+ * readiness ping a file written to double as a forked worker sends, directly or
+ * through a dependency — tore down a healthy run and blamed the runner for a
+ * message it never sent; feature detection (`if (process.send)`) steers a
+ * script straight into it, and under plain `node` the same detection is a
+ * no-op. A script could also send a well-formed `result` and replace its own
+ * verdict with one the executor has no way to question.
+ *
+ * The channel stays open — the runner still needs it — but only the runner may
+ * use it. Script code gets a `send` that accepts and drops, which is what "a
+ * channel with nobody listening" should look like, and a `disconnect` that does
+ * nothing, since closing the channel would leave the run with no way to report
+ * at all.
+ */
+function closeChannelToScript() {
+  const realSend = process.send;
+  const realLowLevelSend = process._send;
+  // `send` calls `this._send`, so both names are guarded by the one flag rather
+  // than replaced — the runner's own call sets it for the length of that call.
+  process.send = (...args) => (runnerIsSending ? realSend.apply(process, args) : true);
+  if (typeof realLowLevelSend === "function") {
+    process._send = (...args) => (runnerIsSending ? realLowLevelSend.apply(process, args) : true);
+  }
+  process.disconnect = () => {};
 }
 
 /** The one `execute` request. A second message is ignored rather than obeyed. */
@@ -445,8 +480,18 @@ function finish(response) {
     process.stderr.write("", flushed);
   };
   try {
-    process.send(response, flush);
+    sendToParent(response, flush);
   } catch {
     flush();
+  }
+}
+
+/** The only path onto the protocol channel. See `closeChannelToScript`. */
+function sendToParent(message, callback) {
+  runnerIsSending = true;
+  try {
+    return process.send(message, callback);
+  } finally {
+    runnerIsSending = false;
   }
 }
