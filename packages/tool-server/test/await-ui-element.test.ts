@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AXServiceApi, AXDescribeResponse } from "../src/blueprints/ax-service";
 import type { AndroidDevtoolsApi } from "../src/blueprints/android-devtools";
 import type { ChromiumCdpApi } from "../src/blueprints/chromium-cdp";
-import { createAwaitUiElementTool, evaluateMatches } from "../src/tools/await-ui-element";
+import {
+  createAwaitUiElementTool,
+  evaluateMatches,
+  unmetUiWaitCause,
+} from "../src/tools/await-ui-element";
 import { findAll } from "../src/utils/ui-tree-match";
 import type { DescribeNode } from "../src/tools/describe/contract";
 import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
@@ -441,9 +445,71 @@ describe("await-ui-element tool", () => {
       expect(result.success).toBe(false);
     });
 
+    // `isBlindRead` keys off `hint` / `should_restart`, so an empty tree
+    // carrying neither is taken as a trustworthy screen — and `hidden` is the
+    // one condition that resolves TRUE on an empty tree. With a live service and
+    // no connected app the read is unexplained, not empty.
+    it("`hidden` refuses to resolve off an empty tree the hierarchy could not corroborate", async () => {
+      const { api } = makeSequencedAXService([axResponse([])]);
+      const nativeApi = {
+        listConnectedBundleIds: () => [],
+        appConnectionState: async () => "unregistered" as const,
+      };
+      const registry = {
+        resolveService: vi.fn(async (urn: string) => {
+          if (urn.startsWith("AXService:")) return api;
+          if (urn.startsWith("NativeDevtools:")) return nativeApi;
+          throw new Error(`unexpected service: ${urn}`);
+        }),
+      } as any;
+      const tool = createAwaitUiElementTool(registry);
+
+      const result = await tool.execute(
+        {},
+        {
+          udid: IOS_UDID,
+          condition: "hidden",
+          selector: { text: "30 November" },
+          timeoutMs: 300,
+          pollIntervalMs: 50,
+        }
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.note).toMatch(/empty or unreadable/i);
+      // The exact shape this guard prevents: a gated wait released in
+      // milliseconds against an element never confirmed gone.
+      expect(result.note).not.toMatch(/condition met immediately/);
+    });
+
     it("`hidden` can succeed for a role selector that would otherwise pin the root", async () => {
       const { api } = makeSequencedAXService([axResponse([])]);
-      const tool = createAwaitUiElementTool(iosRegistry(api));
+      // The hierarchy must be READ and empty, not merely unread. Here the
+      // native source answers with zero elements, which IS evidence.
+      const nativeApi = {
+        listConnectedBundleIds: () => ["com.example.app"],
+        appConnectionState: async () => "connected" as const,
+        getAppState: async () => ({
+          bundleId: "com.example.app",
+          applicationState: "active",
+          foregroundActiveSceneCount: 1,
+          foregroundInactiveSceneCount: 0,
+          backgroundSceneCount: 0,
+          unattachedSceneCount: 0,
+          isFrontmostCandidate: true,
+        }),
+        queryViewHierarchy: async () => ({
+          screenFrame: { x: 0, y: 0, width: 440, height: 956 },
+          elements: [],
+        }),
+      };
+      const tool = createAwaitUiElementTool({
+        resolveService: vi.fn(async (urn: string) => {
+          if (urn.startsWith("AXService:")) return api;
+          if (urn.startsWith("NativeDevtools:")) return nativeApi;
+          throw new Error(`unexpected service: ${urn}`);
+        }),
+      } as any);
 
       const result = await tool.execute(
         {},
@@ -664,6 +730,396 @@ describe("await-ui-element tool", () => {
     expect(result.note).toMatch(/boot-device/i);
   });
 
+  // ── The cause an unmet wait reports ──────────────────────────────────────
+  //
+  // Only one of the three causes judges the condition, and the callers that
+  // narrate a failed wait (`flow-add-step`) send an author to rewrite or delete
+  // a step on the strength of it. These drive the REAL tool and read the cause
+  // back through the REAL classifier, because the interesting cases are exactly
+  // the ones a hand-written note fixture cannot produce.
+
+  it("calls a wait that never got a readable tree unreadable, hint and all", async () => {
+    // The AX backend is down, so `describeIos` returns an empty tree plus a
+    // boot hint — which `appendDiagnostics` folds onto the note. Matching the
+    // undecorated note text is what this defeats: on the platform state the
+    // `unreadable` cause exists for, the note is ALWAYS decorated.
+    const tool = createAwaitUiElementTool(iosRegistry(makeFailingAXService()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "hidden",
+        selector: { text: "Spinner" },
+        timeoutMs: 40,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(result.note).toMatch(/could not confirm the element is hidden/i);
+    expect(result.note).toMatch(/boot-device/i); // decorated, so `===` cannot fire
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it.each(["visible", "exists", "text"] as const)(
+    "calls a blind `%s` wait unreadable, though its note reads like a genuine miss",
+    async (condition) => {
+      // On these three a wholly blind window produces prose byte-identical to a
+      // real miss, so no note can tell them apart — the cause has to come from
+      // the loop, which knows no read was ever trustworthy.
+      const tool = createAwaitUiElementTool(iosRegistry(makeFailingAXService()));
+
+      const result = await tool.execute(
+        {},
+        {
+          udid: IOS_UDID,
+          condition,
+          selector: { text: "Spinner" },
+          expectedText: condition === "text" ? "done" : undefined,
+          timeoutMs: 40,
+          pollIntervalMs: 10,
+        }
+      );
+
+      expect(result.note).toMatch(/no element matched the selector before timeout/i);
+      expect(unmetUiWaitCause(result)).toBe("unreadable");
+    }
+  );
+
+  it("calls a genuine miss on a readable tree unmet", async () => {
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "Header", frame: FRAME, traits: [] }]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 40,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(unmetUiWaitCause(result)).toBe("unmet");
+  });
+
+  // A Chromium session that serves one real tree and then goes down: the
+  // renderer throws, which reaches the loop as a fetch ERROR rather than as the
+  // empty-tree-plus-hint iOS degrades to.
+  function makeChromiumApiThatDiesAfterOneRead(): ChromiumCdpApi {
+    const tree = {
+      role: "html",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        {
+          role: "heading",
+          label: "Header",
+          frame: { x: 0.1, y: 0.1, width: 0.5, height: 0.05 },
+          children: [],
+        },
+      ],
+    };
+    let reads = 0;
+    return {
+      refreshViewport: async () => ({ width: 1024, height: 768 }),
+      cdp: {
+        send: async (method: string) => {
+          if (method !== "Runtime.evaluate") return {};
+          if (reads++ > 0) throw new Error("renderer detached");
+          return { result: { value: JSON.stringify({ tree, truncated: false }) } };
+        },
+      },
+    } as unknown as ChromiumCdpApi;
+  }
+
+  it("keeps a genuine miss unmet when only the final poll fails", async () => {
+    // `lastError` describes the LAST fetch alone, and `pollDescribeTree` clears
+    // it on every success — so reading the cause off the note turns one bad
+    // trailing read into "nothing was ever compared", for a step that will
+    // hard-fail at replay. The trusted read is one clamped sleep behind the
+    // deadline, well inside the blip tolerance.
+    //
+    // `pollIntervalMs` exceeds `timeoutMs` deliberately: the sleep is clamped
+    // to the deadline either way, so the shape is unchanged, but the tolerance
+    // it scales is now 4000ms against a ~600ms tail. At 500 the two were 1000
+    // and 600, and ~400ms of scheduler slip flipped the cause under load.
+    const tool = createAwaitUiElementTool(makeMockRegistry({}));
+
+    const result = await tool.execute(
+      { chromium: makeChromiumApiThatDiesAfterOneRead() },
+      {
+        udid: CHROMIUM_ID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 600,
+        pollIntervalMs: 2000,
+      }
+    );
+
+    expect(result.note).toMatch(/last tree fetch failed/i);
+    expect(unmetUiWaitCause(result)).toBe("unmet");
+  });
+
+  it("holds `hidden` to a stricter bar than the dark-tail tolerance", async () => {
+    // Same fixture and same timings as the test above, which comes back
+    // `unmet`: one trusted read, then a failing one barely a poll interval
+    // behind the deadline — well inside the blip tolerance. `hidden` is the one
+    // condition that must NOT accept that, because ABSENCE is the transition
+    // being waited on and an unjudgeable final read leaves gone-ness
+    // unconfirmable. The selector matches the first tree, so the wait is a real
+    // "still there" case rather than a selector that never hit anything.
+    const tool = createAwaitUiElementTool(makeMockRegistry({}));
+
+    const result = await tool.execute(
+      { chromium: makeChromiumApiThatDiesAfterOneRead() },
+      {
+        udid: CHROMIUM_ID,
+        condition: "hidden",
+        selector: { text: "Header" },
+        timeoutMs: 600,
+        pollIntervalMs: 2000,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it("stops vouching for a verdict the reads went dark long before", async () => {
+    // Same shape, but the trusted read lies many poll intervals behind the
+    // deadline: consecutive reads went dark, so what they saw no longer
+    // describes the screen the wait gave up on.
+    const tool = createAwaitUiElementTool(makeMockRegistry({}));
+
+    const result = await tool.execute(
+      { chromium: makeChromiumApiThatDiesAfterOneRead() },
+      {
+        udid: CHROMIUM_ID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 600,
+        pollIntervalMs: 20,
+      }
+    );
+
+    expect(result.note).toMatch(/last tree fetch failed/i);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  // An AX service that answers once and then stops answering: every later
+  // describe() hangs forever. Distinct from `makeChromiumApiThatDiesAfterOneRead`
+  // above, whose second read THROWS — the one variant that sets `lastError`.
+  // A source that simply goes silent (a blocked renderer, a wedged AX service,
+  // an Android `getHierarchy` RPC sitting on its 15s bound) leaves the loop
+  // holding a tree it read before the silence, with no error to mark it stale.
+  function makeAXServiceThatHangsAfterOneRead(): AXServiceApi {
+    let reads = 0;
+    return {
+      degraded: false,
+      describe: () =>
+        reads++ === 0
+          ? Promise.resolve(axResponse([{ label: "Header", frame: FRAME, traits: [] }]))
+          : new Promise(() => {}),
+      alertCheck: async () => false,
+      ping: async () => true,
+    };
+  }
+
+  it("calls a wait unreadable when the tree source went silent for most of the window", async () => {
+    // The screen was read once, at t≈0, and never again — so the note quotes a
+    // tree the wait stopped having any evidence for long before its deadline.
+    // Narrating that as `unmet` sends the recorder's author to delete a step
+    // over a condition nothing ever re-checked.
+    const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 300,
+        pollIntervalMs: 20,
+      }
+    );
+
+    // No fetch threw, so there is no error in the note to read the cause off —
+    // it reads exactly like a miss on a tree that was there the whole time.
+    expect(result.note).toMatch(/no element matched/i);
+    expect(result.note ?? "").not.toMatch(/fetch failed|did not complete/i);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it("holds a silent source to the same bar on `hidden`", async () => {
+    // `hidden` resolves on ABSENCE, so a window that went dark cannot confirm
+    // the element left — the note says it was still visible, and that reading
+    // is 300ms stale.
+    const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "hidden",
+        selector: { text: "Header" },
+        timeoutMs: 300,
+        pollIntervalMs: 20,
+      }
+    );
+
+    expect(result.note).toMatch(/still visible at timeout/i);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it.each(["visible", "hidden"] as const)(
+    "keeps `%s` unmet when only the deadline poll straddles, with the reads still fresh",
+    async (condition) => {
+      // The over-correction guard. `pollIntervalMs` exceeds `timeoutMs`, so the
+      // sleep is clamped to the deadline and the poll after it is issued with
+      // ~0ms of budget — it CANNOT complete, on any device. Treating that
+      // routine straddle as an untrusted final read would make every timeout
+      // here `unreadable`, `hidden` most of all. What keeps it honest is the
+      // tail: one trusted read, one interval back.
+      const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+      const result = await tool.execute(
+        {},
+        {
+          udid: IOS_UDID,
+          // `hidden` needs a selector that MATCHED, or it resolves true on the
+          // first read; `visible` needs one that did not.
+          condition,
+          selector: { text: condition === "hidden" ? "Header" : "Nope" },
+          timeoutMs: 600,
+          pollIntervalMs: 2000,
+        }
+      );
+
+      expect(result.success).toBe(false);
+      expect(unmetUiWaitCause(result)).toBe("unmet");
+    }
+  );
+
+  // The tolerance itself, bracketed. Both cases have exactly one trusted read
+  // at t≈0 and nothing after it, so the dark tail IS `timeoutMs` and the only
+  // variable is how many poll intervals it spans. 1.3 intervals must stay a
+  // blip and 2.6 must not, which pins the multiple to 2 — the nearest tests
+  // before this ran at 1.2 and 30 intervals, so raising it to 20 changed
+  // nothing. Scheduler slip only ever LENGTHENS a measured tail, so it can
+  // only push the first case toward its 700ms of headroom and pushes the
+  // second further into the clear.
+  it.each([
+    { intervals: "1.3", timeoutMs: 1300, cause: "unmet" },
+    { intervals: "2.6", timeoutMs: 2600, cause: "unreadable" },
+  ])("calls a dark tail of $intervals poll intervals $cause", async ({ timeoutMs, cause }) => {
+    const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs,
+        pollIntervalMs: 1000,
+      }
+    );
+
+    expect(unmetUiWaitCause(result)).toBe(cause);
+  });
+
+  it("does not trust a final read that landed but was blind", async () => {
+    // The third term of the final-read test, and the only one no fixture
+    // produced: a fetch that SUCCEEDS and still cannot be judged. The screen is
+    // read once with the element on it, then goes blank — and an empty tree
+    // after a match is a transient blank frame, not evidence. `text` on a
+    // selector that matches with an expectedText that does not is the shape
+    // that keeps the wait running through it; `visible` would have resolved on
+    // the first read and `hidden` has its own guard for the same blank.
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "Spinner", frame: FRAME, traits: [] }]),
+      axResponse([]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "text",
+        selector: { text: "Spinner" },
+        expectedText: "done",
+        timeoutMs: 400,
+        pollIntervalMs: 20,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    // Every later fetch RETURNED, so there is no error to read the cause off —
+    // dropping the blind term makes this a trusted final read and the verdict
+    // becomes a confident `unmet` on a screen nobody could see.
+    expect(result.note ?? "").not.toMatch(/fetch failed|did not complete/i);
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
+  });
+
+  it("calls a cancelled wait cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { api } = makeSequencedAXService([axResponse([])]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      { udid: IOS_UDID, condition: "visible", selector: { text: "Nope" }, timeoutMs: 40 },
+      { signal: controller.signal } as never
+    );
+
+    expect(unmetUiWaitCause(result)).toBe("cancelled");
+  });
+
+  it("leaves `cause` off a wait that was met", async () => {
+    // "Set on every `success: false` return and never on a success" is half a
+    // contract, and only the first half was pinned. The second matters because
+    // the note fallback in `unmetUiWaitCause` reads `unmet` out of anything it
+    // does not recognise — so a stray `cause` on a passing wait would be a
+    // verdict against a check that held. Both success shapes: the plain one,
+    // and the `hidden` arm that returns a note of its own.
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "Header", frame: FRAME, traits: [] }]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const met = await tool.execute(
+      {},
+      { udid: IOS_UDID, condition: "visible", selector: { text: "Header" }, timeoutMs: 200 }
+    );
+    expect(met.success).toBe(true);
+    expect(met.cause).toBeUndefined();
+
+    const alreadyGone = await tool.execute(
+      {},
+      { udid: IOS_UDID, condition: "hidden", selector: { text: "Nope" }, timeoutMs: 200 }
+    );
+    expect(alreadyGone.success).toBe(true);
+    expect(alreadyGone.note).toMatch(/condition met immediately/i);
+    expect(alreadyGone.cause).toBeUndefined();
+  });
+
+  it("defaults to unmet for a result carrying no cause at all", async () => {
+    // The note fallback, for a result that crossed a boundary without the
+    // field: `unmet` is what every caller acted on before the cause existed.
+    expect(unmetUiWaitCause({ success: false, elapsed: 10 })).toBe("unmet");
+    expect(unmetUiWaitCause({ success: false, elapsed: 10, note: "no element matched" })).toBe(
+      "unmet"
+    );
+    expect(
+      unmetUiWaitCause({ success: false, elapsed: 10, note: "last tree fetch failed: boom" })
+    ).toBe("unreadable");
+  });
+
   // ── Per-fetch deadline ───────────────────────────────────────────────────
 
   it("bounds a single slow fetch to the wait budget instead of its internal timeout", async () => {
@@ -726,6 +1182,11 @@ describe("await-ui-element tool", () => {
     expect(result.success).toBe(false);
     expect(result.note).toMatch(/no element matched/i);
     expect(result.note ?? "").not.toMatch(/did not complete/i);
+    // …and the CAUSE the same run produces, which is the half this test drove
+    // and never checked. One read at t≈0, nothing after it, a 120ms window:
+    // the note describes a screen 120ms of darkness old, so `unmet` — the one
+    // cause that licenses deleting the step — is not available here.
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
   });
 
   it("aborts promptly even while a fetch is in flight", async () => {
