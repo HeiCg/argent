@@ -69,7 +69,6 @@ describe("flow iOS full-hierarchy source", () => {
         unattachedSceneCount: 0,
         isFrontmostCandidate: true,
       })),
-      requiresAppRestart: vi.fn(async () => false),
       queryViewHierarchy,
     } as unknown as NativeDevtoolsApi;
 
@@ -131,7 +130,6 @@ describe("flow iOS full-hierarchy source", () => {
           unattachedSceneCount: 0,
           isFrontmostCandidate: true,
         })),
-        requiresAppRestart: vi.fn(async () => false),
         queryViewHierarchy: vi.fn(async (_bundleId, _method, params) =>
           buildRaw(Math.min((params as { maxDepth: number }).maxDepth, deviceCap))
         ),
@@ -200,7 +198,6 @@ describe("flow iOS full-hierarchy source", () => {
           unattachedSceneCount: 0,
           isFrontmostCandidate: true,
         })),
-        requiresAppRestart: vi.fn(async () => false),
         queryViewHierarchy: vi.fn(async (_bundleId, _method, params) =>
           buildRaw(Math.min((params as { maxDepth: number }).maxDepth, deviceCap))
         ),
@@ -510,19 +507,24 @@ describe("flow iOS full-hierarchy source", () => {
         } as unknown as NativeDevtoolsApi,
       },
       {
-        branch: "target requires a restart",
-        api: {
-          listConnectedBundleIds: () => [ids[0]],
-          getAppState: vi.fn(async (b: string) => appState(b)),
-          requiresAppRestart: vi.fn(async () => true),
-        } as unknown as NativeDevtoolsApi,
+        branch: "target dropped its connection",
+        api: (() => {
+          let connected = [ids[0]];
+          return {
+            listConnectedBundleIds: () => {
+              const now = connected;
+              connected = [];
+              return now;
+            },
+            getAppState: vi.fn(async (b: string) => appState(b)),
+          } as unknown as NativeDevtoolsApi;
+        })(),
       },
       {
         branch: "no windows",
         api: {
           listConnectedBundleIds: () => [ids[0]],
           getAppState: vi.fn(async (b: string) => appState(b)),
-          requiresAppRestart: vi.fn(async () => false),
           queryViewHierarchy: vi.fn(async () => ({ windows: [] })),
         } as unknown as NativeDevtoolsApi,
       },
@@ -531,7 +533,6 @@ describe("flow iOS full-hierarchy source", () => {
         api: {
           listConnectedBundleIds: () => [ids[0]],
           getAppState: vi.fn(async (b: string) => appState(b)),
-          requiresAppRestart: vi.fn(async () => false),
           queryViewHierarchy: vi.fn(async () => ({ error: "serializer busy" })),
         } as unknown as NativeDevtoolsApi,
       },
@@ -653,14 +654,19 @@ describe("flow iOS full-hierarchy source", () => {
   });
 
   it("reports a dropped connection, not a pre-instrumentation launch, when the target needs a restart", async () => {
-    // The ONE way this branch fires for an auto-resolved target:
-    // requiresAppRestart answers false for every connected bundle id, and
-    // auto-resolution only ever yields connected ones, so a `true` here means
-    // the socket dropped between the resolve and the read. The mock reproduces
-    // that race — an app that resolved and then went away — which is why the
+    // The ONE way this branch fires for an auto-resolved target: auto-resolution
+    // only ever yields ids that were in `listConnectedBundleIds()`, so finding
+    // the target absent from that same map afterwards means the socket dropped
+    // between the resolve and the read. The mock reproduces that race — the app
+    // is connected for the resolve and gone by the re-read — which is why the
     // message must not diagnose an app that was never instrumented.
+    let connected = ["com.example.app"];
     const api = {
-      listConnectedBundleIds: () => ["com.example.app"],
+      listConnectedBundleIds: () => {
+        const now = connected;
+        connected = [];
+        return now;
+      },
       getAppState: vi.fn(async (bundleId: string) => ({
         bundleId,
         applicationState: "active",
@@ -670,7 +676,6 @@ describe("flow iOS full-hierarchy source", () => {
         unattachedSceneCount: 0,
         isFrontmostCandidate: true,
       })),
-      requiresAppRestart: vi.fn(async () => true),
     } as unknown as NativeDevtoolsApi;
 
     const error = await queryFullHierarchyTree(registryFor(api), DEVICE).catch((err) => err);
