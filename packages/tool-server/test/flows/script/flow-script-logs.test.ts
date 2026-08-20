@@ -310,6 +310,35 @@ describe("flow script executor — redaction", () => {
     expect(result.log).toContain("auth: {{secret:API_KEY}}");
   });
 
+  it("replaces the longer of two nested secrets when the chunk splits between them", async () => {
+    const ws = workspace();
+    // The case the longest-first replacement exists for, one layer up: the
+    // host is a secret and so is the URL containing it. Scrubbing the chunk
+    // before measuring the hold-back rewrote the host to its placeholder, so
+    // the chunk no longer ended in anything that could grow into the URL — the
+    // whole chunk went out and the URL's high-entropy tail reached the report.
+    const host: FlowScriptSecret = { name: "HOST", value: "api.internal.example.com" };
+    const url: FlowScriptSecret = {
+      name: "URL",
+      value: `https://${host.value}/tenant/9f3a0b1c2d3e4f50`,
+    };
+    const script = ws.write(
+      "nested.mjs",
+      `process.stdout.write("calling https://" + ${JSON.stringify(host.value)});
+       await new Promise((r) => setTimeout(r, 120));
+       process.stdout.write("/tenant/9f3a0b1c2d3e4f50\\n");
+       output.ok = true;`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [host, url],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.log).toBe("calling {{secret:URL}}\n");
+  });
+
   it("keeps a secret that straddles the truncation cut out of the report", async () => {
     const ws = workspace();
     // The cap keeps the earliest bytes, so a value straddling the cut would

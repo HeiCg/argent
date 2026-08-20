@@ -1480,10 +1480,10 @@ class ScriptLogCapture {
     if (!text && !final) return;
     if (state.watchForHeapFatal) this.watchForHeapFatal(text);
     const secrets = this.secrets();
-    const scrubbed = scrubSecretValues(state.holdback + text, secrets);
+    const pending = state.holdback + text;
     let emit: string;
     if (final) {
-      emit = scrubbed;
+      emit = scrubSecretValues(pending, secrets);
       state.holdback = "";
     } else {
       // Only a tail that could still grow into a secret is held back. Holding
@@ -1492,10 +1492,18 @@ class ScriptLogCapture {
       // character line waited for that stream's next chunk and landed after
       // text the script wrote later. Adding a secret to a flow must not
       // reorder its log.
-      const keep = partialSecretTail(scrubbed, secrets);
-      const split = Math.max(0, scrubbed.length - keep);
-      emit = scrubbed.slice(0, split);
-      state.holdback = scrubbed.slice(split);
+      //
+      // Measured on the text as written, and scrubbed only after the split.
+      // One secret's value can sit inside another's — a host inside a URL that
+      // is itself a secret, the case the longest-first replacement exists for
+      // — and scrubbing first rewrote the host to `{{secret:HOST}}`, so the
+      // chunk no longer ended in anything that could grow into the URL. The
+      // whole chunk went out, and neither this pass nor the final one could
+      // ever match the URL again.
+      const keep = partialSecretTail(pending, secrets);
+      const split = Math.max(0, pending.length - keep);
+      emit = scrubSecretValues(pending.slice(0, split), secrets);
+      state.holdback = pending.slice(split);
     }
     this.append(state.collapser ? state.collapser.write(emit) : emit);
     // A collapsed frame dump is output the report does not carry, which is what
