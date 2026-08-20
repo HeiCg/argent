@@ -240,6 +240,16 @@ export type FlowStepResult = {
    * here, so anything else renders as text or is skipped.
    */
   artifacts?: Record<string, unknown>;
+  /**
+   * A `script` step's captured stdout and stderr, in written order, already
+   * redacted and bounded by the tool server. Rendered as its own block under
+   * the step line — for a passing script too, since it is the only record of
+   * what the step did to the backend. Untrusted wire data: a non-string is
+   * ignored rather than interpolated.
+   */
+  scriptLog?: string;
+  /** A log limit dropped some of that output; the text carries no marker. */
+  scriptLogTruncated?: boolean;
   /** Legacy field from pre-report flow-execute results. */
   error?: string;
 };
@@ -326,6 +336,19 @@ export async function flowRunToMcpContent(
       type: "text",
       text: `[${num}] ${glyph}${stepIndent(step.depth)}${stepLabel(step)}${suffix}${warning}`,
     });
+
+    // A script step's output, kept out of the step line so a multi-line log
+    // stays readable and so the line's own reason is not buried in it. The
+    // truncation notice stands on its own when a run-wide budget dropped the
+    // output entirely — silence would read as a script that printed nothing.
+    const scriptLog = typeof step.scriptLog === "string" ? step.scriptLog : "";
+    const scriptLogTruncated = step.scriptLogTruncated === true;
+    if (scriptLog || scriptLogTruncated) {
+      const parts = [`${stepIndent(step.depth)}script output:`];
+      if (scriptLog) parts.push(scriptLog.endsWith("\n") ? scriptLog.slice(0, -1) : scriptLog);
+      if (scriptLogTruncated) parts.push("… output truncated (script log limit reached)");
+      blocks.push({ type: "text", text: parts.join("\n") });
+    }
 
     // Surface a step's own content (e.g. a screenshot) only when it actually
     // returned one.

@@ -7,6 +7,7 @@ import {
   CLIENT_FILE_MARKER,
   FLOW_NAME_PATTERN,
   FLOW_FILE_NAME_PATTERN,
+  SCRIPT_FILE_NAME_PATTERN,
   type ClientFileDirective,
 } from "@argent/registry";
 import {
@@ -227,18 +228,27 @@ export type OnDiskSpelling =
  * name. Every call site hands a pure-ASCII basename (flow-name charset +
  * ".yaml"), so Unicode-normalizing filesystems cannot make the comparison lie.
  *
+ * `addressable` is the pattern the verdict is judged against — the flow-file
+ * one by default, {@link SCRIPT_FILE_NAME_PATTERN} for a `script:` path. It
+ * decides only whether the caller can be pointed at the on-disk spelling or has
+ * to ask for a rename; it never changes which verdict is returned.
+ *
  * What an `absent` verdict means is the caller's to decide, and they differ:
  * `flow_path` arrives with the boundary's stat already vouching for the file,
  * so a listing that lacks it is itself the phantom-spelling bug, while a `name`
  * may simply not name a saved flow — an ordinary missing-flow error the later
  * read reports far better than a casing complaint could.
  */
-export async function classifyOnDiskSpelling(dir: string, base: string): Promise<OnDiskSpelling> {
+export async function classifyOnDiskSpelling(
+  dir: string,
+  base: string,
+  addressable: RegExp = FLOW_FILE_NAME_PATTERN
+): Promise<OnDiskSpelling> {
   const entries = await fs.readdir(dir).catch(() => null);
   if (entries === null || entries.includes(base)) return { state: "listed" };
   const actual = entries.find((entry) => entry.toLowerCase() === base.toLowerCase());
   if (actual === undefined) return { state: "absent" };
-  return { state: "case_folded", actual, addressable: FLOW_FILE_NAME_PATTERN.test(actual) };
+  return { state: "case_folded", actual, addressable: addressable.test(actual) };
 }
 
 // ── Recording sessions ───────────────────────────────────────────────
@@ -718,7 +728,15 @@ export type FlowStep =
   | { kind: "scroll-to"; target: FlowSelector; direction: ScrollDirection; within?: FlowSelector }
   | { kind: "pinch"; selector?: FlowSelector; scale: number }
   | { kind: "rotate"; selector?: FlowSelector; by: number }
-  | { kind: "snapshot"; name: string; maxMismatch?: number; cropOn?: FlowSelector };
+  | { kind: "snapshot"; name: string; maxMismatch?: number; cropOn?: FlowSelector }
+  /**
+   * Run a trusted local JavaScript file in a fresh Node process, for the
+   * backend state a flow needs before it touches a device. `path` is the
+   * as-written YAML path, resolved against the containing file's directory
+   * exactly as a `run:` target is; `timeout` is the hard limit in
+   * milliseconds. The step drives no device — the steps around it do.
+   */
+  | { kind: "script"; path: string; timeout?: number };
 
 export type FlowFile = {
   /** Fragments only: documented entry-state contract. "" when unset. */
@@ -931,7 +949,10 @@ type YamlStep =
   | { "scroll-to": YamlScrollBody }
   | { pinch: { on?: YamlSelector; scale: number } }
   | { rotate: { on?: YamlSelector; by: number } }
-  | { snapshot: string | { name: string; maxMismatch?: number; cropOn?: YamlSelector } };
+  | { snapshot: string | { name: string; maxMismatch?: number; cropOn?: YamlSelector } }
+  // Always a map, deliberately — see parseScriptStep for why `script:` refuses
+  // the bare-value sugar four other directives accept.
+  | { script: { path: string; timeout?: number } };
 
 type YamlFlowFile = {
   executionPrerequisite?: string;
@@ -1328,14 +1349,34 @@ function toYamlStep(step: FlowStep): YamlStep {
       if (step.cropOn !== undefined) body.cropOn = selectorToYaml(step.cropOn);
       return { snapshot: body };
     }
-    case "tool":
-    default: {
+    case "script": {
+      // Key order is preserved, and `path` reads first because it is the
+      // step's subject. `timeout` is emitted only when set, so the minimal
+      // spelling round-trips unchanged.
+      const body: { path: string; timeout?: number } = { path: step.path };
+      if (step.timeout !== undefined) body.timeout = step.timeout;
+      return { script: body };
+    }
+    case "tool": {
       const y: { tool: string; args?: Record<string, unknown>; delayMs?: number } = {
         tool: step.name,
       };
       if (Object.keys(step.args).length > 0) y.args = step.args;
       if (step.delayMs !== undefined) y.delayMs = step.delayMs;
       return y;
+    }
+    default: {
+      // Declared exhaustive rather than falling through to the `tool` arm. That
+      // arm reads `name`, `args` and `delayMs`, so it happens to reject any
+      // kind carrying none of them — but a future kind that carries even one
+      // would compile there and serialize as somebody else's step, silently
+      // rewriting a flow file on the next `flow-add-step` round trip. The
+      // binding turns that into a build error.
+      const unserialized: never = step;
+      void unserialized;
+      throw new Error(
+        `internal: no YAML spelling for step kind "${(unserialized as FlowStep).kind}"`
+      );
     }
   }
 }
@@ -2006,6 +2047,7 @@ const STEP_DIRECTIVE_KEYS: readonly string[] = [
   "pinch",
   "rotate",
   "snapshot",
+  "script",
 ];
 
 /**
@@ -2565,6 +2607,125 @@ function completeRunExtension(value: string): string {
   return FLOW_FILE_NAME_PATTERN.test(path.posix.basename(candidate)) ? candidate : value;
 }
 
+/**
+ * A `script:` step body. **Always a map** — a bare `script: seed.mjs` is
+ * rejected, and so is an option written beside the directive key.
+ *
+ * That is a deliberate exception to the house convention. Four directives
+ * (`tap`, `long-press`, `scroll-to`, `snapshot`) accept a bare value or an
+ * options map, and `snapshot` is the exact structural analog: `snapshot: home`
+ * sugars to `{ name: home }` and {@link toYamlStep} collapses it back. What
+ * separates `script:` is what the value IS. In those four the bare form
+ * carries the step's SUBJECT and the map hangs options off it; a script step's
+ * value is a configuration block whose parts are co-equal, and the parts an
+ * author gets wrong are the ones the bare form cannot spell. A flow that began
+ * `script: seed.mjs` would have to be rewritten the moment the script needed a
+ * time limit, which is the common case — so the one spelling is the map.
+ *
+ * The sibling-key half of that rule costs no code here: `script` is listed in
+ * {@link STEP_DIRECTIVE_KEYS}, so `fromYamlStep`'s single-key check already
+ * rejects `script: seed.mjs` + `timeout: 30000` with its own message.
+ */
+function parseScriptStep(raw: unknown, body: unknown): FlowStep {
+  if (typeof body === "string") {
+    badEntry(
+      raw,
+      "a `script` step takes a map, not a bare path — write `script: { path: scripts/seed.mjs }`"
+    );
+  }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    badEntry(raw, "script needs { path, timeout? }, e.g. `script: { path: scripts/seed.mjs }`");
+  }
+  const b = body as Record<string, unknown>;
+  // `env` lands here too, and must: it is a real key of a later release, and a
+  // flow written against a tool server that does not honour it yet would run
+  // with an empty environment and report green.
+  rejectUnknownKeys(raw, b, ["path", "timeout"], "script");
+  const step: Extract<FlowStep, { kind: "script" }> = {
+    kind: "script",
+    path: parseScriptPath(raw, b.path),
+  };
+  if (b.timeout !== undefined) step.timeout = parseScriptTimeout(raw, b.timeout);
+  return step;
+}
+
+/**
+ * A `script` step's `path`: the same name rules a `run:` target obeys, spelled
+ * for `.mjs`.
+ *
+ * Identical on purpose. Flows are not required to live in `.argent/flows` —
+ * `flow_path` names any YAML on the host, and a `run:` target reaches siblings
+ * and parents — so scripts are not required to live in one directory either.
+ * `..` is admitted for the same reason it is there: shared code may
+ * legitimately sit outside the directory of the flow using it, and there is no
+ * path fence at resolution time (see resolveFlowRelativeFile in flow-run.ts).
+ * `scripts/` is a convention the authoring skill teaches, not a rule this
+ * enforces.
+ *
+ * Three things differ from {@link parseRunTarget}, and only three:
+ *
+ * - the extension is `.mjs`, which pins the module type against a project's
+ *   `package.json` `type` field;
+ * - there is no bare-name completion. `run: login` → `login.yaml` is
+ *   back-compat for flows once looked up by name in `.argent/flows`; scripts
+ *   have no such history, and the explicit extension is load-bearing;
+ * - the basename charset is {@link SCRIPT_FILE_NAME_PATTERN}, the `.mjs`
+ *   spelling of the one behind FLOW_FILE_NAME_PATTERN.
+ */
+function parseScriptPath(raw: unknown, value: unknown): string {
+  // Uncoerced, exactly as parseRunTarget is: YAML renders a valueless
+  // `path:` as null and a bare scalar as a boolean/number, and String()-ing
+  // those first would turn a key the author left empty into a live reference
+  // to a "null.mjs" that was never meant to exist.
+  if (typeof value !== "string" || value.length === 0) {
+    badEntry(
+      raw,
+      "a `script` step needs a `path` — a .mjs file path relative to this flow's file, e.g. `script: { path: scripts/seed.mjs }`"
+    );
+  }
+  if (value.includes("\\")) {
+    badEntry(raw, "a `script` path uses forward slashes, e.g. `path: scripts/seed.mjs`");
+  }
+  // posix.isAbsolute catches `/...`; the drive-letter test catches every win32
+  // device form — absolute ("C:/") and drive-RELATIVE ("C:foo", which even
+  // win32.isAbsolute passes but which resolves against that drive's own
+  // current directory. No `\`-separated absolute survives the rejection above.
+  if (path.posix.isAbsolute(value) || /^[A-Za-z]:/.test(value)) {
+    badEntry(raw, "a `script` path must be relative to the flow file that references it");
+  }
+  if (!value.endsWith(".mjs")) {
+    if (value.toLowerCase().endsWith(".mjs")) {
+      badEntry(raw, "a `script` path must use the lowercase .mjs extension");
+    }
+    badEntry(
+      raw,
+      "a `script` path must end in .mjs — the extension pins the module type whatever the project's package.json says"
+    );
+  }
+  if (!SCRIPT_FILE_NAME_PATTERN.test(path.posix.basename(value))) {
+    badEntry(
+      raw,
+      `a \`script\` path's filename must match ${SCRIPT_FILE_NAME_PATTERN} — letters, digits, underscore, hyphen before the .mjs`
+    );
+  }
+  return value;
+}
+
+/**
+ * The `timeout` a `script` step may carry: its hard time limit, in
+ * milliseconds. Non-finite values are rejected alongside non-positive ones for
+ * the same reason {@link parseAwaitTimeout} rejects them — YAML `.inf` (or an
+ * overflowing literal) is typeof number and > 0, and would leave the step with
+ * no deadline at all. The executor clamps whatever survives to the host's
+ * configured maximum and says so in the step's report.
+ */
+function parseScriptTimeout(raw: unknown, value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    badEntry(raw, "script.timeout needs a positive number of milliseconds (e.g. `timeout: 30000`)");
+  }
+  return value as number;
+}
+
 function fromYamlStep(raw: YamlStep, blockDepth = 0): FlowStep {
   const entry = raw as Record<string, unknown>;
   // There is deliberately no per-step `optional:` — it would have to be
@@ -2784,6 +2945,8 @@ function fromYamlStep(raw: YamlStep, blockDepth = 0): FlowStep {
     }
     return step;
   }
+
+  if ("script" in raw) return parseScriptStep(raw, (raw as { script: unknown }).script);
 
   if ("tool" in raw) {
     const r = raw as { tool: string; args?: Record<string, unknown>; delayMs?: number };
