@@ -7,9 +7,11 @@
 // life even on a host where the lifeline does not fire.
 //
 // `Atomics.wait` blocks the thread outright — no event loop, no timer, no CPU —
-// so this costs nothing while the script runs. The parent's own timer starts at
-// spawn while this one starts when the request arrives, so the parent normally
-// reaches the limit first and this is the second line, not the first.
+// so this costs nothing while the script runs. The deadline the parent sends is
+// deliberately its own limit plus a margin, so that this stays the second line
+// and not the first: a parent that reports "timed out and was stopped" says
+// more than a child that kills its own group and leaves the parent describing
+// an unexplained SIGKILL.
 
 import { workerData } from "node:worker_threads";
 

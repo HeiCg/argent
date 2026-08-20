@@ -53,6 +53,20 @@ const SCRIPT_RUN_LOG_LIMIT_BYTES = 256 * 1024;
 const SETTLE_TIMEOUT_MS = 500;
 /** Grace between asking a process tree to stop and forcing it. */
 const STOP_GRACE_MS = 1_500;
+/**
+ * How far behind the parent's timer the child's own deadline watchdog sits.
+ *
+ * The watchdog is the second line, for a parent that cannot act — one that is
+ * gone, or whose event loop is blocked. Given the same number as the parent's
+ * timer, its only margin was the child's boot time, about thirty milliseconds:
+ * one synchronous `execFileSync` on the tool server's loop across the moment
+ * the limit expired was enough for the child to SIGKILL its own group first, so
+ * the parent's timer never ran and a timed-out step was reported as an
+ * unexplained signal — the wrong line of code entirely, and a different
+ * `failure.kind`. The tool server does make such calls (`stop-metro` shells out
+ * to `lsof` and `netstat`), so the margin has to be an ordinary stall wide.
+ */
+const CHILD_DEADLINE_MARGIN_MS = 2_000;
 /** How often the stop path re-checks whether a process group has emptied. */
 const GROUP_POLL_MS = 50;
 /** How long a forced stop waits for the kernel to finish tearing the tree down. */
@@ -705,7 +719,7 @@ export class FlowScriptExecutor {
       type: "execute",
       scriptUrl: pathToFileURL(scriptPath).href,
       outputJson,
-      deadlineMs: timeoutMs,
+      deadlineMs: timeoutMs + CHILD_DEADLINE_MARGIN_MS,
       maxOutputBytes: SCRIPT_MAX_OUTPUT_BYTES,
     };
     try {

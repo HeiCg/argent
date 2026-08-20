@@ -110,6 +110,34 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.failure?.kind).toBe("timeout");
   });
 
+  it("still reports a timeout when the tool server's own loop stalls across the limit", async () => {
+    const ws = workspace();
+    // The child keeps its own copy of the limit as the backstop for a parent
+    // that cannot act. Given the same number as the parent's timer, its only
+    // margin was the child's boot time — so one synchronous child-process call
+    // on the server's loop across the moment the limit expired let the child
+    // SIGKILL its own group first, and the step was reported as an unexplained
+    // signal instead of the timeout it was.
+    const script = ws.write("hang.mjs", `setInterval(() => {}, 1000);`);
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 1_000,
+    });
+    const stall = setTimeout(() => {
+      const until = Date.now() + 500;
+      // Exactly what `execFileSync("lsof")` does to this loop.
+      while (Date.now() < until) {
+        /* block */
+      }
+    }, 800);
+    const result = await pending;
+    clearTimeout(stall);
+
+    expect(result.failure?.kind).toBe(TIMEOUT);
+    expect(result.failure?.message).toContain("time limit");
+  }, 30_000);
+
   it("names a top-level await that never settles instead of waiting out the limit", async () => {
     const ws = workspace();
     // Nothing is left to run, so the step does not have to occupy its slot
