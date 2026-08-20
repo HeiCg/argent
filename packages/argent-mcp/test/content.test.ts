@@ -304,6 +304,65 @@ describe("flowRunToMcpContent", () => {
     expect(blocks[1]).toEqual({ type: "text", text: "[1] Hello" });
   });
 
+  it("renders a script step's captured output as its own block", async () => {
+    // Its own block, not appended to the step line: a multi-line log inline
+    // would bury the step's own reason.
+    const input: FlowExecuteResult = {
+      flow: "f",
+      steps: [
+        {
+          index: 0,
+          kind: "script",
+          status: "pass",
+          target: "scripts/seed.mjs",
+          scriptLog: "creating order\norder 4711 created\n",
+        },
+      ],
+    };
+    const blocks = await flowRunToMcpContent(input);
+
+    expect(blocks[1]).toEqual({ type: "text", text: "[1] ✓ script scripts/seed.mjs" });
+    expect(blocks[2]).toEqual({
+      type: "text",
+      text: "script output:\ncreating order\norder 4711 created",
+    });
+  });
+
+  it("says when a script's log was truncated, and ignores a non-string one off the wire", async () => {
+    const truncated = await flowRunToMcpContent({
+      flow: "f",
+      steps: [
+        { index: 0, kind: "script", status: "fail", scriptLog: "…", scriptLogTruncated: true },
+      ],
+    });
+    expect(JSON.stringify(truncated)).toContain("output truncated (script log limit reached)");
+
+    // A run-wide budget an earlier step exhausted drops a later script's output
+    // entirely; the notice has to stand on its own or the report reads as a
+    // script that printed nothing.
+    const nothingLeft = await flowRunToMcpContent({
+      flow: "f",
+      steps: [{ index: 0, kind: "script", status: "pass", scriptLogTruncated: true }],
+    });
+    expect(nothingLeft[2]).toEqual({
+      type: "text",
+      text: "script output:\n… output truncated (script log limit reached)",
+    });
+
+    const hostile = await flowRunToMcpContent({
+      flow: "f",
+      steps: [
+        {
+          index: 0,
+          kind: "script",
+          status: "pass",
+          scriptLog: { evil: true } as unknown as string,
+        },
+      ],
+    });
+    expect(hostile.filter((b) => b.type === "text")).toHaveLength(3); // header, step, footer
+  });
+
   it("renders run steps by their as-written path, with a stem fallback for legacy servers", async () => {
     const input: FlowExecuteResult = {
       flow: "f",
