@@ -7,6 +7,7 @@ import {
   type FlowScriptLogBudget,
   type FlowScriptSecret,
 } from "../../../src/tools/flows/script/flow-script-executor";
+import { SCRIPT_MAX_FAILURE_MESSAGE_CHARS } from "../../../src/tools/flows/script/flow-script-protocol";
 import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 
 const workspaces: ScriptWorkspace[] = [];
@@ -361,6 +362,32 @@ describe("flow script executor — redaction", () => {
     expect(result.logTruncated).toBe(true);
     expect(result.log).not.toContain(SECRET.value);
     expect(result.log).not.toContain(SECRET.value.slice(0, 8));
+  });
+
+  it("keeps a secret that straddles the failure-message ceiling out of the report", async () => {
+    const ws = workspace();
+    // The same truncation boundary the log capture scrubs ahead of, arriving
+    // from the other side: the child clamps the message — it is the only side
+    // that can bound what crosses the channel — and the child has no secret
+    // list, so a value cut in half leaves a prefix nothing matches.
+    const script = ws.write(
+      "long-throw.mjs",
+      `throw new Error(
+         "p".repeat(${SCRIPT_MAX_FAILURE_MESSAGE_CHARS} - 16) + process.env.API_KEY + " trailing"
+       );`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      env: { API_KEY: SECRET.value },
+      secrets: [SECRET],
+    });
+
+    expect(result.failure?.kind).toBe("runtime");
+    expect(result.failure?.message).not.toContain(SECRET.value.slice(0, 8));
+    // Still says it was cut, and now says so for the dropped prefix too.
+    expect(result.failure?.message).toMatch(/… \[\d+ more characters omitted]$/);
+    expect(result.failure?.stack).not.toContain(SECRET.value.slice(0, 8));
   });
 
   it("redacts a value that straddled a chunk boundary before its secret was known", async () => {

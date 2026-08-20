@@ -899,8 +899,8 @@ function redactSecrets(
     ...verdict,
     failure: {
       ...failure,
-      message: scrubSecretValues(failure.message, secrets),
-      ...(failure.stack ? { stack: scrubSecretValues(failure.stack, secrets) } : {}),
+      message: redactTruncated(failure.message, secrets),
+      ...(failure.stack ? { stack: redactTruncated(failure.stack, secrets) } : {}),
     },
   };
 }
@@ -966,6 +966,36 @@ function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output
   }
   return { ok: true, output: parsed as Record<string, unknown> };
 }
+
+/**
+ * Scrub a field the ceiling may already have cut, including across the cut.
+ *
+ * The same truncation boundary the log capture scrubs ahead of, arriving from
+ * the other side. A failure message is clamped by the child — the only side
+ * that can bound what crosses the channel — and the child has no secret list,
+ * so a value straddling the cut leaves its prefix in the kept text, where a
+ * whole-value replacement matches nothing. Sixteen characters of a
+ * thirty-three character key survived that way, from the shape the runner's own
+ * comment names: `throw new Error(\`Unexpected response: \${await res.text()}\`)`
+ * where the body echoes the credential.
+ *
+ * A tail that could still grow into a secret is dropped and counted, and only
+ * on text that says it was cut — the marker is what makes the extra characters
+ * honest rather than silent.
+ */
+function redactTruncated(text: string, secrets: readonly FlowScriptSecret[]): string {
+  const scrubbed = scrubSecretValues(text, secrets);
+  const omission = OMISSION_RE.exec(scrubbed);
+  if (!omission) return scrubbed;
+  const head = scrubbed.slice(0, omission.index);
+  const partial = partialSecretTail(head, secrets);
+  if (partial === 0) return scrubbed;
+  const omitted = Number(omission[1]) + partial;
+  return `${head.slice(0, head.length - partial)}… [${omitted} more characters omitted]`;
+}
+
+/** The tail {@link clampText} leaves behind, read back by {@link redactTruncated}. */
+const OMISSION_RE = /… \[(\d+) more characters omitted]$/;
 
 /** Cut child-controlled text to a ceiling, saying how much was left out. */
 function clampText(text: string, max: number): string;
