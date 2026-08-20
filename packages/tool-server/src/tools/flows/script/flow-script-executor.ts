@@ -24,6 +24,7 @@ import { pathToFileURL } from "node:url";
 import {
   getConfigDefinition,
   getConfigValue,
+  MIN_SCRIPT_HEAP_LIMIT_MB,
   type ConfigDefinition,
 } from "@argent/configuration-core";
 import { scrubSecretValues } from "../../../utils/secrets";
@@ -357,7 +358,13 @@ export class FlowScriptExecutor {
           defaultConcurrency(),
         maxTimeoutMs:
           this.options.maxTimeoutMs ?? configuredNumber("scripts.maxTimeoutMs") ?? 5 * 60_000,
-        heapLimitMb: this.options.heapLimitMb ?? configuredNumber("scripts.heapLimitMb") ?? 512,
+        // Floored, not just defaulted: a heap too small to start V8 makes every
+        // step fail during the child's own startup, with a message that names
+        // neither this bound nor the value that caused it.
+        heapLimitMb: Math.max(
+          MIN_SCRIPT_HEAP_LIMIT_MB,
+          this.options.heapLimitMb ?? configuredNumber("scripts.heapLimitMb") ?? 512
+        ),
       };
     }
     return this.bounds;

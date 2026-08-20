@@ -2,7 +2,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { FlowScriptExecutor } from "../../../src/tools/flows/script/flow-script-executor";
+import { MIN_SCRIPT_HEAP_LIMIT_MB } from "@argent/configuration-core";
+import {
+  FlowScriptExecutor,
+  type FlowScriptExecutorOptions,
+} from "../../../src/tools/flows/script/flow-script-executor";
 import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 
 const workspaces: ScriptWorkspace[] = [];
@@ -29,8 +33,8 @@ afterEach(() => {
   while (workspaces.length) workspaces.pop()!.cleanup();
 });
 
-function executor() {
-  return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 });
+function executor(options: FlowScriptExecutorOptions = {}) {
+  return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000, ...options });
 }
 
 /** A script that copies the values it is asked about into `output`. */
@@ -132,6 +136,23 @@ describe("flow script executor — execArgv", () => {
     } finally {
       process.execArgv = before;
     }
+  });
+});
+
+describe("flow script executor — the heap limit", () => {
+  it("floors a heap limit too small for a Node process to start", async () => {
+    const ws = workspace();
+    const script = ws.write("argv.mjs", `output.execArgv = process.execArgv;`);
+    // Below about 5 MiB the child dies inside V8's own startup, before the
+    // runner can send anything, and every step failed with a protocol error
+    // that named neither the bound nor the value behind it.
+    const result = await executor({ heapLimitMb: 2 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output?.execArgv).toContain(`--max-old-space-size=${MIN_SCRIPT_HEAP_LIMIT_MB}`);
   });
 });
 

@@ -57,6 +57,7 @@ export {
   asNumber,
   asPositiveInteger,
   asStringArray,
+  MIN_SCRIPT_HEAP_LIMIT_MB,
   type ConfigDefinition,
 } from "./config-schema.js";
 
