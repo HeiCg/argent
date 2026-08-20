@@ -1043,13 +1043,20 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           return;
         }
         // A schema miss the REGISTRY caught, rather than the HTTP layer's own
-        // copy of the same check above. It reaches here only through a NESTED
-        // invoke — a flow-add-step sub-tool, a run-sequence step — where the
-        // outer call's own params parsed fine, so the same mistyped argument
-        // was a 400 sent directly and a 500 sent inside a recording. The
-        // failure already carries `error_kind: "validation"`, so a 500 has the
-        // body contradicting its own status; this is the classification the
-        // registry's signal was given, applied at the boundary that reads it.
+        // copy of the same check above. One nested invoke reaches here:
+        // flow-add-step's sub-tool, where the outer call's own params parsed
+        // fine, so the same mistyped argument was a 400 sent directly and a 500
+        // sent inside a recording. The failure already carries
+        // `error_kind: "validation"`, so a 500 has the body contradicting its
+        // own status; this is the classification the registry's signal was
+        // given, applied at the boundary that reads it.
+        //
+        // The other two dispatchers never get here, which matters to anyone
+        // deciding whether this arm may be reordered or which paths still need
+        // the `issues` field the boundary 400 carries: run-sequence catches
+        // every sub-invoke failure into `steps[].error` and breaks, and the
+        // flow runner returns its `tool:` steps as `status: "error"` inside the
+        // run report. Both answer 200.
         if (getFailureSignal(err)?.error_code === FAILURE_CODES.TOOL_INPUT_INVALID) {
           res.status(400).json({ error: formatErrorForAgent(err), ...errorSignalFields(err) });
           return;
