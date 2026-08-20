@@ -656,11 +656,18 @@ export function describeParamIssues(
   // never renders a bare leading ".".
   //
   // Drop a part's own trailing full stop before adding this one. A custom
-  // refinement's message survives verbatim and is author-written prose, which
-  // normally ends in a period — so every cross-field rule (both flow tools'
-  // source-count errors, gesture-scroll, gesture-rotate, await-ui-element)
-  // rendered "…/.argent/flows/<name>.yaml.. You sent: …". Only a period is
-  // trimmed: a message ending in "?" or "!" keeps its own punctuation.
+  // refinement's message survives verbatim and is author-written prose, so the
+  // rules that end theirs in a period rendered a double one — both flow tools'
+  // source-count errors ("…/.argent/flows/<name>.yaml.. You sent: …"),
+  // gesture-scroll's zero-delta rule, and gesture-rotate's "Pass radius, or
+  // both radiusX and radiusY.".
+  //
+  // Not every cross-field rule punctuates that way, and the ones that do not
+  // never had the symptom: await-ui-element's "condition `text` requires
+  // expectedText" and gesture-rotate's radius-pair message end on a word and a
+  // closing parenthesis, so the trim is a no-op for them. Only a period is
+  // trimmed either way — a message ending in "?" or "!" keeps its own
+  // punctuation.
   const body = parts.length > 0 ? `${parts.map((p) => p.replace(/\.$/, "")).join("; ")}.` : "";
   return `${body}${sent}`.trim() || "invalid parameters";
 }
