@@ -86,8 +86,13 @@ export function describeNestedParamError(
   if (!zodSchema) return undefined;
   // `?? {}` mirrors what the registry parsed, so the issues are the same ones.
   const parsed = zodSchema.safeParse(dispatchedArgs ?? {});
-  // Defensive: the rejection came from this parse, so a success here would mean
-  // the schema is not a pure function of its input. Leave the original message.
+  // Not defensive — this fires on a live path, and dropping it throws.
+  // `InvalidToolInputError` DEFAULTS to `TOOL_INPUT_INVALID`, so a tool that
+  // rejects its own arguments from inside `execute` passes the gate above while
+  // its args parsed perfectly well: `resolveFlowName` is exactly that throw,
+  // reached by a flow `- tool: flow-execute` step whose `name` is the empty
+  // string. There is no zod error to re-render then, and the tool's own message
+  // is already the right one — so leave it alone.
   if (parsed.success) return undefined;
   return `Invalid params for tool "${toolId}": ${describeParamIssues(parsed.error, authoredArgs)}`;
 }

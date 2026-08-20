@@ -182,6 +182,28 @@ describe("describeParamIssues", () => {
     expect(msg).not.toContain('"code"');
   });
 
+  it("renders a SCALAR union's branches with no dangling path prefix", () => {
+    // The guard that decides this is `inner.path.length > 0 ? … : ""`, and the
+    // union tests around it all assert fragments, so none of them can see the
+    // difference: dropping the guard rendered
+    // "`button`: button.: Invalid option: …; or button.: Invalid input: …" —
+    // a bare "button." before every branch, on the parameter the source
+    // comments name as the one callers most often get wrong — and left the
+    // whole package green. Compare the whole string, since the defect is a
+    // prefix that every `toContain` fragment survives.
+    const schema = z.object({
+      button: z.union([
+        z.enum(["up", "down", "select"]),
+        z.array(z.enum(["up", "down", "select"])),
+      ]),
+    });
+    const value = { button: "OK" };
+    expect(describeParamIssues(issuesOf(schema, value), value)).toBe(
+      '`button`: Invalid option: expected one of "up"|"down"|"select"; ' +
+        "or Invalid input: expected array, received string. You sent: `button`."
+    );
+  });
+
   it("path-qualifies a union branch's own nested issue", () => {
     const schema = z.object({
       target: z.union([z.string(), z.object({ id: z.string() })]),

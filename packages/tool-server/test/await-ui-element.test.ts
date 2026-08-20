@@ -473,6 +473,36 @@ describe("await-ui-element tool", () => {
     expect(result.note).toMatch(/REORDERS/);
   });
 
+  it("`text` timeout note defuses a directional override in the EXPECTATION too", async () => {
+    // The label is not the only carrier: the expectation is authored, and the
+    // note this message appends lands after it, so an override there reverses
+    // the explanation itself. Such a string reaches an expectation exactly
+    // because the note tells the author to copy what the app renders and the
+    // fold keeps the characters that reorder.
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "bedrock", value: "", frame: FRAME, traits: [] }]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "text",
+        selector: { text: "bedrock" },
+        expectedText: "bed\u202Erock",
+        textMatch: "contains",
+        timeoutMs: 30,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.note).not.toContain("\u202E");
+    expect(result.note).toMatch(/<U\+202E>/);
+    expect(result.note).toMatch(/REORDERS/);
+  });
+
   it("`text` timeout note stays bare when the strings differ visibly", async () => {
     const { api } = makeSequencedAXService([
       axResponse([{ label: "Amount", value: "PLN 43", frame: FRAME, traits: [] }]),
@@ -1001,8 +1031,8 @@ describe("await-ui-element tool", () => {
     //
     // `pollIntervalMs` exceeds `timeoutMs` deliberately: the sleep is clamped
     // to the deadline either way, so the shape is unchanged, but the tolerance
-    // it scales is now 4000ms against a ~600ms tail. At 500 the two were 1000
-    // and 600, and ~400ms of scheduler slip flipped the cause under load.
+    // it buys is the 2000ms ceiling against a ~600ms tail. At 500 the two were
+    // 1000 and 600, and ~400ms of scheduler slip flipped the cause under load.
     const tool = createAwaitUiElementTool(makeMockRegistry({}));
 
     const result = await tool.execute(
@@ -1186,6 +1216,29 @@ describe("await-ui-element tool", () => {
     );
 
     expect(unmetUiWaitCause(result)).toBe(cause);
+  });
+
+  it("stops a long poll interval buying a verdict for a window nobody watched", async () => {
+    // The tolerance is a MULTIPLE of the caller's interval, and `pollIntervalMs`
+    // is caller-supplied up to 5000ms — so two intervals would reach 10s. Here
+    // the source answers once at t≈0 and never again: 2.5s of unbroken silence,
+    // inside the 3000ms the multiple alone would allow. `unmet` is the one
+    // cause that licenses rewriting or deleting the step, so it must not be
+    // reachable by asking to poll rarely.
+    const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "visible",
+        selector: { text: "Nope" },
+        timeoutMs: 2500,
+        pollIntervalMs: 1500,
+      }
+    );
+
+    expect(unmetUiWaitCause(result)).toBe("unreadable");
   });
 
   it("does not trust a final read that landed but was blind", async () => {
