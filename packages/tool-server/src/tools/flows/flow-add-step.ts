@@ -1261,11 +1261,19 @@ function nestedRecordRefusal(
   // cancellation as "a failed nested step". Signal first, verdict second, the
   // order the runner uses; `skip` already IS the reader's own abort branch, and
   // the verdict is kept alongside rather than thrown away.
+  //
+  // `attempted` is the third conjunct because a cancel can only have caused an
+  // outcome the nested run actually got far enough to have. A `flow-execute`
+  // prerequisite notice is status `error` and reached no step: the flow was not
+  // runnable AS WRITTEN, which a concurrent cancel neither caused nor changes,
+  // so wrapping it hides the one actionable sentence inside a parenthesis and
+  // reports a cancellation of something that never started.
+  const attempted = nestedStepAttempted(result);
   const reason =
-    aborted && outcome.status !== "skip"
+    aborted && attempted && outcome.status !== "skip"
       ? `${command} was cancelled (${outcome.reason})`
       : outcome.reason;
-  return { reason, mayHaveMutated: nestedStepAttempted(result) };
+  return { reason, mayHaveMutated: attempted };
 }
 
 /**

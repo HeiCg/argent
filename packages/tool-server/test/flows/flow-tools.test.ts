@@ -1032,6 +1032,13 @@ describe("flow-add-step", () => {
     // A cancel BETWEEN nested steps is the shared reader's own abort branch,
     // and it carries the progress the sequence made.
     expect(result.message).toContain("run-sequence was aborted after 1 of 2 steps");
+    // That branch must be left to speak for itself rather than wrapped in the
+    // recorder's own cancellation wording, which would double-report the same
+    // event ("run-sequence was cancelled (run-sequence was aborted after …)")
+    // and bury the progress it carries. Asserted as OPENS-with, because every
+    // `toContain` here still matches inside that wrapper — without it the
+    // `status !== "skip"` conjunct cannot be told from a version that drops it.
+    expect(result.message.startsWith("run-sequence was aborted after 1 of 2 steps")).toBe(true);
     expect(result.message).toContain("step NOT recorded");
     expect(result.message).toContain("Prior nested steps may already have changed the device");
     // A check, not a restore: relaunching would not reproduce the prefix.
@@ -1131,6 +1138,9 @@ describe("flow-add-step", () => {
     );
 
     expect(result.message).toContain('flow "login" was aborted');
+    // The reader's own abort branch, unwrapped — see the run-sequence twin for
+    // why this is asserted as OPENS-with rather than as a `toContain`.
+    expect(result.message.startsWith('flow "login" was aborted')).toBe(true);
     expect(result.message).not.toContain("failed:");
     expect(result.message).toContain("NOT recorded");
     expect(parseFlow(await onDisk("compose-cancelled")).steps).toEqual([]);
@@ -1413,7 +1423,56 @@ describe("flow-add-step", () => {
     expect(result.message).toContain("NOT recorded");
     // Provably nothing ran, so no warning: a notice carries no step list.
     expect(result.message).not.toContain("may already have");
+    expect(result.message.startsWith('flow "login" did not run')).toBe(true);
     expect(parseFlow(await onDisk("compose-notice")).steps).toEqual([]);
+  });
+
+  it("does not call a prerequisite notice a cancellation when a cancel is in play", async () => {
+    // A notice means the composed flow was not runnable AS WRITTEN and reached
+    // no step, so there is nothing a cancel could have interrupted. Wrapping it
+    // as `flow-execute was cancelled (…)` reports a cancellation of something
+    // that never started, and pushes the only actionable sentence — the
+    // prerequisite and how to acknowledge it — inside a parenthesis. Its own
+    // `mayHaveMutated: false` already says nothing ran, so the two halves of
+    // one message would contradict each other.
+    const controller = new AbortController();
+    controller.abort();
+    const registry = createMockRegistry({
+      "flow-execute": {
+        result: {
+          flow: "login",
+          notice: "This flow has an execution prerequisite",
+          executionPrerequisite: "On login screen",
+        },
+      },
+    });
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "compose-notice-cancelled", project_root: tmpDir }
+    );
+    await writeSiblingFlow(
+      "login",
+      "executionPrerequisite: On login screen\nsteps:\n  - echo: hi\n"
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-notice-cancelled",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify({ name: "login", project_root: tmpDir, device: "ABC" }),
+      },
+      { signal: controller.signal } as never
+    );
+
+    expect(result.message.startsWith('flow "login" did not run')).toBe(true);
+    expect(result.message).not.toContain("was cancelled");
+    expect(result.message).toContain("On login screen");
+    expect(result.message).toContain("NOT recorded");
+    expect(result.message).not.toContain("may already have");
+    expect(parseFlow(await onDisk("compose-notice-cancelled")).steps).toEqual([]);
   });
 
   it("keeps the raw flow-execute step when the target is not a sibling", async () => {
