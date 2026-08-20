@@ -1277,8 +1277,19 @@ class ScriptLogCapture {
     this.streams.clear();
   }
 
+  /**
+   * A last pass with the secret set as it stands at the end of the step.
+   *
+   * The streaming scrub can only match what it can see: a value straddling a
+   * chunk boundary is held back against the secrets known *at that chunk*, so a
+   * value whose head was released before the run resolved it — the set grows as
+   * a run resolves more secrets — has its two halves rejoined here in
+   * plaintext. Streaming stays first, because it is what protects the
+   * truncation boundary: a value split by the cut leaves a prefix that matches
+   * nothing.
+   */
   get text(): string {
-    return this.parts.join("");
+    return scrubSecretValues(this.parts.join(""), this.secrets());
   }
 
   get truncated(): boolean {

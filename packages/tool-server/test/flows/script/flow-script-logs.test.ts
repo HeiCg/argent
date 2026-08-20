@@ -232,6 +232,29 @@ describe("flow script executor — redaction", () => {
     expect(result.log).not.toContain(SECRET.value.slice(0, 8));
   });
 
+  it("redacts a value that straddled a chunk boundary before its secret was known", async () => {
+    const ws = workspace();
+    const value = "sk-live-9d3f0a1b2c3d4e5f6071";
+    // The hold-back can only cover values it knows about at that chunk. Here
+    // the head is released while the set is still empty and the tail arrives
+    // after the run resolved the secret, so neither half matches on its own.
+    const script = ws.write(
+      "straddles.mjs",
+      `const value = ${JSON.stringify(value)};
+       process.stdout.write("Authorization: Bearer " + value.slice(0, 10));
+       await new Promise((r) => setTimeout(r, 400));
+       process.stdout.write(value.slice(10) + "\\n");
+       output.ok = true;`
+    );
+    const secrets: FlowScriptSecret[] = [];
+    const pending = executor().execute({ scriptPath: script, projectRoot: ws.dir, secrets });
+    setTimeout(() => secrets.push({ name: "TOKEN", value }), 200);
+    const result = await pending;
+
+    expect(result.log).not.toContain(value);
+    expect(result.log).toContain("Bearer {{secret:TOKEN}}");
+  });
+
   it("reads the secret set live, so a value added mid-run still redacts", async () => {
     const ws = workspace();
     const script = ws.write(
