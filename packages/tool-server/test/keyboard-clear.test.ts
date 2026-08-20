@@ -2379,7 +2379,29 @@ describe("keyboard clear — Android (adb input)", () => {
       );
 
       expect(result.note).toMatch(/select-all chord followed by a delete/);
+      expect(result.note).toMatch(/read back afterwards and nothing was left to remove/);
       expect(result.note).not.toMatch(/chord did NOT take/);
+    });
+
+    it.each([
+      ["a focused password field, whose text cannot be measured", dumpWith("••••", true)],
+      ["a screen that would not dump at all", "ERROR: could not get idle state"],
+    ])("does not claim a read-back it never got from %s", async (_label, dump) => {
+      // Both leave the fast path exactly as an empty field does, and neither
+      // confirms anything. On a password box whose widget swallows the chord —
+      // the failure this path exists to catch — reporting "read back, nothing
+      // left" says the credential box is clear while the credential is in it.
+      seedDump(dump);
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/select-all chord followed by a delete/);
+      expect(result.note).toMatch(/Nothing confirmed the chord took/);
+      expect(result.note).not.toMatch(/nothing was left to remove/);
     });
 
     it("does not invent a failed chord out of a field it could not measure", async () => {

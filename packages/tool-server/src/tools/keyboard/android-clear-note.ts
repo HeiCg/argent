@@ -63,10 +63,7 @@ const DOUBLED =
  * only useful content is what is now unverified and how it can be wrong.
  */
 const WHAT: Record<AndroidClearOutcome["path"], string> = {
-  "select-all":
-    "the select-all chord followed by a delete. The field was read back afterwards and nothing " +
-    "was left to remove — though a screen `uiautomator` cannot capture reads the same way as an " +
-    "empty one",
+  "select-all": "the select-all chord followed by a delete",
   "select-all-kept":
     "the select-all chord alone, with the `text` replacing the selection so the field was never " +
     "observed empty mid-call. Nothing verified that the chord took: with text following there is " +
@@ -81,6 +78,22 @@ const WHAT: Record<AndroidClearOutcome["path"], string> = {
     "a backspace run, because this Android level has no `input keycombination`. That deletes " +
     "backwards from end-of-LINE, so a multi-line field keeps whatever sits below the caret",
 };
+
+/**
+ * What the read-back after the delete actually saw, which only `select-all` has
+ * to answer.
+ *
+ * Three read-backs reach that path and just one of them saw an empty field. A
+ * screen the reader could not capture, and a focused field it could not measure
+ * — a password box — both leave the fast path alone in exactly the same way. A
+ * note that reports all three as "read back, and empty" tells the caller the
+ * credential box is clear while the credential is still in it.
+ */
+const READ_BACK_EMPTY = " The field was read back afterwards and nothing was left to remove.";
+
+const READ_BACK_UNAVAILABLE =
+  " Nothing confirmed the chord took: the field could not be read back — either the screen would " +
+  "not capture, or the focused field cannot be measured, which is what a password box always is.";
 
 const BLIND =
   " The field's length could not be read, so a fixed run of backspaces was sent instead of a " +
@@ -121,6 +134,11 @@ export function androidClearNote(
   return (
     `keyboard clear: the atomic accessibility replace was not used (${why}), so the ` +
     `field was cleared with ${WHAT[outcome.path]}.` +
+    (outcome.path === "select-all"
+      ? outcome.readBackEmpty
+        ? READ_BACK_EMPTY
+        : READ_BACK_UNAVAILABLE
+      : "") +
     (outcome.blindDeleteRun ? BLIND : "") +
     (applied && fallbackText ? DOUBLED : "") +
     ` Read the field back if the exact value matters.`

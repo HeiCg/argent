@@ -386,6 +386,21 @@ export interface AndroidClearOutcome {
    * claim from "no run happened at all", and both spell the same word.
    */
   blindDeleteRun?: true;
+  /**
+   * The field was read back after the delete and reported NO text.
+   *
+   * Only `select-all` carries it, and only for one of the three read-backs that
+   * reach that path. The other two are a screen the reader could not capture at
+   * all, and a focused field it could not measure — a password box is floored to
+   * the blind count rather than dropped (see `measureFocusedTextLength`). Both
+   * end the same way as an empty field and neither confirms anything, so the
+   * caller's note has to tell them apart.
+   *
+   * Typed `true` rather than `boolean` for the reason `blindDeleteRun` is: the
+   * paths that read nothing back must carry nothing, not a `false` that reads as
+   * "read back, and not empty".
+   */
+  readBackEmpty?: true;
 }
 
 /**
@@ -543,7 +558,14 @@ export async function injectAndroidClear(
     const blind = await clearByDeleting(serial, deadline, options, residue.chars);
     return { path: "select-all-rescued", keptSelection: false, ...blind };
   }
-  return { path: "select-all", keptSelection: false };
+  // A SIZED zero is the only reading that says the field is empty. An unreadable
+  // screen and an unmeasurable field both arrive here too, and neither confirms
+  // anything — see AndroidClearOutcome.readBackEmpty.
+  return {
+    path: "select-all",
+    keptSelection: false,
+    ...(residue?.sized === true ? { readBackEmpty: true as const } : {}),
+  };
 }
 
 const KEYCODE_MOVE_END = 123;
