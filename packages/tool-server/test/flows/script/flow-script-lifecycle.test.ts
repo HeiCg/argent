@@ -218,6 +218,57 @@ describe("flow script executor — exit classification", () => {
     // The numbered frame list is gone; the summary that names the cause is not.
     expect(result.log).not.toMatch(/^\s*\d+: 0x[0-9a-f]{6}/m);
   }, 60_000);
+
+  it("still reports a heap limit when the script logged past its log budget first", async () => {
+    const ws = workspace();
+    // V8 prints its banner last, so a script chatty enough to fill the step's
+    // log budget loses the one line that names the cause — and "a progress line
+    // per item, then out of heap" is the ordinary shape of a script that hits
+    // this limit. The verdict cannot be read off the truncated log.
+    const script = ws.write(
+      "chatty-hungry.mjs",
+      `for (let i = 0; i < 2000; i++) console.log("progress line " + i + " ".repeat(120));
+       const held = [];
+       for (;;) held.push("x".repeat(1024 * 1024));`
+    );
+    const result = await executor({ heapLimitMb: 64 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.logTruncated).toBe(true);
+    expect(result.failure?.kind).toBe("heap");
+    expect(result.failure?.message).toBe("The script exceeded its 64 MiB heap limit.");
+  }, 60_000);
+
+  it("does not call a forwarded 134 exit status a heap limit", async () => {
+    const ws = workspace();
+    // A wrapper that runs a build through a shell and forwards its status: the
+    // shell reports the aborted build as 128+SIGABRT, and the build's own
+    // banner lands in the stream this script inherited. Neither is this
+    // process running out of heap.
+    ws.write("build.mjs", `const held = []; for (;;) held.push("x".repeat(1024 * 1024));`);
+    const script = ws.write(
+      "wrapper.mjs",
+      `import { spawnSync } from "node:child_process";
+       const r = spawnSync(
+         "/bin/sh",
+         ["-c", process.execPath + " --max-old-space-size=40 build.mjs 2>&1"],
+         { encoding: "utf8" }
+       );
+       console.log(r.stdout);
+       process.exit(r.status ?? 0);`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.failure?.kind).toBe("exit");
+    expect(result.failure?.message).toContain("exit code 134");
+  }, 60_000);
 });
 
 describe("flow script executor — process cleanup", () => {

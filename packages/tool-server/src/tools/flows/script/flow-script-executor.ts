@@ -57,6 +57,16 @@ const QUEUE_DEPTH_LIMIT = 32;
 const QUEUE_WAIT_REPORT_MS = 5_000;
 /** A partial stderr line longer than this is passed through unclassified. */
 const MAX_BUFFERED_LINE_CHARS = 8 * 1024;
+/**
+ * V8's heap-exhaustion banner, matched on the live stream. Deliberately coarse:
+ * it must not depend on the frame layout, the address format or the surrounding
+ * wording, none of which is a stability contract, and it must hold on both
+ * Node 20.12 and current. An unrecognized abort degrades to the signal report
+ * rather than to a wrong verdict.
+ */
+const V8_HEAP_FATAL_RE = /FATAL ERROR:[^\n]*(?:heap limit|heap out of memory|Allocation failed)/i;
+/** Enough of the stream to hold a banner split across two pipe chunks. */
+const HEAP_FATAL_WINDOW_CHARS = 256;
 
 const RUNNER_FILE = "flow-script-runner.mjs";
 
@@ -680,7 +690,7 @@ export class FlowScriptExecutor {
         startedSeen,
         interrupted,
         timeoutMs,
-        log,
+        heapFatalSeen: capture.heapFatalSeen,
         heapLimitMb: bounds.heapLimitMb,
       }),
       request.secrets ?? []
@@ -715,7 +725,7 @@ interface ClassifyInput {
   startedSeen: boolean;
   interrupted: "timeout" | "cancelled" | null;
   timeoutMs: number;
-  log: string;
+  heapFatalSeen: boolean;
   heapLimitMb: number;
 }
 
@@ -767,7 +777,7 @@ function classifyOutcome(
   // surrounding wording, none of which is a stability contract, and it must
   // hold on both Node 20.12 and current. An unrecognized abort simply degrades
   // to the signal report rather than to a wrong verdict.
-  if (isHeapAbort(exit, input.log)) {
+  if (isHeapAbort(exit, input.heapFatalSeen)) {
     return failed("heap", `The script exceeded its ${input.heapLimitMb} MiB heap limit.`);
   }
 
@@ -843,16 +853,18 @@ function failed(
   return { ok: false, failure: { kind, message, ...(stack ? { stack } : {}) } };
 }
 
-const V8_HEAP_FATAL_RE = /FATAL ERROR:[^\n]*(?:heap limit|heap out of memory|Allocation failed)/i;
-
 function isHeapAbort(
   exit: { code: number | null; signal: NodeJS.Signals | null },
-  log: string
+  heapFatalSeen: boolean
 ): boolean {
-  // Some hosts surface the abort as a signal, others as the shell's 128+SIGABRT
-  // exit code; both mean the same thing.
-  const aborted = exit.signal === "SIGABRT" || exit.code === 134;
-  return aborted && V8_HEAP_FATAL_RE.test(log);
+  // A signal, never an exit code. 128+SIGABRT is a *shell's* way of reporting
+  // an aborted child, and there is no shell between the executor and the
+  // runner — but there often is one inside the script. A wrapper that runs a
+  // build through `sh` and forwards its status returns 134 while allocating
+  // nothing itself, and the build's own banner lands in the inherited stream,
+  // so reading it as this process aborting asserted something false about the
+  // wrong process and named the wrong limit.
+  return exit.signal === "SIGABRT" && heapFatalSeen;
 }
 
 function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null }): string {
@@ -1140,6 +1152,8 @@ interface StreamState {
   decoder: StringDecoder;
   holdback: string;
   collapser?: V8FrameCollapser;
+  /** Only stderr carries V8's fatal banner. */
+  watchForHeapFatal?: boolean;
 }
 
 /**
@@ -1173,6 +1187,8 @@ class ScriptLogCapture {
   private readonly streams = new Map<string, StreamState>();
   private stepRemaining: number;
   private truncatedFlag = false;
+  private heapFatalFlag = false;
+  private heapFatalTail = "";
 
   constructor(
     private readonly secrets: () => readonly FlowScriptSecret[],
@@ -1208,15 +1224,42 @@ class ScriptLogCapture {
     return this.truncatedFlag;
   }
 
+  /**
+   * Whether V8 printed a heap-exhaustion banner while the process was alive.
+   *
+   * Read here rather than off the finished log because the log is what the
+   * limits act on: V8 prints its banner last, so a script that logged past its
+   * step budget before dying lost the one line that names the cause — and
+   * "logged a line per item, then ran out of heap" is the ordinary shape of a
+   * script that hits this limit. A rolling window carries a banner split
+   * across two pipe chunks.
+   */
+  get heapFatalSeen(): boolean {
+    return this.heapFatalFlag;
+  }
+
+  private watchForHeapFatal(text: string): void {
+    if (this.heapFatalFlag) return;
+    const window = this.heapFatalTail + text;
+    if (V8_HEAP_FATAL_RE.test(window)) {
+      this.heapFatalFlag = true;
+      this.heapFatalTail = "";
+      return;
+    }
+    this.heapFatalTail = window.slice(-HEAP_FATAL_WINDOW_CHARS);
+  }
+
   private stateFor(stream: "stdout" | "stderr"): StreamState {
     let state = this.streams.get(stream);
     if (!state) {
       state = {
         decoder: new StringDecoder("utf8"),
         holdback: "",
-        // A V8 fatal error prints its frame dump on stderr, so only that stream
-        // pays the cost of line buffering.
-        ...(stream === "stderr" ? { collapser: new V8FrameCollapser() } : {}),
+        // A V8 fatal error prints its banner and frame dump on stderr, so only
+        // that stream pays the cost of line buffering or of being watched.
+        ...(stream === "stderr"
+          ? { collapser: new V8FrameCollapser(), watchForHeapFatal: true }
+          : {}),
       };
       this.streams.set(stream, state);
     }
@@ -1225,6 +1268,7 @@ class ScriptLogCapture {
 
   private consume(state: StreamState, text: string, final: boolean): void {
     if (!text && !final) return;
+    if (state.watchForHeapFatal) this.watchForHeapFatal(text);
     const secrets = this.secrets();
     const scrubbed = scrubSecretValues(state.holdback + text, secrets);
     let emit: string;
