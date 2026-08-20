@@ -3418,6 +3418,25 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
 }
 
 /**
+ * One step rendered for comparison, or `null` where it has no rendering.
+ *
+ * A cyclic YAML alias inside a step's `args` — which {@link parseFlow} accepts,
+ * since `args` are passed to the tool as parsed — materializes as a cyclic
+ * object, and `JSON.stringify` throws on it. Throwing out of {@link samePrefix}
+ * would fail the whole append, which by then has already written the step to
+ * the file and already run it on the device, so the retry that failure invites
+ * repeats both. The same guard, for the same reason, as `renderToolArgs` in
+ * flow-finish-recording.ts.
+ */
+function renderStepForCompare(step: FlowStep): string | null {
+  try {
+    return JSON.stringify(step);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Are the first `n` steps of these two views the same steps?
  *
  * Both sides are {@link parseFlow} output — the recorder's previous view came
@@ -3426,11 +3445,16 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
  * a structural comparison is exact. That is what makes `JSON.stringify` safe
  * here where it would not be against a raw in-memory step: no key-order or
  * normalization difference can exist between two parses of the same bytes.
+ *
+ * A step with no rendering is NOT the same step: an unrenderable prefix is one
+ * this cannot vouch for, and the caller drops the verdict rather than reporting
+ * it against a step whose identity is unknown.
  */
 function samePrefix(now: FlowStep[], before: FlowStep[], n: number): boolean {
   if (now.length < n || before.length < n) return false;
   for (let i = 0; i < n; i += 1) {
-    if (JSON.stringify(now[i]) !== JSON.stringify(before[i])) return false;
+    const rendered = renderStepForCompare(now[i]);
+    if (rendered === null || rendered !== renderStepForCompare(before[i])) return false;
   }
   return true;
 }

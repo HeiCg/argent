@@ -2288,6 +2288,56 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(finished.message).toContain("2 steps carry a cross-tree warning");
   });
 
+  it("records the next step when a hand edit made an earlier one unserializable", async () => {
+    // The anchor check renders both views of the prefix to compare them, and a
+    // cyclic YAML alias — which `parseFlow` accepts inside a step's `args` —
+    // has no rendering. Throwing there reports a FAILURE for an append that
+    // already wrote the step and already ran on the device, so the documented
+    // retry duplicates both.
+    await startRecording("cyclic");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("cyclic", { condition: "visible", selector: { text: "Continue" } });
+
+    // Alias the step's own `args` map back into itself, the one edit that
+    // survives a re-parse and cannot be stringified.
+    const file = path.join(tmpDir, ".argent", "flows", "cyclic.yaml");
+    await fs.writeFile(
+      file,
+      [
+        "steps:",
+        "  - tool: await-ui-element",
+        "    args: &cyc",
+        `      udid: ${IOS}`,
+        "      condition: visible",
+        "      selector:",
+        "        text: Continue",
+        "      self: *cyc",
+        "executionPrerequisite: on the form",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+
+    const echo = await flowInsertEchoTool.execute(
+      {},
+      { name: "cyclic", project_root: tmpDir, message: "form submitted" }
+    );
+
+    expect(echo.stepCount).toBe(2);
+    expect((await recordedSteps("cyclic")).map((s) => s.kind)).toEqual(["tool", "echo"]);
+
+    // The edited step cannot be vouched for, so its verdict goes — and the
+    // finish says so rather than reporting a clean recording.
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "cyclic", project_root: tmpDir }
+    );
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
+  });
+
   // ── Cancellation ─────────────────────────────────────────────────────────
 
   it("keeps the step when the run is cancelled during the re-probe", async () => {
