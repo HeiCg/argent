@@ -295,8 +295,13 @@ async function dispatchForResult(
  * Structural rather than typed against `KeyboardResult`: `invokeOnDevice`
  * returns `unknown` for every tool, and the directive layer deliberately does
  * not import a backend's result types.
+ *
+ * Exported because a flow can carry the same clear as a RAW tool step rather
+ * than a `type` directive — `flow-add-step` has no `keyboard` → `type` rewrite —
+ * and a step report that drops the note there says the clear was proven when it
+ * was not. `flow-run` applies the same rule to those steps.
  */
-function resultNote(result: unknown): string | undefined {
+export function resultNote(result: unknown): string | undefined {
   if (typeof result !== "object" || result === null) return undefined;
   const note = (result as { note?: unknown }).note;
   return typeof note === "string" && note.length > 0 ? note : undefined;

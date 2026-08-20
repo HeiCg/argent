@@ -611,6 +611,48 @@ describe("type directive — clear dispatch", () => {
     expect(result.steps[0]!.warning).toBeUndefined();
   });
 
+  it("carries the note of a clear recorded as a RAW tool step too", async () => {
+    // `flow-add-step` has no `keyboard` → `type` rewrite, so a recorded clear
+    // replays as a raw tool step. Its report used to carry the note inside
+    // `result` and no warning at all — and `argent-cli`'s own `StepReport` has no
+    // `result` field, so the CLI printed a clean pass over an unverified clear.
+    const calls: Call[] = [];
+    const NOTE = "keyboard clear: the atomic accessibility replace was not used (…).";
+    const registry = mockRegistry(
+      calls,
+      () => ({ xml: fieldXml("old.remembered.login") }),
+      (args) =>
+        args.clear === true ? { typed: "x", keys: 1, cleared: true, note: NOTE } : { ok: true }
+    );
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "keyboard", args: { clear: true, text: "new@example.com" } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    expect(result.steps[0]!.warning).toBe(NOTE);
+  });
+
+  it("leaves a raw tool step warning-free when its result carries no note", async () => {
+    const calls: Call[] = [];
+    const registry = mockRegistry(
+      calls,
+      () => ({ xml: fieldXml("old.remembered.login") }),
+      () => ({ typed: "x", keys: 1, cleared: true })
+    );
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "keyboard", args: { clear: true, text: "new@example.com" } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.status).toBe("pass");
+    expect(result.steps[0]!.warning).toBeUndefined();
+  });
+
   it("refuses to clear when the focus wait never sees focus reach the target", async () => {
     // The destructive case: the tap did not move focus, so a clear would empty
     // whichever field still holds it — silently, and reported as a pass on a

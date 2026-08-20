@@ -57,6 +57,7 @@ import { isNestedOrchestratorTool, nestedOrchestratorOutcome } from "./flow-nest
 import {
   runDirective,
   invokeOnDevice,
+  resultNote,
   ABORTED_OUTCOME,
   probeWhenCondition,
   type ActionEnv,
@@ -2378,7 +2379,22 @@ async function execLeafStep(
             args,
           };
         }
-        return { ...base, status: "pass", tool: step.name, result, outputHint, args };
+        // A tool can pass in a WEAKER way than asked, and say so in its result:
+        // the Android `keyboard` clear does, when the verified accessibility
+        // replace was unavailable. The `type` directive surfaces that as the
+        // step's warning; a raw tool step carrying the same clear would
+        // otherwise report a clean pass with the note buried in `result` — which
+        // no CLI renders, since `StepReport` there has no `result` field at all.
+        const note = resultNote(result);
+        return {
+          ...base,
+          status: "pass",
+          tool: step.name,
+          result,
+          outputHint,
+          args,
+          ...(note === undefined ? {} : { warning: note }),
+        };
       } catch (err) {
         return { ...base, status: "error", tool: step.name, reason: errMsg(err) };
       }
