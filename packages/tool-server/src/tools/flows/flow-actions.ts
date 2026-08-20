@@ -223,12 +223,14 @@ export function invokeOnDevice(
  * to the same depth. Only iOS checks it BETWEEN keypresses:
  * `keyboard/platforms/ios.ts` forwards `options?.signal` into
  * `simulator-server-keys`, which calls `signal?.throwIfAborted()` per key.
- * Android and Chromium check it ONCE, as the call's turn on the per-device
- * chain comes round (`keyboard/platforms/android.ts`, `.../chromium.ts`), and
- * neither `runAndroidPhoneType` nor `runChromium` takes a signal at all —
- * Android's own comment says so outright, `adb shell input` not being
- * cancellable. Concretely: cancel a run mid-`type` on Android or Chromium and
- * the whole text is still typed out, a resolved `{{secret:…}}` included. An
+ * Chromium checks it ONCE, as the call's turn on the per-device chain comes
+ * round (`.../chromium.ts`), and `runChromium` takes no signal at all — so
+ * cancel a run mid-`type` there and the whole text is still typed out, a
+ * resolved `{{secret:…}}` included. Android checks it at three points, none of
+ * them between characters: as its turn on the chain comes round, again between
+ * the atomic tier and the injected one (that gap can be tens of seconds), and
+ * once more before the `key` that follows a clear — `adb shell input` is not
+ * cancellable, so the injection itself still runs to the end once it starts. An
  * abort-driven rejection is still the DESIGNED outcome on every one of them,
  * which is what this wrapper classifies.
  *
