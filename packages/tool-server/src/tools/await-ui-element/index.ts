@@ -453,8 +453,9 @@ also accepting the unqualified Android resource-id name ('submit' matches 'com.e
 text and role are compared on FOLDED text, so a non-breaking space matches a plain one and an LTR bidi wrapper
 around left-to-right text is ignored — but characters that change the rendering are not folded (bidi controls
 that reorder, a soft hyphen, emoji ZWJ/variation selectors), and a leading or trailing space is significant.
-identifier is never folded: it is a machine key, so spell it exactly. A field that is only whitespace or
-invisible characters matches nothing.
+identifier is never folded: it is a machine key, so spell it exactly. A field of only invisible characters
+matches nothing rather than everything, and so does a whitespace-only identifier — but a whitespace-only role
+is a real constraint, and matches any role that holds a space.
 It polls the same accessibility / DOM tree as \`describe\`
 (iOS AXRuntime, Android uiautomator, Chromium CDP, Vega automation toolkit) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
