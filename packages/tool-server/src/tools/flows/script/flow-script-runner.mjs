@@ -788,10 +788,25 @@ function describeBytes(bytes) {
  * up its own chain.
  */
 function errorMessage(err) {
-  if (!(err instanceof Error)) return typeof err === "string" ? err : safeStringify(err);
+  if (!(err instanceof Error)) return describeThrown(err);
   const parts = [];
   visitError(err, 0, CAUSED_BY, parts, new Set());
   return parts.map((part, at) => (at === 0 ? part.text : part.joiner + part.text)).join("");
+}
+
+/** What a value that is not an `Error` reads as. */
+function describeThrown(value) {
+  return typeof value === "string" ? value : safeStringify(value);
+}
+
+/**
+ * Add one part, unless an earlier one already says it.
+ *
+ * Text an earlier part already carries adds nothing: a wrapper that quotes its
+ * own cause is the ordinary shape.
+ */
+function addPart(parts, joiner, text) {
+  if (text && !parts.some((part) => part.text.includes(text))) parts.push({ joiner, text });
 }
 
 /** How far {@link errorMessage} follows a chain of causes. */
@@ -801,12 +816,23 @@ const CAUSED_BY = " — caused by: ";
 const ALSO = "; ";
 
 function visitError(err, depth, joiner, parts, seen) {
-  if (depth > MAX_CAUSE_DEPTH || !(err instanceof Error) || seen.has(err)) return;
+  if (depth > MAX_CAUSE_DEPTH) return;
+  // Neither a `.cause` nor an `AggregateError.errors` entry has to be an
+  // `Error`: `new Error("upload failed", { cause: "HTTP 500 …" })` and
+  // `Promise.any` over promises rejected with strings are both ordinary, and
+  // Node prints both. Dropping them left the report carrying the wrapper's own
+  // message and nothing else — and the log has no second copy to fall back on,
+  // because the runner claims the exception, so Node's own printout never runs.
+  // A leaf either way: `safeStringify` of an object renders whatever it nests.
+  if (!(err instanceof Error)) {
+    // `undefined` is an absent cause rather than a value. Every error is asked
+    // for one and almost none has it.
+    if (err !== undefined) addPart(parts, joiner, describeThrown(err));
+    return;
+  }
+  if (seen.has(err)) return;
   seen.add(err);
-  const text = err.message || String(err);
-  // Text an earlier part already carries adds nothing: a wrapper that quotes
-  // its own cause is the ordinary shape.
-  if (text && !parts.some((part) => part.text.includes(text))) parts.push({ joiner, text });
+  addPart(parts, joiner, err.message || String(err));
   const siblings = /** @type {{ errors?: unknown }} */ (err).errors;
   if (Array.isArray(siblings)) {
     const before = parts.length;

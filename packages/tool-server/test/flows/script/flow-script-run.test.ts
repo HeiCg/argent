@@ -435,6 +435,52 @@ describe("flow script executor — module loading", () => {
     );
   });
 
+  it("carries a cause that is not an Error", async () => {
+    const ws = workspace();
+    // Neither field has to hold an `Error`. `cause: "HTTP 500 …"` is what a
+    // handwritten wrapper puts there, and `Promise.any` over promises rejected
+    // with strings puts strings in `errors`. Node prints both; the runner
+    // dropped both, and it claims the exception, so the log had no second copy
+    // to fall back on — the report was the wrapper's own message and nothing
+    // else.
+    const stringCause = ws.write(
+      "string-cause.mjs",
+      `throw new Error("upload failed", {
+         cause: "HTTP 500 from https://api.example.com/v1/upload",
+       });`
+    );
+    const fromString = await executor().execute({ scriptPath: stringCause, projectRoot: ws.dir });
+    expect(fromString.failure?.kind).toBe("runtime");
+    expect(fromString.failure?.message).toBe(
+      "upload failed — caused by: HTTP 500 from https://api.example.com/v1/upload"
+    );
+
+    const rejected = ws.write(
+      "rejected.mjs",
+      `await Promise.any([Promise.reject("primary down"), Promise.reject("replica down")]);`
+    );
+    const fromRejected = await executor().execute({ scriptPath: rejected, projectRoot: ws.dir });
+    expect(fromRejected.failure?.message).toBe(
+      "All promises were rejected — caused by: primary down; replica down"
+    );
+
+    // An object cause renders as the data it is, nested keys included.
+    const objectCause = ws.write(
+      "object-cause.mjs",
+      `throw new Error("request rejected", { cause: { status: 422, field: "email" } });`
+    );
+    const fromObject = await executor().execute({ scriptPath: objectCause, projectRoot: ws.dir });
+    expect(fromObject.failure?.message).toBe(
+      'request rejected — caused by: {"status":422,"field":"email"}'
+    );
+
+    // And an error with no cause still says only what it says: `.cause` is read
+    // on every error and is absent from nearly all of them.
+    const plain = ws.write("plain.mjs", `throw new Error("plain failure");`);
+    const fromPlain = await executor().execute({ scriptPath: plain, projectRoot: ws.dir });
+    expect(fromPlain.failure?.message).toBe("plain failure");
+  });
+
   it("calls the script's own asynchronous failures runtime failures", async () => {
     const ws = workspace();
     // An error raised asynchronously carries the frames of wherever it was
