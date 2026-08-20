@@ -895,6 +895,73 @@ describe("flow-add-step", () => {
     expect(inner.invokeTool).toHaveBeenCalledTimes(2);
   });
 
+  it("reports the take, the file and the nested report alongside a refusal", async () => {
+    // A refusal returns three fields besides `message`, and each answers a
+    // question the author cannot answer any other way: `stepCount` says the
+    // take was left where it was (NOT reset), `savedTo` says which file that
+    // is, and `toolResult` is the only place the nested report survives —
+    // which step failed and how far the sequence got. Asserted against a take
+    // that already holds a step, so a zeroed count is distinguishable.
+    const registry = createMockRegistry({
+      "gesture-tap": { result: { tapped: true } },
+      "run-sequence": {
+        result: {
+          completed: 1,
+          total: 3,
+          steps: [
+            { tool: "gesture-tap", result: { tapped: true } },
+            { tool: "keyboard", error: "keyboard failed: device went away" },
+          ],
+        },
+      },
+    });
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "sequence-fields", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    const recorded = await tool.execute(
+      {},
+      {
+        name: "sequence-fields",
+        project_root: tmpDir,
+        command: "gesture-tap",
+        args: JSON.stringify({ udid: "ABC", x: 0.5, y: 0.3, delayMs: 1 }),
+      }
+    );
+    expect(recorded.stepCount).toBe(1);
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "sequence-fields",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({
+          udid: "ABC",
+          steps: [
+            { tool: "gesture-tap", args: { x: 0.5, y: 0.3 } },
+            { tool: "keyboard", args: { text: "hi" } },
+            { tool: "gesture-tap", args: { x: 0.5, y: 0.4 } },
+          ],
+        }),
+      }
+    );
+
+    expect(result.recorded).toBeUndefined();
+    expect(result.stepCount).toBe(1);
+    expect(result.savedTo).toBe(path.join(tmpDir, ".argent", "flows", "sequence-fields.yaml"));
+    expect(result.toolResult).toEqual({
+      completed: 1,
+      total: 3,
+      steps: [
+        { tool: "gesture-tap", result: { tapped: true } },
+        { tool: "keyboard", error: "keyboard failed: device went away" },
+      ],
+    });
+    expect(parseFlow(await onDisk("sequence-fields")).steps).toHaveLength(1);
+  });
+
   it("does not record a run-sequence whose nested step failed", async () => {
     const registry = createMockRegistry({
       "run-sequence": {
