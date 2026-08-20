@@ -95,6 +95,22 @@ const READ_BACK_UNAVAILABLE =
   " Nothing confirmed the chord took: the field could not be read back — either the screen would " +
   "not capture, or the focused field cannot be measured, which is what a password box always is.";
 
+const REMEDY = " Read the field back if the exact value matters.";
+
+/**
+ * The same advice for a request whose text came from a `{{secret:…}}`
+ * placeholder.
+ *
+ * "Read the field back" is the one thing an agent must not do there: the box
+ * holds a credential, the tool skips its own after-typing screenshot for that
+ * reason, and `argent-device-interact` tells the agent to submit or navigate
+ * away rather than `describe` such a field. Sending the ordinary remedy with the
+ * skipped-screenshot notice in the same response contradicts both.
+ */
+const SECRET_REMEDY =
+  " This field was filled from a secret, so do not read it back with `describe` or a screenshot. " +
+  "Confirm it by the app's own result instead.";
+
 const BLIND =
   " The field's length could not be read, so a fixed run of backspaces was sent instead of a " +
   "sized one; a longer field keeps its head.";
@@ -113,11 +129,17 @@ const BLIND =
  * travels into the agent's transcript and the tool-server's logs;
  * `redactSecretsFromError` substitutes the resolved value and could not redact a
  * count. Everything here is derived from WHICH path ran, never from what it read.
+ *
+ * `secret` changes the closing advice for the same reason — see SECRET_REMEDY.
  */
 export function androidClearNote(
   reason: AndroidClearSkipReason,
   outcome: AndroidClearOutcome,
-  { applied = false, fallbackText = false }: { applied?: boolean; fallbackText?: boolean } = {}
+  {
+    applied = false,
+    fallbackText = false,
+    secret = false,
+  }: { applied?: boolean; fallbackText?: boolean; secret?: boolean } = {}
 ): string {
   // `WHY` is keyed by a closed union, but the reason crosses an RPC boundary
   // from a helper that may be NEWER than this tool-server — a protocol-3 reason
@@ -141,6 +163,6 @@ export function androidClearNote(
       : "") +
     (outcome.blindDeleteRun ? BLIND : "") +
     (applied && fallbackText ? DOUBLED : "") +
-    ` Read the field back if the exact value matters.`
+    (secret ? SECRET_REMEDY : REMEDY)
   );
 }

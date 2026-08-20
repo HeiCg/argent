@@ -480,6 +480,10 @@ async function runAndroidPhoneType(
             // The same truthiness the injection above is gated on, so the note
             // claims a second write only where one was actually sent.
             fallbackText: !!params.text,
+            // Set by the tool's own `execute`, and the same flag that skips the
+            // after-typing screenshot: the closing advice must not send the
+            // agent to read a box holding a credential.
+            secret: params.secretText === true,
           }),
         }
       : {}),

@@ -2476,6 +2476,37 @@ describe("keyboard clear — Android (adb input)", () => {
       expect(result.note).not.toMatch(/\d/);
     });
 
+    it("does not send the agent to read back a field it just filled from a secret", async () => {
+      // The tool skips its own after-typing screenshot for a secret, and
+      // `argent-device-interact` tells the agent to submit or navigate away
+      // rather than `describe` such a field. "Read the field back" arrives in the
+      // same response as that skip notice and contradicts both.
+      seedLegacyLevel();
+      seedDump(dumpWith("Monday"));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc", secretText: true },
+        ANDROID
+      );
+
+      expect(result.note).not.toMatch(/Read the field back/);
+      expect(result.note).toMatch(/do not read it back with `describe` or a screenshot/);
+    });
+
+    it("keeps the ordinary read-back advice when the text is not a secret", async () => {
+      seedLegacyLevel();
+      seedDump(dumpWith("Monday"));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/Read the field back if the exact value matters/);
+    });
+
     it("carries no note when no clear was requested", async () => {
       const result = await makeAndroidImpl(registryWith({})).handler(
         {},
