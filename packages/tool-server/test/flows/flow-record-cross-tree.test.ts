@@ -2553,6 +2553,45 @@ describe("a flow-directive name points at the tool that records it", () => {
     expect(await recordedSteps("hints")).toEqual([]);
   });
 
+  it("reports the step count as the hand-edited file now stands, not the stale snapshot", async () => {
+    // Host mode re-reads the flow on the record-nothing paths so a
+    // mid-recording hand edit is reflected in the count they report — the
+    // stated reason that branch exists. Only its FAILURE half was covered
+    // (the test below writes an unparseable file), and that one's expectation
+    // of 0 matches the in-memory snapshot with or without the refresh: so
+    // deleting `session.flow = parseFlow(...)` while leaving the read in place
+    // kept everything green, and the positive behaviour could regress to a
+    // stale count silently.
+    const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
+    const flowPath = path.join(tmpDir, ".argent", "flows", "hints.yaml");
+
+    // One recorded step, so the in-memory snapshot is a NON-zero number that
+    // differs from what the file will say — a count of 0 either way would not
+    // tell the two sources apart.
+    await tool.execute(
+      {},
+      {
+        name: "hints",
+        project_root: tmpDir,
+        command: "gesture-tap",
+        args: JSON.stringify({ udid: IOS, x: 0.5, y: 0.5 }),
+      }
+    );
+    expect(await recordedSteps("hints")).toHaveLength(1);
+
+    // The author edits the YAML by hand while the recording is open.
+    await fs.writeFile(flowPath, "steps:\n  - echo: one\n  - echo: two\n  - echo: three\n", "utf8");
+
+    const result = await tool.execute(
+      {},
+      { name: "hints", project_root: tmpDir, command: "echo", args: "{}" }
+    );
+
+    expect(result.message).toContain("flow-add-echo");
+    expect(result.message).not.toContain("could not be read");
+    expect(result.stepCount).toBe(3); // the file, not the snapshot's 1
+  });
+
   it("qualifies the step count when the persisted flow can no longer be read", async () => {
     // The record-nothing paths re-read the file so a mid-recording hand edit is
     // reflected in the count they report. When that read (or parse) fails, the
