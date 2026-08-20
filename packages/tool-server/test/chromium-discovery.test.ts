@@ -71,6 +71,14 @@ async function startFakeCdpServer(options?: {
   };
 }
 
+/**
+ * A port whose probe can never be answered: Node's fetch refuses port 1 as a
+ * WHATWG "bad port" before it opens a socket. Anything in the unprivileged
+ * range is bindable — a `listen(0)` fake CDP server in a sibling test file
+ * serves the very /json responses that would make a probe here succeed.
+ */
+const UNREACHABLE_PORT = 1;
+
 const portsToCleanup: number[] = [];
 const serversToCleanup: FakeCdpServer[] = [];
 
@@ -135,10 +143,9 @@ describe("discoverChromiumDevices", () => {
   });
 
   it("returns no entry for a non-responsive port", async () => {
-    // Tracked but no server bound
-    trackChromiumPort(1);
-    portsToCleanup.push(1);
-    const devices = await discoverChromiumDevices({ timeoutMs: 300, ports: [1] });
+    trackChromiumPort(UNREACHABLE_PORT);
+    portsToCleanup.push(UNREACHABLE_PORT);
+    const devices = await discoverChromiumDevices({ timeoutMs: 300, ports: [UNREACHABLE_PORT] });
     expect(devices).toEqual([]);
   });
 
@@ -186,14 +193,13 @@ describe("port persistence across tool-server restarts", () => {
   });
 
   it("a dead persisted port is pruned from the file after a failed probe", async () => {
-    trackChromiumPort(43211);
-    portsToCleanup.push(43211);
-    expect(JSON.parse(fs.readFileSync(TEST_PORTS_FILE, "utf8"))).toContain(43211);
+    trackChromiumPort(UNREACHABLE_PORT);
+    portsToCleanup.push(UNREACHABLE_PORT);
+    expect(JSON.parse(fs.readFileSync(TEST_PORTS_FILE, "utf8"))).toContain(UNREACHABLE_PORT);
 
-    // Nothing listens on 43211 — the probe fails and prunes it everywhere.
-    await discoverChromiumDevices({ timeoutMs: 300, ports: [43211] });
-    expect(JSON.parse(fs.readFileSync(TEST_PORTS_FILE, "utf8"))).not.toContain(43211);
-    expect(getCandidateChromiumPorts()).not.toContain(43211);
+    await discoverChromiumDevices({ timeoutMs: 300, ports: [UNREACHABLE_PORT] });
+    expect(JSON.parse(fs.readFileSync(TEST_PORTS_FILE, "utf8"))).not.toContain(UNREACHABLE_PORT);
+    expect(getCandidateChromiumPorts()).not.toContain(UNREACHABLE_PORT);
   });
 
   it("untrackChromiumPort removes the port from the persisted file", () => {
