@@ -70,6 +70,11 @@ export function asNumber(raw: unknown): number | undefined {
   return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
 
+/** Accept a whole number above zero — a count, a byte size, a millisecond bound. */
+export function asPositiveInteger(raw: unknown): number | undefined {
+  return typeof raw === "number" && Number.isSafeInteger(raw) && raw > 0 ? raw : undefined;
+}
+
 /** Accept an array of non-blank strings (blank entries dropped). */
 export function asStringArray(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined;
@@ -91,6 +96,7 @@ const PARSER_EXPECTATIONS = new Map<ConfigDefinition["parse"], string>([
   [asBoolean, "a boolean (true or false)"],
   [asString, "a non-empty string"],
   [asNumber, "a number"],
+  [asPositiveInteger, "a whole number greater than zero"],
   [asStringArray, "an array of strings"],
 ]);
 
@@ -164,6 +170,46 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     // *client's* config that decides.
     merge: "prioritize-local",
     example: "~/Movies/argent",
+  },
+  // ── Flow `script` step host bounds ────────────────────────────────────
+  // All three are global-scope only, and that is the load-bearing part. Each
+  // bounds how much of the developer's machine a script step may occupy, and a
+  // project scope would let a checked-in `.argent/config.json` — a file an
+  // agent writes — raise the ceiling on every flow in that repository.
+  // `merge` is nominal for a global-only key: the project scope is never read.
+  {
+    key: "scripts.maxTimeoutMs",
+    description:
+      "Upper bound, in milliseconds, on the time limit a flow `script` step may ask for " +
+      "(default 300000 — five minutes). Bounds how long one script can occupy the host.",
+    scopes: ["global"],
+    parse: asPositiveInteger,
+    merge: "prioritize-global",
+    default: 5 * 60_000,
+    example: "300000",
+  },
+  {
+    key: "scripts.heapLimitMb",
+    description:
+      "Old-space heap limit, in MiB, given to each flow `script` process (default 512). " +
+      "A smaller value is below what a real npm dependency needs at import time.",
+    scopes: ["global"],
+    parse: asPositiveInteger,
+    merge: "prioritize-global",
+    default: 512,
+    example: "512",
+  },
+  {
+    key: "scripts.concurrency",
+    description:
+      "How many flow `script` processes one tool-server runs at once. Unset ⇒ derived from " +
+      "the CPU count as max(2, min(8, cpus - 2)); a script can spin a core, and eight " +
+      "spinning runners on a four-core laptop stops every other agent on the host.",
+    scopes: ["global"],
+    parse: asPositiveInteger,
+    merge: "prioritize-global",
+    // No `default`: the fallback is CPU-derived, so the executor computes it.
+    example: "4",
   },
 ] as const;
 

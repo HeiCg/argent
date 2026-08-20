@@ -1,0 +1,284 @@
+import { fork } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import net from "node:net";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  FlowScriptExecutor,
+  type FlowScriptFailure,
+} from "../../../src/tools/flows/script/flow-script-executor";
+import {
+  parseScriptResponse,
+  type ScriptFailureType,
+  type ScriptResponse,
+} from "../../../src/tools/flows/script/flow-script-protocol";
+import {
+  createScriptWorkspace,
+  SOURCE_RUNNER_DIR,
+  type ScriptWorkspace,
+} from "../../helpers/flow-script-workspace";
+
+const workspaces: ScriptWorkspace[] = [];
+const cleanups: Array<() => void> = [];
+
+function workspace(): ScriptWorkspace {
+  const ws = createScriptWorkspace("proto");
+  workspaces.push(ws);
+  return ws;
+}
+
+afterEach(() => {
+  while (cleanups.length) cleanups.pop()!();
+  while (workspaces.length) workspaces.pop()!.cleanup();
+});
+
+function executor() {
+  return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 });
+}
+
+/** Run a script against a stand-in runner that misbehaves in a chosen way. */
+async function withFakeRunner(source: string) {
+  const ws = workspace();
+  const runnerDir = ws.resolve("runner");
+  fs.mkdirSync(runnerDir, { recursive: true });
+  fs.writeFileSync(path.join(runnerDir, "flow-script-runner.mjs"), source);
+  const script = ws.write("script.mjs", `output.ok = true;`);
+  return executor().execute({
+    scriptPath: script,
+    projectRoot: ws.dir,
+    runnerDir,
+    timeoutMs: 5_000,
+  });
+}
+
+describe("script response parsing", () => {
+  it("accepts the three valid shapes", () => {
+    const started: ScriptResponse | null = parseScriptResponse({ type: "started" });
+    expect(started).toEqual({ type: "started" });
+    expect(parseScriptResponse({ type: "result", outputJson: "{}" })).toEqual({
+      type: "result",
+      outputJson: "{}",
+    });
+    const runtime: ScriptFailureType = "runtime";
+    expect(parseScriptResponse({ type: "failure", failureType: runtime, message: "x" })).toEqual({
+      type: "failure",
+      failureType: runtime,
+      message: "x",
+    });
+  });
+
+  it.each([
+    ["a non-object", "started"],
+    ["null", null],
+    ["an unknown type", { type: "progress" }],
+    ["a result with no output", { type: "result" }],
+    ["a result whose output is not a string", { type: "result", outputJson: {} }],
+    ["a failure with no message", { type: "failure", failureType: "runtime" }],
+    [
+      "a failure with an unknown failure type",
+      { type: "failure", failureType: "weird", message: "x" },
+    ],
+  ])("rejects %s", (_label, raw) => {
+    expect(parseScriptResponse(raw)).toBeNull();
+  });
+});
+
+describe("flow script executor — a runner that misbehaves", () => {
+  it("reports an unrecognized message as a protocol failure", async () => {
+    const result = await withFakeRunner(
+      `process.on("message", () => { process.send({ type: "progress", at: 1 }); });`
+    );
+    expect(result.failure?.kind).toBe("protocol");
+    expect(result.failure?.message).toContain("does not recognise");
+  });
+
+  it("reports a runner that exits before starting the script", async () => {
+    const result = await withFakeRunner(`process.on("message", () => process.exit(9));`);
+    expect(result.failure?.kind).toBe("protocol");
+    expect(result.failure?.message).toContain("exited before it started the script");
+    expect(result.failure?.message).toContain("exit code 9");
+  });
+
+  it("reports a runner that starts the script then exits without a verdict", async () => {
+    const result = await withFakeRunner(
+      `process.on("message", () => { process.send({ type: "started" }); process.exit(0); });`
+    );
+    expect(result.failure?.kind).toBe("exit");
+    expect(result.failure?.message).toContain("exit code 0");
+  });
+
+  it("rejects a result whose output does not parse", async () => {
+    const result = await withFakeRunner(
+      `process.on("message", () => {
+         process.send({ type: "started" });
+         process.send({ type: "result", outputJson: "{not json" }, () => process.exit(0));
+       });`
+    );
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("did not parse");
+  });
+
+  it("keeps the first terminal response and ignores a second", async () => {
+    const result = await withFakeRunner(
+      `process.on("message", () => {
+         process.send({ type: "started" });
+         process.send({ type: "result", outputJson: JSON.stringify({ first: true }) });
+         process.send({ type: "failure", failureType: "runtime", message: "second" }, () =>
+           process.exit(0)
+         );
+       });`
+    );
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({ first: true });
+  });
+
+  it("re-checks the output size even though a compliant child already did", async () => {
+    // The parent must not depend on a child staying compliant after arbitrary
+    // script code has run inside it.
+    const result = await withFakeRunner(
+      `process.on("message", () => {
+         process.send({ type: "started" });
+         const big = JSON.stringify({ blob: "x".repeat(1024 * 1024 + 32) });
+         process.send({ type: "result", outputJson: big }, () => process.exit(0));
+       });`
+    );
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("the limit is 1.0 MiB");
+  });
+
+  it("reports a missing runner rather than spawning nothing", async () => {
+    const ws = workspace();
+    const script = ws.write("script.mjs", `output.ok = true;`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      runnerDir: ws.resolve("no-such-dir"),
+    });
+    const failure = result.failure as FlowScriptFailure;
+    expect(failure.kind).toBe("spawn");
+    expect(failure.message).toContain("missing from this installation");
+  });
+});
+
+describe("flow script executor — the published layout", () => {
+  it("runs from a directory holding only the three .mjs files", async () => {
+    // In the published bundle the runner sits flat in dist/ beside
+    // tool-server.cjs, with no package.json and no node_modules of its own. It
+    // resolves both watchdogs against its own module URL, so nothing else has
+    // to be there.
+    const dist = fs.mkdtempSync(path.join(os.tmpdir(), "argent-script-dist-"));
+    cleanups.push(() => fs.rmSync(dist, { recursive: true, force: true }));
+    for (const name of fs.readdirSync(SOURCE_RUNNER_DIR).filter((f) => f.endsWith(".mjs"))) {
+      fs.copyFileSync(path.join(SOURCE_RUNNER_DIR, name), path.join(dist, name));
+    }
+    expect(fs.readdirSync(dist).sort()).toEqual([
+      "flow-script-runner.mjs",
+      "flow-script-watchdog-deadline.mjs",
+      "flow-script-watchdog-lifeline.mjs",
+    ]);
+
+    const ws = workspace();
+    const script = ws.write("seed.mjs", `console.log("bundled"); output.ok = true;`);
+    const shared = executor();
+    await shared.execute({ scriptPath: script, projectRoot: ws.dir, runnerDir: dist });
+
+    const started = Date.now();
+    const result = await shared.execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      runnerDir: dist,
+    });
+    const roundTripMs = Date.now() - started;
+
+    expect(result.ok).toBe(true);
+    expect(result.log).toContain("bundled");
+    // Process start cost, measured from the published layout: this is what
+    // decides whether a process pool is ever worth adding. Locally it is ~60ms.
+    expect(roundTripMs).toBeLessThan(3_000);
+  }, 30_000);
+});
+
+describe("flow script runner — the watchdogs, driven directly", () => {
+  /** Fork the real runner the way the executor does, without its time limit. */
+  function forkRunner(scriptPath: string, deadlineMs: number) {
+    const child = fork(path.join(SOURCE_RUNNER_DIR, "flow-script-runner.mjs"), [], {
+      cwd: path.dirname(scriptPath),
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+      execArgv: ["--max-old-space-size=512"],
+      stdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],
+      detached: process.platform !== "win32",
+    });
+    cleanups.push(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    });
+    child.send({
+      type: "execute",
+      scriptUrl: pathToFileURL(scriptPath).href,
+      outputJson: "{}",
+      deadlineMs,
+      maxOutputBytes: 1024 * 1024,
+    });
+    return child;
+  }
+
+  function exitOf(child: ReturnType<typeof forkRunner>) {
+    return new Promise<{ code: number | null; signal: NodeJS.Signals | null; at: number }>(
+      (resolve) => {
+        const started = Date.now();
+        child.once("exit", (code, signal) => resolve({ code, signal, at: Date.now() - started }));
+      }
+    );
+  }
+
+  it("stops a spinning script on its own deadline, with no help from the parent", async () => {
+    // The child's copy of the time limit is the platform-neutral backstop: it
+    // applies even when the parent is gone, and `Atomics.wait` behaves the same
+    // everywhere.
+    const ws = workspace();
+    const script = ws.write("spin.mjs", `for (;;) {}`);
+    const child = forkRunner(script, 1_200);
+    const exit = await exitOf(child);
+
+    expect(exit.signal).toBe("SIGKILL");
+    expect(exit.at).toBeGreaterThan(1_000);
+    expect(exit.at).toBeLessThan(6_000);
+  }, 30_000);
+
+  it("stops a spinning script when the parent's lifeline end closes", async () => {
+    const ws = workspace();
+    const script = ws.write("spin.mjs", `for (;;) {}`);
+    // A deadline far past the assertion window, so only the lifeline can be
+    // what stops it.
+    const child = forkRunner(script, 120_000);
+    const exit = exitOf(child);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    (child.stdio[4] as net.Socket | null)?.destroy();
+
+    expect((await exit).signal).toBe("SIGKILL");
+  }, 30_000);
+});
+
+describe("flow script executor — the lifeline end in the parent", () => {
+  it("unrefs it so one script step cannot hold the tool server past idle shutdown", async () => {
+    const original = net.Socket.prototype.unref;
+    const unreffed: net.Socket[] = [];
+    net.Socket.prototype.unref = function (this: net.Socket) {
+      unreffed.push(this);
+      return original.call(this);
+    };
+    cleanups.push(() => {
+      net.Socket.prototype.unref = original;
+    });
+
+    const ws = workspace();
+    const script = ws.write("quick.mjs", `output.ok = true;`);
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.ok).toBe(true);
+    // Node exposes stdio index 4 as a duplex Socket that holds a reference on
+    // the tool server's event loop until it is unref'd.
+    expect(unreffed.length).toBeGreaterThanOrEqual(1);
+  });
+});

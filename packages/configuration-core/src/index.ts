@@ -55,6 +55,7 @@ export {
   asBoolean,
   asString,
   asNumber,
+  asPositiveInteger,
   asStringArray,
   type ConfigDefinition,
 } from "./config-schema.js";

@@ -20,6 +20,7 @@
     "scripts/**/*.cjs",
     "scripts/**/*.mjs",
     "packages/argent/scripts/**/*.cjs",
+    "packages/tool-server/scripts/**/*.mjs",
     "packages/skills/scripts/**/*.js"
   ]
 }
