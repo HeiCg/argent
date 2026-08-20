@@ -473,6 +473,36 @@ describe("await-ui-element tool", () => {
     expect(result.note).toMatch(/REORDERS/);
   });
 
+  it("`text` timeout note defuses a directional override in the EXPECTATION too", async () => {
+    // The label is not the only carrier: the expectation is authored, and the
+    // note this message appends lands after it, so an override there reverses
+    // the explanation itself. Such a string reaches an expectation exactly
+    // because the note tells the author to copy what the app renders and the
+    // fold keeps the characters that reorder.
+    const { api } = makeSequencedAXService([
+      axResponse([{ label: "bedrock", value: "", frame: FRAME, traits: [] }]),
+    ]);
+    const tool = createAwaitUiElementTool(iosRegistry(api));
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS_UDID,
+        condition: "text",
+        selector: { text: "bedrock" },
+        expectedText: "bed\u202Erock",
+        textMatch: "contains",
+        timeoutMs: 30,
+        pollIntervalMs: 10,
+      }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.note).not.toContain("\u202E");
+    expect(result.note).toMatch(/<U\+202E>/);
+    expect(result.note).toMatch(/REORDERS/);
+  });
+
   it("`text` timeout note stays bare when the strings differ visibly", async () => {
     const { api } = makeSequencedAXService([
       axResponse([{ label: "Amount", value: "PLN 43", frame: FRAME, traits: [] }]),

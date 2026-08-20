@@ -370,12 +370,16 @@ function timeoutNote(
           : params.textMatch === "equals"
             ? confusableTextNote(shown, params.expectedText)
             : confusableTextNoteIn(shown, params.expectedText);
-      // The label is defused before it is quoted: an unbalanced U+202E in it
-      // reverses every character printed after it, and what follows here is the
-      // codepoint note itself. See quoteScreenText.
+      // BOTH quoted strings are defused, not just the label: an unbalanced
+      // U+202E reverses every character printed after it, and what follows here
+      // is the codepoint note itself — the explanation this failure exists to
+      // give, rendered mirrored. The expectation is as likely a carrier as the
+      // label, because the note that precedes it tells the author to copy the
+      // characters the app renders, and the fold deliberately keeps the ones
+      // that reorder. See quoteScreenText.
       base =
         `element matched but its text was "${quoteScreenText(shown)}" ` +
-        `(wanted to ${wanted} "${params.expectedText}")` +
+        `(wanted to ${wanted} "${quoteScreenText(params.expectedText ?? "")}")` +
         (confusable ? ` — ${confusable}` : "");
       break;
     }
