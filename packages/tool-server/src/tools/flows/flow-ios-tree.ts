@@ -5,11 +5,13 @@ import {
   type DeviceInfo,
   type Registry,
 } from "@argent/registry";
-import { nativeDevtoolsRef, type NativeDevtoolsApi } from "../../blueprints/native-devtools";
 import {
-  resolveNativeTargetApp,
-  type ResolvedNativeTargetApp,
-} from "../../utils/native-target-app";
+  buildAppStateMessage,
+  isInjectableBundleId,
+  nativeDevtoolsRef,
+  type NativeDevtoolsApi,
+} from "../../blueprints/native-devtools";
+import { resolveNativeTargetApp } from "../../utils/native-target-app";
 import { deviceSetForUdid, simctlPrefix } from "../../utils/ios-device-sets";
 import { flattenHoisting, type FlatNode } from "./flow-tree-flatten";
 import {
@@ -314,16 +316,70 @@ const FULL_HIERARCHY_FIELDS = [
 const FLOW_TREE_MAX_DEPTH = 100;
 
 /**
+ * Why the app a flow launched serves no view hierarchy, for the case where
+ * nothing at all is connected.
+ *
+ * An app the dylib cannot be relied on to load into is terminal for a selector,
+ * yet every measured state offers a relaunch or a tool-server restart: the
+ * launchd env carrying the bootstrap dylib is simulator-wide, so such a process
+ * inherits the injection tokens the measurement reads and can score as merely
+ * `unregistered`. Selector resolution is where that impossibility bites — the
+ * launch gate lets these apps through so a coordinate-driven flow still runs —
+ * so it is said here, with the remedy that exists at flow level.
+ *
+ * Everything else is measured off the running process; a rejection degrades as
+ * it does for the other consumers, since the call re-applies the launchd env
+ * before measuring and so rejects on a sim that went away mid-run.
+ */
+async function unreadableHierarchyReason(
+  nativeApi: NativeDevtoolsApi,
+  bundleId: string
+): Promise<string> {
+  if (!isInjectableBundleId(bundleId)) {
+    return (
+      `${bundleId} is an Apple system app: it is a platform binary with library validation, so ` +
+      `argent's native devtools cannot be relied on to inject into it, and without them a flow has ` +
+      `no view hierarchy to resolve selectors against. Replace the selector steps with coordinate ` +
+      `ones — \`tap: { x: 0.5, y: 0.35 }\` takes a point directly and reads no tree — or target an app ` +
+      `argent installs.`
+    );
+  }
+  const state = await nativeApi.appConnectionState(bundleId).catch(() => "indeterminate" as const);
+  if (state === "connected") {
+    // Reachable: `appConnectionState` re-reads the live connections map after
+    // its env re-apply and process probe, several simctl round-trips after the
+    // empty list that sent us here. So the connection arrived mid-read, and the
+    // only thing wrong with this attempt is that it was taken too early.
+    return (
+      `native devtools reported no connected app while this tree was being read, but ${bundleId} is ` +
+      `connected now — the connection arrived mid-read. Retry: flows resolve selectors against the ` +
+      `full view hierarchy native devtools serve.`
+    );
+  }
+  // The diagnosis already names the corrective action — for `unregistered` a
+  // tool-server restart, where telling a flow author to relaunch would loop.
+  // The trailing sentence says why a tree read needed one at all.
+  return `${buildAppStateMessage(bundleId, state)} Flows resolve selectors against the full view hierarchy native devtools serve.`;
+}
+
+/**
  * Query the raw UIView tree via native-devtools `getFullHierarchy` and adapt
  * it. Throws — with the reason — when native-devtools is unavailable / not yet
  * connected / errored, or when the resolved target returns no windows (a
  * non-injectable or backgrounded app): flows never degrade to the AX tree (see
  * `fetchFlowTree`), so the caller's retry loop either rides out a transient
  * failure or surfaces this message as the step's failure reason.
+ *
+ * `launchedNativeApp` is the app this run's `launch:` step started, when it had
+ * one. It serves the two reads auto-targeting cannot, both following from it
+ * resolving only out of the connected list: with that list empty it names the
+ * app whose disconnection needs explaining, and when auto-resolution's own probe
+ * times out mid-stall it arbitrates the target.
  */
 export async function queryFullHierarchyTree(
   registry: Registry,
-  device: DeviceInfo
+  device: DeviceInfo,
+  launchedNativeApp?: string
 ): Promise<DescribeTreeData> {
   let nativeApi: NativeDevtoolsApi;
   try {
@@ -335,6 +391,19 @@ export async function queryFullHierarchyTree(
       err
     );
   }
+  // Auto-targeting draws its candidates from `listConnectedBundleIds`, the same
+  // map `appConnectionState` reads, so an empty list is exactly the set of
+  // states that explain a missing connection — and the error it raises there
+  // ("Launch or restart the app first") is the restart loop this measurement
+  // exists to break. The flow's launched id does not come from that map, so it
+  // survives the disconnection auto-targeting could not describe.
+  //
+  // Tested directly rather than by catching the throw: its failure code travels
+  // on a module-local symbol, so a duplicate `@argent/registry` instance would
+  // read it as absent and silently fall back to the stock message.
+  if (launchedNativeApp !== undefined && nativeApi.listConnectedBundleIds().length === 0) {
+    throw new Error(await unreadableHierarchyReason(nativeApi, launchedNativeApp));
+  }
   // resolveNativeTargetApp's own errors suggest providing a bundleId — a flow
   // selector step has no way to express one (this call hardcodes
   // auto-targeting) — so replace that advice with the remedy available for the
@@ -343,105 +412,121 @@ export async function queryFullHierarchyTree(
   // intended one, NOT to relaunch it for instrumentation it already has. Only
   // "no connected app" means the target was launched outside Argent (Metro/Expo,
   // Xcode, or the home-screen icon) and needs an Argent relaunch.
-  let target: ResolvedNativeTargetApp;
+  let target: { bundleId: string };
   try {
     target = await resolveNativeTargetApp(nativeApi, undefined);
   } catch (err) {
     const failureCode = getFailureSignal(err)?.error_code;
-    const terminate = await terminateCommand(device);
-    if (failureCode === FAILURE_CODES.NATIVE_TARGET_MULTIPLE_APPS_AMBIGUOUS) {
-      // Backgrounding the others is deliberately NOT offered: it leaves them
-      // connected, so the set stays ambiguous, and once iOS suspends one it
-      // stops answering the state probe entirely — turning this failure into
-      // the harder indeterminate one below. That rationale lives here rather
-      // than in the reason, which is repeated per step.
+    // The `launch:`-derived hint arbitrates ONLY a timeout, and only before the
+    // diagnoses below: auto-resolution's `Application.getState` probe hops onto
+    // the app's main thread, so an app mid-stall (first Hermes parse, Lottie
+    // decode) times it out even though it is exactly the app the flow launched
+    // and is about to read. Every resolution that ANSWERS — including the
+    // deliberate "single app but backgrounded" error — is preferred, so the
+    // hint never bypasses a guard that fired; it only rides out a probe the
+    // stall made unanswerable.
+    if (
+      failureCode === FAILURE_CODES.NATIVE_DEVTOOLS_RPC_TIMEOUT &&
+      launchedNativeApp !== undefined &&
+      nativeApi.listConnectedBundleIds().includes(launchedNativeApp)
+    ) {
+      target = { bundleId: launchedNativeApp };
+    } else {
+      const terminate = await terminateCommand(device);
+      if (failureCode === FAILURE_CODES.NATIVE_TARGET_MULTIPLE_APPS_AMBIGUOUS) {
+        // Backgrounding the others is deliberately NOT offered: it leaves them
+        // connected, so the set stays ambiguous, and once iOS suspends one it
+        // stops answering the state probe entirely — turning this failure into
+        // the harder indeterminate one below. That rationale lives here rather
+        // than in the reason, which is repeated per step.
+        throw wrapPreservingFailure(
+          // The header stays short because the embedded diagnostic's own first
+          // line already says the set is ambiguous; repeating it cost 90 chars of
+          // a budget the per-app entries need.
+          `could not target an app to read the view hierarchy from:\n` +
+            `${cappedAppDiagnostic(withoutExplicitBundleIdAdvice(errMsg(err)))}\n` +
+            `Flow selectors auto-target and cannot name a bundleId. Foreground the intended app with ` +
+            `launch-app (it does not terminate), then retry; clear the others with ` +
+            `\`${terminate}\` (argent has no terminate tool, and ` +
+            `restart-app would just bring that app back to the front).`,
+          err
+        );
+      }
+      if (failureCode === FAILURE_CODES.NATIVE_TARGET_SINGLE_APP_NOT_FOREGROUND) {
+        // The lone connected app is already instrumented; it is just not
+        // foreground-like. Reaching this verdict means the app ANSWERED the state
+        // probe, so it is not merely suspended (that path rejects the probe and
+        // is handled below): the window is a just-backgrounded app before iOS
+        // suspends it, or one that keeps running in the background (audio,
+        // location, VoIP) and so keeps answering. A permission dialog does NOT
+        // land here — the app stays inactive with a foreground-inactive scene,
+        // which resolves normally. Foregrounding fixes the read, so the generic
+        // relaunch-for-instrumentation advice below would misdiagnose the state.
+        // Keep resolveNativeTargetApp's per-app applicationState diagnostic.
+        throw wrapPreservingFailure(
+          `the only native-devtools-connected app is not foreground, so it cannot be auto-targeted:\n` +
+            `${withoutExplicitBundleIdAdvice(errMsg(err))}\n` +
+            `Flow selector steps auto-target and cannot provide a bundleId. Bring that app to the ` +
+            `foreground with launch-app (it does not terminate — the app is already instrumented, ` +
+            `just not frontmost), then retry.`,
+          err
+        );
+      }
+      // Neither verdict — the applicationState probe resolveNativeTargetApp runs
+      // over EVERY connected app failed, so it reached no verdict at all. iOS
+      // suspends a backgrounded app within about a second and a suspended app
+      // stops answering that probe, so one stale connection rejects the whole
+      // read (the probe is a single Promise.all). That is not the "nothing is
+      // instrumented" state the relaunch advice below describes: the connections
+      // are live. Relaunching discards whatever state the flow built up, and when
+      // the unresponsive connection belongs to a DIFFERENT app than the one being
+      // driven, relaunching the target cannot fix the read at all.
+      const stillConnected = nativeApi.listConnectedBundleIds();
+      if (stillConnected.length > 0) {
+        throw wrapPreservingFailure(
+          `could not read the state of the native-devtools-connected apps, so none could be ` +
+            `auto-targeted (${firstClause(err)}). Connected: ${cappedList(stillConnected)}. ` +
+            `They are instrumented — do not relaunch. A suspended app stops answering: foreground ` +
+            `the app the flow drives with launch-app (it does not terminate), then retry.` +
+            // Only worth saying when there IS another connection to clear, and it
+            // has to name a command that exists: argent exposes no terminate tool,
+            // and restart-app on the other app would make it frontmost instead.
+            (stillConnected.length > 1
+              ? ` To clear the others use \`${terminate}\` — argent ` +
+                `exposes no terminate tool, and restart-app would bring that app to the front instead.`
+              : ``),
+          err
+        );
+      }
+      // Kept short on purpose: every selector read that fails repeats this reason
+      // verbatim, and the recorder repeats it once per captured tap.
       throw wrapPreservingFailure(
-        // The header stays short because the embedded diagnostic's own first
-        // line already says the set is ambiguous; repeating it cost 90 chars of
-        // a budget the per-app entries need.
-        `could not target an app to read the view hierarchy from:\n` +
-          `${cappedAppDiagnostic(withoutExplicitBundleIdAdvice(errMsg(err)))}\n` +
-          `Flow selectors auto-target and cannot name a bundleId. Foreground the intended app with ` +
-          `launch-app (it does not terminate), then retry; clear the others with ` +
-          `\`${terminate}\` (argent has no terminate tool, and ` +
-          `restart-app would just bring that app back to the front).`,
+        `no app is connected to native devtools, so flow selectors have no instrumented process to ` +
+          `read the view hierarchy from (${firstClause(err)}). Relaunch with restart-app (or a flow ` +
+          `\`launch\` step): launch-app does not terminate, so on an app already running from ` +
+          `Metro/Expo, Xcode, or its icon it only foregrounds that uninstrumented process. ` +
+          // "the native-devtools FEATURE tools", not "the native-* tools": only
+          // the six that run the throwing 3-arg precheck refuse a com.apple.*
+          // bundle. native-devtools-status runs the 2-arg form and reports
+          // injectable:false instead, and the native-profiler-* tools do not
+          // precheck at all — so the broader claim would send an agent away from
+          // the one native-* tool that can confirm this state.
+          `Argent treats an Apple system app (com.apple.*) as non-injectable — the native-devtools ` +
+          `feature tools refuse it too — so if one never connects, drive it with raw point taps ` +
+          `and tool: await-ui-element steps.`,
         err
       );
     }
-    if (failureCode === FAILURE_CODES.NATIVE_TARGET_SINGLE_APP_NOT_FOREGROUND) {
-      // The lone connected app is already instrumented; it is just not
-      // foreground-like. Reaching this verdict means the app ANSWERED the state
-      // probe, so it is not merely suspended (that path rejects the probe and
-      // is handled below): the window is a just-backgrounded app before iOS
-      // suspends it, or one that keeps running in the background (audio,
-      // location, VoIP) and so keeps answering. A permission dialog does NOT
-      // land here — the app stays inactive with a foreground-inactive scene,
-      // which resolves normally. Foregrounding fixes the read, so the generic
-      // relaunch-for-instrumentation advice below would misdiagnose the state.
-      // Keep resolveNativeTargetApp's per-app applicationState diagnostic.
-      throw wrapPreservingFailure(
-        `the only native-devtools-connected app is not foreground, so it cannot be auto-targeted:\n` +
-          `${withoutExplicitBundleIdAdvice(errMsg(err))}\n` +
-          `Flow selector steps auto-target and cannot provide a bundleId. Bring that app to the ` +
-          `foreground with launch-app (it does not terminate — the app is already instrumented, ` +
-          `just not frontmost), then retry.`,
-        err
-      );
-    }
-    // Neither verdict — the applicationState probe resolveNativeTargetApp runs
-    // over EVERY connected app failed, so it reached no verdict at all. iOS
-    // suspends a backgrounded app within about a second and a suspended app
-    // stops answering that probe, so one stale connection rejects the whole
-    // read (the probe is a single Promise.all). That is not the "nothing is
-    // instrumented" state the relaunch advice below describes: the connections
-    // are live. Relaunching discards whatever state the flow built up, and when
-    // the unresponsive connection belongs to a DIFFERENT app than the one being
-    // driven, relaunching the target cannot fix the read at all.
-    const stillConnected = nativeApi.listConnectedBundleIds();
-    if (stillConnected.length > 0) {
-      throw wrapPreservingFailure(
-        `could not read the state of the native-devtools-connected apps, so none could be ` +
-          `auto-targeted (${firstClause(err)}). Connected: ${cappedList(stillConnected)}. ` +
-          `They are instrumented — do not relaunch. A suspended app stops answering: foreground ` +
-          `the app the flow drives with launch-app (it does not terminate), then retry.` +
-          // Only worth saying when there IS another connection to clear, and it
-          // has to name a command that exists: argent exposes no terminate tool,
-          // and restart-app on the other app would make it frontmost instead.
-          (stillConnected.length > 1
-            ? ` To clear the others use \`${terminate}\` — argent ` +
-              `exposes no terminate tool, and restart-app would bring that app to the front instead.`
-            : ``),
-        err
-      );
-    }
-    // Kept short on purpose: every selector read that fails repeats this reason
-    // verbatim, and the recorder repeats it once per captured tap.
-    throw wrapPreservingFailure(
-      `no app is connected to native devtools, so flow selectors have no instrumented process to ` +
-        `read the view hierarchy from (${firstClause(err)}). Relaunch with restart-app (or a flow ` +
-        `\`launch\` step): launch-app does not terminate, so on an app already running from ` +
-        `Metro/Expo, Xcode, or its icon it only foregrounds that uninstrumented process. ` +
-        // "the native-devtools FEATURE tools", not "the native-* tools": only
-        // the six that run the throwing 3-arg precheck refuse a com.apple.*
-        // bundle. native-devtools-status runs the 2-arg form and reports
-        // injectable:false instead, and the native-profiler-* tools do not
-        // precheck at all — so the broader claim would send an agent away from
-        // the one native-* tool that can confirm this state.
-        `Argent treats an Apple system app (com.apple.*) as non-injectable — the native-devtools ` +
-        `feature tools refuse it too — so if one never connects, drive it with raw point taps ` +
-        `and tool: await-ui-element steps.`,
-      err
-    );
   }
 
   // Reachable only through a disconnect race. The target came from
   // `resolveNativeTargetApp(api, undefined)`, which returns ids out of
-  // `listConnectedBundleIds()`, and `requiresAppRestart` answers false for
-  // anything in `connections` — so getting `true` here means the socket dropped
-  // between the resolve and this call. The app therefore WAS instrumented, and
-  // the "launched before argent's instrumentation loaded" diagnosis that fits
-  // an explicitly-named bundle is exactly wrong for this one.
-  if (await nativeApi.requiresAppRestart(target.bundleId)) {
+  // `listConnectedBundleIds()` — so re-reading that same live map and NOT
+  // finding the target means the socket dropped between the resolve and this
+  // call. The app therefore WAS instrumented, and the "launched before argent's
+  // instrumentation loaded" diagnosis that fits an explicitly-named bundle is
+  // exactly wrong for this one.
+  if (!nativeApi.listConnectedBundleIds().includes(target.bundleId)) {
     throw new Error(
       `${target.bundleId} answered the target probe and then dropped its native-devtools ` +
         `connection before the view hierarchy could be read. It was instrumented, so a retry may ` +

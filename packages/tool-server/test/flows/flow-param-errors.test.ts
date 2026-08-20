@@ -3,7 +3,12 @@ import { z } from "zod";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Registry, getFailureSignal, FAILURE_CODES } from "@argent/registry";
+import {
+  Registry,
+  getFailureSignal,
+  FAILURE_CODES,
+  zodObjectToJsonSchema,
+} from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
 import { InvalidToolInputError } from "../../src/utils/capability";
@@ -269,15 +274,30 @@ describe("flow-read-prerequisite parameter handling", () => {
     expect(result.executionPrerequisite).toBe("anywhere");
   });
 
-  it("advertises both spellings in the oneOf it publishes to MCP and HTTP clients", () => {
-    // superRefine cannot be expressed in JSON Schema, so `oneOf` is the only
-    // machine-readable statement of the rule a client sees. It has to name the
-    // alias, or a client generating calls from the schema never learns of it.
+  it("advertises both spellings in the schema it publishes to MCP and HTTP clients", () => {
+    // A client generating calls from the schema has to be able to learn of the
+    // alias. It cannot be advertised as a top-level `oneOf` naming both
+    // spellings: the Anthropic Messages API rejects a top-level combinator with
+    // a 400 that fails every tool in the request (#773), which is why
+    // tool-input-schema-contract.test.ts forbids one. So the alias has to be
+    // legible from the published `properties` instead — `flow_name` present as
+    // its own field, and its description saying what it aliases.
     for (const tool of [createRunFlowTool(new Registry()), flowReadPrerequisiteTool]) {
-      expect(tool.inputSchema!.oneOf, tool.id).toEqual([
-        { anyOf: [{ required: ["name"] }, { required: ["flow_name"] }] },
-        { required: ["flow_path"] },
-      ]);
+      const schema = zodObjectToJsonSchema(tool.zodSchema!) as {
+        properties: Record<string, { description?: string }>;
+        required?: string[];
+      };
+
+      expect(Object.keys(schema.properties), tool.id).toEqual(
+        expect.arrayContaining(["name", "flow_name", "flow_path"])
+      );
+      expect(schema.properties.flow_name.description, tool.id).toMatch(/alias for `name`/i);
+
+      // Neither spelling may be `required`, or the alias-only call the previous
+      // tests make would be rejected before the tool ever runs.
+      expect(schema.required ?? [], tool.id).not.toContain("name");
+      expect(schema.required ?? [], tool.id).not.toContain("flow_name");
+      expect(schema.required ?? [], tool.id).not.toContain("flow_path");
     }
   });
 
