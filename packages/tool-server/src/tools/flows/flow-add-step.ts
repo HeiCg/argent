@@ -59,9 +59,10 @@ const zodSchema = z.object({
     .string()
     .describe(
       'MCP tool name (e.g. "gesture-tap", "screenshot", "launch-app") — a TOOL, not a flow directive. ' +
-        'A flow-file directive name ("tap", "launch", "run", "type", "await", "assert", "echo", "wait", ' +
-        '"long-press") is answered with guidance, and nothing runs or is recorded: most name the tool ' +
-        'that records the directive, while "wait" and "long-press" have no recording tool at all and ' +
+        'A flow-file directive name ("tap", "launch", "run", "type", "await", "assert", "pinch", ' +
+        '"echo", "wait", "long-press", "scroll-to", "snapshot", "when") is answered with guidance, ' +
+        "and nothing runs or is recorded: most name the tool that records the directive, while " +
+        '"wait", "long-press", "scroll-to", "snapshot" and "when" have no recording tool at all and ' +
         "are answered with what to do instead. A recording tool (flow-add-step, flow-add-echo, " +
         "flow-start-recording, flow-finish-recording) is refused the same way, each for its own " +
         "reason — nesting one would erase this flow at replay, end the take, or write the step twice."
@@ -1116,11 +1117,20 @@ const DIRECTIVE_COMMAND_HINTS: Record<string, DirectiveHint> = {
   type: { tool: "keyboard", rewritten: false },
   await: { tool: AWAIT_UI_ELEMENT_TOOL_ID, rewritten: false },
   assert: { tool: AWAIT_UI_ELEMENT_TOOL_ID, rewritten: false },
-  // `echo`, `wait` and `long-press` are deliberately absent — each needs an
-  // answer this table cannot express, so `directiveCommandHint` handles them
-  // directly: `echo` is recorded by a tool called on its OWN (routing it
-  // through flow-add-step records a second, replay-breaking step), and neither
-  // `wait` nor `long-press` has a recording tool at all.
+  pinch: { tool: "gesture-pinch", rewritten: false },
+  // Every directive the flow parser accepts is either here or answered
+  // directly by `directiveCommandHint` below, except two that cannot reach
+  // either: `rotate` and `tool` — `rotate` because a real `rotate` tool is
+  // registered (the device-orientation one, NOT the `rotate:` gesture, which
+  // `isToolNotFound`'s docblock calls out), so the not-found this hangs off
+  // never fires; `tool` because it names no action of its own — it IS the raw
+  // escape hatch, and `command` is already the tool name a `tool:` step wants.
+  //
+  // `echo`, `wait`, `long-press`, `scroll-to`, `snapshot` and `when` each need
+  // an answer this table cannot express, so `directiveCommandHint` handles
+  // them directly: `echo` is recorded by a tool called on its OWN (routing it
+  // through flow-add-step records a second, replay-breaking step), and the
+  // other five have no recording tool at all.
 };
 
 /**
@@ -1168,7 +1178,22 @@ function isToolNotFound(err: unknown, command: string): boolean {
   return err instanceof ToolNotFoundError && err.toolId === command;
 }
 
-function directiveCommandHint(command: string): string | undefined {
+/**
+ * Directive keys this feature deliberately does NOT answer, with the reason —
+ * held against the parser's own vocabulary by
+ * `flow-record-cross-tree.test.ts`, so a directive added later is either given
+ * an answer or listed here on purpose.
+ */
+export const UNHINTED_DIRECTIVE_KEYS: readonly string[] = [
+  // A real `rotate` tool is registered (device orientation, not the `rotate:`
+  // gesture), so the ToolNotFoundError this hangs off never fires.
+  "rotate",
+  // The raw escape hatch: `command` already IS the tool name a `tool:` step
+  // wants, so there is nothing to redirect.
+  "tool",
+];
+
+export function directiveCommandHint(command: string): string | undefined {
   if (command === "echo") {
     return (
       `"echo" is a flow directive, not a tool. Call \`flow-add-echo\` DIRECTLY — not through ` +
@@ -1188,6 +1213,30 @@ function directiveCommandHint(command: string): string | undefined {
       `"long-press" is a flow directive, not a tool, and no tool records one — there is no ` +
       `gesture-long-press. Record the rest of the path, then add the \`long-press:\` step by ` +
       `hand during polish and prove it with the replay.`
+    );
+  }
+  if (command === "scroll-to") {
+    return (
+      `"scroll-to" is a flow directive, not a tool, and no tool records one — it SEARCHES, ` +
+      `scrolling until the target is visible, which no single recorded gesture reproduces. ` +
+      `Record the movement with \`gesture-swipe\` (\`gesture-scroll\` on chromium) if the path ` +
+      `needs it, then add the \`scroll-to:\` step by hand during polish and prove it with the ` +
+      `replay.`
+    );
+  }
+  if (command === "snapshot") {
+    return (
+      `"snapshot" is a flow directive, not a tool, and no tool records one — it compares the ` +
+      `screen against a stored baseline, which \`screenshot-diff\` does not manage. Add the ` +
+      `\`snapshot:\` step by hand during polish, then adopt its baseline with a run that sets ` +
+      `updateBaselines, and review the PNG before committing it.`
+    );
+  }
+  if (command === "when") {
+    return (
+      `"when" is a flow directive, not a tool, and no tool records one — it GUARDS the steps ` +
+      `nested under it, so there is no action of its own to run. Record those steps, then wrap ` +
+      `them in the \`when:\` block by hand during polish and prove both branches with the replay.`
     );
   }
   // `Object.hasOwn`, not a bare index: `command` is caller-controlled, so a

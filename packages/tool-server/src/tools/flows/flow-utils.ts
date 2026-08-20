@@ -2048,7 +2048,11 @@ function parseLaunch(raw: unknown): Launch {
 
 // The directive key that names each step kind. Order mirrors fromYamlStep's
 // dispatch; used to reject a step carrying zero, several, or misspelled ones.
-const STEP_DIRECTIVE_KEYS: readonly string[] = [
+// Exported so flow-add-step's directive-name guidance can be held against the
+// whole vocabulary rather than a hand-copied subset of it — a directive added
+// here and nowhere else answers "Tool not found", which is the bare error that
+// guidance exists to replace.
+export const STEP_DIRECTIVE_KEYS: readonly string[] = [
   "echo",
   "launch",
   "run",

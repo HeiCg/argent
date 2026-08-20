@@ -56,13 +56,18 @@ import { parseUiAutomatorDump } from "../../src/tools/describe/platforms/android
 import { adaptChromiumTreeForFlows } from "../../src/tools/flows/flow-chromium-tree";
 import { adaptVegaTreeForFlows } from "../../src/tools/flows/flow-vega-tree";
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
-import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
+import {
+  createFlowAddStepTool,
+  directiveCommandHint,
+  UNHINTED_DIRECTIVE_KEYS,
+} from "../../src/tools/flows/flow-add-step";
 import { flowFinishRecordingTool } from "../../src/tools/flows/flow-finish-recording";
 import { flowInsertEchoTool } from "../../src/tools/flows/flow-insert-echo";
 import {
   __resetRecordingsForTesting,
   parseFlow,
   serializeFlow,
+  STEP_DIRECTIVE_KEYS,
 } from "../../src/tools/flows/flow-utils";
 import { n } from "./harness";
 
@@ -2375,6 +2380,52 @@ describe("a flow-directive name points at the tool that records it", () => {
     const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
     return tool.execute({}, { name: "hints", project_root: tmpDir, command });
   };
+
+  it("answers EVERY directive the parser accepts, or lists it as deliberately unanswered", async () => {
+    // The table covered nine names while the flow file's vocabulary is fifteen,
+    // and the ones left out answered with exactly the bare "Tool not found"
+    // this feature exists to replace — `pinch:`, `scroll-to:` and `snapshot:`
+    // are documented directives in flow-execute's own description, and `when:`
+    // is the parser's one nesting form, so none is any less likely a slip than
+    // `assert`. Held against the parser's own registry rather than a copy of
+    // it, so a directive added there is either answered or exempted on
+    // purpose.
+    const unanswered = STEP_DIRECTIVE_KEYS.filter((key) => directiveCommandHint(key) === undefined);
+    expect([...unanswered].sort()).toEqual([...UNHINTED_DIRECTIVE_KEYS].sort());
+  });
+
+  it("names no tool for the directives that have none, and says what to do instead", async () => {
+    // Five directives have no recording tool, each for its own reason, and an
+    // author who is told to "call X" for one of them goes looking for a tool
+    // that does not exist.
+    const cases: [string, string][] = [
+      ["wait", "a fixed sleep is not a readiness signal"],
+      ["long-press", "there is no gesture-long-press"],
+      ["scroll-to", "it SEARCHES"],
+      ["snapshot", "compares the screen against a stored baseline"],
+      ["when", "it GUARDS the steps nested under it"],
+    ];
+    for (const [command, why] of cases) {
+      const result = await hint(command);
+      expect(result.message, command).toContain("is a flow directive, not a tool");
+      expect(result.message, command).toContain("records one");
+      expect(result.message, command).toContain(why);
+      // No "Record it by calling `X` through flow-add-step" — that sentence
+      // is the table's, and following it here sends the author after a tool
+      // that does not exist.
+      expect(result.message, command).not.toContain("Record it by calling");
+      expect(result.message, command).toContain("no step was recorded");
+      expect(result.stepCount, command).toBe(0);
+    }
+    expect(await recordedSteps("hints")).toEqual([]);
+  });
+
+  it("names gesture-pinch for `pinch`, stored raw", async () => {
+    const result = await hint("pinch");
+    expect(result.message).toContain("gesture-pinch");
+    expect(result.message).toContain("stored as a raw `tool: gesture-pinch` step");
+    expect(result.stepCount).toBe(0);
+  });
 
   it("names flow-add-echo for `echo`", async () => {
     const result = await hint("echo");
