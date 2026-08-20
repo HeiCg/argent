@@ -196,7 +196,7 @@ export function assertText(node: DescribeNode): string {
 //   - A line break is not one of these controls at all, but the same test
 //     decides it: a run of whitespace collapses to a single character, and a
 //     run that breaks the line collapses to a newline rather than a space (see
-//     {@link LINE_BREAK}). A soft hyphen is kept for a hyphen it MIGHT paint;
+//     {@link LINE_BREAKS_G}). A soft hyphen is kept for a hyphen it MIGHT paint;
 //     a `\n` moves the glyphs after it unconditionally.
 //
 // So the set is split three ways: always safe, safe only while the string has
@@ -207,7 +207,9 @@ const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
 
 /**
  * Whitespace that BREAKS THE LINE, and so is the one part of the whitespace
- * family the run-collapse must not equate with a space.
+ * family the run-collapse must not equate with a space. Global, and matching a
+ * CRLF as the ONE break it renders as, because the collapse COUNTS the breaks
+ * in a run; used only with `String.prototype.match`, which resets `lastIndex`.
  *
  * A soft hyphen is kept because it MIGHT paint a hyphen, if the line happens to
  * break there; `\n` breaks the line unconditionally. Collapsing it let
@@ -218,10 +220,13 @@ const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
  *
  * The horizontal collapse it narrows is still worth having: doubled spaces and
  * a tab used as padding really are invisible, and an NBSP reduced by
- * {@link SPACE_LIKE} next to a plain space has to merge with it. So a run
- * collapses to ONE character either way — a newline when the run breaks the
- * line, a space otherwise — which also folds CRLF onto LF and absorbs the
- * incidental spaces around a break.
+ * {@link SPACE_LIKE} next to a plain space has to merge with it. So a run with
+ * no break in it collapses to one space, while a run that breaks the line
+ * collapses to ONE NEWLINE PER BREAK — which folds CRLF onto LF and absorbs the
+ * incidental spaces around a break, but keeps a blank line. Collapsing the run
+ * to a single newline equated one break with two, so deleting a visible blank
+ * line could not fail an `equals`: the same silently-wrong green this comment's
+ * first paragraph rules out, one line further down.
  *
  * Only an INTERIOR run, though. A break at the very edge of a label separates
  * no glyph from another, and it is the same outer whitespace {@link foldText}
@@ -234,7 +239,7 @@ const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
  * reaches the collapse — which lands on the same conservative answer anyway: it
  * survives folding whole, and a label carrying one equals no label without it.
  */
-const LINE_BREAK = /[\n\r\v\f\u2028\u2029]/;
+const LINE_BREAKS_G = /\r\n|[\n\r\v\f\u2028\u2029]/gu;
 
 /**
  * Invisible formatting that cannot change a glyph or its position in ANY
@@ -314,13 +319,26 @@ const BIDI_SENSITIVE =
 //   {@link LTR_BIDI} and {@link BIDI_SENSITIVE}.
 
 const foldCache = new Map<string, string>();
-const FOLD_CACHE_MAX = 4096;
+/**
+ * Sized to hold ONE WORST-CASE TREE, which is what makes the plain
+ * clear-at-the-cap below cost a single refill rather than thrash.
+ *
+ * The bound this file works to elsewhere is 12k nodes on Android and Chromium
+ * (see the containment-grid comment), and `includesCI` folds a node's label and
+ * its value separately, so one `findAll` over such a tree inserts up to ~24k
+ * distinct keys. At 4096 that pass cleared the map six times over — the refill
+ * was per pass, not once — and the cost stepped exactly at the cap: measured
+ * over 20 passes on a label-only tree, 0.19 µs/node at 4,090 nodes against
+ * 0.54 µs/node at 4,200, and 6.24 ms against 2.46 ms per `findAll` over the
+ * full 12k. Holding that tree costs about 4 MB of heap, measured.
+ */
+const FOLD_CACHE_MAX = 32_768;
 
 /**
  * The comparable form of a piece of UI text: invisible formatting stripped,
  * every space-like codepoint reduced to a plain space, each run of whitespace
- * collapsed to one character (a newline where the run breaks the line — see
- * {@link LINE_BREAK} — a space otherwise), trimmed, lowercased, and only then
+ * collapsed to one space, or to one newline per line break the run holds (see
+ * {@link LINE_BREAKS_G}), trimmed, lowercased, and only then
  * NFC-normalized (composition runs last because `toLowerCase` is not
  * NFC-preserving — see {@link foldLoose}).
  *
@@ -410,14 +428,16 @@ function foldWith(value: string, stripLtr: boolean): string {
   if (stripLtr) stripped = stripped.replace(LTR_BIDI, "");
   const folded = stripped
     .replace(SPACE_LIKE, " ")
-    // One character per whitespace run — a newline when an INTERIOR run breaks
-    // the line, a space otherwise. See {@link LINE_BREAK} for why the two
-    // cannot both collapse to a space, and why only an interior run counts:
-    // `\s+` is greedy, so a run with text on both sides is one with a non-space
-    // neighbour at each end.
-    .replace(/\s+/g, (run, at: number, whole: string) =>
-      LINE_BREAK.test(run) && at > 0 && at + run.length < whole.length ? "\n" : " "
-    )
+    // One space per whitespace run, or one newline per LINE BREAK in an INTERIOR
+    // run. See {@link LINE_BREAKS_G} for why the two cannot both collapse to a
+    // space, why the breaks are counted rather than merged, and why only an
+    // interior run counts: `\s+` is greedy, so a run with text on both sides is
+    // one with a non-space neighbour at each end.
+    .replace(/\s+/g, (run, at: number, whole: string) => {
+      if (at === 0 || at + run.length === whole.length) return " ";
+      const breaks = run.match(LINE_BREAKS_G)?.length ?? 0;
+      return breaks > 0 ? "\n".repeat(breaks) : " ";
+    })
     .toLowerCase()
     // Compose LAST, because `toLowerCase` is not NFC-preserving. Where the
     // uppercase spelling has no precomposed code point, NFC leaves it
@@ -430,8 +450,10 @@ function foldWith(value: string, stripLtr: boolean): string {
     // neither space-like nor whitespace.
     .normalize("NFC");
   // Trees are re-read on every poll, so the same strings recur constantly.
-  // A plain size cap (rather than an LRU) is enough: the working set is one
-  // screen's labels, and blowing it away wholesale costs one refill.
+  // A plain size cap (rather than an LRU) is enough BECAUSE the cap holds a
+  // whole tree: the working set is one screen's labels, so blowing it away
+  // wholesale costs one refill. See FOLD_CACHE_MAX for the arithmetic — a cap
+  // under the working set turns that one refill into several per pass.
   if (foldCache.size >= FOLD_CACHE_MAX) foldCache.clear();
   foldCache.set(key, folded);
   return folded;
@@ -530,6 +552,8 @@ const RENDERING_AFFECTING = /[\u00ad\u180e]/u;
  * this note exists for.
  */
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
+/** {@link DEFAULT_IGNORABLE}, non-global — for a single-character test. */
+const DEFAULT_IGNORABLE_ONE = new RegExp(DEFAULT_IGNORABLE.source, "u");
 
 /** Every inert ignorable in `text`, in order, sequence-builders excluded. */
 function inertIgnorables(text: string): string[] {
@@ -541,20 +565,87 @@ function withoutInertIgnorables(text: string): string {
   return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) ? ch : ""));
 }
 
-/** Which ignorable characters occur a DIFFERENT number of times in each string? */
-function differingIgnorables(actual: string, expected: string): string[] {
+/** `text` with every inert ignorable removed EXCEPT `keep`. */
+function keepOnlyIgnorable(text: string, keep: string): string {
+  return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) || ch === keep ? ch : ""));
+}
+
+/**
+ * Every inert ignorable in `text`, each tagged with how much VISIBLE text
+ * precedes it — the only position two confusable strings can be compared at,
+ * their visible forms being equal by construction.
+ */
+function placedIgnorables(text: string): string[] {
+  const placed: string[] = [];
+  let before = 0;
+  for (const ch of text) {
+    if (DEFAULT_IGNORABLE_ONE.test(ch) && !isSequenceBuilding(ch)) {
+      placed.push(`${before}\u0000${ch}`);
+    } else {
+      before += 1;
+    }
+  }
+  return placed;
+}
+
+/**
+ * Which ignorable characters sit DIFFERENTLY in the two strings — a different
+ * number of them, or the same number somewhere else?
+ *
+ * Counting alone is blind to a MOVE: `report<RLO>txt.exe` and
+ * `reporttxt.exe<RLO>` hold one RLO each, so the tally came out empty and the
+ * lead below fell through to "differ only in invisible characters" — about an
+ * override that reorders a filename into `reportexe.txt`, the exact false story
+ * this note must never tell. Tagging each character with the visible text
+ * before it makes a move a difference, while a character that sits identically
+ * in both — a wrapper they share — still drops out, which is what keeps it from
+ * picking the lead for a difference elsewhere.
+ */
+function displacedIgnorables(actual: string, expected: string): string[] {
   const tally = (s: string): Map<string, number> => {
     const counts = new Map<string, number>();
-    for (const ch of inertIgnorables(s)) {
-      counts.set(ch, (counts.get(ch) ?? 0) + 1);
+    for (const placed of placedIgnorables(s)) {
+      counts.set(placed, (counts.get(placed) ?? 0) + 1);
     }
     return counts;
   };
   const a = tally(actual);
   const b = tally(expected);
-  return [...new Set([...a.keys(), ...b.keys()])].filter(
-    (ch) => (a.get(ch) ?? 0) !== (b.get(ch) ?? 0)
+  const moved = [...new Set([...a.keys(), ...b.keys()])].filter(
+    (placed) => (a.get(placed) ?? 0) !== (b.get(placed) ?? 0)
   );
+  return [...new Set(moved.map((placed) => placed.slice(placed.indexOf("\u0000") + 1)))];
+}
+
+/**
+ * Which ignorable characters is the comparison actually STUCK on?
+ *
+ * {@link displacedIgnorables} answers "which ones differ", which is the whole
+ * answer under `equals` and too wide under `contains`: there the label also
+ * carries ignorables the needle never reached, and one unrelated RLM elsewhere
+ * in a long label picked the reordering lead for a miss that a CGJ inside the
+ * needle's own region caused.
+ *
+ * So ask the comparator, once per character: keep that one, drop every other
+ * inert ignorable from both sides, and see whether the comparison would have
+ * held. The ones that still block it are the ones responsible — which is the
+ * property {@link confusableTextNoteIn}'s docstring claims and the lead below
+ * relies on.
+ *
+ * When no single character is necessary the answer is every one that differs.
+ * Two candidate regions can each be blocked by a different character, so that
+ * neither alone is load-bearing, and naming both beats naming none.
+ */
+function blockingIgnorables(
+  actual: string,
+  expected: string,
+  holds: (a: string, b: string) => boolean
+): string[] {
+  const displaced = displacedIgnorables(actual, expected);
+  const blocking = displaced.filter(
+    (ch) => !holds(keepOnlyIgnorable(actual, ch), keepOnlyIgnorable(expected, ch))
+  );
+  return blocking.length > 0 ? blocking : displaced;
 }
 
 /**
@@ -599,13 +690,47 @@ export function confusableTextNote(actual: string, expected: string): string | u
   // case-sensitive by design and must not be told otherwise.
   const visible = withoutInertIgnorables;
   if (visible(actual) !== visible(expected)) return undefined;
-  return ignorableDifferenceNote(actual, expected);
+  return ignorableDifferenceNote(actual, expected, equalsCI);
 }
 
-const codepoints = (s: string): string =>
-  Array.from(s)
-    .map((ch) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
-    .join(" ");
+const codepointName = (ch: string): string =>
+  `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+
+/**
+ * How many code points of each string the dump below prints. At about seven
+ * characters each, this keeps the two dumps to roughly 700 characters however
+ * long the strings are.
+ */
+const CODEPOINT_DUMP_MAX = 48;
+
+/**
+ * A string as code points, windowed on the character that blocked the match
+ * when printing it whole would not fit {@link CODEPOINT_DUMP_MAX}.
+ *
+ * Under `equals` the dump is bounded by the expectation the author wrote.
+ * Under `contains` it is bounded by the ELEMENT, and `assertText` prefers the
+ * hoisted `subtreeText` — a container's whole aggregated text — so one failed
+ * check carried an entire card at seven characters per code point: a 1,412
+ * character label made an 11,532 character failure reason, of which the author
+ * needed about forty code points.
+ *
+ * The window is centred on the blocker rather than on the start, because where
+ * in the label the intruder sits is the thing the dump is for; an elision
+ * marker says the rest was cut.
+ */
+function codepoints(text: string, blocking: readonly string[] = []): string {
+  const chars = Array.from(text);
+  if (chars.length <= CODEPOINT_DUMP_MAX) return chars.map(codepointName).join(" ");
+  const found = chars.findIndex((ch) => blocking.includes(ch));
+  const centre = found === -1 ? 0 : found;
+  const start = Math.min(
+    Math.max(0, centre - Math.floor(CODEPOINT_DUMP_MAX / 2)),
+    chars.length - CODEPOINT_DUMP_MAX
+  );
+  const end = start + CODEPOINT_DUMP_MAX;
+  const body = chars.slice(start, end).map(codepointName).join(" ");
+  return `${start > 0 ? "… " : ""}${body}${end < chars.length ? " …" : ""}`;
+}
 
 /**
  * The shared body of the two confusable notes: pick the lead that tells the
@@ -614,9 +739,18 @@ const codepoints = (s: string): string =>
  * Reordering is the more dramatic claim, so it wins a mixed difference; the
  * rendering-affecting lead then covers everything left that is not simply
  * invisible. Only the last branch is allowed to say "invisible".
+ *
+ * `holds` is the comparator whose failure is being explained — it is what
+ * {@link blockingIgnorables} asks to tell the characters responsible for the
+ * miss from the ones that merely share the string with them.
  */
-function ignorableDifferenceNote(actual: string, expected: string): string | undefined {
-  const differing = differingIgnorables(actual, expected);
+function ignorableDifferenceNote(
+  actual: string,
+  expected: string,
+  holds: (a: string, b: string) => boolean
+): string | undefined {
+  const differing = blockingIgnorables(actual, expected, holds);
+  if (differing.length === 0) return undefined;
   const lead = differing.some((ch) => DIRECTIONAL.test(ch))
     ? "the two strings differ only in directional formatting, which draws nothing itself but " +
       "REORDERS the characters around it, so the screen does not read the way the text does"
@@ -625,7 +759,10 @@ function ignorableDifferenceNote(actual: string, expected: string): string | und
         "drawn — a soft hyphen paints a real hyphen where the line breaks, U+180E breaks " +
         "Arabic cursive joining as ZWNJ does — so the screen and the text really do differ"
       : "the two strings differ only in invisible characters";
-  return `${lead} — actual [${codepoints(actual)}] vs expected [${codepoints(expected)}]`;
+  return (
+    `${lead} — actual [${codepoints(actual, differing)}] ` +
+    `vs expected [${codepoints(expected, differing)}]`
+  );
 }
 
 /**
@@ -642,18 +779,22 @@ function ignorableDifferenceNote(actual: string, expected: string): string | und
  * and ask `includesCI` again. If the needle is in the label THEN and was not
  * before, those characters are exactly what stopped it — no other difference
  * can be responsible, because everything else the fold handles already matched.
+ * That holds for the SET; {@link blockingIgnorables} is what narrows it to the
+ * members, since under a substring test the label also carries ignorables the
+ * needle never reached.
  *
- * Both whole strings are printed, not the matched region: mapping an index back
- * through the fold is not sound (case and whitespace collapse change lengths),
- * and the author needs to see where in the label the intruder sits anyway.
+ * Both strings are printed as they stand, not as the matched region: mapping an
+ * index back through the fold is not sound (case and whitespace collapse change
+ * lengths). Only their LENGTH is bounded, and centred on the blocking character
+ * so the author still sees where in the label the intruder sits — see
+ * {@link codepoints}.
  */
 export function confusableTextNoteIn(haystack: string, needle: string): string | undefined {
   if (includesCI(haystack, needle)) return undefined;
   const bareHaystack = withoutInertIgnorables(haystack);
   const bareNeedle = withoutInertIgnorables(needle);
   if (!includesCI(bareHaystack, bareNeedle)) return undefined;
-  if (differingIgnorables(haystack, needle).length === 0) return undefined;
-  return ignorableDifferenceNote(haystack, needle);
+  return ignorableDifferenceNote(haystack, needle, includesCI);
 }
 
 /**
@@ -878,6 +1019,10 @@ export function identifierMatches(actual: string | undefined, needle: string): b
 export const uiTreeMatchInternals = {
   createRegExp(pattern: string): RegExp {
     return new RegExp(pattern);
+  },
+  /** How many folds are cached right now — for pinning {@link FOLD_CACHE_MAX}. */
+  foldCacheSize(): number {
+    return foldCache.size;
   },
 };
 

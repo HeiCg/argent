@@ -13,6 +13,7 @@ import {
   includesCI,
   selectorToFrame,
   textMatches,
+  uiTreeMatchInternals,
 } from "../src/utils/ui-tree-match";
 import type { DescribeNode } from "../src/tools/describe/contract";
 
@@ -129,11 +130,28 @@ describe("foldText", () => {
     expect(equalsCI("Sign\u0085in", "Sign in")).toBe(false);
   });
 
-  it("still collapses a break run to ONE newline, the spaces around it included", () => {
+  it("still collapses a break run to ONE newline PER BREAK, spaces around it included", () => {
     // CRLF is one break, not two, and the incidental indentation either side of
     // a break is as invisible as a doubled space is.
     expect(foldText("Line one\r\nLine two")).toBe(foldText("Line one\nLine two"));
     expect(foldText("Line one \n  Line two")).toBe("line one\nline two");
+  });
+
+  it("keeps a BLANK LINE, which one break does not render as", () => {
+    // Collapsing the whole run to a single newline equated one break with two,
+    // so deleting a visible blank line could not fail an exact check — the same
+    // silently-wrong green the break itself is kept to prevent. The breaks in a
+    // run are counted, and the indentation between them still absorbed.
+    expect(foldText("Line one\n\nLine two")).toBe("line one\n\nline two");
+    expect(equalsCI("Line one\n\nLine two", "Line one\nLine two")).toBe(false);
+    expect(includesCI("Line one\n\nLine two", "one\nLine")).toBe(false);
+    // A blank line spelled with indentation on it is still ONE blank line, and
+    // CRLF still counts once.
+    expect(equalsCI("Line one\n \nLine two", "Line one\n\nLine two")).toBe(true);
+    expect(equalsCI("Line one\r\n\r\nLine two", "Line one\n\nLine two")).toBe(true);
+    // Nothing downstream can rescue this either, so the fold has to: the two
+    // labels differ in a VISIBLE character, which is not what the note names.
+    expect(confusableTextNote("Line one\n\nLine two", "Line one\nLine two")).toBeUndefined();
   });
 
   it("counts only an INTERIOR break, so outer whitespace stays a space", () => {
@@ -394,6 +412,7 @@ describe("confusableTextNote", () => {
   // classes do NOT list — anything the fold handles compares equal, so the
   // check passes and there is no message to annotate.
   const CGJ = "͏"; // U+034F COMBINING GRAPHEME JOINER
+  const RLM = "‏"; // U+200F RIGHT-TO-LEFT MARK
 
   it("names the differing codepoints when the strings only look equal", () => {
     const note = confusableTextNote(`PLN 42${CGJ}`, "PLN 42")!;
@@ -427,6 +446,46 @@ describe("confusableTextNote", () => {
     // And says nothing when the ignorables are not why the needle missed.
     expect(confusableTextNoteIn("Totally other text", "SaveChanges")).toBeUndefined();
     expect(confusableTextNoteIn("Save Changes now", "Save")).toBeUndefined();
+  });
+
+  it("picks the lead from the character that BLOCKED the needle, not from the label", () => {
+    // Under a substring test the label also carries ignorables the needle never
+    // reached, and the lead was chosen from all of them: one unrelated RLM
+    // elsewhere in the label made a CGJ miss read as a reordering, and told the
+    // author the screen does not read the way the text does when it does.
+    const blocked = `Total ${RLM}42. Save${CGJ}Changes`;
+    // Dropping the CGJ alone rescues the needle; dropping the RLM alone does
+    // not — which is exactly the question the note now asks.
+    expect(includesCI(`Total ${RLM}42. SaveChanges`, "SaveChanges")).toBe(true);
+    expect(includesCI(`Total 42. Save${CGJ}Changes`, "SaveChanges")).toBe(false);
+    const note = confusableTextNoteIn(blocked, "SaveChanges")!;
+    expect(note).toContain("differ only in invisible characters");
+    expect(note).not.toContain("REORDERS");
+    // Both strings are still printed whole, so the RLM is visible in the dump
+    // even though it did not pick the sentence.
+    expect(note).toContain("U+200F");
+    // A directional control that IS the blocker still gets its own lead.
+    expect(confusableTextNoteIn(`Save${RLM}Changes`, "SaveChanges")).toContain("REORDERS");
+  });
+
+  it("bounds the codepoint dump, and windows it on the blocker", () => {
+    // Under `contains` the dump is sized by the ELEMENT, and assertText prefers
+    // the hoisted subtreeText — a container's whole aggregated text — so one
+    // failed check carried an entire card at ~7 characters per code point: a
+    // 1,412-character label made an 11,532-character failure reason, of which
+    // the author needed about forty code points.
+    const card = `${"Total 42. ".repeat(140)}Save${CGJ}Changes`;
+    const note = confusableTextNoteIn(card, "SaveChanges")!;
+    expect(card.length).toBeGreaterThan(1400);
+    expect(note.length).toBeLessThan(700);
+    // Windowed on the blocker, not truncated from the front — where in the
+    // label the intruder sits is what the dump is for.
+    expect(note).toContain("U+034F");
+    expect(note).toContain("…");
+    // A string that fits is still printed whole, marker and all absent.
+    const short = confusableTextNote(`Save${CGJ}Changes`, "SaveChanges")!;
+    expect(short).not.toContain("…");
+    expect(short).toContain("U+0053 U+0061 U+0076 U+0065 U+034F");
   });
 
   it("stays silent for a prepended concatenation mark, which is NOT ignorable", () => {
@@ -506,6 +565,19 @@ describe("confusableTextNote", () => {
     const note = confusableTextNote("‪Save​‬", "‪Save‬")!;
     expect(note).toContain("differ only in invisible characters");
     expect(note).toContain("U+200B");
+  });
+
+  it("names a MOVED control, which a count of the two strings cannot see", () => {
+    // Both sides hold exactly one U+202E, so a tally came out empty and the
+    // lead fell through to "invisible" — about an override that renders
+    // `report<RLO>txt.exe` as `reportexe.txt` and the other spelling as itself.
+    const note = confusableTextNote("report\u202Etxt.exe", "reporttxt.exe\u202E")!;
+    expect(note).toContain("REORDERS");
+    expect(note).not.toContain("differ only in invisible characters");
+    // The same blindness covered the other two DELIBERATELY NOT FOLDED members.
+    const shy = confusableTextNote(`kraft${SOFT_HYPHEN}fahrzeug`, `kraftfahrzeug${SOFT_HYPHEN}`)!;
+    expect(shy).toContain("changes what IS drawn");
+    expect(confusableTextNote("\u180Eبب", "بب\u180E")).toContain("changes what IS drawn");
   });
 
   it("says nothing when the strings are equal, or visibly different", () => {
@@ -832,6 +904,18 @@ describe("end-to-end: a plain selector matches a bidi-wrapped label through find
   it("but a genuinely different name still fails, so the fold has not gone blind", () => {
     const matches = findAll(root, { text: "Eddie Robson" });
     expect(evaluateCondition("text", "Eddie Robertson", matches, "equals")).toBe(false);
+  });
+});
+
+describe("the fold cache holds a whole worst-case tree", () => {
+  it("does not clear before one tree's labels are in it", () => {
+    // A cap under the working set turns the wholesale clear from one refill
+    // into several per pass: the file bounds a tree at 12k nodes, includesCI
+    // folds a node's label and value separately, so one findAll inserts up to
+    // ~24k keys. At 4096 the per-node cost stepped exactly at the cap.
+    const KEYS = 24_000;
+    for (let i = 0; i < KEYS; i++) foldText(`Row label number ${i}`);
+    expect(uiTreeMatchInternals.foldCacheSize()).toBeGreaterThanOrEqual(KEYS);
   });
 });
 

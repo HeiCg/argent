@@ -370,12 +370,16 @@ function timeoutNote(
           : params.textMatch === "equals"
             ? confusableTextNote(shown, params.expectedText)
             : confusableTextNoteIn(shown, params.expectedText);
-      // The label is defused before it is quoted: an unbalanced U+202E in it
-      // reverses every character printed after it, and what follows here is the
-      // codepoint note itself. See quoteScreenText.
+      // BOTH quoted strings are defused, not just the label: an unbalanced
+      // U+202E reverses every character printed after it, and what follows here
+      // is the codepoint note itself — the explanation this failure exists to
+      // give, rendered mirrored. The expectation is as likely a carrier as the
+      // label, because the note that precedes it tells the author to copy the
+      // characters the app renders, and the fold deliberately keeps the ones
+      // that reorder. See quoteScreenText.
       base =
         `element matched but its text was "${quoteScreenText(shown)}" ` +
-        `(wanted to ${wanted} "${params.expectedText}")` +
+        `(wanted to ${wanted} "${quoteScreenText(params.expectedText ?? "")}")` +
         (confusable ? ` — ${confusable}` : "");
       break;
     }
@@ -449,8 +453,9 @@ also accepting the unqualified Android resource-id name ('submit' matches 'com.e
 text and role are compared on FOLDED text, so a non-breaking space matches a plain one and an LTR bidi wrapper
 around left-to-right text is ignored — but characters that change the rendering are not folded (bidi controls
 that reorder, a soft hyphen, emoji ZWJ/variation selectors), and a leading or trailing space is significant.
-identifier is never folded: it is a machine key, so spell it exactly. A field that is only whitespace or
-invisible characters matches nothing.
+identifier is never folded: it is a machine key, so spell it exactly. A field of only invisible characters
+matches nothing rather than everything, and so does a whitespace-only identifier — but a whitespace-only role
+is a real constraint, and matches any role that holds a space.
 It polls the same accessibility / DOM tree as \`describe\`
 (iOS AXRuntime, Android uiautomator, Chromium CDP, Vega automation toolkit) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
