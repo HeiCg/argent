@@ -124,11 +124,18 @@ export function scrubSecretValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>
 ): string {
-  return secrets.reduce(
-    (acc, { name, value }) =>
-      value ? acc.split(value).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`) : acc,
-    text
-  );
+  // Longest value first, so the result does not depend on the order the caller
+  // happened to collect its secrets in. One value can contain another — a host
+  // inside a URL that is itself a secret — and replacing the shorter one first
+  // rewrites the middle of the longer one, leaving its tail in the text:
+  // `using {{secret:HOST}}9d3f0a1b2c`.
+  return [...secrets]
+    .sort((a, b) => b.value.length - a.value.length)
+    .reduce(
+      (acc, { name, value }) =>
+        value ? acc.split(value).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`) : acc,
+      text
+    );
 }
 
 /**

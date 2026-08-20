@@ -352,18 +352,29 @@ export class FlowScriptExecutor {
   private resolveBounds(): ResolvedBounds {
     if (!this.bounds) {
       this.bounds = {
+        // `positive` on the option too: `configuredNumber` rejects a
+        // non-positive configured value, but `concurrency: 0` reached `??`
+        // intact — zero is not nullish — and every step then queued until the
+        // wait bound refused it.
         concurrency:
-          this.options.concurrency ??
+          positive(this.options.concurrency) ??
           configuredNumber("scripts.concurrency") ??
           defaultConcurrency(),
-        maxTimeoutMs:
-          this.options.maxTimeoutMs ?? configuredNumber("scripts.maxTimeoutMs") ?? 5 * 60_000,
+        // Capped at the largest delay `setTimeout` can hold: past that Node
+        // clamps the timer to 1ms, so a maximum of a few weeks made every
+        // script "time out" immediately.
+        maxTimeoutMs: Math.min(
+          MAX_TIMER_MS,
+          positive(this.options.maxTimeoutMs) ??
+            configuredNumber("scripts.maxTimeoutMs") ??
+            5 * 60_000
+        ),
         // Floored, not just defaulted: a heap too small to start V8 makes every
         // step fail during the child's own startup, with a message that names
         // neither this bound nor the value that caused it.
         heapLimitMb: Math.max(
           MIN_SCRIPT_HEAP_LIMIT_MB,
-          this.options.heapLimitMb ?? configuredNumber("scripts.heapLimitMb") ?? 512
+          positive(this.options.heapLimitMb) ?? configuredNumber("scripts.heapLimitMb") ?? 512
         ),
       };
     }
@@ -382,7 +393,7 @@ export class FlowScriptExecutor {
     try {
       release = await this.acquireSlot(
         request.signal,
-        this.options.queueWaitMs ?? bounds.maxTimeoutMs * 2
+        Math.min(MAX_TIMER_MS, positive(this.options.queueWaitMs) ?? bounds.maxTimeoutMs * 2)
       );
     } catch (err) {
       const queuedMs = Date.now() - queueStarted;
@@ -521,10 +532,17 @@ export class FlowScriptExecutor {
     let cwd: string;
     let env: NodeJS.ProcessEnv;
     let runnerPath: string;
+    let outputJson: string;
     try {
       cwd = resolveWorkingDirectory(request, notes);
       env = buildChildEnv(request.env);
       runnerPath = resolveRunnerPath(request.runnerDir ?? this.options.runnerDir);
+      // Before the fork, and inside this guard: a cyclic or BigInt document
+      // makes `JSON.stringify` throw, and doing it after the fork made
+      // `execute` reject with a raw TypeError — no `FlowScriptResult` for the
+      // caller, and a child left running until the time limit reaped it. Every
+      // other unusable request is a verdict.
+      outputJson = encodeRequestOutput(request.output);
     } catch (err) {
       const kind = err instanceof ScriptSetupError ? err.kind : "spawn";
       return emptyResult(
@@ -645,7 +663,10 @@ export class FlowScriptExecutor {
     });
 
     const timer = setTimeout(() => {
-      interrupted = "timeout";
+      // `??=`, like the abort handler: a script that survives SIGTERM long
+      // enough for its deadline to pass during the stop grace was cancelled,
+      // not timed out, and the first interruption is the true one.
+      interrupted ??= "timeout";
       void stop();
     }, timeoutMs);
     const onAbort = () => {
@@ -660,7 +681,7 @@ export class FlowScriptExecutor {
     const message: ScriptExecuteRequest = {
       type: "execute",
       scriptUrl: pathToFileURL(scriptPath).href,
-      outputJson: JSON.stringify(request.output ?? {}),
+      outputJson,
       deadlineMs: timeoutMs,
       maxOutputBytes: SCRIPT_MAX_OUTPUT_BYTES,
     };
@@ -765,11 +786,12 @@ function classifyOutcome(
 ): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
   const { exit } = input;
   if (input.spawnProblem) return failed("spawn", input.spawnProblem);
-  if (input.interrupted === "cancelled") {
-    return failed("cancelled", "The run was cancelled and the script process was stopped.");
-  }
   if (input.protocolProblem) return failed("protocol", input.protocolProblem);
 
+  // A verdict the script actually produced outranks an interruption that landed
+  // after it — for a cancel exactly as for a timeout, which was already ordered
+  // this way. The two are the same narrow race, and the answer to both is that
+  // the work was finished before the stop arrived.
   if (input.terminal) {
     if (input.terminal.type === "failure") {
       // The child bounds both fields before sending; this is the same second
@@ -783,6 +805,10 @@ function classifyOutcome(
     return commitOutput(input.terminal.outputJson);
   }
 
+  if (input.interrupted === "cancelled") {
+    return failed("cancelled", "The run was cancelled and the script process was stopped.");
+  }
+
   if (input.interrupted === "timeout") {
     return failed(
       "timeout",
@@ -791,22 +817,21 @@ function classifyOutcome(
     );
   }
 
+  // V8 does not throw when it hits the heap limit: it prints a fatal error and
+  // aborts. Without this row the plain classification below says "the script
+  // stopped its own process", which it did not. Ahead of the row below because
+  // a script can exhaust the heap while it is still loading its imports, and
+  // "the runner never started the script" is then the wrong thing to say about
+  // a process that ran out of memory.
+  if (isHeapAbort(exit, input.heapFatalSeen)) {
+    return failed("heap", `The script exceeded its ${input.heapLimitMb} MiB heap limit.`);
+  }
+
   if (!input.startedSeen) {
     return failed(
       "protocol",
       `The script runner exited before it started the script (${describeExit(exit)}).`
     );
-  }
-
-  // V8 does not throw when it hits the heap limit: it prints a fatal error and
-  // aborts. Without this row the plain classification below says "the script
-  // stopped its own process", which it did not. The match is deliberately
-  // coarse — it must not depend on the frame layout, the address format, or the
-  // surrounding wording, none of which is a stability contract, and it must
-  // hold on both Node 20.12 and current. An unrecognized abort simply degrades
-  // to the signal report rather than to a wrong verdict.
-  if (isHeapAbort(exit, input.heapFatalSeen)) {
-    return failed("heap", `The script exceeded its ${input.heapLimitMb} MiB heap limit.`);
   }
 
   if (exit.signal) {
@@ -975,6 +1000,23 @@ function describeDirectoryProblem(candidate: string): string | null {
   }
 }
 
+/** Encode the caller's output document, as a verdict rather than a throw. */
+function encodeRequestOutput(output: Record<string, unknown> | undefined): string {
+  let encoded: string | undefined;
+  try {
+    encoded = JSON.stringify(output ?? {});
+  } catch (err) {
+    throw new ScriptSetupError(
+      "invalid",
+      `The flow output could not be encoded for the script: ${errorMessage(err)}`
+    );
+  }
+  if (typeof encoded !== "string") {
+    throw new ScriptSetupError("invalid", "The flow output could not be encoded for the script.");
+  }
+  return encoded;
+}
+
 /**
  * The real path of a file, or the path itself when it cannot be resolved —
  * a missing script is Node's error to report, with the name the author wrote.
@@ -1070,7 +1112,12 @@ function clampTimeout(
   maxTimeoutMs: number,
   notes: string[]
 ): number {
-  const wanted = requested && requested > 0 ? requested : DEFAULT_SCRIPT_TIMEOUT_MS;
+  // A step that asked for nothing gets the default, quietly bounded by the
+  // host maximum. The note below is for a caller that asked for more than the
+  // host allows, and a host that deliberately tightened the ceiling below the
+  // default was getting it on every step.
+  const wanted = positive(requested);
+  if (wanted === undefined) return Math.min(DEFAULT_SCRIPT_TIMEOUT_MS, maxTimeoutMs);
   if (wanted <= maxTimeoutMs) return wanted;
   notes.push(
     `The requested ${describeDuration(wanted)} time limit is above this host's maximum of ` +
@@ -1086,6 +1133,14 @@ function clampTimeout(
 function defaultConcurrency(): number {
   const cpus = os.cpus()?.length || 1;
   return Math.max(2, Math.min(8, cpus - 2));
+}
+
+/** The largest delay `setTimeout` holds; past it Node clamps the timer to 1ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** A caller-supplied bound, or `undefined` when it is not a usable one. */
+function positive(value: number | undefined): number | undefined {
+  return typeof value === "number" && value > 0 ? value : undefined;
 }
 
 function configuredNumber(key: string): number | undefined {
@@ -1272,7 +1327,10 @@ class ScriptLogCapture {
   end(): void {
     for (const state of this.streams.values()) {
       this.consume(state, state.decoder.end(), true);
-      if (state.collapser) this.append(state.collapser.end());
+      if (state.collapser) {
+        this.append(state.collapser.end());
+        if (state.collapser.collapsed) this.truncatedFlag = true;
+      }
     }
     this.streams.clear();
   }
@@ -1360,6 +1418,9 @@ class ScriptLogCapture {
       state.holdback = scrubbed.slice(split);
     }
     this.append(state.collapser ? state.collapser.write(emit) : emit);
+    // A collapsed frame dump is output the report does not carry, which is what
+    // `logTruncated` means.
+    if (state.collapser?.collapsed) this.truncatedFlag = true;
   }
 
   private append(text: string): void {
@@ -1437,6 +1498,12 @@ class V8FrameCollapser {
   private heldCount = 0;
   private armed = false;
   private armWindow = "";
+  private collapsedAny = false;
+
+  /** Whether any frame line has been replaced by a marker. */
+  get collapsed(): boolean {
+    return this.collapsedAny;
+  }
 
   write(text: string): string {
     if (!text) return "";
@@ -1486,10 +1553,9 @@ class V8FrameCollapser {
 
   private flush(): string {
     if (this.heldCount === 0) return "";
-    const out =
-      this.heldCount < COLLAPSE_THRESHOLD
-        ? this.held.join("")
-        : `[${this.heldCount} V8 stack frames omitted]\n`;
+    const collapsing = this.heldCount >= COLLAPSE_THRESHOLD;
+    if (collapsing) this.collapsedAny = true;
+    const out = collapsing ? `[${this.heldCount} V8 stack frames omitted]\n` : this.held.join("");
     this.held = [];
     this.heldCount = 0;
     return out;

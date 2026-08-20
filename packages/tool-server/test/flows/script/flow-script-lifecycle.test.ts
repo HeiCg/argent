@@ -170,6 +170,29 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.durationMs).toBeLessThan(1_000);
   });
 
+  it("does not relabel a cancellation as a timeout when the deadline passes mid-stop", async () => {
+    const ws = workspace();
+    // A script that ignores SIGTERM outlives the polite stop, so its deadline
+    // can pass during the stop grace. The first interruption is the true one.
+    const script = ws.write(
+      "stubborn.mjs",
+      `process.on("SIGTERM", () => {});
+       setInterval(() => {}, 1000);`
+    );
+    const controller = new AbortController();
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 800,
+      signal: controller.signal,
+    });
+    await delay(300);
+    controller.abort();
+    const result = await pending;
+
+    expect(result.failure?.kind).toBe("cancelled");
+  }, 30_000);
+
   it("refuses a step whose signal is already aborted, without spawning", async () => {
     const ws = workspace();
     const script = ws.write("never.mjs", `output.ran = true;`);

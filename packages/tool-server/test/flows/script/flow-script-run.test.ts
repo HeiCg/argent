@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   FlowScriptExecutor,
@@ -243,6 +244,43 @@ describe("flow script executor — module loading", () => {
     expect(result.failure?.kind).toBe("runtime");
     expect(result.failure?.message).toBe("late boom");
     expect(result.failure?.stack).toContain("late-throw.mjs:1");
+  });
+
+  it("calls a SyntaxError from running code a runtime failure, not a load one", async () => {
+    const ws = workspace();
+    // The canonical script failure: the endpoint returned an HTML error page.
+    // Telling this author their file never evaluated sends them somewhere else
+    // entirely.
+    const script = ws.write("html.mjs", `JSON.parse("<html>not json</html>");`);
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure?.kind).toBe("runtime");
+  });
+
+  it("calls a script file it cannot open a load failure, not a runtime one", async () => {
+    const ws = workspace();
+    const script = ws.write("locked.mjs", `output.ok = true;`);
+    fs.chmodSync(script, 0o000);
+    try {
+      const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+      expect(result.failure?.kind).toBe("load");
+      expect(result.failure?.message).toContain("EACCES");
+    } finally {
+      fs.chmodSync(script, 0o600);
+    }
+  });
+
+  it("does not put a stream crash into the log of a passing step", async () => {
+    const ws = workspace();
+    // A script that ended its own stdout: writing to an ended stream raises an
+    // unhandled error event, and the trace landed in the report of a step that
+    // otherwise passed.
+    const script = ws.write("ends-stdout.mjs", `console.log("done"); process.stdout.end();`);
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.ok).toBe(true);
+    expect(result.log).not.toContain("ERR_STREAM_WRITE_AFTER_END");
   });
 
   it("loads a script whose path holds a space and a #", async () => {

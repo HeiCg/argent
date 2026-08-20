@@ -222,6 +222,13 @@ jobs:
       - run: test -f packages/argent/assets/trace-processor/LICENSE
       - run: head -c4 packages/argent/assets/trace-processor/trace_processor.wasm | grep -q $'\x00asm'
       - run: ls packages/argent/bin/argent-android-devtools-*.apk
+      # Flow `script` runner + watchdogs, flat in dist/ beside tool-server.cjs —
+      # where flow-script-executor.ts looks for them via __dirname. A package
+      # missing them fails every `script` step at flow-execute time. Keep in
+      # step with build-package-artifact.yml.
+      - run: test -f packages/argent/dist/flow-script-runner.mjs
+      - run: test -f packages/argent/dist/flow-script-watchdog-lifeline.mjs
+      - run: test -f packages/argent/dist/flow-script-watchdog-deadline.mjs
 
       # Canary version: <patch-bump of highest published>-next.<counter>, where
       # the counter resets to 0 per base and increments per publish (derived

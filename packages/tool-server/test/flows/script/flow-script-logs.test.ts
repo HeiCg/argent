@@ -3,6 +3,7 @@ import {
   createScriptLogBudget,
   FlowScriptExecutor,
   SCRIPT_STEP_LOG_LIMIT_BYTES,
+  type FlowScriptExecutorOptions,
   type FlowScriptLogBudget,
   type FlowScriptSecret,
 } from "../../../src/tools/flows/script/flow-script-executor";
@@ -20,8 +21,8 @@ afterEach(() => {
   while (workspaces.length) workspaces.pop()!.cleanup();
 });
 
-function executor() {
-  return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 });
+function executor(options: FlowScriptExecutorOptions = {}) {
+  return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000, ...options });
 }
 
 describe("flow script executor — log capture", () => {
@@ -105,6 +106,42 @@ describe("flow script executor — log capture", () => {
     expect(sizes.slice(0, 4).every((size) => size > 0)).toBe(true);
     expect(sizes[4]).toBe(0);
     expect(budget.remainingBytes).toBeLessThanOrEqual(0);
+  });
+});
+
+describe("flow script executor — the V8 frame collapser", () => {
+  it("marks the log truncated when it drops frames", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "hungry.mjs",
+      `console.log("allocating"); const held = []; for (;;) held.push("x".repeat(1024 * 1024));`
+    );
+    const result = await executor({ heapLimitMb: 64 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.log).toMatch(/\[\d+ V8 stack frames omitted]/);
+    // Collapsed frames are output the report does not carry, which is what
+    // this flag means; it stayed false and nothing told the caller.
+    expect(result.logTruncated).toBe(true);
+  }, 60_000);
+
+  it("leaves frame-shaped lines from the script alone", async () => {
+    const ws = workspace();
+    // No fatal error printed, so nothing is a frame dump — a memory map, a
+    // disassembly, any `${i}: 0x…` loop is the script's own output.
+    const script = ws.write(
+      "hexdump.mjs",
+      `for (let i = 1; i <= 6; i++) console.error(\` \${i}: 0x1049\${i}1aec some symbol\`);
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.log).toContain("1: 0x104911aec some symbol");
+    expect(result.log).toContain("6: 0x104961aec some symbol");
+    expect(result.logTruncated).toBe(false);
   });
 });
 

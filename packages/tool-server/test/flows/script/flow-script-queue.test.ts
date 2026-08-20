@@ -152,3 +152,60 @@ describe("flow script executor — concurrency", () => {
     expect(waited.notes.join(" ")).toMatch(/Waited \d+\.\ds for a free script slot/);
   }, 30_000);
 });
+
+describe("flow script executor — bounds that would break every step", () => {
+  it("treats concurrency 0 as unset rather than a queue that never drains", async () => {
+    const ws = createScriptWorkspace("queue");
+    try {
+      const script = ws.write("quick.mjs", `output.ok = true;`);
+      // Zero is not nullish, so it went through `??` intact and every step
+      // queued until the wait bound refused it.
+      const result = await new FlowScriptExecutor({ concurrency: 0, maxTimeoutMs: 60_000 }).execute(
+        { scriptPath: script, projectRoot: ws.dir }
+      );
+
+      expect(result.ok).toBe(true);
+    } finally {
+      ws.cleanup();
+    }
+  }, 30_000);
+
+  it("keeps a huge maximum inside what a timer can hold", async () => {
+    const ws = createScriptWorkspace("queue");
+    try {
+      const script = ws.write(
+        "slow.mjs",
+        `await new Promise((r) => setTimeout(r, 300)); output.ok = true;`
+      );
+      // Past ~24.9 days the clamped step limit exceeds setTimeout's range, Node
+      // clamps the timer to 1ms, and every script "times out" at once.
+      const result = await new FlowScriptExecutor({
+        concurrency: 2,
+        maxTimeoutMs: 3_000_000_000,
+      }).execute({ scriptPath: script, projectRoot: ws.dir, timeoutMs: 3_000_000_000 });
+
+      expect(result.failure).toBeUndefined();
+      expect(result.ok).toBe(true);
+    } finally {
+      ws.cleanup();
+    }
+  }, 30_000);
+
+  it("does not note a clamp for a step that asked for nothing", async () => {
+    const ws = createScriptWorkspace("queue");
+    try {
+      const script = ws.write("quick.mjs", `output.ok = true;`);
+      // A host that deliberately tightened its ceiling below the 30s default
+      // was told, on every step, that it had asked for too much.
+      const result = await new FlowScriptExecutor({ concurrency: 2, maxTimeoutMs: 5_000 }).execute({
+        scriptPath: script,
+        projectRoot: ws.dir,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.notes).toEqual([]);
+    } finally {
+      ws.cleanup();
+    }
+  }, 30_000);
+});

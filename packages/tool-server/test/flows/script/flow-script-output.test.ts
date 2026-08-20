@@ -135,6 +135,40 @@ describe("flow script executor — output validation", () => {
     expect((result.output?.blob as string).length).toBe(1024 * 1000);
   });
 
+  it("encodes a sparse array the way JSON.stringify does", async () => {
+    // `JSON.stringify` writes a hole as null; rejecting it named an index the
+    // author never wrote.
+    const result = await run(`const a = []; a[2] = "third"; output.a = a;`);
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ a: [null, null, "third"] });
+  });
+
+  it("validates what toJSON will actually encode", async () => {
+    const withToJson = await run(`output.point = { x: 1, toJSON() { return { x: 1, y: 2 }; } };`);
+    expect(withToJson.failure).toBeUndefined();
+    expect(withToJson.output).toEqual({ point: { x: 1, y: 2 } });
+
+    // And the other direction: a toJSON that hands back something unencodable
+    // used to slip past a walk of the object itself.
+    const smuggled = await run(`output.toJSON = () => ({ fn: () => {} });`);
+    expect(smuggled.failure?.kind).toBe("output");
+  });
+
+  it("still rejects a Date, which has a toJSON of its own", async () => {
+    const result = await run(`output.at = new Date();`);
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("use an ISO string");
+  });
+
+  it("rejects an own __proto__ key rather than passing it into flow state", async () => {
+    // `JSON.parse` creates this as an own key, so `output.settings =
+    // JSON.parse(untrustedBody)` carries it through — inert under a spread, a
+    // prototype write under Object.assign.
+    const result = await run(`output.settings = JSON.parse('{"__proto__": {"admin": true}}');`);
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("__proto__");
+  });
+
   it("bounds a failure message and stack, the last unbounded fields on the channel", async () => {
     // `throw new Error(\`Unexpected response: \${await res.text()}\`)` is how a
     // whole response body ends up in an error. An IPC message is deserialized

@@ -303,21 +303,43 @@ function startWatchdogs(deadlineMs) {
       const worker = new Worker(url, { execArgv: [], ...(workerData ? { workerData } : {}) });
       // A watchdog that cannot start must not take the run with it: the parent
       // keeps its own copy of the time limit, so the step is still bounded.
-      worker.on("error", () => {});
+      // It does have to be visible, though — the missing file is otherwise
+      // silent at runtime and only a build check would ever catch it.
+      worker.on("error", (err) => reportWatchdogProblem(url, err));
       worker.unref();
-    } catch {
-      // Same reasoning as the error handler above.
+    } catch (err) {
+      reportWatchdogProblem(url, err);
     }
+  }
+}
+
+/** One line on stderr, the same way the lifeline reports an unusable fd. */
+function reportWatchdogProblem(url, err) {
+  try {
+    const name = url.href.slice(url.href.lastIndexOf("/") + 1);
+    process.stderr.write(`[argent] script watchdog ${name} unavailable: ${errorMessage(err)}\n`);
+  } catch {
+    // Reporting must never be what ends the run.
   }
 }
 
 /**
  * Which side of the load boundary failed.
  *
- * The distinction is coarse on purpose. Loading a module both resolves and
- * evaluates it, so there is no exact line between the two; what a report needs
- * is "the file never ran" versus "your code threw", and a resolution/parse
- * error is a reliable stand-in for the first.
+ * What a report needs is "the file never ran" versus "your code threw". The
+ * module codes below are the reliable half. The other two rows exist because
+ * the same error class reaches this function from both sides:
+ *
+ * - A `SyntaxError` is a module that would not parse *or* `JSON.parse` of an
+ *   HTML error page — the canonical script failure, "the endpoint returned
+ *   HTML" — and telling that author their file never evaluated sends them to
+ *   the wrong place entirely.
+ * - A POSIX errno from the loader (`chmod 000` on the script) is a file that
+ *   never opened, and calling it "your code threw" is the same mistake
+ *   mirrored.
+ *
+ * A stack frame naming a file tells the two apart: code that ran has one,
+ * Node's loader failing to parse or open a file has only internal frames.
  */
 function classifyScriptError(err) {
   const code = err && typeof err === "object" ? err.code : undefined;
@@ -334,7 +356,31 @@ function classifyScriptError(err) {
   ) {
     return "load";
   }
-  return err instanceof SyntaxError ? "load" : "runtime";
+  const fromLoader = !hasUserFrame(err);
+  if (err instanceof SyntaxError) return fromLoader ? "load" : "runtime";
+  if (typeof code === "string" && POSIX_ERRNO_RE.test(code)) return fromLoader ? "load" : "runtime";
+  return "runtime";
+}
+
+const POSIX_ERRNO_RE = /^E[A-Z]+$/;
+
+/**
+ * Whether the stack names a file the script owns, rather than only Node's own
+ * loader. A `node:` frame is internal however it is written — some carry the
+ * function name in parentheses and some do not.
+ */
+function hasUserFrame(err) {
+  const stack = errorStack(err);
+  if (typeof stack !== "string") return false;
+  return stack
+    .split("\n")
+    .slice(1)
+    .some((line) => {
+      const frame = line.trim();
+      if (!frame.startsWith("at ")) return false;
+      if (frame.includes("node:")) return false;
+      return frame.includes("file:") || /[/\\]/.test(frame);
+    });
 }
 
 /**
@@ -400,21 +446,39 @@ function walk(value, path, ancestors) {
   if (Array.isArray(value)) {
     ancestors.add(value);
     for (let i = 0; i < value.length; i++) {
-      const problem = walk(value[i], `${path}[${i}]`, ancestors);
+      // A hole is not `undefined` written by the author — `JSON.stringify`
+      // encodes it as null, and rejecting it named an index nobody wrote.
+      const problem = walk(i in value ? value[i] : null, `${path}[${i}]`, ancestors);
       if (problem) return problem;
     }
     ancestors.delete(value);
     return null;
   }
+  if (value instanceof Date) {
+    // Checked before `toJSON` below, which a Date has: it encodes to an opaque
+    // string a later step cannot read back as a date.
+    return `${path} is a Date; output must be JSON-compatible data (use an ISO string)`;
+  }
+  if (typeof value.toJSON === "function") {
+    // `JSON.stringify` will call this and encode what it returns, so that is
+    // what has to be validated. Walking the object instead let a `toJSON` on
+    // the root smuggle a function through as null, and refused a plain object
+    // whose `toJSON` encodes perfectly well.
+    return walk(value.toJSON(), path, ancestors);
+  }
   if (!isPlainObject(value)) {
-    // A Date, a Map, a Set, a class instance: each encodes to something a later
-    // step cannot read back — `{}` for a Map, an opaque string for a Date.
-    return `${path} is ${describeValue(value)}; output must be JSON-compatible data${
-      value instanceof Date ? " (use an ISO string)" : ""
-    }`;
+    // A Map, a Set, a class instance: each encodes to something a later step
+    // cannot read back — `{}` for a Map.
+    return `${path} is ${describeValue(value)}; output must be JSON-compatible data`;
   }
   ancestors.add(value);
   for (const key of Object.keys(value)) {
+    if (key === "__proto__") {
+      // `JSON.parse` creates this as an own key, so `output.settings =
+      // JSON.parse(body)` carries it into flow state, where a later
+      // `Object.assign` would write a prototype rather than a property.
+      return `${path} has an own "__proto__" key; output must be JSON-compatible data`;
+    }
     const problem = walk(value[key], `${path}${memberPath(key)}`, ancestors);
     if (problem) return problem;
   }
@@ -510,8 +574,8 @@ function finish(response) {
     // A stream whose peer is gone never calls back; the fallback keeps this
     // from becoming the hang that the deadline watchdog has to clean up.
     setTimeout(exit, 1000).unref();
-    process.stdout.write("", flushed);
-    process.stderr.write("", flushed);
+    flushStream(process.stdout, flushed);
+    flushStream(process.stderr, flushed);
   };
   try {
     sendToParent(response, flush);
@@ -524,6 +588,27 @@ function finish(response) {
 function clampText(text, max) {
   if (typeof text !== "string" || text.length <= max) return text;
   return `${text.slice(0, max)}… [${text.length - max} more characters omitted]`;
+}
+
+/**
+ * Queue an empty write so the callback runs after everything already buffered.
+ *
+ * A script may have ended the stream itself (`process.stdout.end()`), and
+ * writing to an ended stream raises an unhandled `error` event — which put an
+ * `ERR_STREAM_WRITE_AFTER_END` trace naming this file into the log of a step
+ * that otherwise passed.
+ */
+function flushStream(stream, done) {
+  if (!stream || stream.writableEnded || stream.destroyed) {
+    done();
+    return;
+  }
+  stream.once("error", done);
+  try {
+    stream.write("", done);
+  } catch {
+    done();
+  }
 }
 
 /** The only path onto the protocol channel. See `closeChannelToScript`. */
