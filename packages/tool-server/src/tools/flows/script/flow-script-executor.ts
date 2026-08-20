@@ -930,24 +930,49 @@ function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): s
     { label: "the flow file's directory", value: request.flowDir },
   ];
   const named = candidates.filter((c) => c.value);
+  const problems: string[] = [];
   for (const candidate of named) {
-    if (isDirectory(candidate.value!)) {
-      if (candidate.label !== "project_root" && request.projectRoot) {
-        notes.push(
-          `project_root ${request.projectRoot} does not exist on the machine running the ` +
-            `tool server; the script ran in ${candidate.value} instead.`
-        );
+    const problem = describeDirectoryProblem(candidate.value!);
+    if (!problem) {
+      // Every rejected candidate is named, not just a missing project_root: a
+      // fallback that happens silently is how a wrong input keeps working until
+      // it does not.
+      if (problems.length > 0) {
+        notes.push(`${problems.join("; ")}; the script ran in ${candidate.value} instead.`);
       }
       return candidate.value!;
     }
+    problems.push(`${candidate.label} ${candidate.value} ${problem}`);
   }
   throw new ScriptSetupError(
     "invalid",
     named.length === 0
       ? "No working directory was given for the script (neither project_root nor a flow directory)."
-      : `No working directory exists on the machine running the tool server: ` +
-          `${named.map((c) => `${c.label} ${c.value}`).join(", ")}.`
+      : `No working directory exists on the machine running the tool server: ${problems.join("; ")}.`
   );
+}
+
+/**
+ * Why a candidate cannot be the working directory, or `null` when it can.
+ *
+ * The absolute-path rule is the load-bearing one, and it is the same rule
+ * `assertValidProjectRoot` in `flow-utils.ts` applies to every other flow path.
+ * A relative candidate is resolved by the OS against the *tool server's* own
+ * working directory — the one value this function exists to keep out, because
+ * an editor sets it when it spawns the server and it can be `/` or `$HOME`. A
+ * relative root that happens to exist also beat a perfectly good absolute
+ * fallback, defeating this machinery exactly when the input was wrong.
+ */
+function describeDirectoryProblem(candidate: string): string | null {
+  if (!path.isAbsolute(candidate)) {
+    return "is not an absolute path (a relative path would resolve against the tool server's own working directory)";
+  }
+  if (candidate.split(/[\\/]+/).includes("..")) return 'contains a ".." segment';
+  try {
+    return fs.statSync(candidate).isDirectory() ? null : "is not a directory";
+  } catch {
+    return "does not exist";
+  }
 }
 
 /**
@@ -959,14 +984,6 @@ function realPathOrSelf(candidate: string): string {
     return fs.realpathSync(candidate);
   } catch {
     return candidate;
-  }
-}
-
-function isDirectory(candidate: string): boolean {
-  try {
-    return fs.statSync(candidate).isDirectory();
-  } catch {
-    return false;
   }
 }
 

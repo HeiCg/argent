@@ -182,6 +182,38 @@ describe("flow script executor — the working directory", () => {
     expect(result.notes.join(" ")).toContain(missing);
   });
 
+  it("refuses a relative project_root rather than resolving it against its own cwd", async () => {
+    const ws = workspace();
+    const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
+    // A relative path is resolved by the OS against the *tool server's* working
+    // directory — the one value this must never inherit, since an editor sets it
+    // and it can be `/` or `$HOME`. A relative root that happens to exist also
+    // beat a perfectly good absolute fallback.
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ".",
+      flowDir: ws.dir,
+    });
+
+    expect(fs.realpathSync(result.output?.cwd as string)).toBe(fs.realpathSync(ws.dir));
+    expect(result.output?.cwd).not.toBe(process.cwd());
+    expect(result.notes.join(" ")).toContain("is not an absolute path");
+  });
+
+  it("says a project_root that is a file is not a directory", async () => {
+    const ws = workspace();
+    const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
+    // Naming the flow file instead of its directory: "does not exist" would
+    // send the author looking for the wrong problem.
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: script,
+      flowDir: ws.dir,
+    });
+
+    expect(result.notes.join(" ")).toContain("is not a directory");
+  });
+
   it("refuses the step when no candidate directory exists", async () => {
     const ws = workspace();
     const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
