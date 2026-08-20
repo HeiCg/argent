@@ -3422,7 +3422,7 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
  *
  * A cyclic YAML alias inside a step's `args` — which {@link parseFlow} accepts,
  * since `args` are passed to the tool as parsed — materializes as a cyclic
- * object, and `JSON.stringify` throws on it. Throwing out of {@link samePrefix}
+ * object, and `JSON.stringify` throws on it. Throwing out of {@link sameStepRun}
  * would fail the whole append, which by then has already written the step to
  * the file and already run it on the device, so the retry that failure invites
  * repeats both. The same guard, for the same reason, as `renderToolArgs` in
@@ -3437,7 +3437,8 @@ function renderStepForCompare(step: FlowStep): string | null {
 }
 
 /**
- * Are the first `n` steps of these two views the same steps?
+ * Do `n` steps of `now` starting at `nowFrom` match `n` steps of `before`
+ * starting at `beforeFrom`?
  *
  * Both sides are {@link parseFlow} output — the recorder's previous view came
  * from parsing the file after the previous append, and `now` from parsing it
@@ -3447,14 +3448,63 @@ function renderStepForCompare(step: FlowStep): string | null {
  * normalization difference can exist between two parses of the same bytes.
  *
  * A step with no rendering is NOT the same step: an unrenderable prefix is one
- * this cannot vouch for, and the caller drops the verdict rather than reporting
- * it against a step whose identity is unknown.
+ * this cannot vouch for, and {@link anchorHolds} drops the verdict rather than
+ * reporting it against a step whose identity is unknown.
+ *
+ * Both offsets are 0 for the alignment an unedited file has; {@link anchorHolds}
+ * moves one of them to ask about the alignments an edit AHEAD of the prefix
+ * would produce.
  */
-function samePrefix(now: FlowStep[], before: FlowStep[], n: number): boolean {
-  if (now.length < n || before.length < n) return false;
+function sameStepRun(
+  now: FlowStep[],
+  before: FlowStep[],
+  n: number,
+  nowFrom: number,
+  beforeFrom: number
+): boolean {
+  if (now.length < nowFrom + n || before.length < beforeFrom + n) return false;
   for (let i = 0; i < n; i += 1) {
-    const rendered = renderStepForCompare(now[i]);
-    if (rendered === null || rendered !== renderStepForCompare(before[i])) return false;
+    const rendered = renderStepForCompare(now[nowFrom + i]);
+    if (rendered === null || rendered !== renderStepForCompare(before[beforeFrom + i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Is the step at number `n` still the step the verdict at `n` judged?
+ *
+ * Matching the prefix at the unedited alignment is necessary but not
+ * sufficient. A length change says a step was removed or added, and a prefix
+ * that ALSO matches the alignment such an edit would leave behind is consistent
+ * with the edit having happened inside it. Two adjacent identical waits make
+ * the shift invisible, and a verdict is not a function of content: the probe
+ * read the live device at that step's moment, so byte-identical waits can
+ * diverge at one position and agree at another. Delete the one that diverged
+ * and the survivor inherits its number, its content check, and its verdict —
+ * the false conviction this exists to prevent, arrived at through the check
+ * itself.
+ *
+ * So a resized file keeps a verdict only where the alignments DISAGREE, which
+ * is the witness that the edit lies behind the prefix. An author who edits a
+ * later, distinguishable step still keeps every verdict before it.
+ *
+ * Every shift the length change admits is tried, not just one, so two deletions
+ * inside a run are no more invisible than one. What stays out of reach is an
+ * edit that leaves the length alone: a reorder of two identical steps has no
+ * witness at all, in this or any content comparison.
+ */
+function anchorHolds(now: FlowStep[], before: FlowStep[], n: number): boolean {
+  if (!sameStepRun(now, before, n, 0, 0)) return false;
+  // A deletion ahead of the prefix slides `before` forward relative to `now`;
+  // an insertion slides `now` forward relative to `before`. Only the direction
+  // the length change allows is asked about.
+  for (let shift = 1; shift <= before.length - now.length; shift += 1) {
+    if (sameStepRun(now, before, n, 0, shift)) return false;
+  }
+  for (let shift = 1; shift <= now.length - before.length; shift += 1) {
+    if (sameStepRun(now, before, n, shift, 0)) return false;
   }
   return true;
 }
@@ -3473,15 +3523,17 @@ function samePrefix(now: FlowStep[], before: FlowStep[], n: number): boolean {
  * clean — the false conviction {@link RecordedStepWarning} exists to prevent.
  *
  * The append that ABSORBS the edit is where both views still exist, so the
- * question is asked here. A verdict at number `n` survives exactly when the
- * first `n` steps are untouched: that is what makes the step at `n` still the
- * step that was at `n`. Anything else — a delete or an insert at or before it,
- * a reorder that reaches it, an in-place replacement — moves it or changes it,
- * and dropping is the only answer that cannot convict an innocent step.
+ * question is asked here. A verdict at number `n` survives only where
+ * {@link anchorHolds} can show the first `n` steps are still those steps: that
+ * is what makes the step at `n` still the step that was at `n`. Anything else —
+ * a delete or an insert at or before it, a reorder that reaches it, an in-place
+ * replacement — moves it or changes it, and dropping is the only answer that
+ * cannot convict an innocent step.
  *
- * Verdicts BEHIND the edit keep theirs. An author who deletes a later step and
- * records on must not lose the warnings on steps the edit never reached, or the
- * anchor rule would be the length heuristic again under another name.
+ * Verdicts BEHIND the edit keep theirs. An author who deletes a later,
+ * distinguishable step and records on must not lose the warnings on steps the
+ * edit never reached, or the anchor rule would be the length heuristic again
+ * under another name.
  *
  * Returns how many were dropped, so the finish can report a shortfall rather
  * than a clean bill of health.
@@ -3494,7 +3546,7 @@ function dropMovedWarnings(
   if (!warnings) return 0;
   let dropped = 0;
   for (const n of [...warnings.keys()]) {
-    if (samePrefix(now, before, n)) continue;
+    if (anchorHolds(now, before, n)) continue;
     warnings.delete(n);
     dropped += 1;
   }

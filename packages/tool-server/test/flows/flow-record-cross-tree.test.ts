@@ -2264,11 +2264,16 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // The other half of the anchor rule: an edit that removes an UNwarned step
     // must not cost the steps before it their verdicts, or the guard would be
     // the length heuristic again under another name.
+    //
+    // The removed step has to be DISTINGUISHABLE from the warned one, and that
+    // is the point rather than a convenience: deleting a step identical to its
+    // neighbour leaves the shortened file matching both alignments, so nothing
+    // in it says which one went — see the test below.
     await startRecording("kept");
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await recordWait("kept", { condition: "visible", selector: { text: "Continue" } });
-    serveTree(iosRunnerTree([iosLabel("Continue")]));
-    await recordWait("kept", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Sign in")]));
+    await recordWait("kept", { condition: "visible", selector: { text: "Sign in" } });
 
     // Delete the clean step 2, then record one more warned step.
     const file = path.join(tmpDir, ".argent", "flows", "kept.yaml");
@@ -2286,6 +2291,72 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect([...verdictsIn(finished.summary).keys()]).toEqual([1, 2]);
     expect(finished.message).toContain("2 steps carry a cross-tree warning");
+  });
+
+  it("drops the verdict when a delete of a twin puts the length back", async () => {
+    // The case a prefix comparison alone cannot see. Step 1 diverges and
+    // carries the verdict, step 2 is the byte-identical wait against a tree
+    // that DOES hold the element, so it agrees. Delete step 1 and record one
+    // more that also agrees: the file is two steps long again, so nothing about
+    // the length says anything, and the survivor at number 1 renders exactly
+    // like the step the verdict judged.
+    //
+    // Every wait left in the flow agreed with the runner's tree. A verdict on
+    // either convicts a check that converts fine, while the one that really
+    // diverges is gone with the step the author deleted.
+    await startRecording("relen");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("relen", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("relen", { condition: "visible", selector: { text: "Continue" } });
+
+    const file = path.join(tmpDir, ".argent", "flows", "relen.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = parsed.steps.slice(1);
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("relen", { condition: "visible", selector: { text: "Continue" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "relen", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(2);
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
+  });
+
+  it("drops the verdict when an inserted twin takes the warned step's number", async () => {
+    // The same blindness the other way round. Hand-inserting a copy of the
+    // warned wait AHEAD of it leaves number 1 holding the copy — which renders
+    // identically and was never probed at all — while the step that diverged
+    // slides to 2.
+    await startRecording("grown");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("grown", { condition: "visible", selector: { text: "Continue" } });
+
+    const file = path.join(tmpDir, ".argent", "flows", "grown.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = [parsed.steps[0], parsed.steps[0]];
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("grown", { condition: "visible", selector: { text: "Continue" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "grown", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(3);
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
   });
 
   it("records the next step when a hand edit made an earlier one unserializable", async () => {
