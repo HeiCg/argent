@@ -148,6 +148,16 @@ async function prepare() {
   // unhandled rejection arrives here too: Node raises it as an uncaught
   // exception unless an `unhandledRejection` listener claims it first.
   keepListener("uncaughtException", (err) => {
+    // Unless the script has a handler of its own, in which case it is the one
+    // recovering and this one is in its way. Node does not end a process that
+    // has an `uncaughtException` listener, so under plain `node` such a script
+    // carries on and finishes; claiming the error unconditionally failed the
+    // step with an error the script had already dealt with — its own log line
+    // saying so, right beside the verdict. This handler is registered before
+    // the script loads, so it runs first and a second listener can only be the
+    // script's. The mirrored `unhandledRejection` case needs nothing: Node
+    // routes a rejection here only when the script claimed neither.
+    if (process.listenerCount("uncaughtException") > 1) return;
     finish({
       type: "failure",
       failureType: classifyScriptError(err),

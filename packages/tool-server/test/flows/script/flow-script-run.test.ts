@@ -294,6 +294,29 @@ describe("flow script executor — module loading", () => {
     expect(result.failure?.stack).toContain("late-throw.mjs:1");
   });
 
+  it("lets a script recover through an uncaughtException handler of its own", async () => {
+    const ws = workspace();
+    // Node does not end a process that has an `uncaughtException` listener, so
+    // this script carries on and finishes under plain `node`. The runner's own
+    // handler is registered before the script loads, so it pre-empted the
+    // script's and failed the step with an error the script had already dealt
+    // with — its own log line saying so, right beside the verdict.
+    const script = ws.write(
+      "recovers.mjs",
+      `process.on("uncaughtException", (err) => {
+         console.log("recovered from " + err.message);
+         output.recovered = true;
+       });
+       setTimeout(() => { throw new Error("boom in timer"); }, 20);
+       output.ok = true;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.output).toEqual({ ok: true, recovered: true });
+    expect(result.log).toContain("recovered from boom in timer");
+  });
+
   it("calls a SyntaxError from running code a runtime failure, not a load one", async () => {
     const ws = workspace();
     // The canonical script failure: the endpoint returned an HTML error page.
