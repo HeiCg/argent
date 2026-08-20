@@ -97,7 +97,7 @@ Scopes can combine and nest, with at most six scope keys. Use strict selectors f
 
 ## Directives
 
-Directives stop the flow on failure and skip later steps. `flow-execute` documents their shapes. The available directives are `launch`, `tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`, `await`, `assert`, `wait`, `snapshot`, `run`, `when`, `echo`, and `tool`.
+Directives stop the flow on failure and skip later steps. `flow-execute` documents their shapes. The available directives are `launch`, `tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`, `await`, `assert`, `wait`, `snapshot`, `run`, `script`, `when`, `echo`, and `tool`.
 
 Use the launch map for cross-platform flows. A bare launch applies everywhere and becomes an app path on Chromium. The map takes `native:`, `ios:`, `android:`, `vega:`, and `chromium:`. `native:` is one id shared by iOS, Android, and Vega, and a per-platform key overrides it for that platform. `chromium:` accepts a relative or absolute app path. A launch that declares no id for the run's platform is an error, not a cue to switch platforms.
 
@@ -189,6 +189,37 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 - iOS and Android can run fragments or e2e flows inline. A nested e2e launch restarts its app.
 - Chromium boots one instance per launch **step**, not one per run. The leading launch — the flow's own, or the one its leading `run:` chain reaches — boots before step 1, unless you pinned the run with an explicit `device`, where it only attaches. Every later launch boots a fresh instance, moves the run onto it, and tears down the instance the run already owned for that app path. Nesting a Chromium e2e flow with its own launch is therefore the supported way to give a sub-scenario its own restart. Chromium rejects `pinch` and `rotate`. Use the app's own zoom or rotate controls.
 - Vega uses `tool: tv-remote` and raw `tool: keyboard`. The touch directives (`tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`) are unsupported. Gate focus and navigation results with `await`.
+
+## Backend state: `script`
+
+A `script:` step runs a local JavaScript file in a fresh Node process. It is how a flow reaches a backend before it touches a device: seed an order, create a test account, clean up what a run left behind. It drives no device — the steps around it do — so a flow of nothing but scripts runs with nothing booted.
+
+```yaml
+- script: { path: scripts/seed-order.mjs }
+- script: { path: scripts/seed-order.mjs, timeout: 60000 }
+```
+
+**The value is always a map.** `script: scripts/seed.mjs` is rejected, and so is a `timeout:` written beside the directive key rather than inside its value. `path` is required; `timeout` is the hard limit in milliseconds and defaults to 30 seconds.
+
+`path` obeys the same rules a `run:` target does, spelled for `.mjs`. It is resolved against the directory of the flow file **containing the step**, so a fragment reaches the same script whichever flow composed it, and `../` reaches a sibling directory:
+
+```yaml
+# .argent/flows/checkout.yaml
+- script: { path: ../../scripts/seed.mjs }
+
+# .argent/flows/onboarding/login.yaml — the same file
+- script: { path: ../../../scripts/seed.mjs }
+```
+
+Keep scripts in a `scripts/` directory. That is a convention this skill teaches, not a rule the runner enforces — the same way it does not enforce where a `run:` fragment lives.
+
+The filename must end in a lowercase `.mjs` and use only letters, digits, `_` and `-` before it. The `.mjs` is load-bearing: it pins the module type whatever the project's `package.json` says, so one script behaves the same in every project. There is no bare-name completion — write the extension. **Spell the path exactly as the file is named.** macOS and Windows open a file whose case does not match, so a mis-cased path runs green locally and fails with `ENOENT` on Linux CI; the runner refuses the step rather than letting that through, and quotes the spelling on disk.
+
+The script's stdout and stderr come back on the step report and are printed under the step line, on a pass as well as a failure — it is the only record of what the step did to the backend. Anything the run resolved as a secret is redacted first.
+
+A script that throws, fails to load, or exits non-zero **fails** the step and stops the flow. A limit the host imposed — a time limit, a heap limit, a process it could not start — **errors** it instead: that distinction is what lets CI tell a regression from the machine it ran on.
+
+Two boundaries. A `script:` step needs the client and tool server to share a filesystem, so an uploaded flow is rejected: its `.mjs` never left the client. And a flow whose script step sits beside a `run:` step still resolves a device, because `run:` needs one whatever its fragment holds.
 
 ## Snapshots and standalone runs
 
