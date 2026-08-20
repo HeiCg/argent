@@ -324,21 +324,25 @@ function guardRunnerListeners() {
  * and the parent's `exit` verdict already names the code.
  */
 function reportOnScriptExit() {
-  process.exit = (...args) => {
-    const code = args.length > 0 ? args[0] : process.exitCode;
-    if (!finished && (code === undefined || code === null || Number(code) === 0)) {
-      const encoded = encodeOutput(globalThis.output, maxOutputBytes);
-      finishSynchronously(
-        encoded.error
-          ? { type: "failure", failureType: "output", message: encoded.error }
-          : { type: "result", outputJson: encoded.json }
-      );
+  // Cast because `process.exit` is typed as returning `never` and an arrow that
+  // ends in a call to it is inferred as returning that call's type.
+  process.exit = /** @type {typeof process.exit} */ (
+    (...args) => {
+      const code = args.length > 0 ? args[0] : process.exitCode;
+      if (!finished && (code === undefined || code === null || Number(code) === 0)) {
+        const encoded = encodeOutput(globalThis.output, maxOutputBytes);
+        finishSynchronously(
+          encoded.error
+            ? { type: "failure", failureType: "output", message: encoded.error }
+            : { type: "result", outputJson: encoded.json }
+        );
+      }
+      // Forwarded by arity, not by value: `realExit(undefined)` is not the same
+      // call as `realExit()`, and the difference is whether a `process.exitCode`
+      // the script set survives.
+      return realExit(...args);
     }
-    // Forwarded by arity, not by value: `realExit(undefined)` is not the same
-    // call as `realExit()`, and the difference is whether a `process.exitCode`
-    // the script set survives.
-    return realExit(...args);
-  };
+  );
 }
 
 /**
@@ -762,9 +766,10 @@ function visitError(err, depth, joiner, parts, seen) {
   // Text an earlier part already carries adds nothing: a wrapper that quotes
   // its own cause is the ordinary shape.
   if (text && !parts.some((part) => part.text.includes(text))) parts.push({ joiner, text });
-  if (Array.isArray(err.errors)) {
+  const siblings = /** @type {{ errors?: unknown }} */ (err).errors;
+  if (Array.isArray(siblings)) {
     const before = parts.length;
-    for (const nested of err.errors) {
+    for (const nested of siblings) {
       visitError(nested, depth + 1, parts.length === before ? CAUSED_BY : ALSO, parts, seen);
     }
   }
