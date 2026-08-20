@@ -857,10 +857,33 @@ function boundFailureText(response) {
   };
 }
 
-/** Cut runner-controlled text to a ceiling, saying how much was left out. */
+/**
+ * Cut runner-controlled text to a ceiling, saying how much was left out.
+ *
+ * The marker counts against the ceiling. Left outside it the result is *longer*
+ * than the ceiling, and the parent re-clamps at the very same number as its
+ * second line against a child that stopped being compliant — so on every
+ * compliant child that second cut landed on the same boundary, threw away this
+ * marker, and wrote one of its own reporting the length of the marker it had
+ * just dropped. A message that lost a megabyte said it had lost thirty-four
+ * characters.
+ */
 function clampText(text, max) {
   if (typeof text !== "string" || text.length <= max) return text;
-  return `${text.slice(0, max)}… [${text.length - max} more characters omitted]`;
+  let cut = max;
+  let marked = `${text.slice(0, cut)}${omissionMarker(text.length - cut)}`;
+  // Two passes at most: the marker only grows by the digits the larger count
+  // adds. The guard is what ends it for a ceiling narrower than a marker.
+  while (marked.length > max && cut > 0) {
+    cut = Math.max(0, cut - (marked.length - max));
+    marked = `${text.slice(0, cut)}${omissionMarker(text.length - cut)}`;
+  }
+  return marked;
+}
+
+/** The tail {@link clampText} leaves behind; the parent reads it back. */
+function omissionMarker(omitted) {
+  return `… [${omitted} more characters omitted]`;
 }
 
 /**

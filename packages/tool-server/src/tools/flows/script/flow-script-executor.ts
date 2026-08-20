@@ -1022,18 +1022,37 @@ function redactTruncated(text: string, secrets: readonly FlowScriptSecret[]): st
   const partial = partialSecretTail(head, secrets);
   if (partial === 0) return scrubbed;
   const omitted = Number(omission[1]) + partial;
-  return `${head.slice(0, head.length - partial)}… [${omitted} more characters omitted]`;
+  return `${head.slice(0, head.length - partial)}${omissionMarker(omitted)}`;
 }
 
 /** The tail {@link clampText} leaves behind, read back by {@link redactTruncated}. */
 const OMISSION_RE = /… \[(\d+) more characters omitted]$/;
 
-/** Cut child-controlled text to a ceiling, saying how much was left out. */
+/** The same tail, written. The runner carries its own copy of both. */
+function omissionMarker(omitted: number): string {
+  return `… [${omitted} more characters omitted]`;
+}
+
+/**
+ * Cut child-controlled text to a ceiling, saying how much was left out.
+ *
+ * The marker counts against the ceiling, exactly as it does in the runner's
+ * copy of this function: a result longer than the ceiling would be cut again by
+ * whatever applies the same number next, and that second cut can only report
+ * how much *it* dropped — which is the marker, not the text the marker speaks
+ * for.
+ */
 function clampText(text: string, max: number): string;
 function clampText(text: string | undefined, max: number): string | undefined;
 function clampText(text: string | undefined, max: number): string | undefined {
   if (text === undefined || text.length <= max) return text;
-  return `${text.slice(0, max)}… [${text.length - max} more characters omitted]`;
+  let cut = max;
+  let marked = `${text.slice(0, cut)}${omissionMarker(text.length - cut)}`;
+  while (marked.length > max && cut > 0) {
+    cut = Math.max(0, cut - (marked.length - max));
+    marked = `${text.slice(0, cut)}${omissionMarker(text.length - cut)}`;
+  }
+  return marked;
 }
 
 function failed(

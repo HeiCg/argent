@@ -3,6 +3,7 @@ import {
   FlowScriptExecutor,
   type FlowScriptResult,
 } from "../../../src/tools/flows/script/flow-script-executor";
+import { SCRIPT_MAX_FAILURE_MESSAGE_CHARS } from "../../../src/tools/flows/script/flow-script-protocol";
 import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 
 const workspaces: ScriptWorkspace[] = [];
@@ -233,5 +234,23 @@ describe("flow script executor — output validation", () => {
     expect(result.failure?.message.length).toBeLessThan(9 * 1024);
     expect(result.failure?.message).toContain("more characters omitted");
     expect(result.failure?.stack?.length).toBeLessThan(17 * 1024);
+  }, 30_000);
+
+  it("says how much of a clamped message was really dropped", async () => {
+    // The number, not just the marker. The child clamps and marks honestly, and
+    // the parent re-clamps the same field at the same ceiling as its second line
+    // — so while the marker sat *outside* the ceiling, that second cut landed on
+    // the same boundary, discarded the child's marker and reported the length of
+    // the marker it had just dropped. A megabyte read as thirty-four characters.
+    const body = "y".repeat(1_000_000);
+    const thrown = `Unexpected response: ${body}`;
+    const result = await run(`throw new Error("Unexpected response: " + "y".repeat(1000000));`);
+
+    const message = result.failure?.message ?? "";
+    const omitted = /… \[(\d+) more characters omitted]$/.exec(message);
+    expect(result.failure?.kind).toBe("runtime");
+    // The whole field fits the ceiling, marker included, so nothing re-clamps it.
+    expect(message.length).toBe(SCRIPT_MAX_FAILURE_MESSAGE_CHARS);
+    expect(Number(omitted?.[1])).toBe(thrown.length - (message.length - omitted![0].length));
   }, 30_000);
 });
