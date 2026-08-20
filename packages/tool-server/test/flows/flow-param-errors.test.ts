@@ -244,6 +244,40 @@ describe("flow-execute parameter handling", () => {
     expect(step.reason).toContain("You sent: `xx`, `y`.");
     expect(step.reason).not.toContain("`udid`");
   });
+
+  it("leaves a tool's OWN input rejection alone when the dispatched args parsed fine", async () => {
+    // `describeNestedParamError` re-renders a schema miss against the authored
+    // args. It gates on `TOOL_INPUT_INVALID` — which is also what
+    // `InvalidToolInputError` DEFAULTS to, so a tool rejecting its arguments
+    // from inside `execute` passes that gate while its args parse perfectly
+    // well. `resolveFlowName` is exactly that throw, and this step reaches it:
+    // an empty `name` is a named source as far as the schema is concerned.
+    // There is no zod error to re-render then, and reaching for one throws
+    // `Cannot read properties of undefined (reading 'issues')` in place of the
+    // message the tool wrote.
+    const dir = path.join(tmpDir, ".argent", "flows");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "nested-empty.yaml"),
+      `steps:\n  - tool: flow-execute\n    args:\n      name: ""\n      project_root: ${tmpDir}\n      prerequisiteAcknowledged: true\n`,
+      "utf8"
+    );
+
+    const r = new Registry();
+    r.registerTool(createRunFlowTool(r) as never);
+
+    const result = await r.invokeTool<FlowRunResult>("flow-execute", {
+      name: "nested-empty",
+      project_root: tmpDir,
+      device: "00000000-0000-0000-0000-0000000000ab",
+      prerequisiteAcknowledged: true,
+    });
+
+    const step = result.steps.find((s) => s.tool === "flow-execute")!;
+    expect(step.status).toBe("error");
+    expect(step.reason).toContain("needs the flow's name in `name`");
+    expect(step.reason).not.toContain("Cannot read properties of undefined");
+  });
 });
 
 describe("flow-read-prerequisite parameter handling", () => {
