@@ -952,6 +952,25 @@ describe("keyboard clear — Android (adb input)", () => {
       expect(result.note).not.toMatch(/already been ACCEPTED/);
     });
 
+    it.each([["unverifiable"], ["value_mismatch"]])(
+      "does not warn about a doubled value on a clear-only call, where %s wrote nothing to double",
+      async (reason) => {
+        // The fallback for a clear-only call DELETES; there is no text for the
+        // accepted replace to be doubled with, and the replace wrote the empty
+        // string, which is what the fallback leaves behind anyway.
+        const { registry } = registryWithSetText({ matched: false, reason });
+
+        const result = await makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true },
+          ANDROID
+        );
+
+        expect(result.note).not.toMatch(/already been ACCEPTED/);
+        expect(result.note).not.toMatch(/added to it/);
+      }
+    );
+
     it("warns about a doubled value when the reply says applied and names no reason", async () => {
       // `reason` is optional on `SetTextResult`, so a reply can say the widget
       // ACCEPTED the action and leave the miss unnamed. Deciding the warning

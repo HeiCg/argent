@@ -474,7 +474,14 @@ async function runAndroidPhoneType(
     // Only when the verified path did not run, and only from WHICH path did —
     // never from anything it read off the field. See `androidClearNote`.
     ...(atomic && !atomic.ok && outcome
-      ? { note: androidClearNote(atomic.reason, outcome, { applied: atomic.applied }) }
+      ? {
+          note: androidClearNote(atomic.reason, outcome, {
+            applied: atomic.applied,
+            // The same truthiness the injection above is gated on, so the note
+            // claims a second write only where one was actually sent.
+            fallbackText: !!params.text,
+          }),
+        }
       : {}),
   };
 }

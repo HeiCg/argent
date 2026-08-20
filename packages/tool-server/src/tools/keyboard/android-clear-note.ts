@@ -45,6 +45,11 @@ const WHY: Record<AndroidClearSkipReason, string> = {
  * carries `applied: true` with no reason at all, and a reason from a helper
  * newer than this build. A name-keyed set answers "nothing was written" for
  * both, which is the one answer that must not be guessed.
+ *
+ * It also needs a SECOND write to exist. A clear-only call has none — the
+ * fallback deletes — and the accepted replace wrote the empty string, so both
+ * writes agree and there is nothing to double. Saying it anyway put "the
+ * fallback's text added to it" on a call that carried no text.
  */
 const DOUBLED =
   " The accessibility replace had already been ACCEPTED by the widget when this ran, so if it " +
@@ -97,7 +102,7 @@ const BLIND =
 export function androidClearNote(
   reason: AndroidClearSkipReason,
   outcome: AndroidClearOutcome,
-  { applied = false }: { applied?: boolean } = {}
+  { applied = false, fallbackText = false }: { applied?: boolean; fallbackText?: boolean } = {}
 ): string {
   // `WHY` is keyed by a closed union, but the reason crosses an RPC boundary
   // from a helper that may be NEWER than this tool-server — a protocol-3 reason
@@ -115,7 +120,7 @@ export function androidClearNote(
     `keyboard clear: the atomic accessibility replace was not used (${why}), so the ` +
     `field was cleared with ${WHAT[outcome.path]}.` +
     (outcome.blindDeleteRun ? BLIND : "") +
-    (applied ? DOUBLED : "") +
+    (applied && fallbackText ? DOUBLED : "") +
     ` Read the field back if the exact value matters.`
   );
 }
