@@ -151,7 +151,7 @@ jobs:
 
       - run: npm ci
 
-      - run: npx tsc --build
+      - run: npm run build
 
       - run: npm run build -w @swmansion/argent
         env:
