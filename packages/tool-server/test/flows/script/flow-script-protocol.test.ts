@@ -283,6 +283,34 @@ describe("flow script executor — the protocol channel is the runner's alone", 
   });
 });
 
+describe("flow script executor — the runner's reporting path survives the script", () => {
+  // Each of these is a script that otherwise finishes normally and that plain
+  // `node` exits 0 with the right output. Each one took the runner's verdict
+  // with it, and the step was reported as `exit` — "the script stopped its own
+  // process ... no output was captured" — for a script that had done its work.
+  const shapes: Array<[string, string]> = [
+    ["replaced process.send", `process.send = () => true;`],
+    ["deleted process.send", `delete process.send;`],
+    ["removed every process listener", `process.removeAllListeners();`],
+    ["removed the beforeExit listeners", `process.removeAllListeners("beforeExit");`],
+  ];
+
+  for (const [what, prelude] of shapes) {
+    it(`still reports a script that ${what}`, async () => {
+      const ws = workspace();
+      const script = ws.write(
+        "disturbs.mjs",
+        `${prelude}\nconsole.log("did the work");\noutput.ok = true;`
+      );
+      const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+      expect(result.failure).toBeUndefined();
+      expect(result.output).toEqual({ ok: true });
+      expect(result.log).toContain("did the work");
+    });
+  }
+});
+
 describe("flow script executor — the published layout", () => {
   it("runs from a directory holding only the three .mjs files", async () => {
     // In the published bundle the runner sits flat in dist/ beside

@@ -63,6 +63,24 @@ const ENTRY_SETTLE_PROBE_MS = 1_000;
 const MAX_FAILURE_MESSAGE_CHARS = 8 * 1024;
 const MAX_FAILURE_STACK_CHARS = 16 * 1024;
 
+/**
+ * The real `process.send`, taken while this preload is the only code that has
+ * run. Everything the runner reports goes through it rather than through
+ * whatever `process.send` names later: a script that replaces or deletes the
+ * property — a test double, a stub for a dependency that pings its parent —
+ * silently took the verdict with it, and a step that had done all of its work
+ * and set its output was reported as having stopped its own process.
+ */
+const realSend = typeof process.send === "function" ? process.send : undefined;
+
+/**
+ * The listeners the runner cannot lose. `process.removeAllListeners()` with no
+ * arguments is ordinary cleanup code, and it took the `beforeExit` probe with
+ * it — after which a script that finished normally simply exited, and the step
+ * was reported as self-termination.
+ */
+const runnerListeners = [];
+
 if (isMainThread && process.env[ACTIVATION_ENV] === "1") {
   delete process.env[ACTIVATION_ENV];
   await prepare();
@@ -110,7 +128,7 @@ async function prepare() {
   // wrote and losing the error itself. Claim it and report what it was. An
   // unhandled rejection arrives here too: Node raises it as an uncaught
   // exception unless an `unhandledRejection` listener claims it first.
-  process.on("uncaughtException", (err) => {
+  keepListener("uncaughtException", (err) => {
     finish({
       type: "failure",
       failureType: classifyScriptError(err),
@@ -128,7 +146,7 @@ async function prepare() {
   // `beforeExit` can fire more than once and does not fire at all after an
   // explicit `process.exit`. The first is handled by `finish` reporting once;
   // the second is the executor's `exit` verdict, which is the right one.
-  process.on("beforeExit", () => {
+  keepListener("beforeExit", () => {
     if (finished || probing) return;
     probing = true;
     reportWhenEntrySettled(request.scriptUrl);
@@ -141,7 +159,8 @@ async function prepare() {
   // inactive preload — the copy a `child_process.fork` from the script
   // inherits — that reference alone kept the script's own child alive after its
   // work was done, and the step ran to its time limit.
-  process.on("disconnect", exitOnParentDisconnect);
+  keepListener("disconnect", exitOnParentDisconnect);
+  guardRunnerListeners();
 
   // Load-bearing. This is the only thing that lets the executor tell "the
   // runner never began the script" apart from "the script stopped its own
@@ -215,6 +234,36 @@ function reportWhenEntrySettled(scriptUrl) {
   import(scriptUrl).then(report, report);
 }
 
+/** Register a process listener the runner needs, and remember it. */
+function keepListener(event, handler) {
+  runnerListeners.push({ event, handler });
+  process.on(event, handler);
+}
+
+/**
+ * Put back any of the runner's own listeners a script removes.
+ *
+ * `process.removeAllListeners()` is ordinary cleanup code — a test harness
+ * between cases, a library tearing down its own handlers — and with no argument
+ * it takes every listener on the process, the runner's included. Losing the
+ * `beforeExit` probe means a script that finished all of its work and set its
+ * output simply exits, and the executor reports self-termination.
+ *
+ * Re-registering inside the call keeps the runner's handler first, which is
+ * where it was: `beforeExit` yields to the script's handlers before probing,
+ * and `uncaughtException` checks for a handler of the script's own.
+ */
+function guardRunnerListeners() {
+  const realRemoveAllListeners = process.removeAllListeners;
+  process.removeAllListeners = (...args) => {
+    const result = realRemoveAllListeners.apply(process, args);
+    for (const { event, handler } of runnerListeners) {
+      if (!process.listeners(event).includes(handler)) process.on(event, handler);
+    }
+    return result;
+  };
+}
+
 /**
  * Take the protocol channel away from the script.
  *
@@ -241,7 +290,6 @@ function reportWhenEntrySettled(scriptUrl) {
  * ends as a pass carrying whatever half-written document the script had reached.
  */
 function closeChannelToScript() {
-  const realSend = process.send;
   // `_send` is Node's undocumented implementation behind `send`, and not on the
   // public type — but a script can reach it by name, so it is guarded too.
   const host = /** @type {{ _send?: Function }} */ (/** @type {unknown} */ (process));
@@ -671,11 +719,18 @@ function flushStream(stream, done) {
   }
 }
 
-/** The only path onto the protocol channel. See `closeChannelToScript`. */
+/**
+ * The only path onto the protocol channel. See `closeChannelToScript`.
+ *
+ * Through the `send` captured at load, never through whatever `process.send`
+ * names by now: the property is the script's to replace or delete, and reading
+ * it back here handed the verdict to a stub.
+ */
 function sendToParent(message, callback) {
+  const send = realSend ?? process.send;
   runnerIsSending = true;
   try {
-    return process.send(message, callback);
+    return send.call(process, message, callback);
   } finally {
     runnerIsSending = false;
   }
