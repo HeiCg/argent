@@ -246,7 +246,7 @@ export type FlowScriptFailureKind =
   | "timeout"
   /** The run was cancelled. */
   | "cancelled"
-  /** The script stopped its own process instead of returning. */
+  /** The script stopped its own process, or reported failure through its exit code. */
   | "exit"
   /** The process was killed by a signal it did not choose. */
   | "signal"

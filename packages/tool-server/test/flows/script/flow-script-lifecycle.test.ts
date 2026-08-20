@@ -208,6 +208,25 @@ describe("flow script executor — exit classification", () => {
     expect(result.log).toContain("leaving");
   });
 
+  it("fails a step whose script set a non-zero process.exitCode", async () => {
+    const ws = workspace();
+    // `try { await main() } catch (e) { console.error(e); process.exitCode = 1 }`
+    // is the recommended way to fail a script, preferred over `process.exit(1)`
+    // because it does not truncate stdout. Both have to reach the same verdict.
+    const script = ws.write(
+      "soft-fail.mjs",
+      `console.log("validation failed: 3 of 10 checks");
+       output.failures = 3;
+       process.exitCode = 1;`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.ok).toBe(false);
+    expect(result.failure?.kind).toBe("exit");
+    expect(result.failure?.message).toContain("1");
+    expect(result.log).toContain("validation failed");
+  });
+
   it("reports a signal death as a runner error naming the signal", async () => {
     const ws = workspace();
     // A process killed by a signal did not choose to stop; calling that

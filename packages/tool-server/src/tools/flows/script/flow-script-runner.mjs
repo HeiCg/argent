@@ -194,6 +194,20 @@ function reportWhenEntrySettled(scriptUrl) {
   }, ENTRY_SETTLE_PROBE_MS);
   const report = () => {
     clearTimeout(bound);
+    // `try { await main() } catch (e) { console.error(e); process.exitCode = 1 }`
+    // is the recommended way to fail a script — preferred over `process.exit(1)`
+    // precisely because it does not truncate stdout — and the exit code is the
+    // script saying it failed. Reading the verdict off the IPC message alone
+    // threw that away and reported the step as passing.
+    const code = process.exitCode;
+    if (code !== undefined && code !== null && code !== 0) {
+      finish({
+        type: "failure",
+        failureType: "exit",
+        message: `The script set process.exitCode to ${code}, which means it failed.`,
+      });
+      return;
+    }
     // Read the global back rather than a reference captured earlier: a script
     // may mutate the object (`output.user = user`) or replace the binding
     // (`output = { user }`, which resolves to this global property), and both

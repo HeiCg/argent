@@ -54,10 +54,11 @@ export interface ScriptExecuteRequest {
  *
  * `load` is a module that never evaluated (missing file, bad syntax, an import
  * Node refused); `runtime` is the script's own code throwing; `output` is a
- * value that cannot cross into flow state; `protocol` is the runner itself
+ * value that cannot cross into flow state; `exit` is the script reporting its
+ * own failure through a non-zero exit code; `protocol` is the runner itself
  * failing before or around the script.
  */
-export type ScriptFailureType = "load" | "runtime" | "output" | "protocol";
+export type ScriptFailureType = "load" | "runtime" | "output" | "exit" | "protocol";
 
 /**
  * Child → parent. `started` is load-bearing: it is the only thing that lets the
@@ -77,7 +78,13 @@ export type ScriptResponse =
 /** The two responses that end a run. `started` is not one of them. */
 export type ScriptTerminalResponse = Exclude<ScriptResponse, { type: "started" }>;
 
-const FAILURE_TYPES: readonly ScriptFailureType[] = ["load", "runtime", "output", "protocol"];
+const FAILURE_TYPES: readonly ScriptFailureType[] = [
+  "load",
+  "runtime",
+  "output",
+  "exit",
+  "protocol",
+];
 
 /**
  * Validate one message off the IPC channel.
