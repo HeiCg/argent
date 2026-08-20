@@ -678,10 +678,44 @@ export function confusableTextNote(actual: string, expected: string): string | u
   return ignorableDifferenceNote(actual, expected, equalsCI);
 }
 
-const codepoints = (s: string): string =>
-  Array.from(s)
-    .map((ch) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
-    .join(" ");
+const codepointName = (ch: string): string =>
+  `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+
+/**
+ * How many code points of each string the dump below prints. At about seven
+ * characters each, this keeps the two dumps to roughly 700 characters however
+ * long the strings are.
+ */
+const CODEPOINT_DUMP_MAX = 48;
+
+/**
+ * A string as code points, windowed on the character that blocked the match
+ * when printing it whole would not fit {@link CODEPOINT_DUMP_MAX}.
+ *
+ * Under `equals` the dump is bounded by the expectation the author wrote.
+ * Under `contains` it is bounded by the ELEMENT, and `assertText` prefers the
+ * hoisted `subtreeText` — a container's whole aggregated text — so one failed
+ * check carried an entire card at seven characters per code point: a 1,412
+ * character label made an 11,532 character failure reason, of which the author
+ * needed about forty code points.
+ *
+ * The window is centred on the blocker rather than on the start, because where
+ * in the label the intruder sits is the thing the dump is for; an elision
+ * marker says the rest was cut.
+ */
+function codepoints(text: string, blocking: readonly string[] = []): string {
+  const chars = Array.from(text);
+  if (chars.length <= CODEPOINT_DUMP_MAX) return chars.map(codepointName).join(" ");
+  const found = chars.findIndex((ch) => blocking.includes(ch));
+  const centre = found === -1 ? 0 : found;
+  const start = Math.min(
+    Math.max(0, centre - Math.floor(CODEPOINT_DUMP_MAX / 2)),
+    chars.length - CODEPOINT_DUMP_MAX
+  );
+  const end = start + CODEPOINT_DUMP_MAX;
+  const body = chars.slice(start, end).map(codepointName).join(" ");
+  return `${start > 0 ? "… " : ""}${body}${end < chars.length ? " …" : ""}`;
+}
 
 /**
  * The shared body of the two confusable notes: pick the lead that tells the
@@ -710,7 +744,10 @@ function ignorableDifferenceNote(
         "drawn — a soft hyphen paints a real hyphen where the line breaks, U+180E breaks " +
         "Arabic cursive joining as ZWNJ does — so the screen and the text really do differ"
       : "the two strings differ only in invisible characters";
-  return `${lead} — actual [${codepoints(actual)}] vs expected [${codepoints(expected)}]`;
+  return (
+    `${lead} — actual [${codepoints(actual, differing)}] ` +
+    `vs expected [${codepoints(expected, differing)}]`
+  );
 }
 
 /**
@@ -731,9 +768,11 @@ function ignorableDifferenceNote(
  * members, since under a substring test the label also carries ignorables the
  * needle never reached.
  *
- * Both whole strings are printed, not the matched region: mapping an index back
- * through the fold is not sound (case and whitespace collapse change lengths),
- * and the author needs to see where in the label the intruder sits anyway.
+ * Both strings are printed as they stand, not as the matched region: mapping an
+ * index back through the fold is not sound (case and whitespace collapse change
+ * lengths). Only their LENGTH is bounded, and centred on the blocking character
+ * so the author still sees where in the label the intruder sits — see
+ * {@link codepoints}.
  */
 export function confusableTextNoteIn(haystack: string, needle: string): string | undefined {
   if (includesCI(haystack, needle)) return undefined;

@@ -467,6 +467,26 @@ describe("confusableTextNote", () => {
     expect(confusableTextNoteIn(`Save${RLM}Changes`, "SaveChanges")).toContain("REORDERS");
   });
 
+  it("bounds the codepoint dump, and windows it on the blocker", () => {
+    // Under `contains` the dump is sized by the ELEMENT, and assertText prefers
+    // the hoisted subtreeText — a container's whole aggregated text — so one
+    // failed check carried an entire card at ~7 characters per code point: a
+    // 1,412-character label made an 11,532-character failure reason, of which
+    // the author needed about forty code points.
+    const card = `${"Total 42. ".repeat(140)}Save${CGJ}Changes`;
+    const note = confusableTextNoteIn(card, "SaveChanges")!;
+    expect(card.length).toBeGreaterThan(1400);
+    expect(note.length).toBeLessThan(700);
+    // Windowed on the blocker, not truncated from the front — where in the
+    // label the intruder sits is what the dump is for.
+    expect(note).toContain("U+034F");
+    expect(note).toContain("…");
+    // A string that fits is still printed whole, marker and all absent.
+    const short = confusableTextNote(`Save${CGJ}Changes`, "SaveChanges")!;
+    expect(short).not.toContain("…");
+    expect(short).toContain("U+0053 U+0061 U+0076 U+0065 U+034F");
+  });
+
   it("stays silent for a prepended concatenation mark, which is NOT ignorable", () => {
     // U+110BD KAITHI NUMBER SIGN is category Cf but changes how the digits
     // after it render, so calling it invisible would be a false explanation.
