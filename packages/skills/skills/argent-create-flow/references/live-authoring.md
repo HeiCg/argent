@@ -21,7 +21,9 @@ args: "{\"udid\":\"DEVICE\",\"x\":0.5,\"y\":0.35}"
 
 `command` takes a **tool** name, never a flow-file directive. A directive name (`tap`, `launch`, `run`, `type`, `await`, `assert`, `echo`, `wait`, `long-press`) runs nothing and records nothing: the call is answered with the tool that records it, or — for `wait` and `long-press`, which have no recording tool — with what to do instead. A recording tool's own name (`flow-add-step`, `flow-add-echo`, `flow-start-recording`, `flow-finish-recording`) is refused the same way. Both answers omit `recorded`, so read that field rather than the call's status to know whether a step was appended.
 
-Other returns are success-shaped and record nothing after the call already ran. A composed `flow-execute` that answers with a prerequisite notice, fails, or is cancelled writes no `run:` step, and its `message` names what happened. A `run-sequence` is refused on the same terms: it records as one opaque raw batch step, so a single nested failure discards the whole batch and nothing is written. Do not batch mid-recording — record the actions as individual `flow-add-step` calls, each verified as it lands, so the file gets one directive per action to polish. Whenever a step is refused after something ran, treat the device as possibly moved off your recorded prefix's end state — check with `describe` or `screenshot` and restore it by hand. Do not relaunch the app: that lands on the start screen, not where your prefix ended.
+Other returns are also success-shaped and record nothing. A composed `flow-execute` that answers with a prerequisite notice, fails, or is cancelled writes no `run:` step, and its `message` names what happened. A `run-sequence` is refused on the same terms: it records as one opaque raw batch step, so a single nested failure discards the whole batch and nothing is written. Do not batch mid-recording — record the actions as individual `flow-add-step` calls, each verified as it lands, so the file gets one directive per action to polish.
+
+Some of these refusals ran first and some ran nothing: a prerequisite notice executes no step, and a batch rejected on its first step dispatches none. Do not infer which from the case. Read `message`: it warns that the device may have moved when a step was reached, and stays silent when none was. On that warning, treat the device as possibly moved off your recorded prefix's end state — check with `describe` or `screenshot` and restore it by hand. Do not relaunch the app: that lands on the start screen, not where your prefix ended.
 
 A recorded `flow-execute` has two names. The top-level `name` identifies the recording. `args.name`, or its `args.flow_name` alias, identifies the sibling flow captured as `run:`.
 
@@ -32,7 +34,7 @@ Obey these lifecycle rules:
 3. Give concurrent recordings separate devices. Their files are isolated, but their live device actions are not.
 4. Treat `flow-start-recording` as destructive. It always truncates the named YAML, including a finished or committed flow. `restarted` reports only a displaced live take.
 5. If a call says the recording is inactive, do not restart under that name. The completed take can still be on disk. Copy it aside or record under a fresh name.
-6. Inspect `toolResult`, `message`, and `recorded` after each call. A call that errors records nothing, but a call that returns normally while reporting an unmet condition **does** append the step, and `message` says the step was added either way. `await-ui-element` is the case that turns up in practice (see [Live waits and checks](#live-waits-and-checks)). Only `flow-start-recording` and `flow-finish-recording` return the whole YAML as `flowFile`. A step call returns `recorded` — one summary line for the step it appended — plus a running `stepCount`. Read `recorded`: the recorder does not always store the tool call you made, and that line is where a rewrite shows up. To see the whole file mid-recording, read it at `savedTo`. A `savedTo` that comes back `null` means the write failed on your side. The step is still in the recording, so continue: the next step rewrites the whole file, and `flow-finish-recording` returns `flowFile` regardless.
+6. Inspect `toolResult`, `message`, and `recorded` after each call. A call that errors records nothing, but a call that returns normally while reporting an unmet condition **does** append the step, and `message` says the step was added either way. `await-ui-element` is the case that turns up in practice (see [Live waits and checks](#live-waits-and-checks)). The reverse does not hold: a normal return is not proof the step landed, because the returns above record nothing and still succeed. Only `flow-start-recording` and `flow-finish-recording` return the whole YAML as `flowFile`. A step call returns `recorded` — one summary line for the step it appended — plus a running `stepCount`. Read `recorded`: the recorder does not always store the tool call you made, and that line is where a rewrite shows up. To see the whole file mid-recording, read it at `savedTo`. A `savedTo` that comes back `null` means the write failed on your side. The step is still in the recording, so continue: the next step rewrites the whole file, and `flow-finish-recording` returns `flowFile` regardless.
 7. Edit or reorder the YAML only after `flow-finish-recording`. An active remote recording can overwrite mid-recording edits.
 
 ## Start in the correct order
@@ -136,11 +138,11 @@ For every retained raw gesture, add an echo and a recorded result check.
 
 Record `await-ui-element` through `flow-add-step`. The recorder writes the step even when `toolResult.success` is false. Read `success` and `cause` after each check:
 
-- `unmet`: The tree was readable, but the condition was false. Restore the expected state or correct the selector or timeout. Then, record the check again.
-- `unreadable`: The wait ended without a trustworthy read. Restore the tree source and record the check again.
-- `cancelled`: The caller stopped the wait. Record the check again.
+- `unmet`: The tree was readable, but the condition was false. Restore the expected state or correct the selector or timeout. Record the check again, then delete the failed step after `flow-finish-recording`.
+- `unreadable`: The wait ended without a trustworthy read. Restore the tree source and record the check again. Keep the failed step: the condition is unknown, not false.
+- `cancelled`: The caller stopped the wait. Record the check again. Keep the failed step: the condition is unknown, not false.
 
-Delete the old failed step after `flow-finish-recording`. Only `unmet` disproves the condition.
+Only `unmet` disproves the condition. Never delete a step during the recording.
 
 A stale `hidden` whose selector matches nothing replays as a silent pass — the unfalsifiable gate that [Record absence in three steps](#record-absence-in-three-steps) exists to prevent. Never proceed as though the gate passed. See the `await-ui-element` section of `argent-device-interact` for the full live condition and selector reference.
 
@@ -149,7 +151,7 @@ A wait inside `run-sequence` gets no recorder warning. Inspect the nested result
 The live tool and flow runner use [different trees](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree). After a successful wait, the recorder checks the same condition on the runner tree:
 
 - No warning: The condition holds on both trees.
-- Mismatch: Rule out a changed screen first. For `text`, also rule out multiple matches. Otherwise, use a runner-tree selector and replay.
+- Mismatch: For `text`, first rule out a selector that matches more than one element. Then rule out a changed screen. If the trees really differ, use a runner-tree selector and replay.
 - Unreadable, slow, or cancelled check: The conversion is unknown. Restore the source or re-record before conversion.
 
 A warning does not reject the step. `flow-finish-recording` repeats each warning below its step and reports dropped warnings.
