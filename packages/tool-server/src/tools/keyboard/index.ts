@@ -207,7 +207,8 @@ One call does one typing action: pass text OR key, never both. \`clear\` rides a
     // One request can run a clear AND one injection — `text` or `key`, never
     // both — and the legs are budgeted separately. On Android a clear first
     // tries the accessibility replace (ATOMIC_CLEAR_BUDGET_MS 8s to start the
-    // helper, then two RPCs under the client's own 15s cap each), then the
+    // helper, then a 5s `ping` and a 15s `setText` under the client's own
+    // caps), then the
     // injected clear capped at 26s (ANDROID_CLEAR_BUDGET_MS, which derives as
     // ADB_INPUT_TIMEOUT_MS + DELETE_RUN_RESERVE_MS), and the injection that
     // follows keeps its own 15s cap — a `{ clear, text }` worst case now well
