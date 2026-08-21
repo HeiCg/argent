@@ -164,6 +164,7 @@ export const ALLOWED: ValidatorMap = {
   },
   "installation:allowlist_decision": {
     is_enabled: bool,
+    decided_by: oneOf(["flag", "default", "prompt"] as const),
   },
   "installation:stale_config_cleanup": {
     removed_count: COUNT,
