@@ -42,6 +42,28 @@ function getAvailableToolIds(): string[] {
 
 // The exact opted-in shape Windsurf's alwaysAllow / Kiro's autoApprove get:
 // anything else there is a value the user narrowed since.
+// `update` rewrites the argent MCP entry on every run (to repair drift), but
+// only command/args/env are argent's to author. Editors keep state INSIDE the
+// entry too — Gemini's `trust`, Kiro's `autoApprove`, Windsurf's `alwaysAllow`,
+// Codex's `tools` table, a user-set `timeout`/`disabled` — and a wholesale
+// replace drops all of it. Dropping the opt-in keys used to be masked by the
+// unconditional allowlist re-add that followed; update's refresh guard has
+// retired that re-add, so the rewrite itself must carry them over.
+function mergeServerEntry(existing: unknown, entry: McpServerEntry): Record<string, unknown> {
+  const kept: Record<string, unknown> = {};
+  if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+    for (const [key, value] of Object.entries(existing as Record<string, unknown>)) {
+      if (key !== "command" && key !== "args" && key !== "env") kept[key] = value;
+    }
+  }
+  return {
+    command: entry.command,
+    args: entry.args,
+    ...(hasEnv(entry) ? { env: entry.env } : {}),
+    ...kept,
+  };
+}
+
 function isWildcardOnly(value: unknown): boolean {
   return Array.isArray(value) && value.length === 1 && value[0] === "*";
 }
@@ -1093,11 +1115,10 @@ const windsurfAdapter: McpConfigAdapter = {
 
   // JSONC-safe writes (see the Cursor adapter).
   write(configPath: string, entry: McpServerEntry): void {
-    editJsoncFile(configPath, ["mcpServers", MCP_SERVER_KEY], {
-      command: entry.command,
-      args: entry.args,
-      ...(hasEnv(entry) ? { env: entry.env } : {}),
-    });
+    const existing = (readJsonc(configPath).mcpServers as Record<string, unknown> | undefined)?.[
+      MCP_SERVER_KEY
+    ];
+    editJsoncFile(configPath, ["mcpServers", MCP_SERVER_KEY], mergeServerEntry(existing, entry));
   },
 
   remove(configPath: string): boolean {
@@ -1280,11 +1301,10 @@ const geminiAdapter: McpConfigAdapter = {
 
   // JSONC-safe writes (see the Cursor adapter).
   write(configPath: string, entry: McpServerEntry): void {
-    editJsoncFile(configPath, ["mcpServers", MCP_SERVER_KEY], {
-      command: entry.command,
-      args: entry.args,
-      ...(hasEnv(entry) ? { env: entry.env } : {}),
-    });
+    const existing = (readJsonc(configPath).mcpServers as Record<string, unknown> | undefined)?.[
+      MCP_SERVER_KEY
+    ];
+    editJsoncFile(configPath, ["mcpServers", MCP_SERVER_KEY], mergeServerEntry(existing, entry));
   },
 
   remove(configPath: string): boolean {
@@ -1371,11 +1391,7 @@ const codexAdapter: McpConfigAdapter = {
   write(configPath: string, entry: McpServerEntry): void {
     const config = readToml(configPath);
     const servers = (config.mcp_servers ?? {}) as Record<string, unknown>;
-    servers[MCP_SERVER_KEY] = {
-      command: entry.command,
-      args: entry.args,
-      ...(hasEnv(entry) ? { env: entry.env } : {}),
-    };
+    servers[MCP_SERVER_KEY] = mergeServerEntry(servers[MCP_SERVER_KEY], entry);
     config.mcp_servers = servers;
     writeToml(configPath, config);
   },
@@ -1660,11 +1676,10 @@ const kiroAdapter: McpConfigAdapter = {
   // Read and written as JSONC through readJsonc / editJsoncFile so comments and
   // foreign servers survive (see the Cursor adapter).
   write(configPath: string, entry: McpServerEntry): void {
-    editJsoncFile(configPath, ["mcpServers", MCP_SERVER_KEY], {
-      command: entry.command,
-      args: entry.args,
-      ...(hasEnv(entry) ? { env: entry.env } : {}),
-    });
+    const existing = (readJsonc(configPath).mcpServers as Record<string, unknown> | undefined)?.[
+      MCP_SERVER_KEY
+    ];
+    editJsoncFile(configPath, ["mcpServers", MCP_SERVER_KEY], mergeServerEntry(existing, entry));
   },
 
   remove(configPath: string): boolean {
