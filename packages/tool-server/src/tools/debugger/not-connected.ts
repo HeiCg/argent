@@ -107,12 +107,14 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "something other than CDP, or is up but has no usable page — detail says which. " +
     "A detail about page targets (none at all, or only devtools:// ones) means the " +
     "app is still running and only lacks a window: ask the user to bring one back, " +
-    "since relaunching it would leave a second copy behind. Otherwise nothing is " +
-    "serving CDP there and launch-app cannot start a Chromium app: the app has to " +
-    "come back with --remote-debugging-port — for an Electron app, boot-device with " +
-    "electronAppPath relaunches it; for a browser, ask the user to start it again on " +
-    "the same port. Then re-read the chromium-cdp-<port> id from boot-device / " +
-    "list-devices, since a relaunch on a new port is a new id, and retry once.",
+    "since relaunching it would leave a second copy behind. Otherwise the app has to " +
+    "come back with --remote-debugging-port, and launch-app cannot start a Chromium " +
+    "app: confirm it has actually exited first — boot-device never stops one, so " +
+    "relaunching a live app leaves that same second copy — then boot-device with " +
+    "electronAppPath relaunches an Electron app, and for a browser, ask the user to " +
+    "start it again on the same port. Re-read the chromium-cdp-<port> id from " +
+    "boot-device / list-devices, since a relaunch on a new port is a new id, and " +
+    "retry once.",
   runtime_unresponsive:
     "The app accepted the debugger connection but did not answer within the " +
     "timeout — it is likely frozen, or paused at a breakpoint. Do not retry in a loop " +

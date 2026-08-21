@@ -14,6 +14,7 @@ import { createRestartAppTool } from "../src/tools/restart-app";
 import { debuggerInspectElementTool } from "../src/tools/debugger/debugger-inspect-element";
 import { debuggerReloadMetroTool } from "../src/tools/debugger/debugger-reload-metro";
 import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-component-tree";
+import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status";
 
 const SKILLS = path.resolve(__dirname, "../../skills/skills");
 const DEBUGGER_SKILL = path.join(SKILLS, "argent-metro-debugger/SKILL.md");
@@ -24,6 +25,7 @@ const FAILURE_SCENARIOS = path.join(
 const DEVICE_INTERACT_SKILL = path.join(SKILLS, "argent-device-interact/SKILL.md");
 
 const restartAppTool = createRestartAppTool({} as unknown as Registry);
+const debuggerStatusTool = createDebuggerStatusTool({} as unknown as Registry);
 const restartApp = restartAppTool.capability;
 
 /** The skill's platform vocabulary, in the order its tables list it. */
@@ -115,15 +117,12 @@ describe("the Chromium recovery names a relaunch that exists", () => {
 
     // Offering restart-app to a reader who may be on Chromium obliges each
     // surface to name the relaunch that works, not merely fence restart-app off.
-    // The flag marks the surfaces that tell the user to quit the app; the
-    // failure-scenarios row instead sends the reader to check whether it already
-    // exited, so it owns no quit step.
-    const surfaces: [string, string, boolean][] = [
-      [DEBUGGER_SKILL, "Relaunch app on device", true],
-      [FAILURE_SCENARIOS, "**Was connected, then tool fails**", false],
-      [DEVICE_INTERACT_SKILL, "Restart an app", true],
+    const surfaces: [string, string][] = [
+      [DEBUGGER_SKILL, "Relaunch app on device"],
+      [FAILURE_SCENARIOS, "**Was connected, then tool fails**"],
+      [DEVICE_INTERACT_SKILL, "Restart an app"],
     ];
-    for (const [file, label, quitStep] of surfaces) {
+    for (const [file, label] of surfaces) {
       const cell = row(file, label);
       expect(cell, file).toContain("Chromium");
       expect(cell, file).toContain("`boot-device` with `electronAppPath`");
@@ -134,9 +133,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       expect(cell, file).toContain("`list-devices`");
       // boot-device never stops an app, so a relaunch aimed at a process that is
       // still up leaves a second copy holding the single-instance lock. Every
-      // surface has to name the app's exit as part of the relaunch.
+      // surface has to name the app's exit, and who ends it when it has not.
       expect(cell, file).toContain("exited");
-      if (quitStep) expect(cell, file).toContain("quit");
+      expect(cell, file).toContain("quit");
     }
 
     // The Reload & recovery row fences restart-app off and delegates rather than
@@ -161,6 +160,12 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     for (const reason of DEBUGGER_NOT_CONNECTED_REASONS) {
       expect(skill, `${reason} is missing from SKILL.md's reason list`).toContain(`\`${reason}\``);
       expect(table, `${reason} has no row in failure-scenarios.md`).toContain(reason);
+      // The tool's own description is the enumeration an agent reads before it
+      // has any skill open, and it is the one that returns these reasons.
+      expect(
+        debuggerStatusTool.description,
+        `${reason} is missing from debugger-status's description`
+      ).toContain(reason);
     }
   });
 });

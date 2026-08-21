@@ -114,6 +114,9 @@ describe("guidance platform-correctness", () => {
       expect(r.guidance).toContain("same");
       // The id is only new when the port is, so the flat claim must not come back.
       expect(r.guidance).toContain("list-devices");
+      // boot-device never stops an app, so every relaunch these strings order
+      // has to be gated on the app being gone - the invariant the skill rows carry.
+      expect(r.guidance).toMatch(/exited|quit it/);
       expect(r.guidance).not.toMatch(/under a new chromium-cdp/);
     }
     // A renderer paused at a breakpoint times out exactly like a wedged one, and
