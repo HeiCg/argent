@@ -10,10 +10,10 @@ import { gestureScrollTool } from "../src/tools/gesture-scroll";
 // front with an actionable error; keyboard skips the guard because key events
 // bypass hit-testing and stay fast on hidden windows, and button never reaches
 // it — its capability omits chromium. In practice the guard is a backstop:
-// argent-spawned apps carry anti-throttling flags, and a page with a CDP
-// session attached also has focus emulation pinning reported visibility to
-// "visible", so the probe reads "hidden" only where both are absent — exactly
-// where the stall is real.
+// argent-spawned apps carry anti-throttling flags, and focus emulation pins
+// reported visibility to "visible" on every session that could apply it, so the
+// probe reads "hidden" only on an externally launched target whose runtime
+// could not — exactly where the stall is real.
 
 function fakeChromiumApi(visibility = "visible") {
   return {
@@ -134,9 +134,9 @@ describe("hidden-window guard on chromium mouse tools", () => {
   });
 
   // The other half of "only an explicit `hidden` refuses": a probe that resolves
-  // without a usable value. `Runtime.evaluate` answers this way when the
-  // expression itself threw or the page has no execution context yet, and a
-  // guard that refused on it would block tap/drag/scroll on a visible window.
+  // with anything other than "hidden". `Runtime.evaluate` omits `value` when the
+  // expression threw, and `visibilityState` has states beyond visible/hidden — a
+  // guard that refused on those would block tap/drag/scroll on a live window.
   it.each([
     ["an empty result", {}],
     ["a result with no value", { result: {} }],

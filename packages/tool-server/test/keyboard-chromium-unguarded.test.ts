@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { Registry, type DeviceInfo } from "@argent/registry";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
 import { buttonTool } from "../src/tools/button";
-import { assertSupported } from "../src/utils/capability";
+import { assertSupported, UnsupportedOperationError } from "../src/utils/capability";
 
 // The mouse tools (gesture-tap/-drag/-scroll) refuse up front on a hidden
 // Chromium window because every mouse dispatch waits on compositor hit-testing.
@@ -13,11 +13,11 @@ import { assertSupported } from "../src/utils/capability";
 // deliberately NOT guarded. These tests are what hold it that way: guarding
 // `keyboard` would make it refuse input that demonstrably works.
 //
-// The sibling `button` tool is exempt for a different reason, pinned below: its
-// capability omits chromium, so the dispatcher's gate rejects a Chromium device
-// before `execute` runs. A Chromium app has no hardware buttons anyway — the
-// chromium-server's WebSocket `button` command emulates `Back` alone, as an
-// Alt+Left chord, and throws for every other button.
+// The sibling `button` tool is exempt for a different reason, pinned below: it
+// declares no chromium capability, so the gate rejects a Chromium device and
+// `execute` never runs — there is no guard on its path to reach. A Chromium app
+// has no hardware buttons anyway; the chromium-server's WebSocket `button`
+// command emulates `Back` alone, as an Alt+Left chord, and throws for the rest.
 
 const chromiumDevice = {
   id: "chromium-cdp-9222",
@@ -72,10 +72,16 @@ describe("keyboard on chromium — deliberately unguarded on a hidden window", (
     // keyDown + keyUp for the named key.
     expect(dispatchKeyEvent).toHaveBeenCalledTimes(2);
   });
+});
 
-  it("rejects `button` on a Chromium device before it can reach the guard", () => {
+describe("button chromium lockout", () => {
+  it("declares no chromium capability, so the gate rejects the device", () => {
+    expect(buttonTool.capability).not.toHaveProperty("chromium");
     expect(() => assertSupported("button", buttonTool.capability, chromiumDevice)).toThrow(
-      /no chromium support declared/
+      UnsupportedOperationError
+    );
+    expect(() => assertSupported("button", buttonTool.capability, chromiumDevice)).toThrow(
+      /button.*not supported on chromium/
     );
   });
 });
