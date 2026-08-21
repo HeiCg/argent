@@ -69,11 +69,11 @@ describe("the reaped-session key", () => {
   it("does not pin the teardown on one caller the disposer cannot have seen", () => {
     // A blueprint's dispose() is called by Registry._teardown with no caller, so
     // nothing that writes a breadcrumb knows which tool triggered it.
-    // stop-all-simulator-servers is the common one, but stop-simulator-server on
-    // Chromium cascades into the debugger through ChromiumCdp, and
-    // react-profiler-start disposes it whenever it finds the session in a state
-    // it cannot reuse — so the message names the family rather than asserting
-    // one member.
+    // stop-all-simulator-servers is the common one, but react-profiler-start
+    // disposes the session too whenever it finds it in a state it cannot reuse —
+    // so the message names the family rather than asserting one member. It names
+    // only the members that reach an RN session: `stop-simulator-server` reaches
+    // the debugger through ChromiumCdp, which this device has none of.
     recordReapedSession("js-runtime-debugger", UDID);
 
     const message = describeReapedSession(
@@ -81,8 +81,8 @@ describe("the reaped-session key", () => {
       "JS-runtime debugger session"
     );
     expect(message).toContain("stop-all-simulator-servers");
-    expect(message).toContain("stop-simulator-server on Chromium");
     expect(message).toContain("react-profiler-start");
+    expect(message).not.toContain("a stop-simulator-server");
     // The claim that made it wrong two ways out of three.
     expect(message).not.toMatch(/torn down \d+s ago by a stop-all-simulator-servers/);
   });
@@ -134,6 +134,21 @@ describe("the reaped-session key", () => {
     expect(message).toContain("the page went away");
     expect(message).toContain("the browser quitting");
     expect(message).toContain("the log file is kept at /x");
+  });
+
+  it("names a Chromium teardown only tools that reach a Chromium session", () => {
+    // `react-profiler-start` carries RN_ONLY_TOOL_CAPABILITY, which declares no
+    // chromium platform, so it can never have been the disposer here; the tool
+    // that can is `stop-simulator-server`, which cascades through ChromiumCdp.
+    recordReapedSession("js-runtime-debugger", "chromium-cdp-9222", "");
+
+    const message = describeReapedSession(
+      takeReapedSession("js-runtime-debugger", "chromium-cdp-9222")!,
+      "JS-runtime debugger session"
+    );
+    expect(message).toContain("stop-all-simulator-servers");
+    expect(message).toContain("a stop-simulator-server");
+    expect(message).not.toContain("react-profiler-start");
   });
 
   it("spends every copy of one teardown, whichever id the reader knows", () => {
@@ -197,11 +212,12 @@ describe("the reaped-session key", () => {
       expect(fs.existsSync(newer)).toBe(true);
     });
 
-    it("reclaims the file of an event this one leaves no id to ask for", () => {
+    it("leaves the file of an event whose ids this one does not cover", () => {
       // The id set can grow back: a session keyed by the logicalDeviceId alone,
-      // then one that files both ids again. Every key the older event held is
-      // taken, so nothing can reach it or the file it named — which would then
-      // sit until the day-old sweep, one per crash.
+      // then one that files both ids again. Nothing can reach the older record
+      // afterwards, but that shape is the stranger's fallback shape as well —
+      // one shared id, one this event owns alone — so its file waits for the
+      // day-old sweep instead of being taken from a device that may still own it.
       const older = path.join(dir, "argent-logs-5-1.log");
       const newer = path.join(dir, "argent-logs-5-2.log");
       fs.writeFileSync(older, "first");
@@ -215,7 +231,7 @@ describe("the reaped-session key", () => {
         keptAt: newer,
       });
 
-      expect(fs.existsSync(older)).toBe(false);
+      expect(fs.existsSync(older)).toBe(true);
       expect(fs.existsSync(newer)).toBe(true);
       expect(takeReapedSession("js-runtime-debugger", "logical-abc")?.salvage).toBe("second");
     });

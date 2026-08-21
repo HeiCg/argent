@@ -338,7 +338,9 @@ describe("debugger-log-registry not-connected results", () => {
     >;
     expect(second.note).toBeUndefined();
     expect(second.guidance).toContain("the first read of it spends it");
-    expect(second.guidance).not.toContain("no session ended");
+    // "unread" is the whole hedge: a session DID end here, and this reader is
+    // late rather than first.
+    expect(second.guidance).toContain("no unread record of a previous session");
   });
 
   /**

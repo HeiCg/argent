@@ -26,7 +26,8 @@
  *
  * One entry can also own a file: {@link ReapedSession.keptAt} names a log the
  * teardown left on disk for the breadcrumb to advertise, and this store unlinks
- * it when the event superseding that entry keeps a file of its own. That makes the
+ * it when an event that answers everywhere that entry did keeps a file of its
+ * own. Anything short of that leaves the file to the day-old sweep. That makes the
  * module a lifetime owner, not only a message board, so read that field's doc
  * before setting it — an artifact the user is meant to keep does not go there.
  */
@@ -148,17 +149,18 @@ export function recordReapedSession(
   const orphanedFiles = new Set<string>();
   for (const previous of displaced.values()) {
     const leftovers = [...previous.keys].filter((k) => !keys.has(k));
-    // A previous event keeps its copies, and its file, when this one is a
-    // DIFFERENT device: it still answers under an id this one does not name,
-    // while this one names an id it never answered to. That is `selectTarget`'s
-    // one-device fallback minting a stranger's session on this device's
-    // logicalDeviceId, and taking that entry would take the log file it is
-    // holding for the device that crashed. Two teardowns of one device match,
-    // shrink or grow instead, and the ones that grow leave nothing behind; a
-    // second app on this port goes incomparable, and the older file waits for
-    // the day-old sweep.
+    // A previous event keeps its copies, and its file, unless it answered
+    // everywhere this one does — matched or narrowed, the only shapes that
+    // prove one device. An id it holds and this one does not name reads the
+    // same whether that is `selectTarget`'s one-device fallback minting a
+    // stranger's session on the crashed device's logicalDeviceId or one device
+    // growing its id set back, and on the first reading taking the entry takes
+    // the log file it is holding for the device that crashed. So the grown case
+    // leaves a file to the day-old sweep rather than the stranger's case losing
+    // a crash log outright; a second app on this port goes incomparable and
+    // waits for that sweep too.
     const standsIn = [...keys].every((k) => previous.keys.has(k));
-    if (!standsIn && leftovers.length > 0) continue;
+    if (!standsIn) continue;
     // Half an event explains nothing: a copy left behind would answer some
     // later, unrelated read.
     //
@@ -213,11 +215,13 @@ export function takeReapedSession(
  * On a `teardown` the disposer cannot see who triggered it — a blueprint's
  * `dispose()` is called by `Registry._teardown`, with no caller — so the message
  * names the family rather than asserting one member. `stop-all-simulator-servers`
- * is the common one and is named first, but it is not the only one:
- * `stop-simulator-server` on Chromium cascades into the debugger through
- * `ChromiumCdp` (its documented behaviour), and `react-profiler-start` disposes
- * the debugger and the profiler session whenever it finds either in a state it
- * cannot reuse. A `runtime-death` narrows that: the app itself went away, so
+ * is the common one and is named first, but it is not the only one, and which
+ * other member is even reachable depends on the platform: `stop-simulator-server`
+ * cascades into the debugger through `ChromiumCdp` (its documented behaviour),
+ * while `react-profiler-start`, which disposes the debugger and the profiler
+ * session whenever it finds either in a state it cannot reuse, is gated to
+ * Apple and Android and can never have touched a Chromium session. A
+ * `runtime-death` narrows that: the app itself went away, so
  * pointing at the teardown family would send an agent hunting for a tool call,
  * or another agent, that never touched this session. It does NOT name the culprit either —
  * the disposer sees a dropped socket, which a crash, a force-quit and a
@@ -230,7 +234,8 @@ export function takeReapedSession(
  */
 export function describeReapedSession(entry: ReapedSession, what: string): string {
   const secondsAgo = Math.max(0, Math.round((Date.now() - entry.atMs) / 1000));
-  const runtimeDeath = entry.deviceId.startsWith(CHROMIUM_ID_PREFIX)
+  const isChromium = entry.deviceId.startsWith(CHROMIUM_ID_PREFIX);
+  const runtimeDeath = isChromium
     ? `its debugger connection dropped instead of being closed — the page went away (a crash, ` +
       `a tab or window closing, the browser quitting) or its CDP endpoint stopped being ` +
       `reachable — which ends the session the same way a teardown does.`
@@ -241,10 +246,12 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
     entry.cause === "runtime-death"
       ? runtimeDeath
       : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
-        `another teardown that reaches the same services (a stop-simulator-server on Chromium, ` +
-        `or a react-profiler-start clearing a session it could not reuse). One tool-server serves ` +
-        `every agent using this argent install, so this may have been another agent rather ` +
-        `than your own call.`;
+        (isChromium
+          ? `a stop-simulator-server, which cascades into the debugger through the Chromium CDP ` +
+            `session it reaps`
+          : `a react-profiler-start clearing a debugger session it could not reuse`) +
+        `. One tool-server serves every agent using this argent install, so this may have been ` +
+        `another agent rather than your own call.`;
   // The salvage clause was written when the file was there; a breadcrumb nobody
   // read can outlive it, so correct the promise rather than send the reader at a
   // path the log pruner has already reclaimed.
@@ -275,7 +282,7 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
 export function describeLostHistory(captured: number, keptAt?: string): string {
   const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;
   if (keptAt) {
-    return `The log file is kept at ${keptAt} — read that file for the ${entries} it holds.`;
+    return `The log file is kept at ${keptAt} — grep that file for the ${entries} it holds.`;
   }
   return `The ${entries} went with it — no log file was left behind.`;
 }
