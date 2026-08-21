@@ -3452,20 +3452,22 @@ function renderStepForCompare(step: FlowStep): string | null {
  * reporting it against a step whose identity is unknown.
  *
  * Both offsets are 0 for the alignment an unedited file has; {@link anchorHolds}
- * moves one of them to ask about the alignments an edit AHEAD of the prefix
- * would produce.
+ * moves them to ask about the alignments an edit INSIDE the prefix would
+ * produce. Both sides arrive pre-rendered because there is one such alignment
+ * per position and per size, and rendering a step again for each of them
+ * repeats the same `JSON.stringify` work for the same answer.
  */
 function sameStepRun(
-  now: FlowStep[],
-  before: FlowStep[],
+  now: (string | null)[],
+  before: (string | null)[],
   n: number,
   nowFrom: number,
   beforeFrom: number
 ): boolean {
   if (now.length < nowFrom + n || before.length < beforeFrom + n) return false;
   for (let i = 0; i < n; i += 1) {
-    const rendered = renderStepForCompare(now[nowFrom + i]);
-    if (rendered === null || rendered !== renderStepForCompare(before[beforeFrom + i])) {
+    const rendered = now[nowFrom + i];
+    if (rendered === null || rendered !== before[beforeFrom + i]) {
       return false;
     }
   }
@@ -3490,21 +3492,37 @@ function sameStepRun(
  * is the witness that the edit lies behind the prefix. An author who edits a
  * later, distinguishable step still keeps every verdict before it.
  *
- * Every shift the length change admits is tried, not just one, so two deletions
- * inside a run are no more invisible than one. What stays out of reach is an
- * edit that leaves the length alone: a reorder of two identical steps has no
- * witness at all, in this or any content comparison.
+ * The edit can sit anywhere in the prefix, not only at its head, so every
+ * position is asked about and not just the one where the whole prefix slides.
+ * A splice at `p` leaves the steps before `p` where they were and slides only
+ * what follows, so its alignment matches the unedited one up to `p` and the
+ * shifted one after it — a shape no single whole-prefix shift can express.
+ * Deleting a wait whose byte-identical twin follows it is exactly that: the
+ * twin inherits the number, the content check passes at both ends, and the
+ * verdict lands on the step that agreed with the runner.
+ *
+ * Every size the length change admits is tried at every position, so two
+ * deletions inside a run are no more invisible than one. What stays out of
+ * reach is an edit that leaves the length alone: a reorder of two identical
+ * steps has no witness at all, in this or any content comparison.
  */
-function anchorHolds(now: FlowStep[], before: FlowStep[], n: number): boolean {
+function anchorHolds(now: (string | null)[], before: (string | null)[], n: number): boolean {
   if (!sameStepRun(now, before, n, 0, 0)) return false;
-  // A deletion ahead of the prefix slides `before` forward relative to `now`;
-  // an insertion slides `now` forward relative to `before`. Only the direction
-  // the length change allows is asked about.
-  for (let shift = 1; shift <= before.length - now.length; shift += 1) {
-    if (sameStepRun(now, before, n, 0, shift)) return false;
-  }
-  for (let shift = 1; shift <= now.length - before.length; shift += 1) {
-    if (sameStepRun(now, before, n, shift, 0)) return false;
+  // A deletion slides `before` forward relative to `now` from the splice on; an
+  // insertion slides `now` forward relative to `before`. Only the direction the
+  // length change allows is asked about, and only sizes it can account for.
+  const deleted = before.length - now.length;
+  const inserted = now.length - before.length;
+  for (let at = 0; at < n; at += 1) {
+    // Everything before `at` is untouched by a splice there, and the base check
+    // above already compared it — so each hypothesis only has to account for
+    // the `n - at` steps the splice would have moved.
+    for (let size = 1; size <= deleted; size += 1) {
+      if (sameStepRun(now, before, n - at, at, at + size)) return false;
+    }
+    for (let size = 1; size <= inserted; size += 1) {
+      if (sameStepRun(now, before, n - at, at + size, at)) return false;
+    }
   }
   return true;
 }
@@ -3544,9 +3562,13 @@ function dropMovedWarnings(
   before: FlowStep[]
 ): number {
   if (!warnings) return 0;
+  // Render both views once. Every verdict asks about the same two step lists,
+  // and each asks about several alignments of them.
+  const nowRendered = now.map(renderStepForCompare);
+  const beforeRendered = before.map(renderStepForCompare);
   let dropped = 0;
   for (const n of [...warnings.keys()]) {
-    if (anchorHolds(now, before, n)) continue;
+    if (anchorHolds(nowRendered, beforeRendered, n)) continue;
     warnings.delete(n);
     dropped += 1;
   }

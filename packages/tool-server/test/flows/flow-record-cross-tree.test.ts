@@ -2185,6 +2185,49 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     for (const line of finished.summary) expect(line).not.toContain("warning:");
   });
 
+  it("drops the verdict a delete INSIDE the prefix moved onto an identical twin", async () => {
+    // The same false conviction as the test above, but the delete lands in the
+    // middle of the prefix rather than at its head. Deleting step 2 slides its
+    // byte-identical twin at step 3 up into number 2, so the shortened file
+    // still renders exactly like the recorder's view of the first two steps —
+    // the alignment an unedited file has. What says an edit happened is that a
+    // SPLICE at 2 renders alike too, and only a hypothesis anchored at that
+    // position can see it.
+    await startRecording("midtwins");
+    serveTree(iosRunnerTree([iosLabel("Ready marker")]));
+    await recordWait("midtwins", { condition: "visible", selector: { text: "Ready marker" } });
+    // Step 2 diverges: the runner's tree does not hold "Continue".
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("midtwins", { condition: "visible", selector: { text: "Continue" } });
+    // Step 3 is the byte-identical call against a tree that DOES hold it.
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("midtwins", { condition: "visible", selector: { text: "Continue" } });
+
+    // Hand-delete the diverging step 2, leaving its twin to inherit the number.
+    const file = path.join(tmpDir, ".argent", "flows", "midtwins.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = [parsed.steps[0], parsed.steps[2]];
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Ready marker")]));
+    await recordWait("midtwins", { condition: "visible", selector: { text: "Ready marker" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "midtwins", project_root: tmpDir }
+    );
+
+    // Number 2 now holds the twin that AGREED with the runner's tree. Reporting
+    // the verdict there convicts a check that converts fine.
+    expect(finished.summary).toHaveLength(3);
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.summary[1]).toContain('"Continue"');
+    for (const line of finished.summary) expect(line).not.toContain("warning:");
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
+  });
+
   it("keeps a live verdict when a delete makes the next append reuse its number", async () => {
     // TWO verdicts alive across the edit, which is what makes the reused key
     // reachable: the file loses a step, so the next append comes back with a
