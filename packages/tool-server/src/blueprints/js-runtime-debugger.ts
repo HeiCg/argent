@@ -184,7 +184,12 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         error_kind: "validation",
       });
     }
-    const port = parseInt(payload.slice(0, colonIdx), 10);
+    // The URN's port text, not the parsed number: it is what identifies this
+    // session — `parseInt` folds "8081.5" onto 8081 while the URN keeps them
+    // apart — and the reaped-session scope below has to agree with the readers,
+    // which key on the same text.
+    const portKey = payload.slice(0, colonIdx);
+    const port = parseInt(portKey, 10);
     if (!Number.isFinite(port)) {
       throw new FailureError(`JsRuntimeDebugger payload has invalid port: "${payload}"`, {
         error_code: FAILURE_CODES.JS_RUNTIME_PAYLOAD_PORT_INVALID,
@@ -394,7 +399,7 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
             // This device can hold another session on another Metro port, with
             // its own log file; without the port that one's teardown would
             // reclaim this file.
-            scope: String(port),
+            scope: portKey,
           });
         }
         forgetDeviceAlias(api.logicalDeviceId);
