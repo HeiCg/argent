@@ -240,6 +240,33 @@ describe("the reaped-session key", () => {
       expect(fs.existsSync(newer)).toBe(true);
     });
 
+    it("keeps two Metro ports apart, each with its own file", () => {
+      // One device can hold a debugger session per Metro port — one app on 8081,
+      // another on 8082 — each with its own log file. On a shared key the
+      // second teardown supersedes the first and reclaims the file it kept,
+      // which is the one a reader was about to be sent to.
+      const on8081 = path.join(dir, "argent-logs-8081-1.log");
+      const on8082 = path.join(dir, "argent-logs-8082-1.log");
+      fs.writeFileSync(on8081, "first");
+      fs.writeFileSync(on8082, "second");
+      recordReapedSession("js-runtime-debugger", UDID, "on 8081", {
+        cause: "runtime-death",
+        keptAt: on8081,
+        scope: "8081",
+      });
+      recordReapedSession("js-runtime-debugger", UDID, "on 8082", {
+        cause: "runtime-death",
+        keptAt: on8082,
+        scope: "8082",
+      });
+
+      expect(fs.existsSync(on8081)).toBe(true);
+      expect(fs.existsSync(on8082)).toBe(true);
+      // And a reader gets its own port's session, not whichever died last.
+      expect(takeReapedSession("js-runtime-debugger", UDID, "8081")?.salvage).toBe("on 8081");
+      expect(takeReapedSession("js-runtime-debugger", UDID, "8082")?.salvage).toBe("on 8082");
+    });
+
     it("keeps the file when the same path is recorded twice", () => {
       // The sweep runs after the new entries are written, so a breadcrumb that
       // supersedes one naming the same file would otherwise unlink the very path

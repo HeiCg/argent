@@ -88,3 +88,17 @@ export function debuggerServiceRef(params: { port: number; device_id?: string })
   }
   return `JsRuntimeDebugger:${params.port}:${deviceId}`;
 }
+
+/**
+ * The reaped-session scope for a debugger session, which readers and the
+ * blueprint that files the breadcrumb have to agree on. Same split as the ref
+ * above: a Metro-backed device holds one session per port, each with its own
+ * log file, while a Chromium session carries its port inside the device id.
+ */
+export function debuggerReapedScope(params: {
+  port: number;
+  device_id?: string;
+}): string | undefined {
+  const deviceId = canonicalDeviceId(params.device_id);
+  return deviceId?.startsWith(CHROMIUM_ID_PREFIX) ? undefined : String(params.port);
+}

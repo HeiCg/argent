@@ -28,10 +28,18 @@ describe("LogFileWriter", () => {
     writer.close();
   });
 
+  it("reports no file once the path is gone from under it", () => {
+    // What the disposer asks before naming a path in a breadcrumb, and what
+    // `debugger-log-registry` asks before sending a reader to grep it. The fd
+    // survives an unlink, so answering from it would advertise a file that is
+    // no longer there.
+    expect(writer.hasFile()).toBe(true);
+    fs.rmSync(writer.getFilePath());
+    expect(writer.hasFile()).toBe(false);
+  });
+
   describe("stale-log pruning", () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
-    let savedHome: string | undefined;
-    let tmpHome: string;
     let logDir: string;
 
     const age = (file: string, ms: number) => {
@@ -40,17 +48,11 @@ describe("LogFileWriter", () => {
     };
 
     beforeEach(() => {
-      savedHome = process.env.HOME;
-      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "argent-logprune-"));
-      process.env.HOME = tmpHome;
-      logDir = path.join(tmpHome, ".argent", "tmp");
+      // `scopeTempHome` above already pinned HOME and USERPROFILE at a fresh
+      // directory for this test; a second one here would send the writer and
+      // these fixtures to different places on Windows.
+      logDir = path.join(os.homedir(), ".argent", "tmp");
       fs.mkdirSync(logDir, { recursive: true });
-    });
-
-    afterEach(() => {
-      if (savedHome === undefined) delete process.env.HOME;
-      else process.env.HOME = savedHome;
-      fs.rmSync(tmpHome, { recursive: true, force: true });
     });
 
     it("removes log files older than a day and leaves everything else", () => {
@@ -60,13 +62,14 @@ describe("LogFileWriter", () => {
       for (const f of [stale, recent, foreign]) fs.writeFileSync(f, "x");
       age(stale, DAY_MS + 60_000);
       age(foreign, DAY_MS + 60_000);
-      age(recent, 60 * 60 * 1000);
+      age(recent, DAY_MS - 60 * 60 * 1000);
 
       const pruner = new LogFileWriter(3333);
 
       expect(fs.existsSync(stale)).toBe(false);
-      // A concurrent tool-server's live writer keeps touching its file, so an
-      // hour-old one is still in use.
+      // A concurrent tool-server's live writer touches its file hourly, so the
+      // cutoff has to clear that by a long way: this one is an hour short of it
+      // and still in use.
       expect(fs.existsSync(recent)).toBe(true);
       // The directory is not exclusively ours to empty.
       expect(fs.existsSync(foreign)).toBe(true);

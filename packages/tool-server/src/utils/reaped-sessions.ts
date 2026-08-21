@@ -74,8 +74,8 @@ export interface ReapedSession {
 const reaped = new Map<string, ReapedSession>();
 let nextEvent = 1;
 
-function key(kind: ReapedSessionKind, deviceId: string): string {
-  return `${kind}:${deviceId.toLowerCase()}`;
+function key(kind: ReapedSessionKind, deviceId: string, scope?: string): string {
+  return `${kind}:${scope ?? ""}:${deviceId.toLowerCase()}`;
 }
 
 /**
@@ -94,18 +94,25 @@ function key(kind: ReapedSessionKind, deviceId: string): string {
  * it knows is that `dispose()` ran. Pass `"runtime-death"` only where the
  * disposer can tell the session's runtime went out from under it, and `keptAt`
  * when the teardown left a file behind for the reader to open.
+ *
+ * `scope` tells apart two sessions of one kind on one device, and readers must
+ * pass the same one. A Metro-backed debugger is per port, each session with its
+ * own log file, so without the port a teardown on 8082 supersedes the crash
+ * breadcrumb from 8081 AND reclaims the file it named. Omit it where a device
+ * holds at most one session of the kind (a recording, a profiler trace), and on
+ * Chromium, whose port is already inside the device id.
  */
 export function recordReapedSession(
   kind: ReapedSessionKind,
   deviceIds: string | string[],
   salvage?: string,
-  opts: { cause?: ReapedSessionCause; keptAt?: string } = {}
+  opts: { cause?: ReapedSessionCause; keptAt?: string; scope?: string } = {}
 ): void {
   const event = nextEvent++;
   const superseded = new Set<number>();
   const orphanedFiles = new Set<string>();
   for (const deviceId of new Set(typeof deviceIds === "string" ? [deviceIds] : deviceIds)) {
-    const k = key(kind, deviceId);
+    const k = key(kind, deviceId, opts.scope);
     const previous = reaped.get(k);
     // Not this event's own earlier key: two ids differing only in case land on
     // one slot, since `key` lowercases while callers compare theirs verbatim.
@@ -170,9 +177,10 @@ export function recordReapedSession(
  */
 export function takeReapedSession(
   kind: ReapedSessionKind,
-  deviceId: string
+  deviceId: string,
+  scope?: string
 ): ReapedSession | undefined {
-  const entry = reaped.get(key(kind, deviceId));
+  const entry = reaped.get(key(kind, deviceId, scope));
   if (!entry) return undefined;
   for (const [k, sibling] of reaped) {
     if (sibling.event === entry.event) reaped.delete(k);

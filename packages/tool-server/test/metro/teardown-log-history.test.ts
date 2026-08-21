@@ -281,6 +281,37 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
       expect(viaLogicalId.note).toContain("13 captured console entries");
     });
 
+    it("leaves the breadcrumb alone for a read that landed here by Metro's fallback", async () => {
+      // `selectTarget` answers a device_id it cannot match with its single
+      // remaining target instead of failing, so a read for some other device
+      // resolves THIS device's session — logicalDeviceId included. Reading the
+      // breadcrumb back under that id hands one device's lost history to
+      // another as its own, and spends it, so the owner never sees it.
+      const urn = await connectAndCapture(CONNECT_ID, 17);
+      await registry.disposeService(urn);
+
+      const strangerUrn = `JsRuntimeDebugger:${mockPort}:someone-elses-device`;
+      const stranger = await registry.resolveService<JsRuntimeDebuggerApi>(strangerUrn);
+      // The premise: the fallback really did land this session on the reaped
+      // device's Metro target.
+      expect(stranger.logicalDeviceId).toBe(LOGICAL_ID);
+
+      const strangerRead = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: "someone-elses-device",
+      })) as { totalEntries: number; note?: string };
+      expect(strangerRead.totalEntries).toBe(0);
+      expect(strangerRead.note).toBeUndefined();
+      await registry.disposeService(strangerUrn);
+
+      // Still there for the read it is actually about.
+      const owner = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: CONNECT_ID,
+      })) as { note?: string };
+      expect(owner.note).toContain("17 captured console entries");
+    });
+
     it("spends BOTH breadcrumbs on that one read, so no copy outlives the event", async () => {
       // The read consumed one key and left the other, so a later unrelated
       // empty read — a fresh session that genuinely logged nothing — collected

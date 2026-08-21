@@ -20,10 +20,10 @@ import { scopeTempHome } from "../helpers/temp-home";
  * exactly the artifact the developer came for.
  */
 
-// The console-log server's bind is the one hard-failure path inside the
-// factory, reached through `http.createServer`. Everything else here — this
-// file's own mock Metro included — needs a working one, so the flag is off by
-// default and flipped for exactly one call.
+// One of the factory's hard-failure paths — the console-log server's bind,
+// reached through `http.createServer`. Everything else here, this file's own
+// mock Metro included, needs a working one, so the flag is off by default and
+// flipped for exactly one call.
 // LogFileWriter mkdir -p's os.homedir()/.argent/tmp and this file asserts on
 // that directory's contents, which is only meaningful when nothing else writes
 // there — including the tool-server this developer may be running.
@@ -47,6 +47,15 @@ vi.mock("node:http", async (importOriginal) => {
 });
 
 const logDir = () => path.join(os.homedir(), ".argent", "tmp");
+
+/** How many sockets opened since `known` are still up, once they have had time to drain. */
+async function countLeakedSockets(known: Set<WebSocket>): Promise<number> {
+  const opened = () => [...wss.clients].filter((socket) => !known.has(socket));
+  for (let i = 0; i < 40 && opened().length > 0; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return opened().length;
+}
 
 let mockServer: http.Server;
 let wss: WebSocketServer;
@@ -275,6 +284,9 @@ describe("console logs across an app crash", () => {
       expect(after.note).toBeDefined();
       expect(after.note).toContain(logPath);
       expect(after.note).toContain("its debugger connection dropped instead of being closed");
+      // The registry sentence belongs to an empty registry, and this answer has
+      // none: it never resolved a session to read one from.
+      expect(after.note).not.toContain("This registry starts empty");
       expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
     } finally {
       targetsGone = false;
@@ -407,7 +419,10 @@ describe("console logs across an app crash", () => {
     // `pruneStaleLogs` for exactly that long.
     fs.mkdirSync(logDir(), { recursive: true });
     const before = new Set(fs.readdirSync(logDir()));
-    const socketsBefore = wss.clients.size;
+    // By identity, not by count: sockets from earlier cases in this file can
+    // still be draining, and a count calls a leaked one gone the moment one of
+    // those drops.
+    const socketsBefore = new Set(wss.clients);
     httpControl.failCreateServer = true;
     try {
       await expect(
@@ -420,10 +435,7 @@ describe("console logs across an app crash", () => {
     expect(fs.readdirSync(logDir()).filter((n) => !before.has(n))).toEqual([]);
     // The CDP socket the factory opened on the way here is the other thing
     // nothing would ever close.
-    for (let i = 0; i < 40 && wss.clients.size > socketsBefore; i++) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(wss.clients.size).toBe(socketsBefore);
+    expect(await countLeakedSockets(socketsBefore)).toBe(0);
   });
 
   it("hands the CDP socket back when a setup send fails before the writer exists", async () => {
@@ -432,7 +444,7 @@ describe("console logs across an app crash", () => {
     // life of the tool-server.
     fs.mkdirSync(logDir(), { recursive: true });
     const filesBefore = new Set(fs.readdirSync(logDir()));
-    const socketsBefore = wss.clients.size;
+    const socketsBefore = new Set(wss.clients);
     cdpControl.failEnable = true;
     try {
       await expect(
@@ -442,10 +454,7 @@ describe("console logs across an app crash", () => {
       cdpControl.failEnable = false;
     }
 
-    for (let i = 0; i < 40 && wss.clients.size > socketsBefore; i++) {
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(wss.clients.size).toBe(socketsBefore);
+    expect(await countLeakedSockets(socketsBefore)).toBe(0);
     // Nothing to close on this path — the failure lands before the writer is
     // built — so a new log file here would mean the order had drifted.
     expect(fs.readdirSync(logDir()).filter((n) => !filesBefore.has(n))).toEqual([]);
@@ -511,6 +520,66 @@ describe("console logs across an app crash", () => {
     } finally {
       fs.chmodSync(logs, 0o755);
     }
+  });
+
+  it("reads the socket before the dispose awaits anything", async () => {
+    // The read decides whether the file is kept, and everything it can see
+    // changes under an await: the console server's close drops its subscribers,
+    // and `disconnect()` runs a close handshake. Taken after either one, an
+    // explicit teardown starts reporting itself as a crash and keeping files
+    // nothing will ever reclaim but the pruner.
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "order-device" });
+    cdpConn!.send(
+      JSON.stringify({
+        method: "Runtime.consoleAPICalled",
+        params: {
+          type: "error",
+          args: [{ type: "string", value: "logged before the teardown" }],
+          executionContextId: 1,
+          timestamp: Date.now(),
+        },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 200));
+
+    const api = await resolveDebuggerService(registry, {
+      port: mockPort,
+      device_id: "order-device",
+    });
+    const { file } = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: "order-device",
+    })) as { file: string };
+
+    // A console-log subscriber, disconnected by `consoleServer.close()`: that
+    // close cannot finish until this client has answered the close frame, so
+    // its readyState tells the read which side of the await it ran on.
+    const subscriber = new WebSocket(api.consoleSocketUrl);
+    await new Promise<void>((resolve, reject) => {
+      subscriber.on("open", () => resolve());
+      subscriber.on("error", reject);
+    });
+    let subscriberAtRead = -1;
+    // Reporting a live socket, so the teardown below stays a teardown.
+    const connected = vi.spyOn(api.cdp, "isConnected").mockImplementation(() => {
+      // `disconnect()` asks again on its way out; the dispose's own read is the
+      // first one.
+      if (subscriberAtRead < 0) subscriberAtRead = subscriber.readyState;
+      return true;
+    });
+
+    await registry.disposeService(`JsRuntimeDebugger:${mockPort}:order-device`);
+    connected.mockRestore();
+    subscriber.close();
+
+    expect(subscriberAtRead).toBe(WebSocket.OPEN);
+    // And a live socket at that moment means a teardown, which takes the file.
+    expect(fs.existsSync(file)).toBe(false);
+    const after = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: "order-device",
+    })) as { note?: string };
+    expect(after.note).toContain("no log file was left behind");
   });
 
   it("removes the log file on an explicit teardown", async () => {

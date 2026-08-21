@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Registry, ToolDefinition } from "@argent/registry";
 import type { LogStats, MessageCluster } from "../../utils/debugger/log-file-writer";
-import { DEBUGGER_TOOL_CAPABILITY } from "./debugger-service-ref";
+import { DEBUGGER_TOOL_CAPABILITY, debuggerReapedScope } from "./debugger-service-ref";
 import { canonicalDeviceId } from "../../utils/debugger/device-alias";
 import { describeReapedSession, takeReapedSession } from "../../utils/reaped-sessions";
 import {
@@ -39,10 +39,16 @@ interface LogRegistryResponse extends LogStats {
  * Consume the breadcrumb the previous session's dispose left, under whichever
  * of this device's ids is known here. The store files one teardown under every
  * id it answers to and spends them together, so the first hit is the answer.
+ *
+ * Only ids the CALLER named. The resolved session's own `logicalDeviceId` is
+ * not one of them: Metro answers an unmatched device_id with its single
+ * remaining target rather than failing (`selectTarget`'s one-device fallback),
+ * so that id can belong to a different device, whose breadcrumb this read would
+ * then consume and report as its own.
  */
-function takeReapedNote(ids: Array<string | undefined>): string | undefined {
+function takeReapedNote(ids: Array<string | undefined>, scope?: string): string | undefined {
   for (const id of new Set(ids.filter((id): id is string => id !== undefined))) {
-    const entry = takeReapedSession("js-runtime-debugger", id);
+    const entry = takeReapedSession("js-runtime-debugger", id, scope);
     if (entry) return describeReapedSession(entry, "JS-runtime debugger session");
   }
   return undefined;
@@ -106,17 +112,12 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // with entries in it is reporting this session's own capture, and
         // consuming a breadcrumb there would attach a stale explanation to a
         // healthy result.
-        // `forgetDeviceAlias` runs in the same dispose that wrote the
-        // breadcrumb, so by now the alias no longer joins this device's two ids:
-        // the logical one has to come from the freshly resolved api, which is
-        // the only thing that still knows it.
         const reaped =
           stats.totalEntries === 0
-            ? takeReapedNote([
-                canonicalDeviceId(params.device_id),
-                params.device_id,
-                api.logicalDeviceId,
-              ])
+            ? takeReapedNote(
+                [canonicalDeviceId(params.device_id), params.device_id],
+                debuggerReapedScope(params)
+              )
             : undefined;
         // Both can be true at once — an unwritable directory outlives the
         // session that died in it — and they are about different files, the old
@@ -157,7 +158,10 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // agent through restart-app, and a restarted app leaves no trace of the
         // one that died. No `logicalDeviceId` to add here, since resolving is
         // what just failed.
-        const note = takeReapedNote([canonicalDeviceId(params.device_id), params.device_id]);
+        const note = takeReapedNote(
+          [canonicalDeviceId(params.device_id), params.device_id],
+          debuggerReapedScope(params)
+        );
         return { ...buildNotConnected(reason, err, params), ...(note ? { note } : {}) };
       }
     },

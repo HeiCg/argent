@@ -48,9 +48,10 @@ function makeFakeChromiumCdpApi(): {
 
 const logDir = () => path.join(os.homedir(), ".argent", "tmp");
 
-// The console-log server's bind is the one hard-failure path inside the factory,
-// and it is reached through `http.createServer`. Every other case in this file
-// needs a working one, so the flag is off by default.
+// One of the factory's hard-failure paths — the console-log server's bind,
+// reached through `http.createServer`; the writer's constructor is the other.
+// Every other case in this file needs a working one, so the flag is off by
+// default.
 const httpControl = vi.hoisted(() => ({ failCreateServer: false }));
 vi.mock("node:http", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:http")>();

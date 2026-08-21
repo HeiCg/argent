@@ -261,7 +261,7 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     const consoleEvents = new TypedEventEmitter<ConsoleLogEvents>();
     let nextLogId = 0;
 
-    cdp.events.on("consoleAPICalled", (params) => {
+    const onConsoleAPI = (params: ConsoleAPICalledParams) => {
       const entry: ConsoleLogEntry = {
         id: nextLogId++,
         level: params.type,
@@ -282,7 +282,8 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         stackTrace: entry.stackTrace,
       });
       consoleEvents.emit("log", entry);
-    });
+    };
+    cdp.events.on("consoleAPICalled", onConsoleAPI);
 
     // Same rule, now with a writer to undo as well: its fd, its file and its
     // hourly keepalive would last as long as the process, and the keepalive
@@ -343,6 +344,10 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     return {
       api,
       dispose: async () => {
+        // Before the writer closes below: `disconnect()` waits out a close
+        // handshake, and a frame delivered in that window would reach a closed
+        // writer, whose `write` throws.
+        cdp.events.off("consoleAPICalled", onConsoleAPI);
         // This dispose ends the capture session — up to 50,000 captured console
         // entries stop being reachable through the registry, because the next
         // resolve builds a new writer over a new path. That is invisible, and
@@ -366,10 +371,12 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         // caller connects with the logicalDeviceId itself, and Metro issues a
         // new one per connection. The breadcrumb survives that — it is keyed by
         // the string, not by anything Metro still knows — but only a read that
-        // passes the OLD id reaches it, and while both devices are attached only
-        // `debugger-log-registry` can: resolving that id throws a mismatch,
-        // which this tool renders as an answer and `debugger-connect` as a
-        // failure.
+        // passes the OLD id reaches it, and that read is `debugger-log-registry`:
+        // with the other device still attached, resolving a stale id throws a
+        // mismatch, which this tool renders as an answer and `debugger-connect`
+        // as a failure; with it gone, `selectTarget`'s one-device fallback
+        // resolves the stale id onto the surviving device, so the rest of that
+        // answer describes someone else's session.
         //
         // The socket is the whole of "did the app die?" here, and the
         // `disconnected` event is not consulted at all: `CDPClient` nulls its
@@ -392,6 +399,10 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
           recordReapedSession("js-runtime-debugger", ids, describeLostHistory(captured, keptAt), {
             cause: runtimeDied ? "runtime-death" : "teardown",
             keptAt,
+            // This device can hold another session on another Metro port, with
+            // its own log file; without the port that one's teardown would
+            // reclaim this file.
+            scope: String(port),
           });
         }
         forgetDeviceAlias(api.logicalDeviceId);
