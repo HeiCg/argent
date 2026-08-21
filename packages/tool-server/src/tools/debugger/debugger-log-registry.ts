@@ -118,11 +118,14 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         const notes: string[] = [];
         if (reaped) {
           // The one answer that HAS a registry to account for, so the one that
-          // says why this one is empty. `debugger-connect` and the
+          // says what this zero covers. `debugger-connect` and the
           // `not_connected` branch below report the same teardown without one.
+          // It does not go on to say the app HAS logged: the relaunched session
+          // may well have captured nothing yet, and both are true at once —
+          // what the reader must not do is read this zero as the old session's.
           notes.push(
-            `${reaped} This registry starts empty because a new session was minted, ` +
-              `not because the app logged nothing.`
+            `${reaped} The counts here are the new session's own, so this zero ` +
+              `says nothing about what the old one captured.`
           );
         }
         if (!api.logWriter.hasFile()) {
@@ -179,8 +182,8 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           ...(note ? { note } : {}),
           guidance: note
             ? `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`
-            : `This result has no note: no unread record of a previous session on this ${
-                scope ? "device and port" : "device"
+            : `This result has no note: no unread record of a previous session under this ${
+                scope ? "device id and port" : "device id"
               }. One is filed only for a session that ended holding console history, and the first read of it spends it. ${
                 result.guidance
               }`,

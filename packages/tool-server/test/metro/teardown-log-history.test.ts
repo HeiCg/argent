@@ -159,7 +159,7 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     // And it answers the question this tool's own empty answer raises. Only
     // here: `debugger-connect` and a `not_connected` result report the same
     // teardown with no registry to account for.
-    expect(result.note).toContain("This registry starts empty because a new session was minted");
+    expect(result.note).toContain("The counts here are the new session's own");
   });
 
   it("stays silent when the previous session had captured nothing", async () => {

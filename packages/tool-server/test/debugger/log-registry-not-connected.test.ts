@@ -169,7 +169,7 @@ describe("debugger-log-registry not-connected results", () => {
     // answer that says only "on this device" invites a reader to conclude the
     // other port's crash was never recorded.
     expect(result.guidance).toContain(
-      "no unread record of a previous session on this device and port"
+      "no unread record of a previous session under this device id and port"
     );
     expect(result.guidance).toContain(
       "filed only for a session that ended holding console history"
@@ -240,7 +240,7 @@ describe("debugger-log-registry not-connected results", () => {
   it("chromium: scopes the no-note sentence by the device alone, since its answer has no port", async () => {
     // A Chromium session's CDP port lives inside its device id, so the answer
     // omits `port` and the breadcrumb is filed unscoped. Telling that caller
-    // nothing was filed "on this device and port" invites a retry with another
+    // nothing was filed "under this device id and port" invites a retry with another
     // port, which this tool ignores — the same answer, twice.
     const registry = new Registry();
     registry.registerBlueprint(chromiumJsRuntimeDebuggerBlueprint);
@@ -268,7 +268,7 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.reason).toBe("cdp_unreachable");
     expect("port" in result).toBe(false);
     expect(result.guidance.startsWith("This result has no note")).toBe(true);
-    expect(result.guidance).toContain("previous session on this device.");
+    expect(result.guidance).toContain("previous session under this device id.");
     expect(result.guidance).not.toContain("device and port");
   });
 
