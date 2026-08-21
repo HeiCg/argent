@@ -45,9 +45,7 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
     expect(restartAppCapability?.android).toBeDefined();
     expect(restartAppCapability?.vega).toBeDefined();
 
-    for (const file of [DEBUGGER_SKILL]) {
-      expect(row(file, "`restart-app`")).toContain("(iOS / Android / Vega)");
-    }
+    expect(row(DEBUGGER_SKILL, "`restart-app`")).toContain("(iOS / Android / Vega)");
   });
 
   it("tags debugger-reload-metro as the narrower tool it is", () => {
