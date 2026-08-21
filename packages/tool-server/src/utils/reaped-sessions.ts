@@ -161,9 +161,13 @@ export function recordReapedSession(
     // later, unrelated read — and would still
     // name the file the reclaim below is about to take.
     //
-    // Its kept file goes with it: nothing records that path any more, so
-    // reclaiming here rather than waiting for the day-old sweep keeps an UNREAD
-    // crash loop to one kept file per device.
+    // Its kept file goes with it when this event keeps one of its own: nothing
+    // records that path any more, and reclaiming it here rather than waiting for
+    // the day-old sweep keeps an UNREAD crash loop to one kept file per device —
+    // every crash in such a loop keeps a file, so the bound holds. A teardown
+    // that keeps nothing reclaims nothing: it would be spending the log a crash
+    // left, which the reader it was kept for may still reach by path, to save a
+    // file the sweep collects anyway.
     //
     // A loop whose notes are read is not bounded here, and deliberately so.
     // restart-app then `debugger-connect` is both the prescribed recovery and
@@ -172,7 +176,7 @@ export function recordReapedSession(
     // one file per cycle waits for the day-old sweep rather than being deleted
     // out from under the agent that was just told to read it.
     for (const k of leftovers) reaped.delete(k);
-    if (previous.keptAt) orphanedFiles.add(previous.keptAt);
+    if (previous.keptAt && opts.keptAt) orphanedFiles.add(previous.keptAt);
   }
   for (const file of orphanedFiles) {
     if (file === opts.keptAt) continue;
@@ -265,7 +269,7 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
 export function describeLostHistory(captured: number, keptAt?: string): string {
   const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;
   if (keptAt) {
-    return `The log file is kept at ${keptAt} — it holds the ${entries}, so read that file for them.`;
+    return `The log file is kept at ${keptAt} — read that file for the ${entries} it holds.`;
   }
   return `The ${entries} went with it — no log file was left behind.`;
 }

@@ -21,6 +21,11 @@ import {
 } from "../../src/blueprints/js-runtime-debugger";
 import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
 import type { DebuggerNotConnectedResult } from "../../src/tools/debugger/not-connected";
+import {
+  recordReapedSession,
+  takeReapedSession,
+  __resetReapedSessionsForTesting,
+} from "../../src/utils/reaped-sessions";
 import { freePort, startMockMetroCdp } from "./metro-cdp-harness";
 import { scopeTempHome } from "../helpers/temp-home";
 
@@ -160,7 +165,11 @@ describe("debugger-log-registry not-connected results", () => {
     expect(outcomeCalls()[0][1]).toMatchObject({ outcome: "cdp_unreachable" });
   });
 
-  it("reconnecting: a resolve racing an in-flight teardown maps like debugger-status does", async () => {
+  /**
+   * A service parked in dispose until the returned `release`, which is the
+   * window a real teardown spends waiting out its CDP close handshake.
+   */
+  async function teardownInFlight(deviceId: string) {
     let releaseDispose!: () => void;
     const disposeGate = new Promise<void>((resolve) => {
       releaseDispose = resolve;
@@ -176,14 +185,20 @@ describe("debugger-log-registry not-connected results", () => {
     };
     const setup = makeSetup(slowDisposeBlueprint as ServiceBlueprint);
 
-    const urn = `${JS_RUNTIME_DEBUGGER_NAMESPACE}:8081:dev1`;
+    const urn = `${JS_RUNTIME_DEBUGGER_NAMESPACE}:8081:${deviceId}`;
     await setup.registry.resolveService(urn);
     const disposing = setup.registry.disposeService(urn);
     cleanups.push(async () => {
       releaseDispose();
       await disposing;
       await setup.registry.dispose();
+      __resetReapedSessionsForTesting();
     });
+    return setup;
+  }
+
+  it("reconnecting: a resolve racing an in-flight teardown maps like debugger-status does", async () => {
+    const setup = await teardownInFlight("dev1");
 
     const result = (await setup.invoke({
       port: 8081,
@@ -195,6 +210,31 @@ describe("debugger-log-registry not-connected results", () => {
     expect(setup.failed).toEqual([]);
     expect(outcomeCalls()).toHaveLength(1);
     expect(outcomeCalls()[0][1]).toMatchObject({ outcome: "reconnecting" });
+  });
+
+  it("reconnecting: leaves the breadcrumb for the retry its own guidance asks for", async () => {
+    // The dispose files the breadcrumb before it awaits anything, so this is
+    // the answer a read gets while the crashed session is still winding down.
+    // Its guidance is "wait a moment and retry once" — spending the note on an
+    // answer that says to ask again leaves the asking again with nothing, and
+    // nothing else names the file that session kept.
+    const setup = await teardownInFlight("dev2");
+    recordReapedSession("js-runtime-debugger", "dev2", "The log file is kept at /tmp/kept.log", {
+      cause: "runtime-death",
+      keptAt: "/tmp/kept.log",
+      scope: "8081",
+    });
+
+    const result = (await setup.invoke({ port: 8081, device_id: "dev2" })) as Record<
+      string,
+      unknown
+    >;
+
+    expect(result.reason).toBe("reconnecting");
+    expect(result.note).toBeUndefined();
+    expect(takeReapedSession("js-runtime-debugger", "dev2", "8081")?.salvage).toContain(
+      "/tmp/kept.log"
+    );
   });
 
   it("connected path: returns the LogStats superset — guards against an over-broad catch", async () => {

@@ -76,6 +76,29 @@ describe("LogFileWriter", () => {
       pruner.close();
     });
 
+    it("lets a kept file age out once the session that kept it has closed", () => {
+      // The keep path is where the keepalive has to stop: mtime is the only
+      // thing that ever makes a kept file reclaimable, and a keepalive left
+      // running refreshes it hourly for the life of the process — so every crash
+      // would leave a file no sweep in any tool-server can collect.
+      vi.useFakeTimers();
+      try {
+        const crashed = new LogFileWriter(7777);
+        crashed.write({ id: 1, timestamp: "t", level: "error", message: "CRITICAL pre-crash" });
+        const kept = crashed.getFilePath();
+        crashed.close({ keepFile: true });
+        expect(fs.existsSync(kept)).toBe(true);
+
+        vi.advanceTimersByTime(DAY_MS + 60 * 60 * 1000);
+        const later = new LogFileWriter(8888);
+
+        expect(fs.existsSync(kept)).toBe(false);
+        later.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("opens anyway when the log directory cannot be listed", () => {
       // The sweep is a courtesy; the session it runs for is not. A throw here
       // comes out of debugger-connect as a failed connect, on a machine where

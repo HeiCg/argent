@@ -265,8 +265,8 @@ describe("console logs across an app crash", () => {
     expect(after.note).toBeDefined();
     // The path, and a file actually there to be read at it.
     expect(after.note).toContain(logPath);
-    // One entry, counted as one.
-    expect(after.note).toContain("1 captured console entry,");
+    // One entry, counted and worded as one.
+    expect(after.note).toContain("the 1 captured console entry it holds");
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
     // Never the reaped-by-stop-all wording: nothing was deleted here.
     expect(after.note).not.toContain("no log file was left behind");

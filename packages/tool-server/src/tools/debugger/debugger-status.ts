@@ -82,8 +82,9 @@ Use when you need to verify connectivity before using other debugger tools. Neve
           // CLOSING but the close event has not dispatched yet (the terminated
           // cascade otherwise removes the node first) — which is to say the far
           // end has already gone. The blueprint's dispose reads that same socket
-          // state, so it KEEPS the captured log file rather than unlinking it,
-          // and the breadcrumb it leaves names the path. The concurrent
+          // state, so a session that captured anything KEEPS its log file rather
+          // than unlinking it, and the breadcrumb it leaves names the path when
+          // there is a file to name. The concurrent
           // terminated cascade may win the race and remove the node first; that
           // end state is what we wanted, so a failed dispose is absorbed.
           //

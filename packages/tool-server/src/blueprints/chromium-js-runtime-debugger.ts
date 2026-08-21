@@ -243,8 +243,9 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
     // file and its keepalive would last as long as the process — the keepalive
     // holding that file out of `pruneStaleLogs` for exactly that long — and the
     // two listeners would stay on `ChromiumCdp`'s client, which survives this
-    // failure, feeding console entries to a closed writer. The client itself is
-    // that service's to disconnect, not ours.
+    // failure, feeding console entries into a session that no longer exists —
+    // and, once the rollback below closes the writer, into a closed one. The
+    // client itself is that service's to disconnect, not ours.
     let consoleServer: Awaited<ReturnType<typeof createConsoleLogServer>>;
     try {
       consoleServer = await createConsoleLogServer(consoleEvents, logWriter);

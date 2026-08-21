@@ -149,11 +149,20 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // A crash is the ordinary way here: the app drops off Metro's target
         // list, so the resolve above throws and this is the only answer the
         // caller gets. The breadcrumb the dead session left is what names the
-        // file it kept — reading it back is the whole point of keeping it, and
-        // nothing later in this flow would report it: the guidance sends the
-        // agent through restart-app, and a restarted app leaves no trace of the
-        // one that died.
-        const note = takeReapedNote(params.device_id, debuggerReapedScope(params));
+        // file it kept, and reading it back is the whole point of keeping it:
+        // `debugger-connect` is the only other tool that reports it, and an
+        // agent that relaunches without going through it never hears of the file
+        // at all.
+        //
+        // Except while that session is still being torn down. The dispose files
+        // the breadcrumb before it awaits anything and then spends up to a
+        // second on the CDP close handshake, so a read landing in that window
+        // gets `reconnecting` — whose guidance is to wait and ask again, and the
+        // asking again is what would find it spent.
+        const note =
+          reason === "reconnecting"
+            ? undefined
+            : takeReapedNote(params.device_id, debuggerReapedScope(params));
         return { ...buildNotConnected(reason, err, params), ...(note ? { note } : {}) };
       }
     },

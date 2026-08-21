@@ -335,6 +335,26 @@ describe("the reaped-session key", () => {
       expect(fs.existsSync(kept)).toBe(true);
     });
 
+    it("leaves a crash's file to the sweep when the teardown replacing it keeps nothing", () => {
+      // The bound this reclaim defends is an unread crash LOOP, where every
+      // crash keeps a file of its own. An ordinary teardown keeps none, so
+      // reclaiming there would delete the one artifact the crash left — and the
+      // developer can still reach it by path, which is more than a deleted file
+      // offers. It waits for the day-old sweep instead.
+      const crashLog = path.join(dir, "argent-logs-1-5.log");
+      fs.writeFileSync(crashLog, "x");
+      recordReapedSession("js-runtime-debugger", UDID, "the crash", {
+        cause: "runtime-death",
+        keptAt: crashLog,
+      });
+
+      recordReapedSession("js-runtime-debugger", UDID, "a later teardown");
+
+      expect(fs.existsSync(crashLog)).toBe(true);
+      // Superseded all the same: the note a reader gets is the teardown's.
+      expect(takeReapedSession("js-runtime-debugger", UDID)?.salvage).toBe("a later teardown");
+    });
+
     it("records the new session even though the file it supersedes is already gone", () => {
       // That directory is shared with every other tool-server on the machine,
       // any of which prunes it on its own connects. An unlink that threw here
