@@ -355,6 +355,15 @@ describe("console logs across an app crash", () => {
     expect(fs.existsSync(before.file)).toBe(true);
     expect(fs.readFileSync(before.file, "utf-8")).toContain("CRITICAL pre-crash error");
 
+    // A kept file nothing names is barely better than a deleted one, and this
+    // read is a health check, not the one an agent hunting logs makes. Spending
+    // the breadcrumb here would take the path from the tool that reports it.
+    const afterStatus = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: "closing-device",
+    })) as { note?: string };
+    expect(afterStatus.note).toContain(before.file);
+
     fs.rmSync(before.file, { force: true });
   });
 
@@ -444,6 +453,19 @@ describe("console logs across an app crash", () => {
       expect(fs.existsSync(result.file)).toBe(false);
       expect(result.note).toContain("could not be created");
       expect(result.note).toContain(result.file);
+
+      // And when that session dies, the breadcrumb has no file to keep either:
+      // `keptAt` is gated on the writer having one, so the note reports the
+      // loss instead of naming a path that never existed.
+      cdpConn!.terminate();
+      await new Promise((r) => setTimeout(r, 500));
+
+      const afterDeath = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: "nofile-device",
+      })) as { note?: string };
+      expect(afterDeath.note).toContain("no log file was left behind");
+      expect(afterDeath.note).not.toContain("has since been reclaimed");
     } finally {
       fs.chmodSync(logs, 0o755);
       if (savedHome === undefined) delete process.env.HOME;
@@ -454,10 +476,26 @@ describe("console logs across an app crash", () => {
 
   it("removes the log file on an explicit teardown", async () => {
     await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "explicit-device" });
-    const { file } = (await registry.invokeTool("debugger-log-registry", {
+    // With history in it: `keepFile` is a conjunction, so a session that
+    // captured nothing is deleted by the other half and says nothing about
+    // whether a teardown is told apart from a death.
+    cdpConn!.send(
+      JSON.stringify({
+        method: "Runtime.consoleAPICalled",
+        params: {
+          type: "error",
+          args: [{ type: "string", value: "logged before the teardown" }],
+          executionContextId: 1,
+          timestamp: Date.now(),
+        },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    const { file, totalEntries } = (await registry.invokeTool("debugger-log-registry", {
       port: mockPort,
       device_id: "explicit-device",
-    })) as { file: string };
+    })) as { file: string; totalEntries: number };
+    expect(totalEntries).toBe(1);
     expect(fs.existsSync(file)).toBe(true);
 
     await registry.disposeService(`JsRuntimeDebugger:${mockPort}:explicit-device`);

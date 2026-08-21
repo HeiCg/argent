@@ -176,7 +176,11 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
         message: `captured ${i}`,
       });
     }
+    const logPath = instance.api.logWriter.getFilePath();
+    expect(fs.existsSync(logPath)).toBe(true);
     await instance.dispose();
+
+    expect(fs.existsSync(logPath)).toBe(false);
 
     const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
     expect(reaped).toBeDefined();
@@ -232,6 +236,51 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     expect(reaped?.keptAt).toBe(logPath);
 
     fs.rmSync(logPath, { force: true });
+  });
+
+  it("names no file when the renderer dies and the writer never got one", async () => {
+    // `keptAt` is a conjunction with `hasFile()`: `open()` swallows its failure
+    // and buffers, so a death in an unwritable ~/.argent/tmp has entries to
+    // report and no file to point at. Without that half the breadcrumb names a
+    // path that never existed, and — since it is gone by the time anyone reads
+    // it — blames the pruner for the loss.
+    __resetReapedSessionsForTesting();
+    const roHome = fs.mkdtempSync(path.join(os.tmpdir(), "argent-ro-home-"));
+    const logs = path.join(roHome, ".argent", "tmp");
+    fs.mkdirSync(logs, { recursive: true });
+    fs.chmodSync(logs, 0o555);
+    const savedHome = process.env.HOME;
+    process.env.HOME = roHome;
+    try {
+      const fake = makeFakeChromiumCdpApi();
+      let socketOpen = true;
+      (fake.api.cdp as unknown as { isConnected: () => boolean }).isConnected = () => socketOpen;
+      const instance = await chromiumJsRuntimeDebuggerBlueprint.factory(
+        { chromium: fake.api },
+        "chromium-cdp-19222",
+        { device: chromiumDevice }
+      );
+      instance.api.logWriter.write({
+        id: 1,
+        timestamp: new Date(1710000000000).toISOString(),
+        level: "error",
+        message: "buffered only",
+      });
+      expect(instance.api.logWriter.hasFile()).toBe(false);
+
+      socketOpen = false;
+      await instance.dispose();
+
+      const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
+      expect(reaped?.cause).toBe("runtime-death");
+      expect(reaped?.keptAt).toBeUndefined();
+      expect(reaped?.salvage).toContain("no log file was left behind");
+    } finally {
+      fs.chmodSync(logs, 0o755);
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      fs.rmSync(roHome, { recursive: true, force: true });
+    }
   });
 
   it("keeps the log when the renderer's death cascades a teardown in before our listener runs", async () => {

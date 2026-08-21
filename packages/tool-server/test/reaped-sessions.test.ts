@@ -241,10 +241,9 @@ describe("the reaped-session key", () => {
     });
 
     it("keeps the file when the same path is recorded twice", () => {
-      // `key()` lowercases the device id while the disposer compares its two
-      // ids case-sensitively, so a device whose udid and logicalDeviceId differ
-      // only in case writes twice into one slot, both naming the file it just
-      // kept. Reclaiming the previous path there would delete it.
+      // The sweep runs after the new entries are written, so a breadcrumb that
+      // supersedes one naming the same file would otherwise unlink the very path
+      // it is advertising.
       const kept = path.join(dir, "argent-logs-1-3.log");
       fs.writeFileSync(kept, "x");
       recordReapedSession("js-runtime-debugger", UDID, "same", {

@@ -59,10 +59,14 @@ export interface ReapedSession {
    */
   salvage?: string;
   /**
-   * The file {@link salvage} points at, when it points at one. Kept apart from
-   * the prose so the read can check the file is still there: a breadcrumb has no
-   * expiry, while a kept debugger log is swept once it is a day old, so an
-   * unread breadcrumb outlives what it advertises.
+   * A file this store may delete: the one {@link salvage} points at, kept apart
+   * from the prose so the read can check it is still there — a breadcrumb has no
+   * expiry, while a kept debugger log is swept once it is a day old, so an unread
+   * breadcrumb outlives what it advertises — and so superseding this entry can
+   * reclaim it (see {@link recordReapedSession}). Set it only for a file whose
+   * lifetime the breadcrumb owns; an artifact the user is meant to keep, like the
+   * recording and trace paths the other two kinds salvage, belongs in
+   * {@link salvage} alone.
    */
   keptAt?: string;
 }

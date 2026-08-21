@@ -200,7 +200,16 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     const urn = await connectAndCapture(LOGICAL_ID, 40);
     await registry.disposeService(urn);
 
-    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: LOGICAL_ID });
+    const connected = (await registry.invokeTool("debugger-connect", {
+      port: mockPort,
+      device_id: LOGICAL_ID,
+    })) as { note?: string };
+
+    // Silently. Connect reports only a runtime death, whose note carries a file
+    // path the agent still needs; an explicit teardown left no file, so saying
+    // "torn down, possibly by another agent" here would answer a question this
+    // caller did not ask, about a session it just replaced.
+    expect(connected.note).toBeUndefined();
 
     const result = (await registry.invokeTool("debugger-log-registry", {
       port: mockPort,

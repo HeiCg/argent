@@ -295,9 +295,10 @@ const LOG_NAME_RE = /^argent-logs-\d+-\d+\.log$/;
  * can enumerate the others' sessions; `touch`'s keepalive is what earns that,
  * refreshing an open file's mtime whether or not it is being written to, so a
  * file this stale has no writer behind it in any process that runs this code.
- * A tool-server old enough to predate the keepalive is the gap, and it is the
- * reason the cutoff is a day rather than an hour: the file has to look
- * abandoned for far longer than a session plausibly sits idle.
+ * The gaps are a tool-server old enough to predate the keepalive, and a
+ * filesystem that refuses `futimes` (which `touch` swallows); both are why the
+ * cutoff is a day rather than an hour, since the file has to look abandoned for
+ * far longer than a session plausibly sits idle.
  */
 function pruneStaleLogs(dir: string): void {
   const cutoff = Date.now() - STALE_LOG_AGE_MS;

@@ -285,7 +285,6 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
       dispose: async () => {
         cdp.events.off("consoleAPICalled", onConsoleAPI);
         cdp.events.off("disconnected", onDisconnected);
-        await consoleServer.close();
         // Same breadcrumb the Hermes blueprint leaves, for the same reason:
         // this dispose ends the capture session, and since
         // `ChromiumJsRuntimeDebugger` joined `DEVICE_OWNED_NAMESPACES` it is
@@ -326,6 +325,9 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
             { cause: runtimeDied ? "runtime-death" : "teardown", keptAt }
           );
         }
+        // After the socket read, not before it: an await here would let a
+        // teardown's socket close mid-dispose and be reported as a death.
+        await consoleServer.close();
         // Gated on `captured` for the same reason the breadcrumb is: a death
         // that logged nothing leaves an empty file no breadcrumb names and
         // nothing reclaims for a day.

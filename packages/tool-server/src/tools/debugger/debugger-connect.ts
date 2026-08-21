@@ -29,9 +29,10 @@ export const debuggerConnectTool: ToolDefinition<
     /**
      * What became of the previous session's console history, present only when
      * that session ended with the app itself going away. Names the log file the
-     * teardown left on disk, or says it has since been reclaimed. Reported here
-     * because this call is the prescribed recovery step after a crash, and it
-     * consumes the record that names the file.
+     * teardown left on disk, says it has since been reclaimed, or — when the
+     * writer never got a file to keep — that those entries went with it.
+     * Reported here because this call is the prescribed recovery step after a
+     * crash, and it consumes the record that names the file.
      */
     note?: string;
   }
@@ -47,7 +48,7 @@ export const debuggerConnectTool: ToolDefinition<
   description: `Connect to a JS runtime CDP debugger.
 iOS / Android / Vega: connects to Metro's CDP endpoint on the given port. Chromium: re-uses the page CDP session opened by boot-device — port is ignored.
 Returns connection info including port, projectRoot (empty on Chromium and on legacy Metro, e.g. Vega), deviceName, appName, logicalDeviceId (absent on Vega), and isNewDebugger. If already connected, returns the existing connection.
-Also returns { note } when the PREVIOUS session for this device ended with its runtime going away (a crash, a force-quit, a restart-app, or Metro being restarted) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says it has since been reclaimed. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line, and either tool consumes it, so whichever reports it first is the one that reports it at all.
+Also returns { note } when the PREVIOUS session for this device ended with its runtime going away (a crash, a force-quit, a restart-app, or Metro being restarted) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says those entries are gone, because the file was reclaimed or never written. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line, and either tool consumes it, so whichever reports it first is the one that reports it at all.
 Use when starting a debug session or before calling other debugger-* tools. Fails if the runtime is unreachable (Metro down, or Chromium CDP terminated).`,
   zodSchema,
   capability: DEBUGGER_TOOL_CAPABILITY,

@@ -350,10 +350,13 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         //
         // Sometimes there is only one id, and it is that unresolvable one:
         // `selectTarget` refuses a udid once two devices share a Metro, so the
-        // caller connects with the logicalDeviceId itself. Nothing can look this
-        // breadcrumb up after the app relaunches under a new one — the kept file
-        // is then reachable only by an agent that already holds its path, and
-        // otherwise waits for the pruner.
+        // caller connects with the logicalDeviceId itself, and Metro issues a
+        // new one per connection. The breadcrumb survives that — it is keyed by
+        // the string, not by anything Metro still knows — but only a read that
+        // passes the OLD id reaches it, and while both devices are attached only
+        // `debugger-log-registry` can: resolving that id throws a mismatch,
+        // which this tool renders as an answer and `debugger-connect` as a
+        // failure.
         //
         // The socket is the whole of "did the app die?" here, and the
         // `disconnected` event is not consulted at all: `CDPClient` nulls its
