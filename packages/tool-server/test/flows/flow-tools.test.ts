@@ -1472,6 +1472,49 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("compose-all-skipped")).steps).toEqual([]);
   });
 
+  it("warns when a composed step was cut short after it had already acted", async () => {
+    // `skip` is not proof a step did nothing: a `launch` reaches its abort only
+    // after restart-app has terminated and relaunched the app, and the runner
+    // says so with `reached`. Silence here would tell the author their recorded
+    // prefix still reproduces against an app sitting on its start screen.
+    const registry = createMockRegistry({
+      "flow-execute": {
+        result: {
+          flow: "login",
+          device: "ABC",
+          executionPrerequisite: "",
+          ok: false,
+          aborted: true,
+          passed: 0,
+          failed: 0,
+          skipped: 2,
+          errored: 0,
+          steps: [
+            { index: 0, kind: "launch", status: "skip", reason: "run aborted", reached: true },
+            { index: 1, kind: "tap", status: "skip", reason: "run aborted" },
+          ],
+        },
+      },
+    });
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute({}, { name: "compose-cut-short", project_root: tmpDir });
+    await writeSiblingFlow("login", "steps:\n  - echo: hi\n");
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-cut-short",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify({ name: "login", project_root: tmpDir, device: "ABC" }),
+      }
+    );
+
+    expect(result.message).toContain("NOT recorded");
+    expect(result.message).toContain("Prior composed steps may already have");
+    expect(parseFlow(await onDisk("compose-cut-short")).steps).toEqual([]);
+  });
+
   it("omits the mutation warning only when no nested step was reached", async () => {
     // The cancel landed before the first step, so run-sequence returned an empty
     // `steps` array: nothing was attempted and nothing could have moved.

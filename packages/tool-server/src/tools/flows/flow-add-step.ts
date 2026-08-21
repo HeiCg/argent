@@ -1391,7 +1391,11 @@ function nestedStepAttempted(result: unknown): boolean {
     return !Object.prototype.hasOwnProperty.call(result, "notice");
   }
   // The flow runner reports one entry per DECLARED step and marks the ones it
-  // never reached `skip`.
+  // never reached `skip` — except that a step CUT SHORT by a cancel is a skip
+  // too, and that one may well have acted: a `launch` is only cancellable once
+  // `restart-app` has relaunched the app. The runner marks those `reached`, so
+  // "skip" alone is read as proof of nothing only without it.
+  //
   // `run-sequence` appends one entry per step it got to and stops there, so its
   // entries are attempts — except the ones rejected before dispatch (a tool
   // outside its allow-list, one the target platform does not support, args the
@@ -1402,8 +1406,9 @@ function nestedStepAttempted(result: unknown): boolean {
   // tells a superseded author to weigh undoing an action never performed.
   return steps.some((s) => {
     if (typeof s !== "object" || s === null) return true;
-    const entry = s as { status?: unknown; dispatched?: unknown };
-    return entry.status !== "skip" && entry.dispatched !== false;
+    const entry = s as { status?: unknown; reached?: unknown; dispatched?: unknown };
+    if (entry.status === "skip") return entry.reached === true;
+    return entry.dispatched !== false;
   });
 }
 

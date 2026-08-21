@@ -314,6 +314,17 @@ export interface StepReport {
    * waited.
    */
   warning?: string;
+  /**
+   * The runner had already begun executing this step when the run was
+   * cancelled, so its `skip` is NOT proof the device is untouched: a `launch`
+   * reaches its abort only after `restart-app` has terminated and relaunched
+   * the app, and a gesture can be cancelled with the fingers already on the
+   * glass. Set only on skips, and only on the ones a reached step produces —
+   * the pre-step guard and an unreached block's skips leave it absent, which is
+   * what makes their silence provable. The flow recorder reads it to decide
+   * whether to warn that the recorded prefix may no longer reproduce.
+   */
+  reached?: true;
   /** Underlying tool id for `tool` steps. */
   tool?: string;
   /** Tool result for `tool` steps. */
@@ -2464,7 +2475,9 @@ async function execLeafStep(
       const r = await runLaunch(state, step.app);
       // A run cancelled mid-launch is a skip (matching the pre-step guard and
       // the directives), never a step failure — the app did nothing wrong.
-      if (r.aborted) return { ...base, status: "skip", reason: r.reason };
+      // `reached` all the same: every abort exit in `runLaunch` sits after the
+      // relaunch (or the chromium boot/attach) has already happened.
+      if (r.aborted) return { ...base, status: "skip", reason: r.reason, reached: true };
       return { ...base, status: r.ok ? "pass" : "error", reason: r.reason };
     }
 
@@ -2483,8 +2496,11 @@ async function execLeafStep(
       try {
         const r = await runDirective(deviceEnv(state), step);
         // A run cancelled mid-directive is a skip (matching the pre-step guard
-        // and `wait`), never a step failure — the app did nothing wrong.
-        if (r.aborted) return { ...base, status: "skip", reason: r.reason };
+        // and `wait`), never a step failure — the app did nothing wrong. It is
+        // still `reached`: a directive cancelled after its gesture was
+        // dispatched moved the screen, and the outcome does not say which side
+        // of the dispatch the cancel landed on.
+        if (r.aborted) return { ...base, status: "skip", reason: r.reason, reached: true };
         // `indeterminate` is `idle`'s only non-passing outcome: a screen that
         // merely kept moving passes with a warning, and so does one that
         // rendered nothing, so what is left here is a wait that could not run
@@ -2604,7 +2620,15 @@ async function execLeafStep(
         // exactly that step, and would use `skip` for something other than "did
         // not run", which is what it means everywhere else in this file.
         if (signal?.aborted && isUnmetUiWaitResult(step.name, result)) {
-          return { ...base, status: "skip", tool: step.name, reason: "run aborted during wait" };
+          // The sub-tool ran and returned — `reached`, unlike the pre-invoke
+          // delay skip above.
+          return {
+            ...base,
+            status: "skip",
+            tool: step.name,
+            reason: "run aborted during wait",
+            reached: true,
+          };
         }
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;
