@@ -279,6 +279,11 @@ describe("CDPClient", () => {
       // The server never replies — the per-request timer must fire.
       const err = await rejection(client.send("Runtime.enable", {}, 50));
       expect((err as Error).message).toMatch(/CDP request Runtime\.enable \(id=\d+\) timed out/);
+      // This client is shared with the Chromium path, and its own comment says the
+      // message carries the recovery so skills need not re-explain it. restart-app
+      // is refused there by the capability gate, so a bare 'restart the app' is a
+      // wasted call on the one platform that cannot take it.
+      expect((err as Error).message).toContain("on Chromium it is refused");
       expect(getFailureSignal(err)).toMatchObject({
         error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
         failure_stage: "debugger_cdp_send",

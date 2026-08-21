@@ -18,6 +18,8 @@ import { debuggerInspectElementTool } from "../src/tools/debugger/debugger-inspe
 import { debuggerReloadMetroTool } from "../src/tools/debugger/debugger-reload-metro";
 import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-component-tree";
 import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status";
+import { createBootDeviceTool } from "../src/tools/devices/boot-device";
+import { listDevicesTool } from "../src/tools/devices/list-devices";
 import { pinsOnce } from "./helpers/pins";
 
 const SKILLS = path.resolve(__dirname, "../../skills/skills");
@@ -34,6 +36,9 @@ const CREATE_FLOW_RECOVERY = path.join(
 
 const restartAppTool = createRestartAppTool({} as unknown as Registry);
 const debuggerStatusTool = createDebuggerStatusTool({} as unknown as Registry);
+const bootDeviceParams = createBootDeviceTool({} as unknown as Registry).zodSchema as unknown as {
+  shape: Record<string, { description?: string }>;
+};
 const restartApp = restartAppTool.capability;
 
 /** The skill's platform vocabulary, in the order its tables list it. */
@@ -96,6 +101,10 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
     // over sim-remote (registry types.ts), which these rows fold into "iOS"
     // rather than naming, so there is no prose claim for a tag to track.
     expect(restartApp?.appleRemote).toBeDefined();
+    // The guard the tags rest on. Every capability in these tables has a populated
+    // matrix, so nothing above tells `apple: {}` - support the gate rejects - from
+    // real iOS support.
+    expect(platformTag({ apple: {} } as ToolCapability), "empty matrix is not support").toBe("");
   });
 
   it("tags every RN-only row, in each of the three tables that list one", () => {
@@ -175,7 +184,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // Both branches. An Electron app does not come back by restarting a browser,
       // and a browser restarted without the flag exposes no CDP, so a surface
       // carrying one of them strands whoever is on the other.
-      ["the Electron branch", "boot-device with electronapppath", statesRecovery],
+      ["the Electron branch", "boot-device with electronapppath for electron", statesRecovery],
       ["the browser branch", "ask the user to start the browser again", statesRecovery],
       ["the flag that exposes CDP", "--remote-debugging-port", statesRecovery],
       ["which port it returns on", "on the same cdp port", statesRecovery],
@@ -193,6 +202,22 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // it drops an exited one, so polling it for the exit relaunches into a
       // running app.
       ["the exit cannot be read off list-devices", "cannot confirm the exit", statesRecovery],
+      // Where the new id can be read back at all. Without it the clause above
+      // reads as an invitation to relaunch anywhere and look it up.
+      [
+        "which ports are probed",
+        "list-devices only probes 9222, argent_chromium_ports and the ports boot-device opened",
+        statesRecovery,
+      ],
+      // The precondition on the whole sequence. These surfaces are read without
+      // the guidance in hand - restart-app's description is alwaysLoad and the
+      // device-interact table is open for tap/describe work - so a flat
+      // quit-then-relaunch here is what asks the user to quit a healthy app.
+      [
+        "the relaunch is for a gone app only",
+        "only for an app that is actually gone",
+        listsRestartApp,
+      ],
     ];
     for (const [what, needle, surfaces] of facts) {
       for (const [where, text] of surfaces) pinsOnce(norm(text), needle, `${where} (${what})`);
@@ -203,13 +228,24 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // relaunch is the wrong remedy.
     const createFlow = row(CREATE_FLOW_RECOVERY, "Chromium");
     pinsOnce(createFlow, "the failure names page targets, none at all or only devtools:// ones");
-    pinsOnce(createFlow, "a relaunch recovers nothing there");
+    pinsOnce(createFlow, "ask for one back, since a relaunch recovers nothing there");
+    // Its third state: the guidance routes a non-CDP reply away from a relaunch,
+    // and this row's "Otherwise" swallowed it into the quit-and-relaunch.
+    pinsOnce(createFlow, "something else holds the port, which no relaunch on that port clears");
 
     // The Reload & recovery row fences restart-app off and delegates rather than
     // restating the recovery, so the pointer is the only thing carrying it - and
     // it is the Chromium reader it exists to redirect, since that table's
     // restart-app row is tagged for the three platforms that are not Chromium.
     pinsOnce(row(DEBUGGER_SKILL, "`restart-app`"), "On Chromium see the Quick Reference row");
+
+    // The shared-surface summary a Chromium reader meets before any table.
+    // gesture-swipe declares no chromium and the gate rejects it there, so the
+    // verb in this list has to be the one that works.
+    pinsOnce(
+      readFileSync(DEVICE_INTERACT_SKILL, "utf8"),
+      "describe/tap/scroll/keyboard/screenshot"
+    );
 
     // cdp_unreachable is not only the dead-app code: CHROMIUM_CDP_NO_PAGE_TARGET
     // maps to it too and fires while the process is alive, where a relaunch adds a
@@ -221,8 +257,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // Both lock shapes: Electron's newcomer exits 0 with no reason given, Chrome
     // refuses outright and names the lock. A reader matching only Electron's
     // shape against Chrome's refusal concludes it hit something else.
-    pinsOnce(unreachable, "bare early exit");
-    pinsOnce(unreachable, "SingletonLock");
+    pinsOnce(unreachable, "bare early exit for Electron");
+    pinsOnce(unreachable, "SingletonLock: File exists` for Chrome");
     // Of the seven codes behind cdp_unreachable only CHROMIUM_CDP_NO_PAGE_TARGET
     // proves the app alive, and only its devtools:// half names the window, so
     // both the narrowing and the remedy it points to are pinned. "devtools://"
@@ -238,6 +274,16 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // The dead-app half of this reason is not restated here; the pointer is all
     // that carries it.
     pinsOnce(unreachable, "**Was connected, then tool fails**");
+    pinsOnce(unreachable, "`launch-app`, which cannot start a Chromium app");
+
+    // The two sibling descriptions the recovery leans on. list-devices is where
+    // the id is re-read, so a reader who cannot see a booted app there concludes
+    // it must set the env var; and boot-device's own `force` promised the stop
+    // every surface above denies.
+    pinsOnce(listDevicesTool.description, "the ports boot-device itself opened");
+    expect(bootDeviceParams.shape.force?.description).toContain(
+      "Ignored on Chromium: boot-device only ever starts an Electron app"
+    );
   });
 
   it("answers every not-connected reason the debugger can report", () => {
@@ -255,6 +301,6 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     }
     // cdp_unreachable covers three unlike states and the reason name says none of
     // them; the Chromium one is the reason the recovery had to split.
-    expect(debuggerStatusTool.description).toContain("is up with no drivable page");
+    expect(debuggerStatusTool.description).toContain("(Chromium) is up with no drivable page");
   });
 });

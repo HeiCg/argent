@@ -8,7 +8,10 @@ import {
 import { classifyNotConnected, buildNotConnected } from "../../src/tools/debugger/not-connected";
 import { pinsOnce } from "../helpers/pins";
 import { discoverPrimaryPage } from "../../src/chromium-server/cdp-session";
+import { getCandidateChromiumPorts } from "../../src/utils/chromium-discovery";
 import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
 
 /**
  * Pins EVERY entry of NOT_CONNECTED_CODE_MAP. The map is the contract that
@@ -105,14 +108,15 @@ describe("guidance platform-correctness", () => {
       expect(r.guidance).toMatch(/timeout/);
     }
     expect(metro.guidance).toContain("restart-app");
-    expect(chromium.guidance).not.toContain("restart-app");
 
     // A renderer paused at a breakpoint times out exactly like a wedged one, and
-    // quitting the app throws the debug session away, so the quit is gated on
-    // checking first - without the gate the guidance reads as "it timed out,
-    // quit it".
+    // the two states take opposite actions: quitting a paused app throws the
+    // user's debug session away. Naming the state without branching it leaves
+    // the quit as the only instruction on offer for both.
     expect(chromium.guidance).toContain("breakpoint");
-    pinsOnce(chromium.guidance, "Check the app first; if it is hung");
+    pinsOnce(chromium.guidance, "Check the app first.");
+    pinsOnce(chromium.guidance, "If it is paused, ask the user to resume it");
+    pinsOnce(chromium.guidance, "If it is hung, ask the user to quit it");
   });
 
   it("gives both Chromium overrides the whole recovery, not half of it each", () => {
@@ -134,17 +138,32 @@ describe("guidance platform-correctness", () => {
       // broken-but-running one from an exited one, so the user is the only actor
       // that can end it - and the relaunch has to wait for that, or it lands on a
       // single-instance lock.
-      pinsOnce(guidance, "ask the user to quit it", reason);
-      pinsOnce(guidance, "then relaunch once it has exited", reason);
+      pinsOnce(guidance, "ask the user to quit it, then relaunch once it has exited", reason);
+      // Both dead ends, on both overrides. restart-app is refused by the gate and
+      // launch-app is a documented no-op that reports launched: true, so either
+      // one named as an action manufactures a guaranteed second failure - and a
+      // per-reason negative leaves the twin free to take up the one it was not
+      // checked against.
+      expect(guidance, reason).not.toContain("restart-app");
+      expect(guidance, reason).not.toMatch(/\(launch-app\)/);
+      pinsOnce(guidance, "launch-app cannot start a Chromium app", reason);
       // The premise the manual quit rests on, worded the same way the four prose
       // surfaces word it.
       pinsOnce(guidance, "only starts an app and never stops one", reason);
       // Absence of a list-devices entry is not the exit, on either reason: probePort
       // drops an app that is up with no drivable page exactly as it drops an exited
-      // one. Pinned on both because the useful-looking converse - still listed, so
-      // still up - is what the runtime_unresponsive override said, and it is false
-      // in the direction the reader needs.
+      // one. The converse reads as the more useful statement - still listed, so
+      // still up - and is false in the direction the reader needs, so the claim is
+      // pinned together with the mechanism that makes it actionable.
       pinsOnce(guidance, "list-devices cannot confirm the exit", reason);
+      pinsOnce(
+        guidance,
+        "it drops an app that is up with no drivable page exactly as it drops an exited one",
+        reason
+      );
+      // The rule needs its consequence: without it a reader takes 'never recovers
+      // it' for 'has no effect' and tries the relaunch anyway.
+      pinsOnce(guidance, "the relaunch either duplicates the app or fails", reason);
       // The id is re-readable only where discovery looks: getCandidateChromiumPorts
       // probes 9222, the env list and the ports boot-device opened. Without this the
       // new-port clause reads as an invitation to relaunch anywhere and re-read.
@@ -159,6 +178,35 @@ describe("guidance platform-correctness", () => {
       // is on the other.
       pinsOnce(guidance, "boot-device with electronAppPath relaunches an Electron app", reason);
       pinsOnce(guidance, "with --remote-debugging-port", reason);
+    }
+  });
+
+  it("names the probe set discovery actually has, not a restated one", () => {
+    // The closing clause tells the reader where the new id can be read back. A
+    // literal that drifts from getCandidateChromiumPorts sends them to look on a
+    // port nothing probes, so derive it: with the env list and the persisted file
+    // both out of the way, what is left is the default the prose has to name.
+    const prevList = process.env.ARGENT_CHROMIUM_PORTS;
+    const prevFile = process.env.ARGENT_CHROMIUM_PORTS_FILE;
+    delete process.env.ARGENT_CHROMIUM_PORTS;
+    process.env.ARGENT_CHROMIUM_PORTS_FILE = path.join(os.tmpdir(), "argent-absent-ports.json");
+    try {
+      const { guidance } = buildNotConnected(
+        "cdp_unreachable",
+        coded(FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE),
+        { port: 8081, device_id: "chromium-cdp-9222" }
+      );
+      for (const port of getCandidateChromiumPorts()) pinsOnce(guidance, String(port));
+      // And the env var it names is the one discovery reads - the name is prose on
+      // both sides, so nothing but a round trip through the function pins it.
+      process.env.ARGENT_CHROMIUM_PORTS = "9333";
+      expect(getCandidateChromiumPorts()).toContain(9333);
+      pinsOnce(guidance, "ARGENT_CHROMIUM_PORTS");
+    } finally {
+      if (prevList === undefined) delete process.env.ARGENT_CHROMIUM_PORTS;
+      else process.env.ARGENT_CHROMIUM_PORTS = prevList;
+      if (prevFile === undefined) delete process.env.ARGENT_CHROMIUM_PORTS_FILE;
+      else process.env.ARGENT_CHROMIUM_PORTS_FILE = prevFile;
     }
   });
 });
@@ -223,6 +271,7 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       expect(detail, "the discriminator the guidance names must be in the detail").toContain(cue);
       expect(guidance).toContain(cue);
     }
+    pinsOnce(guidance, "or is up with no usable page");
     // The clause that routes a live app away from a relaunch - both halves. The
     // diagnosis alone leaves the remedy free to become the relaunch this whole
     // branch exists to prevent.
@@ -231,15 +280,21 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       "page targets (none at all, or only devtools:// ones) means the app is still " +
         "running and only lacks a window: ask the user to bring one back"
     );
-    // The third state cdp_unreachable covers. CHROMIUM_CDP_INVALID_RESPONSE has
-    // three throw sites in cdp-session.ts and none of them is a stopped app, so
-    // this one is a relaunch away from a remedy too - and the reader tells it
-    // apart by the shapes, which have to match the three sites that produce them.
-    pinsOnce(
-      guidance,
-      "a non-2xx status, a body that is not JSON, a /json/version with no browser socket"
+    // The third state cdp_unreachable covers, and no relaunch is its remedy. Only
+    // two of CHROMIUM_CDP_INVALID_RESPONSE's three throw sites can reach a
+    // not_connected result - fetchJson's !res.ok and its non-JSON body; the third
+    // (browserWebSocketUrl) is called only from chromium-tabs, which throws
+    // instead. Naming the unreachable one gives the reader a shape to match that
+    // never arrives, so the list has to track the reachable sites, not the file's.
+    pinsOnce(guidance, "a non-2xx status, or a body that is not JSON");
+    expect(guidance, "names a shape no cdp_unreachable detail can carry").not.toContain(
+      "browser socket"
     );
-    pinsOnce(guidance, "check what is on it rather than relaunching");
+    // Naming the state without a way out is what left this branch a dead end:
+    // there is no port-inspecting tool, so the actor is the user, and the id is
+    // gone either way.
+    pinsOnce(guidance, "pass on what the detail says, since nothing here can free a port");
+    pinsOnce(guidance, "a browser has to come back on a port nothing else holds");
     // A sequence, not a condition on whether it exited: nothing in the catalogue
     // can answer that condition, and quitting an app that already exited is a
     // no-op anyway.

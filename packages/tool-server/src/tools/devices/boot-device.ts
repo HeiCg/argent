@@ -89,7 +89,9 @@ const zodSchema = z.object({
   force: z
     .boolean()
     .optional()
-    .describe("Shut down and re-boot the device even if already running."),
+    .describe(
+      "Shut down and re-boot the device even if already running. Ignored on Chromium: boot-device only ever starts an Electron app, so a running one is left alone."
+    ),
   headless: z
     .boolean()
     .optional()
