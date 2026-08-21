@@ -1,9 +1,9 @@
 import { expect } from "vitest";
 
 /**
- * Assert `needle` appears exactly once. The recovery prose states the same steps
- * twice - once per branch, or once per platform - so a plain toContain survives
- * deleting the clause it was written for.
+ * Assert `needle` appears exactly once. The recovery prose names the same actor
+ * and the same tools in more than one clause, so a plain toContain stays green
+ * after the clause it was written for is deleted.
  */
 export function pinsOnce(haystack: string | undefined, needle: string, label?: string) {
   const where = label ? `${label}: ` : "";

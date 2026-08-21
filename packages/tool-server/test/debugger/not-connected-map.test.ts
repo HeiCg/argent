@@ -101,9 +101,9 @@ describe("guidance platform-correctness", () => {
     expect(chromium.guidance).not.toContain("restart-app");
     expect(chromium.guidance).toContain("electronAppPath");
 
-    // The two Chromium overrides are the only recovery an agent meets with no
-    // skill open, so each carries what the skill surfaces carry: who performs
-    // the browser half, and where the id is re-read once a relaunch moves it.
+    // Both overrides route around restart-app, so each carries what the skill
+    // surfaces carry: who performs the browser half, and where the id is re-read
+    // once a relaunch moves it.
     for (const r of [
       buildNotConnected("cdp_unreachable", coded(FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE), {
         port: 8081,
@@ -116,8 +116,11 @@ describe("guidance platform-correctness", () => {
       pinsOnce(r.guidance, "id from boot-device / list-devices");
       // boot-device never stops an app, and nothing in the catalogue can tell a
       // broken-but-running one from an exited one, so the user is the only actor
-      // that can end it.
+      // that can end it - and the relaunch has to wait for that, or it lands on a
+      // single-instance lock. Both overrides carry both halves, as the skill
+      // surfaces do.
       pinsOnce(r.guidance, "ask the user to quit it");
+      pinsOnce(r.guidance, "then relaunch once it has exited");
       // The id tracks the port, so a relaunch that comes back on the same port
       // keeps it. Only a moved port mints a new id.
       expect(r.guidance).not.toMatch(/under a new chromium-cdp/);
@@ -175,10 +178,12 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     }
     // The clause that routes a live app away from a relaunch.
     pinsOnce(guidance, "only lacks a window");
-    // Stated as a sequence, not a condition: a conditional here has been inverted
-    // twice, and quitting an app that already exited is a no-op either way.
-    pinsOnce(guidance, "quit it and relaunch once it has exited");
-    // The shapes differ per app (boot-electron.ts, BOOT_CONFIRM_WINDOW_MS), so the
+    // A sequence, not a condition on whether it exited: nothing in the catalogue
+    // can answer that condition, and quitting an app that already exited is a
+    // no-op anyway.
+    pinsOnce(guidance, "quit it, then relaunch once it has exited");
+    // How the relaunch fails is per-app - a duplicate, an early exit behind
+    // Electron's single-instance lock, a refusal behind Chrome's - so the
     // guidance states the rule and failure-scenarios.md carries the shapes.
     pinsOnce(guidance, "never recovers it");
 

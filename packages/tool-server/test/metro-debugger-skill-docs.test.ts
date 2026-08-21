@@ -27,6 +27,10 @@ const FAILURE_SCENARIOS = path.join(
   "argent-metro-debugger/references/failure-scenarios.md"
 );
 const DEVICE_INTERACT_SKILL = path.join(SKILLS, "argent-device-interact/SKILL.md");
+const CREATE_FLOW_RECOVERY = path.join(
+  SKILLS,
+  "argent-create-flow/references/reliability-and-recovery.md"
+);
 
 const restartAppTool = createRestartAppTool({} as unknown as Registry);
 const debuggerStatusTool = createDebuggerStatusTool({} as unknown as Registry);
@@ -113,17 +117,15 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // Pin the browser half specifically: a bare "ask the user" is already
     // satisfied by the quit step, so it would survive dropping the actor here.
     expect(restartAppTool.description).toContain("ask the user to start the browser again");
-    expect(restartAppTool.description).toContain("exited");
     expect(restartAppTool.description).toContain("chromium-cdp-<port>");
     expect(restartAppTool.description).toContain("list-devices");
-    expect(restartAppTool.description).toContain("quit");
 
-    const surfaces: [string, string][] = [
+    const rows: [string, string][] = [
       [DEBUGGER_SKILL, "Relaunch app on device"],
       [FAILURE_SCENARIOS, "**Was connected, then tool fails**"],
       [DEVICE_INTERACT_SKILL, "Restart an app"],
     ];
-    for (const [file, label] of surfaces) {
+    for (const [file, label] of rows) {
       const cell = row(file, label);
       expect(cell, file).toContain("Chromium");
       expect(cell, file).toContain("`boot-device` with `electronAppPath`");
@@ -138,10 +140,22 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // no udid field - so calling it one sends the reader looking for a key that
       // is not in the response.
       expect(cell, file).not.toMatch(/`chromium-cdp-<port>` udid/);
-      // boot-device never stops an app, so the relaunch has to wait on an exit only
-      // the user can cause.
-      expect(cell, file).toContain("exited");
-      pinsOnce(cell, "ask the user to quit it", file);
+    }
+
+    // Every surface that states the recovery, down to the two that state only
+    // its first step. boot-device stops nothing, so the exit is the user's to
+    // cause and the relaunch has to wait for it; a surface keeping the sequence
+    // but dropping the actor leaves the reader waiting on nobody, and one
+    // keeping the actor but dropping the sequence sends them to relaunch into a
+    // single-instance lock. Both halves are pinned, on all of them.
+    const recoverySurfaces: [string, string | undefined][] = [
+      ...rows.map(([file, label]): [string, string] => [file, row(file, label)]),
+      ["restart-app's description", restartAppTool.description],
+      [CREATE_FLOW_RECOVERY, row(CREATE_FLOW_RECOVERY, "Chromium")],
+    ];
+    for (const [where, text] of recoverySurfaces) {
+      pinsOnce(text, "the user to quit it", where);
+      pinsOnce(text, "once it has exited", where);
     }
 
     // The Reload & recovery row fences restart-app off and delegates rather than
@@ -154,9 +168,14 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // sends the live case to the wrong remedy. Which detail carries the window hint
     // is pinned against the throw sites in debugger/not-connected-map.test.ts.
     const unreachable = row(FAILURE_SCENARIOS, "**App unreachable**");
-    expect(unreachable).toContain("second copy");
-    expect(unreachable).toContain("single-instance");
-    expect(unreachable).toContain("devtools://");
+    pinsOnce(unreachable, "second copy");
+    pinsOnce(unreachable, "single-instance");
+    // Of the seven codes behind cdp_unreachable only CHROMIUM_CDP_NO_PAGE_TARGET
+    // proves the app alive, and only its devtools:// half names the window, so
+    // both the narrowing and the remedy it points to are pinned. "devtools://"
+    // alone is not: the row says it twice.
+    pinsOnce(unreachable, "variant names the window");
+    pinsOnce(unreachable, "bring a window back");
   });
 
   it("answers every not-connected reason the debugger can report", () => {
