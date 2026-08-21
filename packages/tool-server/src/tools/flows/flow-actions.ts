@@ -163,14 +163,11 @@ export interface DirectiveOutcome {
    * blind/degraded tree), or a `hidden` check ended on a blind or failed
    * read after the element had matched.
    *
-   * Every reader turns it into "unknown", and each has its own way to say so.
-   * The `when:` guard probe errors rather than silently skip a block a broken
-   * tree source can't vouch for. A plain `assert` reports it as an ordinary
-   * failure. An `idle` step has no condition to fall back on, so the runner
-   * scores it `error` rather than `fail`. And the recorder's cross-tree
-   * re-probe (`probeAgainstRunnerTree` in flow-add-step.ts) neither errors nor
-   * fails: the recorded step already ran on the device, so it keeps the step
-   * and composes a warning that says the conversion is UNKNOWN, not known-bad.
+   * Every reader turns it into "unknown" its own way: the `when:` guard errors
+   * rather than skip a block it cannot vouch for, `assert` reports an ordinary
+   * failure, `idle` scores `error` rather than `fail`, and the recorder's
+   * cross-tree re-probe keeps the step and warns that the conversion is
+   * UNKNOWN, not known-bad.
    */
   indeterminate?: boolean;
   /**
@@ -366,19 +363,15 @@ const CONDITION_DARK_TAIL_TOLERANCE_MS = POLL_INTERVAL_MS * 2;
 /**
  * Evaluate a UI condition on the assert grace window — the same engine as
  * `assert`, and deliberately not an await-sized wait. `ok` is "condition met";
- * `indeterminate` separates an unreadable tree, which is unknown rather than
- * false, from a plainly unmet condition.
+ * `indeterminate` separates an unreadable tree (unknown) from a plainly unmet
+ * condition.
  *
  * Named for its first caller, the `when:` block guard, where the grace window
- * is the whole point: a skipped block must not add a dead wait to every clean
- * run, and the two outcomes map onto error (unknown) versus skip (unmet).
- *
- * The recorder's cross-tree re-probe (`probeAgainstRunnerTree` in
- * flow-add-step.ts) is a second caller and neither errors nor skips — it always
- * keeps the step and only chooses which warning to raise. It wants this
- * function for a different reason: the window it predicts is an `assert:`
- * conversion's, which is exactly the window this polls on. What it does NOT
- * inherit is the guard's tolerance for a slow read; see PROBE_BUDGET_MS there.
+ * is the point: a skipped block must not add a dead wait to every clean run.
+ * The recorder's cross-tree re-probe is a second caller — it neither errors nor
+ * skips, and wants this function because an `assert:` conversion polls on
+ * exactly this window. It does not inherit the guard's tolerance for a slow
+ * read; see PROBE_BUDGET_MS there.
  */
 export function probeWhenCondition(
   env: ActionEnv,

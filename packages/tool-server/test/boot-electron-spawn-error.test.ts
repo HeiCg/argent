@@ -16,6 +16,8 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
+import { scopeTempHome } from "./helpers/temp-home";
 
 /**
  * CDP port for the boots below, which must never reach a live endpoint: when
@@ -52,7 +54,6 @@ vi.mock("../src/utils/chromium-discovery", () => ({
 }));
 
 import { bootElectronApp } from "../src/tools/devices/boot-electron";
-import { trackChromiumPort } from "../src/utils/chromium-discovery";
 
 interface FakeChild extends EventEmitter {
   pid: number | undefined;
@@ -73,6 +74,8 @@ function makeFakeChild(opts: { pid?: number | undefined } = {}): FakeChild {
   ee.signalCode = null;
   return ee;
 }
+
+scopeTempHome("argent-boot-electron-home-");
 
 let appDir: string;
 beforeAll(() => {
@@ -296,10 +299,13 @@ describe("bootElectronApp — spawn error handling", () => {
         readyTimeoutMs: 5000,
       });
 
-      // A successful boot persists its port for later discovery. Asserting it
-      // pins the module mock above, whose absence would send that write to the
-      // developer's real ~/.argent/chromium-cdp-ports.json.
-      expect(trackChromiumPort).toHaveBeenCalledWith(realPort);
+      // A completed boot persists its port. Two guards keep it out of the
+      // developer's real ~/.argent/chromium-cdp-ports.json — the mock above,
+      // and the scoped HOME that makes this about the run's own writes — and
+      // asserting the absence is what fails when either stops working.
+      expect(fs.existsSync(path.join(os.homedir(), ".argent", "chromium-cdp-ports.json"))).toBe(
+        false
+      );
 
       // After successful boot, both boot-time listeners MUST be detached.
       // Exactly one 'exit' listener remains: the kill-registry cleanup hook
@@ -344,17 +350,19 @@ describe("bootElectronApp — spawn error handling", () => {
     process.on("unhandledRejection", onUnhandled);
 
     try {
-      // No HTTP server on the port → waitForCdpReady times out fast, taking
-      // the catch path. earlyExit / spawnError aren't fired by us. Match the
-      // timeout message: a failure raised before spawn attaches no boot
-      // listener, so the assertions below would pass vacuously.
-      await expect(
-        bootElectronApp({
+      // The readiness probe cannot be answered, so waitForCdpReady exhausts
+      // readyTimeoutMs and the boot takes the catch path; earlyExit and
+      // spawnError aren't fired by us. Pin the code: a failure raised before
+      // spawn attaches no listener, so the assertions below go vacuous.
+      const signal = getFailureSignal(
+        await bootElectronApp({
           appPath: appDir,
           port: UNREACHABLE_CDP_PORT,
           readyTimeoutMs: 100,
-        })
-      ).rejects.toThrow(/CDP never became reachable/);
+        }).catch((e: unknown) => e)
+      );
+      expect(signal?.error_code).toBe(FAILURE_CODES.CHROMIUM_ELECTRON_CDP_TIMEOUT);
+      expect(signal?.failure_stage).toBe("electron_cdp_ready");
 
       // Both listeners must be detached in the catch path.
       expect(child.listenerCount("error")).toBe(0);

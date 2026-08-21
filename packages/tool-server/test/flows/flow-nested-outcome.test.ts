@@ -137,12 +137,10 @@ describe("a nested flow-execute reports its own verdict", () => {
   });
 
   it("still names the failing step when the run was cancelled after it failed", async () => {
-    // `summarize` folds the abort into the verdict, so a composed step that
-    // genuinely failed and was then cancelled takes the abort branch and never
-    // reaches the `ok: false` one that renders the detail. `reason` is the whole
-    // string the CLI prints and the only one the recorder's refusal can render,
-    // so losing the detail here loses it everywhere — while the sibling
-    // `run-sequence` reader names its failing step on the same event.
+    // `summarize` folds the abort into the verdict. A step that failed and was
+    // then cancelled takes the abort branch, not the `ok: false` one that
+    // renders the detail. `reason` is the only string the recorder's refusal
+    // can render, so a loss here is a loss everywhere.
     const { result } = await run("flow-execute", { ...FAILED_SUBFLOW, aborted: true });
 
     expect(result.steps[0].status).toBe("skip");
@@ -201,10 +199,10 @@ describe("a nested run-sequence reports its own verdict", () => {
   });
 
   it("flags a nested failure whose error message is empty", () => {
-    // A tool that throws `new Error("")` records `error: ""`. Keying the check
-    // on a non-empty message would skip that entry and let the failed sequence
-    // score — or, in the recorder, record — as a pass. The message is named
-    // rather than rendered blank so the reason does not trail off at the colon.
+    // A tool that throws `new Error("")` records `error: ""`. A check on a
+    // non-empty message would skip that entry and score the failed sequence as
+    // a pass. The empty message is named, so the reason does not trail off at
+    // the colon.
     const out = nestedOrchestratorOutcome("run-sequence", {
       completed: 0,
       total: 1,
