@@ -131,11 +131,10 @@ export type Selector = z.infer<typeof selectorSchema> & {
 export type WaitCondition = "exists" | "visible" | "hidden" | "text";
 
 // How a `text` condition compares the located element's text to the expected
-// string. Both literal modes fold first (see foldText): `contains` (default) is
-// a case-insensitive, folded substring — with a leading/trailing space in the
-// expected string kept significant, so it still works as a word boundary —
-// and `equals` is a case-insensitive, folded full-string match, trimmed at both
-// ends (so "1" no longer satisfies "10"). Both
+// string. Both literal modes fold first (see foldText). `contains` (default) is
+// a case-insensitive folded substring. It keeps a leading or trailing space in
+// the expected string as a word boundary. `equals` is a case-insensitive folded
+// full-string match, trimmed at both ends (so "1" no longer satisfies "10"). Both
 // are offered so a caller can assert "shows this somewhere" or "shows exactly
 // this" interchangeably. `matches` treats the expected string as a JS regular
 // expression tested unanchored against the text (the `contains` analog —
@@ -167,249 +166,114 @@ export function assertText(node: DescribeNode): string {
 
 // ── Text folding ───────────────────────────────────────────────────────────
 //
-// UI text is not the text an author types. A currency label renders with a
-// non-breaking space, a layout wraps a user-supplied name in bidi isolates, a
-// soft hyphen or ZWSP survives a copy-paste. All of them survive
-// `toLowerCase()`, so the comparison fails against two strings that are
-// character-for-character identical on screen and in the failure message. That
-// is unexplainable in CI, and it cost whole 15-second timeouts per attempt.
-//
-// So every literal comparison folds both sides first. Folding only ever
-// removes distinctions the eye cannot see; `matches` (regex) is deliberately
-// exempt, because a pattern carries its own precision.
-//
-// "Invisible" is NOT the same as "renders identically", and that gap is the
-// whole design of the three blocks below. Zero advance width is universal
-// across this area — measured per character with Range.getBoundingClientRect
-// in Chromium, every one of these controls is 0 px wide — so a width test
-// alone calls the dangerous ones safe. What decides is whether removing the
-// character can change the GLYPHS drawn or their ORDER:
-//
-//   - A bidi control reorders the text around it, in plain ASCII under
-//     dir="ltr", with no RTL content anywhere. "5" + U+200F + "-3" renders
-//     `53-`, and U+202E turns `report<RLO>txt.exe` into `reportexe.txt`.
-//     Folding those let an assertion pass against a screen that plainly reads
-//     something else — the silently-wrong green this module rates worse than a
-//     flake, arriving through the fold itself.
-//   - A soft hyphen paints a real hyphen when the line breaks there.
-//   - U+180E suppresses Arabic cursive joining exactly as ZWNJ does.
-//   - A line break is not one of these controls at all, but the same test
-//     decides it: a run of whitespace collapses to a single character, and a
-//     run that breaks the line collapses to a newline rather than a space (see
-//     {@link LINE_BREAKS_G}). A soft hyphen is kept for a hyphen it MIGHT paint;
-//     a `\n` moves the glyphs after it unconditionally.
-//
-// So the set is split three ways: always safe, safe only while the string has
-// no bidi content, and never.
+// UI text is not the text an author types: a non-breaking space in a label,
+// bidi isolates around a name, a soft hyphen from a copy-paste. These survive
+// `toLowerCase()`, so a comparison fails on two strings that read the same on
+// screen. Every literal comparison folds both sides first, but `matches`
+// (regex) is exempt. Zero width alone does not make a character safe to remove:
+// the test is whether the removal changes the glyphs drawn or their order.
 
 /** Space-like codepoints that are not U+0020. NBSP, narrow NBSP, ideographic, en/em quad, etc. */
 const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
 
 /**
- * Whitespace that BREAKS THE LINE, and so is the one part of the whitespace
- * family the run-collapse must not equate with a space. Global, and matching a
- * CRLF as the ONE break it renders as, because the collapse COUNTS the breaks
- * in a run; used only with `String.prototype.match`, which resets `lastIndex`.
+ * Whitespace that breaks the line. It is the one part of the whitespace family
+ * the run collapse must not equate with a space. A run with no break collapses
+ * to one space. A run that breaks the line collapses to one newline per break,
+ * because one newline for a whole run equates one break with two. Interior runs
+ * only: an edge break is the outer whitespace {@link foldText} trims.
  *
- * A soft hyphen is kept because it MIGHT paint a hyphen, if the line happens to
- * break there; `\n` breaks the line unconditionally. Collapsing it let
- * `equals: "Sign in"` go green against a label the screen renders on two lines
- * — a pass against a screen that reads differently, which is the outcome this
- * module rates worse than a flake, and nothing downstream catches it (the fold
- * having equated them, {@link confusableTextNote} sees no difference to name).
- *
- * The horizontal collapse it narrows is still worth having: doubled spaces and
- * a tab used as padding really are invisible, and an NBSP reduced by
- * {@link SPACE_LIKE} next to a plain space has to merge with it. So a run with
- * no break in it collapses to one space, while a run that breaks the line
- * collapses to ONE NEWLINE PER BREAK — which folds CRLF onto LF and absorbs the
- * incidental spaces around a break, but keeps a blank line. Collapsing the run
- * to a single newline equated one break with two, so deleting a visible blank
- * line could not fail an `equals`: the same silently-wrong green this comment's
- * first paragraph rules out, one line further down.
- *
- * Only an INTERIOR run, though. A break at the very edge of a label separates
- * no glyph from another, and it is the same outer whitespace {@link foldText}
- * discards wholesale — so treating it as significant in the untrimmed
- * {@link foldLoose} would make the two disagree, and would break the boundary
- * space a `contains` needle is entitled to (`contains: "Changes "` against a
- * label ending `Changes\n`).
- *
- * U+0085 NEXT LINE is absent because JS `\s` does not match it, so it never
- * reaches the collapse — which lands on the same conservative answer anyway: it
- * survives folding whole, and a label carrying one equals no label without it.
+ * Global, and used only with `String.prototype.match`, which resets `lastIndex`.
  */
 const LINE_BREAKS_G = /\r\n|[\n\r\v\f\u2028\u2029]/gu;
 
 /**
- * Invisible formatting that cannot change a glyph or its position in ANY
+ * Invisible formatting that cannot change a glyph or its position in any
  * context: ZWSP, word joiner, the invisible math operators, the deprecated
- * format controls, BOM. The most any of these does is offer or forbid a
- * line-break opportunity, which moves where a line wraps but never what
- * characters are drawn, or in what order.
- *
- * NOT ZWNJ/ZWJ or the variation selectors — the class starts at U+200B and
- * jumps to U+2060 to skip them, because they are load-bearing in sequence (see
- * the DELIBERATELY NOT FOLDED block below). U+2065 is unassigned, so the
- * invisible-operator run stops at U+2064 and resumes at the deprecated
- * controls, U+206A.
+ * format controls, BOM. The gaps in the class skip the sequence builders and
+ * the unassigned U+2065.
  */
 const INVISIBLE = /[\u200b\u2060-\u2064\u206a-\u206f\ufeff]/gu;
 
 /**
- * The LTR-forcing directional controls — LRM, LRE, PDF, LRO, LRI, FSI, PDI —
- * folded ONLY when {@link BIDI_SENSITIVE} finds nothing in the string that
- * could give the bidi algorithm a non-trivial order to produce. In a string
- * whose strong characters are all left-to-right, every one of these resolves
- * to "lay this out left to right", which is already what happens, so removing
- * them provably cannot move a glyph.
- *
- * This is what keeps the common real case working. An app that renders
- * user-supplied names wraps every one of them: a census of four Bluesky web
- * screens found 367 U+202A/U+202C pairs and not a single NBSP, and what they
- * wrap is overwhelmingly a plain Latin handle. Those still fold. What no
- * longer folds is the same wrapper around text it actually reorders.
- *
- * Their RTL counterparts are deliberately absent, and live in
- * {@link BIDI_SENSITIVE} instead: RLM, ALM, RLE, RLO and RLI impose a
- * right-to-left order on the neutrals around them even in otherwise-ASCII
- * text, so they are never foldable. A string containing one is also, by that
- * very membership, bidi-sensitive — which is why the LTR controls in it stay
- * too. Folding half of a directional pair would rewrite the string without
- * rewriting what it renders as.
+ * The LTR-forcing directional controls - LRM, LRE, PDF, LRO, LRI, FSI, PDI.
+ * Folded only when {@link BIDI_SENSITIVE} finds nothing the bidi algorithm can
+ * reorder, because there each of these asks for the order that already happens.
+ * The RTL counterparts never fold. A string that holds one keeps its LTR
+ * controls too, because a fold of half a pair rewrites the string, not the
+ * screen.
  */
 const LTR_BIDI = /[\u200e\u202a\u202c\u202d\u2066\u2068\u2069]/gu;
 
 /**
- * Does this string contain anything that makes the bidi algorithm's output
- * depend on more than logical order — a strong RTL or Arabic-number character,
- * or one of the RTL-imposing controls? Deliberately over-inclusive (whole
- * script blocks, rather than the exact Bidi_Class membership JS regex cannot
- * express): a false positive only means folding less, which is always safe,
- * while a false negative is the defect this exists to prevent.
+ * True when the string holds content whose bidi order depends on more than
+ * logical order: a strong RTL or Arabic-number character, or an RTL-forcing
+ * control. Over-inclusive, because a false positive only folds less.
  *
- * Not global, and only ever used with `.test`, so there is no `lastIndex` to
- * reset between calls.
+ * Not global, and used only with `.test`, so there is no `lastIndex` to reset.
  */
 const BIDI_SENSITIVE =
   /[\u061c\u200f\u202b\u202e\u2067\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
 
-// DELIBERATELY NOT FOLDED, for the same reason NFKC is not used: these are
-// invisible ALONE but LOAD-BEARING in sequence, so removing them changes what
-// is on screen.
+// Never folded - invisible alone, but each builds or moves a glyph in sequence:
 //
-// - U+200D ZERO WIDTH JOINER and U+FE00-FE0F VARIATION SELECTORS build emoji
-//   sequences. The transgender flag is U+1F3F3 VS16 ZWJ U+26A7 VS16 — ONE
-//   glyph. Stripping them folded it onto two separate glyphs, so a `text`
-//   check passed against a visibly different display name, and a BROKEN
-//   sequence — a real rendering regression — became invisible to every check.
-// - U+200C ZERO WIDTH NON-JOINER suppresses ligatures in Arabic, Persian and
-//   Indic scripts, where its presence or absence is a spelling difference.
-// - U+180E MONGOLIAN VOWEL SEPARATOR does ZWNJ's job: it suppresses Arabic
-//   cursive joining (ببببب goes from one connected run at 135 px to two at
-//   173 px), so by the criterion above it belongs here beside it — however
-//   much its Unicode 6.3 reclassification from a space to a zero-width format
-//   control makes it look like a member of the INVISIBLE block.
-// - U+00AD SOFT HYPHEN is invisible only while the line does NOT break there.
-//   When it does, it paints a real hyphen: `kraft<SHY>fahrzeug` displays
-//   `kraft-`, so folding it onto `kraftfahrzeug` asserts text the screen does
-//   not show.
-// - The RTL directional controls (U+061C, U+200F, U+202B, U+202E, U+2067) and,
-//   in any string carrying bidi content, their LTR counterparts too. See
-//   {@link LTR_BIDI} and {@link BIDI_SENSITIVE}.
+// - U+200D ZWJ and U+FE00-FE0F variation selectors build emoji sequences: the
+//   transgender flag is U+1F3F3 VS16 ZWJ U+26A7 VS16, one glyph, not two.
+// - U+200C ZWNJ suppresses ligatures in Arabic, Persian and Indic scripts.
+// - U+180E suppresses Arabic cursive joining as ZWNJ does.
+// - U+00AD SOFT HYPHEN paints a real hyphen where the line breaks.
+// - The RTL directional controls, plus their LTR counterparts in a bidi string.
+//   See {@link LTR_BIDI} and {@link BIDI_SENSITIVE}.
 
 const foldCache = new Map<string, string>();
 /**
- * Sized to hold ONE WORST-CASE TREE, which is what makes the plain
- * clear-at-the-cap below cost a single refill rather than thrash.
- *
- * The bound this file works to elsewhere is 12k nodes on Android and Chromium
- * (see the containment-grid comment), and `includesCI` folds a node's label and
- * its value separately, so one `findAll` over such a tree inserts up to ~24k
- * distinct keys. At 4096 that pass cleared the map six times over — the refill
- * was per pass, not once — and the cost stepped exactly at the cap: measured
- * over 20 passes on a label-only tree, 0.19 µs/node at 4,090 nodes against
- * 0.54 µs/node at 4,200, and 6.24 ms against 2.46 ms per `findAll` over the
- * full 12k. Holding that tree costs about 4 MB of heap, measured.
+ * Large enough for one worst-case tree, so the clear below costs one refill.
+ * A 12k-node tree folds a label and a value per node, so up to 24k keys. A
+ * smaller cap cleared the map several times per `findAll` and doubled its cost.
+ * This cap holds about 4 MB.
  */
 const FOLD_CACHE_MAX = 32_768;
 
 /**
- * The comparable form of a piece of UI text: invisible formatting stripped,
- * every space-like codepoint reduced to a plain space, each run of whitespace
- * collapsed to one space, or to one newline per line break the run holds (see
- * {@link LINE_BREAKS_G}), trimmed, lowercased, and only then
- * NFC-normalized (composition runs last because `toLowerCase` is not
- * NFC-preserving — see {@link foldLoose}).
+ * The comparable form of a piece of UI text:
+ * - invisible formatting stripped,
+ * - every {@link SPACE_LIKE} codepoint made a plain space,
+ * - each whitespace run collapsed (see {@link LINE_BREAKS_G}),
+ * - trimmed, lowercased, then normalized to NFC.
  *
- * **NFC, not NFKC.** Canonical normalization only equates spellings that
- * render identically (a precomposed "é" and its decomposed form). COMPATIBILITY
- * normalization goes further and folds away differences the eye reads
- * perfectly well — mathematical alphanumerics, ligatures, full-width forms,
- * superscripts, circled digits. With NFKC a blackletter display name compared
- * EQUAL to its plain-ASCII spelling, so a check could not tell an
- * impersonating account from the real one: a silently-wrong green, which is
- * exactly what this module's doctrine calls worse than a flake. The invariant
- * is that folding only ever removes distinctions the eye cannot see, and NFKC
- * breaks it.
- *
- * The directional half of that invariant is conditional, which is why the
- * strip runs in two passes: {@link INVISIBLE} always, {@link LTR_BIDI} only
- * when the string carries no {@link BIDI_SENSITIVE} content to be reordered.
+ * NFC, not NFKC: NFKC folds ligatures, fullwidth forms and styled
+ * alphabets, so a styled display name equates with the plain one it imitates.
+ * The strip is conditional: {@link INVISIBLE} always, {@link LTR_BIDI} only
+ * when the string holds no {@link BIDI_SENSITIVE} content to reorder.
  */
 export function foldText(value: string): string {
   return foldLoose(value).trim();
 }
 
 /**
- * {@link foldText} without the trim — leading and trailing whitespace survive
- * as a single space each.
- *
- * A substring test needs this. A boundary space is the standard low-tech word
- * boundary (`contains: "Taps: 3"` is also satisfied by "Taps: 30", so an author
- * writes `"Taps: 3 "`), and trimming BOTH sides silently discarded exactly the
- * constraint they added: `contains "Save "` started matching "Saved
- * successfully", and `contains " OK"` matched "NOTOK". A regex needle is exempt
- * from folding because "a pattern carries its own precision"; a boundary space
- * is the same claim in the literal modes, and gets the same protection.
- *
- * Trimming still belongs on an EQUALS comparison, where a label's incidental
- * outer whitespace is noise rather than a boundary — so {@link foldText} keeps
- * it, and only {@link includesCI} reaches past it.
+ * {@link foldText} without the trim. Leading and trailing whitespace each
+ * survive as one space, which a substring test needs. A boundary space is the
+ * word boundary an author writes, because "Taps: 3" also matches "Taps: 30".
  */
 function foldLoose(value: string): string {
   return foldWith(value, !isBidiSensitive(value));
 }
 
 /**
- * Does this string carry content the bidi algorithm can reorder — and so must
- * keep its {@link LTR_BIDI} controls?
- *
- * Asked on the {@link INVISIBLE}-stripped form, which is the form
- * {@link foldWith} tests: none of the controls {@link BIDI_SENSITIVE} looks for
- * is in the INVISIBLE class, so that strip cannot change the answer, but asking
- * on the same string keeps the two from drifting.
+ * True when the string holds content the bidi algorithm can reorder, and so
+ * must keep its {@link LTR_BIDI} controls. Asked on the {@link foldWith} form,
+ * with {@link INVISIBLE} removed.
  */
 function isBidiSensitive(value: string): boolean {
   return BIDI_SENSITIVE.test(value.replace(INVISIBLE, ""));
 }
 
 /**
- * Fold two strings that are about to be compared, deciding the conditional LTR
- * strip ONCE for the pair rather than per string.
- *
- * Per string it is not monotonic under substring, and {@link includesCI} is a
- * substring test: a label carrying one RTL word keeps its `U+202A`/`U+202C`
- * wrappers, while a Latin-only fragment COPIED OUT OF THAT LABEL does not, so
- * the identical wrappers were stripped from the needle only. A needle taken
- * character-for-character off the screen then failed to match the screen —
- * against the very population this fold is for (the 367-wrapper census), and
- * against the workflow every miss note prescribes, "copy the characters the app
- * actually renders".
- *
- * Either side being bidi-sensitive keeps the controls in both. That is the safe
- * direction: folding less can only ever fail to equate two strings that render
- * alike, never equate two that do not.
+ * Fold two strings for one comparison, and decide the conditional LTR strip
+ * once for the pair. Per string the strip is not monotonic under substring, and
+ * {@link includesCI} is a substring test. A label with one RTL word keeps its
+ * U+202A/U+202C wrappers, while a Latin-only fragment of it loses them. Either
+ * side that is bidi-sensitive keeps both, the safe direction.
  */
 function foldPairLoose(a: string, b: string): [string, string] {
   const stripLtr = !isBidiSensitive(a) && !isBidiSensitive(b);
@@ -420,74 +284,46 @@ function foldWith(value: string, stripLtr: boolean): string {
   const key = `${stripLtr ? "1" : "0"}${value}`;
   const hit = foldCache.get(key);
   if (hit !== undefined) return hit;
-  // Strip invisibles BEFORE composing: an invisible sitting between a base
-  // letter and its combining mark blocks NFC from composing them, so a later
-  // strip would leave a decomposed grapheme that no longer equals its
-  // precomposed twin. Removing it first lets the NFC pass compose the pair.
+  // Remove the invisibles before composition. An invisible between a base letter
+  // and its combining mark blocks NFC, which leaves a decomposed grapheme.
   let stripped = value.replace(INVISIBLE, "");
   if (stripLtr) stripped = stripped.replace(LTR_BIDI, "");
   const folded = stripped
     .replace(SPACE_LIKE, " ")
-    // One space per whitespace run, or one newline per LINE BREAK in an INTERIOR
-    // run. See {@link LINE_BREAKS_G} for why the two cannot both collapse to a
-    // space, why the breaks are counted rather than merged, and why only an
-    // interior run counts: `\s+` is greedy, so a run with text on both sides is
-    // one with a non-space neighbour at each end.
+    // One space per whitespace run, or one newline per line break in an
+    // interior run. See {@link LINE_BREAKS_G}. `\s+` is greedy, so an interior
+    // run is one with a non-space neighbour at each end.
     .replace(/\s+/g, (run, at: number, whole: string) => {
       if (at === 0 || at + run.length === whole.length) return " ";
       const breaks = run.match(LINE_BREAKS_G)?.length ?? 0;
       return breaks > 0 ? "\n".repeat(breaks) : " ";
     })
     .toLowerCase()
-    // Compose LAST, because `toLowerCase` is not NFC-preserving. Where the
-    // uppercase spelling has no precomposed code point, NFC leaves it
-    // decomposed and lowercasing yields a decomposed sequence, while the
-    // already-lowercase spelling composes — so normalizing first left the two
-    // folds of one visibly-identical pair unequal (`J̌anko` vs `ǰanko`, and the
-    // same for U+1E96-U+1E99 and some sixty polytonic-Greek groups). Composing
-    // after the case fold settles both spellings on the same form. Nothing
-    // between here and the strip needs the composed form: a combining mark is
-    // neither space-like nor whitespace.
+    // Compose last, because `toLowerCase` is not NFC-preserving. Where the
+    // uppercase spelling has no precomposed code point, an NFC pass before the
+    // case fold left one visibly identical pair unequal.
     .normalize("NFC");
   // Trees are re-read on every poll, so the same strings recur constantly.
-  // A plain size cap (rather than an LRU) is enough BECAUSE the cap holds a
-  // whole tree: the working set is one screen's labels, so blowing it away
-  // wholesale costs one refill. See FOLD_CACHE_MAX for the arithmetic — a cap
-  // under the working set turns that one refill into several per pass.
   if (foldCache.size >= FOLD_CACHE_MAX) foldCache.clear();
   foldCache.set(key, folded);
   return folded;
 }
 
 /**
- * Do these two strings differ ONLY by a compatibility variant — a rendered `…`
- * against three typed dots, a ligature, a fullwidth form?
- *
- * Deliberately not folded away (see {@link foldText}): those glyphs are
- * visibly different, and equating them is how a blackletter display name came
- * to match the account it imitates. But an author who types `...` for a label
- * the app renders with U+2026 gets a selector that matches NOTHING, and a
- * bare "no element matched" gives them no way to see why. This is what turns
- * that miss into an explanation.
+ * True when two strings differ only by a compatibility variant: a rendered `…`
+ * against three typed dots, a ligature, a fullwidth form. The fold keeps those
+ * apart (see {@link foldText}), so this explains the miss instead.
  */
 export function compatibilityVariantOf(actual: string, expected: string): boolean {
   if (foldText(actual) === foldText(expected)) return false;
-  // NFKC is itself NFKD followed by canonical composition, so the leading NFKD
-  // is redundant — `s.normalize("NFKD").normalize("NFKC")` equals
-  // `s.normalize("NFKC")` for every codepoint.
+  // NFKC is NFKD plus canonical composition, so a leading NFKD is redundant.
   const compat = (s: string): string => foldText(s.normalize("NFKC"));
   return compat(actual) === compat(expected);
 }
 
 /**
- * The substring analog of {@link compatibilityVariantOf}: does `haystack`
- * CONTAIN a compatibility variant of `needle`, while not containing the needle
- * itself?
- *
- * Both `contains` and a selector's own `text` are substring tests, so asking
- * only whether the WHOLE strings are variants meant the note could never fire
- * for them — which is to say never at all under the default comparator, the
- * one most misses arrive through.
+ * The substring form of {@link compatibilityVariantOf}. Both `contains` and a
+ * selector's own `text` are substring tests, so a whole-string question misses.
  */
 export function compatibilityVariantIn(haystack: string, needle: string): boolean {
   if (includesCI(haystack, needle)) return false;
@@ -497,16 +333,9 @@ export function compatibilityVariantIn(haystack: string, needle: string): boolea
 }
 
 /**
- * Does this character draw no glyph of its own but BUILD one in sequence — so
- * that a string carrying it does not look like the same string without it?
- * ZWNJ, ZWJ, both variation-selector blocks and the emoji tag characters:
- * exactly the set the fold deliberately keeps (see DELIBERATELY NOT FOLDED).
- *
- * A code-point predicate rather than a regex character class, because a class
- * spelling this set is what `no-misleading-character-class` exists to reject —
- * and it is right to: a class holding ZWJ and the variation selectors reads as
- * though it matched the sequences they build, when it matches the single units.
- * Here that IS the intent, so it is written in a form that cannot be misread.
+ * True for a character that draws no glyph alone but builds one in sequence:
+ * ZWNJ, ZWJ, both variation-selector blocks and the emoji tag characters. A
+ * code-point predicate, because `no-misleading-character-class` bans the class.
  */
 function isSequenceBuilding(ch: string): boolean {
   const cp = ch.codePointAt(0) ?? 0;
@@ -519,40 +348,25 @@ function isSequenceBuilding(ch: string): boolean {
   );
 }
 
-/** The directional controls: no glyph of their own, but they REORDER text. */
+/** The directional controls: no glyph of their own, but they reorder text. */
 const DIRECTIONAL = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
-/** {@link DIRECTIONAL}, global — for {@link quoteScreenText}'s replace. */
+/** {@link DIRECTIONAL}, global - for {@link quoteScreenText}'s replace. */
 const DIRECTIONAL_G = new RegExp(DIRECTIONAL.source, "gu");
 
 /**
- * No glyph of their own, but they change which glyphs are DRAWN — the two
- * members of the DELIBERATELY NOT FOLDED list that {@link isSequenceBuilding}
- * does not cover and that are not {@link DIRECTIONAL} either. U+00AD SOFT
- * HYPHEN paints a real hyphen when the line breaks there; U+180E MONGOLIAN
- * VOWEL SEPARATOR suppresses Arabic cursive joining exactly as ZWNJ does.
- *
- * Both are `Default_Ignorable_Code_Point`, so they reach the note as ordinary
- * inert ignorables and would be described as noise — the false story this note
- * must never tell, about the very characters the fold keeps for the opposite
- * reason. They get their own lead rather than being dropped the way ZWJ is,
- * because the code points are still worth printing: an author cannot fix what
- * they cannot see, and this lead points them at the rendering instead of at a
- * copy-paste.
+ * The two never-folded characters that draw no glyph but change which glyphs a
+ * screen draws: U+00AD and U+180E. Both are `Default_Ignorable_Code_Point`, so
+ * a note needs a separate lead for them rather than one about inert noise.
  */
 const RENDERING_AFFECTING = /[\u00ad\u180e]/u;
 
 /**
- * Every default-ignorable code point EXCEPT the sequence-building ones — the
- * characters whose removal genuinely leaves the string looking the same.
- * `Default_Ignorable_Code_Point` rather than category `Cf`, in both directions:
- * it excludes the prepended concatenation marks (U+0600-0605, U+110BD and kin),
- * which are `Cf` but do affect how the digits after them render, and it
- * includes U+034F COMBINING GRAPHEME JOINER, which is `Mn` and so escaped a
- * `Cf` test entirely despite being exactly the kind of unexplainable invisible
- * this note exists for.
+ * Every default-ignorable code point except the sequence-building ones - the
+ * characters whose removal leaves the same appearance. The property, not `Cf`:
+ * `Cf` holds the concatenation marks and misses U+034F, which is `Mn`.
  */
 const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
-/** {@link DEFAULT_IGNORABLE}, non-global — for a single-character test. */
+/** {@link DEFAULT_IGNORABLE}, non-global - for a single-character test. */
 const DEFAULT_IGNORABLE_ONE = new RegExp(DEFAULT_IGNORABLE.source, "u");
 
 /** Every inert ignorable in `text`, in order, sequence-builders excluded. */
@@ -560,21 +374,17 @@ function inertIgnorables(text: string): string[] {
   return (text.match(DEFAULT_IGNORABLE) ?? []).filter((ch) => !isSequenceBuilding(ch));
 }
 
-/** `text` with every inert ignorable removed — what the eye is left with. */
+/** `text` with every inert ignorable removed - what the eye reads. */
 function withoutInertIgnorables(text: string): string {
   return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) ? ch : ""));
 }
 
-/** `text` with every inert ignorable removed EXCEPT `keep`. */
+/** `text` with every inert ignorable removed except `keep`. */
 function keepOnlyIgnorable(text: string, keep: string): string {
   return text.replace(DEFAULT_IGNORABLE, (ch) => (isSequenceBuilding(ch) || ch === keep ? ch : ""));
 }
 
-/**
- * Every inert ignorable in `text`, each tagged with how much VISIBLE text
- * precedes it — the only position two confusable strings can be compared at,
- * their visible forms being equal by construction.
- */
+/** Every inert ignorable in `text`, tagged with the count of visible characters before it. */
 function placedIgnorables(text: string): string[] {
   const placed: string[] = [];
   let before = 0;
@@ -589,17 +399,9 @@ function placedIgnorables(text: string): string[] {
 }
 
 /**
- * Which ignorable characters sit DIFFERENTLY in the two strings — a different
- * number of them, or the same number somewhere else?
- *
- * Counting alone is blind to a MOVE: `report<RLO>txt.exe` and
- * `reporttxt.exe<RLO>` hold one RLO each, so the tally came out empty and the
- * lead below fell through to "differ only in invisible characters" — about an
- * override that reorders a filename into `reportexe.txt`, the exact false story
- * this note must never tell. Tagging each character with the visible text
- * before it makes a move a difference, while a character that sits identically
- * in both — a wrapper they share — still drops out, which is what keeps it from
- * picking the lead for a difference elsewhere.
+ * The ignorable characters that sit differently in the two strings: a different
+ * count, or the same count at another position. A count alone is blind to a
+ * move, so the position tag is what makes a move a difference.
  */
 function displacedIgnorables(actual: string, expected: string): string[] {
   const tally = (s: string): Map<string, number> => {
@@ -618,23 +420,9 @@ function displacedIgnorables(actual: string, expected: string): string[] {
 }
 
 /**
- * Which ignorable characters is the comparison actually STUCK on?
- *
- * {@link displacedIgnorables} answers "which ones differ", which is the whole
- * answer under `equals` and too wide under `contains`: there the label also
- * carries ignorables the needle never reached, and one unrelated RLM elsewhere
- * in a long label picked the reordering lead for a miss that a CGJ inside the
- * needle's own region caused.
- *
- * So ask the comparator, once per character: keep that one, drop every other
- * inert ignorable from both sides, and see whether the comparison would have
- * held. The ones that still block it are the ones responsible — which is the
- * property {@link confusableTextNoteIn}'s docstring claims and the lead below
- * relies on.
- *
- * When no single character is necessary the answer is every one that differs.
- * Two candidate regions can each be blocked by a different character, so that
- * neither alone is load-bearing, and naming both beats naming none.
+ * The ignorable characters that block the comparison, not merely the ones that
+ * differ - {@link displacedIgnorables} is too wide under `contains`. Ask the
+ * comparator once per character. When none alone is necessary, name them all.
  */
 function blockingIgnorables(
   actual: string,
@@ -649,47 +437,23 @@ function blockingIgnorables(
 }
 
 /**
- * A note naming the difference between two strings that LOOK equal but are not.
- *
- * This fires only where the FOLD did not already handle it. Folding-equal
- * strings compare equal, so the check passes and no message is produced at all;
- * the note therefore has to key on a strictly wider notion of "looks the same"
- * than {@link foldText} — here, equality once every INERT default-ignorable is
- * removed. That makes it the safety net for invisible characters the fold's
- * explicit classes do not list, which is precisely the failure that is
- * otherwise unexplainable: two identical-looking strings, quoted side by side,
- * declared unequal.
- *
- * What it must never do is call a REAL rendering difference invisible, because
- * the advice that follows such a note is "copy what the app renders" and an
- * author who takes it masks the regression permanently:
- *
- * - The {@link isSequenceBuilding} characters are excluded outright. The fold
- *   keeps ZWJ so a trans flag (U+1F3F3 VS16 ZWJ U+26A7 VS16, ONE glyph) cannot
- *   equal the two separate glyphs of a broken sequence — and then this note
- *   described that very difference as invisible noise, so the module's own
- *   flagship counter-example came with advice to defeat it.
- * - A {@link DIRECTIONAL} difference is reported as what it is: those draw no
- *   glyph, but they move the ones around them, so "invisible" would be just as
- *   false a story about a `53-` that was asked to equal `5-3`.
- * - A {@link RENDERING_AFFECTING} difference likewise. The soft hyphen and
- *   U+180E are on the same DELIBERATELY NOT FOLDED list, and for the same
- *   reason as ZWNJ — they change the glyphs — so the note names them as a
- *   rendering difference instead of quietly grouping them with the ZWSPs.
- *
- * Returns undefined when the strings are equal, or differ visibly — the quoted
- * strings already say that.
+ * A note that names the difference between two strings that look equal. Its
+ * gate is wider than {@link foldText}: the comparator holds once every inert
+ * default-ignorable is removed. It must not call a real rendering difference
+ * invisible, so it excludes {@link isSequenceBuilding} characters and gives
+ * {@link DIRECTIONAL} and {@link RENDERING_AFFECTING} their own leads.
  */
 export function confusableTextNote(actual: string, expected: string): string | undefined {
   if (actual === expected) return undefined;
-  // Ignorables ONLY. Lowercasing or NFKC-folding here would call a plain case
-  // difference — or a compatibility variant like "ﬁ" vs "fi" — "invisible",
-  // which is false: those differ in characters the eye reads perfectly well.
-  // The literal comparators already fold both, so a pair differing only that
-  // way passes and never reaches this note; a regex comparison is
-  // case-sensitive by design and must not be told otherwise.
+  // Remove the ignorables, then ask the comparator rather than raw `===`,
+  // because only the comparator that failed folds both sides. With `===` any
+  // difference the fold absorbs, such as an NBSP, suppressed the note.
   const visible = withoutInertIgnorables;
-  if (visible(actual) !== visible(expected)) return undefined;
+  const bareActual = visible(actual);
+  const bareExpected = visible(expected);
+  // Raw equality sits beside the folded test so the gate only widens: a pair
+  // that folds to nothing is equal as strings, while `equalsCI` refuses it.
+  if (bareActual !== bareExpected && !equalsCI(bareActual, bareExpected)) return undefined;
   return ignorableDifferenceNote(actual, expected, equalsCI);
 }
 
@@ -697,26 +461,15 @@ const codepointName = (ch: string): string =>
   `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
 
 /**
- * How many code points of each string the dump below prints. At about seven
- * characters each, this keeps the two dumps to roughly 700 characters however
- * long the strings are.
+ * How many code points {@link codepoints} prints of each string. At about seven
+ * characters each, this holds the two dumps to roughly 700 characters.
  */
 const CODEPOINT_DUMP_MAX = 48;
 
 /**
- * A string as code points, windowed on the character that blocked the match
- * when printing it whole would not fit {@link CODEPOINT_DUMP_MAX}.
- *
- * Under `equals` the dump is bounded by the expectation the author wrote.
- * Under `contains` it is bounded by the ELEMENT, and `assertText` prefers the
- * hoisted `subtreeText` — a container's whole aggregated text — so one failed
- * check carried an entire card at seven characters per code point: a 1,412
- * character label made an 11,532 character failure reason, of which the author
- * needed about forty code points.
- *
- * The window is centred on the blocker rather than on the start, because where
- * in the label the intruder sits is the thing the dump is for; an elision
- * marker says the rest was cut.
+ * A string as code points, windowed on the blocking character when the whole
+ * string does not fit {@link CODEPOINT_DUMP_MAX}. `assertText` prefers the
+ * hoisted `subtreeText`, so one card produced an 11,532 character reason.
  */
 function codepoints(text: string, blocking: readonly string[] = []): string {
   const chars = Array.from(text);
@@ -733,16 +486,10 @@ function codepoints(text: string, blocking: readonly string[] = []): string {
 }
 
 /**
- * The shared body of the two confusable notes: pick the lead that tells the
- * TRUTH about which characters differ, then print both strings as code points.
- *
- * Reordering is the more dramatic claim, so it wins a mixed difference; the
- * rendering-affecting lead then covers everything left that is not simply
- * invisible. Only the last branch is allowed to say "invisible".
- *
- * `holds` is the comparator whose failure is being explained — it is what
- * {@link blockingIgnorables} asks to tell the characters responsible for the
- * miss from the ones that merely share the string with them.
+ * The shared body of the two confusable notes: pick the lead that names the
+ * characters that differ, then print both strings as code points. A reorder
+ * wins a mixed difference, and only the last branch says "invisible". `holds`
+ * is the comparator {@link blockingIgnorables} asks.
  */
 function ignorableDifferenceNote(
   actual: string,
@@ -766,28 +513,9 @@ function ignorableDifferenceNote(
 }
 
 /**
- * The substring analog of {@link confusableTextNote}: did the needle fail to
- * appear in the label ONLY because of inert ignorable characters?
- *
- * {@link confusableTextNote}'s gate is whole-string, so under `contains` it
- * could only ever fire when the needle spanned the entire label — the note was
- * absent on the proper-substring shape, which is what `contains` is for, and
- * `contains` is the default comparator most misses arrive through. This is the
- * same gap {@link compatibilityVariantIn} exists to close for the other note.
- *
- * The test is the comparator's own: strip the inert ignorables from both sides
- * and ask `includesCI` again. If the needle is in the label THEN and was not
- * before, those characters are exactly what stopped it — no other difference
- * can be responsible, because everything else the fold handles already matched.
- * That holds for the SET; {@link blockingIgnorables} is what narrows it to the
- * members, since under a substring test the label also carries ignorables the
- * needle never reached.
- *
- * Both strings are printed as they stand, not as the matched region: mapping an
- * index back through the fold is not sound (case and whitespace collapse change
- * lengths). Only their LENGTH is bounded, and centred on the blocking character
- * so the author still sees where in the label the intruder sits — see
- * {@link codepoints}.
+ * The substring form of {@link confusableTextNote}: the needle failed to appear
+ * in the label only because of inert ignorable characters. Both strings print
+ * whole, not as the matched region, because an index cannot map back.
  */
 export function confusableTextNoteIn(haystack: string, needle: string): string | undefined {
   if (includesCI(haystack, needle)) return undefined;
@@ -798,14 +526,9 @@ export function confusableTextNoteIn(haystack: string, needle: string): string |
 }
 
 /**
- * Screen text, made safe to embed in a failure message.
- *
- * A label carrying an unbalanced U+202E survives the fold (it is exactly the
- * kind of character the fold must not remove) and, quoted verbatim, reverses
- * every character printed after it — turning the rest of the report into
- * mojibake. Spell the directional controls out instead, which both defuses them
- * and names the culprit; everything else is left alone so the quoted text stays
- * copy-pasteable, which is the whole point of quoting it.
+ * Screen text, made safe for a failure message. A label with an unbalanced
+ * U+202E survives the fold, and quoted as it stands it reverses every character
+ * after it. Replace the directional controls with names, and keep the rest.
  */
 export function quoteScreenText(text: string): string {
   return text.replace(
@@ -815,40 +538,16 @@ export function quoteScreenText(text: string): string {
 }
 
 /**
- * A note naming the invisible characters IN one string, without comparing it to
- * anything.
- *
- * The counterpart {@link confusableTextNote} cannot serve a `matches` step: its
- * "expected" is a regular expression, so comparing its code points against a
- * label describes a mismatch that has nothing to do with the pattern that
- * failed. But `matches` is also exempt from folding — a pattern carries its own
- * precision — which left the one comparison mode the fold cannot rescue with no
- * explanation at all, just two identical-looking strings and nothing else.
- *
- * So say what is in the TEXT and stop there: an author whose `^Hubert
- * Gancarczyk$` misses a label wrapped in U+202A/U+202C needs to know the
- * wrapper is there, and can then decide what their pattern should do about it.
- *
- * `pattern` is what keeps that RELEVANT. A label can carry an ignorable and
- * have missed for a reason that has nothing to do with it, and a note is not
- * free — it names a cause. Re-testing the pattern against the text with the
- * ignorables removed answers the question the note is implicitly claiming to
- * have answered: only when that would have matched are they the obstacle.
- * Omitting it reports every ignorable in the text, unfiltered.
- *
- * Returns undefined when the text holds no such character, or when removing
- * them would not have rescued the pattern.
+ * A note that names the invisible characters in one string, with no comparison.
+ * {@link confusableTextNote} cannot serve a `matches` step, because its
+ * "expected" is a regex, and `matches` is exempt from the fold. `pattern` keeps
+ * the note relevant: it re-tests the pattern with the ignorables removed.
  */
 export function ignorableTextNote(text: string, pattern?: string): string | undefined {
   const found = inertIgnorables(text);
   if (found.length === 0) return undefined;
-  // Only speak when these characters are WHY the pattern missed. Without this
-  // the note fired on any `matches` failure whose text merely carried one, so
-  // on an app that wraps every display name (the 367-pair census) every failing
-  // assertion against a name ended in "that the pattern must account for" —
-  // pointing at the wrapper when the pattern was looking for another name
-  // entirely. Removing them and re-testing answers the question directly: if
-  // the pattern still does not match, they are not the obstacle.
+  // Speak only when these characters are the reason the pattern missed. A
+  // re-test with them removed answers that directly.
   if (pattern !== undefined) {
     let stripped: RegExp;
     try {
@@ -861,10 +560,8 @@ export function ignorableTextNote(text: string, pattern?: string): string | unde
   const names = [...new Set(found)]
     .map((ch) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
     .join(" ");
-  // Same three-way lead as {@link confusableTextNote}, and for the same reason:
-  // its siblings on the DELIBERATELY NOT FOLDED list must not be described as
-  // noise. Calling a U+202E "invisible" is the false story that note refuses to
-  // tell about the very same code point.
+  // The same three-way lead as {@link confusableTextNote}: a U+202E is not
+  // invisible.
   const lead = found.some((ch) => DIRECTIONAL.test(ch))
     ? `the text carries directional formatting [${names}], which draws nothing itself but ` +
       `REORDERS the characters around it, so the screen does not read the way the text does`
@@ -880,26 +577,13 @@ export function ignorableTextNote(text: string, pattern?: string): string | unde
 }
 
 /**
- * Why a text SELECTOR matched nothing, when something on screen nearly did.
- *
- * `candidates` is the node set the caller has already narrowed to what its
- * selector could otherwise have accepted (every field but the text, plus
- * whatever visibility rule the condition implies) — searching wider lets an
- * unrelated look-alike hijack the note and sends the author down a dead end.
- *
- * Both halves mirror how a `text` selector actually matches: label and value
- * ONLY (never the hoisted `subtreeText`, which no selector compares against),
- * and a SUBSTRING test, so the question is "does this label contain a
- * near-miss of the needle", not "is it one".
- *
- * The invisible-character question is asked FIRST, matching the precedence the
- * `text` expectation's failure already uses: it names exact code points, so it
- * is the more precise answer whenever both apply.
- *
- * Shared because a bare "no element matched" is the failure this whole area
- * exists to eliminate, and it is reachable from the tool surface as readily as
- * from the flow runner — explaining it in one and not the other just moves the
- * unexplainable miss.
+ * Why a text selector matched nothing, when something on screen nearly did.
+ * `candidates` is the node set the caller already narrowed to what its selector
+ * could otherwise accept, because a wider search lets a look-alike claim the
+ * note. Both halves - {@link confusableTextNoteIn} and
+ * {@link compatibilityVariantIn} - use the label and the value only, and a
+ * substring test. The invisible question comes first, because it names exact
+ * code points.
  */
 export function selectorMissNote(
   candidates: readonly DescribeNode[],
@@ -921,9 +605,8 @@ export function selectorMissNote(
 }
 
 /**
- * The sentence naming a compatibility variant the screen renders. Shared so the
- * two places that reach it — a selector that matched nothing, and a `text`
- * expectation that missed on a located element — cannot drift apart.
+ * The sentence that names a compatibility variant the screen renders. Shared by
+ * its two callers, so a selector miss and a `text` miss cannot drift apart.
  */
 export function typographicVariantNote(shown: string): string {
   return (
@@ -937,46 +620,26 @@ export function typographicVariantNote(shown: string): string {
 
 export function includesCI(haystack: string | undefined, needle: string): boolean {
   if (!haystack) return false;
-  // Both sides UNTRIMMED, so a boundary space in the needle survives to
-  // constrain the match. See {@link foldLoose}. Folded as a PAIR so the
-  // conditional LTR strip is decided once and a needle copied out of the label
-  // stays a substring of it — see {@link foldPairLoose}.
+  // Both sides untrimmed, so a boundary space still constrains the match (see
+  // {@link foldLoose}), and folded as a pair so a needle copied from the label
+  // stays a substring of it (see {@link foldPairLoose}).
   const [hay, ndl] = foldPairLoose(haystack, needle);
-  // A needle that folds away to LITERALLY nothing is not a weak constraint, it
-  // is NO constraint: `"".includes()` is true of every string, so the check
-  // could never fail — the defect class the `hidden` evidence gate exists to
-  // prevent, arriving through a selector field instead.
-  //
-  // Only an INVISIBLE-only needle does that, and only since this fold existed:
-  // a `role` of a lone ZWSP (U+200B) folds to "" and matches every element on
-  // screen, where
-  // at base it was a plain lowercased `String.includes` and matched none.
-  // `text` is already covered by hasVisibleText's refinement; `role` and
-  // `identifier` are not, so refuse it here, where every literal comparison
-  // passes through.
-  //
-  // A WHITESPACE-only needle is a different thing and is deliberately allowed:
-  // it folds loosely to " ", which is not empty, so it constrains the match to
-  // labels containing a space exactly as it did at base. Testing the trimmed
-  // fold here instead rejected it, and `contains: " "` then failed against a
-  // label plainly showing one — a message that reads as a tool bug.
+  // A needle that folds to nothing is no constraint at all: `"".includes()` is
+  // true of every string, so the check can never fail. Only an invisible-only
+  // needle does that - a `role` of a lone ZWSP folds to "". A whitespace-only
+  // needle is allowed: it folds loosely to " ", which still constrains it.
   if (ndl === "") return false;
   return hay.includes(ndl);
 }
 
 export function equalsCI(actual: string | undefined, expected: string): boolean {
-  // Folded as a PAIR, for the same reason includesCI is: the two comparators
-  // must agree about which controls survive, or a string could equal a label
-  // that does not contain it. See {@link foldPairLoose}.
+  // Folded as a pair so the two comparators agree - see {@link foldPairLoose}.
   const [got, wanted] = foldPairLoose(actual ?? "", expected);
-  // Same rule as includesCI: an expectation that folds away to LITERALLY
-  // nothing is NO constraint, not an exact one (a bidi pair, a ZWSP that
-  // survived a copy-paste), so it must not equal every textless element.
+  // Same rule as includesCI: an expectation that folds to nothing is no
+  // constraint, so it must not equal a textless element.
   if (wanted === "") return false;
-  // Nothing survives the TRIM, so the expectation is pure whitespace — odd,
-  // but a real constraint, and one the trim would otherwise erase into the
-  // case above. Compare untrimmed, which is the only reading that can still
-  // tell a label of one space from an element with no text at all.
+  // Nothing survives the trim, so the expectation is pure whitespace - odd, but
+  // a real constraint. Compare untrimmed to keep a label of one space distinct.
   if (wanted.trim() === "") return got === wanted;
   return got.trim() === wanted.trim();
 }
@@ -989,26 +652,14 @@ export function equalsCI(actual: string | undefined, expected: string): boolean 
  * capture an unrelated id (`save` must not match `autosave-banner`), which is
  * how a loose flow selector's identifier-first pass could hijack a tap.
  *
- * Deliberately NOT folded either, on both sides. Folding is justified by what
- * the eye cannot distinguish, and an identifier is never rendered: it is a
- * machine key, copied from source rather than read off a screen, and two keys
- * that differ by a character are two keys. Folding collapsed them — it made
- * `row:id/save ` match `row:id/save`, merging distinct testids — while buying
- * nothing, since there is no screen for an invisible to have crept in from.
+ * Not folded either, on both sides. A fold is justified by what the eye cannot
+ * distinguish, and an identifier is never rendered. It is a machine key, so a
+ * fold made `row:id/save ` match `row:id/save` and merged distinct testids.
  */
 export function identifierMatches(actual: string | undefined, needle: string): boolean {
   if (!actual) return false;
-  // A needle that is blank however it is spelled names no element, so it must
-  // not match one. Narrower than it looks, and worth stating exactly: the
-  // `!actual` line above already rejects a node with no identifier, and an
-  // ordinary resource-id does not end in `:id/`, so neither an empty-vs-empty
-  // comparison nor a bare-suffix match is reachable past it. What the gate
-  // genuinely rules out is a node whose identifier is ITSELF blank — one
-  // spelled `" "` matching a `" "` needle — plus an empty needle against an id
-  // that really does end in `:id/`, which `z.string().min(1)` also blocks.
-  //
-  // The GATE folds, so every spelling of blank is caught at once; the
-  // comparison below deliberately does not, an identifier being a machine key.
+  // A needle that is blank in any spelling names no element. Only the gate
+  // folds, so it catches every spelling of blank at once.
   if (foldText(needle) === "") return false;
   const key = actual.toLowerCase();
   const wanted = needle.toLowerCase();
@@ -1020,7 +671,7 @@ export const uiTreeMatchInternals = {
   createRegExp(pattern: string): RegExp {
     return new RegExp(pattern);
   },
-  /** How many folds are cached right now — for pinning {@link FOLD_CACHE_MAX}. */
+  /** How many folds are cached right now - for pinning {@link FOLD_CACHE_MAX}. */
   foldCacheSize(): number {
     return foldCache.size;
   },
@@ -1558,27 +1209,17 @@ function fullConsumptionRegex(selector: Selector): RegExp | undefined {
     : uiTreeMatchInternals.createRegExp(`^(?:${selector.textMatches})$`);
 }
 
-// Exactness is GRADED, not a yes/no count, and the grades exist because
-// folding erased the distinction ranking depends on.
-//
-// The scale: a field scores LITERAL when the node's text equals the selector's
-// once case is folded and nothing else, FOLDED when it takes the full fold to
-// make them equal, and nothing when it merely contains the needle. Folding is
-// what LOCATES an element the author could not otherwise name (a currency NBSP,
-// a bidi-wrapped handle), but between two elements that both match, the one
-// spelled exactly as asked for is the better answer — and on a real screen the
-// other one is usually a decorative sibling.
-//
-// Ungraded, this retargeted taps. An icon-only 28x28 button labelled
-// "Sign<NBSP>in" used to score 0 here and could never outrank the 420x70 button
-// whose text is literally "Sign in"; once both scored 1 they tied, the tiebreak
-// is "smallest frame wins", and `tap: { text: "Sign in" }` started firing the
-// icon — silently, with the step still reporting pass.
+// Exactness is graded, not a yes/no count, because the fold erased the
+// distinction that ranking depends on. A field scores LITERAL when the node's
+// text equals the selector's under a case fold alone, FOLDED when the full fold
+// is needed, and nothing when it merely contains the needle. Ungraded, an
+// icon-only 28x28 button labelled "Sign<NBSP>in" tied with the real 420x70 one,
+// and the smallest-frame tiebreak then chose the icon.
 const EXACT_LITERAL = 2;
 const EXACT_FOLDED = 1;
 
-// The comparison equalsCI made before it folded: case-insensitive and nothing
-// more. Only ranking asks this — a MATCH is still decided by the folded form.
+// The comparison equalsCI made before the fold: case-insensitive and nothing
+// more. Only ranking asks this - the folded form still decides a match.
 function literalEqualsCI(actual: string | undefined, expected: string): boolean {
   return (actual ?? "").toLowerCase() === expected.toLowerCase();
 }
@@ -1589,8 +1230,7 @@ function exactTextScore(actual: string | undefined, expected: string): number {
 }
 
 // How exactly this node matches the selector's provided fields, summed over
-// them: full-string hits rather than substring / partial ones, and among those,
-// literal spellings ahead of ones only the fold equates.
+// them: full-string hits first, then literal spellings ahead of folded ones.
 function exactFieldCount(
   node: DescribeNode,
   selector: Selector,
@@ -1608,7 +1248,7 @@ function exactFieldCount(
     (regexMatchesNonEmpty(fullTextRegex, node.label) ||
       regexMatchesNonEmpty(fullTextRegex, node.value))
   ) {
-    // A regex is never folded — consuming the whole string IS the literal grade.
+    // A regex is never folded, so full consumption is the literal grade.
     count += EXACT_LITERAL;
   }
   if (selector.identifier !== undefined) {

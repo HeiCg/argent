@@ -42,12 +42,10 @@ const zodSchema = z
     if (named === (params.flow_path !== undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        // Same split as flow-execute, and for the same reason: a call with NO
-        // source at all may well have named the flow under a key zod stripped,
-        // so that is the one that needs the alias spelled out. This tool is the
-        // documented pre-flight — the skill has agents call it BEFORE the run —
-        // so withholding the hint here means the tool they hit first is the one
-        // that stays quiet about the spelling it accepts.
+        // Same split as flow-execute: a call with NO source may have named the
+        // flow under a key zod stripped, so that one needs the alias spelled
+        // out. This tool is the documented pre-flight, so it is the first place
+        // an agent can learn the spelling.
         message: named
           ? "Pass exactly one flow source: name or flow_path."
           : "Pass exactly one flow source: name or flow_path. flow-read-prerequisite needs the " +

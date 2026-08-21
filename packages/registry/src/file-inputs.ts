@@ -140,9 +140,7 @@ export interface FileInputSpec {
    *
    * A LIST when the alternate source has more than one accepted spelling (e.g.
    * flow-execute's `name` and its `flow_name` alias): any one of them being set
-   * is a dual-source call, so any one of them must suppress the resolution.
-   * Naming only the canonical spelling would send the alias down the resolve
-   * path and diagnose it by whether an unused file happens to exist.
+   * makes the call dual-source, so any one must suppress the resolution.
    */
   unwrapWhenSet?: string | string[];
 }

@@ -56,9 +56,8 @@ export interface CreateToolsClientOptions {
  * rejected) when it sent one; a pre-signal server leaves them undefined.
  *
  * `issues` is the schema-validation issue list a 400 carries beside its prose
- * message — the machine-readable half, which a caller needs to map a rejected
- * field back to the flag its user typed. Undefined for every other failure, and
- * for a server too old to send it.
+ * message, which a caller needs to map a rejected field back to the flag its
+ * user typed. Undefined for every other failure, and for an older server.
  */
 export class ToolInvocationError extends Error {
   readonly errorCode?: string;

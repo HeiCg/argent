@@ -59,20 +59,16 @@ export async function invokeSubTool<T = unknown>(
  * A nested schema rejection re-rendered against the args the CALLER wrote, or
  * undefined when `err` is not one.
  *
- * Every dispatcher injects the device key into the args it forwards —
- * run-sequence merges `udid` into each step, and the flow runner's
- * `bindDeviceArgs` strips the recorded device keys and re-injects the resolved
- * one. The registry can only describe what it was handed, so its message closes
- * with "You sent: `xx`, `y`, `udid`", naming a key the author never typed
- * (indeed CANNOT have typed: the recorder strips it so flows stay portable)
- * beside the misspelling that list exists to expose. Here is the only place
- * both the dispatched args and the authored ones are in scope.
+ * Every dispatcher injects the device key into the args it forwards, and the
+ * registry can only describe what it was handed — so its "You sent:" list names
+ * a key the author never typed beside the misspelling that list exists to
+ * expose. Here is the only place both the dispatched and the authored args are
+ * in scope.
  *
  * Re-parsing rather than short-circuiting the dispatch: the invoke is what
- * emits `toolInvoked`/`toolFailed` for the step, which the telemetry listener
- * and the event log both subscribe to. Validating up front instead would make
- * an invalid step invisible to both — the very signal a schema miss is now
- * classified to produce. This runs on a failure path only.
+ * emits `toolInvoked`/`toolFailed`, so validating up front would make an
+ * invalid step invisible to telemetry and the event log. This runs on a failure
+ * path only.
  */
 export function describeNestedParamError(
   registry: Registry,
@@ -86,13 +82,11 @@ export function describeNestedParamError(
   if (!zodSchema) return undefined;
   // `?? {}` mirrors what the registry parsed, so the issues are the same ones.
   const parsed = zodSchema.safeParse(dispatchedArgs ?? {});
-  // Not defensive — this fires on a live path, and dropping it throws.
-  // `InvalidToolInputError` DEFAULTS to `TOOL_INPUT_INVALID`, so a tool that
-  // rejects its own arguments from inside `execute` passes the gate above while
-  // its args parsed perfectly well: `resolveFlowName` is exactly that throw,
-  // reached by a flow `- tool: flow-execute` step whose `name` is the empty
-  // string. There is no zod error to re-render then, and the tool's own message
-  // is already the right one — so leave it alone.
+  // Not defensive — this fires on a live path. `InvalidToolInputError` DEFAULTS
+  // to `TOOL_INPUT_INVALID`, so a tool that rejects its own arguments from
+  // inside `execute` passes the gate above with args that parsed fine (a
+  // `tool: flow-execute` step whose `name` is the empty string). There is no
+  // zod error to re-render then, and the tool's own message is already right.
   if (parsed.success) return undefined;
   return `Invalid params for tool "${toolId}": ${describeParamIssues(parsed.error, authoredArgs)}`;
 }
