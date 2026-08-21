@@ -26,14 +26,15 @@
  *
  * One entry can also own a file: {@link ReapedSession.keptAt} names a log the
  * teardown left on disk for the breadcrumb to advertise, and this store unlinks
- * it when an event that answers everywhere that entry did keeps a file of its
- * own. Anything short of that leaves the file to the day-old sweep. That makes the
+ * it when an event that answers ONLY where that entry did — the shape that proves
+ * one device — keeps a file of its own. Anything wider leaves the file to the
+ * day-old sweep. That makes the
  * module a lifetime owner, not only a message board, so read that field's doc
  * before setting it — an artifact the user is meant to keep does not go there.
  */
 
 import * as fs from "node:fs";
-import { CHROMIUM_ID_PREFIX } from "./device-info";
+import { classifyDevice } from "./device-info";
 
 /** Which session kind was reaped; scopes the key so two kinds can't collide. */
 export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
@@ -165,8 +166,11 @@ export function recordReapedSession(
     // later, unrelated read.
     //
     // Its file goes with it only when this event keeps one of its own — nothing
-    // else records that path — which bounds an UNREAD crash loop to one kept
-    // file per device, since every crash in such a loop keeps one. A teardown
+    // else records that path — which bounds an UNREAD crash loop that keeps
+    // reconnecting the same way to one kept file per device, since every crash
+    // in such a loop keeps one. A loop that alternates the connect id with the
+    // logicalDeviceId a mismatch told it to use is incomparable at every second
+    // step, and those files wait for the sweep instead. A teardown
     // keeps none and reclaims none: it would be spending an unread crash log to
     // save a file the sweep collects anyway. Nor is a loop whose notes ARE read
     // bounded here — the read spends the event, leaving nothing to supersede —
@@ -215,13 +219,14 @@ export function takeReapedSession(
  * On a `teardown` the disposer cannot see who triggered it — a blueprint's
  * `dispose()` is called by `Registry._teardown`, with no caller — so the message
  * names the family rather than asserting one member. `stop-all-simulator-servers`
- * is the common one and is named first, but it is not the only one, and which
- * other member is even reachable depends on the platform: `stop-simulator-server`
- * cascades into the debugger through `ChromiumCdp` (its documented behaviour),
- * while `react-profiler-start`, which disposes the debugger and the profiler
- * session whenever it finds either in a state it cannot reuse, is gated to
- * Apple and Android and can never have touched a Chromium session. A
- * `runtime-death` narrows that: the app itself went away, so
+ * is the common one and is named first; whether a SECOND member can be named at
+ * all depends on what was reaped. Only a debugger session has one: on Chromium
+ * `stop-simulator-server` cascades into it through `ChromiumCdp` (its documented
+ * behaviour), and on Apple or Android `react-profiler-start` disposes the
+ * debugger and the profiler session whenever it finds either in a state it
+ * cannot reuse. That tool declares no chromium and no vega platform, and nothing
+ * depends on a screen recording or a native trace at all, so those keep the
+ * unnarrowed family. A `runtime-death` narrows that: the app itself went away, so
  * pointing at the teardown family would send an agent hunting for a tool call,
  * or another agent, that never touched this session. It does NOT name the culprit either —
  * the disposer sees a dropped socket, which a crash, a force-quit and a
@@ -234,7 +239,7 @@ export function takeReapedSession(
  */
 export function describeReapedSession(entry: ReapedSession, what: string): string {
   const secondsAgo = Math.max(0, Math.round((Date.now() - entry.atMs) / 1000));
-  const isChromium = entry.deviceId.startsWith(CHROMIUM_ID_PREFIX);
+  const isChromium = classifyDevice(entry.deviceId) === "chromium";
   const runtimeDeath = isChromium
     ? `its debugger connection dropped instead of being closed — the page went away (a crash, ` +
       `a tab or window closing, the browser quitting) or its CDP endpoint stopped being ` +
@@ -242,14 +247,24 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
     : `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
       `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
       `a device transport dropped) — which ends the session the same way a teardown does.`;
+  // Only a debugger session has a second tool that can have disposed it, and
+  // which one depends on the platform. Nothing depends on a screen recording or
+  // a native trace, so naming either tool to those would send an agent after a
+  // call that could not have reached them.
+  const otherReacher =
+    entry.kind !== "js-runtime-debugger"
+      ? undefined
+      : isChromium
+        ? `a stop-simulator-server, which cascades into the debugger through the Chromium CDP ` +
+          `session it reaps`
+        : classifyDevice(entry.deviceId) === "vega"
+          ? undefined
+          : `a react-profiler-start clearing a debugger session it could not reuse`;
   const why =
     entry.cause === "runtime-death"
       ? runtimeDeath
       : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
-        (isChromium
-          ? `a stop-simulator-server, which cascades into the debugger through the Chromium CDP ` +
-            `session it reaps`
-          : `a react-profiler-start clearing a debugger session it could not reuse`) +
+        (otherReacher ?? `another teardown that reaches the same services`) +
         `. One tool-server serves every agent using this argent install, so this may have been ` +
         `another agent rather than your own call.`;
   // The salvage clause was written when the file was there; a breadcrumb nobody

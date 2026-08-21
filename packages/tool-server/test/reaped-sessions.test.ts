@@ -151,6 +151,36 @@ describe("the reaped-session key", () => {
     expect(message).not.toContain("react-profiler-start");
   });
 
+  it("names no second tool for a kind nothing else can have reached", () => {
+    // `describeReapedSession` serves all three kinds. A screen recording and a
+    // native trace have no dependents and are not among the URNs
+    // `react-profiler-start` disposes, so naming that tool to their owner sends
+    // an agent after a call that cannot have taken their capture.
+    recordReapedSession("screen-recording", UDID, "");
+
+    const message = describeReapedSession(
+      takeReapedSession("screen-recording", UDID)!,
+      "screen recording"
+    );
+    expect(message).toContain("stop-all-simulator-servers");
+    expect(message).toContain("another teardown that reaches the same services");
+    expect(message).not.toContain("react-profiler-start");
+    expect(message).not.toContain("a stop-simulator-server");
+  });
+
+  it("names no react-profiler-start to a Vega debugger session", () => {
+    // The debugger runs on Vega — DEBUGGER_TOOL_CAPABILITY declares vega.vvd —
+    // while RN_ONLY_TOOL_CAPABILITY, which gates react-profiler-start, does not.
+    recordReapedSession("js-runtime-debugger", "amazon-4a27df03c9777152", "");
+
+    const message = describeReapedSession(
+      takeReapedSession("js-runtime-debugger", "amazon-4a27df03c9777152")!,
+      "JS-runtime debugger session"
+    );
+    expect(message).toContain("another teardown that reaches the same services");
+    expect(message).not.toContain("react-profiler-start");
+  });
+
   it("spends every copy of one teardown, whichever id the reader knows", () => {
     // A reader asks with one id and gets the whole event: a copy left behind
     // under the other would explain some later, unrelated answer, and would
