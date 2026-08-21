@@ -286,6 +286,21 @@ const FULL_HIERARCHY_FIELDS = [
  * stop matching), the cap carries generous headroom rather than hugging the
  * deepest observed measurement.
  *
+ * Verdict note, before the cost one: this is not only a size knob — it moves
+ * `text` verdicts. A `text` check scoped to an identified container reads that
+ * container's hoisted `subtreeText`, so admitting deeper descendants changes
+ * the string being compared. `contains` rides that out (whatever matched before
+ * is still a substring), but `equals` flips from pass to FAIL: the additive
+ * fallback in `evaluateCondition` (`ui-tree-match.ts`) also tries the node's OWN
+ * `label`/`value`, and a testID'd wrapper has neither, so nothing catches it.
+ * Measured on the fixture the hoist case below uses — a `card` container over
+ * labels at depths 20/30/41/55 — `assert: { text: { in: { id: card }, equals:
+ * "row-30 row-20" } }` passed at a device cap of 40 and fails at 100, because
+ * the container now hoists "row-55 row-41 row-30 row-20". A flow written
+ * against the old cap that pinned an `equals` on a CONTAINER has to move it to
+ * the leaf that carries the text, or relax to `contains`; a check already
+ * aimed at a leaf is unaffected, since nothing hoists into it.
+ *
  * Cost note: the tree itself is never returned — `selectorToFrame` /
  * `evaluateCondition` consume it — so no tool RESULT carries it. Text derived
  * from it does reach the agent though, and one such path grows with this cap:

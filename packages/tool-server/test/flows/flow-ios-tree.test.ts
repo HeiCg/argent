@@ -7,12 +7,13 @@ import {
   type Registry,
 } from "@argent/registry";
 import type { NativeDevtoolsApi } from "../../src/blueprints/native-devtools";
+import type { DescribeNode } from "../../src/tools/describe/contract";
 import {
   MAX_LISTED_APPS,
   MAX_TARGETING_REASON_CHARS,
   queryFullHierarchyTree,
 } from "../../src/tools/flows/flow-ios-tree";
-import { selectorToFrame } from "../../src/utils/ui-tree-match";
+import { evaluateCondition, selectorToFrame } from "../../src/utils/ui-tree-match";
 import { resolveNativeTargetApp } from "../../src/utils/native-target-app";
 import {
   __resetDeviceSetCacheForTesting,
@@ -144,13 +145,13 @@ describe("flow iOS full-hierarchy source", () => {
     expect(selectorToFrame(truncated, { identifier: "deep-button" })).toBeUndefined();
   });
 
-  it("hoists more text into an identified container as the cap admits more of it", async () => {
-    // The cost side of the raised cap, pinned because FLOW_TREE_MAX_DEPTH's
-    // docblock now claims it. `assertReason`'s `text` arm quotes the matched
-    // node's hoisted subtreeText verbatim into a failing assert/await reason
-    // and nothing truncates it downstream, so descendants that a depth-40 read
-    // dropped now show up in what the agent reads.
-    const LABEL_AT = [20, 30, 41, 55]; // two inside the old cap, two past it
+  // A `card` container buried under RN wrappers, over labels at four depths —
+  // two inside the old cap of 40, two past it. Hoisting stops at the next
+  // identified node, so everything below lands in the card's `subtreeText`.
+  // Shared by the two cases below: what the cap admits changes both what a
+  // failing reason QUOTES and what a `text` check COMPARES.
+  const hoistCardUnder = async (deviceCap: number): Promise<DescribeNode> => {
+    const LABEL_AT = [20, 30, 41, 55];
     const buildRaw = (maxDepth: number) => {
       let node: Record<string, unknown> | null = null;
       for (let depth = 60; depth >= 1; depth--) {
@@ -167,8 +168,6 @@ describe("flow iOS full-hierarchy source", () => {
         }
         node = {
           className: "RNSScreenView",
-          // The container the selector names — hoisting stops at the next
-          // identified node, so everything below lands in ITS subtreeText.
           ...(depth === 2 ? { identifier: "card" } : {}),
           frame: { x: 0, y: 0, width: 400, height: 800 },
           windowFrame: { x: 0, y: 0, width: 400, height: 800 },
@@ -186,38 +185,42 @@ describe("flow iOS full-hierarchy source", () => {
         ],
       };
     };
-    const apiWithCap = (deviceCap: number) =>
-      ({
-        listConnectedBundleIds: () => ["com.example.app"],
-        getAppState: vi.fn(async (bundleId: string) => ({
-          bundleId,
-          applicationState: "active",
-          foregroundActiveSceneCount: 1,
-          foregroundInactiveSceneCount: 0,
-          backgroundSceneCount: 0,
-          unattachedSceneCount: 0,
-          isFrontmostCandidate: true,
-        })),
-        queryViewHierarchy: vi.fn(async (_bundleId, _method, params) =>
-          buildRaw(Math.min((params as { maxDepth: number }).maxDepth, deviceCap))
-        ),
-      }) as unknown as NativeDevtoolsApi;
+    const api = {
+      listConnectedBundleIds: () => ["com.example.app"],
+      getAppState: vi.fn(async (bundleId: string) => ({
+        bundleId,
+        applicationState: "active",
+        foregroundActiveSceneCount: 1,
+        foregroundInactiveSceneCount: 0,
+        backgroundSceneCount: 0,
+        unattachedSceneCount: 0,
+        isFrontmostCandidate: true,
+      })),
+      queryViewHierarchy: vi.fn(async (_bundleId, _method, params) =>
+        buildRaw(Math.min((params as { maxDepth: number }).maxDepth, deviceCap))
+      ),
+    } as unknown as NativeDevtoolsApi;
 
-    const hoistedUnder = async (deviceCap: number): Promise<string> => {
-      const { tree } = await queryFullHierarchyTree(registryFor(apiWithCap(deviceCap)), DEVICE);
-      const find = (node: typeof tree): string => {
-        if (node.identifier === "card") return node.subtreeText ?? "";
-        for (const child of node.children ?? []) {
-          const inner = find(child);
-          if (inner) return inner;
-        }
-        return "";
-      };
-      return find(tree);
+    const { tree } = await queryFullHierarchyTree(registryFor(api), DEVICE);
+    const find = (node: DescribeNode): DescribeNode | undefined => {
+      if (node.identifier === "card") return node;
+      for (const child of node.children ?? []) {
+        const inner = find(child);
+        if (inner) return inner;
+      }
+      return undefined;
     };
+    return find(tree)!;
+  };
 
-    const shallow = await hoistedUnder(40);
-    const deep = await hoistedUnder(100);
+  it("hoists more text into an identified container as the cap admits more of it", async () => {
+    // The cost side of the raised cap, pinned because FLOW_TREE_MAX_DEPTH's
+    // docblock now claims it. `assertReason`'s `text` arm quotes the matched
+    // node's hoisted subtreeText verbatim into a failing assert/await reason
+    // and nothing truncates it downstream, so descendants that a depth-40 read
+    // dropped now show up in what the agent reads.
+    const shallow = (await hoistCardUnder(40)).subtreeText ?? "";
+    const deep = (await hoistCardUnder(100)).subtreeText ?? "";
 
     expect(shallow).toContain("row-20-content");
     expect(shallow).not.toContain("row-41-content");
@@ -225,6 +228,26 @@ describe("flow iOS full-hierarchy source", () => {
     expect(deep).toContain("row-55-content");
     // The quoted string genuinely grows — this is what reaches the agent.
     expect(deep.length).toBeGreaterThan(shallow.length);
+  });
+
+  it("moves an `equals` text verdict against a container as the cap admits more of it", async () => {
+    // The raised cap is not only a size trade: the same YAML step changes
+    // ANSWER. `assert: { text: { in: { id: card }, equals: <hoist> } }` reads
+    // the container's subtreeText, which now carries the deeper rows too, and
+    // `evaluateCondition`'s additive fallback only also tries the node's own
+    // label/value — a testID'd wrapper has neither, so nothing catches it.
+    const shallow = await hoistCardUnder(40);
+    const deep = await hoistCardUnder(100);
+    const asRecordedAt40 = shallow.subtreeText ?? "";
+
+    expect(asRecordedAt40).toBe("row-30-content row-20-content");
+    expect(deep.subtreeText).toBe("row-55-content row-41-content row-30-content row-20-content");
+
+    // `equals` flips pass → fail; `contains` rides it out, which is the remedy
+    // the docblock offers alongside retargeting at the leaf.
+    expect(evaluateCondition("text", asRecordedAt40, [shallow], "equals")).toBe(true);
+    expect(evaluateCondition("text", asRecordedAt40, [deep], "equals")).toBe(false);
+    expect(evaluateCondition("text", asRecordedAt40, [deep], "contains")).toBe(true);
   });
 
   it("keeps native-target FailureError metadata while replacing impossible advice", async () => {
