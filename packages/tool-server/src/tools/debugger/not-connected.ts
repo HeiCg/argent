@@ -152,8 +152,8 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "works again if the app comes back on it. " +
     "A detail carrying 'Chromium CDP on port' means the app answered and has no drivable " +
     "page (none at all, or only devtools:// ones): it is still running and only lacks a " +
-    "window, so ask the user to bring one back. Ignore that detail's closing question " +
-    "about --remote-debugging-port — the port answered, so the flag was passed. " +
+    "window, so ask the user to bring one back. If the detail closes by asking about " +
+    "--remote-debugging-port, ignore it — the port answered, so the flag was passed. " +
     "A detail carrying neither is the CDP socket failing after discovery had already " +
     "answered, so " +
     "the app was up moments ago. It may have lost only the page it was driving, which the " +

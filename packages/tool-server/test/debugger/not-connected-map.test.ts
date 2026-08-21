@@ -419,7 +419,7 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       guidance,
       "means the app answered and has no drivable page (none at all, or only devtools:// " +
         "ones): it is still running and only lacks a window, so ask the user to bring one " +
-        "back. Ignore that detail's closing question about --remote-debugging-port — the " +
+        "back. If the detail closes by asking about --remote-debugging-port, ignore it — the " +
         "port answered, so the flag was passed."
     );
     // The third state cdp_unreachable covers, and no relaunch is its remedy. Only
