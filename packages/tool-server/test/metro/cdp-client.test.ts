@@ -302,7 +302,11 @@ describe("CDPClient", () => {
       // so a loosened "unless it looks slow" at one end or a "retry until it answers"
       // at the other undoes the reason the guidance is in the message at all.
       pinsOnce(message, "Do not retry in a loop. If it is paused");
-      pinsOnce(message, "then reconnect and retry once.");
+      pinsOnce(
+        message,
+        "then reconnect with the chromium-cdp-<port> id boot-device returns — a relaunch on a " +
+          "new port is a new id — and retry once."
+      );
       // Derived from restart-app's own capability, not restated: the same tag on the
       // skill rows is built this way, and a literal here drifts off it silently.
       const restartApp = createRestartAppTool({} as unknown as Registry).capability;

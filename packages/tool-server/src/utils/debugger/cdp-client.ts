@@ -263,7 +263,8 @@ export class CDPClient {
               `iOS / Android / Vega; on Chromium it is refused, so the user has to quit it, then ` +
               `boot-device with electronAppPath relaunches an Electron app and a browser has ` +
               `to be started again with --remote-debugging-port — launch-app cannot start ` +
-              `one), then reconnect and retry once.`,
+              `one), then reconnect with the chromium-cdp-<port> id boot-device returns — a ` +
+              `relaunch on a new port is a new id — and retry once.`,
             {
               error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
               failure_stage: "debugger_cdp_send",

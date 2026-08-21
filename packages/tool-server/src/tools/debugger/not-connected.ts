@@ -102,9 +102,8 @@ export function classifyNotConnected(err: unknown): DebuggerNotConnectedReason |
  * How both Chromium overrides close. Hoisted because the id and the port are the
  * same fact: `parseChromiumCdpPort` reads the port straight out of the id with no
  * check against discovery, while `getCandidateChromiumPorts` probes only 9222, the
- * env list and the ports `boot-device` opened. So a browser the user brings back
- * elsewhere is invisible to `list-devices` and still perfectly drivable — which is
- * the way out of the one state that would otherwise be a dead end.
+ * env list and the ports `boot-device` opened — so a browser brought back elsewhere
+ * is invisible to `list-devices` and still perfectly drivable.
  */
 const CHROMIUM_REREAD_ID =
   "After a relaunch, re-read the chromium-cdp-<port> id from boot-device / " +
@@ -150,12 +149,13 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "port with --remote-debugging-port. " +
     CHROMIUM_REREAD_ID,
   runtime_unresponsive:
-    "The app accepted the debugger connection but did not answer within the " +
-    "timeout — it is likely frozen, or paused at a breakpoint. Do not retry in a loop " +
-    "(each attempt waits out the full timeout). Check the app first. If it is paused, " +
-    "ask the user to resume it — nothing here can, and quitting throws the debug " +
-    "session away. If it is hung, ask the user to quit it, then relaunch once it has " +
-    "exited: the app is up either way, so relaunching it yourself never recovers it — " +
+    "The app accepted the debugger connection but did not answer within the timeout: " +
+    "the renderer is frozen. A renderer paused at a breakpoint does not reach this " +
+    "reason — it answers the enables and the viewport read, so the session resolves and " +
+    "debugger-status reports connected. Do not retry in a loop " +
+    "(each attempt waits out the full timeout). Ask the user to quit the app, then " +
+    "relaunch once it has " +
+    "exited: the app is up, so relaunching it yourself never recovers it — " +
     "boot-device only starts an app and never stops one, so the relaunch either " +
     "duplicates the app or fails, and launch-app cannot start a Chromium app. " +
     "list-devices cannot confirm the exit either: a wedged app keeps its page target " +

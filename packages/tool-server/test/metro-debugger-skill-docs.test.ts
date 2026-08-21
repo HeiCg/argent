@@ -153,8 +153,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     expect(restartApp?.chromium).toBeUndefined();
 
     // Every surface that states the recovery, against every fact it rests on. A
-    // fact held on one surface and not its twin is how each of these drifted, so
-    // they are checked as a matrix rather than one assertion per fix. Markdown
+    // fact held on one surface and not its twin is the shape these drift in, so
+    // they are checked as a cross product rather than one assertion each. Markdown
     // backticks the identifiers and a tool description cannot, and a clause that
     // opens a sentence on one surface sits mid-sentence on another, so match on
     // text with the backticks stripped and the case folded.

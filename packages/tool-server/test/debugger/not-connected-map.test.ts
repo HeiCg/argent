@@ -107,32 +107,29 @@ describe("guidance platform-correctness", () => {
     for (const r of [metro, chromium]) {
       expect(r.guidance).toMatch(/Do not retry in a loop/);
       expect(r.guidance).toMatch(/timeout/);
-      // Both name the paused state, so both owe it a branch. Nothing here can
-      // resume a runtime - there is no Debugger.resume anywhere in the tool-server -
-      // and the other instruction on offer ends the session the user is sitting in,
-      // on Metro through restart-app exactly as on Chromium through the quit.
-      expect(r.guidance).toContain("paused at a breakpoint");
-      pinsOnce(r.guidance, "If it is paused, ask the user to resume it — nothing here can");
     }
-    // Through each remedy, on both. The shared needle above stops at "nothing here
-    // can", which leaves the reason the quit/restart is refused - and the retry
-    // discipline on a path that waits out a full timeout per attempt - free to be
-    // rewritten into the advice each override exists to prevent.
+    // Metro owes the paused state a branch: nothing here can resume a runtime -
+    // there is no Debugger.resume anywhere in the tool-server - and the other
+    // instruction on offer ends the session the user is sitting in. The needle
+    // reaches its remedy and its rationale; stopping at "nothing here can" leaves
+    // both free to be rewritten into the advice the branch exists to prevent.
+    expect(metro.guidance).toContain("paused at a breakpoint");
     pinsOnce(metro.guidance, "nothing here can, and restarting throws the debug session away");
     pinsOnce(metro.guidance, "If it is hung, restart it (restart-app), then retry once.");
 
-    // A renderer paused at a breakpoint times out exactly like a wedged one, and
-    // the two states take opposite actions: quitting a paused app throws the
-    // user's debug session away. Naming the state without branching it leaves
-    // the quit as the only instruction on offer for both.
-    expect(chromium.guidance).toContain("breakpoint");
-    pinsOnce(chromium.guidance, "Check the app first.");
-    pinsOnce(
-      chromium.guidance,
-      "If it is paused, ask the user to resume it — nothing here can, and quitting throws " +
-        "the debug session away"
+    // Chromium cannot be in that state here, so it gets the opposite treatment.
+    // Measured on Chrome 151 with a page stopped at a breakpoint (Debugger.paused
+    // observed): Page/DOM/Runtime/Accessibility.enable, setFocusEmulationEnabled
+    // and readViewport's Runtime.evaluate all answer in under a millisecond, so
+    // createChromiumServer resolves and debugger-status reports connected. Only a
+    // frozen renderer times out those sends, and a branch for a state that never
+    // arrives costs a wasted round-trip through the user.
+    pinsOnce(chromium.guidance, "the renderer is frozen");
+    pinsOnce(chromium.guidance, "A renderer paused at a breakpoint does not reach this reason");
+    expect(chromium.guidance, "no resume ask on the one state that is never paused").not.toContain(
+      "ask the user to resume"
     );
-    pinsOnce(chromium.guidance, "If it is hung, ask the user to quit it");
+    pinsOnce(chromium.guidance, "Ask the user to quit the app, then relaunch once it has exited");
     // Why absence is not the exit, in the state this reason is actually in: the
     // socket opened, so the app has a page target and stays listed while it hangs.
     // The cdp_unreachable twin states the opposite mechanism for the opposite
@@ -349,15 +346,14 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     expect(guidance, "names a shape no cdp_unreachable detail can carry").not.toContain(
       "browser socket"
     );
-    // Naming the state without a way out is what left this branch a dead end:
-    // there is no port-inspecting tool, so the actor is the user, and the id is
-    // gone either way.
+    // A named state with no way out is a dead end: there is no port-inspecting
+    // tool, so the actor is the user, and the id is gone either way.
     pinsOnce(
       guidance,
       "In that second case pass on what the detail says, since nothing here can free a port"
     );
-    // Its remedy. Naming a squatted port without one leaves the reader holding a
-    // diagnosis and no action, which is how this arm read as a dead end.
+    // Its remedy. A squatted port named without one leaves the reader holding a
+    // diagnosis and no action.
     pinsOnce(guidance, "for an Electron app boot-device takes a free port and returns the new id");
     pinsOnce(guidance, "a browser has to come back on a port nothing else holds");
     // This arm is reached only when nothing answered the port at all, so the quit
