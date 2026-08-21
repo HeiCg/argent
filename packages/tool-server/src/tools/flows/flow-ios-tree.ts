@@ -635,14 +635,24 @@ export const MAX_LISTED_APPS = 2;
  * {@link terminateCommand}); that is one path, fixed by the config, and the
  * ceiling is measured without it.
  *
- * The ceiling is set by the ambiguous branch, which carries two full per-app
- * `applicationState` diagnostics: that IS the diagnosis on the one branch where
- * the agent has to choose which app to clear, so it is not the thing to cut.
- * What matters is that the figure no longer moves with the connected-app count
- * — see {@link MAX_LISTED_APPS}. Every other branch has well over 100 chars of
- * slack.
+ * "Every reason" includes the ones {@link unreadableHierarchyReason} raises for
+ * a flow whose launched app is no longer connected — the arm the RECORDER takes
+ * (`captureTapSelector` passes the launched id on every captured tap, and a
+ * failing `await:` does the same once per poll), so leaving it outside the guard
+ * would exempt the most-repeated reason of the set.
+ *
+ * That arm sets the ceiling, at 775 chars for `unregistered` against a 37-char
+ * bundle id: `buildAppStateMessage`'s shared wording plus one flow-specific
+ * sentence. `unregistered` is the state whose remedies close into a ring, so the
+ * message has to hand the reader the test that breaks it, and the wording is
+ * shared with `native-devtools-status` and iOS `describe` rather than written to
+ * this budget. Next is the ambiguous branch at 702, which carries two full
+ * per-app `applicationState` diagnostics: that IS the diagnosis on the one
+ * branch where the agent has to choose which app to clear, so it is not the
+ * thing to cut either. What matters is that neither figure moves with the
+ * connected-app count — see {@link MAX_LISTED_APPS}.
  */
-export const MAX_TARGETING_REASON_CHARS = 760;
+export const MAX_TARGETING_REASON_CHARS = 800;
 
 /** Keep the first {@link MAX_LISTED_APPS} entries, and say how many were not shown. */
 function cappedList(bundleIds: readonly string[]): string {

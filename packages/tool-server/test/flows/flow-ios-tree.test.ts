@@ -450,6 +450,13 @@ describe("flow iOS full-hierarchy source", () => {
   // than a hand-picked pair — the previous version looped over the two SHORTEST
   // branches and so passed while the ambiguous one ran to 1444 characters.
   // Bundle ids are deliberately long, to keep the budget honest for real ones.
+  //
+  // `launched` covers the arm auto-targeting never reaches: a flow that ran a
+  // `launch:` step passes that id down, and with nothing connected the read
+  // fails through `unreadableHierarchyReason` instead. Omitting those entries
+  // exempted the LONGEST reason of the set (`unregistered`, 775 chars) from a
+  // guard that says "every" — and the arm the recorder takes, since
+  // `captureTapSelector` passes the launched id on every captured tap.
   const LONG_ID = "com.example.enterprise.mobile.client";
   const rpcTimeout = (): never => {
     throw new FailureError("ViewInspector RPC timed out: Application.getState", {
@@ -471,8 +478,25 @@ describe("flow iOS full-hierarchy source", () => {
   });
   const notFrontmost = { applicationState: "background", isFrontmostCandidate: false } as const;
 
-  const targetingFailures = (appCount: number): { branch: string; api: NativeDevtoolsApi }[] => {
+  const targetingFailures = (
+    appCount: number
+  ): { branch: string; api: NativeDevtoolsApi; launched?: string }[] => {
     const ids = Array.from({ length: appCount }, (_, i) => `${LONG_ID}${i}`);
+    // Nothing connected plus a launched id — the one shape that reaches
+    // `unreadableHierarchyReason`, one entry per state it diagnoses.
+    const launchGone = (
+      state: string,
+      bundleId = ids[0],
+      label = state
+    ): { branch: string; api: NativeDevtoolsApi; launched?: string } => ({
+      branch: `launched app not connected: ${label}`,
+      api: {
+        listConnectedBundleIds: () => [] as string[],
+        appConnectionState: vi.fn(async () => state),
+        getAppState: vi.fn(),
+      } as unknown as NativeDevtoolsApi,
+      launched: bundleId,
+    });
     return [
       {
         branch: "ambiguous connected set",
@@ -536,6 +560,13 @@ describe("flow iOS full-hierarchy source", () => {
           queryViewHierarchy: vi.fn(async () => ({ error: "serializer busy" })),
         } as unknown as NativeDevtoolsApi,
       },
+      ...["not_running", "stale_process", "connecting", "indeterminate", "unregistered"].map(
+        (state) => launchGone(state)
+      ),
+      // The two arms that answer before the state switch: a connection that
+      // arrived mid-read, and a bundle the dylib is not relied on to load into.
+      launchGone("connected"),
+      launchGone("not_running", "com.apple.Preferences", "non-injectable bundle"),
     ];
   };
 
@@ -544,8 +575,10 @@ describe("flow iOS full-hierarchy source", () => {
     // while the read is failing, and a failing `await` repeats it once per
     // poll. A reason that ran to ~900 characters made the recorder the
     // session's largest context consumer for a single stuck screen.
-    for (const { branch, api } of targetingFailures(2)) {
-      const error = await queryFullHierarchyTree(registryFor(api), DEVICE).catch((err) => err);
+    for (const { branch, api, launched } of targetingFailures(2)) {
+      const error = await queryFullHierarchyTree(registryFor(api), DEVICE, launched).catch(
+        (err) => err
+      );
       expect(`${branch}: ${error.message.length}`).toBe(
         `${branch}: ${Math.min(error.message.length, MAX_TARGETING_REASON_CHARS)}`
       );
