@@ -7,7 +7,7 @@ import {
 } from "@argent/registry";
 import { classifyNotConnected, buildNotConnected } from "../../src/tools/debugger/not-connected";
 import { pinsOnce } from "../helpers/pins";
-import { discoverPrimaryPage } from "../../src/chromium-server/cdp-session";
+import { discoverPrimaryPage, ensureCdpReachable } from "../../src/chromium-server/cdp-session";
 import { getCandidateChromiumPorts } from "../../src/utils/chromium-discovery";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -113,7 +113,12 @@ describe("guidance platform-correctness", () => {
       expect(r.guidance).toContain("paused at a breakpoint");
       pinsOnce(r.guidance, "If it is paused, ask the user to resume it — nothing here can");
     }
-    expect(metro.guidance).toContain("restart-app");
+    // Through each remedy, on both. The shared needle above stops at "nothing here
+    // can", which leaves the reason the quit/restart is refused - and the retry
+    // discipline on a path that waits out a full timeout per attempt - free to be
+    // rewritten into the advice each override exists to prevent.
+    pinsOnce(metro.guidance, "nothing here can, and restarting throws the debug session away");
+    pinsOnce(metro.guidance, "If it is hung, restart it (restart-app), then retry once.");
 
     // A renderer paused at a breakpoint times out exactly like a wedged one, and
     // the two states take opposite actions: quitting a paused app throws the
@@ -127,6 +132,15 @@ describe("guidance platform-correctness", () => {
         "the debug session away"
     );
     pinsOnce(chromium.guidance, "If it is hung, ask the user to quit it");
+    // Why absence is not the exit, in the state this reason is actually in: the
+    // socket opened, so the app has a page target and stays listed while it hangs.
+    // The cdp_unreachable twin states the opposite mechanism for the opposite
+    // reason, and a shared needle would let either one take the other's.
+    pinsOnce(
+      chromium.guidance,
+      "a wedged app keeps its page target and stays listed, so when the entry goes it means " +
+        "the window was closed just as readily as that the app exited"
+    );
   });
 
   it("gives both Chromium overrides the whole recovery, not half of it each", () => {
@@ -153,10 +167,16 @@ describe("guidance platform-correctness", () => {
       // (one knows the app is up, the other is reached only when nothing answers),
       // and a relaunch-first rewrite keeps every needle above while telling the
       // reader to relaunch into a running app. Positions are what rule that out.
-      const quitAt = guidance.indexOf("quit");
-      expect(quitAt, `${reason}: names a quit`).toBeGreaterThan(-1);
+      // Anchored on the instruction, not the word: "quit" also appears in the
+      // paused branch's "quitting throws the debug session away", which sits early
+      // enough to satisfy an ordering check while the actual quit moves after the
+      // relaunch. Case-folded for the same reason - a sentence-initial "Relaunch"
+      // is invisible to a case-sensitive search.
+      const lower = guidance.toLowerCase();
+      const quitAt = lower.indexOf("ask the user to quit");
+      expect(quitAt, `${reason}: names the quit as an instruction`).toBeGreaterThan(-1);
       expect(quitAt, `${reason}: quit must precede any relaunch`).toBeLessThan(
-        guidance.indexOf("relaunch")
+        lower.indexOf("relaunch")
       );
       // The one retry-discipline clause each override has. Its twin's 'do not retry
       // in a loop' is pinned above; without this one 'retry once' can become
@@ -164,7 +184,11 @@ describe("guidance platform-correctness", () => {
       pinsOnce(guidance, "Then retry once.", reason);
       // The way out of the one state list-devices cannot show: the id carries the
       // port, so a browser the user names is drivable whether or not it is listed.
-      pinsOnce(guidance, "use chromium-cdp-<that port> directly", reason);
+      pinsOnce(
+        guidance,
+        "if the user names the port, use chromium-cdp-<that port> directly",
+        reason
+      );
       // Both dead ends, on both overrides. restart-app is refused by the gate and
       // launch-app is a documented no-op that reports launched: true, so either
       // one named as an action manufactures a guaranteed second failure - and a
@@ -182,11 +206,6 @@ describe("guidance platform-correctness", () => {
       // still up - and is false in the direction the reader needs, so the claim is
       // pinned together with the mechanism that makes it actionable.
       pinsOnce(guidance, "list-devices cannot confirm the exit", reason);
-      pinsOnce(
-        guidance,
-        "it drops an app that is up with no drivable page exactly as it drops an exited one",
-        reason
-      );
       // The rule needs its consequence: without it a reader takes 'never recovers
       // it' for 'has no effect' and tries the relaunch anyway.
       pinsOnce(guidance, "the relaunch either duplicates the app or fails", reason);
@@ -222,7 +241,11 @@ describe("guidance platform-correctness", () => {
         coded(FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE),
         { port: 8081, device_id: "chromium-cdp-9222" }
       );
-      for (const port of getCandidateChromiumPorts()) pinsOnce(guidance, String(port));
+      pinsOnce(
+        guidance,
+        `only probes ${getCandidateChromiumPorts().join(", ")}, ARGENT_CHROMIUM_PORTS and the ` +
+          "ports boot-device opened"
+      );
       // And the env var it names is the one discovery reads - the name is prose on
       // both sides, so nothing but a round trip through the function pins it.
       process.env.ARGENT_CHROMIUM_PORTS = "9333";
@@ -314,7 +337,8 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // never arrives, so the list has to track the reachable sites, not the file's.
     pinsOnce(
       guidance,
-      "a non-2xx status, or a body that is not JSON — means something else holds that port"
+      "a non-2xx status, or a body that is not JSON — means the port answered with something " +
+        "that is not a CDP endpoint"
     );
     expect(guidance, "names a shape no cdp_unreachable detail can carry").not.toContain(
       "browser socket"
@@ -323,18 +347,27 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // there is no port-inspecting tool, so the actor is the user, and the id is
     // gone either way.
     pinsOnce(guidance, "pass on what the detail says, since nothing here can free a port");
-    // Its remedy, which deletes without a red otherwise - and is the step the
-    // create-flow row was missing.
+    // Its remedy. Naming a squatted port without one leaves the reader holding a
+    // diagnosis and no action, which is how this arm read as a dead end.
     pinsOnce(guidance, "for an Electron app boot-device takes a free port and returns the new id");
     pinsOnce(guidance, "a browser has to come back on a port nothing else holds");
     // This arm is reached only when nothing answered the port at all, so the quit
     // is a precaution rather than a diagnosis - and it still has to come first,
     // since the one case it guards against is an app that is somehow still up.
     pinsOnce(guidance, "ask the user to quit the app if it is still up, then relaunch");
+    // The precondition on the one tool named after the quit. Without it the clause
+    // reads as an alternative to the quit rather than the step that follows it.
+    pinsOnce(guidance, "Once it is gone, launch-app cannot start a Chromium app");
     // How the relaunch fails is per-app - a duplicate, an early exit behind
     // Electron's single-instance lock, a refusal behind Chrome's - so the
     // guidance states the rule and failure-scenarios.md carries the shapes.
     pinsOnce(guidance, "relaunching a live app never recovers it");
+    // Why absence is not the exit here: nothing answered, so probePort drops this
+    // app exactly as it drops a live one with no drivable page.
+    pinsOnce(
+      guidance,
+      "it drops an app that is up with no drivable page exactly as it drops an exited one"
+    );
 
     // Only the devtools:// variant names a window - the asymmetry
     // failure-scenarios.md's "App unreachable" row states, so a window hint added
@@ -343,5 +376,45 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // filed as #880.)
     expect(devtoolsOnly.message).toMatch(/window/i);
     expect(noPages.message, "the no-targets message gained a window hint").not.toMatch(/window/i);
+  });
+
+  it("keys the nothing-answered arm on wording only an unreachable port produces", async () => {
+    // Four of the five codes that fall through to that arm are thrown after
+    // discovery already got two responses out of the port - CDPClient.connect
+    // dials a target ensureCdpReachable and discoverPrimaryPage both answered for,
+    // and NOT_CONNECTED / CONNECTION_CLOSED come off an established socket. So the
+    // arm cannot claim the port is dead; it names the one detail that means it,
+    // and that detail has to come from the throw site rather than be restated.
+    const server = http.createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    const err = await ensureCdpReachable(port).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err, "expected a closed port to reject").toBeDefined();
+    expect(String(getFailureSignal(err)?.error_code)).toBe(FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE);
+    const cue = "could not connect";
+    expect((err as Error).message, "the arm's discriminator must be in the detail").toContain(cue);
+    // And no other detail behind this reason carries it, or the arm sends a live
+    // app to the quit: discoverPrimaryPage answers on a port that responded.
+    const answering = await detailFor([{ id: "1", type: "worker", title: "w", url: "x" }]);
+    expect(answering.message, "a detail from an answering port must not match").not.toContain(cue);
+
+    const { guidance } = buildNotConnected(
+      "cdp_unreachable",
+      coded(FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE),
+      { port: 8081, device_id: "chromium-cdp-9222" }
+    );
+    pinsOnce(
+      guidance,
+      `only a detail saying the discovery GET ${cue} means nothing answered the port`
+    );
+    // The other wording's remedy is the window, not the quit - the app answered
+    // discovery moments earlier, so a relaunch there is the duplicate this whole
+    // override routes around.
+    pinsOnce(guidance, "the page it was driving is what went, which the window remedy above fixes");
   });
 });

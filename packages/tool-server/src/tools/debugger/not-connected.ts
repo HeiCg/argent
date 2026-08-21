@@ -123,14 +123,19 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
   cdp_unreachable:
     "No page could be driven: the CDP endpoint was unreachable, answered as something " +
     "other than CDP, or is up with no usable page — detail says which. A reply that is " +
-    "not CDP — a non-2xx status, or a body that is not JSON — means something else " +
-    "holds that port: pass on what the detail " +
+    "not CDP — a non-2xx status, or a body that is not JSON — means the port answered " +
+    "with something that is not a CDP endpoint, usually another service holding it: " +
+    "pass on what the detail " +
     "says, since nothing here can free a port. That id is dead either way — for an " +
     "Electron app boot-device takes a free port and returns the new id, and a browser " +
     "has to come back on a port nothing else holds. A detail about " +
     "page targets (none at all, or only devtools:// ones) means the app is still " +
-    "running and only lacks a window: ask the user to bring one back. Otherwise " +
-    "nothing is answering that port at all: ask the user to quit the app if it is " +
+    "running and only lacks a window: ask the user to bring one back. Otherwise the CDP " +
+    "connection itself failed, and only a detail saying the discovery GET could not " +
+    "connect means nothing answered the port: any other wording means discovery answered " +
+    "first, so the app was up moments ago and the page it was driving is what went, which " +
+    "the window remedy above fixes. When nothing answered at all: " +
+    "ask the user to quit the app if it is " +
     "still up, then relaunch once it has exited — list-devices cannot " +
     "confirm the exit, since it drops an app that is up with no drivable page exactly " +
     "as it drops an exited one, " +
@@ -150,8 +155,9 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "exited: the app is up either way, so relaunching it yourself never recovers it — " +
     "boot-device only starts an app and never stops one, so the relaunch either " +
     "duplicates the app or fails, and launch-app cannot start a Chromium app. " +
-    "list-devices cannot confirm the exit, since it drops an app that is up with no " +
-    "drivable page exactly as it drops an exited one. " +
+    "list-devices cannot confirm the exit either: a wedged app keeps its page target " +
+    "and stays listed, so when the entry goes it means the window was closed just as " +
+    "readily as that the app exited. " +
     "boot-device with electronAppPath relaunches an Electron app, and " +
     "for a browser, ask the user to start the browser again on the same CDP port " +
     "with --remote-debugging-port. " +

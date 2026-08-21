@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
 import { FAILURE_CODES, getFailureSignal, type Registry } from "@argent/registry";
 import { createRestartAppTool } from "../../src/tools/restart-app";
+import { pinsOnce } from "../helpers/pins";
 import { platformTag } from "../helpers/platform-tag";
 import { CDPClient } from "../../src/utils/debugger/cdp-client";
 
@@ -287,15 +288,34 @@ describe("CDPClient", () => {
       // debugger-status answers "connected" and the branching guidance is never
       // emitted. Both branches, through to their remedies - the message names the
       // paused state, and quitting there throws the user's session away.
-      expect((err as Error).message).toContain(
+      const message = (err as Error).message;
+      pinsOnce(
+        message,
         "If it is paused, ask the user to resume it — quitting throws the debug session away."
       );
+      // The claim the two branches above rest on: a post-connect hang leaves the
+      // socket OPEN, so debugger-status reports "connected" and never reaches the
+      // branching guidance. Invert it and this message reads as the redundant copy
+      // of a guidance string the reader will in fact never see.
+      pinsOnce(message, 'debugger-status can still report "connected" in this state');
+      // Both ends of the retry discipline. Each attempt waits out this full timeout,
+      // so a loosened "unless it looks slow" at one end or a "retry until it answers"
+      // at the other undoes the reason the guidance is in the message at all.
+      pinsOnce(message, "Do not retry in a loop. If it is paused");
+      pinsOnce(message, "then reconnect and retry once.");
       // Derived from restart-app's own capability, not restated: the same tag on the
       // skill rows is built this way, and a literal here drifts off it silently.
       const restartApp = createRestartAppTool({} as unknown as Registry).capability;
-      expect((err as Error).message).toContain(
-        `restart-app on ${platformTag(restartApp)}; on Chromium it is refused, so the user has to quit it first`
+      pinsOnce(
+        message,
+        `restart-app on ${platformTag(restartApp)}; on Chromium it is refused, so the user has to quit it,`
       );
+      // The Chromium relaunch this message has to carry itself, for the same reason:
+      // the guidance that spells it out is unreachable while the socket is open, and
+      // launch-app is the tool an agent reaches for when restart-app is refused.
+      pinsOnce(message, "boot-device with electronAppPath relaunches an Electron app");
+      pinsOnce(message, "a browser has to be started again with --remote-debugging-port");
+      pinsOnce(message, "launch-app cannot start one");
       expect(getFailureSignal(err)).toMatchObject({
         error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
         failure_stage: "debugger_cdp_send",

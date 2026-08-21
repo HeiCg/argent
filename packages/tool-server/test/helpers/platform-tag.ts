@@ -1,3 +1,4 @@
+import { expect } from "vitest";
 import type { ToolCapability } from "@argent/registry";
 
 /**
@@ -24,4 +25,17 @@ export function platformTag(capability: ToolCapability | undefined): string {
   })
     .map(([, word]) => word)
     .join(" / ");
+}
+
+/**
+ * Assert the parenthesised `tag` is the whole platform claim `cell` makes. A
+ * containment check reads the paren and nothing after it, so a platform
+ * appended outside — "(iOS / Android / Vega) and Chromium" — documents support
+ * the capability gate rejects while every tag assertion stays green.
+ */
+export function expectTagEndsTheClaim(cell: string, tag: string, label: string) {
+  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  expect(cell, `${label}: (${tag}) must end the platform claim`).toMatch(
+    new RegExp(`\\(${escaped}\\)(?=\\s*(?:[.,;:|)]|$))`)
+  );
 }

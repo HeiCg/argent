@@ -260,8 +260,10 @@ export class CDPClient {
               `debugger-status can still report "connected" in this state (the socket is open). ` +
               `Do not retry in a loop. If it is paused, ask the user to resume it — quitting throws ` +
               `the debug session away. If it is hung, get the app restarted (restart-app on ` +
-              `iOS / Android / Vega; on Chromium it is refused, so the user has to quit it ` +
-              `first), then reconnect and retry once.`,
+              `iOS / Android / Vega; on Chromium it is refused, so the user has to quit it, then ` +
+              `boot-device with electronAppPath relaunches an Electron app and a browser has ` +
+              `to be started again with --remote-debugging-port — launch-app cannot start ` +
+              `one), then reconnect and retry once.`,
             {
               error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
               failure_stage: "debugger_cdp_send",

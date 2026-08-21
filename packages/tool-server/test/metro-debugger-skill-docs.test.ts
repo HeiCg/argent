@@ -21,8 +21,8 @@ import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-compon
 import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status";
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { listDevicesTool } from "../src/tools/devices/list-devices";
-import { pinsOnce } from "./helpers/pins";
-import { PLATFORM_WORDS, platformTag } from "./helpers/platform-tag";
+import { pinsOnce, pinsUnqualified } from "./helpers/pins";
+import { PLATFORM_WORDS, expectTagEndsTheClaim, platformTag } from "./helpers/platform-tag";
 import { getCandidateChromiumPorts } from "../src/utils/chromium-discovery";
 
 const SKILLS = path.resolve(__dirname, "../../skills/skills");
@@ -94,7 +94,7 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
     // Both copies are derived: the Reload & recovery row delegates Chromium readers
     // to the Quick Reference one, which carries its own tag.
     for (const label of ["`restart-app`", "Relaunch app on device"]) {
-      expect(row(DEBUGGER_SKILL, label), label).toContain(`(${platformTag(restartApp)})`);
+      expectTagEndsTheClaim(row(DEBUGGER_SKILL, label), platformTag(restartApp), label);
     }
     // appleRemote is deliberately absent from PLATFORM_WORDS: it is remote-iOS
     // over sim-remote (registry types.ts), which these rows fold into "iOS"
@@ -127,7 +127,7 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
       const prose = row(DEBUGGER_SKILL, proseLabel);
       const quick = row(DEBUGGER_SKILL, quickLabel);
       expect(proseTag(prose), tool.id).toBe(tag);
-      expect(quick, tool.id).toContain(`(${tag})`);
+      expectTagEndsTheClaim(quick, tag, tool.id);
       // Neither comparison reaches past the tag it reads: proseTag takes the first
       // platform run it finds, and the Quick Reference paren is a substring, so
       // "on iOS / Android, and on Chromium" satisfies both. These rows are RN-only
@@ -153,6 +153,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // opens a sentence on one surface sits mid-sentence on another, so match on
     // text with the backticks stripped and the case folded.
     const norm = (text: string | undefined) => (text ?? "").replace(/`/g, "").toLowerCase();
+    const deviceInteract = readFileSync(DEVICE_INTERACT_SKILL, "utf8");
     const listsRestartApp: [string, string | undefined][] = [
       [DEBUGGER_SKILL, row(DEBUGGER_SKILL, "Relaunch app on device")],
       [FAILURE_SCENARIOS, row(FAILURE_SCENARIOS, "**Was connected, then tool fails**")],
@@ -166,10 +167,13 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       [CREATE_FLOW_RECOVERY, row(CREATE_FLOW_RECOVERY, "Chromium")],
     ];
 
-    const facts: [string, string, [string, string | undefined][]][] = [
+    // A fact flagged `carveable` is one whose needle ends where an exception
+    // would be attached ("not supported on chromium" -> "... except for an app you
+    // booted yourself"), which a containment check cannot see.
+    const facts: [string, string, [string, string | undefined][], boolean?][] = [
       // The tool is offered on these surfaces, so the refusal is what the reader
       // needs first; everything else is advice they only reach after it.
-      ["restart-app is refused", "not supported on chromium", listsRestartApp],
+      ["restart-app is refused", "not supported on chromium", listsRestartApp, true],
       // Why the recovery is manual at all.
       ["boot-device cannot stop it", "only starts an app and never stops one", listsRestartApp],
       // One contiguous clause, not two substrings that happen to both be present:
@@ -208,22 +212,45 @@ describe("the Chromium recovery names a relaunch that exists", () => {
         `list-devices only probes ${defaultChromiumPorts().join(", ")}, argent_chromium_ports and the ports boot-device opened`,
         statesRecovery,
       ],
-      // The precondition on the whole sequence. These surfaces are read without
-      // the guidance in hand - restart-app's description is alwaysLoad and the
-      // device-interact table is open for tap/describe work - so a flat
-      // quit-then-relaunch here is what asks the user to quit a healthy app. Both
-      // halves in one needle: page targets prove the app is up, a non-CDP reply
-      // proves only that the port is taken, and a needle covering one of them is
-      // satisfied by a sentence that gets the other backwards.
+      // The escape from the one state discovery cannot show. The clause above
+      // enumerates the probe set and stops there on its own, which is the dead end
+      // a user who relaunched on any other port lands in - and these surfaces are
+      // read without a debugger-status guidance in hand.
       [
-        "the relaunch needs a gone app and a free port",
-        "a failure naming page targets means it is still up, and a reply that is not " +
-          "cdp means something else holds the port",
+        "the id drives without discovery",
+        "if the user names the port, use chromium-cdp-<that port> directly",
+        statesRecovery,
+      ],
+      // The precondition on the whole sequence, in the three claims it rests on.
+      // These surfaces are read without the guidance - restart-app's description is
+      // alwaysLoad and the device-interact table is open for tap/describe work - so
+      // a flat quit-then-relaunch here is what asks the user to quit a healthy app.
+      // The guard and its evidence are separate needles because a needle covering
+      // only the evidence is satisfied by a sentence that inverts the guard.
+      [
+        "the relaunch needs a gone app",
+        "only when the app is gone: a failure naming page targets means it is still up",
+        listsRestartApp,
+      ],
+      // What a non-CDP reply does and does not prove. It is not evidence the app is
+      // up - the app may well be gone and something else may have taken the port.
+      [
+        "a squatted port is not a live app",
+        "a reply that is not cdp means the port answered with something that is not a cdp endpoint",
+        listsRestartApp,
+      ],
+      // And why the port matters for one half of the recovery only: bootElectronApp
+      // takes its own free port unless electronPort pins one, so gating the Electron
+      // remedy on the old port being free strands a reader whose port was taken.
+      [
+        "only the browser needs that port back",
+        "an electron relaunch takes a fresh port, a browser needs one nothing else holds",
         listsRestartApp,
       ],
     ];
-    for (const [what, needle, surfaces] of facts) {
-      for (const [where, text] of surfaces) pinsOnce(norm(text), needle, `${where} (${what})`);
+    for (const [what, needle, surfaces, carveable] of facts) {
+      const pin = carveable ? pinsUnqualified : pinsOnce;
+      for (const [where, text] of surfaces) pin(norm(text), needle, `${where} (${what})`);
     }
 
     // Same split as the App-unreachable row, in the surface a flow author reads:
@@ -234,7 +261,11 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     pinsOnce(createFlow, "ask for one back, since a relaunch recovers nothing there");
     // Its third state. Without an arm of its own it falls into the row's
     // "Otherwise", which is the quit-and-relaunch the guidance routes it away from.
-    pinsOnce(createFlow, "something else holds the port, which no relaunch on that port clears");
+    pinsOnce(
+      createFlow,
+      "the port answered with something that is not a CDP endpoint, usually another service " +
+        "holding it, which no relaunch on that port clears"
+    );
 
     // The Reload & recovery row fences restart-app off and delegates rather than
     // restating the recovery, so the pointer is the only thing carrying it - and
@@ -245,10 +276,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // The shared-surface summary a Chromium reader meets before any table.
     // gesture-swipe declares no chromium and the gate rejects it there, so the
     // verb in this list has to be the one that works.
-    pinsOnce(
-      readFileSync(DEVICE_INTERACT_SKILL, "utf8"),
-      "describe/tap/scroll/keyboard/screenshot"
-    );
+    pinsOnce(deviceInteract, "describe/tap/scroll/keyboard/screenshot surface drives all of them.");
 
     // cdp_unreachable is not only the dead-app code: CHROMIUM_CDP_NO_PAGE_TARGET
     // maps to it too and fires while the process is alive, where a relaunch adds a
@@ -263,16 +291,26 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // which is the relaunch the guidance routes it away from.
     pinsOnce(
       unreachable,
-      "means something else holds the port instead, which no relaunch on that port clears"
+      "the port answered with something that is not a CDP endpoint, usually another service " +
+        "holding it, which no relaunch on that port clears"
     );
+    // And its own remedy, rather than the neighbouring one: "second copy" and
+    // "bring a window back" answer a live app, which a squatted port is not. The
+    // row states three states in one cell, so position is what keeps each remedy
+    // with the state it answers.
+    pinsOnce(unreachable, "`boot-device` with `electronAppPath` takes a free port");
+    expect(
+      unreachable.indexOf("the port answered with something that is not a CDP endpoint"),
+      "the squatted-port state must follow the window remedy it would otherwise borrow"
+    ).toBeGreaterThan(unreachable.indexOf("Ask the user to bring a window back instead."));
     // Why restart-app is not the answer here. The conclusion without the mechanism
     // reads as a preference.
     pinsOnce(
       row(FAILURE_SCENARIOS, "**Was connected, then tool fails**"),
       "the capability gate rejects it"
     );
-    // The remedy for a squatted port on the flow-authoring surface, which stated
-    // the diagnosis and stopped.
+    // The remedy for a squatted port on the flow-authoring surface. The diagnosis
+    // without it leaves a flow author with nothing to do about the state.
     pinsOnce(
       createFlow,
       "`boot-device` with `electronAppPath` takes a free one and returns the new id"
@@ -280,13 +318,33 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // list-devices is where the recovery sends the reader to check, and its own
     // description documents absence for every other platform - so on Chromium the
     // silence reads as an exit unless it says otherwise.
-    pinsOnce(listDevicesTool.description, "A missing Chromium entry does not mean the app exited");
-    // Section 1 is where a tap/describe agent arrives, and it is the only Chromium
-    // instruction in that file older than the carve-out: on an absent entry it says
-    // boot, which for a windowless-but-live app is the duplicate the row forbids.
     pinsOnce(
-      readFileSync(DEVICE_INTERACT_SKILL, "utf8"),
-      "An absent Chromium entry is not proof nothing is running"
+      listDevicesTool.description,
+      "A missing Chromium entry does not mean the app exited: a probe needs a drivable page, " +
+        "so an app that is up with no window is dropped exactly as an exited one is."
+    );
+    // Section 1 is where a tap/describe agent arrives, and the only Chromium
+    // instruction it reads: on an absent entry the obvious move is to boot, which
+    // for a windowless-but-live app is the duplicate the row forbids. Claim and
+    // mechanism in one needle - the claim alone reads as a caution to ignore.
+    pinsOnce(
+      deviceInteract,
+      "An absent Chromium entry is not proof nothing is running: `list-devices` drops an app " +
+        "that is up with no drivable page exactly as it drops an exited one"
+    );
+    // And its remedy. Section 1 pointed at the Restart-an-app row, whose leading
+    // instruction is the quit - the wrong half for an app that is merely windowless.
+    pinsOnce(
+      deviceInteract,
+      "If the app is up with no window, have the user reopen one — that is the whole recovery."
+    );
+    // The same probe set this file states a second time, in the prose a reader
+    // meets before any table. Derived, like every other copy.
+    pinsOnce(
+      deviceInteract,
+      "on port `" +
+        defaultChromiumPorts().join("`, `") +
+        "`, anything in `ARGENT_CHROMIUM_PORTS`, and the ports `boot-device` opened"
     );
     // Both lock shapes: Electron's newcomer exits 0 with no reason given, Chrome
     // refuses outright and names the lock. A reader matching only Electron's
@@ -317,16 +375,18 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // the id is re-read, so a reader who cannot see a booted app there concludes
     // it must set the env var; and boot-device's `force` is the one parameter that
     // reads as the stop every surface above denies.
-    // Derived, like the guidance's copy: a restated literal drifts, and this one
-    // had drifted off both 9222 and the env var name with the suite green.
+    // Derived, like the guidance's copy: a restated literal drifts off the probe
+    // set and the env-var name with nothing red.
     for (const port of defaultChromiumPorts()) pinsOnce(listDevicesTool.description, String(port));
     pinsOnce(listDevicesTool.description, "ARGENT_CHROMIUM_PORTS=<comma-separated-ports>");
     pinsOnce(listDevicesTool.description, "the ports boot-device itself opened");
     // Through to the end of the sentence: the clause after the carve-out is where
     // the contradiction would go, and it re-asserts the behaviour #867 files.
     expect(bootDeviceParams.shape.force?.description).toContain(
-      "Ignored on Chromium: boot-device only ever starts an Electron app, so a running one is left " +
-        "alone and the new one lands beside it or fails on its single-instance lock."
+      "Ignored on Chromium: boot-device only ever starts an Electron app, so a running one is " +
+        "left alone and the new one lands beside it, fails on its single-instance lock, or — with " +
+        "electronPort pinned to a port that app already holds — comes up unable to bind it, " +
+        "leaving the id you get back pointed at the old app."
     );
   });
 

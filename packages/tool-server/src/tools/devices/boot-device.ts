@@ -90,7 +90,7 @@ const zodSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Shut down and re-boot the device even if already running. Ignored on Chromium: boot-device only ever starts an Electron app, so a running one is left alone and the new one lands beside it or fails on its single-instance lock."
+      "Shut down and re-boot the device even if already running. Ignored on Chromium: boot-device only ever starts an Electron app, so a running one is left alone and the new one lands beside it, fails on its single-instance lock, or — with electronPort pinned to a port that app already holds — comes up unable to bind it, leaving the id you get back pointed at the old app."
     ),
   headless: z
     .boolean()
