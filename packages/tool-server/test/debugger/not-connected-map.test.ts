@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { FAILURE_CODES, FailureError, type FailureSignal } from "@argent/registry";
 import { classifyNotConnected, buildNotConnected } from "../../src/tools/debugger/not-connected";
+import { discoverPrimaryPage } from "../../src/chromium-server/cdp-session";
+import * as http from "node:http";
 
 /**
  * Pins EVERY entry of NOT_CONNECTED_CODE_MAP. The map is the contract that
@@ -117,5 +119,63 @@ describe("guidance platform-correctness", () => {
     // A renderer paused at a breakpoint times out exactly like a wedged one, and
     // quitting the app throws the debug session away.
     expect(chromium.guidance).toContain("breakpoint");
+  });
+});
+
+describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
+  /** Serve one /json/list body from a throwaway CDP endpoint. */
+  async function detailFor(targets: unknown[]): Promise<string> {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(targets));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      await discoverPrimaryPage(port);
+      throw new Error("expected discoverPrimaryPage to reject");
+    } catch (err) {
+      return (err as Error).message;
+    } finally {
+      server.close();
+    }
+  }
+
+  it("routes both CHROMIUM_CDP_NO_PAGE_TARGET details away from a relaunch", async () => {
+    // This code maps to cdp_unreachable, but the endpoint answered — the app is
+    // alive and only lacks a window, where a relaunch adds a second copy rather
+    // than recovering. It has two messages and the guidance has to catch both,
+    // so drive them out of the real throw sites instead of restating them.
+    const devtoolsOnly = await detailFor([
+      {
+        id: "1",
+        type: "page",
+        title: "DevTools",
+        url: "devtools://devtools/bundled/inspector.html",
+        webSocketDebuggerUrl: "ws://127.0.0.1/devtools/page/1",
+      },
+    ]);
+    const noPages = await detailFor([{ id: "2", type: "service_worker", title: "sw", url: "x" }]);
+
+    const { guidance } = buildNotConnected(
+      "cdp_unreachable",
+      coded(FAILURE_CODES.CHROMIUM_CDP_NO_PAGE_TARGET),
+      { port: 8081, device_id: "chromium-cdp-9222" }
+    );
+    for (const detail of [devtoolsOnly, noPages]) {
+      const cue = /devtools:\/\//.test(detail) ? "devtools://" : "page target";
+      expect(detail, "the discriminator the guidance names must be in the detail").toContain(cue);
+      expect(guidance).toContain(cue);
+    }
+    expect(guidance).toMatch(/still running/);
+    expect(guidance).toMatch(/second copy/);
+
+    // Only the inspector variant names a window; the ordinary closed-window case
+    // (no DevTools open) lands on the other one and gets a --remote-debugging-port
+    // question on a port that just answered. failure-scenarios.md's "App
+    // unreachable" row states that asymmetry, so a window hint added here makes
+    // the row stale — fix it there before relaxing this.
+    expect(devtoolsOnly).toMatch(/window/i);
+    expect(noPages, "the no-targets message gained a window hint").not.toMatch(/window/i);
   });
 });
