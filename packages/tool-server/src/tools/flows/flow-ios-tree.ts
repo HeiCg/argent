@@ -275,43 +275,31 @@ const FULL_HIERARCHY_FIELDS = [
 ];
 
 /**
- * Depth ceiling for the flow selector tree. This counts RAW UIView nesting, so
- * it has to clear the invisible wrapper layers RN stacks on every screen —
- * nested navigators (RNSScreenStackView → RNSScreenView, often two deep) plus a
- * drawer/root wrapper routinely bury on-screen content 40–60 levels down before
- * the first tappable view. At 40, plainly visible interactive elements in a
- * deeply nested production RN app were truncated at depths 41–62, so `id:` and
- * `text:` selectors silently failed to resolve and only coordinate taps worked.
- * Because an overflow is silent (nothing reports "truncated" — selectors just
- * stop matching), the cap carries generous headroom rather than hugging the
- * deepest observed measurement.
+ * Depth ceiling for the flow selector tree. It counts raw UIView nesting, and
+ * React Native wrappers alone (nested RNSScreenStackView/RNSScreenView plus a
+ * root or drawer wrapper) run 40 to 60 levels deep. Under the old cap of 40, the
+ * device truncated visible elements of a production app at depths 41 to 62, so
+ * `id:` and `text:` selectors did not resolve and only coordinate taps worked.
+ * Truncation is silent, so this cap keeps headroom.
  *
- * Cost note: the tree itself is never returned — `selectorToFrame` /
- * `evaluateCondition` consume it — so no tool RESULT carries it. Text derived
- * from it does reach the agent though, and one such path grows with this cap:
- * `assertReason`'s `text` arm (flow-actions.ts) quotes `assertText(first)`,
- * i.e. the matched node's hoisted `subtreeText` — every on-screen descendant's
- * text up to the next identified node — verbatim into a failing `assert`/`await`
- * reason, and nothing truncates it on the way out. Descendants a depth-40 read
- * truncated away now hoist, so the quoted string grows with the cap: measured
- * on a `testID`'d collection view with 60 mounted rows, one failing
- * `assert { text }` came back at 87 chars under a device cap of 40 and 466
- * under 100 (686 with no scroll container to clip the hoist). That is the
- * trade this cap accepts, and it is worth it — under the old cap those
- * selectors did not resolve AT ALL. `compatibilityMissNote` rides that same
- * path on one of its two arms: when a `text` condition's locator MATCHED, the
- * near-miss quote it appends is that same `assertText(first)`, so a
- * typographic near-miss against an identified container carries the hoisted
- * string TWICE and grows at twice the rate — measured on a `testID`'d card of
- * 60 hoisting rows, one failing `assert { on: { id }, text }` came back at
- * 1520 chars under a device cap of 40 and 2210 under 100. Its OTHER arm — the
- * whole-tree walk every `exists`/`visible` miss takes — compares `label` and
- * `value` only, never `subtreeText`, so that one does not grow with the cap.
+ * A deeper tree also moves `text` verdicts. A `text` check on an identified
+ * container reads that container's hoisted `subtreeText`, and deeper descendants
+ * now hoist into it. `contains` still passes, but `equals` can flip to a
+ * failure: the fallback in `evaluateCondition` (`ui-tree-match.ts`) also tries
+ * the node's own `label`/`value`, which a testID'd wrapper does not have. Move
+ * such a check to the leaf that holds the text, or relax it to `contains`.
  *
- * Otherwise the cap only grows the getFullHierarchy payload over the
- * native-devtools socket, which is field-limited (`FULL_HIERARCHY_FIELDS`). In
- * the measured production tree, depth-40 was ~11KB and depth-48 ~15KB; past the
- * tree's real depth a higher cap adds nothing at all, so 100 stays modest.
+ * The cap also makes failure reasons longer. The tree itself never reaches a
+ * tool result, but text derived from it does: `assertReason`
+ * (`flow-actions.ts`) quotes the matched node's hoisted `subtreeText` verbatim,
+ * and nothing truncates it. On a testID'd collection view of 60 rows, a failing
+ * `assert { text }` grew from 87 to 466 characters. `compatibilityMissNote`
+ * quotes that same string again, so a near-miss grew from 1520 to 2210. Its
+ * `exists`/`visible` arm reads `label` and `value` only, and does not grow.
+ *
+ * The last cost is the getFullHierarchy payload, which is field-limited
+ * (`FULL_HIERARCHY_FIELDS`): about 11KB at depth 40 and 15KB at depth 48. Past
+ * the real depth of the tree, a higher cap costs nothing.
  */
 const FLOW_TREE_MAX_DEPTH = 100;
 
@@ -404,27 +392,23 @@ export async function queryFullHierarchyTree(
   if (launchedNativeApp !== undefined && nativeApi.listConnectedBundleIds().length === 0) {
     throw new Error(await unreadableHierarchyReason(nativeApi, launchedNativeApp));
   }
-  // resolveNativeTargetApp's own errors suggest providing a bundleId — a flow
-  // selector step has no way to express one (this call hardcodes
-  // auto-targeting) — so replace that advice with the remedy available for the
-  // specific failure. When apps ARE connected but none is uniquely frontmost
-  // (ambiguous set, or a lone backgrounded app) the remedy is to foreground the
-  // intended one, NOT to relaunch it for instrumentation it already has. Only
-  // "no connected app" means the target was launched outside Argent (Metro/Expo,
-  // Xcode, or the home-screen icon) and needs an Argent relaunch.
+  // resolveNativeTargetApp asks the caller to provide a bundleId, which a flow
+  // selector step cannot do: this call hardcodes auto-targeting. Each branch
+  // below replaces that advice with a remedy for its own failure. If apps are
+  // connected but none is uniquely frontmost, the remedy is to foreground the
+  // intended one, not to relaunch instrumentation it already has. Only "no
+  // connected app" means the target started outside Argent (Metro/Expo, Xcode,
+  // or its home-screen icon) and needs an Argent relaunch.
   let target: { bundleId: string };
   try {
     target = await resolveNativeTargetApp(nativeApi, undefined);
   } catch (err) {
     const failureCode = getFailureSignal(err)?.error_code;
-    // The `launch:`-derived hint arbitrates ONLY a timeout, and only before the
-    // diagnoses below: auto-resolution's `Application.getState` probe hops onto
-    // the app's main thread, so an app mid-stall (first Hermes parse, Lottie
-    // decode) times it out even though it is exactly the app the flow launched
-    // and is about to read. Every resolution that ANSWERS — including the
-    // deliberate "single app but backgrounded" error — is preferred, so the
-    // hint never bypasses a guard that fired; it only rides out a probe the
-    // stall made unanswerable.
+    // The `launch:` hint arbitrates a timeout only. The `Application.getState`
+    // probe runs on the app's main thread, so a stall (first Hermes parse,
+    // Lottie decode) times it out even for the app the flow just launched. Any
+    // resolution that answers wins, including the deliberate "single app but
+    // backgrounded" error, so the hint never bypasses a guard that fired.
     if (
       failureCode === FAILURE_CODES.NATIVE_DEVTOOLS_RPC_TIMEOUT &&
       launchedNativeApp !== undefined &&
@@ -434,15 +418,13 @@ export async function queryFullHierarchyTree(
     } else {
       const terminate = await terminateCommand(device);
       if (failureCode === FAILURE_CODES.NATIVE_TARGET_MULTIPLE_APPS_AMBIGUOUS) {
-        // Backgrounding the others is deliberately NOT offered: it leaves them
-        // connected, so the set stays ambiguous, and once iOS suspends one it
-        // stops answering the state probe entirely — turning this failure into
-        // the harder indeterminate one below. That rationale lives here rather
-        // than in the reason, which is repeated per step.
+        // The reason does not offer to background the other apps. They stay
+        // connected, so the set stays ambiguous, and iOS then suspends one until
+        // it no longer answers the state probe. That turns this failure into the
+        // harder indeterminate one below.
         throw wrapPreservingFailure(
-          // The header stays short because the embedded diagnostic's own first
-          // line already says the set is ambiguous; repeating it cost 90 chars of
-          // a budget the per-app entries need.
+          // Short header: the embedded diagnostic already says the set is
+          // ambiguous, and the per-app entries need those 90 characters.
           `could not target an app to read the view hierarchy from:\n` +
             `${cappedAppDiagnostic(withoutExplicitBundleIdAdvice(errMsg(err)))}\n` +
             `Flow selectors auto-target and cannot name a bundleId. Foreground the intended app with ` +
@@ -453,16 +435,13 @@ export async function queryFullHierarchyTree(
         );
       }
       if (failureCode === FAILURE_CODES.NATIVE_TARGET_SINGLE_APP_NOT_FOREGROUND) {
-        // The lone connected app is already instrumented; it is just not
-        // foreground-like. Reaching this verdict means the app ANSWERED the state
-        // probe, so it is not merely suspended (that path rejects the probe and
-        // is handled below): the window is a just-backgrounded app before iOS
-        // suspends it, or one that keeps running in the background (audio,
-        // location, VoIP) and so keeps answering. A permission dialog does NOT
-        // land here — the app stays inactive with a foreground-inactive scene,
-        // which resolves normally. Foregrounding fixes the read, so the generic
-        // relaunch-for-instrumentation advice below would misdiagnose the state.
-        // Keep resolveNativeTargetApp's per-app applicationState diagnostic.
+        // The one connected app answered the state probe, so it is instrumented
+        // and not suspended. It is either just backgrounded, or it keeps running
+        // in the background (audio, location, VoIP). A permission dialog does not
+        // land here: the app keeps a foreground-inactive scene and resolves
+        // normally. Foregrounding fixes the read, so the relaunch advice below
+        // would misdiagnose this state. Keep resolveNativeTargetApp's per-app
+        // applicationState diagnostic.
         throw wrapPreservingFailure(
           `the only native-devtools-connected app is not foreground, so it cannot be auto-targeted:\n` +
             `${withoutExplicitBundleIdAdvice(errMsg(err))}\n` +
@@ -472,15 +451,12 @@ export async function queryFullHierarchyTree(
           err
         );
       }
-      // Neither verdict — the applicationState probe resolveNativeTargetApp runs
-      // over EVERY connected app failed, so it reached no verdict at all. iOS
-      // suspends a backgrounded app within about a second and a suspended app
-      // stops answering that probe, so one stale connection rejects the whole
-      // read (the probe is a single Promise.all). That is not the "nothing is
-      // instrumented" state the relaunch advice below describes: the connections
-      // are live. Relaunching discards whatever state the flow built up, and when
-      // the unresponsive connection belongs to a DIFFERENT app than the one being
-      // driven, relaunching the target cannot fix the read at all.
+      // No verdict at all: resolveNativeTargetApp probes applicationState for
+      // every connected app in one Promise.all, so one stale connection rejects
+      // the whole read. iOS suspends a backgrounded app after about a second,
+      // and a suspended app stops answering. The connections are still live, so
+      // the relaunch advice below does not apply: a relaunch discards the state
+      // the flow built up, and cannot help when another app is the stale one.
       const stillConnected = nativeApi.listConnectedBundleIds();
       if (stillConnected.length > 0) {
         throw wrapPreservingFailure(
@@ -488,9 +464,9 @@ export async function queryFullHierarchyTree(
             `auto-targeted (${firstClause(err)}). Connected: ${cappedList(stillConnected)}. ` +
             `They are instrumented — do not relaunch. A suspended app stops answering: foreground ` +
             `the app the flow drives with launch-app (it does not terminate), then retry.` +
-            // Only worth saying when there IS another connection to clear, and it
-            // has to name a command that exists: argent exposes no terminate tool,
-            // and restart-app on the other app would make it frontmost instead.
+            // Say this only when another connection exists to clear, and name a
+            // command that exists: argent has no terminate tool, and restart-app
+            // would bring the other app to the front.
             (stillConnected.length > 1
               ? ` To clear the others use \`${terminate}\` — argent ` +
                 `exposes no terminate tool, and restart-app would bring that app to the front instead.`
@@ -498,19 +474,18 @@ export async function queryFullHierarchyTree(
           err
         );
       }
-      // Kept short on purpose: every selector read that fails repeats this reason
-      // verbatim, and the recorder repeats it once per captured tap.
+      // Kept short: every failed selector read repeats this reason verbatim, and
+      // the recorder repeats it once per captured tap.
       throw wrapPreservingFailure(
         `no app is connected to native devtools, so flow selectors have no instrumented process to ` +
           `read the view hierarchy from (${firstClause(err)}). Relaunch with restart-app (or a flow ` +
           `\`launch\` step): launch-app does not terminate, so on an app already running from ` +
           `Metro/Expo, Xcode, or its icon it only foregrounds that uninstrumented process. ` +
-          // "the native-devtools FEATURE tools", not "the native-* tools": only
-          // the six that run the throwing 3-arg precheck refuse a com.apple.*
-          // bundle. native-devtools-status runs the 2-arg form and reports
-          // injectable:false instead, and the native-profiler-* tools do not
-          // precheck at all — so the broader claim would send an agent away from
-          // the one native-* tool that can confirm this state.
+          // "feature tools", not "the native-* tools": only the six that run the
+          // throwing 3-arg precheck refuse a com.apple.* bundle.
+          // native-devtools-status runs the 2-arg form and reports
+          // injectable:false, and the native-profiler-* tools do not precheck.
+          // The broader claim would hide the one tool that confirms this state.
           `Argent treats an Apple system app (com.apple.*) as non-injectable — the native-devtools ` +
           `feature tools refuse it too — so if one never connects, drive it with raw point taps ` +
           `and tool: await-ui-element steps.`,
@@ -519,13 +494,11 @@ export async function queryFullHierarchyTree(
     }
   }
 
-  // Reachable only through a disconnect race. The target came from
-  // `resolveNativeTargetApp(api, undefined)`, which returns ids out of
-  // `listConnectedBundleIds()` — so re-reading that same live map and NOT
-  // finding the target means the socket dropped between the resolve and this
-  // call. The app therefore WAS instrumented, and the "launched before argent's
-  // instrumentation loaded" diagnosis that fits an explicitly-named bundle is
-  // exactly wrong for this one.
+  // Only a disconnect race reaches this. `resolveNativeTargetApp(api,
+  // undefined)` returns ids from `listConnectedBundleIds()`, so an id missing
+  // from that same live map means the socket dropped after the resolve. The app
+  // was instrumented, so the "launched before argent's instrumentation loaded"
+  // diagnosis of an explicitly-named bundle is wrong here.
   if (!nativeApi.listConnectedBundleIds().includes(target.bundleId)) {
     throw new Error(
       `${target.bundleId} answered the target probe and then dropped its native-devtools ` +
@@ -570,32 +543,28 @@ function errMsg(err: unknown): string {
 }
 
 /**
- * The `xcrun simctl terminate` invocation an agent can actually run against
- * THIS device — the out-of-band step two targeting reasons offer for clearing
- * a competing connected app, since argent exposes no terminate tool.
+ * The `xcrun simctl terminate` command an agent can run against this device. Two
+ * targeting reasons offer it to clear a competing connected app, because argent
+ * has no terminate tool.
  *
- * simctl scopes every operation to ONE device set, so a UDID from a configured
- * `ios.additionalDeviceSets` set (Radon IDE's, say) does not resolve without
- * `--set` — see `simctlArgsForUdid`, the choke point argent's own call sites
- * use. Only the prefix is resolved; the udid and bundleId stay placeholders,
- * since the agent knows the device it is driving and picks which app to clear.
- * A default-set device — the common case, and the one `deviceSetForUdid`
- * answers without any probe when no additional sets are configured — yields
- * the plain `xcrun simctl terminate …`, so the reasons' size budget is
- * unchanged for it (see {@link MAX_TARGETING_REASON_CHARS}).
+ * simctl scopes each operation to one device set, so a UDID from a configured
+ * `ios.additionalDeviceSets` set (Radon IDE's, for example) needs `--set` to
+ * resolve. See `simctlArgsForUdid`, which argent's own call sites use. Only the
+ * prefix is resolved. The udid and bundleId stay placeholders, because the agent
+ * knows its device and picks the app to clear. A default-set device gets the
+ * plain command, so its reason keeps the same size budget (see
+ * {@link MAX_TARGETING_REASON_CHARS}).
  */
 async function terminateCommand(device: DeviceInfo): Promise<string> {
   const prefix = simctlPrefix(await deviceSetForUdid(device.id));
   return `xcrun ${prefix.join(" ")} terminate <udid> <bundleId>`;
 }
 
-// The first SENTENCE of a diagnostic's first line — the part that names what
-// went wrong, without the remedy paragraph each source appends for its own
-// callers. A sentence ends at a period followed by whitespace (or the end of
-// the line): every message that reaches here carries a dotted identifier
-// (`Application.getState`, `bundleId: com.acme.app`), and keying on the bare
-// period chopped mid-identifier, leaving `RPC timed out: Application.`.
-// A line with no sentence break is already the clause — return it whole.
+// The first sentence of a diagnostic's first line: what went wrong, without the
+// remedy each source appends for its own callers. A sentence ends at a period
+// plus whitespace or the end of the line. Messages that reach here carry dotted
+// identifiers (`Application.getState`), which a bare period cuts in half. A line
+// with no sentence break is already the clause.
 function firstClause(err: unknown): string {
   const firstLine = errMsg(err).split("\n", 1)[0];
   const sentenceEnd = /\.(?=\s|$)/.exec(firstLine);
@@ -603,22 +572,15 @@ function firstClause(err: unknown): string {
 }
 
 /**
- * How many connected apps any targeting reason may enumerate.
+ * How many connected apps a targeting reason may list.
  *
- * Two of these reasons embed a per-app list — the ambiguous branch keeps
- * `resolveNativeTargetApp`'s per-app `applicationState` diagnostic (~110 chars
- * a line) and the indeterminate branch names every live connection — so
- * without a cap the reason grows with the connected-app count: measured at 778
- * chars for 2 apps, 1000 for 4 and 1444 for 8. That is the wrong thing to let
- * grow. `captureTapSelector`'s catch embeds the whole reason in the warning for
- * every recorded tap, and a failing `await:` repeats it once per poll, so the
- * cost is paid per step for as long as the screen stays stuck — and the
- * ambiguous state is the most persistent of them, holding until somebody
- * foregrounds or terminates something.
- *
- * Two is enough to act on: the remedy is "foreground the one you want, clear
- * the rest", which does not change with the fourth entry. The count of what was
- * dropped is still reported, so nothing is silently truncated.
+ * The ambiguous and indeterminate branches both embed a per-app list, so without
+ * a cap the reason grows with the connected-app count: 778 characters for 2
+ * apps, 1000 for 4 and 1444 for 8. That cost is paid per step, because
+ * `captureTapSelector` embeds the reason in the warning of every recorded tap
+ * and a failing `await:` repeats it once per poll. Two entries are enough to act
+ * on: the remedy is to foreground the app you want and clear the rest. The
+ * dropped count is still reported.
  */
 export const MAX_LISTED_APPS = 2;
 
@@ -626,23 +588,19 @@ export const MAX_LISTED_APPS = 2;
  * Ceiling every reason thrown from {@link queryFullHierarchyTree} must fit,
  * enforced by `keeps every targeting reason short enough to repeat per step`.
  *
- * Measured against the RAW message. Callers prefix it before an agent sees it —
- * `waitForCondition` adds "could not read the UI tree: " (27 chars) and a
- * `when:` guard adds "could not evaluate when guard (<label>): " with a
- * caller-supplied label — so this is not the number the agent ends up reading.
- * A device from a configured `ios.additionalDeviceSets` set also spends the
- * `--set <dir>` its terminate command needs to resolve the udid (see
- * {@link terminateCommand}); that is one path, fixed by the config, and the
- * ceiling is measured without it.
+ * Measured on the raw message, before the prefix a caller adds, and without the
+ * `--set <dir>` that an `ios.additionalDeviceSets` device adds to its terminate
+ * command (see {@link terminateCommand}).
  *
- * The ceiling is set by the ambiguous branch, which carries two full per-app
- * `applicationState` diagnostics: that IS the diagnosis on the one branch where
- * the agent has to choose which app to clear, so it is not the thing to cut.
- * What matters is that the figure no longer moves with the connected-app count
- * — see {@link MAX_LISTED_APPS}. Every other branch has well over 100 chars of
- * slack.
+ * The guard covers {@link unreadableHierarchyReason} too, which the recorder
+ * repeats once per captured tap and which sets the ceiling: 775 characters for
+ * `unregistered` against a 37-character bundle id, in wording shared with
+ * `native-devtools-status` and iOS `describe`. The ambiguous branch is next at
+ * 702, because it carries the two per-app `applicationState` diagnostics an
+ * agent needs to pick the app to clear. Neither figure grows with the
+ * connected-app count; see {@link MAX_LISTED_APPS}.
  */
-export const MAX_TARGETING_REASON_CHARS = 760;
+export const MAX_TARGETING_REASON_CHARS = 800;
 
 /** Keep the first {@link MAX_LISTED_APPS} entries, and say how many were not shown. */
 function cappedList(bundleIds: readonly string[]): string {
@@ -652,11 +610,10 @@ function cappedList(bundleIds: readonly string[]): string {
 }
 
 /**
- * Cap the per-app lines of an embedded `resolveNativeTargetApp` diagnostic,
- * keeping its leading summary line intact. The entries are its `- <bundleId>
- * (applicationState=…)` lines; anything else is passed through untouched, so a
- * reworded source degrades to "no cap applied" rather than to a mangled
- * message.
+ * Cap the per-app lines of an embedded `resolveNativeTargetApp` diagnostic and
+ * keep its leading summary line. The entries are its `- <bundleId>
+ * (applicationState=…)` lines. Every other line passes through, so a reworded
+ * source loses the cap instead of getting a mangled message.
  */
 function cappedAppDiagnostic(message: string): string {
   const lines = message.split("\n");
@@ -675,11 +632,10 @@ function cappedAppDiagnostic(message: string): string {
   ].join("\n");
 }
 
-// Strip resolveNativeTargetApp's trailing "Provide bundleId explicitly…" line —
-// a flow selector step hardcodes auto-targeting and cannot act on it. Matching
-// the whole line (not just the bare sentence) covers both wordings it emits:
-// the ambiguous case ends "Provide bundleId explicitly." and the single-app case
-// ends "Provide bundleId explicitly if you still want to target this app.".
+// Strip resolveNativeTargetApp's trailing "Provide bundleId explicitly…" line:
+// a flow selector step hardcodes auto-targeting and cannot act on it. Match the
+// whole line, not the bare sentence, because the ambiguous and single-app cases
+// end that line differently.
 function withoutExplicitBundleIdAdvice(message: string): string {
   return message.replace(/\nProvide bundleId explicitly[^\n]*$/, "");
 }

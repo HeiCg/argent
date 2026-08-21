@@ -3,6 +3,7 @@ import { z } from "zod";
 import { Registry } from "@argent/registry";
 import type { ToolContext } from "@argent/registry";
 import { createRunSequenceTool } from "../src/tools/run-sequence";
+import { InvalidToolInputError } from "../src/utils/capability";
 
 // A minimal registry stub: records every invokeTool call and returns a marker.
 function makeMockRegistry() {
@@ -128,19 +129,17 @@ describe("run-sequence", () => {
     expect(result.steps[0]).toMatchObject({
       tool: "not-a-tool",
       error: expect.stringContaining("not allowed"),
-      // The entry has to say the step never reached the registry. `completed`
-      // is 0 for a step that ran and failed too, and these entries carry no
-      // status, so this marker is the only thing that tells the two apart — the
-      // flow recorder reads it to decide whether the device may have moved.
+      // The entry must say the step never reached the registry. `completed` is
+      // 0 for a step that ran and failed too, and these entries carry no
+      // status, so only this marker separates them.
       dispatched: false,
     });
     expect(registry.invokeTool).not.toHaveBeenCalled();
   });
 
   it("marks a step rejected by the capability pre-flight as never dispatched", async () => {
-    // The second pre-dispatch exit: the tool exists and is allow-listed, but
-    // does not support this target. `button` on a Chromium device is the
-    // ordinary spelling of it, not a synthetic case.
+    // The second pre-dispatch exit: the tool is allow-listed but does not
+    // support this target. `button` on a Chromium device is the ordinary case.
     const registry = {
       getTool: vi.fn(() => ({
         capability: { apple: { simulator: true }, android: { emulator: true } },
@@ -171,9 +170,8 @@ describe("run-sequence", () => {
   });
 
   it("does not mark a step that WAS dispatched and then failed", async () => {
-    // The control for the two above: the marker must be absent whenever the
-    // registry was reached, or a consumer reading it would treat a real device
-    // action as a no-op.
+    // The control for the two above. The marker must be absent whenever the
+    // registry was reached, or a reader treats a real action as a no-op.
     const registry = mockRegistry((id: string) => {
       if (id === "keyboard") throw new Error("keyboard failed: device went away");
       return { ok: true };
@@ -416,10 +414,9 @@ describe("run-sequence", () => {
   });
 
   describe("a step whose args the sub-tool rejects", () => {
-    // A REAL registry, not a stub: the rejection has to come from the same
-    // schema check the live dispatch runs, and the events it emits are half of
-    // what these tests assert. A stub `invokeTool` that resolves happily would
-    // let the rejection come from somewhere else entirely.
+    // A REAL registry, not a stub: the rejection must come from the same schema
+    // check the live dispatch runs, and the events it emits are half of what
+    // these tests assert.
     const liveRegistry = () => {
       const registry = new Registry();
       const executed: string[] = [];
@@ -465,11 +462,10 @@ describe("run-sequence", () => {
     });
 
     it("STOPS the sequence, leaving the later steps un-run", async () => {
-      // Two steps, because one cannot tell a `break` from a `continue`: with a
-      // single-step sequence both spellings return the same result, and the
-      // existing multi-step "stops on first error" tests all exercise the
-      // INVOKE path. A regression here types into whatever screen the un-tapped
-      // app is still on.
+      // Two steps, because a single-step sequence cannot tell `break` from
+      // `continue`, and the existing multi-step "stops on first error" tests
+      // all exercise the INVOKE path. A regression here types into whatever
+      // screen the un-tapped app is still on.
       const { registry, executed } = liveRegistry();
       const tool = createRunSequenceTool(registry);
 
@@ -490,12 +486,55 @@ describe("run-sequence", () => {
       expect(executed).toEqual([]); // neither step reached the device
     });
 
+    it("marks the entry `dispatched: false`, since the parse precedes execute", async () => {
+      // The registry parses before it calls `execute`, so a schema miss touched
+      // the device as little as an unlisted tool name did. Without the marker
+      // the recorder reads the entry as "ran and then failed".
+      const { registry, executed } = liveRegistry();
+      const tool = createRunSequenceTool(registry);
+
+      const result = await tool.execute(
+        {},
+        { udid: IOS, steps: [{ tool: "gesture-tap", args: { xx: 0.5, y: 0.3 } }] }
+      );
+
+      expect(result.steps[0]).toMatchObject({ tool: "gesture-tap", dispatched: false });
+      expect(executed).toEqual([]);
+    });
+
+    it("leaves a tool that rejects its OWN args unmarked", async () => {
+      // The control. `dispatched: false` must mean "never reached the device",
+      // not "the error mentions params". A tool that parses its args and then
+      // throws from inside `execute` DID run.
+      const registry = new Registry();
+      const executed: string[] = [];
+      registry.registerTool({
+        id: "keyboard",
+        description: "test double that rejects from inside execute",
+        zodSchema: z.object({ udid: z.string(), text: z.string().optional() }),
+        services: () => ({}),
+        execute: async () => {
+          executed.push("keyboard");
+          throw new InvalidToolInputError("text must not be empty");
+        },
+      } as never);
+      const tool = createRunSequenceTool(registry);
+
+      const result = await tool.execute(
+        {},
+        { udid: IOS, steps: [{ tool: "keyboard", args: { text: "" } }] }
+      );
+
+      expect(result.steps[0]).not.toHaveProperty("dispatched");
+      expect(executed).toEqual(["keyboard"]);
+    });
+
     it("still emits the step's own invoked/failed events", async () => {
       // The rejection is re-rendered from the registry's failure rather than
       // pre-empting the dispatch, so the step stays visible to the telemetry
-      // listener and the event log — which both subscribe to this pair. A
-      // pre-flight that returned before invoking would make an invalid step
-      // emit nothing at all, while the outer call still reported completion.
+      // listener and the event log. A pre-flight that returned before invoking
+      // would make an invalid step emit nothing while the outer call still
+      // reported completion.
       const { registry } = liveRegistry();
       const events: string[] = [];
       registry.events.on("toolInvoked", (id) => events.push(`invoked:${id}`));

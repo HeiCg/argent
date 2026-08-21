@@ -156,10 +156,9 @@ describe("argent run input validation", () => {
     expect(stderr()).not.toContain("missing required");
   });
 
-  // Built the way a live tool-server answers today: prose in the message, the
-  // issue list beside it. A fixture that only stringifies the issues into the
-  // message tests a wire no server sends any more, and would stay green while
-  // every server-side rejection fell through to a bare error dump.
+  // Built the way a live tool-server answers: prose in the message, the issue
+  // list beside it. A fixture that stringifies the issues into the message
+  // instead tests a wire no server sends any more.
   describe.each([
     [
       "a modern server (prose message + issues)",

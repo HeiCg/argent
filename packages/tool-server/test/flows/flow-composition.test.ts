@@ -2394,17 +2394,14 @@ describe("flow composition (run:)", () => {
   });
 
   it("waits out the gate for a com.apple.* launch, then withholds the verdict", async () => {
-    // The gate is what ties the launched bundle to the app a later selector
-    // step auto-targets, so the WAIT must not be skipped per bundle — see
-    // treeSourceGate. Only the VERDICT is withheld for a bundle the dylib may
-    // never load into: starting the app is all a `launch:` step is for, and a
-    // coordinate-driven flow needs nothing more, so the step passes and the
-    // impossibility surfaces at the first selector read instead. `resolveService`
-    // having been called is what separates a real wait from a skip.
+    // The gate ties the launched bundle to the app a later selector step
+    // auto-targets, so the wait runs for every bundle (see `treeSourceGate`).
+    // Only the verdict is withheld for `com.apple.*`: the first selector read
+    // reports the missing hierarchy instead.
     await writeFlow("main", {
       executionPrerequisite: "",
       steps: [
-        // Prefix matching is deliberately case-insensitive.
+        // The bundle prefix match is case-insensitive.
         { kind: "launch", app: "com.APPLE.Preferences" },
         { kind: "echo", message: "should never run" },
       ],
@@ -2427,23 +2424,21 @@ describe("flow composition (run:)", () => {
 
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:pass", "echo:pass"]);
     expect(result.ok).toBe(true);
-    // The wait really ran — a per-bundle skip would never touch the service.
+    // The wait ran: a per-bundle skip would never touch the service.
     expect(resolveService).toHaveBeenCalled();
-    // And it passes clean: no connection failure is reported for a bundle whose
-    // hierarchy this gate was never going to be able to wait for.
+    // The pass is clean: no connection failure for a hierarchy the gate cannot
+    // wait for.
     expect(result.steps[0].reason ?? "").not.toMatch(/could not connect to native devtools/i);
     expect(result.steps[0].reason ?? "").not.toMatch(/stale or duplicate argent server/i);
-    // The gate spends the full NATIVE_DEVTOOLS_CONNECT_BUDGET_MS (15s) and, now
-    // that it PASSES, the post-launch settle after it — so the budget here has
-    // to clear both with room for a loaded host.
+    // The launch spends the post-launch settle plus the full 15s
+    // NATIVE_DEVTOOLS_CONNECT_BUDGET_MS, so the 30s budget covers both on a
+    // loaded host.
   }, 30000);
 
   it("runs a coordinate-only flow green against an app that never connects", async () => {
-    // The injection-free shape: a raw `tool: restart-app` step dispatches through
-    // the registry instead of `runLaunch`, so it never reaches treeSourceGate,
-    // and point taps plus `tool:` steps resolve no selectors. It has to stay
-    // runnable against a service that never connects — that is the whole reason
-    // a coordinate-driven flow is offered for such an app.
+    // A raw `tool: restart-app` step dispatches through the registry, not
+    // `runLaunch`, so it never reaches `treeSourceGate`. Point taps and `tool:`
+    // steps resolve no selectors.
     await writeFlow("main", {
       executionPrerequisite: "",
       steps: [
@@ -2478,17 +2473,15 @@ describe("flow composition (run:)", () => {
       "tap:pass",
     ]);
     expect(result.ok).toBe(true);
-    // Nothing GATED on the connection this flow can never get: no step errors.
-    // The tree source is still touched, though — a selector-less gesture takes a
-    // settle first — so the tap goes out unsettled and says so, rather than
-    // claiming it landed.
+    // No step gates on the connection this flow never gets. A gesture without a
+    // selector still settles the screen first, so the tap goes out unsettled and
+    // warns.
     expect(result.steps[2].warning).toContain("without settling the screen");
   });
 
   it("passes the gate for a com.apple.* app that does connect", async () => {
-    // Argent treats these bundles as non-injectable, but on the simulator they
-    // do connect after a restart-app (measured on iOS 18.3 and 26.5), so the
-    // gate is a real wait for them and not a permanent dead-end.
+    // Argent treats `com.apple.*` as non-injectable, but simulator system apps
+    // do connect after a restart-app (measured on iOS 18.3 and 26.5).
     await writeFlow("main", {
       executionPrerequisite: "",
       steps: [
@@ -2826,10 +2819,9 @@ describe("flow composition (run:)", () => {
       );
 
       const reason = result.steps[2].reason ?? "";
-      // The launched-id diagnosis names THIS bundle and why it cannot serve a
-      // hierarchy. "Apple system app" alone no longer separates the two paths —
-      // the auto-target reason carries that phrase too — so pin the half only
-      // the launched-id path can produce.
+      // Both reasons say "Apple system app", so that phrase no longer separates
+      // the two paths. Only the launched-id diagnosis names this bundle and its
+      // library validation.
       expect(reason).toMatch(/platform binary with library validation/);
       expect(reason).not.toMatch(/no app is connected to native devtools/);
     }
@@ -2855,13 +2847,9 @@ describe("flow composition (run:)", () => {
       )
     );
 
-    // #721 replaced resolveNativeTargetApp's own "Launch or restart the app
-    // first" advice — a flow selector step cannot name a bundleId, so that text
-    // pointed nowhere — with the auto-target reason below. Both paths now
-    // mention "Apple system app", so the discriminator is which DIAGNOSIS runs:
-    // auto-targeting reports that nothing is connected at all and names no
-    // bundle, where the launched-id path names this bundle and its library
-    // validation.
+    // A flow selector step cannot name a bundleId, so `resolveNativeTargetApp`'s
+    // own "Launch or restart the app first" advice is dropped. The auto-target
+    // reason that replaces it names no bundle and reports nothing is connected.
     const reason = result.steps[2].reason ?? "";
     expect(reason).toMatch(/no app is connected to native devtools/);
     expect(reason).not.toMatch(/platform binary with library validation/);
