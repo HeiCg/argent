@@ -483,6 +483,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // Which of the two relaunch outcomes carries the early exit. A second copy
     // BOOTS (boot-electron resolves { booted: true }), so attaching the exit to
     // both leaves a reader who got a clean result concluding no copy was made.
+    // Row 11 routes a crashed app to row 15, whose first instruction is the quit -
+    // the one step an app that already died does not need.
+    pinsOnce(unreachable, "minus its quit step: that row does not know the app is already gone");
     pinsOnce(
       unreachable,
       "a second copy — which boots successfully, so nothing in the result says you now have " +
@@ -559,6 +562,19 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       bootDeviceParams.shape.electronPort?.description,
       "the id you get back drives that app, not the one just launched."
     );
+    // waitForCdpReady re-checks its deadline only BETWEEN attempts and passes no
+    // AbortSignal, so a port that accepts a connection and never answers runs to
+    // undici's default. Stating 30s as a bound invites a caller to size a budget
+    // against it.
+    pinsOnce(
+      bootDeviceParams.shape.bootTimeoutMs?.description,
+      "which polls CDP against its own 30s deadline, checked between attempts, so a port " +
+        "that accepts a connection and never answers can overrun it"
+    );
+    expect(
+      bootDeviceParams.shape.bootTimeoutMs?.description,
+      "does not state the Electron wait as a bound"
+    ).not.toMatch(/fixed 30s|at most 30s|no more than 30s/i);
   });
 
   it("states the probe set in the rule file too, derived from the same constant", () => {
