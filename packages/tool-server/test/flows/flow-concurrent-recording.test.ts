@@ -116,14 +116,12 @@ function createMockRegistry(): Registry {
       // the same starting gun.
       await new Promise((resolve) => setTimeout(resolve, 0));
       if (subToolGate) await subToolGate();
-      // The two returns that drive flow-add-step's refuse-to-record path: a
-      // verdict reported by RETURNING rather than throwing. They differ in the
-      // half that matters here — this one ran a nested step at the device, the
-      // notice below provably ran nothing.
+      // The two returns that drive flow-add-step's refuse-to-record path. Both
+      // report a verdict by RETURNING. This one ran a nested step at the
+      // device, the notice below ran nothing.
       if (id === "run-sequence") {
-        // The third shape: run-sequence rejects a tool it does not allow BEFORE
-        // reaching the registry, so this entry proves nothing ran — the same
-        // stake as the notice below, reported by the other orchestrator.
+        // The third shape. run-sequence rejects a tool it does not allow
+        // BEFORE the registry, so this entry proves that nothing ran.
         const first = (args as { steps?: Array<{ tool?: string }> })?.steps?.[0];
         if (first?.tool === "screenshot") {
           return {
@@ -1145,11 +1143,9 @@ describe("appending to a recording whose file was hand-edited", () => {
     expect(await readMarkers(root, "alpha")).toEqual(["echo:s1", "echo:s2"]);
 
     // Removing a bad step by editing the .yaml is what both recording tools'
-    // descriptions tell the agent to do AFTER the finish, not during — and this
-    // pins what the "during" half of that advice is about. It only survives
-    // because the host-mode append re-reads from disk; serializing the
-    // in-memory copy instead would silently resurrect the deleted step on the
-    // very next append, which is the failure the remote-client half names.
+    // descriptions tell the agent to do after the finish, not during. It only
+    // survives because the host-mode append re-reads from disk. Serializing the
+    // in-memory copy would resurrect the deleted step on the next append.
     await fs.writeFile(
       flowPath(root, "alpha"),
       'executionPrerequisite: ""\nsteps:\n  - echo: s2\n',
@@ -1380,11 +1376,10 @@ describe("a restart that lands while a step is still running", () => {
   });
 
   it("rejects a superseded step that records NOTHING, rather than counting another take", async () => {
-    // A return that deliberately records nothing still reports `stepCount` and
-    // `savedTo`, and both are read off the session it resolved before the live
-    // call. Without the same liveness check the append path performs, a refusal
-    // that lands after a takeover answers with the OTHER take's step count —
-    // the one number this caller has to know where its own take stands.
+    // A return that records nothing still reports `stepCount` and `savedTo`,
+    // both read off the session it resolved before the live call. Without the
+    // liveness check the append path performs, a refusal that lands after a
+    // takeover answers with the OTHER take's step count.
     const root = await makeRoot("supersede-refusal");
     await start(root, "alpha");
     await addStep(root, "alpha", "a1");
@@ -1415,11 +1410,9 @@ describe("a restart that lands while a step is still running", () => {
 
   it("does not warn a superseded refusal that provably executed nothing", async () => {
     // The other half of the same ternary. A `flow-execute` that answers with a
-    // prerequisite NOTICE runs no step at all, so the refusal above and the
-    // liveness error have to agree that nothing moved: the refusal omits its
-    // mutation warning for this shape, and telling the same author the step
-    // "already ran on the device" would send them undoing an action that never
-    // happened.
+    // prerequisite NOTICE runs no step, so the refusal above and the liveness
+    // error must agree that nothing moved. Otherwise the author undoes an
+    // action that never happened.
     const root = await makeRoot("supersede-notice");
     await start(root, "alpha");
     await addStep(root, "alpha", "a1");
@@ -1445,12 +1438,10 @@ describe("a restart that lands while a step is still running", () => {
   });
 
   it("does not warn a superseded refusal whose sequence never dispatched a step", async () => {
-    // The same invariant as the notice above, reached through the other
-    // orchestrator. `run-sequence` rejects a tool outside its allow-list before
-    // handing it to the registry, so a sequence rejected on its FIRST step
-    // touched nothing — and its entries carry no `status`, which is what made
-    // "a step was attempted" read as "the array is non-empty" and hand this
-    // author the wrong half of the recovery clause.
+    // The same invariant as the notice above, through the other orchestrator.
+    // `run-sequence` rejects an unlisted tool before the registry, so a
+    // sequence rejected on its FIRST step touched nothing. Its entries carry no
+    // `status`, so only the marker proves it.
     const root = await makeRoot("supersede-rejected");
     await start(root, "alpha");
     await addStep(root, "alpha", "a1");
@@ -1479,12 +1470,10 @@ describe("a restart that lands while a step is still running", () => {
 
   it("does not warn a superseded GUIDANCE return that it already ran on the device", async () => {
     // The third `ranOnDevice` argument, and the last one unpinned. A `command`
-    // naming a recorder tool is answered with guidance and dispatches NOTHING —
-    // the refusal is raised before the registry is asked — so telling its author
-    // that "the step itself already ran on the device" sends them undoing an
-    // action that never happened. Same queueing trick as the echo above: this
-    // return reads the take's step count under the flow's lock, so holding the
-    // lock and putting the restart in front of it is the whole window.
+    // that names a recorder tool is answered with guidance and dispatches
+    // NOTHING. The clause "already ran on the device" would send its author
+    // undoing an action that never happened. Same trick as the echo above: this
+    // return reads the step count under the flow's lock.
     const root = await makeRoot("supersede-guidance");
     await start(root, "alpha");
 
@@ -1534,12 +1523,11 @@ describe("a restart that lands while a step is still running", () => {
   });
 
   it("reads a refusal's step count only once the flow's lock is free", async () => {
-    // The liveness assert alone only NARROWS this window: it is synchronous and
-    // the file read that follows it is not, while `flow-start-recording`
-    // truncates and re-registers under this same lock. A refusal that reads
-    // outside the lock can pass the assert, have the restart land, and then
-    // report the superseded take's count as its own success — which is worse
-    // than missing the takeover, since the next call reports that.
+    // The liveness assert alone only NARROWS this window. It is synchronous and
+    // the file read after it is not, while `flow-start-recording` truncates and
+    // re-registers under this same lock. A refusal that reads outside the lock
+    // can pass the assert and then report the superseded take's count as a
+    // success.
     const root = await makeRoot("refusal-lock");
     await start(root, "alpha");
     await addStep(root, "alpha", "a1");
@@ -1561,11 +1549,11 @@ describe("a restart that lands while a step is still running", () => {
     });
 
     await settle();
-    // The live sub-tool has long returned; what it is waiting on is the lock.
+    // The live sub-tool has long returned. It is waiting on the lock.
     expect(order).toEqual([]);
 
-    // Queued behind the refusal, so it can only truncate AFTER the read — the
-    // interleaving the lock exists to forbid.
+    // Queued behind the refusal, so it can only truncate AFTER the read. That
+    // is the interleaving the lock forbids.
     const restarting = start(root, "alpha");
 
     order.push("lock-released");
@@ -1685,10 +1673,9 @@ describe("a finish that lands while a step is still running", () => {
     const onDisk = await readMarkers(root, "alpha");
     expect(markers(parseFlow(report.flowFile).steps)).toEqual(onDisk);
     expect(report.steps).toBe(onDisk.length);
-    // One summary line per step is no longer a total invariant: a step carrying
-    // a cross-tree verdict gets a second, indented `warning:` line of its own.
-    // It holds here because these fixtures record echoes and taps, never an
-    // `await-ui-element` — so count the STEP lines rather than resting on that.
+    // A step with a cross-tree verdict adds a second, indented `warning:` line,
+    // so lines and steps are not always 1:1. These fixtures hold no
+    // `await-ui-element`, but count the step lines rather than rely on that.
     expect(report.summary.filter((line) => /^\d+\. /.test(line))).toHaveLength(onDisk.length);
     expect(report.path).toBe(flowPath(root, "alpha"));
     expect(report.savedTo).toBe(flowPath(root, "alpha"));
@@ -1809,9 +1796,8 @@ describe("a finish that lands while a step is still running", () => {
 // ── A finish whose file a hand-edit broke ────────────────────────────
 
 describe("a finish on a flow file that no longer parses", () => {
-  // Nothing prevents a mid-recording hand edit, whatever the tool descriptions
-  // advise, so parseFlow can legitimately throw inside
-  // flow-finish-recording's critical section. The
+  // Nothing prevents a mid-recording hand edit, so parseFlow can legitimately
+  // throw inside flow-finish-recording's critical section. The
   // session must survive that: clearing the key first leaves the agent unable to
   // retry the finish after repairing the file — flow-finish-recording answers
   // "No active recording", and the only tool that re-establishes the key,
@@ -2173,10 +2159,9 @@ describe("finishing a recording whose YAML was hand-edited into an unrenderable 
     await start(root, "alpha");
     await addStep(root, "alpha", "a1");
 
-    // A hand edit can land mid-recording whatever the tool descriptions
-    // advise, and `args:` is the one step body the parser does not constrain —
-    // a cyclic YAML anchor reaches the summarizer as a cyclic object, which
-    // JSON.stringify throws on.
+    // A hand edit can land mid-recording, and `args:` is the one step body the
+    // parser does not constrain. A cyclic YAML anchor reaches the summarizer as
+    // a cyclic object, which JSON.stringify throws on.
     await fs.writeFile(
       flowPath(root, "alpha"),
       'executionPrerequisite: ""\nsteps:\n  - tool: keyboard\n    args: &a\n      self: *a\n',
