@@ -184,7 +184,7 @@ const UNSUPPORTED_PLATFORM = {
  *
  * "At equal depth" is load-bearing, and is the iOS analogue of the Chromium
  * 5000/12000 asymmetry above: `native-full-hierarchy` defaults to `maxDepth: 8`
- * where `queryFullHierarchyTree` asks for 40. So absent from
+ * where `queryFullHierarchyTree` asks for 100. So absent from
  * `native-full-hierarchy` does NOT imply absent from the runner's tree for
  * anything nested deeper than 8 levels — real RN scrollers sit well past that
  * — and reading it as proof needs the depth raised first.
