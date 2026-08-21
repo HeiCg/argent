@@ -591,8 +591,7 @@ async function probeAgainstRunnerTree(
   // ends it before that read.
   const giveUp = new AbortController();
   const probeSignal = ctx?.signal ? AbortSignal.any([ctx.signal, giveUp.signal]) : giveUp.signal;
-  // Bounded by PROBE_BUDGET_MS: the loop's own deadline does not bound the
-  // tree reads it awaits, and the recorder must not stall on one.
+  // Bounded by PROBE_BUDGET_MS: the loop's deadline does not bound its reads.
   const settled = await settleWithin(
     probeWhenCondition(
       // The signal rides on ActionEnv separately from `ctx`, so pass both.
@@ -1528,12 +1527,12 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
 
       const { savedTo, stepCount } = await appendStepToFlow(session, step);
 
-      // Keep the probe's verdict for `flow-finish-recording`. It is a
-      // polish-time answer, and polish starts after the recording closes — by
+      // Keep the probe's verdict for `flow-finish-recording`. It answers a
+      // polish-time question, and polish starts after the recording closes — by
       // which point this `message` is many tool results back. Filed under the
-      // step's number and carrying the step itself, so a hand edit the recorder
-      // appends over cannot hand the verdict to whatever inherits that number
-      // (see {@link RecordedStepWarning}).
+      // step's number and carrying the step itself, so a hand edit cannot pass
+      // the verdict to whatever inherits that number (see
+      // {@link RecordedStepWarning}).
       //
       // ONLY this warning is carried, deliberately. The finish summary already
       // answers the other two by RENDERING what was written — a

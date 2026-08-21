@@ -82,7 +82,7 @@ const zodSchema = z.object({
  * One element per line is what that renderer prints on its own line; the indent
  * and `warning:` prefix keep it attached to the step above.
  *
- * Which verdicts survive to be folded in is {@link anchoredWarnings}' answer.
+ * {@link anchoredWarnings} decides which verdicts survive to be folded in.
  */
 function attachStepWarnings(
   summary: string[],
@@ -232,14 +232,12 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
           flowFile = await fs.readFile(filePath, "utf8");
           savedTo = filePath;
         }
-        // Parse BEFORE clearing. Both recording tools now tell the agent to
-        // edit the .yaml only AFTER the finish, but nothing STOPS a
-        // mid-recording edit — in host mode the file is the take — so parseFlow
-        // can still throw here on a botched one, and clearing first would
-        // destroy the session on the
-        // way out, leaving the agent unable to retry the finish after repairing
-        // the file (the only tool that re-establishes the key,
-        // flow-start-recording, truncates the take it would be recovering).
+        // Parse BEFORE clearing. Both recording tools tell the agent to edit
+        // the .yaml only AFTER the finish, but nothing STOPS a mid-recording
+        // edit, so parseFlow can still throw here on a botched one. Clearing
+        // first would destroy the session on the way out, and the agent could
+        // not retry the finish after repairing the file (flow-start-recording,
+        // the only tool that re-establishes the key, truncates the take).
         const flow = parseFlow(flowFile);
         // Render the summary before clearing too, for the same reason: it walks
         // step bodies the parser does not fully constrain, and nothing that can

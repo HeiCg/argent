@@ -3445,16 +3445,16 @@ function renderStepForCompare(step: FlowStep): string | null {
  * the prefix would produce.
  */
 function sameStepRun(
-  now: FlowStep[],
-  before: FlowStep[],
+  now: (string | null)[],
+  before: (string | null)[],
   n: number,
   nowFrom: number,
   beforeFrom: number
 ): boolean {
   if (now.length < nowFrom + n || before.length < beforeFrom + n) return false;
   for (let i = 0; i < n; i += 1) {
-    const rendered = renderStepForCompare(now[nowFrom + i]);
-    if (rendered === null || rendered !== renderStepForCompare(before[beforeFrom + i])) {
+    const rendered = now[nowFrom + i];
+    if (rendered === null || rendered !== before[beforeFrom + i]) {
       return false;
     }
   }
@@ -3479,16 +3479,21 @@ function sameStepRun(
  * one. Out of reach is an edit that leaves the length alone: a reorder of two
  * identical steps has no witness in any content comparison.
  */
-function anchorHolds(now: FlowStep[], before: FlowStep[], n: number): boolean {
+function anchorHolds(now: (string | null)[], before: (string | null)[], n: number): boolean {
   if (!sameStepRun(now, before, n, 0, 0)) return false;
-  // A deletion ahead of the prefix slides `before` forward relative to `now`;
-  // an insertion slides `now` forward relative to `before`. Only the direction
-  // the length change allows is asked about.
-  for (let shift = 1; shift <= before.length - now.length; shift += 1) {
-    if (sameStepRun(now, before, n, 0, shift)) return false;
-  }
-  for (let shift = 1; shift <= now.length - before.length; shift += 1) {
-    if (sameStepRun(now, before, n, shift, 0)) return false;
+  // A deletion slides `before` forward from the splice on; an insertion slides
+  // `now` forward. Ask only about the direction the length change allows.
+  const deleted = before.length - now.length;
+  const inserted = now.length - before.length;
+  for (let at = 0; at < n; at += 1) {
+    // The base check above already compared everything before `at`, so each
+    // hypothesis only accounts for the `n - at` steps the splice moved.
+    for (let size = 1; size <= deleted; size += 1) {
+      if (sameStepRun(now, before, n - at, at, at + size)) return false;
+    }
+    for (let size = 1; size <= inserted; size += 1) {
+      if (sameStepRun(now, before, n - at, at + size, at)) return false;
+    }
   }
   return true;
 }
@@ -3519,9 +3524,12 @@ function dropMovedWarnings(
   before: FlowStep[]
 ): number {
   if (!warnings) return 0;
+  // Render both views once. Every verdict asks about the same two lists.
+  const nowRendered = now.map(renderStepForCompare);
+  const beforeRendered = before.map(renderStepForCompare);
   let dropped = 0;
   for (const n of [...warnings.keys()]) {
-    if (anchorHolds(now, before, n)) continue;
+    if (anchorHolds(nowRendered, beforeRendered, n)) continue;
     warnings.delete(n);
     dropped += 1;
   }

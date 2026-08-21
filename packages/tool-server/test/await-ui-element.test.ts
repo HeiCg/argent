@@ -738,10 +738,9 @@ describe("await-ui-element tool", () => {
   // because a hand-written note fixture cannot produce the interesting cases.
 
   it("calls a wait that never got a readable tree unreadable, hint and all", async () => {
-    // The AX backend is down, so `describeIos` returns an empty tree plus a
-    // boot hint — which `appendDiagnostics` folds onto the note. Matching the
-    // undecorated note text is what this defeats: on the platform state the
-    // `unreadable` cause exists for, the note is ALWAYS decorated.
+    // A dead AX backend gives an empty tree plus a boot hint, which
+    // `appendDiagnostics` folds onto the note. The note is thus always
+    // decorated, so a match on the plain note text fails.
     const tool = createAwaitUiElementTool(iosRegistry(makeFailingAXService()));
 
     const result = await tool.execute(
@@ -763,9 +762,8 @@ describe("await-ui-element tool", () => {
   it.each(["visible", "exists", "text"] as const)(
     "calls a blind `%s` wait unreadable, though its note reads like a genuine miss",
     async (condition) => {
-      // On these three a wholly blind window produces prose byte-identical to a
-      // real miss, so no note can tell them apart — the cause has to come from
-      // the loop, which knows no read was ever trustworthy.
+      // A blind window gives the same note text as a real miss. Only the loop
+      // knows that no read was trustworthy, so the cause comes from there.
       const tool = createAwaitUiElementTool(iosRegistry(makeFailingAXService()));
 
       const result = await tool.execute(
@@ -805,9 +803,8 @@ describe("await-ui-element tool", () => {
     expect(unmetUiWaitCause(result)).toBe("unmet");
   });
 
-  // A Chromium session that serves one real tree and then goes down: the
-  // renderer throws, which reaches the loop as a fetch ERROR rather than as the
-  // empty-tree-plus-hint iOS degrades to.
+  // A Chromium session that serves one tree and then throws. The loop sees a
+  // fetch error, not the empty tree plus hint that iOS degrades to.
   function makeChromiumApiThatDiesAfterOneRead(): ChromiumCdpApi {
     const tree = {
       role: "html",
@@ -884,9 +881,8 @@ describe("await-ui-element tool", () => {
   });
 
   it("stops vouching for a verdict the reads went dark long before", async () => {
-    // Same shape, but the trusted read lies many poll intervals behind the
-    // deadline: consecutive reads went dark, so what they saw no longer
-    // describes the screen the wait gave up on.
+    // Same shape, but the trusted read is many poll intervals back. What it saw
+    // no longer describes the screen at the deadline.
     const tool = createAwaitUiElementTool(makeMockRegistry({}));
 
     const result = await tool.execute(
@@ -940,17 +936,15 @@ describe("await-ui-element tool", () => {
       }
     );
 
-    // No fetch threw, so there is no error in the note to read the cause off —
-    // it reads exactly like a miss on a tree that was there the whole time.
+    // No fetch threw, so the note reads exactly like a genuine miss.
     expect(result.note).toMatch(/no element matched/i);
     expect(result.note ?? "").not.toMatch(/fetch failed|did not complete/i);
     expect(unmetUiWaitCause(result)).toBe("unreadable");
   });
 
   it("holds a silent source to the same bar on `hidden`", async () => {
-    // `hidden` resolves on ABSENCE, so a window that went dark cannot confirm
-    // the element left — the note says it was still visible, and that reading
-    // is 300ms stale.
+    // `hidden` resolves on absence. The note says the element is still visible,
+    // but that reading is 300ms stale.
     const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
 
     const result = await tool.execute(
@@ -1069,9 +1063,8 @@ describe("await-ui-element tool", () => {
     );
 
     expect(result.success).toBe(false);
-    // Every later fetch RETURNED, so there is no error to read the cause off —
-    // dropping the blind term makes this a trusted final read and the verdict
-    // becomes a confident `unmet` on a screen nobody could see.
+    // Every later fetch returned, so there is no error to read the cause off.
+    // Without the blind term this becomes a confident `unmet` on a blank screen.
     expect(result.note ?? "").not.toMatch(/fetch failed|did not complete/i);
     expect(unmetUiWaitCause(result)).toBe("unreadable");
   });

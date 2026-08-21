@@ -18,12 +18,9 @@ import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/co
 // produces, not a platform label on one shared fixture.
 
 let fetchCount: number;
-// The whole fetch is the seam, not just the tree it yields: a test that needs
-// the read itself to hang (rather than to throw or to return) replaces this.
-// Reset in beforeEach so no test leaks its implementation into the next.
+// The whole fetch is the seam; `beforeEach` resets it between tests.
 let fetchRunnerTree: () => Promise<DescribeTreeData>;
-// Forces `probeWhenCondition` to REJECT for the one test whose subject is that
-// arm. Every other test leaves it undefined and runs the real poll loop.
+// Makes `probeWhenCondition` REJECT for the one test whose subject is that arm.
 let probeRejection: Error | undefined;
 vi.mock("../../src/tools/flows/flow-actions", async () => {
   const actual = await vi.importActual<typeof import("../../src/tools/flows/flow-actions")>(
@@ -78,8 +75,6 @@ const ROW: DescribeNode["frame"] = { x: 0.1, y: 0.1, width: 0.5, height: 0.05 };
 
 let tmpDir: string;
 
-// ── Runner trees, each through its own platform's real flow adapter ──────────
-
 const IOS_SCREEN = { x: 0, y: 0, width: 390, height: 844 };
 const IOS_ROW = { x: 0, y: 100, width: 390, height: 40 };
 
@@ -122,12 +117,7 @@ function iosLabel(label: string, extra: Partial<RawIosView> = {}): RawIosView {
 const ANDROID_W = 1080;
 const ANDROID_H = 1920;
 
-/**
- * One `android-devtools` getHierarchy dump. Both Android sides read THIS —
- * `describe`'s default path and the flow tree are two parses of the same XML,
- * so an Android divergence has to be demonstrated on identical input or it is
- * not a divergence at all.
- */
+/** One `android-devtools` dump. Both Android sides parse THIS same XML. */
 function androidDump(rows: string): string {
   return `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
 <hierarchy rotation="0">
@@ -157,8 +147,6 @@ function vegaRunnerTree(children: DescribeNode[]): DescribeNode {
   return adaptVegaTreeForFlows(n({ role: "Screen", frame: FULL, children }));
 }
 
-// ── Recording harness ────────────────────────────────────────────────────────
-
 /** A registry whose `await-ui-element` always reports the condition met. */
 function registryWhereWaitSucceeds(): Registry {
   return {
@@ -174,10 +162,7 @@ function registryWhereWaitSucceeds(): Registry {
   } as unknown as Registry;
 }
 
-/**
- * A registry whose `await-ui-element` reports the condition NEVER held — the
- * `{ success: false }` shape the tool returns instead of throwing.
- */
+/** `await-ui-element` returns `{ success: false }`: the condition never held. */
 function registryWhereWaitTimesOut(): Registry {
   return registryWhereWaitFails("no element matched the selector");
 }
@@ -217,10 +202,8 @@ async function startRecording(name: string): Promise<void> {
 }
 
 /**
- * Start a recording in "client" (remote) mode — the arm where the in-memory
- * flow is authoritative and this host never owns the file. `flow-start-recording`
- * picks the mode from the `project_root` file probe: a root that is NOT present
- * on this host means the caller is remote.
+ * Client (remote) mode: the in-memory flow is authoritative and this host never
+ * owns the file. A `project_root` absent from this host is what selects it.
  */
 async function startRemoteRecording(name: string): Promise<void> {
   await flowStartRecordingTool.execute(
@@ -254,12 +237,7 @@ async function recordedSteps(name: string) {
   return parseFlow(yaml).steps;
 }
 
-/**
- * The probe's own reason, as the determinate warning quotes it back — the only
- * part of the message carrying screen content, and so the only part the cap
- * governs. Asserting on the whole warning instead measures the fixed prose
- * around it, which moves whenever the explanation is reworded.
- */
+/** The probe's reason, quoted back. It is the only part the cap governs. */
 function echoedReasonOf(warning: string): string {
   const open = "directives against (";
   const close = "). As the raw";
@@ -270,14 +248,7 @@ function echoedReasonOf(warning: string): string {
   return warning.slice(start + open.length, end);
 }
 
-/**
- * The warning half of `message`, or undefined when there is none.
- *
- * Asserting `message` contains "Step added" proves nothing — that is the
- * unconditional prefix of EVERY message, warnings included — so a regression
- * that nags on every correctly-recorded wait would sail through. Split the
- * prefix off and require the remainder to be absent instead.
- */
+/** The warning half of `message`. "Step added" prefixes EVERY message. */
 function warningOf(result: { message: string }, name: string): string | undefined {
   const prefix = `Step added to "${name}" flow`;
   expect(result.message.startsWith(prefix)).toBe(true);
@@ -301,7 +272,6 @@ function verdictsIn(summary: string[]): Map<number, string> {
       step = Number(numbered[1]);
       continue;
     }
-    // Anything that is not a step line must be a verdict for the step above it.
     expect(line.startsWith(prefix)).toBe(true);
     expect(step).toBeDefined();
     byStep.set(step as number, line.slice(prefix.length));
@@ -347,8 +317,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     });
 
     expect(warningOf(result, "agree")).toBeUndefined();
-    // The whole recorded artifact, not just its count: a step of the wrong
-    // shape (device id left in, condition dropped) would pass a length check.
+    // The whole artifact: a step of the wrong shape passes a length check.
     expect(await recordedSteps("agree")).toEqual([
       {
         kind: "tool",
@@ -409,9 +378,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       const tree = testCase.tree();
       serveTree(tree);
 
-      // What await-ui-element's OWN evaluator decides about this very tree.
-      // The fixture is only meaningful if the live side passes: that is the
-      // premise the probe is being asked to confirm.
+      // The premise: await-ui-element's own evaluator passes on this tree.
       const liveVerdict = evaluateMatches(
         { udid: IOS, ...testCase.wait } as Parameters<typeof evaluateMatches>[0],
         findAll(tree, testCase.wait.selector as Selector)
@@ -425,17 +392,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     });
   }
 
-  // ── The live wait itself never held ───────────────────────────────────────
-  //
-  // `await-ui-element` reports an unmet condition by returning
-  // { success: false }, so the recorder's success path records the step. The
-  // cross-tree warning must not be attached there: it says the raw step
-  // "replays fine — it reads the same tree it just passed against", and this
-  // one never passed. At replay an unmet wait fails the step and stops the run.
+  // An unmet condition returns `{ success: false }` and the step is still
+  // recorded. The warning claims the raw step "replays fine", and it never passed.
   it("does not claim a wait that never held replays fine", async () => {
-    // The runner's tree AGREES with the selector, so the probe — had it run —
-    // would have found nothing to warn about and the step would have been
-    // narrated as clean.
+    // The runner's tree agrees, so a probe would have found nothing to warn about.
     await startRecording("unmet");
 
     const result = await recordWait(
@@ -448,26 +408,17 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("the wait itself never held");
     expect(warning).toContain("stops the run there");
     expect(warning).not.toContain("replays fine");
-    // Nothing was compared, so nothing may blame a tree divergence or send the
-    // author to re-record against "a selector present in both".
+    // Nothing was compared, so nothing may blame a tree divergence.
     expect(warning).not.toContain("neither contains the other");
     expect(warning).not.toContain("present in both");
-    // "Delete it from the .yaml" holds in host mode only: against a remote
-    // client the in-memory copy is authoritative mid-recording and the next
-    // append writes the step straight back, with nothing reporting the restore.
+    // "Delete it from the .yaml" holds in host mode only.
     expect(warning).toContain("after `flow-finish-recording`");
-    // The probe never ran, so the runner's tree was never read.
     expect(fetchCount).toBe(0);
-    // Recording the step anyway is the pre-existing behaviour; only the
-    // narration changes.
     expect(await recordedSteps("unmet")).toHaveLength(1);
   });
 
-  // `success: false` is also how the tool reports that it never got to look at
-  // the screen — the tree source failed for the whole wait, or the caller
-  // cancelled. Neither observed anything, so neither may be narrated as the
-  // condition being false, and neither may prescribe deleting the step: the
-  // check can be perfectly good and the source merely down.
+  // `success: false` also reports that the tool never saw the screen: the tree
+  // source failed, or the caller cancelled. Neither is a false condition.
   it("does not call an unreadable tree source a condition that never held", async () => {
     await startRecording("blind");
 
@@ -480,19 +431,14 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const warning = warningOf(result, "blind");
     expect(warning).toContain("without a trustworthy read of the UI tree");
     expect(warning).toContain("UNKNOWN, not known-bad");
-    // The note carries an error only where a fetch threw; an empty or degraded
-    // tree produces none, and the warning must not send the author looking for
-    // one that is not there.
+    // The note carries an error only where a fetch threw. An empty tree gives none.
     expect(warning).toContain("names the tree-source error where a fetch threw");
     expect(warning).not.toContain("read `toolResult.note` for the tree-source error");
-    // Nor may it claim nothing was compared: a window that goes dark only at
-    // the end classifies here too, and its earlier reads did compare.
+    // A window that goes dark only at the end classifies here, and it did compare.
     expect(warning).not.toContain("nothing was ever compared");
-    // The two claims the unmet text makes, and this one must not.
     expect(warning).not.toContain("the wait itself never held");
     expect(warning).not.toContain("re-record it once the condition can actually hold");
     expect(warning).not.toContain("delete the step from the .yaml");
-    // Nor may it blame a tree divergence: nothing was compared on either side.
     expect(warning).not.toContain("present in both");
     expect(fetchCount).toBe(0);
     expect(await recordedSteps("blind")).toHaveLength(1);
@@ -520,8 +466,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("without a trustworthy read of the UI tree");
     expect(warning).toContain("UNKNOWN, not known-bad");
     expect(warning).not.toContain("the wait itself never held");
-    // The control: the SAME note with no cause is the legacy shape, and there
-    // `unmet` is the only answer available.
+    // The control: the same note with no cause leaves `unmet` the only answer.
     await startRecording("bare");
     const bare = await recordWait(
       "bare",
@@ -547,11 +492,9 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const warning = warningOf(result, "remoteunmet");
     expect(warning).toContain("the wait itself never held");
     expect(warning).toContain("after `flow-finish-recording` rather than mid-recording");
-    // The advice the create-flow skill forbids in two places, and which is what
-    // renumbers the steps a verdict is anchored to.
+    // The advice the create-flow skill forbids; it renumbers the steps.
     expect(warning).not.toContain("in host (local) mode, where the recorder re-reads");
-    // The host never wrote a file in this mode, so the step lives in memory —
-    // and the verdict still has to travel with it.
+    // The host wrote no file, so the step and its verdict live in memory.
     expect(result.savedTo).not.toBe(null);
   });
 
@@ -567,8 +510,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warningOf(result, "remoteprobe")).toContain(
       "does NOT hold against the tree the runner resolves"
     );
-    // The probe reads the device the same way in either mode — persistence is
-    // where the two differ, not the verdict.
+    // The probe reads the device the same way in either mode.
     expect(fetchCount).toBeGreaterThan(0);
   });
 
@@ -588,13 +530,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "remotefinish", project_root: tmpDir }
     );
 
-    // The diverging step keeps its verdict; the clean one gets none — the
-    // asymmetry an all-or-nothing drop would erase.
     expect([...verdictsIn(finished.summary).keys()]).toEqual([1]);
     expect(verdictsIn(finished.summary).get(1)).toContain("does NOT hold");
     expect(finished.message).toContain("1 step carries a cross-tree warning");
     expect(finished.message).not.toContain("NOT in `summary`");
-    // And the file still travels in the directive rather than to a host path.
     expect(finished.savedTo).not.toBe(tmpDir);
   });
 
@@ -632,11 +571,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(fetchCount).toBe(0);
   });
 
-  // ── The probe's early-return guards ───────────────────────────────────────
-  //
-  // Each guard returns before the probe reads anything, so `fetchCount` is what
-  // proves it fired: a guard that stopped guarding would read the device and
-  // then compose a verdict from arguments it could not evaluate.
+  // Each guard returns before the probe reads, so `fetchCount` proves it fired.
   it.each([
     ["a non-string condition", { condition: 7, selector: { text: "Continue" } }],
     ["a null selector", { condition: "visible", selector: null }],
@@ -662,7 +597,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(await recordedSteps(name)).toHaveLength(1);
   });
 
-  // ── The probe is gated on the command ─────────────────────────────────────
   it("does not re-probe a command that is not a wait", async () => {
     await startRecording("tap");
     const tool = createFlowAddStepTool(registryWhereWaitSucceeds());
@@ -678,15 +612,11 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     );
 
     expect(warningOf(result, "tap")).toBeUndefined();
-    // Exactly one read — the tap's own selector capture. A second would mean
-    // the cross-tree probe ran on a command that has no condition to re-probe.
+    // One read, the tap's own selector capture. A second means the probe ran.
     expect(fetchCount).toBe(1);
   });
 
-  // A wait carrying `delayMs` is still a wait: the delay is a replay-time sleep
-  // before the step, and says nothing about which tree the condition resolves
-  // against. (Contrast the tap and restart-app rewrites, which a delayMs
-  // deliberately opts out of.)
+  // `delayMs` is a replay-time sleep; it says nothing about which tree resolves.
   it("still re-probes a wait that carries delayMs", async () => {
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await startRecording("delayed");
@@ -725,9 +655,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const tree = CONTINUE_BUTTON();
     serveTree(tree, "cdp-dom");
 
-    // The premise: the two spellings really do disagree on this tree. The
-    // identifier pass — the bare string's FIRST alternative — matches the
-    // button, while the strict `text` the step recorded matches nothing.
     expect(findAll(tree, { identifier: "Continue" })).toHaveLength(1);
     expect(findAll(tree, { text: "Continue" })).toHaveLength(0);
 
@@ -738,10 +665,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       selector: { text: "Continue" },
     });
 
-    // Strict reading: nothing matches `text=Continue`, so `hidden` holds and
-    // there is nothing to warn about. Were the probe to adopt the bare
-    // string's loose fallback it would find the button and warn here — and
-    // then be wrong about the spelling the skill prescribes.
+    // Strict reading: nothing matches `text=Continue`, so `hidden` holds.
     expect(warningOf(result, "strictclean")).toBeUndefined();
   });
 
@@ -757,8 +681,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const warning = warningOf(result, "strictwarn") ?? "";
 
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
-    // Without this clause the author converts to `{ visible: Continue }`, whose
-    // identifier pass resolves the button — a check the probe never made.
+    // Without it the author converts to `{ visible: Continue }`, a check never made.
     expect(warning).toContain("convert it in the strict map spelling");
     expect(warning).toContain("re-parses as a LOOSE selector");
   });
@@ -792,9 +715,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       expectedText: "$5.00",
       textMatch: "equals",
     });
-    // Same tree, same expectedText — only the comparator differs, and it flips
-    // the verdict. That is exactly the trap when polish converts a defaulted
-    // step to the `equals:` spelling.
     expect(warningOf(exact, "textequals")).toContain('its text was "Total: $5.00"');
   });
 
@@ -826,8 +746,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
   it("iOS: warns when the AX tree's merged label exists on no single view", async () => {
     const tree = iosRunnerTree(IOS_ACCESSIBLE_CONTAINER);
-    // The premise on the runner's side: the merged string names no node, even
-    // though the container is present and carries the pieces as hoisted text.
     expect(findAll(tree, { text: "Total $5.00" })).toHaveLength(0);
     expect(findAll(tree, { identifier: "total-row" })[0]?.subtreeText).toBe("Total $5.00");
 
@@ -901,10 +819,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     ).toHaveLength(0);
   });
 
-  // What the longer `await:` timeout would be waiting FOR is per condition, and
-  // on `hidden` it is the opposite event: the wait passes when the element
-  // LEAVES. Saying "unless the element reaches that tree" there describes the
-  // one outcome that would keep it failing.
+  // On `hidden` the longer `await:` waits for the element to LEAVE, not to arrive.
   it("does not tell a `hidden` wait to wait for the element to arrive", async () => {
     serveTree(iosRunnerTree([iosLabel("Spinner")]));
     await startRecording("hiddenaway");
@@ -918,18 +833,14 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
     expect(warning).toContain("unless the element LEAVES that tree within its longer timeout");
     expect(warning).not.toContain("the element reaches that tree");
-    // The remedy inverts with the condition for the same reason. A `hidden`
-    // verdict fires because the runner's tree still HAS the element, so
-    // "retarget at an id the full hierarchy definitely carries" points at the
-    // opposite of the criterion that would help.
+    // A `hidden` verdict fires because the tree still HAS the element; retarget inverts.
     expect(warning).toContain("this verdict says that tree still HAS the element");
     expect(warning).toContain("narrow the selector until it matches only what you expect to leave");
     expect(warning).not.toContain("retarget the DIRECTIVE at an `id` the full hierarchy carries");
   });
 
   it("Android: inverts the retarget remedy for `hidden` too", async () => {
-    // The clause is per platform AND per condition; Android names a
-    // `resource-id` where iOS names an `id`, and both invert the same way.
+    // Per platform AND per condition: Android names a `resource-id`, iOS an `id`.
     serveTree(androidRunnerTree(ANDROID_ROW), "android-devtools");
     await startRecording("hiddenandroid");
 
@@ -969,8 +880,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       expectedText: "Continue",
     };
 
-    // The premise, on the same dump: the LIVE side really does pass. Without
-    // this the fixture only proves the stub returns success.
+    // The premise, on the same dump: the LIVE side really does pass.
     const recorderTree = androidRecorderTree(ANDROID_ROW);
     expect(
       evaluateMatches(
@@ -986,13 +896,11 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const warning = warningOf(result, "android");
 
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
-    // The reader clause is its own sentence after the divergence sentence's
-    // period, so it must start capitalized — not "…first. no read-only…".
+    // Its own sentence after the period, so it must start capitalized.
     expect(warning).toContain(
       "first. No read-only tool exposes the runner's full hierarchy on Android"
     );
-    // No tree story rules out the screen having moved on between the live wait
-    // and the re-probe, so every platform's must say so.
+    // No tree story rules out a screen that moved on, so every platform says so.
     expect(warning).toContain("changed between the live wait and this re-probe");
     expect(warning).not.toContain("native-find-views");
     // Pin Android's OWN story, not merely that it differs from the others:
@@ -1003,19 +911,16 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).toContain("this host then parses it two ways");
     expect(warning).toContain("each holds elements the other drops");
     expect(warning).not.toContain("full native view hierarchy");
-    // The claim that made it read as two sources.
     expect(warning).not.toContain("the runner reads the full hierarchy");
     expect(await recordedSteps("android")).toHaveLength(1);
   });
 
-  // Chromium: `projectChromiumNode` drops a node with no on-screen frame, and
-  // the walker clamps an off-viewport element's frame to zero area. `describe`
-  // still lists it — so `exists` holds live and not for the runner.
+  // Chromium: `projectChromiumNode` drops a node with no on-screen frame, and the
+  // walker clamps an off-viewport frame to zero area. `describe` still lists it.
   it("Chromium: warns when the runner's projection drops an off-viewport node", async () => {
     serveTree(
       chromiumRunnerTree([
-        // Addressable by id AND by text — the node is dropped purely for having
-        // no on-screen frame, so the message must not blame the selector.
+        // Addressable by id AND by text, so the message must not blame the selector.
         n({
           role: "div",
           identifier: "far",
@@ -1034,27 +939,18 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     });
     const warning = warningOf(result, "chromium");
 
-    // `projectChromiumNode` keeps a node only when it is onScreen AND
-    // addressable. Naming addressability alone reads as a verdict on the
-    // selector, and sends an author whose element is merely below the fold
-    // hunting for an id it already carries.
+    // A node is kept only when onScreen AND addressable; naming the latter blames the selector.
     expect(warning).toContain("addressable nodes");
     expect(warning).toContain("clamp");
     expect(warning).toContain("off-viewport");
     expect(warning).toContain("`scroll-to` before the check rather than a different selector");
-    // Both axes. `normRect` clamps each edge to the viewport on its own, so a
-    // node scrolled sideways comes back zero-WIDTH at full height — and an
-    // author told only about height reads a normal height as "on screen" and
-    // skips the scroll that would fix it.
+    // Both axes. `normRect` clamps each edge alone, so a sideways node is zero-WIDTH.
     expect(warning).toContain("zero width for one left or right of it");
-    // And NOT the other direction, which this condition rules out: the live
-    // `exists` passed, so the recorder's tree held the node and its own walk
-    // limit cannot be why the runner's does not.
+    // Not the other direction: the live `exists` passed, so the recorder saw it.
     expect(warning).toContain("5000-node walk limit is not what went wrong");
     expect(warning).not.toContain("past the end of what it read");
 
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
-    // Capitalized, as its own sentence after the divergence sentence's period.
     expect(warning).toContain(
       "first. No read-only tool exposes the runner's trimmed tree on Chromium"
     );
@@ -1063,9 +959,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("Chromium: inverts its own remedy for a `hidden` divergence", async () => {
-    // The chromium arm used to be one fixed string for every condition, so a
-    // `hidden` verdict — which means that tree still HAS the element — came
-    // with the two tips that make the directive match MORE surely.
+    // A `hidden` verdict means that tree still HAS the element.
     serveTree(
       chromiumRunnerTree([
         n({
@@ -1086,16 +980,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     });
     const warning = warningOf(result, "chromiumhidden") ?? "";
 
-    // The one piece of chromium advice that survives every cause.
     expect(warning).toContain("settle it by running the conversion");
     expect(warning).toContain("This verdict says that tree still HAS the element");
     expect(warning).toContain("matches only what you expect to leave");
-    // …and not the two that point the other way.
     expect(warning).not.toContain("the fix there is a `scroll-to` before the check");
     expect(warning).not.toContain("only an `id`/`role` selector can match it");
-    // The divergence half inverts with it. On `hidden` the runner's tree KEPT
-    // the element, so the flow tree's own drops cannot be the cause and naming
-    // them sends the author to the one end that is provably fine.
+    // On `hidden` the runner's tree KEPT the element, so its own drops are not the cause.
     expect(warning).toContain("it is the RECORDER that never saw the element");
     expect(warning).toContain("past the end of what it read");
     expect(warning).not.toContain("keeps only addressable nodes");
@@ -1107,8 +997,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   // the two enumerate in opposite orders. The verdict is right and every other
   // explanation in the message is wrong for it.
   it("Chromium: names the multi-match cause when a `text` wait elects two different winners", async () => {
-    // A block-level wrapper and its text child on the SAME frame — the default
-    // for a labelled block element, and routine in React Native.
     const TIE = { x: 0.007, y: 0.062, width: 0.98, height: 0.014 };
     const recorderRow = n({
       role: "div",
@@ -1120,8 +1008,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     serveTree(chromiumRunnerTree([recorderRow]), "cdp-dom");
     await startRecording("tie");
 
-    // Guard the premise this test exists for: the two enumeration orders really
-    // do hand back opposite winners from the same nodes.
+    // The premise: the two enumeration orders hand back opposite winners.
     const sel: Selector = { text: "Total" };
     const recorderMatches = findAll(n({ role: "html", frame: FULL, children: [recorderRow] }), sel);
     const runnerMatches = findAll(chromiumRunnerTree([recorderRow]), sel);
@@ -1139,25 +1026,19 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     });
     const warning = warningOf(result, "tie");
 
-    // The cause, and the remedy no other clause offers.
     expect(warning).toContain("selector matches more than one element");
     expect(warning).toContain("elect DIFFERENT ones from the very same nodes");
     expect(warning).toContain("narrow the selector until it resolves a single node");
-    // Membership and timing are both inapplicable here, and the message has to
-    // say so rather than leave four explanations standing that are all false.
+    // Membership and timing are both inapplicable, and the message must say so.
     expect(warning).toContain("both trees hold both elements");
     expect(warning).toContain("a longer `await:` timeout cannot help");
-    // …and it must not claim the two sides judged the same element. `text` has
-    // its own `awaitStillNeeds` arm for this: deleting it silently gives a
-    // `text` wait the `visible` clause, which names the wrong event.
+    // `text` has its own `awaitStillNeeds` arm; without it the `visible` one applies.
     expect(warning).toContain(
       "unless the element THAT tree elects comes to match on it within its longer timeout"
     );
     expect(warning).not.toContain("that element's text comes to match");
     expect(warning).not.toContain("the element reaches that tree");
-    // The MECHANISM, which is the shape this fixture is built out of: a nested
-    // recorder tree read pre-order against a flattened runner tree read
-    // post-order. It holds on Chromium, Android and Vega — and not on iOS.
+    // The MECHANISM: nested pre-order against flattened post-order. Not on iOS.
     expect(warning).toContain("lists a container before its children");
   });
 
@@ -1184,8 +1065,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("does not raise the multi-match cause on a condition that cannot have it", async () => {
-    // `exists`/`visible`/`hidden` quantify over every match, so enumeration
-    // order cannot change their answer — raising it there is noise.
+    // `exists`/`visible`/`hidden` quantify over every match, so order cannot matter.
     serveTree(
       chromiumRunnerTree([
         n({ role: "div", identifier: "far", value: "Continue", frame: { ...ROW, height: 0 } }),
@@ -1223,9 +1103,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     ]);
     serveTree(tree, "cdp-dom");
 
-    // The premise, straight off the real adapter: the node is present and
-    // addressable by id, and its name is the redaction — not the placeholder
-    // `describe` shows.
     expect(findAll(tree, { identifier: "pw-field" })).toHaveLength(1);
     expect(findAll(tree, { text: "secret" })).toHaveLength(0);
     expect(findAll(tree, { text: "[password]" })).toHaveLength(1);
@@ -1239,13 +1116,11 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const warning = warningOf(result, "chromiumpw") ?? "";
 
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
-    // The verdict is right; the explanation must not be the one cause that is
-    // provably not what happened here.
+    // The verdict is right; the explanation must not name the wrong cause.
     expect(warning).not.toContain("never reaches the runner");
     expect(warning).toContain("`[password]`");
     expect(warning).toContain("only an `id`/`role` selector");
-    // Nor may it promise `describe` is a superset the author can read the
-    // runner's side off: past its shorter walk it omits nodes the runner keeps.
+    // `describe` is not a superset: past its shorter walk it omits nodes.
     expect(warning).not.toContain("full DOM the recorder read");
     expect(warning).toContain("omits nodes the runner keeps");
   });
@@ -1268,8 +1143,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     serveTree(flowTree, "vega-automation");
     await startRecording("vegahoist");
 
-    // The container's hoisted text is strictly longer than its own — the
-    // divergence the earlier wording claimed could break an `equals`.
     expect(findAll(flowTree, { identifier: "totals" })[0]?.subtreeText).toContain("$5.00");
 
     const result = await recordWait("vegahoist", {
@@ -1284,8 +1157,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("Vega: blames a changed screen, not two different projections", async () => {
-    // The only way a Vega probe disagrees: the screen moved on between the
-    // live wait and the re-probe.
+    // The only way a Vega probe disagrees: the screen moved on.
     serveTree(
       vegaRunnerTree([n({ role: "text", label: "Proceed", frame: ROW })]),
       "vega-automation"
@@ -1310,16 +1182,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).not.toContain("elected different elements");
     expect(warning).toContain("`describe` reads the same source the runner does");
     expect(warning).not.toContain("different projections of the screen");
-    // Vega is where an absolute consequence is most plainly wrong: the arm
-    // below states outright that a disagreement here MEANS the screen changed,
-    // and on that cause the conversion passes. So the conversion clause may not
-    // decide against it — it has to leave the verdict to the cause.
+    // Here a disagreement MEANS the screen changed, and on that cause conversion passes.
     expect(warning).not.toContain("WILL fail");
     expect(warning).toContain(
       "if the SCREEN simply moved on since the live wait, this verdict is no evidence"
     );
-    // The other three platforms' imperative. Here the selector is fine and the
-    // screen is what moved, so nothing may send the author to rewrite it.
+    // Here the selector is fine, so nothing may send the author to rewrite it.
     expect(warning).not.toContain("retarget the DIRECTIVE");
     expect(warning).not.toContain("re-record with a selector");
     expect(warning).toContain("re-run the wait");
@@ -1356,9 +1224,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).not.toContain("disagreement means the SCREEN changed");
   });
 
-  // Each platform's remedy must be its own. Pinning them only by "does this
-  // string appear" lets a reworded clause collapse two platforms onto one
-  // wording while every negative assertion above still passes.
+  // Each platform's remedy must be its own; a substring check lets a reword collapse two.
   it("gives each platform a distinct remedy", async () => {
     const warnings = new Map<string, string>();
     for (const [name, udid] of [
@@ -1378,7 +1244,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     }
 
     expect(new Set(warnings.values()).size).toBe(4);
-    // And none of them may fall through to the unreachable-platform fallback.
     for (const warning of warnings.values()) {
       expect(warning).not.toContain("on this platform — keep the step raw");
     }
@@ -1387,9 +1252,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   // ── Indeterminate: unknown must never be dressed up as a verdict ──────────
 
   it("records with a warning when the runner's tree cannot be read at all", async () => {
-    // The injection-free case: the runner's tree source is unavailable on this
-    // device. Indeterminate is not a verdict, so refusing here would block a
-    // form the skill explicitly sanctions.
+    // Indeterminate is not a verdict, so refusing here would block a sanctioned form.
     fetchRunnerTree = async () => {
       throw new Error("native devtools is unavailable");
     };
@@ -1403,18 +1266,13 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect(warning).toContain("could not be re-verified against the tree the RUNNER reads");
     expect(warning).toContain("is UNKNOWN, not known-bad");
-    // Its own rule: nothing was compared, so nothing may claim the two trees
-    // differ — nor append the remedy that follows from a comparison.
     expect(warning).not.toContain("neither contains the other");
     expect(warning).not.toContain("No read-only tool");
     expect(warning).not.toContain("re-record");
     expect(await recordedSteps("blind")).toHaveLength(1);
   });
 
-  // "the accessibility tree" is the recorder's tree only on iOS and Android. On
-  // Chromium the recorder read the CDP DOM and on Vega the toolkit page source,
-  // so the indeterminate message must name the READER, not a tree source
-  // neither side touched.
+  // The recorder's tree is the accessibility tree only on iOS and Android.
   it("does not call the recorder's tree the accessibility tree on Chromium", async () => {
     fetchRunnerTree = async () => {
       throw new Error("CDP session closed");
@@ -1430,16 +1288,11 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect(warning).toContain("the tree `await-ui-element` reads");
     expect(warning).not.toContain("accessibility tree");
-    // The bundleId caveat is iOS-only — nothing on Chromium resolves a target
-    // app, so raising the subject here would invent a knob that does not exist.
+    // The bundleId caveat is iOS-only: nothing on Chromium resolves a target app.
     expect(warning).not.toContain("no directive takes a bundleId");
   });
 
-  // On iOS the indeterminate reason is quoted from the shared native-target
-  // error, whose recovery ends "provide bundleId explicitly". `await-ui-element`
-  // takes a `bundleId`, so that reads as actionable — and it is not: the probe
-  // predicts a directive, and no directive carries one. Correct the quoted
-  // advice rather than leaving the author to act on it.
+  // The quoted reason ends "provide bundleId explicitly", but no directive takes one.
   it("iOS: says the bundleId its quoted reason recommends cannot reach the probe", async () => {
     fetchRunnerTree = async () => {
       throw new Error(
@@ -1458,7 +1311,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     // The quoted reason still arrives whole — its tail is the recovery.
     expect(warning).toContain("provide bundleId explicitly");
-    // …followed by what actually applies here.
     expect(warning).toContain("no directive takes a bundleId");
     expect(warning).toContain("`launch-app`");
     expect(warning).toContain("keep the check as a raw `tool:` step");
@@ -1498,16 +1350,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   // the warning advertises. Ceiling the probe, and report an overrun as
   // indeterminate rather than as a verdict.
   it("gives up on a tree read that outruns the probe budget, and stops it", async () => {
-    // A read the test holds open past the ceiling and then releases — the shape
-    // that exposes what "giving up" has to mean. A read that NEVER settles
-    // would prove the bound and nothing else: the loop stays parked on it, so
-    // it could not have issued a second read whether or not it was stopped.
+    // A read held open past the ceiling, then released. One that never settles proves less.
     let releaseRead: () => void = () => {};
     const readLanded = new Promise<void>((resolve) => {
       releaseRead = resolve;
     });
-    // Resolves the instant a SECOND fetch is issued — the thing that must not
-    // happen once the ceiling has given up on the first.
+    // Resolves the instant a SECOND fetch is issued, which must not happen.
     let sawSecondRead: () => void = () => {};
     const secondRead = new Promise<void>((resolve) => {
       sawSecondRead = resolve;
@@ -1516,9 +1364,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     fetchRunnerTree = async () => {
       if ((reads += 1) > 1) sawSecondRead();
       await readLanded;
-      // A tree that does NOT satisfy the condition. One that did would end the
-      // loop on the spot and prove nothing: the post-deadline read only fires
-      // when the read that landed left the condition unmet.
+      // A tree that does NOT satisfy the condition, or the loop would end here.
       return { tree: iosRunnerTree([iosLabel("Proceed")]), source: "native-devtools" };
     };
     await startRecording("slow");
@@ -1532,13 +1378,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     const warning = warningOf(result, "slow");
 
     expect(warning).toContain("could not be re-verified against the tree the RUNNER reads");
-    // The source answered, just too slowly — so the message must not describe
-    // it as absent, nor send the author to wait for a recovery that is not
-    // pending.
+    // The source answered, just too slowly. It is not absent.
     expect(warning).toContain("the source is slow, not down");
     expect(warning).toContain("when the device is quieter");
     expect(warning).not.toContain("once that tree source is back");
-    // Never a verdict: nothing was compared, so the conversion is UNKNOWN.
     expect(warning).not.toContain("does NOT hold");
     // The bound is a BACKSTOP, not the proof. The read cannot land until
     // `releaseRead()` below, so a probe that did not give up would park forever
@@ -1610,7 +1453,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect(warning).toContain("does NOT hold against the tree the runner resolves");
     expect(warning).toContain("more chars)");
-    // Enough of the text to be actionable, not the whole screen.
     expect(warning).toContain("Lorem ipsum");
     // Bound the ECHOED REASON, not the whole message: the fixed prose around it
     // is longer than this fixture, so `warning.length < wall.length` would turn
@@ -1622,14 +1464,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(tail).toHaveLength(60);
   });
 
-  // The cap bounds what is EMITTED, not what is kept. Budgeting the kept
-  // content instead let the marker push the result past the cap — and, just
-  // over the boundary, past the input it was meant to shorten: a 201-character
-  // reason came out at 218 announcing "(1 more chars)".
+  // The cap bounds what is EMITTED, not what is kept. Budgeting the kept content
+  // let a 201-character reason come out at 218, announcing "(1 more chars)".
   it("never emits a reason over the cap, or longer than the reason itself", async () => {
-    // `element matched text="Total" but its text was "<label>" (wanted to
-    // contain "$5.00")` is 76 characters around the label, so the label length
-    // sets the reason length exactly.
+    // The fixed prose around the label is 76 characters.
     const FIXED = 76;
     for (const reasonLength of [199, 200, 201, 205, 220, 260]) {
       const label = `Total ${"z".repeat(reasonLength - FIXED - "Total ".length)}`;
@@ -1646,24 +1484,16 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
       expect(echoed.length).toBeLessThanOrEqual(200);
       expect(echoed.length).toBeLessThanOrEqual(reasonLength);
-      // Either it fit and is verbatim, or it was elided — never "elided and
-      // longer".
       if (reasonLength <= 200) expect(echoed).not.toContain("more chars)");
       else expect(echoed).toContain("more chars)");
     }
   }, 30_000);
 
-  // The cap only ever ELIDES THE MIDDLE, because `waitForCondition` puts the
-  // note recording that its final poll went dark at the END of the reason —
-  // and that note qualifies the very verdict the warning is built on. Head-only
-  // truncation dropped it silently.
+  // The cap ELIDES THE MIDDLE: the note about a dark final poll lives at the END.
   it("keeps the tail of an over-long reason, where the final-poll note lives", async () => {
     const wall = "Lorem ipsum dolor sit amet ".repeat(60);
-    // Trusted reads that leave the condition false right up to the deadline,
-    // then a source that dies on the last poll. That is the blip tier: the dark
-    // tail is inside CONDITION_DARK_TAIL_TOLERANCE_MS, so the verdict stays
-    // determinate and `waitForCondition` appends the failed final read to the
-    // reason rather than discarding the window.
+    // Trusted reads keep the condition false, then the source dies on the last
+    // poll. That tail is inside CONDITION_DARK_TAIL_TOLERANCE_MS, so it stays firm.
     const probeStartedAt = Date.now();
     fetchRunnerTree = async () => {
       if (Date.now() - probeStartedAt > 900) throw new Error("native devtools went away");
@@ -1678,10 +1508,8 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     });
     const warning = warningOf(result, "tail") ?? "";
 
-    // This tier holds only while the last trusted read lies within
-    // CONDITION_DARK_TAIL_TOLERANCE_MS (2 poll intervals, 600ms) of the loop's
-    // exit. Host load is the one thing that can stretch it past that, and the
-    // verdict then turns indeterminate — so say which premise broke.
+    // This tier holds only while the dark tail is inside
+    // CONDITION_DARK_TAIL_TOLERANCE_MS (2 poll intervals, 600ms). Host load breaks it.
     expect(
       warning,
       "expected the blip tier: under host load the dark tail can exceed CONDITION_DARK_TAIL_TOLERANCE_MS, which turns this indeterminate"
@@ -1755,7 +1583,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(result.toolResult).toMatchObject({ completed: 0, total: 2 });
   });
 
-  // Two boundary cases the "wall of text" fixture cannot reach.
   it("quotes a reason at or under the cap verbatim", async () => {
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await startRecording("short");
@@ -1772,8 +1599,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("does not truncate the reason when the runner's tree cannot be read", async () => {
-    // An environment error carries no screen content, and its TAIL is the
-    // recovery instruction — the case where a cap costs the reader the fix.
+    // An environment error carries no screen content, and its TAIL is the fix.
     const advice =
       "native devtools is unavailable on this device — the app was not launched through " +
       "argent, so the injected helper never attached; relaunch it with `launch-app` (or " +
@@ -1795,16 +1621,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warning).not.toContain("more chars)");
   });
 
-  // ── The verdict has to reach the moment it is FOR ────────────────────────
-  //
-  // The probe answers a polish-time question, and polish begins after
-  // flow-finish-recording. A warning that lives only in one step's `message` is
-  // gone from every artifact by then.
+  // Polish begins after flow-finish-recording, so a verdict must survive it.
 
   it("carries each step's verdict into flow-finish-recording", async () => {
     await startRecording("polish");
 
-    // Step 1 agrees — the runner's tree has the element, so no warning.
+    // Step 1 agrees, so no warning.
     serveTree(iosRunnerTree([iosLabel("Continue")]));
     await recordWait("polish", { condition: "visible", selector: { text: "Continue" } });
     // Step 2 diverges.
@@ -1816,13 +1638,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "polish", project_root: tmpDir }
     );
 
-    // Two step lines plus the one verdict line, each its own element.
     expect(finished.summary).toHaveLength(3);
     const verdicts = verdictsIn(finished.summary);
-    // The verdict is anchored to the step it judged, not to the recording.
     expect([...verdicts.keys()]).toEqual([2]);
     expect(verdicts.get(2)).toContain("does NOT hold against the tree the runner resolves");
-    // …and `message` says one exists, for a caller that reads only that.
     expect(finished.message).toContain("1 step carries a cross-tree warning");
   });
 
@@ -1841,11 +1660,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("does not headline a wait that never held as a conversion warning", async () => {
-    // The re-probe is skipped on any `success: false` — the warning says so
-    // itself. What it reports is a step that failed LIVE and stops the run at
-    // replay, which is the opposite of a polish-time question about converting,
-    // and a caller that reads only `message` and is not converting anything
-    // would take the old headline as licence to skip the summary.
+    // The re-probe is skipped on any `success: false`; this step failed LIVE.
     await startRecording("neverheld");
     await recordWait(
       "neverheld",
@@ -1864,9 +1679,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("pluralizes both counts, and joins them", async () => {
-    // The conversion arm's plural is pinned by the trailing-echo test; the wait
-    // arm's was not, so forcing "step" unconditionally shipped green. Two of
-    // each also pins the join, which no single-kind fixture reaches.
+    // The wait arm's plural was unpinned. Two of each also pins the join.
     await startRecording("plural");
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await recordWait("plural", { condition: "visible", selector: { text: "Continue" } });
@@ -1932,22 +1745,16 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "echolast", project_root: tmpDir }
     );
 
-    // Three steps and two verdicts, interleaved.
     expect(finished.summary).toHaveLength(5);
     expect([...verdictsIn(finished.summary).keys()]).toEqual([1, 2]);
     expect(finished.summary[4]).toContain("3. echo:");
-    // The plural arm of the count, and the only place it is asserted.
     expect(finished.message).toContain("2 steps carry a cross-tree warning");
   });
 
   it("drops every verdict when a hand edit renumbered the steps", async () => {
-    // Editing the .yaml mid-recording is documented, and host mode re-reads the
-    // file on every append — so deleting a step renumbers each one after it.
-    // These anchors are positions, so an innocent step can inherit the number a
-    // verdict was left on.
+    // Host mode re-reads on every append, so a delete renumbers each later step.
     await startRecording("edited");
-    // Step 1 agrees, so its probe returns on the first read and costs no grace
-    // window. Step 2 diverges and carries the verdict. Step 3 agrees.
+    // Step 1 agrees, step 2 diverges and carries the verdict, step 3 agrees.
     serveTree(iosRunnerTree([iosLabel("Continue")]));
     await recordWait("edited", { condition: "visible", selector: { text: "Continue" } });
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
@@ -1955,9 +1762,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     serveTree(iosRunnerTree([iosLabel("Continue")]));
     await recordWait("edited", { condition: "visible", selector: { text: "Continue" } });
 
-    // Delete the MIDDLE step: the innocent third slides into position 2, the
-    // one the verdict is anchored to. Dropping only out-of-range numbers would
-    // convict it.
+    // Delete the MIDDLE step: the innocent third slides into the anchored position 2.
     const file = path.join(tmpDir, ".argent", "flows", "edited.yaml");
     const parsed = parseFlow(await fs.readFile(file, "utf8"));
     parsed.steps = [parsed.steps[0], parsed.steps[2]];
@@ -1970,9 +1775,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
 
     expect(finished.summary).toHaveLength(2);
     for (const line of finished.summary) expect(line).not.toContain("warning:");
-    // …and `message` must not advertise what the summary no longer carries —
-    // nor read like a recording in which nothing was ever wrong. The drop is
-    // the right call; reporting it as a pass is not.
+    // …and `message` must not advertise what the summary no longer carries.
     expect(finished.message).toBe(
       'Finished recording "edited" flow (2 steps) — 1 warning raised during this recording is ' +
         "NOT in `summary`: a hand edit to the .yaml moved the step it judged, so which step it " +
@@ -2003,8 +1806,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "inplace", project_root: tmpDir }
     );
 
-    // Step 1 never moved and its anchor still matches, so check 2 would have
-    // kept it.
+    // Step 1 never moved, so check 2 would have kept it.
     expect(finished.summary).toHaveLength(2);
     expect(finished.summary[0]).toContain('"Continue"');
     expect(verdictsIn(finished.summary).size).toBe(0);
@@ -2014,8 +1816,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("drops the verdict when a hand edit REORDERED the steps", async () => {
-    // A reorder needs no second condition: the flow is still the length the
-    // recorder appended, so nothing about the count says anything happened.
+    // The flow is still the length the recorder appended, so the count says nothing.
     await startRecording("swapped");
     serveTree(iosRunnerTree([iosLabel("Continue")]));
     await recordWait("swapped", { condition: "visible", selector: { text: "Continue" } });
@@ -2025,9 +1826,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     serveTree(iosRunnerTree([iosLabel("Continue")]));
     await recordWait("swapped", { condition: "exists", selector: { text: "Continue" } });
 
-    // Hand-swap steps 2 and 3. The step that inherits number 2 is a check that
-    // agrees across both trees, and a verdict left on the number would convict
-    // it while the wait that really diverges reads clean.
+    // Hand-swap steps 2 and 3. The step inheriting number 2 agrees across both trees.
     const file = path.join(tmpDir, ".argent", "flows", "swapped.yaml");
     const parsed = parseFlow(await fs.readFile(file, "utf8"));
     parsed.steps = [parsed.steps[0], parsed.steps[2], parsed.steps[1]];
@@ -2046,17 +1845,14 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("drops the verdict of a step deleted before the recording went on", async () => {
-    // The append after the edit re-reads the edited file, so the recorder's own
-    // view agrees with it and nothing about the file says an edit happened —
-    // while every key past the deletion now points one step too far.
+    // The append re-reads the edited file, so nothing in it says an edit happened.
     await startRecording("deleted");
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await recordWait("deleted", { condition: "visible", selector: { text: "Continue" } });
     serveTree(iosRunnerTree([iosLabel("Sign in")]));
     await recordWait("deleted", { condition: "visible", selector: { text: "Sign in" } });
 
-    // Delete the diverging step 1 — the remedy `UNMET_WAIT_WARNING` itself
-    // offers — then keep recording.
+    // Delete the diverging step 1, the remedy `UNMET_WAIT_WARNING` offers.
     const file = path.join(tmpDir, ".argent", "flows", "deleted.yaml");
     const parsed = parseFlow(await fs.readFile(file, "utf8"));
     parsed.steps = parsed.steps.slice(1);
@@ -2071,8 +1867,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     );
 
     expect(finished.summary).toHaveLength(2);
-    // Step 1 is now the "Sign in" wait, which was judged clean; the verdict that
-    // was filed under 1 judged a step that is no longer in the file.
+    // Step 1 is now the clean "Sign in" wait; the verdict under 1 judged a goner.
     expect(finished.summary[0]).toContain('"Sign in"');
     expect(verdictsIn(finished.summary).size).toBe(0);
     for (const line of finished.summary) expect(line).not.toContain("warning:");
@@ -2101,8 +1896,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     parsed.steps = parsed.steps.slice(1);
     await fs.writeFile(file, serializeFlow(parsed), "utf8");
 
-    // …and record on, so the append re-reads the edited file and the recorder's
-    // view agrees with it again.
+    // …and record on, so the append re-reads the edited file.
     serveTree(iosRunnerTree([iosLabel("Ready marker")]));
     await recordWait("twins", { condition: "visible", selector: { text: "Ready marker" } });
 
@@ -2111,13 +1905,46 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
       { name: "twins", project_root: tmpDir }
     );
 
-    // Step 1 is the wait that diverged; step 2 is the twin that passed the
-    // probe. A verdict on either is a lie — on step 2 it convicts the clean
-    // one, on step 1 it is right by accident and unprovable from here.
+    // Step 1 diverged; step 2 is the twin that passed. A verdict on either is a lie.
     expect(finished.summary).toHaveLength(3);
     expect(verdictsIn(finished.summary).size).toBe(0);
     expect(finished.summary[1]).toContain('"Continue"');
     for (const line of finished.summary) expect(line).not.toContain("warning:");
+  });
+
+  it("drops the verdict a delete INSIDE the prefix moved onto an identical twin", async () => {
+    // The same false conviction, but mid-prefix. The shortened file renders like
+    // an unedited one; only a hypothesis anchored at 2 sees the splice.
+    await startRecording("midtwins");
+    serveTree(iosRunnerTree([iosLabel("Ready marker")]));
+    await recordWait("midtwins", { condition: "visible", selector: { text: "Ready marker" } });
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("midtwins", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("midtwins", { condition: "visible", selector: { text: "Continue" } });
+
+    // Hand-delete the diverging step 2, leaving its twin to inherit the number.
+    const file = path.join(tmpDir, ".argent", "flows", "midtwins.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = [parsed.steps[0], parsed.steps[2]];
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    serveTree(iosRunnerTree([iosLabel("Ready marker")]));
+    await recordWait("midtwins", { condition: "visible", selector: { text: "Ready marker" } });
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "midtwins", project_root: tmpDir }
+    );
+
+    // Number 2 now holds the twin that AGREED, so a verdict there convicts it.
+    expect(finished.summary).toHaveLength(3);
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.summary[1]).toContain('"Continue"');
+    for (const line of finished.summary) expect(line).not.toContain("warning:");
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
   });
 
   it("keeps a live verdict when a delete makes the next append reuse its number", async () => {
@@ -2131,8 +1958,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await recordWait("collide", { condition: "visible", selector: { text: "Beta" } });
 
-    // Delete "Alpha": the file is one step long again, so the next append is
-    // step 2 — the number "Beta"'s verdict is filed under.
+    // Delete "Alpha": the file is one step long again, so the next append is 2.
     const file = path.join(tmpDir, ".argent", "flows", "collide.yaml");
     const parsed = parseFlow(await fs.readFile(file, "utf8"));
     parsed.steps = parsed.steps.slice(1);
@@ -2170,14 +1996,12 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // MAX_RETRIES more times, each retry re-running the action and appending
     // another step. The re-probe spends PROBE_BUDGET_MS from that same ceiling.
     expect(createFlowAddStepTool(registryWhereWaitSucceeds()).longRunning).toBe(true);
-    // The tool it proxies most often, and the asymmetry that made this sharp:
-    // a wait that ran fine standalone duplicated itself once recorded.
+    // The tool it proxies most often: a standalone wait duplicated once recorded.
     expect(createAwaitUiElementTool(registryWhereWaitSucceeds()).longRunning).toBe(true);
   });
 
   it("says nothing about discarded verdicts when none were", async () => {
-    // The other side of the count: a clean recording's `message` must stay the
-    // bare line, or every finish grows a paragraph about an edit nobody made.
+    // A clean recording's `message` must stay the bare line.
     await startRecording("nodrop");
     serveTree(iosRunnerTree([iosLabel("Continue")]));
     await recordWait("nodrop", { condition: "visible", selector: { text: "Continue" } });
@@ -2254,10 +2078,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("drops the verdict when an inserted twin takes the warned step's number", async () => {
-    // The same blindness the other way round. Hand-inserting a copy of the
-    // warned wait AHEAD of it leaves number 1 holding the copy — which renders
-    // identically and was never probed at all — while the step that diverged
-    // slides to 2.
+    // The same blindness reversed: number 1 holds an inserted copy, never probed.
     await startRecording("grown");
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await recordWait("grown", { condition: "visible", selector: { text: "Continue" } });
@@ -2291,8 +2112,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     serveTree(iosRunnerTree([iosLabel("Proceed")]));
     await recordWait("cyclic", { condition: "visible", selector: { text: "Continue" } });
 
-    // Alias the step's own `args` map back into itself, the one edit that
-    // survives a re-parse and cannot be stringified.
+    // Alias the step's own `args` map back into itself: it cannot be stringified.
     const file = path.join(tmpDir, ".argent", "flows", "cyclic.yaml");
     await fs.writeFile(
       file,
@@ -2319,8 +2139,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(echo.stepCount).toBe(2);
     expect((await recordedSteps("cyclic")).map((s) => s.kind)).toEqual(["tool", "echo"]);
 
-    // The edited step cannot be vouched for, so its verdict goes — and the
-    // finish says so rather than reporting a clean recording.
+    // The edited step cannot be vouched for, so its verdict goes.
     const finished = await flowFinishRecordingTool.execute(
       {},
       { name: "cyclic", project_root: tmpDir }
@@ -2334,10 +2153,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   // ── Cancellation ─────────────────────────────────────────────────────────
 
   it("keeps the step when the run is cancelled during the re-probe", async () => {
-    // The live await-ui-element still "passes" (the mock ignores the signal), so
-    // the abort lands in the re-probe — strictly AFTER the recorded tool ran.
-    // Throwing there discards the record of a step that already happened, which
-    // is the thing `captureRunTarget` refuses to do from the same position.
+    // The mock ignores the signal, so the abort lands AFTER the recorded tool ran.
     await startRecording("cancel");
     const controller = new AbortController();
     controller.abort();
@@ -2353,7 +2169,6 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // Nothing was compared, so the verdict is unknown — not a divergence.
     expect(warning).toContain("UNKNOWN, not known-bad");
     expect(warning).not.toContain("does NOT hold");
-    // The step the device already executed survives.
     expect(await recordedSteps("cancel")).toHaveLength(1);
     // ZERO reads. The caller's signal must reach the POLL LOOP, not just the
     // wait for it: `waitForCondition` tests it before its first fetch, so an
@@ -2363,9 +2178,7 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
   });
 
   it("aborts mid-probe in band rather than as a tool failure", async () => {
-    // The abort arrives while the probe is polling, not before it starts — the
-    // window the reproduction hits, and the one where a throw is both a lost
-    // step and an unclassified `REGISTRY_TOOL_EXECUTION_FAILED`.
+    // The abort arrives while the probe polls. A throw there loses the step.
     const controller = new AbortController();
     fetchRunnerTree = async () => {
       controller.abort();

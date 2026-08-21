@@ -178,8 +178,7 @@ interface WaitResult {
   /**
    * WHY an unmet wait failed, for the callers that narrate it. Set on every
    * `success: false` return and never on a success. See
-   * {@link UnmetUiWaitCause} for what each value licenses, and
-   * {@link timeoutCause} for how the deadline arm decides between them.
+   * {@link UnmetUiWaitCause} and {@link timeoutCause}.
    */
   cause?: UnmetUiWaitCause;
 }
@@ -461,9 +460,8 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       // "the element was there and disappeared" from "the selector never matched
       // at all" — otherwise a typo'd selector is an instant false-positive.
       let everMatched = false;
-      // When the last read that could be trusted to have EVALUATED the
-      // condition landed. Still undefined at the deadline means no read in the
-      // window ever did — see {@link timeoutCause}.
+      // When the last read that could EVALUATE the condition landed. Still
+      // undefined at the deadline means no read ever did.
       let lastTrustedReadAt: number | undefined;
 
       const poll = await pollDescribeTree<WaitResult>({
