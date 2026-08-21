@@ -654,11 +654,11 @@ function blockingIgnorables(
  * This fires only where the FOLD did not already handle it. Folding-equal
  * strings compare equal, so the check passes and no message is produced at all;
  * the note therefore has to key on a strictly wider notion of "looks the same"
- * than {@link foldText} — here, equality once every INERT default-ignorable is
- * removed. That makes it the safety net for invisible characters the fold's
- * explicit classes do not list, which is precisely the failure that is
- * otherwise unexplainable: two identical-looking strings, quoted side by side,
- * declared unequal.
+ * than {@link foldText} — here, the comparator holding once every INERT
+ * default-ignorable is removed. That makes it the safety net for invisible
+ * characters the fold's explicit classes do not list, which is precisely the
+ * failure that is otherwise unexplainable: two identical-looking strings,
+ * quoted side by side, declared unequal.
  *
  * What it must never do is call a REAL rendering difference invisible, because
  * the advice that follows such a note is "copy what the app renders" and an
@@ -682,14 +682,28 @@ function blockingIgnorables(
  */
 export function confusableTextNote(actual: string, expected: string): string | undefined {
   if (actual === expected) return undefined;
-  // Ignorables ONLY. Lowercasing or NFKC-folding here would call a plain case
-  // difference — or a compatibility variant like "ﬁ" vs "fi" — "invisible",
-  // which is false: those differ in characters the eye reads perfectly well.
-  // The literal comparators already fold both, so a pair differing only that
-  // way passes and never reaches this note; a regex comparison is
-  // case-sensitive by design and must not be told otherwise.
+  // Strip the ignorables, then ask the COMPARATOR — not raw `===`. The
+  // question the note claims to have answered is "would this have matched
+  // without them", and only the comparator that failed can answer it, because
+  // it folds both sides. Asking `===` here let ANY difference the fold absorbs
+  // suppress the note: a label reading `Amount<CGJ> PLN<NBSP>42` against
+  // `Amount PLN 42` missed on the CGJ and was explained by nothing, the NBSP
+  // alone being enough to fail this gate, and a difference of case did the
+  // same. {@link confusableTextNoteIn} has always asked its gate through
+  // `includesCI`; this is the same question about the whole string.
+  //
+  // What that does NOT fold in is the compatibility variant the old comment
+  // here worried about: {@link foldText} is NFC, never NFKC, so "ﬁle" still
+  // does not equal "file" and a typographic near-miss still goes to the note
+  // that names the glyph the eye can read.
   const visible = withoutInertIgnorables;
-  if (visible(actual) !== visible(expected)) return undefined;
+  const bareActual = visible(actual);
+  const bareExpected = visible(expected);
+  // Raw equality is kept alongside the folded one so the gate only ever
+  // widens: a pair that folds away to nothing on both sides (two ZWSPs against
+  // one) is equal as strings while `equalsCI` refuses it, an expectation that
+  // folds to empty being no constraint rather than an exact one.
+  if (bareActual !== bareExpected && !equalsCI(bareActual, bareExpected)) return undefined;
   return ignorableDifferenceNote(actual, expected, equalsCI);
 }
 

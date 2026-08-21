@@ -2357,9 +2357,10 @@ function assertReason(
       // escape a Cf test despite being exactly the unexplainable invisible this
       // note exists for. A variation selector is likewise Mn and IS ignorable —
       // what keeps it out is that it BUILDS a glyph, not its category. See
-      // confusableTextNote. (A space-like difference never reaches here at all:
-      // the fold reduces NBSP and its kin to a plain space, so the check has
-      // already passed.)
+      // confusableTextNote. (A space-like difference on its OWN never reaches
+      // here: the fold reduces NBSP and its kin to a plain space, so the check
+      // has already passed. Alongside an invisible it does reach here, which is
+      // why that note's gate asks the comparator rather than raw equality.)
       //
       // Only for the LITERAL modes: in `matches` the "expected" string is a
       // regular expression, not text, so comparing its code points against the

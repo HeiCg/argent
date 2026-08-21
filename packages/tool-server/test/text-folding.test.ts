@@ -429,6 +429,31 @@ describe("confusableTextNote", () => {
     expect(confusableTextNote(`Save${CGJ}`, "Save")).toContain("U+034F");
   });
 
+  it("asks its gate through the COMPARATOR, so a folded-away difference cannot silence it", () => {
+    // The gate is a question about the comparison that failed, and the
+    // comparison folds both sides — so asking raw `===` here let anything the
+    // fold absorbs suppress the note entirely. One NBSP beside the CGJ was
+    // enough, and so was a difference of case, while the substring sibling
+    // (whose gate has always been `includesCI`) explained the very same pair.
+    const label = `Amount${CGJ}${NBSP}PLN${NBSP}42`;
+    expect(equalsCI(label, "Amount PLN 42")).toBe(false);
+    expect(confusableTextNote(label, "Amount PLN 42")).toContain("U+034F");
+    expect(equalsCI(`Kraft${SOFT_HYPHEN}fahrzeug`, "kraftfahrzeug")).toBe(false);
+    expect(confusableTextNote(`Kraft${SOFT_HYPHEN}fahrzeug`, "kraftfahrzeug")).toContain(
+      "changes what IS drawn"
+    );
+    // Widening the gate must not widen it onto a COMPATIBILITY variant: those
+    // glyphs are ones the eye reads, and calling them invisible is the false
+    // story this note exists to refuse. foldText is NFC, never NFKC, so they
+    // still fail the gate even with an ignorable alongside them.
+    expect(confusableTextNote(`\uFB01le${ZWSP}`, "file")).toBeUndefined();
+    expect(confusableTextNote(`Add\u2026${ZWSP}`, "Add...")).toBeUndefined();
+    // And a pair that folds away to nothing on BOTH sides is still explained,
+    // though equalsCI refuses it — an expectation that folds to empty is no
+    // constraint rather than an exact one, and the gate must only ever widen.
+    expect(confusableTextNote(`${ZWSP}${ZWSP}`, ZWSP)).toContain("U+200B");
+  });
+
   it("has a SUBSTRING form, so the note is not absent on the default comparator", () => {
     // The whole-string gate could only ever fire under `contains` when the
     // needle spanned the entire label — so on the proper-substring shape,
