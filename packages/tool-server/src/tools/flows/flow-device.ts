@@ -216,8 +216,8 @@ export function stripDeviceKeys(args: Record<string, unknown>): Record<string, u
  */
 export function stepRequiresDevice(registry: Registry, step: FlowStep): boolean {
   switch (step.kind) {
-    // `script` joins the two narration/pause kinds here because it runs a Node
-    // process against a backend, never against the device — which is what lets
+    // `script` joins the two narration/pause kinds here because the runner
+    // routes no device to its Node process — which is what lets
     // a script-only flow run with nothing booted. It does NOT make every
     // script-bearing flow device-free: a `run:` step beside it still requires
     // one, since the runner resolves that target at run time rather than during

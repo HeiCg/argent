@@ -260,7 +260,7 @@ export interface StepReport {
    * arrives exactly as the script wrote it. Present on every script
    * step that produced output, whatever its status — a passing seed script's
    * "created order 4711" is as load-bearing as a failing one's stack, since it
-   * is the only record of what the flow did to the backend.
+   * is the only record of what the script did.
    */
   scriptLog?: string;
   /**
@@ -1175,9 +1175,9 @@ diffs a screenshot — or, with \`cropOn: <selector>\`, one element's cropped re
 baseline (a missing baseline fails the step — set updateBaselines to adopt the current screen; a
 cropped element whose size drifted fails on dimensions); \`echo\` annotates; \`run\` executes another flow
 inline — a YAML path resolved against the directory of the flow file that references it (co-located
-runs only); \`script\` runs a local .mjs file in a fresh Node process for the backend state a flow needs
+runs only); \`script\` runs a local .mjs file in a fresh Node process for setup, cleanup, or any work a device step cannot do
 (\`script: { path: scripts/seed.mjs, timeout?: <ms> }\` — always a map, never a bare path; the path is
-resolved against the flow file that names the step, exactly as a \`run\` target is, and the step drives no
+resolved against the flow file that names the step, exactly as a \`run\` target is, and the step needs no
 device, so a script-only flow runs with nothing booted — though a \`run\` step beside it still resolves
 one. Its stdout and stderr come back on the step report. Co-located runs only.).
 A selector-less gesture — a coordinate \`tap\`/\`long-press\`, or a \`pinch\`/\`rotate\` with no \`on\` — resolves
@@ -2586,13 +2586,13 @@ async function scriptFileProblem(canonical: string): Promise<string | null> {
  * everything the runner did to it — a process it could not start, a limit it
  * hit, a signal it did not choose, a queue it never left. That split is what
  * lets CI read a red script step: a `fail` is a regression in the flow or the
- * backend it talks to, an `error` is the machine it ran on.
+ * system it talks to, an `error` is the machine it ran on.
  *
  * `cancelled` is an `error`, and that is the one classification worth arguing
  * about. `skip` means "the step did not run", and every reader of a report acts
  * on that meaning — the CLI prints it as a not-executed line and
- * {@link FlowRunResult.skipped} counts it. A script that ran, reached a backend
- * and was then killed is the one case where "did not run" is the most dangerous
+ * {@link FlowRunResult.skipped} counts it. A script that ran, reached the system
+ * it talks to and was then killed is the one case where "did not run" is the most dangerous
  * thing a report can say, because the state it created is still there. So a
  * cancellation the executor reports is an `error`, whose reason says which of
  * the two happened; the "did not run" case is reported by {@link execSteps}'

@@ -732,11 +732,12 @@ export type FlowStep =
   | { kind: "rotate"; selector?: FlowSelector; by: number }
   | { kind: "snapshot"; name: string; maxMismatch?: number; cropOn?: FlowSelector }
   /**
-   * Run a trusted local JavaScript file in a fresh Node process, for the
-   * backend state a flow needs before it touches a device. `path` is the
+   * Run a trusted local JavaScript file in a fresh Node process, for setup,
+   * cleanup, or any work the device directives cannot do. `path` is the
    * as-written YAML path, resolved against the containing file's directory
    * exactly as a `run:` target is; `timeout` is the hard limit in
-   * milliseconds. The step drives no device — the steps around it do.
+   * milliseconds. The runner gives the step no device — the steps around it
+   * drive one.
    */
   | { kind: "script"; path: string; timeout?: number };
 
@@ -792,7 +793,7 @@ export function isBlockStep(step: FlowStep): step is BlockStep {
  * Is a `launch` behind this step still the launch the run BEGINS with?
  *
  * Two kinds are transparent to that question. `echo` narrates. `script` runs a
- * Node process against a backend and never touches the device — which is the
+ * Node process the runner never routes to the device — which is the
  * whole of the seed-then-launch ordering it exists for, so a flow that seeds an
  * order and then launches its app is as launch-led as one that only launches.
  * Every other kind settles the question where it stands: a launch behind it is

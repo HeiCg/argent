@@ -43,7 +43,7 @@ Make repeated runs deterministic:
 3. After setup navigation, echo the named baseline and hard-check it before the first scenario mutation. Use `assert:` or a destination `await:` that fully proves the baseline.
 4. Prefer to restore the baseline at the end.
 
-Use `run:` for a separately recorded reset or seed flow, and `script:` for backend state no recorded flow can set. There is no other fixture mechanism. Ask before cleanup that creates or deletes meaningful user data outside the request.
+Use `run:` for a separately recorded reset or seed flow, and `script:` for setup or cleanup that no recorded flow can do. There is no other fixture mechanism. Ask before cleanup that creates or deletes meaningful user data outside the request.
 
 ### Compact example
 

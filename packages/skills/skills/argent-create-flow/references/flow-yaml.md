@@ -9,7 +9,7 @@ Read this reference when polishing, composing, or manually reviewing a flow.
 - [Prove a navigation](#prove-a-navigation-identity-then-readiness)
 - [Optional divergences](#optional-divergences)
 - [Composition and platform limits](#composition-and-platform-limits)
-- [Backend state: `script`](#backend-state-script)
+- [Local scripts: `script`](#local-scripts-script)
 - [Snapshots and standalone runs](#snapshots-and-standalone-runs)
 - [YAML safety](#yaml-safety)
 
@@ -22,7 +22,7 @@ steps:
   - await: { idle: true }
 ```
 
-An e2e flow has a literal `launch:` as its first step that is not `echo:` or `script:`. A flow that seeds a backend and then launches its app still controls its own start state, so it is e2e too. It cannot declare `executionPrerequisite`. Put the named start state in a leading echo.
+An e2e flow has a literal `launch:` as its first step that is not `echo:` or `script:`. A flow that runs a setup script before its launch is therefore e2e too. It cannot declare `executionPrerequisite`. Put the named start state in a leading echo.
 
 A leading `run:` does not classify the outer flow as e2e, but the runner still follows the chain to the launch it reaches, and on Chromium that launch boots the app before step 1. A flow whose `run:` chain reaches a launch is refused an `executionPrerequisite` too: parse accepts the file, then the run rejects it. The one exception is a run pinned to a Chromium instance you brought to the required state yourself (`--device chromium-cdp-<port>`), where that leading launch only attaches.
 
@@ -191,22 +191,22 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 - Chromium boots one instance per launch **step**, not one per run. The leading launch — the flow's own, or the one its leading `run:` chain reaches — boots before step 1, unless you pinned the run with an explicit `device`, where it only attaches. Every later launch boots a fresh instance, moves the run onto it, and tears down the instance the run already owned for that app path. Nesting a Chromium e2e flow with its own launch is therefore the supported way to give a sub-scenario its own restart. Chromium rejects `pinch` and `rotate`. Use the app's own zoom or rotate controls.
 - Vega uses `tool: tv-remote` and raw `tool: keyboard`. The touch directives (`tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`) are unsupported. Gate focus and navigation results with `await`.
 
-## Backend state: `script`
+## Local scripts: `script`
 
-A `script:` step runs a local JavaScript file in a fresh Node process. It is how a flow reaches a backend rather than a device: seed an order, create a test account, clean up what a run left behind. It drives no device — the steps around it do — so a flow of nothing but scripts runs with nothing booted.
+A `script:` step runs a local JavaScript file in a new Node process. Use it for work that no device step can do: call an API, run a CLI, write fixture files, or clean up after a run. The runner needs no device for the step, so a flow of only script steps runs with no booted device.
 
 ```yaml
 - script: { path: ../../scripts/seed-order.mjs }
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-**The value is always a map.** `script: scripts/seed.mjs` is rejected, and so is a `timeout:` written beside the directive key rather than inside its value. `path` is required. `timeout` is the step's time limit in milliseconds and defaults to 30 seconds.
+**The value is always a map.** Parse rejects a bare `script: scripts/seed.mjs`, and a `timeout:` written beside the directive key. `path` is required. `timeout` is the step limit in milliseconds (default 30000).
 
-The host caps that limit with `scripts.maxTimeoutMs`, which is 5 minutes until the machine's global config sets another value. A larger `timeout:` runs at the cap, and the step report says it was clamped. A cap below 30 seconds lowers the default too.
+The machine config caps that limit with `scripts.maxTimeoutMs` (default 300000, five minutes). A larger `timeout:` runs at the cap, and the report shows the clamp. A cap below 30000 also lowers the default.
 
 ### Where `path` points
 
-`path` obeys the same rules a `run:` target does, spelled for `.mjs`. It resolves against the directory of the flow file **containing the step**, so a fragment reaches the same script whichever flow composed it. Each `../` moves up one directory. A flow under `.argent/flows/` is two levels below the project root, so a script in the project's own `scripts/` directory is two hops up — one more for each directory the flow file sits deeper:
+`path` obeys the rules of a `run:` target, but for `.mjs` files. It resolves against the directory of the flow file that **contains the step**. A fragment therefore finds the same script in each flow that composes it:
 
 ```yaml
 # .argent/flows/checkout.yaml -> <project>/scripts/seed.mjs
@@ -216,33 +216,36 @@ The host caps that limit with `scripts.maxTimeoutMs`, which is 5 minutes until t
 - script: { path: ../../../scripts/seed.mjs }
 ```
 
-Keep scripts in one `scripts/` directory at the project root. That is a convention this skill teaches, not a rule the runner enforces — the same way it does not enforce where a `run:` fragment lives.
+Keep scripts in one `scripts/` directory at the project root. The runner does not enforce this convention.
 
-The filename must end in a lowercase `.mjs` and use only letters, digits, `_` and `-` before it. The `.mjs` is load-bearing: it pins the module type whatever the project's `package.json` says, so one script behaves the same in every project. There is no bare-name completion — write the extension. **Spell the path exactly as the file is named.** macOS and Windows open a file whose case does not match, so a mis-cased path runs green locally and fails with `ENOENT` on Linux CI; the runner refuses the step rather than letting that through, and quotes the spelling on disk.
+The filename must end with a lowercase `.mjs`, and use only letters, digits, `_` and `-` before it. The extension pins the module type against the project `package.json`. Always write the extension: there is no bare-name completion.
+
+**Write the path with the letter case of the file on disk.** macOS and Windows open a file whose case does not agree, but Linux CI fails with `ENOENT`. The runner therefore refuses the step, and quotes the spelling on disk.
 
 ### What the script gets
 
-The working directory is `project_root`, not the directory the script file sits in. `fs.readFileSync("./fixtures/order.json")` therefore reads `<project_root>/fixtures/order.json`. A bare `import` does not follow that rule: Node resolves it from the script file's own directory upwards, so a shared script kept outside the project cannot import that project's dependencies.
+- The working directory is `project_root`, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
+- The environment is an allowlist: `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. All other names are absent, such as `NODE_ENV`, `DATABASE_URL`, `API_KEY`, and each value in a project `.env`. Let the script read what it needs from a file. There is no `env:` key; parse rejects one.
+- The `output` global starts as an empty object. Nothing reads it yet, but a value that the runner cannot serialize **fails** the step.
 
-The environment is an allowlist, not a copy of the tool server's. It carries `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. Everything else is absent — `NODE_ENV`, `DATABASE_URL`, `API_KEY`, and every value a project `.env` defines. Read what a script needs from a file the script opens itself. There is no `env:` key; parse rejects one.
+### What the step reports
 
-The script also gets an `output` global, which starts as an empty object. Nothing reads what it holds yet, but a value that cannot be serialized **fails** the step.
+The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. If the runner cuts the output, it says so on a line of its own.
 
-### What comes back
+**The log has no redaction.** Do not print a credential from a script. The value goes to the step report, the terminal, and each CI log.
 
-The script's stdout and stderr come back on the step report and print under the step line, on a pass as well as a failure — it is the only record of what the step did to the backend. Output is capped at 64 KiB for one step and 256 KiB for the whole run. A step whose output was cut says so on a line of its own.
+The step verdict tells you where the cause is, so CI can separate a regression from the machine that ran it. Both verdicts stop the flow.
 
-**Nothing in that log is redacted.** Never print a credential from a script: the value reaches the step report, the terminal, and every CI log that keeps the output.
-
-A script **fails** the step when the answer is the script's own: it threw, it did not load, it exited non-zero, or it wrote an `output` value that cannot be serialized. A script **errors** the step when the answer is the host's: a time limit, a heap limit, a signal, a process that would not start, a queue slot it never got, a cancelled run, or a `path` this machine matched only by case. That split is what lets CI tell a regression from the machine it ran on. Either verdict stops the flow.
+| Verdict     | Cause      | Examples                                                                                                                                                             |
+| ----------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **failed**  | the script | threw an error, did not load, exited non-zero, or wrote an `output` value that the runner cannot serialize                                                           |
+| **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, no free queue slot, a cancelled run, or a `path` that only a case-insensitive filesystem matched |
 
 ### Boundaries
 
-A `script:` step needs the client and tool server to share a filesystem, so an uploaded flow is rejected: its `.mjs` never left the client.
-
-A flow whose script step sits beside a `run:` step still resolves a device, because `run:` needs one whatever its fragment holds.
-
-On Chromium the leading `launch:` boots its app before step 1, so a `script:` step written above it runs against an app that is already up. iOS, Android and Vega restart the app at the `launch:` step itself, after the script.
+- A `script:` step needs one filesystem for the client and the tool server, so an uploaded flow is rejected: its `.mjs` file stays on the client.
+- A flow with a script step next to a `run:` step still resolves a device, because `run:` always needs one.
+- On Chromium the leading `launch:` boots the app before step 1, so a `script:` step above it runs while the app is up. iOS, Android and Vega restart the app at the `launch:` step, after the script.
 
 ## Snapshots and standalone runs
 
