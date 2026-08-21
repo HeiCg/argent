@@ -80,14 +80,12 @@ Use when you need to verify connectivity before using other debugger tools. Neve
           // Metro path owns its CDPClient: discard the stale node so the next
           // call reconnects fresh. This branch fires when the WebSocket is
           // CLOSING but the close event has not dispatched yet (the terminated
-          // cascade otherwise removes the node first). Tradeoff acknowledged:
-          // dispose closes the LogFileWriter, which DELETES the captured log
-          // file from disk — including a path a prior debugger-log-registry
-          // call returned. That loss is the price of a fresh reconnect;
-          // debugger-log-registry itself never triggers it (no socket gate
-          // there, see its comment). The concurrent terminated cascade may win
-          // the race and remove the node first; that end state is what we
-          // wanted, so a failed dispose is absorbed.
+          // cascade otherwise removes the node first) — which is to say the far
+          // end has already gone. The blueprint's dispose reads that same socket
+          // state, so it KEEPS the captured log file rather than unlinking it,
+          // and the breadcrumb it leaves names the path. The concurrent
+          // terminated cascade may win the race and remove the node first; that
+          // end state is what we wanted, so a failed dispose is absorbed.
           //
           // Track BEFORE disposing: dispose forgets the device alias, and the
           // outcome's platform classifies through it — tracking after would

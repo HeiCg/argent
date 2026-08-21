@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -70,6 +70,49 @@ describe("LogFileWriter", () => {
       // Never its own file, however the clock is set.
       expect(fs.existsSync(pruner.getFilePath())).toBe(true);
       pruner.close();
+    });
+
+    it("spares a session still open after a day of capturing nothing", () => {
+      // The pruner reads mtime, which only moves when an entry is written — so
+      // without the writer's keepalive an open session that has logged nothing
+      // for a day is indistinguishable from an orphan, and the next connect
+      // from any tool-server unlinks the file whose path the tool already
+      // handed out. Reached the same way by a session past MAX_ENTRIES, where
+      // `write` stops touching the file at all.
+      //
+      // Fake timers advance both the clock the pruner compares against and the
+      // interval the writer scheduled; the file's mtime is real.
+      vi.useFakeTimers();
+      try {
+        const live = new LogFileWriter(5555);
+        live.write({ id: 1, timestamp: "t", level: "error", message: "CRITICAL pre-crash" });
+        const livePath = live.getFilePath();
+
+        vi.advanceTimersByTime(DAY_MS + 60 * 60 * 1000);
+        const other = new LogFileWriter(6666);
+
+        expect(fs.existsSync(livePath)).toBe(true);
+        expect(fs.readFileSync(livePath, "utf-8")).toContain("CRITICAL pre-crash");
+        other.close();
+        live.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops the keepalive when the writer closes", () => {
+      // One debugger session per connect on a daemon that runs for weeks: an
+      // interval that outlives its writer accumulates one timer per session.
+      vi.useFakeTimers();
+      try {
+        const before = vi.getTimerCount();
+        const w = new LogFileWriter(7777);
+        expect(vi.getTimerCount()).toBe(before + 1);
+        w.close();
+        expect(vi.getTimerCount()).toBe(before);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

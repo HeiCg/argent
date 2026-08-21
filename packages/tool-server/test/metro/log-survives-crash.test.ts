@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
 import * as http from "node:http";
 import * as fs from "node:fs";
@@ -6,6 +6,8 @@ import { Registry } from "@argent/registry";
 import { jsRuntimeDebuggerBlueprint } from "../../src/blueprints/js-runtime-debugger";
 import { debuggerConnectTool } from "../../src/tools/debugger/debugger-connect";
 import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
+import { createDebuggerStatusTool } from "../../src/tools/debugger/debugger-status";
+import { resolveDebuggerService } from "../../src/tools/debugger/not-connected";
 import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions";
 
 /**
@@ -86,6 +88,7 @@ beforeAll(async () => {
   registry.registerBlueprint(jsRuntimeDebuggerBlueprint);
   registry.registerTool(debuggerConnectTool);
   registry.registerTool(createDebuggerLogRegistryTool(registry));
+  registry.registerTool(createDebuggerStatusTool(registry));
 });
 
 afterAll(async () => {
@@ -177,8 +180,63 @@ describe("console logs across an app crash", () => {
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
     // Never the reaped-by-stop-all wording: nothing was deleted here.
     expect(after.note).not.toContain("deleted on teardown");
+    // And never the teardown family either. No tool was called and no other
+    // agent was involved — the app crashed — so a note that opens by blaming a
+    // stop-all sends the reader after a cause that does not exist, then
+    // contradicts itself with a salvage clause about a dead runtime.
+    expect(after.note).toContain("the app's JS runtime died");
+    expect(after.note).not.toContain("stop-all-simulator-servers");
+    expect(after.note).not.toContain("another agent");
 
     fs.rmSync(logPath, { force: true });
+  });
+
+  it("keeps the log when debugger-status disposes the session in the CLOSING window", async () => {
+    // The sibling teardown on the same dying runtime. `debugger-status`'s
+    // stale_connection branch fires only when the socket has stopped being OPEN
+    // and the close event has not dispatched yet — i.e. the far end has already
+    // gone — and it disposes the service to force a fresh reconnect. Reading
+    // just the `disconnected` event would call that an explicit teardown and
+    // unlink the pre-crash log; the socket state is what makes it a death.
+    //
+    // The window is real but lasts a handful of microtasks, so it is held open
+    // here at the seam the production code consults.
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "closing-device" });
+    cdpConn!.send(
+      JSON.stringify({
+        method: "Runtime.consoleAPICalled",
+        params: {
+          type: "error",
+          args: [{ type: "string", value: "CRITICAL pre-crash error" }],
+          executionContextId: 1,
+          timestamp: Date.now(),
+        },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 200));
+
+    const before = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: "closing-device",
+    })) as { file: string; totalEntries: number };
+    expect(before.totalEntries).toBe(1);
+
+    const api = await resolveDebuggerService(registry, {
+      port: mockPort,
+      device_id: "closing-device",
+    });
+    const socketClosing = vi.spyOn(api.cdp, "isConnected").mockReturnValue(false);
+    const status = (await registry.invokeTool("debugger-status", {
+      port: mockPort,
+      device_id: "closing-device",
+    })) as { reason?: string };
+    socketClosing.mockRestore();
+
+    expect(status.reason).toBe("stale_connection");
+    expect(fs.existsSync(before.file)).toBe(true);
+    expect(fs.readFileSync(before.file, "utf-8")).toContain("CRITICAL pre-crash error");
+
+    fs.rmSync(before.file, { force: true });
   });
 
   it("removes the log file on an explicit teardown", async () => {

@@ -291,7 +291,8 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
           recordReapedSession(
             "js-runtime-debugger",
             device.id,
-            describeLostHistory(captured, runtimeDied ? logWriter.getFilePath() : undefined)
+            describeLostHistory(captured, runtimeDied ? logWriter.getFilePath() : undefined),
+            runtimeDied ? "runtime-death" : "teardown"
           );
         }
         logWriter.close({ keepFile: runtimeDied });

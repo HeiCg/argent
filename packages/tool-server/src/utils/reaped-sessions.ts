@@ -28,11 +28,20 @@
 /** Which session kind was reaped; scopes the key so two kinds can't collide. */
 export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
 
+/**
+ * What ended the session. `runtime-death` is the app's JS runtime going away —
+ * a crash or a force-quit — which reaps the session with no tool call involved;
+ * `teardown` is a `dispose()` whose caller the disposer cannot see.
+ */
+export type ReapedSessionCause = "teardown" | "runtime-death";
+
 export interface ReapedSession {
   kind: ReapedSessionKind;
   deviceId: string;
   /** When the teardown ran, for "…N seconds ago" phrasing. */
   atMs: number;
+  /** Why the session ended, so the message does not blame a tool for a crash. */
+  cause: ReapedSessionCause;
   /**
    * What survived, as a ready-to-read clause (e.g. naming a salvaged file), or
    * undefined when nothing did. Built by the disposer, which is the only place
@@ -53,13 +62,18 @@ function key(kind: ReapedSessionKind, deviceId: string): string {
  * Call ONLY when there was something to lose: a dispose of an idle session is
  * routine cleanup, and recording it would make the next honest "no active
  * session" answer claim a teardown destroyed something.
+ *
+ * `cause` defaults to `"teardown"` — all a disposer can say when the only thing
+ * it knows is that `dispose()` ran. Pass `"runtime-death"` only where the
+ * disposer can tell the runtime itself went away.
  */
 export function recordReapedSession(
   kind: ReapedSessionKind,
   deviceId: string,
-  salvage?: string
+  salvage?: string,
+  cause: ReapedSessionCause = "teardown"
 ): void {
-  const entry: ReapedSession = { kind, deviceId, atMs: Date.now() };
+  const entry: ReapedSession = { kind, deviceId, atMs: Date.now(), cause };
   if (salvage) entry.salvage = salvage;
   reaped.set(key(kind, deviceId), entry);
 }
@@ -80,24 +94,31 @@ export function takeReapedSession(
  * happened, says it is not necessarily this agent's own doing (one tool-server
  * serves every agent), and points at whatever survived.
  *
- * The disposer that leaves a breadcrumb cannot see who triggered it — a
- * blueprint's `dispose()` is called by `Registry._teardown`, with no caller — so
- * the message names the family rather than asserting one member.
- * `stop-all-simulator-servers` is the common one and is named first, but it is
- * not the only one: `stop-simulator-server` on Chromium cascades into the
- * debugger through `ChromiumCdp` (its documented behaviour), and
- * `react-profiler-start { force: true }` disposes the debugger and the profiler
- * session to reclaim them.
+ * On a `teardown` the disposer cannot see who triggered it — a blueprint's
+ * `dispose()` is called by `Registry._teardown`, with no caller — so the message
+ * names the family rather than asserting one member. `stop-all-simulator-servers`
+ * is the common one and is named first, but it is not the only one:
+ * `stop-simulator-server` on Chromium cascades into the debugger through
+ * `ChromiumCdp` (its documented behaviour), and `react-profiler-start
+ * { force: true }` disposes the debugger and the profiler session to reclaim
+ * them. A `runtime-death` is the one cause a disposer CAN name, and naming it
+ * matters: offering the teardown family there would send an agent hunting for a
+ * tool call, or another agent, that never existed.
  */
 export function describeReapedSession(entry: ReapedSession, what: string): string {
   const secondsAgo = Math.max(0, Math.round((Date.now() - entry.atMs) / 1000));
+  const why =
+    entry.cause === "runtime-death"
+      ? `the app's JS runtime died (a crash or a force-quit), which ends the session exactly as ` +
+        `a teardown does. No tool call was involved, and no other agent.`
+      : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
+        `another teardown that reaches the same services (a stop-simulator-server on Chromium, ` +
+        `or a react-profiler-start reclaiming the session with force). One tool-server serves ` +
+        `every agent using this argent install, so this may have been another agent rather ` +
+        `than your own call.`;
   return (
-    `The ${what} for device ${entry.deviceId} was torn down ${secondsAgo}s ago — by a ` +
-    `stop-all-simulator-servers, which reaps every service a device owns, or by another ` +
-    `teardown that reaches the same services (a stop-simulator-server on Chromium, or a ` +
-    `react-profiler-start reclaiming the session with force). One tool-server serves every ` +
-    `agent using this argent install, so this may have been another agent rather than your own ` +
-    `call. It was not a session that never started.` +
+    `The ${what} for device ${entry.deviceId} was torn down ${secondsAgo}s ago — ${why} ` +
+    `It was not a session that never started.` +
     (entry.salvage ? ` ${entry.salvage}` : "")
   );
 }
@@ -110,15 +131,16 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
  * disk, which a runtime death does; omit it when the teardown unlinked it. The
  * count restarts at 0 either way, since the next resolve builds a new writer
  * over a new path, so what the clause has to settle is whether the old entries
- * are still readable somewhere.
+ * are still readable somewhere. Why the session ended is the {@link
+ * ReapedSessionCause} clause's job, not this one's.
  */
 export function describeLostHistory(captured: number, keptAt?: string): string {
   const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;
   if (keptAt) {
     return (
-      `The log file is kept at ${keptAt} — it holds ${entries} from before the runtime died, so ` +
-      `read that file for them. This registry starts empty because a new session was minted, not ` +
-      `because the app logged nothing.`
+      `The log file is kept at ${keptAt} — it holds the ${entries}, so read that file for them. ` +
+      `This registry starts empty because a new session was minted, not because the app logged ` +
+      `nothing.`
     );
   }
   return (

@@ -81,10 +81,11 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           logicalDeviceId: api.logicalDeviceId,
         };
 
-        // Resolving the service above silently RECONNECTED if a teardown had
-        // reaped the previous session, so an empty registry here is ambiguous:
-        // either the app has logged nothing, or a `stop-all-simulator-servers`
-        // deleted the log file. Only the empty case is ambiguous — a registry
+        // Resolving the service above silently RECONNECTED if the previous
+        // session had been reaped, so an empty registry here is ambiguous: the
+        // app has logged nothing, or a teardown took the old log file with it,
+        // or the runtime died and left that file on disk. The breadcrumb is what
+        // separates the three. Only the empty case is ambiguous — a registry
         // with entries in it is reporting this session's own capture, and
         // consuming a breadcrumb there would attach a stale explanation to a
         // healthy result.

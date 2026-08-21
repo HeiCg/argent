@@ -83,6 +83,30 @@ describe("the reaped-session key", () => {
     expect(message).not.toMatch(/torn down \d+s ago by a stop-all-simulator-servers/);
   });
 
+  it("names the crash instead of the teardown family when the runtime died", () => {
+    // The one cause a disposer can actually identify. Offering the teardown
+    // family here — "a stop-all-simulator-servers … this may have been another
+    // agent" — sends an agent hunting for a tool call that never happened, and
+    // then contradicts itself with a salvage clause about a dead runtime.
+    recordReapedSession("js-runtime-debugger", UDID, "the log file is kept at /x", "runtime-death");
+
+    const message = describeReapedSession(
+      takeReapedSession("js-runtime-debugger", UDID)!,
+      "JS-runtime debugger session"
+    );
+    expect(message).toContain("the app's JS runtime died");
+    expect(message).not.toContain("stop-all-simulator-servers");
+    expect(message).not.toContain("another agent");
+    // Still says the thing the breadcrumb exists to say.
+    expect(message).toContain("It was not a session that never started.");
+    expect(message).toContain("the log file is kept at /x");
+  });
+
+  it("defaults to the teardown family, so only a proven crash claims one", () => {
+    recordReapedSession("screen-recording", UDID);
+    expect(takeReapedSession("screen-recording", UDID)!.cause).toBe("teardown");
+  });
+
   it("omits the salvage clause entirely when nothing survived", () => {
     recordReapedSession("native-profiler", UDID);
 

@@ -302,17 +302,14 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
 
     const events = new TypedEventEmitter<ServiceEvents>();
 
-    // Distinguishes the two ways this service is torn down. A teardown nothing
-    // died for leaves it false and the log file is removed: server shutdown, a
-    // tool re-creating the debugger, or the `recoverable` self-heal above,
-    // which disposes and retries while the socket is merely CLOSING. A
-    // `disconnected` means the app died, and the console logs it produced on
-    // the way out are what the developer is about to grep, so `dispose` keeps
-    // them.
-    let runtimeDied = false;
+    // Half of the "did the app die?" answer `dispose` needs; the socket itself
+    // is the other half, read there. A `disconnected` means the app died, and
+    // the console logs it produced on the way out are what the developer is
+    // about to grep.
+    let sawDisconnect = false;
 
     cdp.events.on("disconnected", (error) => {
-      runtimeDied = true;
+      sawDisconnect = true;
       events.emit(
         "terminated",
         error ??
@@ -342,15 +339,29 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         // answers to: the caller may read back with either the id it connected
         // with or the `logicalDeviceId` Metro echoed, and `forgetDeviceAlias`
         // below removes the only thing that joins them.
+        //
+        // The `disconnected` we saw is not the whole of "did the app die?":
+        // `debugger-status`'s stale_connection branch and the registry's
+        // `recoverable` self-heal both dispose in the window where the socket
+        // has stopped being OPEN and the close event has not dispatched yet, and
+        // each of those means the far end went away. Reading the socket is safe
+        // here because this blueprint owns its CDPClient and nothing re-points
+        // or closes it before this line — unlike the Chromium side, where a tab
+        // switch nulls the shared client's socket with the renderer perfectly
+        // alive, so that blueprint must keep trusting the event alone. An
+        // explicit teardown runs against an OPEN socket and still removes the
+        // file.
+        const runtimeDied = sawDisconnect || !cdp.isConnected();
         const captured = logWriter.getStats().totalEntries;
         if (captured > 0) {
           const salvage = describeLostHistory(
             captured,
             runtimeDied ? logWriter.getFilePath() : undefined
           );
-          recordReapedSession("js-runtime-debugger", deviceId, salvage);
+          const cause = runtimeDied ? "runtime-death" : "teardown";
+          recordReapedSession("js-runtime-debugger", deviceId, salvage, cause);
           if (api.logicalDeviceId && api.logicalDeviceId !== deviceId) {
-            recordReapedSession("js-runtime-debugger", api.logicalDeviceId, salvage);
+            recordReapedSession("js-runtime-debugger", api.logicalDeviceId, salvage, cause);
           }
         }
         forgetDeviceAlias(api.logicalDeviceId);

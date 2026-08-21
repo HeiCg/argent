@@ -71,6 +71,7 @@ export class LogFileWriter {
   private clusters = new Map<string, ClusterState>();
   private ready = false;
   private closed = false;
+  private keepalive: NodeJS.Timeout | null = null;
 
   constructor(port: number) {
     const timestamp = Date.now();
@@ -86,8 +87,31 @@ export class LogFileWriter {
       this.fd = fs.openSync(this.filePath, "w");
       this.ready = true;
       this.flushBuffer();
+      // What makes `pruneStaleLogs`' age test a liveness test. mtime otherwise
+      // only moves when an entry is written, so a session that has captured
+      // nothing for a day — or one past MAX_ENTRIES, where `write` stops
+      // touching the file at all — would look exactly like an orphan while its
+      // fd is still open, and the next connect from any tool-server would
+      // unlink it out from under the tool that had already handed out its path.
+      this.keepalive = setInterval(() => this.touch(), KEEPALIVE_MS);
+      // Never a reason to keep the process alive.
+      this.keepalive.unref();
     } catch {
       // Will retry on next write or buffer until ready
+    }
+  }
+
+  /**
+   * Mark the file live for the pruner. Through the fd, so a path some other
+   * server already reclaimed cannot be recreated here.
+   */
+  private touch(): void {
+    if (this.fd === null) return;
+    const now = new Date();
+    try {
+      fs.futimesSync(this.fd, now, now);
+    } catch {
+      // unlinked, or a filesystem that refuses — the writer keeps working
     }
   }
 
@@ -226,6 +250,10 @@ export class LogFileWriter {
   close(opts: { keepFile?: boolean } = {}): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.keepalive !== null) {
+      clearInterval(this.keepalive);
+      this.keepalive = null;
+    }
     if (this.fd !== null) {
       try {
         fs.closeSync(this.fd);
@@ -244,14 +272,18 @@ export class LogFileWriter {
 }
 
 const STALE_LOG_AGE_MS = 24 * 60 * 60 * 1000;
+/** Comfortably inside STALE_LOG_AGE_MS, so a live file is never a candidate. */
+const KEEPALIVE_MS = 60 * 60 * 1000;
 const LOG_NAME_RE = /^argent-logs-\d+-\d+\.log$/;
 
 /**
  * Drop log files left behind by earlier sessions — the writer keeps its file
  * when the runtime dies, and a tool-server killed outright never closes its
  * writer at all, so without this the directory only grows. Age-based rather
- * than delete-all: several tool-servers can run at once, and 24h is far longer
- * than any debugger session, so a live writer's file is never a candidate.
+ * than delete-all, because several tool-servers share this directory and none
+ * can enumerate the others' sessions; `touch`'s keepalive is what earns that,
+ * refreshing an open file's mtime whether or not it is being written to, so a
+ * file this stale has no writer behind it in any process.
  */
 function pruneStaleLogs(dir: string): void {
   const cutoff = Date.now() - STALE_LOG_AGE_MS;
