@@ -152,10 +152,10 @@ describe("describeParamIssues", () => {
   });
 
   it("names an OMITTED field named after a prototype member as missing, not a type error", () => {
-    // A bare `params[key]` reads `Object.prototype.toString` (a function) for an
-    // absent `toString` field, which is `!== undefined`, so the field would be
-    // misreported as "expected string, received function". The value-at-path
-    // lookup must be own-property only for the "is required" verdict to hold.
+    // A bare `params[key]` reads `Object.prototype.toString` for an absent
+    // `toString` field, which is `!== undefined`, so it would be misreported as
+    // "expected string, received function". The lookup must be own-property
+    // only.
     const schema = z.object({ toString: z.string() });
     const msg = describeParamIssues(issuesOf(schema, {}), {});
     expect(msg).toContain("`toString` is required (string) and was not provided");
@@ -183,14 +183,10 @@ describe("describeParamIssues", () => {
   });
 
   it("renders a SCALAR union's branches with no dangling path prefix", () => {
-    // The guard that decides this is `inner.path.length > 0 ? … : ""`, and the
-    // union tests around it all assert fragments, so none of them can see the
-    // difference: dropping the guard rendered
-    // "`button`: button.: Invalid option: …; or button.: Invalid input: …" —
-    // a bare "button." before every branch, on the parameter the source
-    // comments name as the one callers most often get wrong — and left the
-    // whole package green. Compare the whole string, since the defect is a
-    // prefix that every `toContain` fragment survives.
+    // The guard is `inner.path.length > 0 ? … : ""`, and the union tests around
+    // it all assert fragments — so dropping it renders a bare "button." before
+    // every branch and stays green. Compare the WHOLE string, since the defect
+    // is a prefix every `toContain` fragment survives.
     const schema = z.object({
       button: z.union([
         z.enum(["up", "down", "select"]),
@@ -262,8 +258,7 @@ describe("describeParamIssues", () => {
 
   it("does not double the full stop of a custom message that already ends in one", () => {
     // A custom refinement's message survives verbatim and is author-written
-    // prose, so it normally ends in a period — every cross-field rule in the
-    // repo does. Existing assertions use `toContain`, which passes on "..".
+    // prose, so it normally ends in a period. `toContain` passes on "..".
     const schema = z
       .object({ deltaX: z.number().optional(), deltaY: z.number().optional() })
       .superRefine((_v, ctx) =>
@@ -309,9 +304,7 @@ describe("describeParamIssues", () => {
 
   it("leaves a ROOT-anchored cross-field rule unqualified", () => {
     // The other half of the pair above. A rule spanning several fields has no
-    // one field to name — a qualifier would point at whichever field the author
-    // happened to anchor on, which is as likely as not the one the caller got
-    // right — so the author's prose is the whole message.
+    // one field to name, so the author's prose is the whole message.
     const schema = z
       .object({ a: z.string().optional(), b: z.string().optional() })
       .superRefine((_v, ctx) =>

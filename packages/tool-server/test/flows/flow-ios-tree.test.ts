@@ -7,12 +7,13 @@ import {
   type Registry,
 } from "@argent/registry";
 import type { NativeDevtoolsApi } from "../../src/blueprints/native-devtools";
+import type { DescribeNode } from "../../src/tools/describe/contract";
 import {
   MAX_LISTED_APPS,
   MAX_TARGETING_REASON_CHARS,
   queryFullHierarchyTree,
 } from "../../src/tools/flows/flow-ios-tree";
-import { selectorToFrame } from "../../src/utils/ui-tree-match";
+import { evaluateCondition, selectorToFrame } from "../../src/utils/ui-tree-match";
 import { resolveNativeTargetApp } from "../../src/utils/native-target-app";
 import {
   __resetDeviceSetCacheForTesting,
@@ -31,17 +32,16 @@ function registryFor(api: Partial<NativeDevtoolsApi>): Registry {
   } as unknown as Registry;
 }
 
-// The udid → device-set memo is module state; a case that seeds it must not
-// leave the next one measuring a `--set`-prefixed command it never asked for.
+// The udid to device-set memo is module state. Without this reset, a seeded
+// `--set` prefix leaks into the next case.
 afterEach(() => {
   __resetDeviceSetCacheForTesting();
 });
 
 describe("flow iOS full-hierarchy source", () => {
   it("requests enough hierarchy depth for deeply nested app content", async () => {
-    // A real window, not `windows: []` — an empty list is now a hard read
-    // failure (it cannot be told from an uninjectable app), and this test is
-    // about the depth the query ASKS for, not about the no-windows path.
+    // A real window, not `windows: []`: an empty list is a hard read failure,
+    // indistinguishable from an uninjectable app.
     const queryViewHierarchy = vi.fn(async () => ({
       windows: [
         {
@@ -82,12 +82,10 @@ describe("flow iOS full-hierarchy source", () => {
   });
 
   it("adapts and resolves a view buried deeper than the old 40-level cap", async () => {
-    // The claim the raised cap rests on: a view at depth 41+ must survive the
-    // query, survive adaptation, and be reachable by an `id:` selector. Asking
-    // for maxDepth 100 proves nothing on its own — the device is what truncates.
+    // A maxDepth of 100 proves nothing on its own: the device cap truncates.
     const DEEP = 45;
     const buildRaw = (maxDepth: number) => {
-      // Innermost first, then wrap outward, so the leaf sits at depth DEEP.
+      // Innermost first, then wrap outward, so the leaf sits at depth `DEEP`.
       let node: Record<string, unknown> = {
         className: "UIButton",
         identifier: "deep-button",
@@ -101,8 +99,7 @@ describe("flow iOS full-hierarchy source", () => {
           className: "RNSScreenView",
           frame: { x: 0, y: 0, width: 400, height: 800 },
           windowFrame: { x: 0, y: 0, width: 400, height: 800 },
-          // The device drops everything past the requested depth; below the cap
-          // the wrapper keeps its subtree.
+          // The device drops everything past the requested depth.
           children: depth < maxDepth ? [node] : [],
         };
       }
@@ -138,19 +135,16 @@ describe("flow iOS full-hierarchy source", () => {
     const { tree } = await queryFullHierarchyTree(registryFor(apiWithCap(DEEP)), DEVICE);
     expect(selectorToFrame(tree, { identifier: "deep-button" })).toBeDefined();
 
-    // Sensitivity check: the same fixture read under the old cap loses it, so a
-    // pass above is the depth doing the work and not the fixture being shallow.
+    // Sensitivity check: under the old cap the same fixture loses the view.
     const { tree: truncated } = await queryFullHierarchyTree(registryFor(apiWithCap(40)), DEVICE);
     expect(selectorToFrame(truncated, { identifier: "deep-button" })).toBeUndefined();
   });
 
-  it("hoists more text into an identified container as the cap admits more of it", async () => {
-    // The cost side of the raised cap, pinned because FLOW_TREE_MAX_DEPTH's
-    // docblock now claims it. `assertReason`'s `text` arm quotes the matched
-    // node's hoisted subtreeText verbatim into a failing assert/await reason
-    // and nothing truncates it downstream, so descendants that a depth-40 read
-    // dropped now show up in what the agent reads.
-    const LABEL_AT = [20, 30, 41, 55]; // two inside the old cap, two past it
+  // A `card` container under RN wrappers, over labels at four depths, two of them
+  // past the old cap of 40. Hoisting stops at the next identified node, so
+  // everything below lands in the card's `subtreeText`.
+  const hoistCardUnder = async (deviceCap: number): Promise<DescribeNode> => {
+    const LABEL_AT = [20, 30, 41, 55];
     const buildRaw = (maxDepth: number) => {
       let node: Record<string, unknown> | null = null;
       for (let depth = 60; depth >= 1; depth--) {
@@ -167,8 +161,6 @@ describe("flow iOS full-hierarchy source", () => {
         }
         node = {
           className: "RNSScreenView",
-          // The container the selector names — hoisting stops at the next
-          // identified node, so everything below lands in ITS subtreeText.
           ...(depth === 2 ? { identifier: "card" } : {}),
           frame: { x: 0, y: 0, width: 400, height: 800 },
           windowFrame: { x: 0, y: 0, width: 400, height: 800 },
@@ -186,45 +178,65 @@ describe("flow iOS full-hierarchy source", () => {
         ],
       };
     };
-    const apiWithCap = (deviceCap: number) =>
-      ({
-        listConnectedBundleIds: () => ["com.example.app"],
-        getAppState: vi.fn(async (bundleId: string) => ({
-          bundleId,
-          applicationState: "active",
-          foregroundActiveSceneCount: 1,
-          foregroundInactiveSceneCount: 0,
-          backgroundSceneCount: 0,
-          unattachedSceneCount: 0,
-          isFrontmostCandidate: true,
-        })),
-        queryViewHierarchy: vi.fn(async (_bundleId, _method, params) =>
-          buildRaw(Math.min((params as { maxDepth: number }).maxDepth, deviceCap))
-        ),
-      }) as unknown as NativeDevtoolsApi;
+    const api = {
+      listConnectedBundleIds: () => ["com.example.app"],
+      getAppState: vi.fn(async (bundleId: string) => ({
+        bundleId,
+        applicationState: "active",
+        foregroundActiveSceneCount: 1,
+        foregroundInactiveSceneCount: 0,
+        backgroundSceneCount: 0,
+        unattachedSceneCount: 0,
+        isFrontmostCandidate: true,
+      })),
+      queryViewHierarchy: vi.fn(async (_bundleId, _method, params) =>
+        buildRaw(Math.min((params as { maxDepth: number }).maxDepth, deviceCap))
+      ),
+    } as unknown as NativeDevtoolsApi;
 
-    const hoistedUnder = async (deviceCap: number): Promise<string> => {
-      const { tree } = await queryFullHierarchyTree(registryFor(apiWithCap(deviceCap)), DEVICE);
-      const find = (node: typeof tree): string => {
-        if (node.identifier === "card") return node.subtreeText ?? "";
-        for (const child of node.children ?? []) {
-          const inner = find(child);
-          if (inner) return inner;
-        }
-        return "";
-      };
-      return find(tree);
+    const { tree } = await queryFullHierarchyTree(registryFor(api), DEVICE);
+    const find = (node: DescribeNode): DescribeNode | undefined => {
+      if (node.identifier === "card") return node;
+      for (const child of node.children ?? []) {
+        const inner = find(child);
+        if (inner) return inner;
+      }
+      return undefined;
     };
+    return find(tree)!;
+  };
 
-    const shallow = await hoistedUnder(40);
-    const deep = await hoistedUnder(100);
+  it("hoists more text into an identified container as the cap admits more of it", async () => {
+    // The cost of the raised cap, claimed by the `FLOW_TREE_MAX_DEPTH` docblock.
+    // `assertReason`'s `text` arm quotes the hoisted subtreeText verbatim into a
+    // failing reason, and nothing truncates it later.
+    const shallow = (await hoistCardUnder(40)).subtreeText ?? "";
+    const deep = (await hoistCardUnder(100)).subtreeText ?? "";
 
     expect(shallow).toContain("row-20-content");
     expect(shallow).not.toContain("row-41-content");
     expect(deep).toContain("row-41-content");
     expect(deep).toContain("row-55-content");
-    // The quoted string genuinely grows — this is what reaches the agent.
     expect(deep.length).toBeGreaterThan(shallow.length);
+  });
+
+  it("moves an `equals` text verdict against a container as the cap admits more of it", async () => {
+    // `assert: { text: { in: { id: card }, equals: <hoist> } }` reads the
+    // container's subtreeText, which now carries the deeper rows.
+    // `evaluateCondition` also tries the node's own label and value, but a
+    // testID'd wrapper has neither.
+    const shallow = await hoistCardUnder(40);
+    const deep = await hoistCardUnder(100);
+    const asRecordedAt40 = shallow.subtreeText ?? "";
+
+    expect(asRecordedAt40).toBe("row-30-content row-20-content");
+    expect(deep.subtreeText).toBe("row-55-content row-41-content row-30-content row-20-content");
+
+    // `contains` is the docblock's remedy for this, along with retargeting at the
+    // leaf.
+    expect(evaluateCondition("text", asRecordedAt40, [shallow], "equals")).toBe(true);
+    expect(evaluateCondition("text", asRecordedAt40, [deep], "equals")).toBe(false);
+    expect(evaluateCondition("text", asRecordedAt40, [deep], "contains")).toBe(true);
   });
 
   it("keeps native-target FailureError metadata while replacing impossible advice", async () => {
@@ -244,21 +256,19 @@ describe("flow iOS full-hierarchy source", () => {
     expect(error.message).toContain("restart-app");
     expect(error.message).toContain("com.apple.*");
     expect(error.message).toContain("raw point taps");
-    // An injectable app simply launched outside Argent also lands here, and for
-    // it the native-* tools do NOT dead-end — the injection precheck throws the
-    // non-injectable error only for com.apple.*, and returns restart_required
-    // otherwise. So that blanket warning must not ride along.
+    // An injectable app launched outside Argent also reaches this branch, and the
+    // native-* tools still work for it: the precheck throws only for com.apple.*,
+    // and returns restart_required otherwise.
     expect(error.message).not.toContain("native-describe-screen");
     expect(error.message).not.toContain("Do not fall back to the native-devtools feature tools");
-    // Scoped to the six tools that run the THROWING 3-arg precheck. Saying
-    // "the native-* tools" would sweep in native-devtools-status, which runs
-    // the 2-arg form and reports injectable:false rather than throwing — the
-    // one native-* tool that can confirm the state this sentence describes —
-    // and the native-profiler-* tools, which never precheck.
+    // The wording covers the six tools that run the throwing 3-arg precheck.
+    // "The native-* tools" would also cover native-devtools-status, which reports
+    // injectable:false from the 2-arg form, and native-profiler-*, which never
+    // prechecks.
     expect(error.message).toContain("the native-devtools feature tools refuse it too");
     expect(error.message).not.toContain("the native-* tools");
-    // The clause is trimmed at the sentence break, so the impossible advice in
-    // the source's SECOND sentence never reaches the flow reason.
+    // Trimming at the sentence break keeps the source's second sentence out of the
+    // flow reason.
     expect(error.message).toContain(
       "(No native-devtools-connected apps are available for auto-targeting.)"
     );
@@ -287,20 +297,18 @@ describe("flow iOS full-hierarchy source", () => {
     });
     expect(error.message).toContain("com.example.first (applicationState=background");
     expect(error.message).toContain("com.example.second (applicationState=background");
-    // Only the TRAILING advice line is dropped; every other line of the source
-    // diagnostic survives verbatim. Anchoring the strip per-line instead of at
-    // the end of the message would start eating the middle of it.
+    // Only the trailing advice line is dropped. The strip is anchored at the end
+    // of the message, not per line.
     const source = await resolveNativeTargetApp(api, undefined).catch((err) => err);
     expect(error.message).toContain(source.message.split("\n").slice(0, -1).join("\n"));
     expect(error.message).toContain("Flow selectors auto-target and cannot name a bundleId");
     expect(error.message).toContain("Foreground the intended app with launch-app");
-    // Clearing the other apps has to name something the agent can actually run:
-    // argent exposes no terminate tool, and restart-app would bring the very app
-    // being cleared back to the front.
+    // argent has no terminate tool, and restart-app would bring the cleared app
+    // back to the front.
     expect(error.message).toContain("xcrun simctl terminate <udid> <bundleId>");
     expect(error.message).toContain("argent has no terminate tool");
-    // Backgrounding is the wrong half of that advice — it leaves them connected
-    // and, once suspended, unable to answer the state probe at all.
+    // Backgrounding does not help: the apps stay connected and, once suspended,
+    // cannot answer the state probe.
     expect(error.message).not.toContain("background or terminate");
     expect(error.message).not.toContain("Provide bundleId explicitly");
     expect(error.message).not.toContain("guarantees instrumentation");
@@ -329,19 +337,18 @@ describe("flow iOS full-hierarchy source", () => {
     });
     // Preserves the per-app applicationState diagnostic from resolveNativeTargetApp.
     expect(error.message).toContain("com.example.solo (applicationState=background");
-    // Correct remedy, and the tool that performs it: launch-app foregrounds
-    // without terminating, so the instrumentation the app already has survives.
+    // launch-app foregrounds without terminating, so existing instrumentation
+    // survives.
     expect(error.message).toContain("Bring that app to the foreground with launch-app");
     expect(error.message).toContain("already instrumented");
-    // Not the impossible advice, and not the misleading relaunch-for-instrumentation
-    // narrative meant for the no-connected-app case.
+    // Not the impossible advice, and not the no-connected-app relaunch text.
     expect(error.message).not.toContain("Provide bundleId explicitly");
     expect(error.message).not.toContain("guarantees instrumentation");
   });
 
   it("does not call a suspended-but-connected app uninstrumented", async () => {
-    // iOS suspends a backgrounded app within ~1s; its devtools socket stays
-    // open but Application.getState stops answering and the RPC times out.
+    // iOS suspends a backgrounded app within about 1s. The devtools socket stays
+    // open, but Application.getState stops answering and the RPC times out.
     const api = {
       listConnectedBundleIds: () => ["com.example.solo"],
       getAppState: vi.fn(async () => {
@@ -359,11 +366,11 @@ describe("flow iOS full-hierarchy source", () => {
     expect(getFailureSignal(error)).toMatchObject({
       error_code: FAILURE_CODES.NATIVE_DEVTOOLS_RPC_TIMEOUT,
     });
-    // The dotted identifier is the actionable half of the clause — it names the
-    // RPC that hung, and keying the clause on a bare period used to chop it.
+    // The dotted identifier names the RPC that hung. Keying on a bare period used
+    // to cut it off.
     expect(error.message).toContain("(ViewInspector RPC timed out: Application.getState)");
     expect(error.message).toContain("com.example.solo");
-    // The app IS instrumented: relaunching it throws the flow's state away.
+    // The app is instrumented, so relaunching it discards the flow's state.
     expect(error.message).toContain("do not relaunch");
     expect(error.message).toContain("launch-app");
     expect(error.message).not.toContain("guarantees instrumentation");
@@ -371,9 +378,8 @@ describe("flow iOS full-hierarchy source", () => {
   });
 
   it("blames the unreadable connection, not the healthy frontmost app", async () => {
-    // A second instrumented app left suspended rejects the whole state probe,
-    // even though the app the flow drives is frontmost and readable — so
-    // relaunching the flow's own target could never fix it.
+    // A second instrumented app, left suspended, fails the whole state probe even
+    // though the flow's own app is frontmost and readable.
     const api = {
       listConnectedBundleIds: () => ["com.example.driven", "com.example.stale"],
       getAppState: vi.fn(async (bundleId: string) => {
@@ -401,17 +407,16 @@ describe("flow iOS full-hierarchy source", () => {
 
     expect(error.message).toContain("com.example.driven, com.example.stale");
     expect(error.message).toContain("xcrun simctl terminate <udid> <bundleId>");
-    // restart-app may only appear as the thing NOT to reach for: these apps are
-    // instrumented, so relaunching one discards state and cannot fix the read.
+    // These apps are instrumented, so relaunching one discards state and does not
+    // fix the read.
     expect(error.message).not.toMatch(/Relaunch with restart-app/i);
     expect(error.message).toContain("do not relaunch");
   });
 
   it("addresses the terminate command to the device set the simulator lives in", async () => {
-    // simctl scopes every operation to ONE device set, so the bare command does
-    // not resolve a udid from a configured `ios.additionalDeviceSets` set (a
-    // Radon IDE simulator, say) — the remedy would fail for the one device
-    // class that needs `--set`. Both list-bearing reasons offer this command.
+    // simctl scopes every operation to a single device set, so the bare command
+    // cannot resolve a udid from a configured `ios.additionalDeviceSets` set, such
+    // as a Radon IDE simulator.
     const RADON = "/Users/dev/Library/Caches/com.swmansion.radon-ide/Devices/iOS";
     rememberDeviceSet(DEVICE.id, RADON);
     const api = {
@@ -423,7 +428,7 @@ describe("flow iOS full-hierarchy source", () => {
 
     expect(error.message).toContain(`xcrun simctl --set ${RADON} terminate <udid> <bundleId>`);
 
-    // The ambiguous branch offers the same command and must resolve it the same way.
+    // The ambiguous branch offers the same command.
     const ambiguous = {
       listConnectedBundleIds: () => ["com.example.driven", "com.example.stale"],
       getAppState: vi.fn(async (bundleId: string) =>
@@ -445,11 +450,15 @@ describe("flow iOS full-hierarchy source", () => {
     );
   });
 
-  // Every failure `queryFullHierarchyTree` can produce, one entry per branch.
-  // The length guard below asserts "every", so it has to iterate this rather
-  // than a hand-picked pair — the previous version looped over the two SHORTEST
-  // branches and so passed while the ambiguous one ran to 1444 characters.
-  // Bundle ids are deliberately long, to keep the budget honest for real ones.
+  // One entry per failure branch of `queryFullHierarchyTree`, iterated by the
+  // length guard below. The bundle ids are long on purpose, so the measured
+  // budget holds for real ones.
+  //
+  // `launched` covers the branch auto-targeting never reaches: a flow that ran a
+  // `launch:` step passes that id down, and with nothing connected the read fails
+  // through `unreadableHierarchyReason`. Those entries hold the longest reason
+  // (`unregistered`, 775 chars) and the branch the recorder takes, since
+  // `captureTapSelector` passes a launched id on every captured tap.
   const LONG_ID = "com.example.enterprise.mobile.client";
   const rpcTimeout = (): never => {
     throw new FailureError("ViewInspector RPC timed out: Application.getState", {
@@ -471,8 +480,25 @@ describe("flow iOS full-hierarchy source", () => {
   });
   const notFrontmost = { applicationState: "background", isFrontmostCandidate: false } as const;
 
-  const targetingFailures = (appCount: number): { branch: string; api: NativeDevtoolsApi }[] => {
+  const targetingFailures = (
+    appCount: number
+  ): { branch: string; api: NativeDevtoolsApi; launched?: string }[] => {
     const ids = Array.from({ length: appCount }, (_, i) => `${LONG_ID}${i}`);
+    // Nothing connected plus a launched id is the only shape that reaches
+    // `unreadableHierarchyReason`. One entry per state it diagnoses.
+    const launchGone = (
+      state: string,
+      bundleId = ids[0],
+      label = state
+    ): { branch: string; api: NativeDevtoolsApi; launched?: string } => ({
+      branch: `launched app not connected: ${label}`,
+      api: {
+        listConnectedBundleIds: () => [] as string[],
+        appConnectionState: vi.fn(async () => state),
+        getAppState: vi.fn(),
+      } as unknown as NativeDevtoolsApi,
+      launched: bundleId,
+    });
     return [
       {
         branch: "ambiguous connected set",
@@ -536,22 +562,29 @@ describe("flow iOS full-hierarchy source", () => {
           queryViewHierarchy: vi.fn(async () => ({ error: "serializer busy" })),
         } as unknown as NativeDevtoolsApi,
       },
+      ...["not_running", "stale_process", "connecting", "indeterminate", "unregistered"].map(
+        (state) => launchGone(state)
+      ),
+      // Two branches answer before the state switch: a connection that arrived
+      // mid-read, and a bundle the dylib may not load into.
+      launchGone("connected"),
+      launchGone("not_running", "com.apple.Preferences", "non-injectable bundle"),
     ];
   };
 
   it("keeps every targeting reason short enough to repeat per step", async () => {
-    // The recorder embeds this reason in the warning for EVERY captured tap
-    // while the read is failing, and a failing `await` repeats it once per
-    // poll. A reason that ran to ~900 characters made the recorder the
-    // session's largest context consumer for a single stuck screen.
-    for (const { branch, api } of targetingFailures(2)) {
-      const error = await queryFullHierarchyTree(registryFor(api), DEVICE).catch((err) => err);
+    // The recorder embeds this reason in the warning for each captured tap, and a
+    // failing `await` repeats it once per poll. At about 900 characters, one
+    // stuck screen made the recorder the largest context consumer of a session.
+    for (const { branch, api, launched } of targetingFailures(2)) {
+      const error = await queryFullHierarchyTree(registryFor(api), DEVICE, launched).catch(
+        (err) => err
+      );
       expect(`${branch}: ${error.message.length}`).toBe(
         `${branch}: ${Math.min(error.message.length, MAX_TARGETING_REASON_CHARS)}`
       );
     }
-    // The service-unresolvable wrap is the one failure that never reaches an
-    // api, so it is built separately rather than skewing the table above.
+    // The service-unresolvable wrap never reaches an api, so it is built here.
     const unresolvable = await queryFullHierarchyTree(
       {
         resolveService: vi.fn(async () => {
@@ -564,10 +597,9 @@ describe("flow iOS full-hierarchy source", () => {
   });
 
   it("keeps the reason the same size as connections pile up", async () => {
-    // The point of the budget is that it cannot be spent by the DEVICE. Both
-    // list-bearing branches used to grow per connected app — the ambiguous one
-    // measured 778 / 1000 / 1444 chars at 2 / 4 / 8 apps — so a stuck screen on
-    // a busy simulator cost more context the busier it got.
+    // The device must not be able to spend the budget. Both list-bearing branches
+    // used to grow per app: the ambiguous one measured 778, 1000 and 1444 chars at
+    // 2, 4 and 8 apps.
     for (const branch of ["ambiguous connected set", "state probe failed, connections live"]) {
       const lengths = await Promise.all(
         [2, 4, 16].map(async (appCount) => {
@@ -576,19 +608,16 @@ describe("flow iOS full-hierarchy source", () => {
           return error.message.length as number;
         })
       );
-      // Not byte-identical: the "(+N more)" count gains a digit. What matters
-      // is that four more connections cost a digit and not four more lines —
-      // each uncapped entry ran to ~110 characters.
+      // Not byte-identical: the "(+N more)" count gains a digit. Four more
+      // connections cost one digit, not four lines of about 110 characters.
       expect(`${branch}: ${lengths[2] - lengths[1] < 5}`).toBe(`${branch}: true`);
       expect(lengths[2]).toBeLessThanOrEqual(MAX_TARGETING_REASON_CHARS);
     }
   });
 
   it("reports nothing withheld when the connected set is exactly at the cap", async () => {
-    // The boundary both cap helpers turn on. Driven only below and above it,
-    // `<=` and `<` are indistinguishable — and the `<` spelling appends
-    // "(+0 more)" to a list that dropped nothing, in the two branches whose
-    // whole point is that what was left out is never silently lost.
+    // The boundary both cap helpers turn on. Away from it, `<=` and `<` behave the
+    // same. With `<`, a list that dropped nothing still gets "(+0 more)".
     for (const { branch, api } of targetingFailures(MAX_LISTED_APPS)) {
       if (branch !== "ambiguous connected set" && branch !== "state probe failed, connections live")
         continue;
@@ -605,7 +634,6 @@ describe("flow iOS full-hierarchy source", () => {
     const { api } = targetingFailures(5).find((f) => f.branch === "ambiguous connected set")!;
     const error = await queryFullHierarchyTree(registryFor(api), DEVICE).catch((err) => err);
 
-    // Two kept verbatim, the rest counted — never silently dropped.
     expect(error.message).toContain(`${LONG_ID}0 (applicationState=background`);
     expect(error.message).toContain(`${LONG_ID}1 (applicationState=background`);
     expect(error.message).not.toContain(`${LONG_ID}2 (`);
@@ -632,8 +660,8 @@ describe("flow iOS full-hierarchy source", () => {
 
     expect(error.message).toContain("native devtools is unavailable");
     expect(error.message).toContain("no simulator-server for 0000…00ab");
-    // A plain Error carries no failure signal, so the wrapper must stay a plain
-    // Error rather than inventing one — but the cause still has to survive.
+    // A plain Error carries no failure signal, so the wrapper stays a plain Error
+    // rather than inventing one.
     expect(error).not.toBeInstanceOf(FailureError);
     expect(error.cause).toBe(cause);
   });
@@ -647,19 +675,16 @@ describe("flow iOS full-hierarchy source", () => {
     const error = await queryFullHierarchyTree(registryFor(api), DEVICE).catch((err) => err);
 
     expect(error.cause).toBeInstanceOf(FailureError);
-    // The rendered message trims the source down to its first sentence; the
-    // untrimmed original is only reachable through the cause.
+    // The rendered message keeps only the source's first sentence. The cause keeps
+    // the full text.
     expect((error.cause as Error).message).toContain("provide bundleId explicitly");
     expect(error.message).not.toContain("provide bundleId explicitly");
   });
 
   it("reports a dropped connection, not a pre-instrumentation launch, when the target needs a restart", async () => {
-    // The ONE way this branch fires for an auto-resolved target: auto-resolution
-    // only ever yields ids that were in `listConnectedBundleIds()`, so finding
-    // the target absent from that same map afterwards means the socket dropped
-    // between the resolve and the read. The mock reproduces that race — the app
-    // is connected for the resolve and gone by the re-read — which is why the
-    // message must not diagnose an app that was never instrumented.
+    // Auto-resolution only yields ids from `listConnectedBundleIds()`, so a target
+    // missing from that map later means the socket dropped between the resolve and
+    // the read. The mock is connected for the resolve and gone by the re-read.
     let connected = ["com.example.app"];
     const api = {
       listConnectedBundleIds: () => {
@@ -682,12 +707,11 @@ describe("flow iOS full-hierarchy source", () => {
 
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toContain("com.example.app answered the target probe and then dropped");
-    // It WAS instrumented — the opposite of what the old wording claimed — so
-    // the retry is named before the relaunch.
+    // The app was instrumented, so the message names the retry before the
+    // relaunch.
     expect(error.message).toContain("It was instrumented");
     expect(error.message).toContain("a retry may ride this out");
     expect(error.message).not.toContain("launched before argent's instrumentation loaded");
-    // restart-app is still the fallback, and launch-app still is not.
     expect(error.message).toContain("relaunch with restart-app");
     expect(error.message).not.toContain("launch-app, or a flow");
   });
