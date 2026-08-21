@@ -52,7 +52,7 @@ export const debuggerConnectTool: ToolDefinition<
   description: `Connect to a JS runtime CDP debugger.
 iOS / Android / Vega: connects to Metro's CDP endpoint on the given port. Chromium: re-uses the page CDP session opened by boot-device — port is ignored.
 Returns connection info including port, projectRoot (empty on Chromium and on legacy Metro, e.g. Vega), deviceName, appName, logicalDeviceId (absent on Vega), and isNewDebugger. If already connected, returns the existing connection.
-Also returns { note } when the PREVIOUS session for this device ended with its runtime going away (a crash, a force-quit, a restart-app, or Metro being restarted) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says those entries are gone, because the file was reclaimed or never written. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line. Both tools consume the record, so whichever reads it first is the one that reports it.
+Also returns { note } when the PREVIOUS session for this device ended with its runtime going away (a crash, a force-quit, a restart-app, or Metro being restarted) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says those entries are gone, because the file was reclaimed or never written. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line. Both tools spend the record, so whichever reads it first is the one that reports it — and this tool reports only a runtime death: a session ended by someone else's teardown is dropped here silently, because from this connect on the capture is your own.
 Use when starting a debug session or before calling other debugger-* tools. Fails if the runtime is unreachable (Metro down, or Chromium CDP terminated).`,
   zodSchema,
   capability: DEBUGGER_TOOL_CAPABILITY,
@@ -87,7 +87,8 @@ Use when starting a debug session or before calling other debugger-* tools. Fail
     //
     // One lookup, on the id this call names: the store files a teardown under
     // every id its device answered to and spends them all together, and
-    // `api.logicalDeviceId` is this session's, which Metro has just reissued.
+    // `api.logicalDeviceId` belongs to whatever session this call resolved,
+    // which `selectTarget`'s one-device fallback can put on another device.
     const reaped = takeReapedSession(
       "js-runtime-debugger",
       params.device_id,

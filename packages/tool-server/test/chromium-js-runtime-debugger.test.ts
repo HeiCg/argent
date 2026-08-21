@@ -12,6 +12,7 @@ import { resolveDevice } from "../src/utils/device-info";
 import type { ChromiumCdpApi } from "../src/blueprints/chromium-cdp";
 import type { CDPClientEvents } from "../src/utils/debugger/cdp-client";
 import { takeReapedSession, __resetReapedSessionsForTesting } from "../src/utils/reaped-sessions";
+import { debuggerReapedScope } from "../src/tools/debugger/debugger-service-ref";
 import { scopeTempHome } from "./helpers/temp-home";
 
 // The JS-runtime-debugger / network blueprints build a real LogFileWriter,
@@ -47,6 +48,32 @@ function makeFakeChromiumCdpApi(): {
 }
 
 const logDir = () => path.join(os.homedir(), ".argent", "tmp");
+
+const DEVICE_ID = "chromium-cdp-19222";
+
+/**
+ * Read a breadcrumb the way `debugger-log-registry` and `debugger-connect` do —
+ * through the scope those tools compute. The blueprint files this one unscoped
+ * because a Chromium device carries its port inside its id; a reader that
+ * scoped it by `port` would find nothing, and the kept log file would be named
+ * by nobody.
+ */
+function takeChromiumReaped() {
+  return takeReapedSession(
+    "js-runtime-debugger",
+    DEVICE_ID,
+    debuggerReapedScope({ port: 8081, device_id: DEVICE_ID })
+  );
+}
+
+/** How many console listeners the shared client is still carrying. */
+function consoleListeners(events: TypedEventEmitter<CDPClientEvents>): number {
+  return (
+    (events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(
+      "consoleAPICalled"
+    )?.size ?? 0
+  );
+}
 
 // One of the factory's hard-failure paths — the console-log server's bind,
 // reached through `http.createServer`; the writer's constructor is the other.
@@ -152,6 +179,11 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     const received: unknown[] = [];
     instance.api.consoleEvents.on("log", (entry) => received.push(entry));
     await instance.dispose();
+    // On the listener itself, not only on what it delivers: this client belongs
+    // to ChromiumCdp and outlives the dispose, so a listener left on it writes
+    // to a closed writer for the rest of the browser's life — and `write`
+    // throwing is why nothing arrives below either way.
+    expect(consoleListeners(fake.events)).toBe(0);
     fake.events.emit("consoleAPICalled", {
       type: "log",
       args: [{ type: "string", value: "after-dispose" }],
@@ -189,7 +221,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
 
     expect(fs.existsSync(logPath)).toBe(false);
 
-    const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
+    const reaped = takeChromiumReaped();
     expect(reaped).toBeDefined();
     expect(reaped!.salvage).toContain("18 captured console entries");
     // A live socket at dispose is a teardown, and a teardown deletes the file.
@@ -234,7 +266,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     expect(fs.existsSync(logPath)).toBe(true);
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
 
-    const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
+    const reaped = takeChromiumReaped();
     expect(reaped?.salvage).toContain(logPath);
     expect(reaped?.salvage).not.toContain("no log file was left behind");
     // Blaming a stop-all for a renderer that died sends the reader hunting for
@@ -275,7 +307,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
       socketOpen = false;
       await instance.dispose();
 
-      const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
+      const reaped = takeChromiumReaped();
       expect(reaped?.cause).toBe("runtime-death");
       expect(reaped?.keptAt).toBeUndefined();
       expect(reaped?.salvage).toContain("no log file was left behind");
@@ -313,7 +345,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     await instance.dispose();
 
     expect(fs.existsSync(logPath)).toBe(false);
-    const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
+    const reaped = takeChromiumReaped();
     expect(reaped?.cause).toBe("teardown");
   });
 
@@ -363,7 +395,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
 
     expect(fs.existsSync(logPath)).toBe(true);
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
-    const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
+    const reaped = takeChromiumReaped();
     expect(reaped?.cause).toBe("runtime-death");
     expect(reaped?.salvage).toContain(logPath);
 
@@ -462,7 +494,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
       { device: chromiumDevice }
     );
     await instance.dispose();
-    expect(takeReapedSession("js-runtime-debugger", "chromium-cdp-19222")).toBeUndefined();
+    expect(takeChromiumReaped()).toBeUndefined();
   });
 
   it("dispose does NOT disconnect the underlying CDP — that belongs to ChromiumCdp", async () => {

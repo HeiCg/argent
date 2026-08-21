@@ -37,7 +37,7 @@ export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-run
  * cannot see. All the disposer reads is a socket that stopped being open, which
  * says the far end is unreachable and nothing about what made it so.
  */
-export type ReapedSessionCause = "teardown" | "runtime-death";
+type ReapedSessionCause = "teardown" | "runtime-death";
 
 export interface ReapedSession {
   kind: ReapedSessionKind;
@@ -148,9 +148,7 @@ export function recordReapedSession(
   // the breadcrumb and hands the agent the path, leaving no previous entry for
   // the next teardown to supersede. One file per cycle then waits for the sweep
   // rather than being deleted out from under the agent that was just told to
-  // read it. A device whose only id is a `logicalDeviceId` waits for the sweep
-  // too — Metro reissues one per connection, so each teardown files under a key
-  // no earlier one used.
+  // read it.
   for (const [k, entry] of reaped) {
     if (!superseded.has(entry.event)) continue;
     reaped.delete(k);
@@ -170,10 +168,9 @@ export function recordReapedSession(
  * Read and consume the breadcrumb for `kind`/`deviceId`, if there is one.
  *
  * Consumes every copy of the same teardown, not just the one that matched. A
- * reader knows only the id it was called with — after a runtime death, nothing
- * can even resolve the `logicalDeviceId` the other copy is filed under — so a
- * per-key delete would leave a twin behind to explain a later, unrelated read
- * and to reclaim, on the next teardown, the very file this answer just named.
+ * reader knows only the id it was called with, so a per-key delete would leave
+ * a twin behind to explain a later, unrelated read — and to reclaim, on the
+ * next teardown, the very file this answer just named.
  */
 export function takeReapedSession(
   kind: ReapedSessionKind,

@@ -292,6 +292,10 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     try {
       consoleServer = await createConsoleLogServer(consoleEvents, logWriter);
     } catch (err) {
+      // Off before close, for the reason dispose does it: `disconnect()` waits
+      // out a close handshake, and a frame delivered in that window would reach
+      // a closed writer, whose `write` throws.
+      cdp.events.off("consoleAPICalled", onConsoleAPI);
       logWriter.close();
       await cdp.disconnect();
       throw err;
@@ -362,21 +366,9 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         // answers to: the caller may read back with either the id it connected
         // with or the `logicalDeviceId` Metro echoed, and `forgetDeviceAlias`
         // below removes the only thing that joins them. One call, so the two
-        // are one event and reading either spends both — after a runtime death
-        // the logical id is unresolvable, so a copy filed under it that a read
-        // left behind would never be read at all.
-        //
-        // Sometimes there is only one id, and it is that unresolvable one:
-        // `selectTarget` refuses a udid once two devices share a Metro, so the
-        // caller connects with the logicalDeviceId itself, and Metro issues a
-        // new one per connection. The breadcrumb survives that — it is keyed by
-        // the string, not by anything Metro still knows — but only a read that
-        // passes the OLD id reaches it, and that read is `debugger-log-registry`:
-        // with the other device still attached, resolving a stale id throws a
-        // mismatch, which this tool renders as an answer and `debugger-connect`
-        // as a failure; with it gone, `selectTarget`'s one-device fallback
-        // resolves the stale id onto the surviving device, so the rest of that
-        // answer describes someone else's session.
+        // are one event and reading either spends both; a copy left behind
+        // would explain some later unrelated answer, and the next teardown
+        // would reclaim the file this one named.
         //
         // The socket is the whole of "did the app die?" here, and the
         // `disconnected` event is not consulted at all: `CDPClient` nulls its

@@ -114,10 +114,9 @@ describe("the reaped-session key", () => {
   });
 
   it("spends every copy of one teardown, whichever id the reader knows", () => {
-    // A crashed app's `logicalDeviceId` cannot be resolved again — nothing can
-    // ask Metro for a target that is gone — so a copy filed under it that a read
-    // left behind would never be read at all, and would explain some later,
-    // unrelated answer instead.
+    // A reader asks with one id and gets the whole event: a copy left behind
+    // under the other would explain some later, unrelated answer, and would
+    // reclaim on the next teardown the very file this read was sent to.
     recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "salvage", {
       cause: "runtime-death",
     });
@@ -152,24 +151,25 @@ describe("the reaped-session key", () => {
     });
 
     it("supersedes the whole previous event, not just the id it reuses", () => {
-      // Metro issues a fresh `logicalDeviceId` per connection, so a second crash
-      // files under a different second key. Left behind, the first crash's copy
-      // is unreadable — nothing can resolve a dead session's logical id — and it
-      // still names a file the reclaim below has already taken.
+      // The two teardowns of one device need not file under the same ids:
+      // `selectTarget` refuses a udid once a second device shares the Metro, so
+      // the caller reconnects with the logicalDeviceId alone. Superseding only
+      // the id the new event reuses leaves the udid copy behind, naming a file
+      // the reclaim below has already taken.
       const older = path.join(dir, "argent-logs-3-1.log");
       const newer = path.join(dir, "argent-logs-3-2.log");
       fs.writeFileSync(older, "first");
       fs.writeFileSync(newer, "second");
-      recordReapedSession("js-runtime-debugger", [UDID, "logical-first"], "first", {
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "first", {
         cause: "runtime-death",
         keptAt: older,
       });
-      recordReapedSession("js-runtime-debugger", [UDID, "logical-second"], "second", {
+      recordReapedSession("js-runtime-debugger", ["logical-abc"], "second", {
         cause: "runtime-death",
         keptAt: newer,
       });
 
-      expect(takeReapedSession("js-runtime-debugger", "logical-first")).toBeUndefined();
+      expect(takeReapedSession("js-runtime-debugger", UDID)).toBeUndefined();
       expect(fs.existsSync(older)).toBe(false);
       expect(fs.existsSync(newer)).toBe(true);
     });
@@ -182,15 +182,16 @@ describe("the reaped-session key", () => {
       const next = path.join(dir, "argent-logs-2-2.log");
       fs.writeFileSync(held, "pre-crash");
       fs.writeFileSync(next, "later");
-      recordReapedSession("js-runtime-debugger", [UDID, "logical-first"], "kept", {
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "kept", {
         cause: "runtime-death",
         keptAt: held,
       });
       expect(takeReapedSession("js-runtime-debugger", UDID)!.keptAt).toBe(held);
 
-      // The app relaunches and crashes again: Metro issues a fresh logical id, so
-      // this teardown files under a different second key either way.
-      recordReapedSession("js-runtime-debugger", [UDID, "logical-second"], "kept", {
+      // The app relaunches and crashes again, under the same two ids: without
+      // the read above, this teardown would supersede that one and take its
+      // file.
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "kept", {
         cause: "runtime-death",
         keptAt: next,
       });

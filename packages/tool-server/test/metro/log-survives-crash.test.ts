@@ -29,7 +29,11 @@ import { scopeTempHome } from "../helpers/temp-home";
 // there — including the tool-server this developer may be running.
 scopeTempHome("argent-log-crash-home-");
 
-const httpControl = vi.hoisted(() => ({ failCreateServer: false }));
+const httpControl = vi.hoisted(() => ({
+  failCreateServer: false,
+  /** Runs at the moment the bind fails, i.e. on the factory's way into its rollback. */
+  onFail: undefined as (() => void) | undefined,
+}));
 // The other hard-failure path: a runtime that accepts the socket and then
 // refuses a setup send, which production reaches as a request timeout against a
 // frozen app.
@@ -40,13 +44,47 @@ vi.mock("node:http", async (importOriginal) => {
     ...actual,
     default: actual,
     createServer: (...args: unknown[]) => {
-      if (httpControl.failCreateServer) throw new Error("no sockets left");
+      if (httpControl.failCreateServer) {
+        httpControl.onFail?.();
+        throw new Error("no sockets left");
+      }
       return (actual.createServer as (...a: unknown[]) => unknown)(...args);
     },
   };
 });
 
 const logDir = () => path.join(os.homedir(), ".argent", "tmp");
+
+/**
+ * Stop answering on the CDP socket and push console frames down it, until the
+ * returned callback. `disconnect()` gives the far end a second to answer its
+ * close frame and a server that has stopped reading never does, so whatever is
+ * still listening for `consoleAPICalled` is exercised for that whole second —
+ * the window in which the writer is already closed.
+ */
+function stallAndFlood(): () => void {
+  const socket = cdpConn!;
+  const raw = (socket as unknown as { _socket: { pause(): void; resume(): void } })._socket;
+  raw.pause();
+  const timer = setInterval(() => {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    socket.send(
+      JSON.stringify({
+        method: "Runtime.consoleAPICalled",
+        params: {
+          type: "error",
+          args: [{ type: "string", value: "a frame after the close" }],
+          executionContextId: 1,
+          timestamp: Date.now(),
+        },
+      })
+    );
+  }, 5);
+  return () => {
+    clearInterval(timer);
+    raw.resume();
+  };
+}
 
 /** How many sockets opened since `known` are still up, once they have had time to drain. */
 async function countLeakedSockets(known: Set<WebSocket>): Promise<number> {
@@ -460,7 +498,52 @@ describe("console logs across an app crash", () => {
     expect(fs.readdirSync(logDir()).filter((n) => !filesBefore.has(n))).toEqual([]);
   });
 
-  it("says the log file could not be created rather than sending a reader to grep it", async () => {
+  it("stops feeding the writer before the factory rollback closes it", async () => {
+    // `LogFileWriter.write` throws once closed, and the rollback closes it and
+    // then waits out a CDP close handshake with the client's message dispatch
+    // still running — so a console listener left behind spends that window
+    // writing to a closed writer. The emitter swallows what that throws, which
+    // is what makes it worth pinning: nothing fails, it just prints.
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const noise = () => stderr.mock.calls.map((call) => String(call[0])).join("");
+    let stopFlood = () => {};
+    httpControl.onFail = () => (stopFlood = stallAndFlood());
+    httpControl.failCreateServer = true;
+    try {
+      await expect(
+        registry.invokeTool("debugger-connect", { port: mockPort, device_id: "flooded-device" })
+      ).rejects.toThrow(/no sockets left/);
+    } finally {
+      httpControl.failCreateServer = false;
+      httpControl.onFail = undefined;
+      stopFlood();
+      stderr.mockRestore();
+    }
+
+    expect(noise()).not.toContain("LogFileWriter is closed");
+  });
+
+  it("hands the console listener back when the session ends", async () => {
+    // The same rule on the dispose path, where the window is too narrow to
+    // provoke: the listener has to be gone before `close()`, since everything
+    // after it is a close handshake the runtime can still send frames into.
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "listener-device" });
+    const api = await resolveDebuggerService(registry, {
+      port: mockPort,
+      device_id: "listener-device",
+    });
+    const consoleListeners = () =>
+      (api.cdp.events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(
+        "consoleAPICalled"
+      )?.size ?? 0;
+    expect(consoleListeners()).toBe(1);
+
+    await registry.disposeService(`JsRuntimeDebugger:${mockPort}:listener-device`);
+
+    expect(consoleListeners()).toBe(0);
+  });
+
+  it("says there is no file at that path rather than sending a reader to grep it", async () => {
     // `open()` swallows its failure and buffers, so the counts and clusters are
     // real while `file` names a path that has never existed — and the documented
     // next step is to grep exactly that path.
@@ -477,7 +560,7 @@ describe("console logs across an app crash", () => {
         device_id: "nofile-device",
       })) as { totalEntries: number; note?: string };
       expect(empty.totalEntries).toBe(0);
-      expect(empty.note).toContain("could not be created");
+      expect(empty.note).toContain("There is no log file at");
 
       cdpConn!.send(
         JSON.stringify({
@@ -499,7 +582,7 @@ describe("console logs across an app crash", () => {
 
       expect(result.totalEntries).toBe(1);
       expect(fs.existsSync(result.file)).toBe(false);
-      expect(result.note).toContain("could not be created");
+      expect(result.note).toContain("There is no log file at");
       expect(result.note).toContain(result.file);
 
       // And when that session dies, the breadcrumb has no file to keep either:
@@ -516,7 +599,7 @@ describe("console logs across an app crash", () => {
       expect(afterDeath.note).not.toContain("has since been reclaimed");
       // And the new session's own file is still uncreatable, which the
       // breadcrumb says nothing about — the two are different files.
-      expect(afterDeath.note).toContain("could not be created");
+      expect(afterDeath.note).toContain("There is no log file at");
     } finally {
       fs.chmodSync(logs, 0o755);
     }
@@ -562,9 +645,7 @@ describe("console logs across an app crash", () => {
     let subscriberAtRead = -1;
     // Reporting a live socket, so the teardown below stays a teardown.
     const connected = vi.spyOn(api.cdp, "isConnected").mockImplementation(() => {
-      // `disconnect()` asks again on its way out; the dispose's own read is the
-      // first one.
-      if (subscriberAtRead < 0) subscriberAtRead = subscriber.readyState;
+      subscriberAtRead = subscriber.readyState;
       return true;
     });
 
