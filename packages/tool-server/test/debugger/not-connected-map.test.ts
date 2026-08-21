@@ -108,8 +108,11 @@ describe("guidance platform-correctness", () => {
     expect(chromium.guidance).not.toContain("restart-app");
 
     // A renderer paused at a breakpoint times out exactly like a wedged one, and
-    // quitting the app throws the debug session away.
+    // quitting the app throws the debug session away, so the quit is gated on
+    // checking first - without the gate the guidance reads as "it timed out,
+    // quit it".
     expect(chromium.guidance).toContain("breakpoint");
+    pinsOnce(chromium.guidance, "Check the app first; if it is hung");
   });
 
   it("gives both Chromium overrides the whole recovery, not half of it each", () => {

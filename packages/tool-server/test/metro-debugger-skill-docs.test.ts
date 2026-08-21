@@ -39,6 +39,7 @@ const restartApp = restartAppTool.capability;
 /** The skill's platform vocabulary, in the order its tables list it. */
 const PLATFORM_WORDS = [
   ["apple", "iOS"],
+  ["appleRemote", "Apple TV"],
   ["android", "Android"],
   ["vega", "Vega"],
 ] as const satisfies readonly (readonly [keyof ToolCapability, string])[];
@@ -91,11 +92,10 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
     for (const label of ["`restart-app`", "Relaunch app on device"]) {
       expect(row(DEBUGGER_SKILL, label), label).toContain(`(${platformTag(restartApp)})`);
     }
-    // platformTag has no word for appleRemote, so the tags cannot show it moving.
     // The description promises an Apple TV slice refresh, which only runs where
-    // the capability reaches an Apple TV.
+    // the capability reaches one - the tag above now carries that platform, so a
+    // capability that stopped reaching it fails there too.
     expect(restartAppTool.description).toContain("Apple TV");
-    expect(restartApp?.appleRemote).toBeDefined();
   });
 
   it("tags every RN-only row, in each of the three tables that list one", () => {
@@ -116,7 +116,12 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
       expect(tool.capability?.chromium, tool.id).toBeUndefined();
 
       const tag = platformTag(tool.capability);
-      expect(proseTag(row(DEBUGGER_SKILL, proseLabel)), tool.id).toBe(tag);
+      const prose = row(DEBUGGER_SKILL, proseLabel);
+      expect(proseTag(prose), tool.id).toBe(tag);
+      // proseTag compares the first platform run it finds, so a claim appended
+      // after it - "on iOS / Android, and on Chromium" - is trimmed off rather
+      // than failing the comparison. These rows are RN-only end to end.
+      expect(prose, tool.id).not.toMatch(/Chromium/);
       expect(row(DEBUGGER_SKILL, quickLabel), tool.id).toContain(`(${tag})`);
     }
   });
@@ -126,63 +131,73 @@ describe("the Chromium recovery names a relaunch that exists", () => {
   it("restart-app declares no chromium support, so every surface routes around it", () => {
     expect(restartApp?.chromium).toBeUndefined();
 
-    expect(restartAppTool.description).toContain("Not supported on Chromium");
-    expect(restartAppTool.description).toContain("electronAppPath");
-    // Pin the browser half specifically: a bare "ask the user" is already
-    // satisfied by the quit step, so it would survive dropping the actor here.
-    expect(restartAppTool.description).toContain("ask the user to start the browser again");
-    expect(restartAppTool.description).toContain("chromium-cdp-<port>");
-    expect(restartAppTool.description).toContain("list-devices");
-
-    const rows: [string, string][] = [
-      [DEBUGGER_SKILL, "Relaunch app on device"],
-      [FAILURE_SCENARIOS, "**Was connected, then tool fails**"],
-      [DEVICE_INTERACT_SKILL, "Restart an app"],
-    ];
-    for (const [file, label] of rows) {
-      const cell = row(file, label);
-      expect(cell, file).toContain("Chromium");
-    }
-
-    // Every surface that states the recovery. boot-device stops nothing, so the
-    // exit is the user's to cause and the relaunch has to wait for it; a surface
-    // keeping the sequence but dropping the actor leaves the reader waiting on
-    // nobody, and one keeping the actor but dropping the sequence sends them to
-    // relaunch into a single-instance lock. Both halves are pinned, on all of them.
-    const spelledOut: [string, string | undefined][] = [
-      ...rows.map(([file, label]): [string, string] => [file, row(file, label)]),
+    // Every surface that states the recovery, against every fact it rests on. A
+    // fact held on one surface and not its twin is how each of these drifted, so
+    // they are checked as a matrix rather than one assertion per fix. Markdown
+    // backticks the identifiers and a tool description cannot, and a clause that
+    // opens a sentence on one surface sits mid-sentence on another, so match on
+    // text with the backticks stripped and the case folded.
+    const norm = (text: string | undefined) => (text ?? "").replace(/`/g, "").toLowerCase();
+    const listsRestartApp: [string, string | undefined][] = [
+      [DEBUGGER_SKILL, row(DEBUGGER_SKILL, "Relaunch app on device")],
+      [FAILURE_SCENARIOS, row(FAILURE_SCENARIOS, "**Was connected, then tool fails**")],
+      [DEVICE_INTERACT_SKILL, row(DEVICE_INTERACT_SKILL, "Restart an app")],
       ["restart-app's description", restartAppTool.description],
+    ];
+    // The create-flow row is keyed by platform rather than by tool, so it never
+    // offers restart-app - but it prescribes the same recovery.
+    const statesRecovery: [string, string | undefined][] = [
+      ...listsRestartApp,
       [CREATE_FLOW_RECOVERY, row(CREATE_FLOW_RECOVERY, "Chromium")],
     ];
-    for (const [where, text] of spelledOut) {
-      pinsOnce(text, "the user to quit it", where);
-      pinsOnce(text, "once it has exited", where);
-    }
 
-    // The id re-read is one sentence on every surface that spells it out;
-    // both runtime guidance strings state it too and are pinned against
-    // buildNotConnected in debugger/not-connected-map.test.ts. It carries the
-    // token (list-devices reports a Chromium entry under `id`, and ChromiumDevice
-    // has no udid field, so naming it anything else sends the reader after a key
-    // that is not in the response), both places it can be read, and the one
-    // condition that moves it. Markdown backticks the identifiers and a tool
-    // description cannot, so match with them stripped.
-    const unticked = (text: string | undefined) => (text ?? "").replace(/`/g, "");
-    for (const [where, text] of spelledOut) {
-      pinsOnce(unticked(text), "chromium-cdp-<port> id from boot-device / list-devices", where);
-      pinsOnce(unticked(text), "a relaunch on a new port is a new id", where);
+    const facts: [string, string, [string, string | undefined][]][] = [
+      // The tool is offered on these surfaces, so the refusal is what the reader
+      // needs first; everything else is advice they only reach after it.
+      ["restart-app is refused", "not supported on chromium", listsRestartApp],
+      // Why the recovery is manual at all.
+      ["boot-device cannot stop it", "only starts an app and never stops one", listsRestartApp],
+      // One contiguous clause, not two substrings that happen to both be present:
+      // a relaunch-first rewrite keeps both halves and still orders a relaunch
+      // into a running app.
+      [
+        "the quit comes first",
+        "the user to quit it, then relaunch once it has exited",
+        statesRecovery,
+      ],
       // Both branches. An Electron app does not come back by restarting a browser,
       // and a browser restarted without the flag exposes no CDP, so a surface
-      // carrying one of them strands whoever is on the other. Each cell says "ask
-      // the user" more than once, so pin the occurrence that carries the step.
-      pinsOnce(unticked(text), "boot-device with electronAppPath", where);
-      pinsOnce(unticked(text), "ask the user to start the browser again", where);
-      pinsOnce(unticked(text), "--remote-debugging-port", where);
+      // carrying one of them strands whoever is on the other.
+      ["the Electron branch", "boot-device with electronapppath", statesRecovery],
+      ["the browser branch", "ask the user to start the browser again", statesRecovery],
+      ["the flag that exposes CDP", "--remote-debugging-port", statesRecovery],
+      ["which port it returns on", "on the same cdp port", statesRecovery],
+      // list-devices reports a Chromium entry under `id` and ChromiumDevice has no
+      // udid field, so naming it anything else sends the reader after a key that
+      // is not in the response.
+      [
+        "where the id is re-read",
+        "chromium-cdp-<port> id from boot-device / list-devices",
+        statesRecovery,
+      ],
+      ["when the id changes", "a relaunch on a new port is a new id", statesRecovery],
+    ];
+    for (const [what, needle, surfaces] of facts) {
+      for (const [where, text] of surfaces) pinsOnce(norm(text), needle, `${where} (${what})`);
     }
 
+    // Same split as the App-unreachable row, in the surface a flow author reads:
+    // "no reachable CDP session" covers the live-but-windowless case too, where a
+    // relaunch is the wrong remedy.
+    const createFlow = row(CREATE_FLOW_RECOVERY, "Chromium");
+    pinsOnce(createFlow, "Still up with no window: ask for one back");
+    pinsOnce(createFlow, "a relaunch recovers nothing there");
+
     // The Reload & recovery row fences restart-app off and delegates rather than
-    // restating the recovery, so the pointer is the only thing carrying it.
-    expect(row(DEBUGGER_SKILL, "`restart-app`")).toContain("Quick Reference");
+    // restating the recovery, so the pointer is the only thing carrying it - and
+    // it is the Chromium reader it exists to redirect, since that table's
+    // restart-app row is tagged for the three platforms that are not Chromium.
+    pinsOnce(row(DEBUGGER_SKILL, "`restart-app`"), "On Chromium see the Quick Reference row");
 
     // cdp_unreachable is not only the dead-app code: CHROMIUM_CDP_NO_PAGE_TARGET
     // maps to it too and fires while the process is alive, where a relaunch adds a
@@ -209,6 +224,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // proves the app alive, and only its devtools:// half names the window, so
     // both the narrowing and the remedy it points to are pinned. "devtools://"
     // alone is not: the row says it twice.
+    pinsOnce(unreachable, "none at all, or only devtools:// ones");
     pinsOnce(unreachable, "variant names the window");
     pinsOnce(unreachable, "Ask the user to bring a window back");
     // The imperative itself. Naming the consequences and the alternative leaves
