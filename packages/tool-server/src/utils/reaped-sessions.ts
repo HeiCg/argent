@@ -179,6 +179,13 @@ export function recordReapedSession(
     // path, leaving no previous entry for the next teardown to supersede — so
     // one file per cycle waits for the day-old sweep rather than being deleted
     // out from under the agent that was just told to read it.
+    //
+    // One hand-out this cannot see: a `debugger-log-registry` read that lands
+    // between the socket dropping and the dispose returns `connected` with that
+    // session's own `file`, and the breadcrumb naming it does not exist yet. The
+    // skill's crash row, which sends the agent to exactly that answer, says to
+    // read the file before relaunching — a relaunch is what brings the next
+    // crash, and the next crash is what reclaims it.
     for (const k of leftovers) reaped.delete(k);
     if (previous.keptAt && opts.keptAt) orphanedFiles.add(previous.keptAt);
   }

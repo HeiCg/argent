@@ -78,9 +78,10 @@ describe("LogFileWriter", () => {
 
     it("lets a kept file age out once the session that kept it has closed", () => {
       // The keep path returns early, and has to disarm the keepalive on its way
-      // out: `touch` runs off that timer, and mtime is the only thing that ever
-      // makes a kept file reclaimable, so a timer left armed refreshes the file
-      // past every cutoff and no sweep in any tool-server collects it.
+      // out: `touch` runs off that timer and writes through the fd, and mtime is
+      // the only thing that ever makes a kept file reclaimable — so a writer
+      // that keeps both refreshes the file past every cutoff, and no sweep in
+      // any tool-server collects it. The fd half is pinned below.
       vi.useFakeTimers();
       try {
         const idle = vi.getTimerCount();
@@ -206,8 +207,9 @@ describe("LogFileWriter", () => {
       // The other half of what `close` frees. One debugger session per connect,
       // and the keep path's writer is closed by the same call that leaves its
       // file on disk — so a descriptor held past it is one per crash for the
-      // life of the tool-server. Asked of the descriptor itself: nulling the
-      // field is what `getStats` reads, and says nothing about the handle.
+      // life of the tool-server. Asked of the descriptor itself, since nulling
+      // the field is what every other reader of `fd` goes by and says nothing
+      // about the handle.
       const fdOf = (w: LogFileWriter) => (w as unknown as { fd: number | null }).fd!;
 
       const kept = new LogFileWriter(4545);

@@ -314,8 +314,7 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
         // durable form of the same fact. Its one ambiguity is a tab switch,
         // where `reconnect()` also leaves the client briefly socket-less with
         // the renderer alive; a teardown landing inside that window keeps a file
-        // the pruner reclaims within a day, which is the cheaper way to be
-        // wrong.
+        // the pruner reclaims a day later, which is the cheaper way to be wrong.
         const runtimeDied = !cdp.isConnected();
         const captured = logWriter.getStats().totalEntries;
         // A count is not a file: `open()` swallows its failure and buffers, so

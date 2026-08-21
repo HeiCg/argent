@@ -164,17 +164,19 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
             ? undefined
             : takeReapedNote(params.device_id, debuggerReapedScope(params));
         const result = buildNotConnected(reason, err, params);
-        if (!note) return result;
-        // `guidance` is the field an agent acts on, and these strings are shared
-        // with the tools that only point AT this one's note — so read from here
-        // they send it back for a note it is holding, and which this read has
-        // just spent. Only `no_app_connected` mentions a note at all; the other
-        // four reasons that can carry one, a crashed Chromium renderer's
-        // `cdp_unreachable` among them, walk the agent straight past it.
+        // `guidance` is the field an agent acts on, and these strings are
+        // written for `debugger-status`, whose answers never carry a note: one
+        // sends the agent here to read one, and the four other reasons that can
+        // carry one — a crashed Chromium renderer's `cdp_unreachable` among
+        // them — mention none at all. Read from an answer that IS the note's,
+        // both are wrong in the same way, so this tool says what its own result
+        // holds before the rest of the guidance speaks for the general case.
         return {
           ...result,
-          note,
-          guidance: `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`,
+          ...(note ? { note } : {}),
+          guidance: note
+            ? `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`
+            : `This result has no note: nothing ended on this device and port that has not already been reported. ${result.guidance}`,
         };
       }
     },

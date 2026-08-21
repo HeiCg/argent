@@ -128,8 +128,12 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.connected).toBe(false);
     expect(result.reason).toBe("metro_not_running");
     expect(result.guidance).toContain("Do not retry in a loop");
-    // Nothing was reaped here, so nothing is prefixed to it.
+    // Nothing was reaped here, and the answer says so: the shared string is
+    // written for `debugger-status`, which has no note field at all, and read
+    // from here it would send the agent back to this tool for a note this
+    // answer already failed to produce.
     expect(result.guidance).not.toContain("Read this result's note");
+    expect(result.guidance.startsWith("This result has no note")).toBe(true);
     // No fabricated LogStats: agents must not be sent to grep a file that
     // does not exist.
     expect("file" in result).toBe(false);
@@ -168,11 +172,11 @@ describe("debugger-log-registry not-connected results", () => {
   });
 
   it("leads the guidance with the note when the answer is carrying one", async () => {
-    // These strings are shared with the tools that only point AT this one's
-    // note, so read from a log-registry answer they send the agent back here
-    // for a note this answer is already holding — and that this read has just
-    // spent. Only `no_app_connected` mentions a note at all, and a crashed
-    // Chromium renderer reaches `cdp_unreachable` instead, which does not.
+    // These strings are written for `debugger-status`, whose answers carry no
+    // note: one of them sends the agent here to read one, and the four other
+    // reasons that can carry one — a crashed Chromium renderer's
+    // `cdp_unreachable` among them — mention none at all. Read from the answer
+    // that IS carrying it, both are wrong in the same way.
     const port = await freePort();
     const setup = makeSetup(jsRuntimeDebuggerBlueprint);
     cleanups.push(async () => {

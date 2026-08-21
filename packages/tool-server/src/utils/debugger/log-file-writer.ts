@@ -259,7 +259,8 @@ export class LogFileWriter {
    * nowhere to go. `keepFile` leaves the log on disk: the caller is shutting
    * the writer down because the JS runtime died, and the entries captured
    * before it died are the reason a developer would look. Everything kept this
-   * way is reclaimed by `pruneStaleLogs` on a later connect.
+   * way is reclaimed by `pruneStaleLogs` on the first connect after it has gone
+   * a day untouched.
    */
   close(opts: { keepFile?: boolean } = {}): void {
     if (this.closed) return;
