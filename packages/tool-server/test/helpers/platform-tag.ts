@@ -28,6 +28,14 @@ export function platformTag(capability: ToolCapability | undefined): string {
 }
 
 /**
+ * The words this repo names a Chromium runtime with. A row for an RN-only tool
+ * may not carry any of them: `platformTag` has no word for chromium, so a claim
+ * of Chromium support is the one drift a tag comparison cannot show, and a
+ * single-word check misses the synonyms ("and on any CDP browser").
+ */
+export const CHROMIUM_WORDS = /chromium|electron|browser/i;
+
+/**
  * Assert the parenthesised `tag` is the whole platform claim `cell` makes. A
  * containment check reads the paren and nothing after it, so a platform
  * appended outside — "(iOS / Android / Vega) and Chromium" — documents support

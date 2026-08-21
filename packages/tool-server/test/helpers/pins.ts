@@ -12,14 +12,16 @@ export function pinsOnce(haystack: string | undefined, needle: string, label?: s
 
 /** The words English carves an exception with. */
 const QUALIFIER =
-  /^[\s,—-]*(except|unless|until|other than|apart from|save for|provided|as long as|only when|only if)\b/i;
+  /^[\s,—\-*_`"]*(except|unless|until|other than|apart from|save for|provided|as long as|only when|only if)\b/i;
 
 /**
  * Assert `needle` appears exactly once and is not carved out where it ends. A
  * needle that stops at a clause boundary is a prefix of its own weakened form,
  * so pinsOnce alone stays green when the escape hatch is appended to the very
  * claim it pins — "not supported on chromium" reads the same in "not supported
- * on chromium except for an app you booted yourself".
+ * on chromium except for an app you booted yourself". Markdown emphasis and quotes
+ * between the two are skipped: on a **bolded** claim the carve-out lands after the
+ * closing marks, not against the needle.
  */
 export function pinsUnqualified(haystack: string | undefined, needle: string, label?: string) {
   pinsOnce(haystack, needle, label);

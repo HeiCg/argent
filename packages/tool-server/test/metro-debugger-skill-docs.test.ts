@@ -22,7 +22,12 @@ import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status"
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { listDevicesTool } from "../src/tools/devices/list-devices";
 import { pinsOnce, pinsUnqualified } from "./helpers/pins";
-import { PLATFORM_WORDS, expectTagEndsTheClaim, platformTag } from "./helpers/platform-tag";
+import {
+  CHROMIUM_WORDS,
+  PLATFORM_WORDS,
+  expectTagEndsTheClaim,
+  platformTag,
+} from "./helpers/platform-tag";
 import { getCandidateChromiumPorts } from "../src/utils/chromium-discovery";
 
 const SKILLS = path.resolve(__dirname, "../../skills/skills");
@@ -129,14 +134,15 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
       expect(proseTag(prose), tool.id).toBe(tag);
       expectTagEndsTheClaim(quick, tag, tool.id);
       // Neither comparison reaches past the tag it reads: proseTag takes the first
-      // platform run it finds, and the Quick Reference paren is a substring, so
-      // "on iOS / Android, and on Chromium" satisfies both. These rows are RN-only
-      // end to end, in both tables, so the claim is barred outright.
+      // platform run it finds, so "on iOS / Android (…), and on any CDP browser"
+      // satisfies it. These rows are RN-only end to end, in both tables, so naming
+      // a Chromium runtime is barred outright - under any of the words for one,
+      // since a single-word check reads "browser" as unrelated prose.
       for (const [where, cell] of [
         ["prose", prose],
         ["quick reference", quick],
       ] as const) {
-        expect(cell, `${tool.id} (${where})`).not.toMatch(/Chromium/);
+        expect(cell, `${tool.id} (${where})`).not.toMatch(CHROMIUM_WORDS);
       }
     }
   });
