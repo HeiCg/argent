@@ -109,19 +109,24 @@ export function recordReapedSession(
   opts: { cause?: ReapedSessionCause; keptAt?: string; scope?: string } = {}
 ): void {
   const event = nextEvent++;
-  const superseded = new Set<number>();
-  const orphanedFiles = new Set<string>();
-  for (const deviceId of new Set(typeof deviceIds === "string" ? [deviceIds] : deviceIds)) {
-    const k = key(kind, deviceId, opts.scope);
+  const ids = new Set(typeof deviceIds === "string" ? [deviceIds] : deviceIds);
+  const keys = new Set([...ids].map((id) => key(kind, id, opts.scope)));
+  // Read before the write below overwrites any of it: every event this one
+  // lands on top of, with every key it holds — the ones this call is about to
+  // take, and the ones it leaves.
+  const collided = new Set<number>();
+  for (const k of keys) {
     const previous = reaped.get(k);
-    // Not this event's own earlier key: two ids differing only in case land on
-    // one slot, since `key` lowercases while callers compare theirs verbatim.
-    if (previous && previous.event !== event) {
-      superseded.add(previous.event);
-      // Collected here because the `set` below is about to drop this copy, and
-      // the sweep at the end would then never see the path it named.
-      if (previous.keptAt) orphanedFiles.add(previous.keptAt);
-    }
+    if (previous) collided.add(previous.event);
+  }
+  const displaced = new Map<number, { keys: Set<string>; keptAt?: string }>();
+  for (const [k, entry] of reaped) {
+    if (!collided.has(entry.event)) continue;
+    const seen = displaced.get(entry.event);
+    if (seen) seen.keys.add(k);
+    else displaced.set(entry.event, { keys: new Set([k]), keptAt: entry.keptAt });
+  }
+  for (const deviceId of ids) {
     const entry: ReapedSession = {
       kind,
       deviceId,
@@ -131,27 +136,44 @@ export function recordReapedSession(
     };
     if (salvage) entry.salvage = salvage;
     if (opts.keptAt) entry.keptAt = opts.keptAt;
-    reaped.set(k, entry);
+    reaped.set(key(kind, deviceId, opts.scope), entry);
   }
-  // A device gets one live event: this one replaced the previous one's entry
-  // under at least one id, and half an event explains nothing. A copy left
-  // behind would answer some later, unrelated read — and would still name the
-  // file the reclaim below is about to take.
-  //
-  // Its kept file goes with it: nothing records that path any more, so
-  // reclaiming here rather than waiting for the day-old sweep keeps an UNREAD
-  // crash loop to one kept file per device.
-  //
-  // A loop whose notes are read is not bounded here, and deliberately so: the
-  // prescribed recovery is restart-app then `debugger-connect`, which consumes
-  // the breadcrumb and hands the agent the path, leaving no previous entry for
-  // the next teardown to supersede. One file per cycle then waits for the sweep
-  // rather than being deleted out from under the agent that was just told to
-  // read it.
-  for (const [k, entry] of reaped) {
-    if (!superseded.has(entry.event)) continue;
-    reaped.delete(k);
-    if (entry.keptAt) orphanedFiles.add(entry.keptAt);
+  const orphanedFiles = new Set<string>();
+  for (const previous of displaced.values()) {
+    // Only an event this one entirely stands in for. The two teardowns of one
+    // device need not file under the same ids — `selectTarget` refuses a udid
+    // once a second device shares the Metro, so the caller reconnects with the
+    // logicalDeviceId alone and the next teardown files one id where the crash
+    // filed two — but an id the previous event never answered to means another
+    // device: the same one-device fallback can mint a stranger's session on
+    // this logicalDeviceId, and its teardown must not take the crashed device's
+    // entry, nor the log file that entry is holding for it.
+    let standsIn = true;
+    for (const k of keys) {
+      if (!previous.keys.has(k)) {
+        standsIn = false;
+        break;
+      }
+    }
+    if (!standsIn) continue;
+    // A device gets one live event, and half an event explains nothing: a copy
+    // left behind would answer some later, unrelated read — and would still
+    // name the file the reclaim below is about to take.
+    //
+    // Its kept file goes with it: nothing records that path any more, so
+    // reclaiming here rather than waiting for the day-old sweep keeps an UNREAD
+    // crash loop to one kept file per device.
+    //
+    // A loop whose notes are read is not bounded here, and deliberately so: the
+    // prescribed recovery is restart-app then `debugger-connect`, which consumes
+    // the breadcrumb and hands the agent the path, leaving no previous entry for
+    // the next teardown to supersede. One file per cycle then waits for the sweep
+    // rather than being deleted out from under the agent that was just told to
+    // read it.
+    for (const k of previous.keys) {
+      if (!keys.has(k)) reaped.delete(k);
+    }
+    if (previous.keptAt) orphanedFiles.add(previous.keptAt);
   }
   for (const file of orphanedFiles) {
     if (file === opts.keptAt) continue;

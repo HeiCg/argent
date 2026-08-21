@@ -175,6 +175,31 @@ describe("the reaped-session key", () => {
       expect(fs.existsSync(newer)).toBe(true);
     });
 
+    it("leaves another device's breadcrumb, and its file, to the device that owns it", () => {
+      // `selectTarget` answers an unmatched device_id with its single remaining
+      // target, so a second device's session is minted on THIS device's
+      // logicalDeviceId and files its own teardown under it. Superseding on that
+      // one shared id would take the crashed device's kept log with it — the
+      // read-side hazard `takeReapedNote` guards against, arriving from the
+      // write side.
+      const owners = path.join(dir, "argent-logs-4-1.log");
+      fs.writeFileSync(owners, "pre-crash");
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "owner", {
+        cause: "runtime-death",
+        keptAt: owners,
+      });
+      recordReapedSession(
+        "js-runtime-debugger",
+        ["someone-elses-device", "logical-abc"],
+        "stranger"
+      );
+
+      expect(fs.existsSync(owners)).toBe(true);
+      const entry = takeReapedSession("js-runtime-debugger", UDID);
+      expect(entry?.salvage).toBe("owner");
+      expect(entry?.keptAt).toBe(owners);
+    });
+
     it("leaves the file alone once a reader has been given its path", () => {
       // The reclaim exists to bound a crash loop nobody reads. A read consumes the
       // whole event, so the next teardown finds nothing to replace — which is what

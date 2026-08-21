@@ -342,6 +342,28 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
       expect(owner.note).toContain("23 captured console entries");
     });
 
+    it("keeps the reaped device's history when a stranger's session is torn down on it", async () => {
+      // The write side of the same misresolve: the stranger's own teardown
+      // files under the logicalDeviceId it borrowed, so a supersede on that one
+      // shared id would drop the crashed device's breadcrumb — and reclaim the
+      // log file it was holding for it — before the owner ever read it.
+      const urn = await connectAndCapture(CONNECT_ID, 23);
+      await registry.disposeService(urn);
+
+      const strangerUrn = `JsRuntimeDebugger:${mockPort}:someone-elses-device`;
+      const stranger = await capture("someone-elses-device", 1);
+      expect(
+        (await registry.resolveService<JsRuntimeDebuggerApi>(strangerUrn)).logicalDeviceId
+      ).toBe(LOGICAL_ID);
+      await registry.disposeService(stranger);
+
+      const owner = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: CONNECT_ID,
+      })) as { note?: string };
+      expect(owner.note).toContain("23 captured console entries");
+    });
+
     it("spends BOTH breadcrumbs on that one read, so no copy outlives the event", async () => {
       // The read consumed one key and left the other, so a later unrelated
       // empty read — a fresh session that genuinely logged nothing — collected

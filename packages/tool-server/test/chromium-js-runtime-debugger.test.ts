@@ -73,7 +73,7 @@ function listenerCount(events: TypedEventEmitter<CDPClientEvents>, event: string
   );
   if (registered === undefined) return 0;
   // The rollback checks below have no live count to compare against, so a
-  // container that stopped being a `Set` would read 0 and pass all of them.
+  // container that stopped being a `Set` would read 0 and pass for free.
   expect(registered).toBeInstanceOf(Set);
   return registered.size;
 }
