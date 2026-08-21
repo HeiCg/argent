@@ -187,12 +187,29 @@ describe("foldText", () => {
     expect(foldText("PLN 42.00")).not.toBe(foldText("PLN 42.0"));
   });
 
-  it("keeps folding correctly once the cache has been cleared at its cap", () => {
-    // The cache is a plain size cap: at 4096 entries it is blown away wholesale
-    // and refilled. Nothing observed that the clear leaves results intact.
+  it("clears at its cap, and keeps folding correctly afterwards", () => {
+    // The cache is a plain size cap: at FOLD_CACHE_MAX entries it is blown away
+    // wholesale and refilled. This test is named for that clear, so it has to
+    // REACH it — a fixed 4,200-iteration loop stopped short once the cap was
+    // raised to 32,768, and deleting the clear altogether then left the whole
+    // suite green. The cap is DISCOVERED here rather than written down, so
+    // raising it again cannot silently un-test it.
     const probe = `Amount, PLN${NBSP}42.00`;
     const before = foldText(probe);
-    for (let i = 0; i < 4200; i++) foldText(`filler-${i}`);
+    const LIMIT = 200_000; // far above any plausible cap; a bound, not a target
+    let cleared = false;
+    let previous = uiTreeMatchInternals.foldCacheSize();
+    for (let i = 0; i < LIMIT && !cleared; i++) {
+      foldText(`filler-${i}`);
+      const size = uiTreeMatchInternals.foldCacheSize();
+      // The cache only ever grows by one per distinct key, so a DROP is the
+      // wholesale clear and nothing else.
+      cleared = size < previous;
+      previous = size;
+    }
+    expect(cleared).toBe(true);
+    expect(uiTreeMatchInternals.foldCacheSize()).toBeLessThan(LIMIT);
+    // Nothing observed that the clear leaves results intact.
     expect(foldText(probe)).toBe(before);
     expect(equalsCI(probe, "Amount, PLN 42.00")).toBe(true);
     // And a bidi-sensitive string still takes the conditional path afterwards.
