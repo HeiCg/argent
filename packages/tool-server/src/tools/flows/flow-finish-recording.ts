@@ -22,17 +22,13 @@ import type { TextMatchMode } from "../../utils/ui-tree-match";
 // (`id`, bare string for loose, no internal `loose` flag) — the summary is what
 // gets read before hand-editing the YAML, so the spellings must agree.
 //
-// Key ORDER is normalised, which the file's own spelling does not fix. This
-// render is also the step ANCHOR ({@link stepAnchor}), and an anchor compares a
-// selector built in memory by the recorder — whose key order is the source
-// object's — against one that came back through `parseSelector`, whose key
-// order is the zod schema's. Two spellings of the same selector would then
-// render differently and every verdict in the recording would be dropped, with
-// no hand edit involved and nothing in the payload to notice it. That cannot
-// fire today only because `deriveSelector` returns a SINGLE-field selector on
-// every branch; sorting removes the dependency instead of resting on it. Order
-// is not part of what "the spellings must agree" is about — the summary already
-// renders schema order rather than the author's — so nothing else changes.
+// Key ORDER is normalised on top of that. This render is also the step ANCHOR
+// ({@link stepAnchor}), which compares a selector built in memory — whose key
+// order is the source object's — against one that came back through
+// `parseSelector`, whose key order is the zod schema's. Two spellings of one
+// selector would then render differently and drop every verdict in the
+// recording. `deriveSelector` returns a single-field selector on every branch
+// today, so sorting removes a dependency rather than fixes a live bug.
 function selectorLabel(sel: FlowSelector): string {
   const yaml = selectorToYaml(sel);
   if (typeof yaml !== "object" || yaml === null) return JSON.stringify(yaml);
@@ -75,25 +71,17 @@ const zodSchema = z.object({
 /**
  * Fold each recorded step's cross-tree verdict into its own summary line.
  *
- * The probe raises that verdict on one step's `message`, but what it answers —
- * "is this wait safe to convert to `await:`/`assert:`?" — is a POLISH-time
- * question, and polish begins here. Without this, a warning raised at step 7 of
- * a 40-step recording has scrolled out of reach by the time it is actionable,
- * and no artifact carries it: the finish payload never mentioned it and
- * `summarizeStep` renders the step as a bare `7. tool: await-ui-element {json}`.
+ * The probe raises the verdict on one step's `message`, but it answers a
+ * POLISH-time question, and polish begins here. A warning raised at step 7 of a
+ * 40-step recording has otherwise scrolled out of reach by the time it is
+ * actionable, and no artifact carries it.
  *
- * On its own line rather than appended to the step text: the verdict runs to
- * paragraphs, and running it into the step line would bury the step it belongs
- * to. That line is its own ARRAY ELEMENT, not a newline inside the step's:
- * `flow-finish-recording` has no bespoke MCP renderer, so its result reaches
- * the agent through `JSON.stringify(value, null, 2)` — where an embedded
- * newline is escaped and the verdict arrives inside one long string, which is
- * the opposite of what a separate line is for. One element per line is what
- * that renderer actually prints on its own line. The indent and the `warning:`
- * prefix keep it attached to the step above it, whose own line still opens with
- * its number.
+ * The verdict gets its own ARRAY ELEMENT, not a newline inside the step's line:
+ * this tool has no bespoke MCP renderer, so `JSON.stringify` would escape an
+ * embedded newline and deliver the verdict inside one long string. The indent
+ * and the `warning:` prefix keep it attached to the step above.
  *
- * Which verdicts survive to be folded in is {@link anchoredWarnings}' answer.
+ * {@link anchoredWarnings} decides which verdicts survive to be folded in.
  */
 function attachStepWarnings(
   summary: string[],
@@ -110,21 +98,14 @@ function attachStepWarnings(
  * What `message` says about the warnings the summary carries, by KIND — and
  * about the ones it does NOT carry.
  *
- * The kinds are different news and only one is about conversion. A recorded
- * wait that came back `success: false` was never probed — its own warning says
- * so — and what it means is that the step failed live, which at replay stops
- * the run rather than raising a polish-time question. Counting it as a
- * "cross-tree warning about converting a recorded wait" states the opposite of
- * the actionable fact, and tells a caller who is not converting anything that
- * the summary can be skipped.
+ * The two kinds are different news, and only one is about conversion. A wait
+ * that came back `success: false` was never probed: it failed live, and at
+ * replay it stops the run. Counting it as a conversion warning states the
+ * opposite of the actionable fact.
  *
- * `discarded` is the count {@link anchoredWarnings} and its append-time
- * counterpart threw away. Dropping is the right answer — a verdict on the wrong
- * step is worse than none — but reporting it as a pass is not: without this
- * clause a recording in which every wait diverged and one step was hand-edited
- * returns a payload byte-identical to one in which nothing was ever wrong. The
- * drop is deliberate, so it is stated as a fact with a recovery, not as an
- * error.
+ * `discarded` is what the anchor checks threw away. Dropping is the right
+ * answer, but reporting it as a pass is not: a recording where every wait
+ * diverged would otherwise return the same payload as a clean one.
  */
 function warningHeadline(warnings: Map<number, RecordedStepWarning>, discarded: number): string {
   const counts = { conversion: 0, wait: 0 };
@@ -158,36 +139,23 @@ function warningHeadline(warnings: Map<number, RecordedStepWarning>, discarded: 
 /**
  * The verdicts still anchored to the steps they judged.
  *
- * These anchors are POSITIONS, and hand-editing the .yaml mid-recording moves
- * positions: host mode re-reads the file before each append, so a delete, a
- * reorder or an in-place replacement renumbers the steps and a verdict left on
- * its old number would convict whichever step inherited it — a false conviction
- * on an innocent step, with the real risk reading clean, which is strictly
- * worse than having no verdict at all. Two checks here, because one edit can
- * defeat either alone:
+ * An anchor is a POSITION, and a mid-recording hand edit moves positions. A
+ * verdict left on its old number would convict whichever step inherited it,
+ * while the real risk reads clean. Two checks, because one edit can defeat
+ * either alone:
  *
- * 1. The finished flow must still be the file the RECORDER saw —
- *    `session.flow`, which `appendStepToFlow` refreshes on every append, from
- *    the re-read file in host mode and from the in-memory copy in client mode.
- *    An edit made after the last append fails here, and a swap of two steps
- *    that render alike fails nothing else. Comparing step CONTENT rather than a
- *    count of the appends this tool made is also what keeps an ordinary append
- *    — a `flow-add-echo` label, which files no verdict — from reading as an
- *    edit.
+ * 1. The finished flow must still be the file the recorder saw. This catches an
+ *    edit made after the last append. It compares step CONTENT, so an ordinary
+ *    append that files no verdict does not read as an edit.
  * 2. Each verdict's own step must still occupy its number.
  *
  * A verdict that fails check 2 is dropped rather than re-anchored: which step
- * moved where is unknowable from here, and dropping is the only answer that
- * cannot convict an innocent step.
+ * moved where is unknowable from here.
  *
- * An edit the recorder then appended OVER is not answerable here at all, and is
- * not left to these checks: that append re-read the edited file into
- * `session.flow`, so check 1 compares the edit against itself, and where the
- * moved verdict lands on a step that renders like the one it judged, check 2
- * agrees as well — both are content comparisons, and two genuinely identical
- * steps are interchangeable to them. `appendStepToFlow` settles it at the one
- * moment both views still exist; see `dropMovedWarnings` in flow-utils. What
- * arrives here has already lost the verdicts that moved.
+ * An edit the recorder then appended OVER is invisible to both checks, because
+ * that append re-read the edited file into `session.flow`. `appendStepToFlow`
+ * settles that case while both views still exist — see `dropMovedWarnings` in
+ * flow-utils.
  */
 function anchoredWarnings(
   session: RecordingSession,
@@ -198,14 +166,9 @@ function anchoredWarnings(
   if (recorded.length !== steps.length) return kept;
   if (!steps.every((step, i) => stepAnchor(step) === stepAnchor(recorded[i]))) return kept;
   for (const [n, verdict] of session.stepWarnings ?? []) {
-    // `steps[n - 1]` is defined on every reachable path, and the guard below is
-    // a fail-safe rather than a branch under test. A surviving key is at most
-    // the flow length the append that filed it saw, `dropMovedWarnings` drops
-    // any key the file later shrank past, and the length check above requires
-    // the finished flow to be that same length. Kept because the alternative
-    // failure is worse than a dropped verdict: `stepAnchor(undefined)` throws
-    // inside the finish's critical section, which loses the whole recording
-    // instead of one warning.
+    // `steps[n - 1]` is defined on every reachable path; the guard is a
+    // fail-safe. `stepAnchor(undefined)` would throw inside the finish's
+    // critical section and lose the whole recording rather than one warning.
     const step = steps[n - 1];
     if (step !== undefined && stepAnchor(step) === verdict.step) kept.set(n, verdict);
   }
@@ -266,14 +229,12 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
           flowFile = await fs.readFile(filePath, "utf8");
           savedTo = filePath;
         }
-        // Parse BEFORE clearing. Both recording tools now tell the agent to
-        // edit the .yaml only AFTER the finish, but nothing STOPS a
-        // mid-recording edit — in host mode the file is the take — so parseFlow
-        // can still throw here on a botched one, and clearing first would
-        // destroy the session on the
-        // way out, leaving the agent unable to retry the finish after repairing
-        // the file (the only tool that re-establishes the key,
-        // flow-start-recording, truncates the take it would be recovering).
+        // Parse BEFORE clearing. Both recording tools tell the agent to edit
+        // the .yaml only AFTER the finish, but nothing STOPS a mid-recording
+        // edit, so parseFlow can still throw here on a botched one. Clearing
+        // first would destroy the session on the way out, and the agent could
+        // not retry the finish after repairing the file (flow-start-recording,
+        // the only tool that re-establishes the key, truncates the take).
         const flow = parseFlow(flowFile);
         // Render the summary before clearing too, for the same reason: it walks
         // step bodies the parser does not fully constrain, and nothing that can
@@ -283,10 +244,9 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
         // recoverable rather than fatal.
         const anchored = anchoredWarnings(session, flow.steps);
         const summary = attachStepWarnings(summarizeSteps(flow), anchored);
-        // Everything raised, less what survived. The two terms are on different
-        // sides of the recording: `discardedWarnings` counts what the appends
-        // threw away as they went, `stepWarnings` what was still filed when the
-        // finish began.
+        // Everything raised, less what survived. `discardedWarnings` counts
+        // what the appends threw away; `stepWarnings` what the finish still
+        // held.
         const discarded =
           (session.discardedWarnings ?? 0) + (session.stepWarnings?.size ?? 0) - anchored.size;
         const headline = warningHeadline(anchored, discarded);
@@ -296,10 +256,8 @@ You can still edit the .yaml file directly afterwards to remove or reorder steps
     );
 
     return {
-      // Name the counts in `message` as well as the summary. The warnings the
-      // summary carries are the reason to read it before converting or
-      // replaying anything, and a caller that only reads `message` would
-      // otherwise polish blind.
+      // Name the counts in `message` as well. A caller that reads only
+      // `message` would otherwise polish blind.
       message: `Finished recording "${params.name}" flow (${flow.steps.length} steps)` + headline,
       path: filePath,
       executionPrerequisite: flow.executionPrerequisite,
@@ -375,20 +333,14 @@ function summarizeSteps(flow: FlowFile): string[] {
 /**
  * WHICH step this is, told apart from where it sits.
  *
- * The same renderer as the summary, on a fixed number so the identity does not
- * move with the position, so a step read back from the file renders exactly as
- * the one the recorder appended.
+ * The same renderer as the summary, on a fixed number, so the identity does not
+ * move with the position.
  *
- * Not because both sides are `parseFlow` output — that is true of only one of
- * the three comparisons. `verdict.step` is rendered from the RAW in-memory step
- * (`flow-add-step.ts`), and in client mode `session.flow.steps` are the raw
- * pushed objects too, so two of them compare a raw step against a parsed one.
- * What actually holds the anchor up is the stronger property that
- * {@link summarizeStep} is STABLE across a serialize-then-parse round trip for
- * every recorder-built step. Each field it reads has to survive that: the
- * numbers `parseTapTimes` normalises, the `args` object `fromYamlStep` copies
- * through, and the selector — see {@link selectorLabel}, where key order is
- * normalised precisely because the round trip does not preserve it.
+ * The anchor rests on {@link summarizeStep} being STABLE across a
+ * serialize-then-parse round trip: two of the three comparisons put a raw
+ * in-memory step against a parsed one. Every field it reads has to survive that
+ * trip — including the selector, whose key order {@link selectorLabel} sorts
+ * because the round trip does not preserve it.
  */
 export function stepAnchor(step: FlowStep): string {
   return summarizeStep(step, 0);

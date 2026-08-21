@@ -53,13 +53,9 @@ export interface PollDescribeTreeResult<R> {
    * loop stopped waiting for it?
    *
    * `lastError` cannot answer this. It is cleared on every successful fetch, so
-   * a set value does mean the last fetch failed; but an unset one does NOT mean
-   * the last fetch succeeded, because the deadline arm below deliberately
-   * leaves it unset when a fetch is abandoned and an earlier read had landed —
-   * so the caller can still build a content note from that older tree. A caller
-   * that reads `lastError === undefined` as "the last read landed" therefore
-   * vouches for a tree the source stopped answering about, which is the one
-   * case where the newest data is oldest. This says which it was.
+   * a set value means the last fetch failed; but an unset one does NOT mean it
+   * succeeded, because the deadline arm below leaves it unset for an abandoned
+   * fetch, so that the caller can still build a note from an older tree.
    */
   lastAttemptSettled: boolean;
 }
@@ -74,8 +70,6 @@ export async function pollDescribeTree<R>(
   let polls = 0;
   let lastData: DescribeTreeData | null = null;
   let lastError: string | undefined;
-  // No attempt has been made yet, so there is none to have settled. Every exit
-  // that reaches a caller reading this has made at least one.
   let lastAttemptSettled = false;
 
   const outcome = (result: R | undefined, aborted: boolean): PollDescribeTreeResult<R> => ({
@@ -101,9 +95,8 @@ export async function pollDescribeTree<R>(
     if (settled.type === "timeout") {
       // Only synthesize a "did not complete" error when we never got a usable
       // tree; a final fetch that merely straddled the deadline leaves lastData
-      // in place so the caller can build a content-based note from it. What
-      // that costs — a caller with no way to tell a stale tree from a fresh
-      // one — is what `lastAttemptSettled` pays back.
+      // in place so the caller can build a content-based note from it.
+      // `lastAttemptSettled` is what tells that stale tree from a fresh one.
       if (lastData === null) {
         lastError ??= `tree fetch did not complete within the ${timeoutMs}ms wait budget`;
       }

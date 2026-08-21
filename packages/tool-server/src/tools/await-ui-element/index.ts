@@ -49,9 +49,8 @@ export function isUnmetUiWaitResult(tool: string, result: unknown): boolean {
   );
 }
 
-// The two `success: false` notes that are NOT a verdict on the condition. Named
-// here, and used below where the notes are built, so a reader of the result can
-// tell them apart from a genuine miss without re-typing the prose.
+// The `success: false` notes that are NOT a verdict on the condition. Named
+// here, and used below where the notes are built.
 const WAIT_CANCELLED_NOTE = "wait was cancelled before the condition was met";
 const TREE_FETCH_FAILED_NOTE_PREFIX = "last tree fetch failed: ";
 const HIDDEN_UNREADABLE_NOTE =
@@ -59,36 +58,26 @@ const HIDDEN_UNREADABLE_NOTE =
 
 /**
  * WHY an unmet wait came back `success: false`. {@link isUnmetUiWaitResult}
- * answers "did this wait fail", which is all its callers need — `run-sequence`
- * and `flow-run` stop the run on every cause alike. A caller that NARRATES the
- * failure needs more, because only one of the three is a statement about the
- * condition:
+ * answers "did this wait fail", which is all `run-sequence` and `flow-run`
+ * need. A caller that NARRATES the failure needs more, because only one cause
+ * judges the condition:
  *
  * - `unmet` — the tree was read and the condition was false there.
- * - `unreadable` — the tree source never answered (or answered blind), so
- *   nothing was ever observed. The condition may be perfectly satisfiable.
- * - `cancelled` — the caller gave up before the deadline. Same: no verdict.
- *
- * Telling an author to re-record or delete a step on the strength of a cause
- * that observed nothing sends them to rewrite something that may be fine.
+ * - `unreadable` — the tree source never answered, so nothing was observed.
+ * - `cancelled` — the caller gave up before the deadline. Also no verdict.
  */
 export type UnmetUiWaitCause = "unmet" | "unreadable" | "cancelled";
 
 /**
  * The cause this wait recorded, or the closest its `note` can be read for.
  *
- * The cause is carried on the RESULT ({@link WaitResult.cause}), decided where
- * the evidence is — the loop knows which of its reads were trustworthy, which
- * the prose cannot say. Deriving it from the note instead is wrong on the main
- * path it matters for: `appendDiagnostics` decorates the note with the very
- * hint that makes a read blind, and on `visible`/`exists`/`text` a wholly blind
- * window produces prose byte-identical to a genuine miss, so three of the four
- * conditions have no distinguishable note at all.
+ * The loop decides the cause and carries it on the result, because only the
+ * loop knows which reads were trustworthy. The note cannot say: a wholly blind
+ * window produces prose identical to a genuine miss on three of the four
+ * conditions.
  *
- * The note fallback stays for a result that crossed a boundary without the
- * field (an older tool-server behind a newer client, a hand-built fixture): it
- * recognises the two notes it can, and defaults to `unmet` — the cause every
- * caller acted on before this classification existed.
+ * The note fallback is for a result that crossed a boundary without the field —
+ * an older tool-server, or a hand-built fixture.
  */
 export function unmetUiWaitCause(result: unknown): UnmetUiWaitCause {
   const carried = (result as { cause?: unknown } | null)?.cause;
@@ -185,8 +174,7 @@ interface WaitResult {
   /**
    * WHY an unmet wait failed, for the callers that narrate it. Set on every
    * `success: false` return and never on a success. See
-   * {@link UnmetUiWaitCause} for what each value licenses, and
-   * {@link timeoutCause} for how the deadline arm decides between them.
+   * {@link UnmetUiWaitCause} and {@link timeoutCause}.
    */
   cause?: UnmetUiWaitCause;
 }
@@ -194,34 +182,21 @@ interface WaitResult {
 /**
  * How far behind the loop's exit the last TRUSTED read may lie before "the
  * condition was false" stops being honest, as a multiple of the poll interval.
- *
- * The same tolerance, for the same reason, as `CONDITION_DARK_TAIL_TOLERANCE_MS`
- * in the flow runner's copy of this loop: one interval of sleep since the last
- * clean read, plus an interval's worth of latency for the deadline poll to also
- * come back dark. Longer than that means consecutive reads went dark, and a
- * verdict narrated from the reads before the darkness describes a screen nobody
- * saw at the deadline.
+ * One interval of sleep, plus one interval of latency for the deadline poll to
+ * also come back dark. The flow runner's copy of this loop uses the same
+ * tolerance as `CONDITION_DARK_TAIL_TOLERANCE_MS`.
  */
 const DARK_TAIL_TOLERANCE_INTERVALS = 2;
 
 /**
- * The same tolerance in absolute time, past which no poll interval buys any
- * more of it.
+ * The same tolerance in absolute time. `pollIntervalMs` is the caller's, up to
+ * 5000ms, so the multiple alone would reach 10s — and a source that answered
+ * once and then went silent would still come back `unmet`. Past a couple of
+ * seconds the trusted reads no longer credibly describe the deadline, however
+ * sparsely the caller polls.
  *
- * `pollIntervalMs` is the CALLER's, up to 5000ms, so the multiple above alone
- * would let the tolerance reach 10s — and a source that answered once and then
- * went silent for the rest of the window would still come back `unmet`, the one
- * cause that licenses an author to rewrite or delete the step. Past a couple of
- * seconds "the trusted reads still describe the deadline" stops being credible
- * however sparsely the caller chose to poll, so the sleep they asked for is
- * honoured only up to here. The flow runner's copy of this loop needs no such
- * cap: its interval is fixed at 300ms, which puts its whole tolerance
- * (`CONDITION_DARK_TAIL_TOLERANCE_MS`, 600ms) below this ceiling by
- * construction.
- *
- * Set above the default interval's own tolerance (2 × 400ms), so nothing at or
- * below a 1000ms interval is affected — the routine deadline straddle, which
- * lies about one interval back, still reads as the blip it is.
+ * Set above the default interval's own tolerance (2 x 400ms), so the routine
+ * deadline straddle still reads as the blip it is.
  */
 const DARK_TAIL_TOLERANCE_MAX_MS = 2000;
 
@@ -239,34 +214,21 @@ type FinalRead = "trusted" | "untrusted" | "unsettled";
 /**
  * WHY a wait that reached its deadline came back `success: false`.
  *
- * Only `unmet` is a statement about the condition, so it has to be earned:
- * some read must have been trustworthy, and the reads must still describe the
- * screen at the deadline. Three tiers, mirroring `waitForCondition`'s
- * post-timeout verdict in flow-actions.ts — the same question asked of the same
- * kind of loop:
+ * Only `unmet` judges the condition, so it has to be earned: some read must
+ * have been trustworthy, and the reads must still describe the screen at the
+ * deadline. Three tiers, mirroring `waitForCondition` in flow-actions.ts:
  *
- * 1. No trusted read in the whole window: every poll returned a blind tree or
- *    the fetch failed, so nothing ever evaluated the condition.
- * 2. Trusted reads existed but the window went dark at the end. `hidden` is
- *    held to a stricter bar: there the element LEAVING is the transition being
- *    waited on, so a final read that ANSWERED unjudgeably leaves gone-ness
- *    unconfirmable. For the rest, a dark tail beyond
- *    {@link DARK_TAIL_TOLERANCE_INTERVALS} — or beyond
- *    {@link DARK_TAIL_TOLERANCE_MAX_MS}, whichever is shorter — means the
- *    trusted reads no longer describe the deadline.
- * 3. A dark tail inside the tolerance — a genuine last-poll blip. The trusted
- *    reads still describe the window, so a transient failure on the trailing
- *    poll must not turn a real miss into "nothing was ever compared".
+ * 1. No trusted read at all — nothing ever evaluated the condition.
+ * 2. Trusted reads, but the window went dark at the end. `hidden` is stricter,
+ *    because there the element LEAVING is the transition being waited on.
+ * 3. A dark tail inside the tolerance — a last-poll blip, which must not turn a
+ *    real miss into "nothing was compared".
  *
- * An `unsettled` final attempt takes the dark-tail measure on EVERY condition,
- * `hidden` included, because that attempt is not evidence either way and the
- * loop makes one on almost every timeout: the poll sleep is clamped to the
- * deadline, so the iteration after it is issued with ~0ms of budget and
- * straddles it. Holding `hidden` to the strict bar on that would make every
- * ordinary `hidden` timeout `unreadable`. What separates the routine straddle
- * from a source that stopped answering is exactly how far back the last
- * trusted read lies — one poll interval in the first case, most of the window
- * in the second.
+ * An `unsettled` final attempt takes the dark-tail measure on every condition.
+ * The loop makes one on almost every timeout, because the poll sleep is clamped
+ * to the deadline and the next iteration straddles it. The age of the last
+ * trusted read is what separates that straddle from a source that stopped
+ * answering.
  */
 function timeoutCause(
   condition: Params["condition"],
@@ -482,9 +444,8 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       // "the element was there and disappeared" from "the selector never matched
       // at all" — otherwise a typo'd selector is an instant false-positive.
       let everMatched = false;
-      // When the last read that could be trusted to have EVALUATED the
-      // condition landed. Still undefined at the deadline means no read in the
-      // window ever did — see {@link timeoutCause}.
+      // When the last read that could EVALUATE the condition landed. Still
+      // undefined at the deadline means no read ever did.
       let lastTrustedReadAt: number | undefined;
 
       const poll = await pollDescribeTree<WaitResult>({
@@ -515,15 +476,10 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       if (poll.aborted) return cancelled();
       if (poll.result) return poll.result;
 
-      // The final read attempt: trusted only if it settled, returned, and
-      // returned something the condition could be judged on. `lastError` alone
-      // cannot say — it is cleared on every successful fetch, so it being set
-      // means the LAST fetch is the one that failed, but the converse does not
-      // hold: the loop leaves it unset for an attempt it abandoned at the
-      // deadline after an earlier read had landed, precisely so the note can
-      // still be built from that older tree. Reading the absence of an error as
-      // "the last read landed" is what let a source that went silent mid-wait
-      // be narrated as a verdict on the condition.
+      // The final attempt is trusted only if it settled and came back with a
+      // tree the condition could be judged on. `lastError` alone cannot say:
+      // the loop leaves it unset for an attempt it abandoned at the deadline,
+      // so that the note can still be built from an older tree.
       const finalRead: FinalRead = !poll.lastAttemptSettled
         ? "unsettled"
         : poll.lastError === undefined &&
