@@ -18,6 +18,7 @@ import { debuggerInspectElementTool } from "../src/tools/debugger/debugger-inspe
 import { debuggerReloadMetroTool } from "../src/tools/debugger/debugger-reload-metro";
 import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-component-tree";
 import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status";
+import { pinsOnce } from "./helpers/pins";
 
 const SKILLS = path.resolve(__dirname, "../../skills/skills");
 const DEBUGGER_SKILL = path.join(SKILLS, "argent-metro-debugger/SKILL.md");
@@ -135,8 +136,10 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // The id is derived from the port, so a relaunch can move it, and the
       // browser half is the user's to perform. A surface naming neither the
       // actor nor where to re-read the id leaves the reader unable to finish.
-      expect(cell, file).toContain("ask the user");
-      expect(cell, file).toContain("`list-devices`");
+      // Each cell says "ask the user" twice and may name list-devices twice, so
+      // both need the occurrence that carries the step, not the token.
+      pinsOnce(cell, "ask the user to start the browser again", file);
+      pinsOnce(cell, "`boot-device` / `list-devices`", file);
       // list-devices reports a Chromium entry's id under `id` - ChromiumDevice has
       // no udid field - so calling it one sends the reader looking for a key that
       // is not in the response.

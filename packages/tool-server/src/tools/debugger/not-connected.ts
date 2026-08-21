@@ -107,7 +107,7 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "other than CDP, or is up with no usable page — detail says which. A detail about " +
     "page targets (none at all, or only devtools:// ones) means the app is still " +
     "running and only lacks a window: ask the user to bring one back. Otherwise ask " +
-    "the user whether it exited, and to quit it if so — list-devices cannot answer " +
+    "the user whether it exited, and to quit it if not — list-devices cannot answer " +
     "that, since it drops a broken-but-running app exactly as it drops an exited one, " +
     "and relaunching a live app never recovers it: boot-device stops nothing, so the " +
     "relaunch either duplicates the app or fails. Once it is gone, launch-app cannot " +

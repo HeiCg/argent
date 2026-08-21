@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { FAILURE_CODES, FailureError, type FailureSignal } from "@argent/registry";
 import { classifyNotConnected, buildNotConnected } from "../../src/tools/debugger/not-connected";
+import { pinsOnce } from "../helpers/pins";
 import { discoverPrimaryPage } from "../../src/chromium-server/cdp-session";
 import * as http from "node:http";
 
@@ -23,16 +24,6 @@ function coded(
     failure_area: "tool_server",
     error_kind,
   });
-}
-
-/**
- * Assert `needle` appears exactly once. Each of these strings states the same
- * recovery twice - once per branch - so a plain toContain quietly starts
- * matching the other branch as the prose grows, and then survives deleting the
- * clause it was written for.
- */
-function pinsOnce(haystack: string | undefined, needle: string) {
-  expect((haystack ?? "").split(needle).length - 1, `exactly one "${needle}"`).toBe(1);
 }
 
 const MAP: Array<[FailureSignal["error_code"], string]> = [
@@ -184,6 +175,9 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     }
     // The clause that routes a live app away from a relaunch.
     pinsOnce(guidance, "only lacks a window");
+    // "if not" has to answer a question about the app having exited; pair it with
+    // the opposite question and the instruction becomes quit an app that already did.
+    pinsOnce(guidance, "whether it exited, and to quit it if not");
     // Relaunching a live app fails differently per app - a second copy, a boot
     // that dies as a bare early exit behind Electron's single-instance lock
     // (boot-electron.ts, BOOT_CONFIRM_WINDOW_MS), or a browser refusing outright
