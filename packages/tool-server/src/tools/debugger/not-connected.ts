@@ -122,21 +122,24 @@ const CHROMIUM_REREAD_ID =
 const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
   cdp_unreachable:
     "No page could be driven: the CDP endpoint was unreachable, answered as something " +
-    "other than CDP, or is up with no usable page — detail says which. A reply that is " +
-    "not CDP — a non-2xx status, or a body that is not JSON — means the port answered " +
-    "with something that is not a CDP endpoint, usually another service holding it: " +
-    "pass on what the detail " +
-    "says, since nothing here can free a port. That id is dead either way — for an " +
-    "Electron app boot-device takes a free port and returns the new id, and a browser " +
-    "has to come back on a port nothing else holds. A detail about " +
-    "page targets (none at all, or only devtools:// ones) means the app is still " +
-    "running and only lacks a window: ask the user to bring one back. Otherwise the CDP " +
-    "connection itself failed, and only a detail saying the discovery GET could not " +
-    "connect means nothing answered the port: any other wording means discovery answered " +
-    "first, so the app was up moments ago and the page it was driving is what went, which " +
-    "the window remedy above fixes. When nothing answered at all: " +
-    "ask the user to quit the app if it is " +
-    "still up, then relaunch once it has exited — list-devices cannot " +
+    "other than CDP, or is up with no usable page. Which one is in the detail, and its " +
+    "opening words are the split. " +
+    "A detail starting 'Chromium CDP discovery: GET' is the discovery request itself: " +
+    "'could not connect' means nothing answered the port, while 'failed (HTTP <status>)' " +
+    "or 'returned a body that is not valid JSON' means something answered that is not a " +
+    "CDP endpoint, usually another service holding it. In that second case pass on what " +
+    "the detail says, since nothing here can free a port. That id is dead either way — " +
+    "for an Electron app boot-device takes a free port and returns the new id, and a " +
+    "browser has to come back on a port nothing else holds. " +
+    "A detail starting 'Chromium CDP on port' means the app answered and has no drivable " +
+    "page (none at all, or only devtools:// ones): it is still running and only lacks a " +
+    "window, so ask the user to bring one back. " +
+    "Any other detail is the CDP socket failing after discovery had already answered, so " +
+    "the app was up moments ago. It may have lost only the page it was driving, which the " +
+    "window remedy above fixes, or exited since — nothing here tells the two apart, so " +
+    "have the user check. " +
+    "Once the app is gone: ask the user to quit it if it is somehow still up, " +
+    "then relaunch once it has exited — list-devices cannot " +
     "confirm the exit, since it drops an app that is up with no drivable page exactly " +
     "as it drops an exited one, " +
     "and relaunching a live app never recovers it: boot-device only starts an app and " +

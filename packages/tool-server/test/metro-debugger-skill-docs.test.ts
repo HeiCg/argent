@@ -238,11 +238,21 @@ describe("the Chromium recovery names a relaunch that exists", () => {
         "only when the app is gone: a failure naming page targets means it is still up",
         listsRestartApp,
       ],
-      // What a non-CDP reply does and does not prove. It is not evidence the app is
-      // up - the app may well be gone and something else may have taken the port.
+      // Which detail proves a squatted port, tied to the prefix only the discovery
+      // request produces. Without that anchor the claim reads onto the raw ws
+      // message a live app's closed page produces ("Unexpected server response:
+      // 500") and sends a healthy id to the relaunch.
       [
         "a squatted port is not a live app",
-        "a reply that is not cdp means the port answered with something that is not a cdp endpoint",
+        "a detail starting chromium cdp discovery: get with a status or a bad body means the " +
+          "port answered as something that is not a cdp endpoint",
+        listsRestartApp,
+      ],
+      // And the class that names neither prefix, which is the one the ws layer
+      // produces after discovery has already answered.
+      [
+        "a socket-level detail is not a dead port",
+        "is the cdp socket failing after discovery answered, so the app was up moments ago",
         listsRestartApp,
       ],
       // And why the port matters for one half of the recovery only: bootElectronApp
@@ -362,8 +372,11 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // Both lock shapes: Electron's newcomer exits 0 with no reason given, Chrome
     // refuses outright and names the lock. A reader matching only Electron's
     // shape against Chrome's refusal concludes it hit something else.
-    pinsOnce(unreachable, "bare early exit for Electron");
-    pinsOnce(unreachable, "SingletonLock: File exists` for Chrome");
+    // Both lock shapes reach the caller as the same early exit: boot-electron pipes
+    // the child's stderr to the tool-server's own and keeps none of it, so a reader
+    // told to match Chrome's message against a tool result never finds it.
+    pinsOnce(unreachable, "`child process exited with code N before CDP was ready`");
+    pinsOnce(unreachable, "is in the server log, not in the result");
     // Of the seven codes behind cdp_unreachable only CHROMIUM_CDP_NO_PAGE_TARGET
     // proves the app alive, and only its devtools:// half names the window, so
     // both the narrowing and the remedy it points to are pinned. "devtools://"
