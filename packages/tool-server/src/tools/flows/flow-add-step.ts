@@ -1020,24 +1020,18 @@ async function captureTapSelector(
  * and that pressure was observed removing checks from tests. The full file
  * comes back once, from `flow-finish-recording`.
  *
- * Liveness is asserted first, for the same reason the append path asserts it:
- * these callers resolved their session BEFORE running a tool that can take
- * minutes, so the recording may have been finished, restarted or evicted in the
- * meantime. Without the check the file is re-read off `session.filePath` and the
- * refusal reports another take's step count as this recording's — the one
- * number the caller relies on to know where its own take stands.
+ * The liveness check comes first, as on the append path. The caller resolved
+ * its session BEFORE a tool that can run for minutes, so the recording can be
+ * finished, restarted or evicted by now. Without the check, the read below
+ * reports another take's step count as this one's.
  *
- * Under the flow's lock, exactly as {@link appendStepToFlow} asserts, because
- * the assert alone only narrows that window: the assert is synchronous and the
- * read below is not, and `flow-start-recording` truncates the file and
- * registers the new session under that same lock. A restart landing between the
- * two is invisible to a lock-free caller, which then reports the SUPERSEDED
- * take's count as its own success — worse than missing the takeover, which the
- * next call on the key reports.
+ * The check and the read hold the flow lock, as {@link appendStepToFlow} does.
+ * The check is synchronous and the read is not, and `flow-start-recording`
+ * truncates the file under that same lock. A restart between the two would make
+ * this report the SUPERSEDED take's count as a success.
  *
- * `ranOnDevice` says whether the tool call this return is refusing to RECORD had
- * already been executed, which decides what the liveness error tells the author
- * to undo.
+ * `ranOnDevice` says whether the refused call already ran, which decides what
+ * the liveness error tells the author to undo.
  */
 async function activeFlowState(
   session: RecordingSession,
@@ -1295,23 +1289,16 @@ export function directiveCommandHint(command: string): string | undefined {
 /**
  * Whether this step must be refused rather than recorded, and why.
  *
- * `flow-execute` and `run-sequence` are the two tools that run other tools and
- * report a failed, cancelled or never-run nested run in their RESULT instead of
- * by throwing — so the recorder has to read that result, or a composition that
- * failed everything is written into the flow as a step that passed.
+ * `flow-execute` and `run-sequence` report a failed, cancelled or never-run
+ * nested run in their RESULT, not by throwing. If the recorder does not read
+ * that result, a composition that failed everything becomes a step that passed.
  *
- * The verdict is read with {@link nestedOrchestratorOutcome}, the same reader
- * the RUNNER scores a nested step with. That is not merely reuse: a step the
- * recorder declines to write is exactly a step the runner would not have passed,
- * so the two must agree by construction rather than by two parsers of one shape
- * staying in step. It also settles the wording — one event had grown three
- * fraction spellings ("step 2/3", "after 1 of 3 steps", "1/2 nested steps
- * completed") — and it names WHICH composed step failed, which the recorder's
- * own reader never did.
+ * The verdict comes from {@link nestedOrchestratorOutcome}, the reader the
+ * RUNNER scores a nested step with. A step the recorder refuses is a step the
+ * runner would not have passed, so one reader keeps the two in agreement.
  *
- * `undefined` from that reader means the nested run finished cleanly, including
- * a run whose cancellation landed in the trailing inter-step delay after every
- * declared step had already succeeded: that step ran in full and is recorded.
+ * `undefined` means the nested run finished cleanly. A cancel in the trailing
+ * delay after the last declared step is clean: that step ran in full.
  */
 function nestedRecordRefusal(
   command: string,
@@ -1320,20 +1307,16 @@ function nestedRecordRefusal(
 ): { reason: string; mayHaveMutated: boolean } | null {
   const outcome = nestedOrchestratorOutcome(command, result);
   if (!outcome) return null;
-  // A cancellation is not a failure. `run-sequence` has no abort field of its
-  // own — a nested tool cancelled mid-flight reports itself either by returning
-  // (a cancelled `await-ui-element` returns unmet) or by rejecting, and both
-  // become an ordinary error entry — so a verdict-first read files a user
-  // cancellation as "a failed nested step". Signal first, verdict second, the
-  // order the runner uses; `skip` already IS the reader's own abort branch, and
-  // the verdict is kept alongside rather than thrown away.
+  // Read the signal before the verdict, the order the runner uses.
+  // `run-sequence` has no abort field: a nested tool that is cancelled returns
+  // unmet or throws, and either becomes an ordinary error entry. A
+  // verdict-first read would file the author's own cancel as a failed nested
+  // step. `skip` is the reader's own abort branch, so it speaks for itself.
   //
-  // `attempted` is the third conjunct because a cancel can only have caused an
-  // outcome the nested run actually got far enough to have. A `flow-execute`
-  // prerequisite notice is status `error` and reached no step: the flow was not
-  // runnable AS WRITTEN, which a concurrent cancel neither caused nor changes,
-  // so wrapping it hides the one actionable sentence inside a parenthesis and
-  // reports a cancellation of something that never started.
+  // `attempted` is the third condition, because a cancel can only affect an
+  // outcome the run got far enough to have. A `flow-execute` prerequisite
+  // notice reached no step, so the wrapper would report a cancel of something
+  // that never started.
   const attempted = nestedStepAttempted(result);
   const reason =
     aborted && attempted && outcome.status !== "skip"
@@ -1343,15 +1326,13 @@ function nestedRecordRefusal(
 }
 
 /**
- * The advice deliberately asks for a CHECK, not a restore.
+ * The advice asks for a CHECK, not a restore.
  *
- * Whether a step that was attempted actually moved the device is not decidable
- * from the result (see {@link nestedStepAttempted}), so this fires on read-only
- * nested runs too — a composed flow of nothing but `assert`s reaches a step and
- * therefore trips it. "Restore the device" is the wrong instruction to hand
- * someone in that position: its obvious execution is a relaunch, and a relaunch
- * puts the app at its start screen, not at the state the recorded prefix leaves
- * it in — destroying the very thing the warning is protecting.
+ * The result cannot show whether an attempted step moved the device (see
+ * {@link nestedStepAttempted}), so this fires on read-only nested runs too. A
+ * composed flow of only `assert`s reaches a step and trips it. "Restore the
+ * device" would invite a relaunch, and a relaunch shows the start screen, not
+ * the state the recorded prefix leaves.
  */
 function partialMutationWarning(command: "flow-execute" | "run-sequence"): string {
   const stepKind = command === "flow-execute" ? "composed" : "nested";
@@ -1364,46 +1345,35 @@ function partialMutationWarning(command: "flow-execute" | "run-sequence"): strin
 }
 
 /**
- * Whether the nested run got as far as ATTEMPTING a step — the trigger for
- * warning the author that the device may no longer be where the recorded prefix
- * leaves it.
+ * Whether the nested run ATTEMPTED a step. This is the trigger for the warning
+ * that the device may no longer be where the recorded prefix leaves it.
  *
- * Deliberately not "did any step succeed". A step routinely acts on the device
- * and THEN fails: a `scroll-to` scrolls to the end of the list before reporting
- * it never found its target, a leading `launch` terminates and relaunches the
- * app before failing its readiness gate, a `keyboard` fires part of its input
- * before throwing. Every one of those leaves `passed`/`completed` at 0 while the
- * screen has moved, so a success count proves nothing about device state and
- * reading one as proof suppressed the warning in exactly the cases it exists
- * for. What the result does settle is whether a step was reached at all.
+ * Not "did a step succeed". A step often acts and THEN fails. A `scroll-to`
+ * scrolls to the end of the list before it reports a miss. A `keyboard` types
+ * part of its text before it throws. Both leave `passed` and `completed` at 0
+ * while the screen moved. The result settles only whether a step was reached.
  *
- * Over-firing is the safe direction here (the message says "may", and its advice
- * is a check, not a restore); staying silent is the one that leaves the author
- * recording the next step against a screen the prefix can no longer reach.
+ * A false warning is safe, because the message says "may" and asks for a check.
+ * Silence leaves the author recording against a screen the prefix cannot reach.
  */
 function nestedStepAttempted(result: unknown): boolean {
   if (typeof result !== "object" || result === null) return true;
   const steps = (result as { steps?: unknown }).steps;
   if (!Array.isArray(steps)) {
-    // flow-execute's prerequisite notice is the one shape that carries no step
-    // list BECAUSE it ran nothing; any other unrecognised shape must assume a
-    // step ran, since it cannot prove otherwise.
+    // Only `flow-execute`'s prerequisite notice has no step list, because it
+    // ran nothing. Any other unknown shape must assume that a step ran.
     return !Object.prototype.hasOwnProperty.call(result, "notice");
   }
   // The flow runner reports one entry per DECLARED step and marks the ones it
-  // never reached `skip` — except that a step CUT SHORT by a cancel is a skip
-  // too, and that one may well have acted: a `launch` is only cancellable once
-  // `restart-app` has relaunched the app. The runner marks those `reached`, so
-  // "skip" alone is read as proof of nothing only without it.
+  // never reached `skip`. A step CUT SHORT by a cancel is a skip too, and that
+  // one can have acted. A `launch` becomes cancellable only after `restart-app`
+  // relaunched the app. The runner marks those `reached`.
   //
-  // `run-sequence` appends one entry per step it got to and stops there, so its
-  // entries are attempts — except the ones rejected before dispatch (a tool
-  // outside its allow-list, one the target platform does not support, args the
-  // registry's schema check refuses), which say so with `dispatched: false`.
-  // Those prove the opposite of an attempt, and a sequence rejected on its
-  // FIRST step touched nothing at all: warning there contradicts the same message's "after 0 of N
-  // steps", and the caller passes this same value as `ranOnDevice`, which then
-  // tells a superseded author to weigh undoing an action never performed.
+  // `run-sequence` appends one entry per step it got to, so its entries are
+  // attempts. The exceptions carry `dispatched: false`: an unlisted tool, one
+  // the platform does not support, or args the registry refuses. A sequence
+  // rejected on its FIRST step touched nothing, and a warning there would
+  // contradict "after 0 of N steps" in the same message.
   return steps.some((s) => {
     if (typeof s !== "object" || s === null) return true;
     const entry = s as { status?: unknown; reached?: unknown; dispatched?: unknown };
@@ -1747,24 +1717,21 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     toolResult: unknown;
     stepCount: number;
     /**
-     * The flow line just appended — and the discriminator for "was anything
-     * recorded at all", since every path that records NOTHING still returns
-     * normally with the unchanged `stepCount`, so the caller can see its take
-     * was left alone. Those paths are:
+     * The flow line just appended, and the discriminator for "was anything
+     * recorded at all". Every path that records NOTHING still returns normally
+     * with the unchanged `stepCount`, so the caller can see its take was left
+     * alone. Those paths are:
      *
-     * - a `command` naming a recorder tool, or one naming a flow-file directive
-     *   rather than a tool — those two answer with the call to make instead of
-     *   running anything;
+     * - a `command` that names a recorder tool, or a flow-file directive
+     *   instead of a tool. Both answer with the call to make.
      * - a nested `flow-execute` that failed, was cancelled, or returned a
-     *   prerequisite notice instead of running;
+     *   prerequisite notice.
      * - a nested `run-sequence` that stopped on a failed step or was cancelled
      *   part-way.
      *
-     * Deliberately NOT partitioned by whether the call reached the device: the
-     * refusals include shapes that provably ran nothing (a prerequisite notice
-     * executes no step, a `run-sequence` rejected on its first step dispatches
-     * none), so any "these two run nothing, the rest ran" split is false.
-     * `message` carries that half — see {@link partialMutationWarning}.
+     * The list is NOT split by whether the call reached the device, because
+     * some refusals provably ran nothing. `message` carries that half. See
+     * {@link partialMutationWarning}.
      *
      * Required while every return appended a step; these returns are what
      * reopened it, and a placeholder would claim a line that is not there. Also
@@ -1781,13 +1748,12 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
       // Name the flow: recordings are concurrent, so several of these lines can
       // interleave in one log and "the recorded flow" would not identify which.
       startedMsg: ({ params }) => `Adding ${params.command} step to flow ${params.name}`,
-      // Several returns are success-SHAPED but deliberately record nothing (a
-      // refused directive command, a nested orchestrator that failed or was
-      // cancelled). Logging "Added …" for those makes the event log assert the
-      // opposite of the message in the same result, and the log is what an agent
-      // scrolls back through to reconstruct what a take actually contains.
-      // `recorded` is the documented discriminator — it is absent exactly when
-      // no line was appended.
+      // Several returns are success-SHAPED and record nothing: a refused
+      // directive command, or a nested orchestrator that failed or was
+      // cancelled. An "Added …" line for those makes the event log contradict
+      // the message in the same result. An agent reads that log to reconstruct
+      // what a take contains. `recorded` is absent exactly when no line was
+      // appended.
       completedMsg: ({ params, result }) =>
         result.recorded === undefined
           ? `Did NOT add ${params.command} step to flow ${params.name} (see the returned message)`
@@ -1954,12 +1920,9 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         ctx?.signal?.aborted === true
       );
       if (refusal) {
-        // Same predicate the mutation warning below reads, for the same reason:
-        // a refusal that provably ran nothing (a prerequisite notice, a cancel
-        // that landed before the first nested step) must not tell a superseded
-        // author their step "already ran on the device" — that is the exact
-        // misdirection `ranOnDevice` exists to prevent, and the two clauses
-        // describing one call have to agree.
+        // The mutation warning below reads the same predicate, for the same
+        // reason. A refusal that provably ran nothing must not tell a
+        // superseded author their step "already ran on the device".
         const { stepCount, note } = await activeFlowState(session, refusal.mayHaveMutated);
         const mutationWarning = refusal.mayHaveMutated
           ? ` ${partialMutationWarning(

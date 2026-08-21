@@ -62,15 +62,12 @@ type Params = z.infer<typeof zodSchema>;
 type StepResult =
   | { tool: string; result: unknown }
   /**
-   * `dispatched: false` marks a step rejected BEFORE the device — an unlisted
-   * tool name, one the target platform does not support, or args the registry's
-   * own schema check refuses (that parse runs ahead of the tool's `execute`).
-   * Each pushes an entry and stops, so without the marker a rejection
-   * that provably touched nothing is indistinguishable from a step that ran and
-   * then failed: `completed` is 0 either way, and these entries carry no
-   * `status` of their own. A consumer deciding whether the device may have
-   * moved (the flow recorder does, to decide what to warn about) would have to
-   * assume the worst for a sequence that never dispatched anything.
+   * `dispatched: false` marks a step rejected BEFORE the device. The causes are
+   * an unlisted tool name, one the target platform does not support, and args
+   * the registry's schema check refuses ahead of `execute`. Without the marker,
+   * such a rejection looks like a step that ran and then failed. `completed` is
+   * 0 either way, and these entries carry no `status`. The flow recorder reads
+   * the marker to decide whether the device may have moved.
    */
   | { tool: string; error: string; dispatched?: false };
 
@@ -251,12 +248,10 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
             toolArgs,
             step.args ?? {}
           );
-          // A re-rendered miss is the registry's own schema rejection, and that
-          // parse runs BEFORE `execute` — so the step never reached the device
-          // and carries the same marker as the two exits rejected here. Without
-          // it a mistyped key reads as "ran and then failed", and the recorder
-          // both warns that the device may have moved and tells a superseded
-          // author the step "already ran on the device".
+          // A re-rendered miss is the registry's own schema rejection, and
+          // that parse runs BEFORE `execute`. The step never reached the
+          // device, so it carries the same marker as the two exits above.
+          // Without it, a mistyped key reads as "ran and then failed".
           results.push({
             tool: step.tool,
             error: reframed ?? (err instanceof Error ? err.message : String(err)),

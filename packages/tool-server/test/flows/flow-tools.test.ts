@@ -791,9 +791,8 @@ describe("flow-add-step", () => {
 
   it("records a clean run-sequence as an ordinary tool step", async () => {
     // The positive control for the refusals below. Every one of them asserts
-    // that NOTHING was recorded, so a regression making the failure check
-    // truthy for a passing sequence would break run-sequence recording outright
-    // and leave the suite green.
+    // that NOTHING was recorded. A check that is truthy for a passing sequence
+    // would break recording and leave the suite green.
     const registry = createMockRegistry({
       "run-sequence": {
         result: {
@@ -837,12 +836,10 @@ describe("flow-add-step", () => {
   });
 
   it("refuses a REAL run-sequence result, not just a hand-written one", async () => {
-    // Every other case here feeds the recorder a mock of what run-sequence is
-    // believed to return, across a registry boundary that types results as
-    // `unknown` — so drift between RunSequenceResult and the shape the recorder
-    // reads is undetectable by construction. Drive the actual tool once: an
-    // unmet await-ui-element is its most common real failure, and it is the path
-    // that turns a soft "condition not met" return into an `error` entry.
+    // The other cases mock what run-sequence returns, and the registry types
+    // results as `unknown`, so drift between the two shapes stays invisible.
+    // Drive the real tool once. An unmet `await-ui-element` is its most common
+    // failure, and it turns a soft return into an `error` entry.
     const inner = {
       invokeTool: vi.fn(async (id: string) => {
         if (id === "gesture-tap") return { tapped: true, timestampMs: 1 };
@@ -892,17 +889,15 @@ describe("flow-add-step", () => {
     expect(result.message).toContain("step NOT recorded");
     expect(result.recorded).toBeUndefined();
     expect(parseFlow(await onDisk("sequence-real")).steps).toEqual([]);
-    // The third step never ran — the denominator has to show that.
+    // The third step never ran, which the denominator must show.
     expect(inner.invokeTool).toHaveBeenCalledTimes(2);
   });
 
   it("reports the take, the file and the nested report alongside a refusal", async () => {
-    // A refusal returns three fields besides `message`, and each answers a
-    // question the author cannot answer any other way: `stepCount` says the
-    // take was left where it was (NOT reset), `savedTo` says which file that
-    // is, and `toolResult` is the only place the nested report survives —
-    // which step failed and how far the sequence got. Asserted against a take
-    // that already holds a step, so a zeroed count is distinguishable.
+    // A refusal returns three fields beside `message`. `stepCount` shows the
+    // take was left in place, `savedTo` names the file, and `toolResult` is the
+    // only copy of the nested report. The take already holds a step, so a
+    // zeroed count is visible.
     const registry = createMockRegistry({
       "gesture-tap": { result: { tapped: true } },
       "run-sequence": {
@@ -1005,11 +1000,9 @@ describe("flow-add-step", () => {
     expect(result.message).toContain("run-sequence stopped at await-ui-element after 1 of 2 steps");
     expect(result.message).toContain("await-ui-element condition not met");
     expect(result.message).toContain("step NOT recorded");
-    // Nothing was cancelled, so nothing may say it was. Asserted on the message
-    // OPENING with the verdict, because the cancellation wording only wraps it
-    // — `<command> was cancelled (<verdict>)` still contains every `toContain`
-    // above, so without this the signal-first guard cannot be told from a
-    // version that reports every failure as a cancellation.
+    // Nothing was cancelled, so the message must not say it was. Asserted as
+    // OPENS-with, because the cancel wording wraps the verdict and every
+    // `toContain` above still matches inside that wrapper.
     expect(result.message.startsWith("run-sequence stopped at")).toBe(true);
     expect(result.message).not.toContain("was cancelled");
     expect(result.message).toContain("Prior nested steps may already have changed the device");
@@ -1020,10 +1013,9 @@ describe("flow-add-step", () => {
   });
 
   it("still warns when the run-sequence failed on its FIRST nested step", async () => {
-    // `completed: 0` counts steps that SUCCEEDED, and a step routinely acts on
-    // the device and then fails — this keyboard typed part of its text before
-    // throwing. Reading the success count as proof that nothing moved is what
-    // silenced the warning in exactly the case it exists for.
+    // `completed: 0` counts steps that SUCCEEDED. This keyboard typed part of
+    // its text before it threw, so the success count cannot prove that the
+    // device stayed still.
     const registry = createMockRegistry({
       "run-sequence": {
         result: {
@@ -1097,15 +1089,13 @@ describe("flow-add-step", () => {
       { signal: controller.signal } as never
     );
 
-    // A cancel BETWEEN nested steps is the shared reader's own abort branch,
-    // and it carries the progress the sequence made.
+    // A cancel BETWEEN nested steps takes the reader's own abort branch, which
+    // carries the progress the sequence made.
     expect(result.message).toContain("run-sequence was aborted after 1 of 2 steps");
-    // That branch must be left to speak for itself rather than wrapped in the
-    // recorder's own cancellation wording, which would double-report the same
-    // event ("run-sequence was cancelled (run-sequence was aborted after …)")
-    // and bury the progress it carries. Asserted as OPENS-with, because every
-    // `toContain` here still matches inside that wrapper — without it the
-    // `status !== "skip"` conjunct cannot be told from a version that drops it.
+    // The recorder must not wrap that branch in its own cancel wording, which
+    // would report one event twice and bury the progress. Asserted as
+    // OPENS-with, because every `toContain` here also matches inside such a
+    // wrapper.
     expect(result.message.startsWith("run-sequence was aborted after 1 of 2 steps")).toBe(true);
     expect(result.message).toContain("step NOT recorded");
     expect(result.message).toContain("Prior nested steps may already have changed the device");
@@ -1116,10 +1106,9 @@ describe("flow-add-step", () => {
   });
 
   it("reports a cancel that landed INSIDE a nested step as a cancellation", async () => {
-    // A cancelled `await-ui-element` reports itself by returning unmet, which
-    // run-sequence turns into an ordinary error entry. Reading the verdict
-    // before the signal files that as "a failed nested step" — the opposite of
-    // what the runner calls the same event.
+    // A cancelled `await-ui-element` returns unmet, and run-sequence turns that
+    // into an ordinary error entry. A verdict-first read would call it a failed
+    // nested step, the opposite of what the runner calls the same event.
     const controller = new AbortController();
     const registry = {
       invokeTool: vi.fn(async () => {
@@ -1169,9 +1158,8 @@ describe("flow-add-step", () => {
   });
 
   it("reports a cancelled composed flow as a cancellation, not as ok: false", async () => {
-    // `summarize` folds the abort into the verdict — `ok` is false whenever
-    // `aborted` is set — so reading `ok` first renames every cancellation into
-    // a composed flow that failed.
+    // `summarize` folds the abort into the verdict: `ok` is false whenever
+    // `aborted` is set. An `ok`-first read renames every cancel as a failure.
     const registry = createMockRegistry({
       "flow-execute": {
         result: {
@@ -1206,8 +1194,8 @@ describe("flow-add-step", () => {
     );
 
     expect(result.message).toContain('flow "login" was aborted');
-    // The reader's own abort branch, unwrapped — see the run-sequence twin for
-    // why this is asserted as OPENS-with rather than as a `toContain`.
+    // The reader's own abort branch, unwrapped. See the run-sequence twin for
+    // why this is asserted as OPENS-with.
     expect(result.message.startsWith('flow "login" was aborted')).toBe(true);
     expect(result.message).not.toContain("failed:");
     expect(result.message).toContain("NOT recorded");
@@ -1215,12 +1203,10 @@ describe("flow-add-step", () => {
   });
 
   it("names the failing composed step even when the run was then cancelled", async () => {
-    // `summarize` folds the abort into the verdict, so a composed run whose step
-    // genuinely failed before the cancel takes the reader's abort branch. The
-    // refusal message has only `reason` to render — the run report's own detail
-    // never reaches it — so without the detail there the author is told a flow
-    // was cancelled and nothing about what broke, on the one path this change
-    // exists to name.
+    // `summarize` folds the abort into the verdict, so a run whose step failed
+    // before the cancel takes the abort branch. The refusal renders only
+    // `reason`, so the failing step must travel in it. Otherwise the author
+    // hears of a cancel and nothing about what broke.
     const registry = createMockRegistry({
       "flow-execute": {
         result: {
@@ -1302,12 +1288,12 @@ describe("flow-add-step", () => {
       }
     );
 
-    // Names WHICH composed step failed and why — not merely that the flow did.
+    // Names WHICH composed step failed and why, not only that the flow did.
     expect(result.message).toContain('flow "login" failed: 1 passed, 1 failed, 0 errored');
     expect(result.message).toContain("assert: Home not visible");
     expect(result.message).toContain("NOT recorded");
     // The other half of the signal-first guard: a composed flow that failed
-    // with no cancel in play is reported as a failure, not wrapped as one.
+    // with no cancel is reported as a failure, not wrapped as a cancel.
     expect(result.message.startsWith('flow "login" failed:')).toBe(true);
     expect(result.message).not.toContain("was cancelled");
     expect(result.message).toContain("Prior composed steps may already have changed the device");
@@ -1316,12 +1302,10 @@ describe("flow-add-step", () => {
   });
 
   it("advises a check rather than a restore when the composed flow was read-only", async () => {
-    // A flow of nothing but asserts reached a step, so the warning fires even
-    // though nothing could have moved — mutation is not decidable from the
-    // result, and over-firing is the safe direction. That makes the ADVICE the
-    // thing that has to be safe: telling this author to "restore the device"
-    // invites a relaunch, which lands on the start screen rather than on the
-    // state the recorded prefix produces, destroying the recording's premise.
+    // A flow of only asserts reaches a step, so the warning fires although
+    // nothing moved. The result cannot decide mutation, and a false warning is
+    // the safe direction. That puts the weight on the ADVICE: "restore the
+    // device" invites a relaunch, which lands on the start screen.
     const registry = createMockRegistry({
       "flow-execute": {
         result: {
@@ -1360,9 +1344,8 @@ describe("flow-add-step", () => {
   });
 
   it("still warns when the composed flow failed with NO step passing", async () => {
-    // The FINDINGS repro, as a report: a `scroll-to` scrolled to the end of the
-    // list and only then reported it never found its target. `passed: 0`, and
-    // the page moved — the success count cannot rule mutation out.
+    // A `scroll-to` scrolled to the end of the list and then reported a miss.
+    // `passed: 0`, and the page still moved.
     const registry = createMockRegistry({
       "flow-execute": {
         result: {
@@ -1408,9 +1391,8 @@ describe("flow-add-step", () => {
   });
 
   it("warns on a failed composed flow whose result carries no step list", async () => {
-    // The unknown/short-shape fallback: `ok: false` with nothing to read a step
-    // list from. Nothing can be proved about the device, so the warning fires —
-    // the branch has to default to warning, not to silence.
+    // The unknown-shape fallback: `ok: false` with no step list. Nothing about
+    // the device is provable, so the branch must warn, not stay silent.
     const registry = createMockRegistry({ "flow-execute": { result: { ok: false } } });
     const tool = createFlowAddStepTool(registry);
     await flowStartRecordingTool.execute({}, { name: "compose-shapeless", project_root: tmpDir });
@@ -1433,7 +1415,7 @@ describe("flow-add-step", () => {
 
   it("stays silent when every composed step was skipped", async () => {
     // The cancel landed before the first step, so the runner reported all of
-    // them as skips: none was reached and none could have moved the device.
+    // them as skips. None was reached, and none could have moved the device.
     const registry = createMockRegistry({
       "flow-execute": {
         result: {
@@ -1473,10 +1455,9 @@ describe("flow-add-step", () => {
   });
 
   it("warns when a composed step was cut short after it had already acted", async () => {
-    // `skip` is not proof a step did nothing: a `launch` reaches its abort only
-    // after restart-app has terminated and relaunched the app, and the runner
-    // says so with `reached`. Silence here would tell the author their recorded
-    // prefix still reproduces against an app sitting on its start screen.
+    // `skip` is not proof that a step did nothing. A `launch` reaches its abort
+    // only after `restart-app` relaunched the app, and the runner says so with
+    // `reached`.
     const registry = createMockRegistry({
       "flow-execute": {
         result: {
@@ -1556,13 +1537,10 @@ describe("flow-add-step", () => {
 
   it("stays silent when run-sequence rejected its first step before dispatching it", async () => {
     // run-sequence has two exits that push an error entry WITHOUT reaching the
-    // registry — a tool outside its allow-list, and one the target platform does
-    // not support — and its entries carry no `status`, so "a step was attempted"
-    // degenerated to "the array is non-empty". A sequence rejected on its first
-    // step touched nothing, yet the refusal said "after 0 of 2 steps" and
-    // "prior nested steps may already have changed the device" in one line.
-    // Driven through the REAL run-sequence, since the marker that settles it is
-    // part of that result shape.
+    // registry: an unlisted tool, and one the platform does not support. Its
+    // entries carry no `status`, so a sequence rejected on its first step once
+    // warned that the device may have moved. Driven through the REAL
+    // run-sequence, because the marker belongs to that result shape.
     const inner = { invokeTool: vi.fn(), getTool: vi.fn(() => undefined) } as unknown as Registry;
     const runSequence = createRunSequenceTool(inner);
     const registry = {
@@ -1605,10 +1583,9 @@ describe("flow-add-step", () => {
   });
 
   it("stays silent when run-sequence's first step failed its schema check", async () => {
-    // The registry's own parse is the third exit that precedes the device: the
-    // step's `execute` never runs, so the entry must carry the same marker as
-    // the two run-sequence rejects itself. Driven through a REAL registry,
-    // since only that parse produces the rejection.
+    // The registry parse is the third exit before the device: `execute` never
+    // runs, so the entry needs the same marker. Driven through a REAL registry,
+    // because only that parse rejects.
     const inner = new Registry();
     const executed: string[] = [];
     inner.registerTool({
@@ -1733,8 +1710,7 @@ describe("flow-add-step", () => {
     );
 
     expect(result.message).toContain('flow "login" did not run');
-    // Names the actual prerequisite, not just the generic handshake text, and
-    // the recovery — both of which the shared reader already renders.
+    // Names the prerequisite and the recovery, not the generic handshake text.
     expect(result.message).toContain("On login screen");
     expect(result.message).toContain("prerequisiteAcknowledged: true");
     expect(result.message).toContain("NOT recorded");
@@ -1745,18 +1721,14 @@ describe("flow-add-step", () => {
   });
 
   it("does not call a prerequisite notice a cancellation when a cancel is in play", async () => {
-    // A notice means the composed flow was not runnable AS WRITTEN and reached
-    // no step, so there is nothing a cancel could have interrupted. Wrapping it
-    // as `flow-execute was cancelled (…)` reports a cancellation of something
-    // that never started, and pushes the only actionable sentence — the
-    // prerequisite and how to acknowledge it — inside a parenthesis. Its own
-    // `mayHaveMutated: false` already says nothing ran, so the two halves of
-    // one message would contradict each other.
+    // A notice means the flow was not runnable AS WRITTEN and reached no step,
+    // so a cancel interrupted nothing. A wrapper would report a cancel of
+    // something that never started and would push the prerequisite, the one
+    // actionable sentence, into a parenthesis.
     const controller = new AbortController();
-    // Cancel WHILE the composed run is in flight, which is the only way a
-    // notice and a cancel coexist: a signal already aborted when the call
-    // arrives is refused before anything is invoked, so it never produces a
-    // notice to mis-narrate.
+    // Cancel WHILE the composed run is in flight. That is the only way a notice
+    // and a cancel coexist: a signal already set when the call arrives is
+    // refused before anything runs.
     const registry = {
       invokeTool: vi.fn(async () => {
         controller.abort();

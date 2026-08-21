@@ -1789,12 +1789,10 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     // probed nor reported on, however its nested wait ended. The author has to
     // read `toolResult` themselves, so the claim has to stay true.
     //
-    // The sequence has to be a CLEAN one. A sequence that stopped short is
-    // refused a recording outright, so it could never reach a wait warning and
-    // would pass this test for the wrong reason. A nested wait that PASSED is
-    // the case that actually discriminates: a top-level wait that passed is
-    // exactly what gets re-probed, so `fetchCount` staying 0 is the proof that
-    // nesting it suppresses the probe.
+    // The sequence must be a CLEAN one. A sequence that stopped short is
+    // refused a recording, so it could never reach a wait warning and would
+    // pass for the wrong reason. A nested wait that PASSED discriminates,
+    // because a top-level wait that passed is what gets re-probed.
     const registry = {
       invokeTool: vi.fn(async (id: string) => {
         if (id === "run-sequence")

@@ -420,14 +420,13 @@ export async function withFlowFileLock<T>(
 }
 
 /**
- * The same lock, for a critical section that already holds a session — the
- * returns that record NOTHING and still report the recording's step count read
- * the file back, and that read must not straddle a restart.
+ * The same lock for a caller that already holds a session. The returns that
+ * record NOTHING read the file back to report the step count, and that read
+ * must not straddle a restart.
  *
- * Keyed off `session.key` rather than re-resolved from (projectRoot, name):
- * {@link resolveFlowKey} touches the filesystem, so re-deriving it would put
- * another await inside the window this lock exists to close, and would answer
- * differently if the path stopped resolving mid-recording.
+ * Keyed off `session.key`, not re-resolved from (projectRoot, name): {@link
+ * resolveFlowKey} touches the filesystem, which would add another await inside
+ * the window this lock closes.
  */
 export async function withRecordingLock<T>(
   session: RecordingSession,
@@ -3394,14 +3393,13 @@ export type FlowSavedTo = string | ClientFileDirective;
  * benign — the step still lands in the file it was recorded for, and only the
  * NEXT call on the key reports the recording gone.
  *
- * Also called by the returns that record NOTHING, which have the same window
- * and the same stake: the count and file path they report would otherwise be a
- * different take's. Those callers run outside the lock, which only widens the
- * benign race above — a takeover they miss is reported by the next call.
+ * The returns that record NOTHING call it too, under the same lock. They have
+ * the same window and the same stake: the count and file path they report
+ * would otherwise be a different take's.
  *
- * `ranOnDevice` picks the recovery clause: the caller knows whether the action
- * was actually performed, and telling an author that a step they never ran
- * "already ran on the device" sends them undoing something that never happened.
+ * `ranOnDevice` picks the recovery clause. Only the caller knows whether the
+ * action ran. An author told that a step they never ran "already ran on the
+ * device" undoes something that never happened.
  */
 export function assertSessionStillLive(session: RecordingSession, ranOnDevice: boolean): void {
   const current = recordings.get(session.key);

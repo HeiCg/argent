@@ -384,9 +384,8 @@ describe("run cancellation mid-launch", () => {
     // tree-source gate were cut short, so the launch verified nothing.
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:skip"]);
     expect(result.steps[0].reason).toBe("run aborted");
-    // The app WAS terminated and relaunched before the cancel, so this skip is
-    // not proof the device is untouched — a reader that took it for one would
-    // tell a flow author their recorded prefix still reproduces.
+    // The app was terminated and relaunched before the cancel, so this skip is
+    // not proof that the device is untouched.
     expect(result.steps[0].reached).toBe(true);
     expect(result.ok).toBe(false);
     expect(calls).toContain("restart-app");
@@ -418,10 +417,9 @@ describe("run cancellation mid-launch", () => {
   });
 
   it("leaves a step the cancel never reached unmarked", async () => {
-    // The control for `reached`: the second launch is skipped by the pre-step
-    // guard, which never called restart-app for it. Same status, same reason —
-    // only the marker separates "may have moved the device" from "provably
-    // did not".
+    // The control for `reached`. The pre-step guard skips the second launch
+    // without calling restart-app. Same status and reason, so only the marker
+    // separates "may have moved the device" from "provably did not".
     const controller = new AbortController();
     const calls: string[] = [];
     const registry = launchRegistry(calls, () => {

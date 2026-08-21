@@ -129,19 +129,17 @@ describe("run-sequence", () => {
     expect(result.steps[0]).toMatchObject({
       tool: "not-a-tool",
       error: expect.stringContaining("not allowed"),
-      // The entry has to say the step never reached the registry. `completed`
-      // is 0 for a step that ran and failed too, and these entries carry no
-      // status, so this marker is the only thing that tells the two apart — the
-      // flow recorder reads it to decide whether the device may have moved.
+      // The entry must say the step never reached the registry. `completed` is
+      // 0 for a step that ran and failed too, and these entries carry no
+      // status, so only this marker separates them.
       dispatched: false,
     });
     expect(registry.invokeTool).not.toHaveBeenCalled();
   });
 
   it("marks a step rejected by the capability pre-flight as never dispatched", async () => {
-    // The second pre-dispatch exit: the tool exists and is allow-listed, but
-    // does not support this target. `button` on a Chromium device is the
-    // ordinary spelling of it, not a synthetic case.
+    // The second pre-dispatch exit: the tool is allow-listed but does not
+    // support this target. `button` on a Chromium device is the ordinary case.
     const registry = {
       getTool: vi.fn(() => ({
         capability: { apple: { simulator: true }, android: { emulator: true } },
@@ -172,9 +170,8 @@ describe("run-sequence", () => {
   });
 
   it("does not mark a step that WAS dispatched and then failed", async () => {
-    // The control for the two above: the marker must be absent whenever the
-    // registry was reached, or a consumer reading it would treat a real device
-    // action as a no-op.
+    // The control for the two above. The marker must be absent whenever the
+    // registry was reached, or a reader treats a real action as a no-op.
     const registry = mockRegistry((id: string) => {
       if (id === "keyboard") throw new Error("keyboard failed: device went away");
       return { ok: true };
@@ -493,9 +490,8 @@ describe("run-sequence", () => {
 
     it("marks the entry `dispatched: false`, since the parse precedes execute", async () => {
       // The registry parses before it calls `execute`, so a schema miss touched
-      // the device exactly as little as an unlisted tool name did. Without the
-      // marker the flow recorder reads the entry as "ran and then failed" and
-      // warns that the device may have moved.
+      // the device as little as an unlisted tool name did. Without the marker
+      // the recorder reads the entry as "ran and then failed".
       const { registry, executed } = liveRegistry();
       const tool = createRunSequenceTool(registry);
 
@@ -509,8 +505,8 @@ describe("run-sequence", () => {
     });
 
     it("leaves a tool that rejects its OWN args unmarked", async () => {
-      // The control: `dispatched: false` must mean "never reached the device",
-      // not "the error mentions params". A tool whose args parse and which then
+      // The control. `dispatched: false` must mean "never reached the device",
+      // not "the error mentions params". A tool that parses its args and then
       // throws from inside `execute` DID run.
       const registry = new Registry();
       const executed: string[] = [];
