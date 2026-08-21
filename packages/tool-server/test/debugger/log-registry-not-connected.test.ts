@@ -159,11 +159,17 @@ describe("debugger-log-registry not-connected results", () => {
     // answer already failed to produce.
     expect(result.guidance).not.toContain("Read this result's note");
     expect(result.guidance.startsWith("This result has no note")).toBe(true);
-    // What it says about the world is only what the store can know: the record
-    // is spent by whoever reads it first, so an empty store is not proof no
-    // session ended here — a concurrent agent's debugger-connect may have taken
-    // it while the file it named is still on disk.
-    expect(result.guidance).toContain("either none did, or an earlier read spent it");
+    // What it says about the world is only what the store can know. Three states
+    // reach an empty store — no session ended here, one ended having logged
+    // nothing (the record is gated on `captured > 0`), or an earlier read spent
+    // it while the file it named is still on disk — and the answer cannot tell
+    // them apart, so it states the two conditions and explains none of them
+    // away.
+    expect(result.guidance).toContain("no unread record of a previous session");
+    expect(result.guidance).toContain(
+      "filed only for a session that ended holding console history"
+    );
+    expect(result.guidance).toContain("the first read of it spends it");
     // No fabricated LogStats: agents must not be sent to grep a file that
     // does not exist.
     expect("file" in result).toBe(false);
@@ -257,16 +263,15 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.reason).toBe("cdp_unreachable");
     expect("port" in result).toBe(false);
     expect(result.guidance.startsWith("This result has no note")).toBe(true);
-    expect(result.guidance).toContain("ending on this device —");
+    expect(result.guidance).toContain("previous session on this device.");
     expect(result.guidance).not.toContain("device and port");
   });
 
   it("leads the guidance with the note when the answer is carrying one", async () => {
     // These strings are written for `debugger-status`, whose answers carry no
-    // note: one of them sends the agent here to read one, and the four other
-    // reasons that can carry one — a crashed Chromium renderer's
-    // `cdp_unreachable` among them — mention none at all. Read from the answer
-    // that IS carrying it, both are wrong in the same way.
+    // note: every reason that can carry one — a crashed Chromium renderer's
+    // `cdp_unreachable` among them — mentions none at all. Read from the answer
+    // that IS carrying it, that silence is what misleads.
     const port = await freePort();
     const setup = makeSetup(jsRuntimeDebuggerBlueprint);
     cleanups.push(async () => {
@@ -293,6 +298,43 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.guidance).toContain("explains what became of the previous session's console log");
     // And the reason's own guidance is still all there behind it.
     expect(result.guidance).toContain("Do not retry in a loop");
+  });
+
+  it("does not tell the second reader that no session ended here", async () => {
+    // The first read spends the record; the file it named outlives it. An answer
+    // that reads its own empty store as "nothing ended here" contradicts the
+    // answer given seconds earlier and sends the agent past a log that is still
+    // on disk.
+    const port = await freePort();
+    const setup = makeSetup(jsRuntimeDebuggerBlueprint);
+    cleanups.push(async () => {
+      await setup.registry.dispose();
+      __resetReapedSessionsForTesting();
+    });
+    recordReapedSession(
+      "js-runtime-debugger",
+      "mock-device",
+      "The log file is kept at /tmp/k.log",
+      {
+        cause: "runtime-death",
+        keptAt: "/tmp/k.log",
+        scope: String(port),
+      }
+    );
+
+    const first = (await setup.invoke({ port, device_id: "mock-device" })) as Record<
+      string,
+      string
+    >;
+    expect(first.note).toContain("/tmp/k.log");
+
+    const second = (await setup.invoke({ port, device_id: "mock-device" })) as Record<
+      string,
+      string
+    >;
+    expect(second.note).toBeUndefined();
+    expect(second.guidance).toContain("the first read of it spends it");
+    expect(second.guidance).not.toContain("no session ended");
   });
 
   /**

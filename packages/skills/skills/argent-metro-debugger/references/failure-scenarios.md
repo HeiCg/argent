@@ -19,7 +19,7 @@ A crashed session's console log is reachable only through the `note` `debugger-l
 
 - **Read it before relaunching.** The next crash on this device and Metro port reclaims the kept file of the one before it.
 - **The answer may still carry the dead session's own entries**, if the teardown has not landed yet — then just read `file`.
-- **No note usually means that session logged nothing.** Whoever reads it first spends it, so a concurrent agent's `debugger-connect` may have taken it — and the record is per Metro port, so ask with the port that session used.
+- **No note usually means that session logged nothing** — the record is filed only for a session that ended holding console history. Whoever reads it first spends it, so a concurrent agent's `debugger-connect` may have taken it — and the record is per Metro port, so ask with the port that session used. On `reason: "reconnecting"` it means neither: the record is held for the retry that guidance asks for, so ask again before concluding anything.
 - **A note saying no log file was left behind** (an explicit teardown deletes it), **or that a kept one has since been reclaimed**, means there is nothing left to read.
 - **Once the app is back and logging**, `debugger-log-registry` reports the new session instead, and the note moves to the next `debugger-connect`. That connect reports one only for an app that died on its own; a session someone else tore down is consumed there in silence.
 - **The `logicalDeviceId` survives the relaunch.** The app derives it from the device and the bundle, so Metro echoes back the same one — reconnect with it.

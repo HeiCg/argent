@@ -73,7 +73,7 @@ export function createDebuggerLogRegistryTool(
     description: `Get a summary of all console logs captured from the app's JS runtime.
 Returns the log file path, entry counts by level, and message clusters (grouped by similarity). Works against Hermes (iOS / Android / Vega) and V8 (Chromium).
 Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. ALWAYS check { note } before acting on the rest: it appears only when something would otherwise mislead you, and it says which of two things it is — or both, when both hold. Either the previous debugger session for this device was torn down while holding captured logs — by a stop-all-simulator-servers, or by the app's JS runtime going away — so this registry starts empty for a reason that is not "the app logged nothing", and when that teardown left the old log file on disk (a crash or force-quit does) the note names its path to read instead. Or nothing is at { file } — the writer could not create it, or something has removed it since — so it is not there to grep and the counts and clusters here are all there is. Absent a note, empty means nothing has been captured since this session began, and { file } is readable.
-When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } and no log file of its own — follow the guidance (do not retry in a loop). A crashed app reaches that state too, so check { note } there as well: when the dead session left its log file behind the note names it, and that file is readable even though the debugger is not. A "connected" result's stats may come from a session whose socket has since died — use debugger-status, not this tool, to judge debugger health.`,
+When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } and no log file of its own — follow the guidance (do not retry in a loop). A crashed app reaches that state too, so check { note } there as well: when the dead session left its log file behind the note names it, and that file is readable even though the debugger is not. The one exception is reason "reconnecting": the record is held for the retry that guidance asks for, so no note there says nothing about what the previous session left. A "connected" result's stats may come from a session whose socket has since died — use debugger-status, not this tool, to judge debugger health.`,
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,
     // Resolved manually in execute so a not-connected precondition becomes a
@@ -165,7 +165,7 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         const result = buildNotConnected(reason, err, params, { reportsOwnNote: true });
         // `guidance` is the field an agent acts on, and these strings are
         // written for `debugger-status`, whose answers never carry a note: the
-        // four reasons that can carry one — a crashed Chromium renderer's
+        // five reasons that can carry one — a crashed Chromium renderer's
         // `cdp_unreachable` among them — mention none at all. So this tool says
         // what its own result holds before the rest of the guidance speaks for
         // the general case.
@@ -179,9 +179,11 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           ...(note ? { note } : {}),
           guidance: note
             ? `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`
-            : `This result has no note: no unread record of a session ending on this ${
+            : `This result has no note: no unread record of a previous session on this ${
                 scope ? "device and port" : "device"
-              } — either none did, or an earlier read spent it. ${result.guidance}`,
+              }. One is filed only for a session that ended holding console history, and the first read of it spends it. ${
+                result.guidance
+              }`,
         };
       }
     },
