@@ -70,9 +70,14 @@ function row(file: string, label: string): string {
   return matches[0]!;
 }
 
-/** The platform list a prose row states, e.g. "… on iOS / Android (like …" -> "iOS / Android". */
+/**
+ * The platform list a prose row states, e.g. "… on iOS / Android (like …" ->
+ * "iOS / Android". Chromium is in the vocabulary here but not in PLATFORM_WORDS:
+ * platformTag has no word for it, so a row claiming Chromium has to land inside
+ * the captured tag to fail the comparison rather than be trimmed off it.
+ */
 function proseTag(cell: string): string {
-  const words = PLATFORM_WORDS.map(([, word]) => word).join("|");
+  const words = [...PLATFORM_WORDS.map(([, word]) => word), "Chromium"].join("|");
   const match = new RegExp(` on ((?:${words})(?: / (?:${words}))*)`).exec(cell);
   return match?.[1] ?? "";
 }
@@ -129,21 +134,23 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       const cell = row(file, label);
       expect(cell, file).toContain("Chromium");
       expect(cell, file).toContain("`boot-device` with `electronAppPath`");
-      // The id is derived from the port, so a relaunch can move it, and the
-      // browser half is the user's to perform. A surface naming neither the
-      // actor nor where to re-read the id leaves the reader unable to finish.
-      // Each cell says "ask the user" twice and may name list-devices twice, so
-      // pin the occurrence that carries the step.
+      // The browser half is the user's to perform, and the id is derived from the
+      // port, so a relaunch can move it. A surface naming neither the actor nor
+      // where to re-read the id leaves the reader unable to finish. Each cell says
+      // "ask the user" twice and may name list-devices twice, so pin the
+      // occurrence that carries the step.
       pinsOnce(cell, "ask the user to start the browser again", file);
-      pinsOnce(cell, "`boot-device` / `list-devices`", file);
-      // list-devices reports a Chromium entry's id under `id` - ChromiumDevice has
-      // no udid field - so calling it one sends the reader looking for a key that
-      // is not in the response.
-      expect(cell, file).not.toMatch(/`chromium-cdp-<port>` udid/);
+      // One sentence, identical on all seven surfaces. It carries the token
+      // (list-devices reports a Chromium entry under `id`, and ChromiumDevice has
+      // no udid field, so naming it anything else sends the reader after a key
+      // that is not in the response), both places it can be read, and the one
+      // condition that moves it.
+      pinsOnce(cell, "`chromium-cdp-<port>` id from `boot-device` / `list-devices`", file);
+      pinsOnce(cell, "a relaunch on a new port is a new id", file);
     }
 
-    // Every surface that states the recovery, down to the two that state only
-    // its first step. boot-device stops nothing, so the exit is the user's to
+    // Every surface that states the recovery, down to the create-flow row that
+    // states only its first step. boot-device stops nothing, so the exit is the user's to
     // cause and the relaunch has to wait for it; a surface keeping the sequence
     // but dropping the actor leaves the reader waiting on nobody, and one
     // keeping the actor but dropping the sequence sends them to relaunch into a
@@ -169,7 +176,11 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // is pinned against the throw sites in debugger/not-connected-map.test.ts.
     const unreachable = row(FAILURE_SCENARIOS, "**App unreachable**");
     pinsOnce(unreachable, "second copy");
-    pinsOnce(unreachable, "single-instance");
+    // Both lock shapes: Electron's newcomer exits 0 with no reason given, Chrome
+    // refuses outright and names the lock. A reader matching only Electron's
+    // shape against Chrome's refusal concludes it hit something else.
+    pinsOnce(unreachable, "bare early exit");
+    pinsOnce(unreachable, "SingletonLock");
     // Of the seven codes behind cdp_unreachable only CHROMIUM_CDP_NO_PAGE_TARGET
     // proves the app alive, and only its devtools:// half names the window, so
     // both the narrowing and the remedy it points to are pinned. "devtools://"

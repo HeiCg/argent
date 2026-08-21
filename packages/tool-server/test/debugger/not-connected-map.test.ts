@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { FAILURE_CODES, FailureError, type FailureSignal } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  FailureError,
+  getFailureSignal,
+  type FailureSignal,
+} from "@argent/registry";
 import { classifyNotConnected, buildNotConnected } from "../../src/tools/debugger/not-connected";
 import { pinsOnce } from "../helpers/pins";
 import { discoverPrimaryPage } from "../../src/chromium-server/cdp-session";
@@ -101,39 +106,49 @@ describe("guidance platform-correctness", () => {
     expect(chromium.guidance).not.toContain("restart-app");
     expect(chromium.guidance).toContain("electronAppPath");
 
-    // Both overrides route around restart-app, so each carries what the skill
-    // surfaces carry: who performs the browser half, and where the id is re-read
-    // once a relaunch moves it.
-    for (const r of [
-      buildNotConnected("cdp_unreachable", coded(FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE), {
-        port: 8081,
-        device_id: "chromium-cdp-9222",
-      }),
-      chromium,
-    ]) {
-      pinsOnce(r.guidance, "ask the user to start the browser again");
-      pinsOnce(r.guidance, "same CDP port");
-      pinsOnce(r.guidance, "id from boot-device / list-devices");
-      // boot-device never stops an app, and nothing in the catalogue can tell a
-      // broken-but-running one from an exited one, so the user is the only actor
-      // that can end it - and the relaunch has to wait for that, or it lands on a
-      // single-instance lock. Both overrides carry both halves, as the skill
-      // surfaces do.
-      pinsOnce(r.guidance, "ask the user to quit it");
-      pinsOnce(r.guidance, "then relaunch once it has exited");
-      // The id tracks the port, so a relaunch that comes back on the same port
-      // keeps it. Only a moved port mints a new id.
-      expect(r.guidance).not.toMatch(/under a new chromium-cdp/);
-    }
     // A renderer paused at a breakpoint times out exactly like a wedged one, and
     // quitting the app throws the debug session away.
     expect(chromium.guidance).toContain("breakpoint");
+  });
+
+  it("gives both Chromium overrides the whole recovery, not half of it each", () => {
+    // Both route around restart-app, so each has to carry what the skill surfaces
+    // carry. They are asserted together because the halves drifted apart twice:
+    // one override named the actor without the wait, the other the wait without
+    // the guard against reading list-devices as proof of an exit.
+    for (const [reason, code] of [
+      ["cdp_unreachable", FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE],
+      ["runtime_unresponsive", FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT],
+    ] as const) {
+      const { guidance } = buildNotConnected(reason, coded(code), {
+        port: 8081,
+        device_id: "chromium-cdp-9222",
+      });
+      pinsOnce(guidance, "ask the user to start the browser again", reason);
+      pinsOnce(guidance, "same CDP port", reason);
+      pinsOnce(guidance, "id from boot-device / list-devices", reason);
+      // boot-device never stops an app, and nothing in the catalogue can tell a
+      // broken-but-running one from an exited one, so the user is the only actor
+      // that can end it - and the relaunch has to wait for that, or it lands on a
+      // single-instance lock.
+      pinsOnce(guidance, "ask the user to quit it", reason);
+      pinsOnce(guidance, "then relaunch once it has exited", reason);
+      // list-devices drops a live-but-windowless app exactly as it drops an exited
+      // one, so an agent polling it for the exit relaunches into a running app.
+      // Naming list-devices as the id source without this reads as an invitation
+      // to do exactly that.
+      pinsOnce(guidance, "list-devices cannot tell you whether it", reason);
+      // The id tracks the port, so a relaunch returning on the same port keeps it.
+      // A negative regex cannot hold this: it passes for every wording that does
+      // not spell out the one phrase it names, the false ones included.
+      pinsOnce(guidance, "a relaunch on a new port is a new id", reason);
+    }
   });
 });
 
 describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
   /** Serve one /json/list body from a throwaway CDP endpoint. */
-  async function detailFor(targets: unknown[]): Promise<string> {
+  async function detailFor(targets: unknown[]): Promise<{ message: string; code: string }> {
     const server = http.createServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(targets));
@@ -144,7 +159,10 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       await discoverPrimaryPage(port);
       throw new Error("expected discoverPrimaryPage to reject");
     } catch (err) {
-      return (err as Error).message;
+      return {
+        message: (err as Error).message,
+        code: String(getFailureSignal(err)?.error_code),
+      };
     } finally {
       server.close();
     }
@@ -165,19 +183,28 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       },
     ]);
     const noPages = await detailFor([{ id: "2", type: "service_worker", title: "sw", url: "x" }]);
+    // The message and the code are one pairing: routing is keyed off the code and
+    // the wording off the message, so a throw site that re-codes keeps its prose
+    // while landing on a different reason.
+    for (const d of [devtoolsOnly, noPages]) {
+      expect(d.code).toBe(FAILURE_CODES.CHROMIUM_CDP_NO_PAGE_TARGET);
+    }
 
     const { guidance } = buildNotConnected(
       "cdp_unreachable",
       coded(FAILURE_CODES.CHROMIUM_CDP_NO_PAGE_TARGET),
       { port: 8081, device_id: "chromium-cdp-9222" }
     );
-    for (const detail of [devtoolsOnly, noPages]) {
+    for (const { message: detail } of [devtoolsOnly, noPages]) {
       const cue = /devtools:\/\//.test(detail) ? "devtools://" : "page target";
       expect(detail, "the discriminator the guidance names must be in the detail").toContain(cue);
       expect(guidance).toContain(cue);
     }
-    // The clause that routes a live app away from a relaunch.
+    // The clause that routes a live app away from a relaunch - both halves. The
+    // diagnosis alone leaves the remedy free to become the relaunch this whole
+    // branch exists to prevent.
     pinsOnce(guidance, "only lacks a window");
+    pinsOnce(guidance, "ask the user to bring one back");
     // A sequence, not a condition on whether it exited: nothing in the catalogue
     // can answer that condition, and quitting an app that already exited is a
     // no-op anyway.
@@ -192,7 +219,7 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // here makes the row stale. Fix it there before relaxing this. (That the other
     // message asks about --remote-debugging-port on a port that just answered is
     // filed as #880.)
-    expect(devtoolsOnly).toMatch(/window/i);
-    expect(noPages, "the no-targets message gained a window hint").not.toMatch(/window/i);
+    expect(devtoolsOnly.message).toMatch(/window/i);
+    expect(noPages.message, "the no-targets message gained a window hint").not.toMatch(/window/i);
   });
 });

@@ -122,8 +122,9 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "timeout — it is likely frozen, or paused at a breakpoint. Do not retry in a loop " +
     "(each attempt waits out the full timeout). Check the app first; if it is hung, " +
     "ask the user to quit it, then relaunch once it has exited — boot-device only " +
-    "starts a Chromium app and never " +
-    "stops one. boot-device with electronAppPath relaunches an Electron app, and " +
+    "starts a Chromium app and never stops one, and list-devices cannot tell you " +
+    "whether it exited, since it drops a broken-but-running app exactly as it " +
+    "drops an exited one. boot-device with electronAppPath relaunches an Electron app, and " +
     "for a browser, ask the user to start the browser again on the same CDP port. " +
     "Re-read the chromium-cdp-<port> id from boot-device / list-devices, since a " +
     "relaunch on a new port is a new id, and retry once.",
