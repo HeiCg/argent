@@ -121,19 +121,20 @@ const CHROMIUM_REREAD_ID =
 const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
   cdp_unreachable:
     "No page could be driven: the CDP endpoint was unreachable, answered as something " +
-    "other than CDP, or is up with no usable page. Which one is in the detail, and its " +
-    "opening words are the split. " +
-    "A detail starting 'Chromium CDP discovery: GET' is the discovery request itself: " +
+    "other than CDP, or is up with no usable page. Which one is in the detail, and the " +
+    "phrase it carries is the split — a service tag opens every detail, so read past it. " +
+    "A detail carrying 'Chromium CDP discovery: GET' is the discovery request itself: " +
     "'could not connect' means nothing answered the port, while 'failed (HTTP <status>)' " +
     "or 'returned a body that is not valid JSON' means something answered that is not a " +
     "CDP endpoint, usually another service holding it. In that second case pass on what " +
     "the detail says, since nothing here can free a port. That id is dead either way — " +
     "for an Electron app boot-device takes a free port and returns the new id, and a " +
     "browser has to come back on a port nothing else holds. " +
-    "A detail starting 'Chromium CDP on port' means the app answered and has no drivable " +
+    "A detail carrying 'Chromium CDP on port' means the app answered and has no drivable " +
     "page (none at all, or only devtools:// ones): it is still running and only lacks a " +
     "window, so ask the user to bring one back. " +
-    "Any other detail is the CDP socket failing after discovery had already answered, so " +
+    "A detail carrying neither is the CDP socket failing after discovery had already " +
+    "answered, so " +
     "the app was up moments ago. It may have lost only the page it was driving, which the " +
     "window remedy above fixes, or exited since — nothing here tells the two apart, so " +
     "have the user check. " +
@@ -152,7 +153,9 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "The app accepted the debugger connection but did not answer within the timeout: " +
     "the renderer is frozen. A renderer paused at a breakpoint does not reach this " +
     "reason — it answers the enables and the viewport read, so the session resolves and " +
-    "debugger-status reports connected. Do not retry in a loop " +
+    'debugger-status reports connected. The detail says "frozen, or paused at a ' +
+    'breakpoint" because it is the shared request-timeout wording, which also covers ' +
+    "debugger-evaluate; only the frozen half of it applies here. Do not retry in a loop " +
     "(each attempt waits out the full timeout). Ask the user to quit the app, then " +
     "relaunch once it has " +
     "exited: the app is up, so relaunching it yourself never recovers it — " +

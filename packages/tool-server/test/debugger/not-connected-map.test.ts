@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   FAILURE_CODES,
   FailureError,
+  ServiceInitializationError,
   getFailureSignal,
   type FailureSignal,
 } from "@argent/registry";
@@ -105,8 +106,11 @@ describe("guidance platform-correctness", () => {
       { port: 8081, device_id: "chromium-cdp-9222" }
     );
     for (const r of [metro, chromium]) {
-      expect(r.guidance).toMatch(/Do not retry in a loop/);
+      pinsOnce(r.guidance, "Do not retry in a loop");
       expect(r.guidance).toMatch(/timeout/);
+      expect(r.guidance, "no instruction to loop anyway").not.toMatch(
+        /until it (answers|connects)/
+      );
     }
     // Metro owes the paused state a branch: nothing here can resume a runtime -
     // there is no Debugger.resume anywhere in the tool-server - and the other
@@ -125,10 +129,25 @@ describe("guidance platform-correctness", () => {
     // frozen renderer times out those sends, and a branch for a state that never
     // arrives costs a wasted round-trip through the user.
     pinsOnce(chromium.guidance, "the renderer is frozen");
-    pinsOnce(chromium.guidance, "A renderer paused at a breakpoint does not reach this reason");
-    expect(chromium.guidance, "no resume ask on the one state that is never paused").not.toContain(
-      "ask the user to resume"
+    // Through the rationale: "does not reach this reason" alone is satisfied by a
+    // sentence that goes on to say it times out identically and to branch on it.
+    pinsOnce(
+      chromium.guidance,
+      "A renderer paused at a breakpoint does not reach this reason — it answers the enables " +
+        "and the viewport read, so the session resolves and debugger-status reports connected."
     );
+    // And no resume ask survives on the one state that is never paused, whoever
+    // the sentence names as the actor.
+    expect(chromium.guidance, "no resume ask here").not.toMatch(/resume/i);
+    // The detail beside this guidance is the shared request-timeout message, which
+    // names a breakpoint. Unreconciled, the pair contradicts itself in one response.
+    pinsOnce(
+      chromium.guidance,
+      'The detail says "frozen, or paused at a breakpoint" because it is the shared ' +
+        "request-timeout wording, which also covers debugger-evaluate; only the frozen " +
+        "half of it applies here."
+    );
+    pinsOnce(chromium.guidance, "(each attempt waits out the full timeout)");
     pinsOnce(chromium.guidance, "Ask the user to quit the app, then relaunch once it has exited");
     // Why absence is not the exit, in the state this reason is actually in: the
     // socket opened, so the app has a page target and stays listed while it hangs.
@@ -207,6 +226,8 @@ describe("guidance platform-correctness", () => {
       // The rule needs its consequence: without it a reader takes 'never recovers
       // it' for 'has no effect' and tries the relaunch anyway.
       pinsOnce(guidance, "the relaunch either duplicates the app or fails", reason);
+      // Its premise. Without it "duplicates or fails" reads as a risk worth taking.
+      pinsOnce(guidance, "never recovers it", reason);
       // The id is re-readable only where discovery looks: getCandidateChromiumPorts
       // probes 9222, the env list and the ports boot-device opened. Without this the
       // new-port clause reads as an invitation to relaunch anywhere and re-read.
@@ -324,6 +345,13 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     expect(devtoolsOnly.message).toContain("devtools://");
     pinsOnce(guidance, "none at all, or only devtools:// ones");
     pinsOnce(guidance, "or is up with no usable page");
+    // The instruction that makes the three arms usable at all. Without it they read
+    // as three descriptions and the reader picks by resemblance.
+    pinsOnce(
+      guidance,
+      "Which one is in the detail, and the phrase it carries is the split — a service tag " +
+        "opens every detail, so read past it."
+    );
     // The clause that routes a live app away from a relaunch - both halves. The
     // diagnosis alone leaves the remedy free to become the relaunch this whole
     // branch exists to prevent.
@@ -359,7 +387,8 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // This arm is reached only when nothing answered the port at all, so the quit
     // is a precaution rather than a diagnosis - and it still has to come first,
     // since the one case it guards against is an app that is somehow still up.
-    pinsOnce(guidance, "ask the user to quit it if it is somehow still up, then relaunch");
+    pinsOnce(guidance, "Once the app is gone: ask the user to quit it if it is somehow still up");
+    pinsOnce(guidance, "That id is dead either way");
     // The precondition on the one tool named after the quit. Without it the clause
     // reads as an alternative to the quit rather than the step that follows it.
     pinsOnce(guidance, "Once it is gone, launch-app cannot start a Chromium app");
@@ -384,7 +413,7 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
   });
 
   it("splits on a detail prefix each throw site actually produces", async () => {
-    // The reader is told to route on the detail's opening words, so the prefixes
+    // The reader is told to route on a phrase the detail carries, so the phrases
     // have to be the ones the throw sites emit. Restating them here would let a
     // reworded message and the guidance drift apart with the suite green, and the
     // guidance sends a whole branch to the wrong remedy when they do: the
@@ -422,7 +451,17 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       ["nothing answered", (unreachable as Error).message, DISCOVERY],
       ["answered, no page", noPages.message, PORT_LEVEL],
     ] as const) {
-      expect(message, `${what}: the guidance routes on this prefix`).toContain(prefix);
+      expect(message, `${what}: the guidance routes on this phrase`).toContain(prefix);
+      // Every one of these is thrown inside the Chromium service factory, so the
+      // detail the reader sees is the registry's rewrite of it. Routing worded
+      // positionally ("a detail starting X") therefore matches NOTHING, and every
+      // state falls into the last arm — which claims the app was up moments ago.
+      const detail = new ServiceInitializationError("ChromiumCdp:chromium-cdp-9222", message)
+        .message;
+      expect(detail.startsWith(prefix), `${what}: service-tagged, so never at the start`).toBe(
+        false
+      );
+      expect(detail, `${what}: still findable as a phrase`).toContain(prefix);
     }
     expect((unreachable as Error).message).toContain("could not connect");
     for (const prefix of [DISCOVERY, PORT_LEVEL]) {
@@ -437,15 +476,25 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       coded(FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE),
       { port: 8081, device_id: "chromium-cdp-9222" }
     );
-    pinsOnce(guidance, `A detail starting '${DISCOVERY}' is the discovery request itself`);
-    pinsOnce(guidance, `A detail starting '${PORT_LEVEL}' means the app answered`);
+    pinsOnce(guidance, `A detail carrying '${DISCOVERY}' is the discovery request itself`);
+    pinsOnce(guidance, `A detail carrying '${PORT_LEVEL}' means the app answered`);
     pinsOnce(guidance, "'could not connect' means nothing answered the port");
+    expect(guidance, "no positional routing — the detail is service-tagged").not.toMatch(
+      /detail (starting|beginning|that starts|that begins)|opening words/i
+    );
     // The third arm's whole point: discovery had answered, so the app was up, and
     // the guidance may not claim which of the two states it is now in.
     pinsOnce(
       guidance,
-      "Any other detail is the CDP socket failing after discovery had already answered"
+      "A detail carrying neither is the CDP socket failing after discovery had already " +
+        "answered, so the app was up moments ago."
     );
-    pinsOnce(guidance, "nothing here tells the two apart, so have the user check");
+    // Both halves of the ambiguity, then the refusal to resolve it. Either half
+    // alone lets the arm assert the state it is there to say it cannot know.
+    pinsOnce(
+      guidance,
+      "It may have lost only the page it was driving, which the window remedy above fixes, " +
+        "or exited since — nothing here tells the two apart, so have the user check."
+    );
   });
 });

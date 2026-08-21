@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { pinsOnce, pinsUnqualified } from "./pins";
-import { expectTagEndsTheClaim, platformTag } from "./platform-tag";
+import { CHROMIUM_WORDS, expectTagEndsTheClaim, platformTag } from "./platform-tag";
 
 /**
  * The doc-pinning helpers only ever fail under a mutation, so nothing in a green
@@ -29,12 +29,20 @@ describe("pinsUnqualified", () => {
     }
   });
 
+  // Every word the qualifier list carries, so a shortened list fails here rather
+  // than silently letting that phrasing through on a real doc surface.
   it("fails on a carve-out appended to the claim it pins", () => {
     for (const tail of [
       " except for an Electron app you booted yourself",
       " unless you booted the app yourself",
+      " until boot-device has started it",
       ", other than an app boot-device started",
+      ", apart from an app you booted yourself",
+      ", save for an Electron app",
+      " provided boot-device started it",
+      " as long as you booted it yourself",
       " only when the app was booted elsewhere",
+      " only if boot-device started it",
     ]) {
       expect(() => pinsUnqualified(`restart-app is ${claim}${tail}`, claim), tail).toThrow();
     }
@@ -45,6 +53,22 @@ describe("pinsUnqualified", () => {
     // closing marks rather than against the needle.
     expect(() => pinsUnqualified(`**${claim}** except for Electron`, claim)).toThrow();
     expect(() => pinsUnqualified(`"${claim}", unless you booted it`, claim)).toThrow();
+  });
+});
+
+describe("CHROMIUM_WORDS", () => {
+  it("matches every word this repo names a Chromium runtime with", () => {
+    for (const cell of [
+      "not supported on Chromium",
+      "boot-device with electronAppPath relaunches an Electron app",
+      "and on any CDP browser",
+    ]) {
+      expect(cell, cell).toMatch(CHROMIUM_WORDS);
+    }
+  });
+
+  it("does not match a row that names no Chromium runtime", () => {
+    expect("Relaunch by bundleId (iOS / Android / Vega)").not.toMatch(CHROMIUM_WORDS);
   });
 });
 

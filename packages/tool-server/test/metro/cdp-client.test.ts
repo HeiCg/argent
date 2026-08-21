@@ -289,6 +289,14 @@ describe("CDPClient", () => {
       // emitted. Both branches, through to their remedies - the message names the
       // paused state, and quitting there throws the user's session away.
       const message = (err as Error).message;
+      // The diagnosis itself. Both remedies below are chosen off "reachable but not
+      // answering"; a message that instead reports the runtime as gone sends the
+      // reader straight past them to a relaunch.
+      pinsOnce(
+        message,
+        "the runtime accepted the connection but did not answer; it may be frozen, or " +
+          "paused at a breakpoint."
+      );
       pinsOnce(
         message,
         "If it is paused, ask the user to resume it — quitting throws the debug session away."
@@ -297,16 +305,33 @@ describe("CDPClient", () => {
       // socket OPEN, so debugger-status reports "connected" and never reaches the
       // branching guidance. Invert it and this message reads as the redundant copy
       // of a guidance string the reader will in fact never see.
-      pinsOnce(message, 'debugger-status can still report "connected" in this state');
+      pinsOnce(
+        message,
+        'debugger-status can still report "connected" in this state (the socket is open).'
+      );
       // Both ends of the retry discipline. Each attempt waits out this full timeout,
       // so a loosened "unless it looks slow" at one end or a "retry until it answers"
       // at the other undoes the reason the guidance is in the message at all.
       pinsOnce(message, "Do not retry in a loop. If it is paused");
+      // The id source sits inside the Chromium parenthetical, and covers BOTH of its
+      // branches: this message is the shared client's, so a Metro reader reaches it
+      // too, and a chromium-cdp id is not a thing on their platform. The browser
+      // branch has no boot-device call to get an id from, so the port it is started
+      // on has to be named as the id.
       pinsOnce(
         message,
-        "then reconnect with the chromium-cdp-<port> id boot-device returns — a relaunch on a " +
-          "new port is a new id — and retry once."
+        "relaunches an Electron app and returns the chromium-cdp-<port> id to reconnect with"
       );
+      pinsOnce(
+        message,
+        "started again with --remote-debugging-port, where that port is the id — " +
+          "chromium-cdp-<that port> — since a relaunch on a new port is a new id"
+      );
+      pinsOnce(message, "one), then reconnect and retry once.");
+      expect(
+        message.slice(message.indexOf("one), then reconnect")),
+        "the platform-neutral close may not name a chromium id"
+      ).not.toMatch(/chromium-cdp/);
       // Derived from restart-app's own capability, not restated: the same tag on the
       // skill rows is built this way, and a literal here drifts off it silently.
       const restartApp = createRestartAppTool({} as unknown as Registry).capability;
