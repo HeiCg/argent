@@ -168,6 +168,7 @@ describe("guidance content", () => {
       "cdp_unreachable",
       "runtime_unresponsive",
       "reconnecting",
+      "stale_connection",
     ] as const) {
       const err = coded(FAILURE_CODES.DEBUGGER_METRO_NOT_RUNNING);
       expect(buildNotConnected(reason, err, params, { reportsOwnNote: true }).guidance).toBe(

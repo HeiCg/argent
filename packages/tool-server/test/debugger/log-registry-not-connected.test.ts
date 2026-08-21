@@ -165,7 +165,12 @@ describe("debugger-log-registry not-connected results", () => {
     // it while the file it named is still on disk — and the answer cannot tell
     // them apart, so it states the two conditions and explains none of them
     // away.
-    expect(result.guidance).toContain("no unread record of a previous session");
+    // Scoped by both, since a Metro device holds one session per port: an
+    // answer that says only "on this device" invites a reader to conclude the
+    // other port's crash was never recorded.
+    expect(result.guidance).toContain(
+      "no unread record of a previous session on this device and port"
+    );
     expect(result.guidance).toContain(
       "filed only for a session that ended holding console history"
     );
