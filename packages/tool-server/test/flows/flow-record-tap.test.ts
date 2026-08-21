@@ -261,11 +261,10 @@ describe("flow-add-step tap selector capture", () => {
   });
 
   it("flags a role-only selector rather than recording the downgrade silently", async () => {
-    // Raising the iOS flow tree's depth cap surfaced views that used to be
-    // truncated away: an unlabeled icon inside a testID container is now the
-    // smallest frame under the tap, so nodeAtPoint elects it and deriveSelector
-    // falls through to its role. That replays only while it stays the
-    // first-ranked element of that role, which is worth saying out loud.
+    // The raised iOS flow tree depth cap now keeps unlabeled icons. One is the
+    // smallest frame under the tap, so `nodeAtPoint` picks it and
+    // `deriveSelector` falls back to its role. Replay then depends on that icon
+    // ranking first for the role.
     setTree([
       n({
         identifier: "product-card",
@@ -280,12 +279,9 @@ describe("flow-add-step tap selector capture", () => {
     expect(await recordedSteps()).toEqual([{ kind: "tap", selector: { role: "AXImage" } }]);
   });
 
-  // The warning is withheld for an identifier and for visible text under
-  // separate guards, so an id-only fixture leaves the text half of this claim
-  // unpinned: a regression that flagged every text capture would keep it green.
-  // Each node also carries the specific role `deriveSelector` falls through to,
-  // so the withholding is attributable to the stable field, not to the absence
-  // of a role to name.
+  // `roleOnlySelectorWarning` withholds the warning under separate guards for an
+  // identifier and for visible text, so both need a case. Each node also carries
+  // a role, so the withholding follows from the stable field, not a missing role.
   it.each([
     {
       carries: "an id",
@@ -300,9 +296,8 @@ describe("flow-add-step tap selector capture", () => {
 
     const result = await recordTap({ x: 0.5, y: 0.52 });
 
-    // Assert the step too: a capture that fell back to coordinates would carry
-    // no role-only warning either, and would pass the negative having proved
-    // nothing about it.
+    // Assert the step too. A coordinate fallback also carries no role-only
+    // warning, so the negative check alone proves nothing.
     expect(await recordedSteps()).toEqual([{ kind: "tap", selector }]);
     expect(result.message).not.toContain("matches by role alone");
   });
@@ -320,11 +315,9 @@ describe("flow-add-step tap selector capture", () => {
   });
 
   it("reports both caveats when a role-only selector comes off the fallback tree", async () => {
-    // The two warnings are independent and can fire on the same capture: a
-    // fallback-source read is exactly the one most likely to hand back an
-    // unlabeled node. Each was only ever exercised alone, so nothing held the
-    // composition — keeping just the first left the whole suite green while
-    // silently dropping the source caveat.
+    // The two warnings are independent and can fire on one capture. A
+    // fallback-source read is the most likely to return an unlabeled node. Other
+    // tests cover each warning alone, so only this test holds the pair.
     setTree(
       [
         n({

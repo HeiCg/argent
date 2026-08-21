@@ -419,11 +419,10 @@ describe("compatibility miss note is scoped to a MISS", () => {
   });
 
   it("quotes the hoisted subtree text twice when the located container near-misses", async () => {
-    // What FLOW_TREE_MAX_DEPTH's cost note claims, pinned. On the arm where a
-    // `text` locator MATCHED, the note's candidate is the located node's
-    // hoisted subtreeText — the same string `assertReason` already quoted — so
-    // this reason carries it twice and grows at twice the rate the depth cap
-    // admits descendants. The other arm (below) walks label/value only.
+    // Pins the cost that `FLOW_TREE_MAX_DEPTH`'s note describes. When a `text`
+    // locator matches, the note quotes the located node's hoisted subtreeText,
+    // which `assertReason` already quoted. The reason carries that string twice,
+    // so it grows twice as fast as the cap admits descendants.
     const HOISTED = "row-a-content row-b-content Add more languages…";
     currentFetch = () => ({
       tree: screen([
@@ -457,9 +456,9 @@ describe("compatibility miss note is scoped to a MISS", () => {
   });
 
   it("does not quote hoisted subtree text on the whole-tree walk an `exists` miss takes", async () => {
-    // The arm the cost note exempts: nothing was located, so the walk compares
-    // each node's own label/value — never its subtreeText — which is why this
-    // one does not grow with the depth cap.
+    // The branch the cost note exempts. With nothing located, the walk reads each
+    // node's own label and value, never its subtreeText, so this reason does not
+    // grow with the cap.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -487,7 +486,7 @@ describe("compatibility miss note is scoped to a MISS", () => {
 
     expect(result.steps[0].status).toBe("fail");
     expect(reason).toMatch(/typographic variant/);
-    // The leaf's own label is quoted; the container's hoisted string is not.
+    // The leaf's own label is quoted. The container's hoisted string is not.
     expect(reason).not.toMatch(/row-a-content/);
   });
 

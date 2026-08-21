@@ -635,13 +635,12 @@ async function androidDevtoolsReady(registry: Registry, device: DeviceInfo): Pro
  * {@link waitForNativeDevtools}) — there the launch is not what failed, and the
  * first selector read reports the impossibility. Otherwise the reason to report.
  *
- * The iOS wait is per BUNDLE, and that is load-bearing beyond readiness: a
- * later selector step reads through `resolveNativeTargetApp(api, undefined)`,
- * which auto-targets whatever is connected and frontmost-like and never
- * compares that against the bundle this step launched. Waiting for THIS bundle
- * to connect is the only thing coupling the two, so it must not be skipped per
- * bundle — a launch that returned without it could hand the next selector step
- * a different app's view hierarchy and report the run green.
+ * The iOS wait is per bundle, and it does more than confirm readiness. A later
+ * selector step calls `resolveNativeTargetApp(api, undefined)`, which
+ * auto-targets whatever is connected and frontmost, and never checks that
+ * against the bundle this step launched. This wait is the only thing that
+ * couples the two, so a launch that skips it can hand the next selector step
+ * another app's view hierarchy and still report the run green.
  */
 async function treeSourceGate(
   registry: Registry,

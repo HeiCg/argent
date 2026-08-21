@@ -944,15 +944,15 @@ async function probeAgainstRunnerTree(
 }
 
 /**
- * `deriveSelector`'s last resort: the tapped node carried no identifier and no
- * visibly-rendered text, so the step replays on role alone. That holds only
- * while it stays the element of that role which wins `selectorToFrame`'s
- * ranking — the re-resolve guard below proves that for the RECORDING screen,
- * never for the screen replay meets. Say so, because the alternative is silent.
+ * `deriveSelector`'s last resort: the tapped node has no identifier and no
+ * visible text, so the step replays on role alone. It holds only while that
+ * element keeps winning `selectorToFrame`'s ranking. The re-resolve guard below
+ * proves that for the recording screen, never for the screen replay meets, so
+ * the warning says so instead of leaving it silent.
  *
- * Reachability rose with the iOS flow tree's depth cap: an unlabeled icon that
- * used to be truncated away — leaving `nodeAtPoint` to elect its `testID`
- * container — is now present and is the smaller frame under the tap.
+ * The raised iOS depth cap makes this more common. An unlabeled icon that the
+ * device used to truncate away, which left `nodeAtPoint` to pick its `testID`
+ * container, is now present and is the smaller frame under the tap.
  */
 function roleOnlySelectorWarning(selector: Selector): string | undefined {
   if (selector.role === undefined || selector.identifier !== undefined) return undefined;
