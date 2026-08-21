@@ -340,13 +340,20 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         // what happened to the history, and where it went: on a runtime death
         // `close` below keeps the file, so the breadcrumb can name it.
         //
-        // Only when there IS history to lose, and under both ids this device
+        // Only when there IS history to lose, and under every id this device
         // answers to: the caller may read back with either the id it connected
         // with or the `logicalDeviceId` Metro echoed, and `forgetDeviceAlias`
         // below removes the only thing that joins them. One call, so the two
         // are one event and reading either spends both — after a runtime death
         // the logical id is unresolvable, so a copy filed under it that a read
         // left behind would never be read at all.
+        //
+        // Sometimes there is only one id, and it is that unresolvable one:
+        // `selectTarget` refuses a udid once two devices share a Metro, so the
+        // caller connects with the logicalDeviceId itself. Nothing can look this
+        // breadcrumb up after the app relaunches under a new one — the kept file
+        // is then reachable only by an agent that already holds its path, and
+        // otherwise waits for the pruner.
         //
         // The socket is the whole of "did the app die?" here, and the
         // `disconnected` event is not consulted at all: `CDPClient` nulls its

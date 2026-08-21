@@ -47,7 +47,7 @@ export const debuggerConnectTool: ToolDefinition<
   description: `Connect to a JS runtime CDP debugger.
 iOS / Android / Vega: connects to Metro's CDP endpoint on the given port. Chromium: re-uses the page CDP session opened by boot-device — port is ignored.
 Returns connection info including port, projectRoot (empty on Chromium and on legacy Metro, e.g. Vega), deviceName, appName, logicalDeviceId (absent on Vega), and isNewDebugger. If already connected, returns the existing connection.
-Also returns { note } when the PREVIOUS session for this device ended because the app went away (a crash, a force-quit, a restart-app) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs, because nothing else reports that path — or says it has since been reclaimed.
+Also returns { note } when the PREVIOUS session for this device ended with its runtime going away (a crash, a force-quit, a restart-app, or Metro being restarted) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says it has since been reclaimed. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line, and either tool consumes it, so whichever reports it first is the one that reports it at all.
 Use when starting a debug session or before calling other debugger-* tools. Fails if the runtime is unreachable (Metro down, or Chromium CDP terminated).`,
   zodSchema,
   capability: DEBUGGER_TOOL_CAPABILITY,
@@ -79,17 +79,19 @@ Use when starting a debug session or before calling other debugger-* tools. Fail
     // Not in the blueprint's factory: that runs for an IMPLICIT resolve too —
     // `debugger-log-registry` reconnects through it — and clearing there would
     // consume the breadcrumb one line before the read that exists to report it.
+    // Either spelling of the device, because the caller may have connected with
+    // either; the store files one teardown under both and spends them together,
+    // so the first hit is the whole of it.
     let note: string | undefined;
     for (const id of new Set(
       [params.device_id, api.logicalDeviceId].filter((v): v is string => v !== undefined)
     )) {
-      // Take every id, keep the first hit: the disposer writes one event under
-      // both ids this device answers to, and short-circuiting would leave the
-      // other behind to explain some later, unrelated read.
       const entry = takeReapedSession("js-runtime-debugger", id);
-      if (entry?.cause === "runtime-death") {
-        note ??= describeReapedSession(entry, "JS-runtime debugger session");
+      if (!entry) continue;
+      if (entry.cause === "runtime-death") {
+        note = describeReapedSession(entry, "JS-runtime debugger session");
       }
+      break;
     }
     return {
       port: api.port,

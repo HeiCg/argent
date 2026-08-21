@@ -19,13 +19,18 @@ interface LogRegistryResponse extends LogStats {
   appName: string;
   logicalDeviceId: string | undefined;
   /**
-   * Why this registry is empty when it should not be — present only when the
-   * previous debugger session for this device was torn down with console
-   * history captured, whether by a `stop-all-simulator-servers` or by the JS
-   * runtime dying. Without it an empty registry reads as "the app logged
-   * nothing", which is the wrong conclusion to hand an agent debugging a silent
-   * app. Names the old log file when that teardown left it on disk, which a
-   * runtime death does.
+   * Whatever would make the rest of this answer misleading on its own, in the
+   * two states where something does:
+   *
+   * - The registry is empty because the previous session for this device was
+   *   torn down holding console history — by a `stop-all-simulator-servers`, or
+   *   by its runtime going away. Without it an empty registry reads as "the app
+   *   logged nothing", the wrong conclusion to hand an agent debugging a silent
+   *   app. Names the old log file when that teardown left it on disk, which a
+   *   runtime death does.
+   * - {@link LogStats.file} names a path that was never created, because
+   *   `open()` failed and the writer buffered instead. The counts and clusters
+   *   are real; the file is not there to grep.
    */
   note?: string;
 }
@@ -65,7 +70,7 @@ export function createDebuggerLogRegistryTool(
     },
     description: `Get a summary of all console logs captured from the app's JS runtime.
 Returns the log file path, entry counts by level, and message clusters (grouped by similarity). Works against Hermes (iOS / Android / Vega) and V8 (Chromium).
-Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. Returns empty stats if no log data has been captured yet — but check { note }, which is present only when the stats are empty BECAUSE the previous debugger session for this device was torn down while holding captured logs, either by a stop-all-simulator-servers or by the app's JS runtime dying. When that teardown left the old log file on disk (a crash or force-quit does) the note names its path — read that file for the pre-crash logs. Absent the note, empty really does mean the app has logged nothing.
+Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. ALWAYS check { note } before acting on the rest: it appears only when something would otherwise mislead you, and it says which. Empty stats with a note mean the previous debugger session for this device was torn down while holding captured logs — by a stop-all-simulator-servers, or by the app's JS runtime going away — and when that teardown left the old log file on disk (a crash or force-quit does) the note names its path to read instead. A note on NON-empty stats means the opposite: the log file could not be created, so { file } names a path that is not there and the counts and clusters here are all there is. Absent a note, empty really does mean the app has logged nothing and { file } is readable.
 When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } and no log file of its own — follow the guidance (do not retry in a loop). A crashed app reaches that state too, so check { note } there as well: when the dead session left its log file behind the note names it, and that file is readable even though the debugger is not. A "connected" result's stats may come from a session whose socket has since died — use debugger-status, not this tool, to judge debugger health.`,
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,
@@ -101,29 +106,31 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // with entries in it is reporting this session's own capture, and
         // consuming a breadcrumb there would attach a stale explanation to a
         // healthy result.
-        if (stats.totalEntries === 0) {
-          // `forgetDeviceAlias` runs in the same dispose that wrote the
-          // breadcrumb, so by now the alias no longer joins this device's two
-          // ids: the logical one has to come from the freshly resolved api,
-          // which is the only thing that still knows it.
-          const note = takeReapedNote([
-            canonicalDeviceId(params.device_id),
-            params.device_id,
-            api.logicalDeviceId,
-          ]);
+        // `forgetDeviceAlias` runs in the same dispose that wrote the
+        // breadcrumb, so by now the alias no longer joins this device's two ids:
+        // the logical one has to come from the freshly resolved api, which is
+        // the only thing that still knows it.
+        const reaped =
+          stats.totalEntries === 0
+            ? takeReapedNote([
+                canonicalDeviceId(params.device_id),
+                params.device_id,
+                api.logicalDeviceId,
+              ])
+            : undefined;
+        if (reaped) {
           // The one answer that HAS a registry to account for, so the one that
           // says why this one is empty. `debugger-connect` and the
           // `not_connected` branch below report the same teardown without one.
-          if (note) {
-            response.note =
-              `${note} This registry starts empty because a new session was minted, ` +
-              `not because the app logged nothing.`;
-          }
+          response.note =
+            `${reaped} This registry starts empty because a new session was minted, ` +
+            `not because the app logged nothing.`;
         } else if (!api.logWriter.hasFile()) {
-          // The counts and clusters above are real — they are held in memory —
-          // but `open()` swallows its failure and buffers, so `file` can name a
-          // path that has never existed, and the documented next step is to grep
-          // it.
+          // Whatever the counts say, `file` names nothing: `open()` swallows its
+          // failure and buffers, and the documented next step is to grep that
+          // path. Checked on an empty registry too — a session that has not
+          // logged yet is where an unwritable directory shows up first, and
+          // saying so beats letting the caller find out by grepping.
           response.note =
             `The log file at ${stats.file} could not be created, so the entries counted here ` +
             `are only in this summary — do not try to read that path. Check that ` +

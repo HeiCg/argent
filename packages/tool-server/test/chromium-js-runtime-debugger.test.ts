@@ -187,7 +187,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     // rather than a path.
     expect(reaped!.cause).toBe("teardown");
     expect(reaped!.keptAt).toBeUndefined();
-    expect(reaped!.salvage).toContain("deleted on teardown");
+    expect(reaped!.salvage).toContain("no log file was left behind");
   });
 
   it("keeps the log file and names it in the breadcrumb when the renderer died", async () => {
@@ -225,7 +225,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
 
     const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
     expect(reaped?.salvage).toContain(logPath);
-    expect(reaped?.salvage).not.toContain("deleted on teardown");
+    expect(reaped?.salvage).not.toContain("no log file was left behind");
     // Blaming a stop-all for a renderer that died sends the reader hunting for
     // a tool call that never happened.
     expect(reaped?.cause).toBe("runtime-death");
@@ -330,6 +330,10 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     );
     const logPath = instance.api.logWriter.getFilePath();
 
+    // `CDPClient` nulls its socket before emitting, so a death is a closed
+    // socket. Without that the `runtimeDied` conjunct decides this on its own
+    // and the `captured` one is never consulted.
+    (fake.api.cdp as unknown as { isConnected: () => boolean }).isConnected = () => false;
     fake.events.emit("disconnected", new Error("renderer gone"));
     await instance.dispose();
 

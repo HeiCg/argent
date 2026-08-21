@@ -98,9 +98,19 @@ export function recordReapedSession(
   opts: { cause?: ReapedSessionCause; keptAt?: string } = {}
 ): void {
   const event = nextEvent++;
+  const superseded = new Set<number>();
+  const orphanedFiles = new Set<string>();
   for (const deviceId of new Set(typeof deviceIds === "string" ? [deviceIds] : deviceIds)) {
     const k = key(kind, deviceId);
     const previous = reaped.get(k);
+    // Not this event's own earlier key: two ids differing only in case land on
+    // one slot, since `key` lowercases while callers compare theirs verbatim.
+    if (previous && previous.event !== event) {
+      superseded.add(previous.event);
+      // Collected here because the `set` below is about to drop this copy, and
+      // the sweep at the end would then never see the path it named.
+      if (previous.keptAt) orphanedFiles.add(previous.keptAt);
+    }
     const entry: ReapedSession = {
       kind,
       deviceId,
@@ -111,18 +121,32 @@ export function recordReapedSession(
     if (salvage) entry.salvage = salvage;
     if (opts.keptAt) entry.keptAt = opts.keptAt;
     reaped.set(k, entry);
-    // Recording this one just made whatever the previous event named
-    // unreachable — nothing else records that path — so reclaim it here rather
-    // than leaving it to the day-old sweep. That is what bounds a crash loop
-    // NOBODY READS to one kept file per device rather than one per crash; once a
-    // reader has consumed an event, there is no previous entry left to reclaim
-    // its file, which is the point: that path is in an agent's hands.
-    if (previous?.keptAt && previous.keptAt !== entry.keptAt) {
-      try {
-        fs.unlinkSync(previous.keptAt);
-      } catch {
-        // already gone, or never ours
-      }
+  }
+  // A device gets one live event: this one replaced the previous one's entry
+  // under at least one id, and half an event explains nothing. Dropping the rest
+  // matters most where they cannot be read anyway — after a runtime death the
+  // `logicalDeviceId` copy is unresolvable, so left alone it would sit here for
+  // the life of the tool-server, one per crash.
+  //
+  // Its kept file goes with it: nothing records that path any more, and
+  // reclaiming here rather than at the day-old sweep is what bounds a crash loop
+  // NOBODY READS to one kept file per device. Two shapes fall outside that bound
+  // and rely on the sweep: a loop somebody reads, deliberately — consuming an
+  // event leaves no previous entry to supersede, and those paths are in an
+  // agent's hands — and a device whose only id is a `logicalDeviceId`, which
+  // Metro reissues per connection, so each teardown files under a key no earlier
+  // one used.
+  for (const [k, entry] of reaped) {
+    if (!superseded.has(entry.event)) continue;
+    reaped.delete(k);
+    if (entry.keptAt) orphanedFiles.add(entry.keptAt);
+  }
+  for (const file of orphanedFiles) {
+    if (file === opts.keptAt) continue;
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // already gone, or never ours
     }
   }
 }
@@ -172,8 +196,7 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
     entry.cause === "runtime-death"
       ? `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
         `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
-        `a device transport dropped) — which ends the session the same way a teardown does. ` +
-        `The reason field of this same answer, if there is one, says which.`
+        `a device transport dropped) — which ends the session the same way a teardown does.`
       : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
         `another teardown that reaches the same services (a stop-simulator-server on Chromium, ` +
         `or a react-profiler-start reclaiming the session with force). One tool-server serves ` +
@@ -199,7 +222,8 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
  * while it still held console history nobody had read.
  *
  * Pass `keptAt` — the log file's path — when the teardown left the file on
- * disk, which a runtime death does; omit it when the teardown unlinked it. What
+ * disk, which a runtime death does; omit it when there is nothing to read,
+ * whether the teardown unlinked the file or it was never created. What
  * the clause settles is only whether the old entries are still readable
  * somewhere: why the session ended is the {@link ReapedSessionCause} clause's
  * job, and what an empty registry means belongs to the one consumer that has a
@@ -210,7 +234,7 @@ export function describeLostHistory(captured: number, keptAt?: string): string {
   if (keptAt) {
     return `The log file is kept at ${keptAt} — it holds the ${entries}, so read that file for them.`;
   }
-  return `The ${entries} went with it — the log file is deleted on teardown.`;
+  return `The ${entries} went with it — no log file was left behind.`;
 }
 
 /** Test-only: drop all breadcrumbs so cases don't leak across tests. */

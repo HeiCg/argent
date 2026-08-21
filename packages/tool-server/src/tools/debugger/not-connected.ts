@@ -33,8 +33,9 @@ export interface DebuggerNotConnectedResult {
    * to reach `no_app_connected`, and the crash is exactly when those logs
    * matter, so the answer that reports the app is gone is also the one that has
    * to say where its last words went. Set by debugger-log-registry only:
-   * debugger-status answers about the connection, and consuming the breadcrumb
-   * there would spend it somewhere it cannot hand back a path.
+   * debugger-status is a health read that consumes nothing, and a breadcrumb is
+   * spent by whoever reads it first — spending it there would take it from the
+   * tool the agent then calls to actually find the logs.
    */
   note?: string;
 }

@@ -126,6 +126,17 @@ describe("the reaped-session key", () => {
     expect(takeReapedSession("js-runtime-debugger", "logical-abc")).toBeUndefined();
   });
 
+  it("still reports a teardown whose two ids differ only in case", () => {
+    // `key()` lowercases, so both spellings land in one slot: the second write
+    // must not read the first as a previous event and supersede itself, which
+    // would drop the only record of a teardown that did happen.
+    recordReapedSession("js-runtime-debugger", [UDID, UDID.toLowerCase()], "same device", {
+      cause: "runtime-death",
+    });
+
+    expect(takeReapedSession("js-runtime-debugger", UDID)?.salvage).toBe("same device");
+  });
+
   it("defaults to the teardown family, so only a proven crash claims one", () => {
     recordReapedSession("screen-recording", UDID);
     expect(takeReapedSession("screen-recording", UDID)!.cause).toBe("teardown");
@@ -138,6 +149,29 @@ describe("the reaped-session key", () => {
     });
     afterEach(() => {
       fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("supersedes the whole previous event, not just the id it reuses", () => {
+      // Metro issues a fresh `logicalDeviceId` per connection, so a second crash
+      // files under a different second key. Left behind, the first crash's copy
+      // is unreadable — nothing can resolve a dead session's logical id — and it
+      // still names a file the reclaim below has already taken.
+      const older = path.join(dir, "argent-logs-3-1.log");
+      const newer = path.join(dir, "argent-logs-3-2.log");
+      fs.writeFileSync(older, "first");
+      fs.writeFileSync(newer, "second");
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-first"], "first", {
+        cause: "runtime-death",
+        keptAt: older,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-second"], "second", {
+        cause: "runtime-death",
+        keptAt: newer,
+      });
+
+      expect(takeReapedSession("js-runtime-debugger", "logical-first")).toBeUndefined();
+      expect(fs.existsSync(older)).toBe(false);
+      expect(fs.existsSync(newer)).toBe(true);
     });
 
     it("leaves the file alone once a reader has been given its path", () => {

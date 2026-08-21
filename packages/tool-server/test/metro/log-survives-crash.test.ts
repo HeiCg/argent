@@ -206,7 +206,7 @@ describe("console logs across an app crash", () => {
     expect(after.note).toContain(logPath);
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
     // Never the reaped-by-stop-all wording: nothing was deleted here.
-    expect(after.note).not.toContain("deleted on teardown");
+    expect(after.note).not.toContain("no log file was left behind");
     // And never the teardown family either. No tool was called and no other
     // agent was involved — the app crashed — so a note that opens by blaming a
     // stop-all sends the reader after a cause that does not exist, then
@@ -412,6 +412,16 @@ describe("console logs across an app crash", () => {
     process.env.HOME = tmpHome;
     try {
       await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "nofile-device" });
+
+      // Before anything is logged: an unwritable directory shows up here first,
+      // and an empty registry handing back a path is the same trap.
+      const empty = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: "nofile-device",
+      })) as { totalEntries: number; note?: string };
+      expect(empty.totalEntries).toBe(0);
+      expect(empty.note).toContain("could not be created");
+
       cdpConn!.send(
         JSON.stringify({
           method: "Runtime.consoleAPICalled",

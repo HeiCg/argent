@@ -135,7 +135,7 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     // The other half of the crash case's assertion: this teardown unlinked the
     // file, so the note must not offer a path — naming one here sends the
     // reader at a file that was deleted a line earlier.
-    expect(result.note).toContain("deleted on teardown");
+    expect(result.note).toContain("no log file was left behind");
     expect(result.note).not.toContain(".log");
     // And it answers the question this tool's own empty answer raises. Only
     // here: `debugger-connect` and a `not_connected` result report the same
@@ -213,7 +213,7 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
 
   describe("when the connect id and the logicalDeviceId differ", () => {
     // Every case above connects with LOGICAL_ID, so `api.logicalDeviceId ===
-    // deviceId` and the disposer's SECOND recordReapedSession never fires —
+    // deviceId` and the disposer files one id rather than two —
     // that is the Chromium/Vega shape. On iOS/Android the caller connects with
     // a udid/serial and Metro echoes its own logical id, so one teardown writes
     // two breadcrumbs. They describe one event and must be spent as one.
