@@ -113,6 +113,12 @@ describe("guidance platform-correctness", () => {
     // quit it".
     expect(chromium.guidance).toContain("breakpoint");
     pinsOnce(chromium.guidance, "Check the app first; if it is hung");
+    // probePort only GETs /json/version and /json/list, both served by the browser
+    // process, so a wedged renderer stays listed. The twin's warning that absence
+    // proves nothing is false here, and the true statement is the more useful one:
+    // the entry going away is the exit the relaunch waits on.
+    pinsOnce(chromium.guidance, "its entry going away is the exit");
+    expect(chromium.guidance).not.toContain("list-devices cannot");
   });
 
   it("gives both Chromium overrides the whole recovery, not half of it each", () => {
@@ -136,11 +142,9 @@ describe("guidance platform-correctness", () => {
       // single-instance lock.
       pinsOnce(guidance, "ask the user to quit it", reason);
       pinsOnce(guidance, "then relaunch once it has exited", reason);
-      // list-devices drops a live-but-windowless app exactly as it drops an exited
-      // one, so an agent polling it for the exit relaunches into a running app.
-      // Naming list-devices as the id source without this reads as an invitation
-      // to do exactly that.
-      pinsOnce(guidance, "list-devices cannot tell you whether it", reason);
+      // The premise the manual quit rests on, worded the same way the four prose
+      // surfaces word it.
+      pinsOnce(guidance, "only starts a Chromium app and never stops one", reason);
       // The id tracks the port, so a relaunch returning on the same port keeps it.
       // A negative regex cannot hold this: it passes for every wording that does
       // not spell out the one phrase it names, the false ones included.
@@ -223,8 +227,18 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     );
     // The third state cdp_unreachable covers. CHROMIUM_CDP_INVALID_RESPONSE has
     // three throw sites in cdp-session.ts and none of them is a stopped app, so
-    // this one is a relaunch away from a remedy too.
+    // this one is a relaunch away from a remedy too - and the reader tells it
+    // apart by the shapes, which have to match the three sites that produce them.
+    pinsOnce(
+      guidance,
+      "a non-2xx status, a body that is not JSON, a /json/version with no browser socket"
+    );
     pinsOnce(guidance, "check what is on it rather than relaunching");
+    // Only cdp_unreachable can be a dead endpoint, so only it warns that the
+    // absence of a list-devices entry proves nothing. runtime_unresponsive is
+    // reached over a socket the discovery endpoints do not use, so a hung app
+    // stays listed and its entry going away IS the exit.
+    pinsOnce(guidance, "list-devices cannot tell you whether it did");
     // A sequence, not a condition on whether it exited: nothing in the catalogue
     // can answer that condition, and quitting an app that already exited is a
     // no-op anyway.

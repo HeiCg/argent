@@ -113,8 +113,9 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "the user to quit it, then relaunch once it has exited — list-devices cannot tell " +
     "you whether it did, since it drops a broken-but-running app exactly as it drops " +
     "an exited one, " +
-    "and relaunching a live app never recovers it: boot-device stops nothing, so the " +
-    "relaunch either duplicates the app or fails. Once it is gone, launch-app cannot " +
+    "and relaunching a live app never recovers it: boot-device only starts a Chromium " +
+    "app and never stops one, so the relaunch either duplicates the app or fails. " +
+    "Once it is gone, launch-app cannot " +
     "start a Chromium app: boot-device with electronAppPath relaunches an Electron " +
     "app, and for a browser, ask the user to start the browser again on the same CDP " +
     "port with --remote-debugging-port. Re-read the chromium-cdp-<port> id from " +
@@ -125,9 +126,9 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "timeout — it is likely frozen, or paused at a breakpoint. Do not retry in a loop " +
     "(each attempt waits out the full timeout). Check the app first; if it is hung, " +
     "ask the user to quit it, then relaunch once it has exited — boot-device only " +
-    "starts a Chromium app and never stops one, and list-devices cannot tell you " +
-    "whether it exited, since it drops a broken-but-running app exactly as it " +
-    "drops an exited one. boot-device with electronAppPath relaunches an Electron app, and " +
+    "starts a Chromium app and never stops one. A hung renderer still answers the " +
+    "discovery endpoints, so list-devices keeps listing it and its entry going away " +
+    "is the exit. boot-device with electronAppPath relaunches an Electron app, and " +
     "for a browser, ask the user to start the browser again on the same CDP port " +
     "with --remote-debugging-port. " +
     "Re-read the chromium-cdp-<port> id from boot-device / list-devices, since a " +

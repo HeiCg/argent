@@ -39,7 +39,6 @@ const restartApp = restartAppTool.capability;
 /** The skill's platform vocabulary, in the order its tables list it. */
 const PLATFORM_WORDS = [
   ["apple", "iOS"],
-  ["appleRemote", "Apple TV"],
   ["android", "Android"],
   ["vega", "Vega"],
 ] as const satisfies readonly (readonly [keyof ToolCapability, string])[];
@@ -92,10 +91,10 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
     for (const label of ["`restart-app`", "Relaunch app on device"]) {
       expect(row(DEBUGGER_SKILL, label), label).toContain(`(${platformTag(restartApp)})`);
     }
-    // The description promises an Apple TV slice refresh, which only runs where
-    // the capability reaches one - the tag above now carries that platform, so a
-    // capability that stopped reaching it fails there too.
-    expect(restartAppTool.description).toContain("Apple TV");
+    // appleRemote is deliberately absent from PLATFORM_WORDS: it is remote-iOS
+    // over sim-remote (registry types.ts), which these rows fold into "iOS"
+    // rather than naming, so there is no prose claim for a tag to track.
+    expect(restartApp?.appleRemote).toBeDefined();
   });
 
   it("tags every RN-only row, in each of the three tables that list one", () => {
@@ -181,6 +180,11 @@ describe("the Chromium recovery names a relaunch that exists", () => {
         statesRecovery,
       ],
       ["when the id changes", "a relaunch on a new port is a new id", statesRecovery],
+      // "once it has exited" is the one step with no instrument, and list-devices
+      // is named two clauses later - it drops a live-but-windowless app exactly as
+      // it drops an exited one, so polling it for the exit relaunches into a
+      // running app.
+      ["the exit cannot be read off list-devices", "cannot confirm the exit", statesRecovery],
     ];
     for (const [what, needle, surfaces] of facts) {
       for (const [where, text] of surfaces) pinsOnce(norm(text), needle, `${where} (${what})`);
@@ -190,7 +194,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // "no reachable CDP session" covers the live-but-windowless case too, where a
     // relaunch is the wrong remedy.
     const createFlow = row(CREATE_FLOW_RECOVERY, "Chromium");
-    pinsOnce(createFlow, "Still up with no window: ask for one back");
+    pinsOnce(createFlow, "the failure names page targets, none at all or only devtools:// ones");
     pinsOnce(createFlow, "a relaunch recovers nothing there");
 
     // The Reload & recovery row fences restart-app off and delegates rather than
@@ -204,15 +208,6 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // second copy rather than recovering. The row has to separate the two, or it
     // sends the live case to the wrong remedy. Which detail carries the window hint
     // is pinned against the throw sites in debugger/not-connected-map.test.ts.
-    // Naming list-devices as the id source without this reads as an invitation to
-    // poll it for the exit, which it cannot answer - it drops a live-but-windowless
-    // app exactly as it drops an exited one. Both guidance strings carry the same
-    // guard, pinned in debugger/not-connected-map.test.ts.
-    pinsOnce(
-      row(FAILURE_SCENARIOS, "**Was connected, then tool fails**"),
-      "cannot tell you whether it exited"
-    );
-
     const unreachable = row(FAILURE_SCENARIOS, "**App unreachable**");
     pinsOnce(unreachable, "second copy");
     // Both lock shapes: Electron's newcomer exits 0 with no reason given, Chrome
@@ -225,7 +220,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // both the narrowing and the remedy it points to are pinned. "devtools://"
     // alone is not: the row says it twice.
     pinsOnce(unreachable, "none at all, or only devtools:// ones");
-    pinsOnce(unreachable, "variant names the window");
+    pinsOnce(unreachable, "Only the devtools:// variant names the window");
     pinsOnce(unreachable, "Ask the user to bring a window back");
     // The imperative itself. Naming the consequences and the alternative leaves
     // the instruction free to invert: "relaunch there once, at worst you get a
