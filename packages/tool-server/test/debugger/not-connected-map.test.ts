@@ -113,12 +113,6 @@ describe("guidance platform-correctness", () => {
     // quit it".
     expect(chromium.guidance).toContain("breakpoint");
     pinsOnce(chromium.guidance, "Check the app first; if it is hung");
-    // probePort only GETs /json/version and /json/list, both served by the browser
-    // process, so a wedged renderer stays listed. The twin's warning that absence
-    // proves nothing is false here, and the true statement is the more useful one:
-    // the entry going away is the exit the relaunch waits on.
-    pinsOnce(chromium.guidance, "its entry going away is the exit");
-    expect(chromium.guidance).not.toContain("list-devices cannot");
   });
 
   it("gives both Chromium overrides the whole recovery, not half of it each", () => {
@@ -144,7 +138,17 @@ describe("guidance platform-correctness", () => {
       pinsOnce(guidance, "then relaunch once it has exited", reason);
       // The premise the manual quit rests on, worded the same way the four prose
       // surfaces word it.
-      pinsOnce(guidance, "only starts a Chromium app and never stops one", reason);
+      pinsOnce(guidance, "only starts an app and never stops one", reason);
+      // Absence of a list-devices entry is not the exit, on either reason: probePort
+      // drops an app that is up with no drivable page exactly as it drops an exited
+      // one. Pinned on both because the useful-looking converse - still listed, so
+      // still up - is what the runtime_unresponsive override said, and it is false
+      // in the direction the reader needs.
+      pinsOnce(guidance, "list-devices cannot confirm the exit", reason);
+      // The id is re-readable only where discovery looks: getCandidateChromiumPorts
+      // probes 9222, the env list and the ports boot-device opened. Without this the
+      // new-port clause reads as an invitation to relaunch anywhere and re-read.
+      pinsOnce(guidance, "not listed at all", reason);
       // The id tracks the port, so a relaunch returning on the same port keeps it.
       // A negative regex cannot hold this: it passes for every wording that does
       // not spell out the one phrase it names, the false ones included.
@@ -212,8 +216,10 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       coded(FAILURE_CODES.CHROMIUM_CDP_NO_PAGE_TARGET),
       { port: 8081, device_id: "chromium-cdp-9222" }
     );
-    for (const { message: detail } of [devtoolsOnly, noPages]) {
-      const cue = /devtools:\/\//.test(detail) ? "devtools://" : "page target";
+    for (const [detail, cue] of [
+      [devtoolsOnly.message, "devtools://"],
+      [noPages.message, "page target"],
+    ] as const) {
       expect(detail, "the discriminator the guidance names must be in the detail").toContain(cue);
       expect(guidance).toContain(cue);
     }
@@ -234,11 +240,6 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       "a non-2xx status, a body that is not JSON, a /json/version with no browser socket"
     );
     pinsOnce(guidance, "check what is on it rather than relaunching");
-    // Only cdp_unreachable can be a dead endpoint, so only it warns that the
-    // absence of a list-devices entry proves nothing. runtime_unresponsive is
-    // reached over a socket the discovery endpoints do not use, so a hung app
-    // stays listed and its entry going away IS the exit.
-    pinsOnce(guidance, "list-devices cannot tell you whether it did");
     // A sequence, not a condition on whether it exited: nothing in the catalogue
     // can answer that condition, and quitting an app that already exited is a
     // no-op anyway.
@@ -246,7 +247,7 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // How the relaunch fails is per-app - a duplicate, an early exit behind
     // Electron's single-instance lock, a refusal behind Chrome's - so the
     // guidance states the rule and failure-scenarios.md carries the shapes.
-    pinsOnce(guidance, "never recovers it");
+    pinsOnce(guidance, "relaunching a live app never recovers it");
 
     // Only the devtools:// variant names a window - the asymmetry
     // failure-scenarios.md's "App unreachable" row states, so a window hint added

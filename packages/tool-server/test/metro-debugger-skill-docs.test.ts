@@ -84,10 +84,11 @@ function proseTag(cell: string): string {
 
 describe("argent-metro-debugger platform tags match the capability objects", () => {
   it("tags restart-app with the platforms it actually supports, in both tables", () => {
-    // The paren anchors the whole tag, so prose wider than the capability fails
-    // as loudly as prose that is narrower. Both copies are derived: the Reload &
-    // recovery row delegates Chromium readers to the Quick Reference one, which
-    // carries its own tag.
+    // The closing paren ends the tag, so a platform added inside it fails exactly
+    // as one dropped does. Outside it is out of reach - and deliberately so here,
+    // since both rows go on to name Chromium as the platform restart-app refuses.
+    // Both copies are derived: the Reload & recovery row delegates Chromium readers
+    // to the Quick Reference one, which carries its own tag.
     for (const label of ["`restart-app`", "Relaunch app on device"]) {
       expect(row(DEBUGGER_SKILL, label), label).toContain(`(${platformTag(restartApp)})`);
     }
@@ -116,12 +117,19 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
 
       const tag = platformTag(tool.capability);
       const prose = row(DEBUGGER_SKILL, proseLabel);
+      const quick = row(DEBUGGER_SKILL, quickLabel);
       expect(proseTag(prose), tool.id).toBe(tag);
-      // proseTag compares the first platform run it finds, so a claim appended
-      // after it - "on iOS / Android, and on Chromium" - is trimmed off rather
-      // than failing the comparison. These rows are RN-only end to end.
-      expect(prose, tool.id).not.toMatch(/Chromium/);
-      expect(row(DEBUGGER_SKILL, quickLabel), tool.id).toContain(`(${tag})`);
+      expect(quick, tool.id).toContain(`(${tag})`);
+      // Neither comparison reaches past the tag it reads: proseTag takes the first
+      // platform run it finds, and the Quick Reference paren is a substring, so
+      // "on iOS / Android, and on Chromium" satisfies both. These rows are RN-only
+      // end to end, in both tables, so the claim is barred outright.
+      for (const [where, cell] of [
+        ["prose", prose],
+        ["quick reference", quick],
+      ] as const) {
+        expect(cell, `${tool.id} (${where})`).not.toMatch(/Chromium/);
+      }
     }
   });
 });
