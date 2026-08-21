@@ -316,7 +316,7 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
       expect(owner.note).toContain("17 captured console entries");
     });
 
-    it("leaves it alone for a CONNECT that landed here by that same fallback", async () => {
+    it("leaves the breadcrumb alone for a CONNECT that landed here by Metro's fallback", async () => {
       // The connect side of the same misresolve, and the costlier one: connect
       // spends the breadcrumb whatever its cause and reports only a runtime
       // death, so a teardown record it takes from another device is gone
