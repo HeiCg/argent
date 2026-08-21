@@ -191,6 +191,16 @@ export class LogFileWriter {
     return this.filePath;
   }
 
+  /**
+   * Whether {@link getFilePath} names something a reader can open. `open()`
+   * swallows its failure and buffers instead, so entries can be counted for a
+   * file that was never created — and a breadcrumb built from the count alone
+   * would send the reader at a path that has never existed.
+   */
+  hasFile(): boolean {
+    return fs.existsSync(this.filePath);
+  }
+
   getStats(): LogStats {
     return {
       file: this.filePath,
@@ -283,7 +293,10 @@ const LOG_NAME_RE = /^argent-logs-\d+-\d+\.log$/;
  * than delete-all, because several tool-servers share this directory and none
  * can enumerate the others' sessions; `touch`'s keepalive is what earns that,
  * refreshing an open file's mtime whether or not it is being written to, so a
- * file this stale has no writer behind it in any process.
+ * file this stale has no writer behind it in any process that runs this code.
+ * A tool-server old enough to predate the keepalive is the gap, and it is the
+ * reason the cutoff is a day rather than an hour: the file has to look
+ * abandoned for far longer than a session plausibly sits idle.
  */
 function pruneStaleLogs(dir: string): void {
   const cutoff = Date.now() - STALE_LOG_AGE_MS;

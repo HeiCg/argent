@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { TypedEventEmitter } from "@argent/registry";
 import {
   chromiumJsRuntimeDebuggerBlueprint,
@@ -37,6 +39,24 @@ function makeFakeChromiumCdpApi(): {
   } as unknown as ChromiumCdpApi;
   return { api, events, sendSpy, addBindingSpy };
 }
+
+const logDir = () => path.join(os.homedir(), ".argent", "tmp");
+
+// The console-log server's bind is the one hard-failure path inside the factory,
+// and it is reached through `http.createServer`. Every other case in this file
+// needs a working one, so the flag is off by default.
+const httpControl = vi.hoisted(() => ({ failCreateServer: false }));
+vi.mock("node:http", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:http")>();
+  return {
+    ...actual,
+    default: actual,
+    createServer: (...args: unknown[]) => {
+      if (httpControl.failCreateServer) throw new Error("no sockets left");
+      return (actual.createServer as (...a: unknown[]) => unknown)(...args);
+    },
+  };
+});
 
 describe("ChromiumJsRuntimeDebugger blueprint", () => {
   const chromiumDevice = resolveDevice("chromium-cdp-19222");
@@ -161,6 +181,13 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
     expect(reaped).toBeDefined();
     expect(reaped!.salvage).toContain("18 captured console entries");
+    // A live socket at dispose is a teardown, and a teardown deletes the file.
+    // Both readings are what `describeReapedSession` turns into "another agent
+    // may have done this" rather than "your app died", and into a deletion
+    // rather than a path.
+    expect(reaped!.cause).toBe("teardown");
+    expect(reaped!.keptAt).toBeUndefined();
+    expect(reaped!.salvage).toContain("deleted on teardown");
   });
 
   it("keeps the log file and names it in the breadcrumb when the renderer died", async () => {
@@ -193,8 +220,106 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
     expect(reaped?.salvage).toContain(logPath);
     expect(reaped?.salvage).not.toContain("deleted on teardown");
+    // Blaming a stop-all for a renderer that died sends the reader hunting for
+    // a tool call that never happened.
+    expect(reaped?.cause).toBe("runtime-death");
+    expect(reaped?.keptAt).toBe(logPath);
 
     fs.rmSync(logPath, { force: true });
+  });
+
+  it("keeps the log when the renderer's death cascades a teardown in before our listener runs", async () => {
+    // What the direct-dispose case above does not model, and what production
+    // actually does: `CDPClient` nulls its socket and then emits `disconnected`;
+    // `ChromiumCdp` — registered on that event first, because its service is
+    // built first — synchronously cascades a teardown into this service, and
+    // this dispose unregisters its own handler while the emit is still walking
+    // the listener set. `TypedEventEmitter` iterates the live set, so the
+    // handler is skipped and never runs. Reading only the event therefore reads
+    // false on exactly the path the keep-the-log rule exists for; against a real
+    // headless Chrome, closing the connected tab deleted the pre-crash log.
+    __resetReapedSessionsForTesting();
+    const fake = makeFakeChromiumCdpApi();
+    let socketOpen = true;
+    (fake.api.cdp as unknown as { isConnected: () => boolean }).isConnected = () => socketOpen;
+
+    // Registered BEFORE the factory, as `ChromiumCdp`'s is in production —
+    // that ordering is what makes this cascade land mid-emit, ahead of the
+    // blueprint's own handler.
+    const created: {
+      instance?: Awaited<ReturnType<typeof chromiumJsRuntimeDebuggerBlueprint.factory>>;
+    } = {};
+    fake.events.on("disconnected", () => {
+      void created.instance!.dispose();
+    });
+
+    const instance = await chromiumJsRuntimeDebuggerBlueprint.factory(
+      { chromium: fake.api },
+      "chromium-cdp-19222",
+      { device: chromiumDevice }
+    );
+    created.instance = instance;
+    instance.api.logWriter.write({
+      id: 1,
+      timestamp: new Date(1710000000000).toISOString(),
+      level: "error",
+      message: "CRITICAL pre-crash error",
+    });
+    const logPath = instance.api.logWriter.getFilePath();
+
+    socketOpen = false;
+    fake.events.emit("disconnected", new Error("renderer gone"));
+    await new Promise((r) => setImmediate(r));
+
+    expect(fs.existsSync(logPath)).toBe(true);
+    expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
+    const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
+    expect(reaped?.cause).toBe("runtime-death");
+    expect(reaped?.salvage).toContain(logPath);
+
+    fs.rmSync(logPath, { force: true });
+  });
+
+  it("closes the log writer when the factory throws before a dispose exists", async () => {
+    // The console-log server bind is a documented hard-failure path, and it runs
+    // after the writer is open. Nothing else can ever close that writer — the
+    // factory never returns a dispose — so its fd, its file and its hourly
+    // keepalive would last as long as the process, and the keepalive would keep
+    // the file out of `pruneStaleLogs` for exactly that long.
+    const before = new Set(fs.readdirSync(logDir()));
+    httpControl.failCreateServer = true;
+    try {
+      await expect(
+        chromiumJsRuntimeDebuggerBlueprint.factory(
+          { chromium: makeFakeChromiumCdpApi().api },
+          "chromium-cdp-19222",
+          { device: chromiumDevice }
+        )
+      ).rejects.toThrow(/no sockets left/);
+    } finally {
+      httpControl.failCreateServer = false;
+    }
+    const leaked = fs.readdirSync(logDir()).filter((n) => !before.has(n));
+    expect(leaked).toEqual([]);
+  });
+
+  it("keeps nothing when the renderer dies without having logged", async () => {
+    // `keepFile` is gated on the same `captured` the breadcrumb is: a death that
+    // captured nothing leaves an empty file that no breadcrumb names and that
+    // the pruner only reclaims a day later — one per disconnect.
+    __resetReapedSessionsForTesting();
+    const fake = makeFakeChromiumCdpApi();
+    const instance = await chromiumJsRuntimeDebuggerBlueprint.factory(
+      { chromium: fake.api },
+      "chromium-cdp-19222",
+      { device: chromiumDevice }
+    );
+    const logPath = instance.api.logWriter.getFilePath();
+
+    fake.events.emit("disconnected", new Error("renderer gone"));
+    await instance.dispose();
+
+    expect(fs.existsSync(logPath)).toBe(false);
   });
 
   it("dispose leaves NO breadcrumb when there was no history to lose", async () => {

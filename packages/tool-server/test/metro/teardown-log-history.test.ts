@@ -1,12 +1,14 @@
 /**
  * `stop-all-simulator-servers` reaps every device-owned service, and since the
  * `devices` scope landed that set includes `JsRuntimeDebugger`. Its dispose
- * calls `logWriter.close()`, which unlinks the console-log file — up to 50,000
- * captured entries.
+ * closes the `LogFileWriter`, and on a teardown like this one — the app is
+ * alive, nothing died — that unlinks the console-log file, up to 50,000
+ * captured entries. (A teardown caused by the app itself going away keeps the
+ * file instead; that path is covered in `log-survives-crash.test.ts`.)
  *
  * The deletion itself is fine: the next resolve builds a new writer over a new
- * path, so nothing could ever read the old file again. What was not fine is
- * that the victim's `debugger-log-registry` transparently reconnected and
+ * path, so nothing could ever read this session's file again. What was not fine
+ * is that the victim's `debugger-log-registry` transparently reconnected and
  * reported `totalEntries: 0` with no error and no warning — indistinguishable
  * from an app that has logged nothing, which is the opposite conclusion.
  *
@@ -130,6 +132,11 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     expect(result.note).toContain("60 captured console entries");
     expect(result.note).toContain("stop-all-simulator-servers");
     expect(result.note).toContain("torn down");
+    // The other half of the crash case's assertion: this teardown unlinked the
+    // file, so the note must not offer a path — naming one here sends the
+    // reader at a file that was deleted a line earlier.
+    expect(result.note).toContain("deleted on teardown");
+    expect(result.note).not.toContain(".log");
   });
 
   it("stays silent when the previous session had captured nothing", async () => {

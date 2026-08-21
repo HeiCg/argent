@@ -269,7 +269,19 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
       consoleEvents.emit("log", entry);
     });
 
-    const consoleServer = await createConsoleLogServer(consoleEvents, logWriter);
+    // No dispose exists until this factory returns, so a throw here leaves
+    // everything opened above with nothing to ever close it: the writer's fd,
+    // its file and its keepalive would last as long as the process — and the
+    // keepalive would hold that file out of `pruneStaleLogs` for exactly that
+    // long — while the CDP socket kept Metro's target busy.
+    let consoleServer: Awaited<ReturnType<typeof createConsoleLogServer>>;
+    try {
+      consoleServer = await createConsoleLogServer(consoleEvents, logWriter);
+    } catch (err) {
+      logWriter.close();
+      await cdp.disconnect();
+      throw err;
+    }
 
     const api: JsRuntimeDebuggerApi = {
       port,
@@ -302,14 +314,7 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
 
     const events = new TypedEventEmitter<ServiceEvents>();
 
-    // Half of the "did the app die?" answer `dispose` needs; the socket itself
-    // is the other half, read there. A `disconnected` means the app died, and
-    // the console logs it produced on the way out are what the developer is
-    // about to grep.
-    let sawDisconnect = false;
-
     cdp.events.on("disconnected", (error) => {
-      sawDisconnect = true;
       events.emit(
         "terminated",
         error ??
@@ -340,34 +345,36 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         // with or the `logicalDeviceId` Metro echoed, and `forgetDeviceAlias`
         // below removes the only thing that joins them.
         //
-        // The `disconnected` we saw is not the whole of "did the app die?":
-        // `debugger-status`'s stale_connection branch and the registry's
-        // `recoverable` self-heal both dispose in the window where the socket
-        // has stopped being OPEN and the close event has not dispatched yet, and
-        // each of those means the far end went away. Reading the socket is safe
-        // here because this blueprint owns its CDPClient and nothing re-points
-        // or closes it before this line — unlike the Chromium side, where a tab
-        // switch nulls the shared client's socket with the renderer perfectly
-        // alive, so that blueprint must keep trusting the event alone. An
-        // explicit teardown runs against an OPEN socket and still removes the
-        // file.
-        const runtimeDied = sawDisconnect || !cdp.isConnected();
+        // The socket is the whole of "did the app die?" here, and the
+        // `disconnected` event is not consulted at all: `CDPClient` nulls its
+        // socket before emitting, so every death this blueprint can see is
+        // already visible as a closed socket — including the ones that never
+        // reach a listener, where `debugger-status`'s stale_connection branch or
+        // the registry's `recoverable` self-heal disposes in the window between
+        // the socket leaving OPEN and the close event dispatching. Nothing
+        // re-points this client either: `reconnect()` is Chromium's tab switch
+        // alone, so an OPEN socket here really does mean a live app, and an
+        // explicit teardown removes the file.
+        const runtimeDied = !cdp.isConnected();
         const captured = logWriter.getStats().totalEntries;
+        // A count is not a file: `open()` swallows its failure and buffers, so
+        // ask the writer whether there is anything to point at.
+        const keptAt = runtimeDied && logWriter.hasFile() ? logWriter.getFilePath() : undefined;
         if (captured > 0) {
-          const salvage = describeLostHistory(
-            captured,
-            runtimeDied ? logWriter.getFilePath() : undefined
-          );
-          const cause = runtimeDied ? "runtime-death" : "teardown";
-          recordReapedSession("js-runtime-debugger", deviceId, salvage, cause);
+          const salvage = describeLostHistory(captured, keptAt);
+          const opts = { cause: runtimeDied ? "runtime-death" : "teardown", keptAt } as const;
+          recordReapedSession("js-runtime-debugger", deviceId, salvage, opts);
           if (api.logicalDeviceId && api.logicalDeviceId !== deviceId) {
-            recordReapedSession("js-runtime-debugger", api.logicalDeviceId, salvage, cause);
+            recordReapedSession("js-runtime-debugger", api.logicalDeviceId, salvage, opts);
           }
         }
         forgetDeviceAlias(api.logicalDeviceId);
         forgetLogicalKeyedDevice(deviceId);
         await consoleServer.close();
-        logWriter.close({ keepFile: runtimeDied });
+        // Gated on `captured` for the same reason the breadcrumb is: a death
+        // that logged nothing leaves an empty file no breadcrumb names and
+        // nothing reclaims for a day.
+        logWriter.close({ keepFile: runtimeDied && captured > 0 });
         await cdp.disconnect();
       },
       events,

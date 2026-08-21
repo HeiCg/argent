@@ -30,6 +30,26 @@ interface LogRegistryResponse extends LogStats {
   note?: string;
 }
 
+/**
+ * Consume the breadcrumb the previous session's dispose left, under every id
+ * this device answers to.
+ *
+ * Every id unconditionally — NOT `a ?? b`. The disposer writes ONE event under
+ * two keys (the id the caller connected with and the `logicalDeviceId` Metro
+ * echoed) so either spelling can read it back; short-circuiting consumes only
+ * the key that matched and leaves the other behind, where it would attach a
+ * stale explanation to a later, unrelated read — against the report-once
+ * invariant the breadcrumb store states.
+ */
+function takeReapedNote(ids: Array<string | undefined>): string | undefined {
+  let reaped: ReturnType<typeof takeReapedSession>;
+  for (const id of new Set(ids.filter((id): id is string => id !== undefined))) {
+    const entry = takeReapedSession("js-runtime-debugger", id);
+    reaped ??= entry;
+  }
+  return reaped ? describeReapedSession(reaped, "JS-runtime debugger session") : undefined;
+}
+
 const zodSchema = z.object({
   port: z.coerce.number().default(8081).describe("Metro server port (ignored for Chromium)"),
   device_id: z
@@ -47,15 +67,13 @@ export function createDebuggerLogRegistryTool(
     interaction: {
       startedMsg: () => "Reading app logs",
       completedMsg: ({ result }) =>
-        result.status === "connected"
-          ? "Read app logs"
-          : "JavaScript debugger is not connected — no logs captured",
+        result.status === "connected" ? "Read app logs" : "JavaScript debugger is not connected",
       failedMsg: ({ failureSignal }) => `Failed to read app logs: ${failureSignal.error_code}`,
     },
     description: `Get a summary of all console logs captured from the app's JS runtime.
 Returns the log file path, entry counts by level, and message clusters (grouped by similarity). Works against Hermes (iOS / Android / Vega) and V8 (Chromium).
 Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. Returns empty stats if no log data has been captured yet — but check { note }, which is present only when the stats are empty BECAUSE the previous debugger session for this device was torn down while holding captured logs, either by a stop-all-simulator-servers or by the app's JS runtime dying. When that teardown left the old log file on disk (a crash or force-quit does) the note names its path — read that file for the pre-crash logs. Absent the note, empty really does mean the app has logged nothing.
-When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } with NO log file — follow the guidance (do not retry in a loop, and do not try to read a log file from this state). A "connected" result's stats may come from a session whose socket has since died — use debugger-status, not this tool, to judge debugger health.`,
+When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } and no log file of its own — follow the guidance (do not retry in a loop). A crashed app reaches that state too, so check { note } there as well: when the dead session left its log file behind the note names it, and that file is readable even though the debugger is not. A "connected" result's stats may come from a session whose socket has since died — use debugger-status, not this tool, to judge debugger health.`,
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,
     // Resolved manually in execute so a not-connected precondition becomes a
@@ -65,9 +83,10 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
       try {
         const api = await resolveDebuggerService(registry, params);
         // Unlike debugger-status, no socket-state gate here: captured logs are
-        // readable over a dead socket, and disposing the stale service would
-        // close the LogFileWriter — destroying exactly the post-crash logs the
-        // caller came for.
+        // readable over a dead socket, and this is the tool that hands out the
+        // path to read them from. Disposing the stale service would mint a new
+        // session over a new path and reduce this answer to a breadcrumb, which
+        // is strictly less than the caller came for.
         const stats = api.logWriter.getStats();
         const clusters = api.logWriter.getClusters(20);
 
@@ -90,36 +109,32 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // consuming a breadcrumb there would attach a stale explanation to a
         // healthy result.
         if (stats.totalEntries === 0) {
-          // Every id this device answers to, and all of them unconditionally — NOT
-          // `a ?? b`. The disposer writes ONE event under two keys (the id the
-          // caller connected with and the `logicalDeviceId` Metro echoed) so either
-          // spelling can read it back. Short-circuiting consumed only the key that
-          // matched and left the other behind, where it would attach a stale
-          // explanation to a later, unrelated empty read — against the report-once
-          // invariant the breadcrumb store states. `forgetDeviceAlias` runs in that
-          // same dispose, so by the time this read happens the alias no longer
-          // joins the two: the logical id has to come from the freshly resolved
-          // api, which is the only thing that still knows it.
-          const aliases = [
+          // `forgetDeviceAlias` runs in the same dispose that wrote the
+          // breadcrumb, so by now the alias no longer joins this device's two
+          // ids: the logical one has to come from the freshly resolved api,
+          // which is the only thing that still knows it.
+          const note = takeReapedNote([
             canonicalDeviceId(params.device_id),
             params.device_id,
             api.logicalDeviceId,
-          ].filter((id): id is string => id !== undefined);
-          let reaped: ReturnType<typeof takeReapedSession>;
-          for (const id of new Set(aliases)) {
-            // Take FIRST, keep second: `reaped ??= take(...)` would short-circuit
-            // once one matched and leave the rest behind — the very bug above.
-            const entry = takeReapedSession("js-runtime-debugger", id);
-            reaped ??= entry;
-          }
-          if (reaped) response.note = describeReapedSession(reaped, "JS-runtime debugger session");
+          ]);
+          if (note) response.note = note;
         }
         return response;
       } catch (err) {
         const reason = classifyNotConnected(err);
         if (!reason) throw err;
         trackDebuggerOutcome("debugger-log-registry", reason, params, ctx);
-        return buildNotConnected(reason, err, params);
+        // A crash is the ordinary way here: the app drops off Metro's target
+        // list, so the resolve above throws and this is the only answer the
+        // caller gets. The breadcrumb the dead session left is what names the
+        // file it kept — reading it back is the whole point of keeping it, and
+        // nothing later in this flow would report it: the guidance sends the
+        // agent through restart-app, and a restarted app leaves no trace of the
+        // one that died. No `logicalDeviceId` to add here, since resolving is
+        // what just failed.
+        const note = takeReapedNote([canonicalDeviceId(params.device_id), params.device_id]);
+        return { ...buildNotConnected(reason, err, params), ...(note ? { note } : {}) };
       }
     },
   };

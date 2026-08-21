@@ -26,6 +26,17 @@ export interface DebuggerNotConnectedResult {
   /** Original error message, preserved for agents that match on its text. */
   detail: string;
   guidance: string;
+  /**
+   * What became of a previous debugger session's console history, when this
+   * device had one that was torn down holding captured logs — and where its log
+   * file is if that teardown left it on disk. A crashed app is the ordinary way
+   * to reach `no_app_connected`, and the crash is exactly when those logs
+   * matter, so the answer that reports the app is gone is also the one that has
+   * to say where its last words went. Set by debugger-log-registry only:
+   * debugger-status answers about the connection, and consuming the breadcrumb
+   * there would spend it somewhere it cannot hand back a path.
+   */
+  note?: string;
 }
 
 /**

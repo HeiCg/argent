@@ -81,7 +81,8 @@ describe("LogFileWriter", () => {
       // `write` stops touching the file at all.
       //
       // Fake timers advance both the clock the pruner compares against and the
-      // interval the writer scheduled; the file's mtime is real.
+      // interval the writer scheduled, so the keepalive's own `new Date()` lands
+      // ahead of the cutoff — which is the whole of what saves the file.
       vi.useFakeTimers();
       try {
         const live = new LogFileWriter(5555);
@@ -97,6 +98,36 @@ describe("LogFileWriter", () => {
         live.close();
       } finally {
         vi.useRealTimers();
+      }
+    });
+
+    it("reports no file when the log could not be opened, though entries still count", () => {
+      // `open()` swallows its failure and buffers instead, so `totalEntries`
+      // rises for a file that never existed. A breadcrumb built from the count
+      // alone would tell an agent to read a path that has never been there.
+      fs.chmodSync(logDir, 0o555);
+      try {
+        const w = new LogFileWriter(8888);
+        w.write({ id: 1, timestamp: "t", level: "error", message: "buffered" });
+
+        expect(w.getStats().totalEntries).toBe(1);
+        expect(w.hasFile()).toBe(false);
+        w.close();
+      } finally {
+        fs.chmodSync(logDir, 0o755);
+      }
+    });
+
+    it("does not let the keepalive hold the process open", () => {
+      // The tool-server exits when its work is done; an hourly ref'd interval
+      // would keep the event loop alive for as long as any writer stayed open.
+      // Real timers, because a faked one is not what Node would be holding.
+      const w = new LogFileWriter(4444);
+      try {
+        const { keepalive } = w as unknown as { keepalive: NodeJS.Timeout };
+        expect(keepalive.hasRef()).toBe(false);
+      } finally {
+        w.close();
       }
     });
 

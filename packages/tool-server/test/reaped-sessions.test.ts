@@ -5,7 +5,10 @@
  * key itself does: scope by kind, and fold case the way every device-id lookup
  * in the stop tools does.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   recordReapedSession,
   takeReapedSession,
@@ -88,15 +91,20 @@ describe("the reaped-session key", () => {
     // family here — "a stop-all-simulator-servers … this may have been another
     // agent" — sends an agent hunting for a tool call that never happened, and
     // then contradicts itself with a salvage clause about a dead runtime.
-    recordReapedSession("js-runtime-debugger", UDID, "the log file is kept at /x", "runtime-death");
+    recordReapedSession("js-runtime-debugger", UDID, "the log file is kept at /x", {
+      cause: "runtime-death",
+    });
 
     const message = describeReapedSession(
       takeReapedSession("js-runtime-debugger", UDID)!,
       "JS-runtime debugger session"
     );
-    expect(message).toContain("the app's JS runtime died");
+    expect(message).toContain("the app it was attached to went away");
     expect(message).not.toContain("stop-all-simulator-servers");
     expect(message).not.toContain("another agent");
+    // Nor does it name a culprit it cannot see — a crash, a force-quit and a
+    // restart-app all reach the disposer as the same dropped socket.
+    expect(message).toContain("restart-app terminated it");
     // Still says the thing the breadcrumb exists to say.
     expect(message).toContain("It was not a session that never started.");
     expect(message).toContain("the log file is kept at /x");
@@ -105,6 +113,75 @@ describe("the reaped-session key", () => {
   it("defaults to the teardown family, so only a proven crash claims one", () => {
     recordReapedSession("screen-recording", UDID);
     expect(takeReapedSession("screen-recording", UDID)!.cause).toBe("teardown");
+  });
+
+  describe("the file a salvage clause points at", () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), "argent-keptat-"));
+    });
+    afterEach(() => {
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("stops advertising it once it is gone", () => {
+      // A breadcrumb has no expiry; a kept debugger log is reclaimed a day after
+      // its session ends, and the sweep that reclaims it runs in the very
+      // connect whose read then surfaces this note. Sending the agent at a path
+      // deleted seconds earlier is worse than admitting the entries are gone.
+      const kept = path.join(dir, "argent-logs-1-2.log");
+      fs.writeFileSync(kept, "x");
+      recordReapedSession("js-runtime-debugger", UDID, `The log file is kept at ${kept}`, {
+        cause: "runtime-death",
+        keptAt: kept,
+      });
+      fs.rmSync(kept);
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("has since been reclaimed");
+      expect(message).not.toContain("The log file is kept at");
+    });
+
+    it("reclaims the file the previous breadcrumb named, which nothing can reach any more", () => {
+      // One breadcrumb per kind+device: the second record makes the first one's
+      // path unreachable. Left alone, a crash loop keeps one file per crash and
+      // only the last is nameable.
+      const older = path.join(dir, "argent-logs-1-1.log");
+      const newer = path.join(dir, "argent-logs-1-2.log");
+      fs.writeFileSync(older, "x");
+      fs.writeFileSync(newer, "y");
+      recordReapedSession("js-runtime-debugger", UDID, "first", {
+        cause: "runtime-death",
+        keptAt: older,
+      });
+      recordReapedSession("js-runtime-debugger", UDID, "second", {
+        cause: "runtime-death",
+        keptAt: newer,
+      });
+
+      expect(fs.existsSync(older)).toBe(false);
+      expect(fs.existsSync(newer)).toBe(true);
+    });
+
+    it("keeps the file when the same path is recorded twice", () => {
+      // The Hermes disposer writes ONE event under both ids the device answers
+      // to; the second write must not delete the file the first just kept.
+      const kept = path.join(dir, "argent-logs-1-3.log");
+      fs.writeFileSync(kept, "x");
+      recordReapedSession("js-runtime-debugger", UDID, "same", {
+        cause: "runtime-death",
+        keptAt: kept,
+      });
+      recordReapedSession("js-runtime-debugger", UDID, "same", {
+        cause: "runtime-death",
+        keptAt: kept,
+      });
+
+      expect(fs.existsSync(kept)).toBe(true);
+    });
   });
 
   it("omits the salvage clause entirely when nothing survived", () => {

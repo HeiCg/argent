@@ -25,13 +25,16 @@
  * "you never started a recording" blame a teardown from an hour ago.
  */
 
+import * as fs from "node:fs";
+
 /** Which session kind was reaped; scopes the key so two kinds can't collide. */
 export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
 
 /**
- * What ended the session. `runtime-death` is the app's JS runtime going away —
- * a crash or a force-quit — which reaps the session with no tool call involved;
- * `teardown` is a `dispose()` whose caller the disposer cannot see.
+ * What ended the session. `runtime-death` is the app going away underneath it —
+ * it crashed, was force-quit, or a tool such as `restart-app` terminated it;
+ * `teardown` is a `dispose()` whose caller the disposer cannot see. The disposer
+ * reads a dropped socket, which tells it the app is gone but not what took it.
  */
 export type ReapedSessionCause = "teardown" | "runtime-death";
 
@@ -48,6 +51,13 @@ export interface ReapedSession {
    * that still knows.
    */
   salvage?: string;
+  /**
+   * The file {@link salvage} points at, when it points at one. Kept apart from
+   * the prose so the read can check the file is still there: a breadcrumb has no
+   * expiry, while a kept debugger log is swept once it is a day old, so an
+   * unread breadcrumb outlives what it advertises.
+   */
+  keptAt?: string;
 }
 
 const reaped = new Map<string, ReapedSession>();
@@ -65,17 +75,37 @@ function key(kind: ReapedSessionKind, deviceId: string): string {
  *
  * `cause` defaults to `"teardown"` — all a disposer can say when the only thing
  * it knows is that `dispose()` ran. Pass `"runtime-death"` only where the
- * disposer can tell the runtime itself went away.
+ * disposer can tell the app went away, and `keptAt` when the teardown left a
+ * file behind for the reader to open.
  */
 export function recordReapedSession(
   kind: ReapedSessionKind,
   deviceId: string,
   salvage?: string,
-  cause: ReapedSessionCause = "teardown"
+  opts: { cause?: ReapedSessionCause; keptAt?: string } = {}
 ): void {
-  const entry: ReapedSession = { kind, deviceId, atMs: Date.now(), cause };
+  const k = key(kind, deviceId);
+  const previous = reaped.get(k);
+  const entry: ReapedSession = {
+    kind,
+    deviceId,
+    atMs: Date.now(),
+    cause: opts.cause ?? "teardown",
+  };
   if (salvage) entry.salvage = salvage;
-  reaped.set(key(kind, deviceId), entry);
+  if (opts.keptAt) entry.keptAt = opts.keptAt;
+  reaped.set(k, entry);
+  // One breadcrumb per kind+device, so recording this one just made whatever the
+  // previous one named unreachable — nothing else records that path. Reclaim it
+  // here instead of leaving it for the log pruner a day later, which is what
+  // bounds a crash loop to one kept file per device rather than one per crash.
+  if (previous?.keptAt && previous.keptAt !== entry.keptAt) {
+    try {
+      fs.unlinkSync(previous.keptAt);
+    } catch {
+      // already gone, or never ours
+    }
+  }
 }
 
 /** Read and consume the breadcrumb for `kind`/`deviceId`, if there is one. */
@@ -101,25 +131,37 @@ export function takeReapedSession(
  * `stop-simulator-server` on Chromium cascades into the debugger through
  * `ChromiumCdp` (its documented behaviour), and `react-profiler-start
  * { force: true }` disposes the debugger and the profiler session to reclaim
- * them. A `runtime-death` is the one cause a disposer CAN name, and naming it
- * matters: offering the teardown family there would send an agent hunting for a
- * tool call, or another agent, that never existed.
+ * them. A `runtime-death` narrows that: the app itself went away, so pointing at
+ * the teardown family would send an agent hunting for a tool call, or another
+ * agent, that never touched this session. It does NOT name the culprit either —
+ * the disposer sees a dropped socket, which a crash, a force-quit and a
+ * `restart-app` all produce alike.
  */
 export function describeReapedSession(entry: ReapedSession, what: string): string {
   const secondsAgo = Math.max(0, Math.round((Date.now() - entry.atMs) / 1000));
   const why =
     entry.cause === "runtime-death"
-      ? `the app's JS runtime died (a crash or a force-quit), which ends the session exactly as ` +
-        `a teardown does. No tool call was involved, and no other agent.`
+      ? `the app it was attached to went away — it crashed, was force-quit, or a tool such as ` +
+        `restart-app terminated it — which ends the session the same way a teardown does.`
       : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
         `another teardown that reaches the same services (a stop-simulator-server on Chromium, ` +
         `or a react-profiler-start reclaiming the session with force). One tool-server serves ` +
         `every agent using this argent install, so this may have been another agent rather ` +
         `than your own call.`;
+  // The salvage clause was written when the file was there; a breadcrumb nobody
+  // read can outlive it, so correct the promise rather than send the reader at a
+  // path the log pruner has already reclaimed.
+  const salvage =
+    entry.keptAt && !fs.existsSync(entry.keptAt)
+      ? `The log file it left at ${entry.keptAt} has since been reclaimed — a kept log is ` +
+        `swept by the next debugger session once it is a day old — so those entries are gone. ` +
+        `This registry ` +
+        `starts empty because a new session was minted, not because the app logged nothing.`
+      : entry.salvage;
   return (
     `The ${what} for device ${entry.deviceId} was torn down ${secondsAgo}s ago — ${why} ` +
     `It was not a session that never started.` +
-    (entry.salvage ? ` ${entry.salvage}` : "")
+    (salvage ? ` ${salvage}` : "")
   );
 }
 
