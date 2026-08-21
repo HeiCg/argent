@@ -11,6 +11,7 @@ import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger
 import { createDebuggerStatusTool } from "../../src/tools/debugger/debugger-status";
 import { resolveDebuggerService } from "../../src/tools/debugger/not-connected";
 import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions";
+import { scopeTempHome } from "../helpers/temp-home";
 
 /**
  * The console log file must outlive the app: when the CDP socket drops
@@ -23,7 +24,16 @@ import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions
 // factory, reached through `http.createServer`. Everything else here — this
 // file's own mock Metro included — needs a working one, so the flag is off by
 // default and flipped for exactly one call.
+// LogFileWriter mkdir -p's os.homedir()/.argent/tmp and this file asserts on
+// that directory's contents, which is only meaningful when nothing else writes
+// there — including the tool-server this developer may be running.
+scopeTempHome("argent-log-crash-home-");
+
 const httpControl = vi.hoisted(() => ({ failCreateServer: false }));
+// The other hard-failure path: a runtime that accepts the socket and then
+// refuses a setup send, which production reaches as a request timeout against a
+// frozen app.
+const cdpControl = { failEnable: false };
 vi.mock("node:http", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:http")>();
   return {
@@ -49,6 +59,10 @@ let registry: Registry;
 function handleCDPMessage(ws: WebSocket, raw: string) {
   const msg = JSON.parse(raw);
   const { id, method } = msg;
+  if (cdpControl.failEnable && method === "Runtime.enable") {
+    ws.send(JSON.stringify({ id, error: { code: -32000, message: "runtime is wedged" } }));
+    return;
+  }
   if (method === "Debugger.enable") {
     ws.send(JSON.stringify({ id, result: { debuggerId: "mock-debugger" } }));
     ws.send(
@@ -204,6 +218,8 @@ describe("console logs across an app crash", () => {
     expect(after.note).toBeDefined();
     // The path, and a file actually there to be read at it.
     expect(after.note).toContain(logPath);
+    // One entry, counted as one.
+    expect(after.note).toContain("1 captured console entry,");
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
     // Never the reaped-by-stop-all wording: nothing was deleted here.
     expect(after.note).not.toContain("no log file was left behind");
@@ -389,6 +405,7 @@ describe("console logs across an app crash", () => {
     // dispose — so its fd, its file and its hourly keepalive would last as long
     // as the process, and the keepalive would hold the file out of
     // `pruneStaleLogs` for exactly that long.
+    fs.mkdirSync(logDir(), { recursive: true });
     const before = new Set(fs.readdirSync(logDir()));
     const socketsBefore = wss.clients.size;
     httpControl.failCreateServer = true;
@@ -409,16 +426,38 @@ describe("console logs across an app crash", () => {
     expect(wss.clients.size).toBe(socketsBefore);
   });
 
+  it("hands the CDP socket back when a setup send fails before the writer exists", async () => {
+    // The factory owns this socket until it returns a dispose, and it never
+    // returns one here. Left open, it holds a debugger target on Metro for the
+    // life of the tool-server.
+    fs.mkdirSync(logDir(), { recursive: true });
+    const filesBefore = new Set(fs.readdirSync(logDir()));
+    const socketsBefore = wss.clients.size;
+    cdpControl.failEnable = true;
+    try {
+      await expect(
+        registry.invokeTool("debugger-connect", { port: mockPort, device_id: "wedged-device" })
+      ).rejects.toThrow(/runtime is wedged/);
+    } finally {
+      cdpControl.failEnable = false;
+    }
+
+    for (let i = 0; i < 40 && wss.clients.size > socketsBefore; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(wss.clients.size).toBe(socketsBefore);
+    // Nothing to close on this path — the failure lands before the writer is
+    // built — so a new log file here would mean the order had drifted.
+    expect(fs.readdirSync(logDir()).filter((n) => !filesBefore.has(n))).toEqual([]);
+  });
+
   it("says the log file could not be created rather than sending a reader to grep it", async () => {
     // `open()` swallows its failure and buffers, so the counts and clusters are
     // real while `file` names a path that has never existed — and the documented
     // next step is to grep exactly that path.
-    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "argent-ro-home-"));
-    const logs = path.join(tmpHome, ".argent", "tmp");
+    const logs = logDir();
     fs.mkdirSync(logs, { recursive: true });
     fs.chmodSync(logs, 0o555);
-    const savedHome = process.env.HOME;
-    process.env.HOME = tmpHome;
     try {
       await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "nofile-device" });
 
@@ -466,11 +505,11 @@ describe("console logs across an app crash", () => {
       })) as { note?: string };
       expect(afterDeath.note).toContain("no log file was left behind");
       expect(afterDeath.note).not.toContain("has since been reclaimed");
+      // And the new session's own file is still uncreatable, which the
+      // breadcrumb says nothing about — the two are different files.
+      expect(afterDeath.note).toContain("could not be created");
     } finally {
       fs.chmodSync(logs, 0o755);
-      if (savedHome === undefined) delete process.env.HOME;
-      else process.env.HOME = savedHome;
-      fs.rmSync(tmpHome, { recursive: true, force: true });
     }
   });
 

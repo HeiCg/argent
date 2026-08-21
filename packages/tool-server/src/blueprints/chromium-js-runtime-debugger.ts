@@ -199,9 +199,12 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
     const onDisconnected = (error?: Error) => {
       events.emit("terminated", error ?? new Error("Chromium CDP disconnected"));
     };
-    cdp.events.on("disconnected", onDisconnected);
-
     const logWriter = new LogFileWriter(port);
+    // Registered after the writer, whose constructor mkdir -p's ~/.argent/tmp
+    // and throws on an unwritable home: this client belongs to `ChromiumCdp`
+    // and survives a failed factory, so a listener attached before the throw
+    // would stay on it forever.
+    cdp.events.on("disconnected", onDisconnected);
     const consoleEvents = new TypedEventEmitter<ConsoleLogEvents>();
     let nextLogId = 0;
 

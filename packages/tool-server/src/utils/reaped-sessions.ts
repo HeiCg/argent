@@ -132,14 +132,18 @@ export function recordReapedSession(
   // `logicalDeviceId` copy is unresolvable, so left alone it would sit here for
   // the life of the tool-server, one per crash.
   //
-  // Its kept file goes with it: nothing records that path any more, and
-  // reclaiming here rather than at the day-old sweep is what bounds a crash loop
-  // NOBODY READS to one kept file per device. Two shapes fall outside that bound
-  // and rely on the sweep: a loop somebody reads, deliberately — consuming an
-  // event leaves no previous entry to supersede, and those paths are in an
-  // agent's hands — and a device whose only id is a `logicalDeviceId`, which
-  // Metro reissues per connection, so each teardown files under a key no earlier
-  // one used.
+  // Its kept file goes with it: nothing records that path any more, so
+  // reclaiming here rather than waiting for the day-old sweep keeps an UNREAD
+  // crash loop to one kept file per device.
+  //
+  // A loop whose notes are read is not bounded here, and deliberately so: the
+  // prescribed recovery is restart-app then `debugger-connect`, which consumes
+  // the breadcrumb and hands the agent the path, leaving no previous entry for
+  // the next teardown to supersede. One file per cycle then waits for the sweep
+  // rather than being deleted out from under the agent that was just told to
+  // read it. A device whose only id is a `logicalDeviceId` waits for the sweep
+  // too — Metro reissues one per connection, so each teardown files under a key
+  // no earlier one used.
   for (const [k, entry] of reaped) {
     if (!superseded.has(entry.event)) continue;
     reaped.delete(k);

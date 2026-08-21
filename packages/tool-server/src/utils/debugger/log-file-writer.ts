@@ -103,8 +103,9 @@ export class LogFileWriter {
   }
 
   /**
-   * Mark the file live for the pruner. Through the fd, so a path some other
-   * server already reclaimed cannot be recreated here.
+   * Mark the file live for the pruner. Through the fd rather than the path:
+   * after another server reclaims that path the fd still refers to this file,
+   * where `utimesSync` would throw ENOENT.
    */
   private touch(): void {
     if (this.fd === null) return;

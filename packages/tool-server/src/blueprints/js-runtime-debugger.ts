@@ -227,22 +227,37 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
       process.stderr.write(`[JsRuntimeDebugger:${port}] ${label} failed (non-fatal): ${msg}\n`);
     };
 
-    await cdp.send("FuseboxClient.setClientMetadata", {}).catch(ignore);
-    await cdp.send("ReactNativeApplication.enable", {}).catch(ignore);
-    await cdp.send("Runtime.enable");
-    await cdp.send("Debugger.enable", { maxScriptsCacheSize: 100_000_000 });
-    await cdp.send("Debugger.setPauseOnExceptions", { state: "none" });
-    await cdp.send("Debugger.setAsyncCallStackDepth", { maxDepth: 32 }).catch(ignore);
-    await cdp.send("Runtime.runIfWaitingForDebugger").catch(ignore);
-    await cdp.addBinding("__argent_callback");
+    // No dispose exists until this factory returns, so anything that throws
+    // from here on leaves the connected socket with nothing to close it, and
+    // Metro holds a debugger target open for the life of the process. The
+    // un-`catch`ed sends are the reachable case: a request timeout against a
+    // frozen runtime is `runtime_unresponsive`, a documented not-connected
+    // state.
+    let logWriter: LogFileWriter;
+    let sourceResolver: SourceResolver;
+    try {
+      await cdp.send("FuseboxClient.setClientMetadata", {}).catch(ignore);
+      await cdp.send("ReactNativeApplication.enable", {}).catch(ignore);
+      await cdp.send("Runtime.enable");
+      await cdp.send("Debugger.enable", { maxScriptsCacheSize: 100_000_000 });
+      await cdp.send("Debugger.setPauseOnExceptions", { state: "none" });
+      await cdp.send("Debugger.setAsyncCallStackDepth", { maxDepth: 32 }).catch(ignore);
+      await cdp.send("Runtime.runIfWaitingForDebugger").catch(ignore);
+      await cdp.addBinding("__argent_callback");
 
-    await cdp.evaluate(DISABLE_LOGBOX_SCRIPT).catch(warnOnError("DISABLE_LOGBOX_SCRIPT"));
+      await cdp.evaluate(DISABLE_LOGBOX_SCRIPT).catch(warnOnError("DISABLE_LOGBOX_SCRIPT"));
 
-    await sourceMaps.waitForPending();
+      await sourceMaps.waitForPending();
 
-    const sourceResolver = createSourceResolver(port, metro.projectRoot);
+      sourceResolver = createSourceResolver(port, metro.projectRoot);
 
-    const logWriter = new LogFileWriter(port);
+      // Its constructor mkdir -p's ~/.argent/tmp, which an unwritable home
+      // makes throw.
+      logWriter = new LogFileWriter(port);
+    } catch (err) {
+      await cdp.disconnect();
+      throw err;
+    }
     const consoleEvents = new TypedEventEmitter<ConsoleLogEvents>();
     let nextLogId = 0;
 
@@ -269,11 +284,9 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
       consoleEvents.emit("log", entry);
     });
 
-    // No dispose exists until this factory returns, so a throw here leaves
-    // everything opened above with nothing to ever close it: the writer's fd,
-    // its file and its keepalive would last as long as the process — and the
-    // keepalive would hold that file out of `pruneStaleLogs` for exactly that
-    // long — while the CDP socket kept Metro's target busy.
+    // Same rule, now with a writer to undo as well: its fd, its file and its
+    // hourly keepalive would last as long as the process, and the keepalive
+    // would hold that file out of `pruneStaleLogs` for exactly that long.
     let consoleServer: Awaited<ReturnType<typeof createConsoleLogServer>>;
     try {
       consoleServer = await createConsoleLogServer(consoleEvents, logWriter);

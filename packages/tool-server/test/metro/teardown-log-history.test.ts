@@ -105,6 +105,15 @@ beforeEach(async () => {
 
 async function connectAndCapture(deviceId: string, entries: number): Promise<string> {
   await registry.invokeTool("debugger-connect", { port: mockPort, device_id: deviceId });
+  return capture(deviceId, entries);
+}
+
+/**
+ * Capture without a `debugger-connect` — the way a read reaches a reaped
+ * device, since resolving the service builds a new session on its own. A
+ * connect would drop the breadcrumb before the read that is under test.
+ */
+async function capture(deviceId: string, entries: number): Promise<string> {
   const urn = `JsRuntimeDebugger:${mockPort}:${deviceId}`;
   const api = await registry.resolveService<JsRuntimeDebuggerApi>(urn);
   for (let i = 0; i < entries; i++) {
@@ -167,8 +176,9 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
   it("does not attach the explanation to a registry that has its own entries", async () => {
     const urn = await connectAndCapture(LOGICAL_ID, 5);
     await registry.disposeService(urn);
-    // Reconnect and capture fresh history before reading.
-    await connectAndCapture(LOGICAL_ID, 3);
+    // Implicitly, so the breadcrumb is still there to be wrongly attached: the
+    // read below is what has to leave it alone, not a connect that dropped it.
+    await capture(LOGICAL_ID, 3);
 
     const result = (await registry.invokeTool("debugger-log-registry", {
       port: mockPort,

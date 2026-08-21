@@ -251,12 +251,9 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     // path that never existed, and — since it is gone by the time anyone reads
     // it — blames the pruner for the loss.
     __resetReapedSessionsForTesting();
-    const roHome = fs.mkdtempSync(path.join(os.tmpdir(), "argent-ro-home-"));
-    const logs = path.join(roHome, ".argent", "tmp");
+    const logs = logDir();
     fs.mkdirSync(logs, { recursive: true });
     fs.chmodSync(logs, 0o555);
-    const savedHome = process.env.HOME;
-    process.env.HOME = roHome;
     try {
       const fake = makeFakeChromiumCdpApi();
       let socketOpen = true;
@@ -283,10 +280,40 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
       expect(reaped?.salvage).toContain("no log file was left behind");
     } finally {
       fs.chmodSync(logs, 0o755);
-      if (savedHome === undefined) delete process.env.HOME;
-      else process.env.HOME = savedHome;
-      fs.rmSync(roHome, { recursive: true, force: true });
     }
+  });
+
+  it("reads the socket before the dispose awaits anything", async () => {
+    // A teardown's socket can close while dispose is mid-await — the console
+    // server's close yields to I/O — and a read placed after that await would
+    // call this teardown a death and keep a file nothing reclaims for a day.
+    __resetReapedSessionsForTesting();
+    const fake = makeFakeChromiumCdpApi();
+    let socketOpen = true;
+    (fake.api.cdp as unknown as { isConnected: () => boolean }).isConnected = () => socketOpen;
+    const instance = await chromiumJsRuntimeDebuggerBlueprint.factory(
+      { chromium: fake.api },
+      "chromium-cdp-19222",
+      { device: chromiumDevice }
+    );
+    instance.api.logWriter.write({
+      id: 1,
+      timestamp: new Date(1710000000000).toISOString(),
+      level: "log",
+      message: "captured before the teardown",
+    });
+    const logPath = instance.api.logWriter.getFilePath();
+
+    // Queued before dispose runs, so it lands the moment dispose first gives up
+    // the stack — which is its first await, and nothing else.
+    process.nextTick(() => {
+      socketOpen = false;
+    });
+    await instance.dispose();
+
+    expect(fs.existsSync(logPath)).toBe(false);
+    const reaped = takeReapedSession("js-runtime-debugger", "chromium-cdp-19222");
+    expect(reaped?.cause).toBe("teardown");
   });
 
   it("keeps the log when the renderer's death cascades a teardown in before our listener runs", async () => {
@@ -348,6 +375,7 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     // factory never returns a dispose — so its fd, its file and its hourly
     // keepalive would last as long as the process, and the keepalive would keep
     // the file out of `pruneStaleLogs` for exactly that long.
+    fs.mkdirSync(logDir(), { recursive: true });
     const before = new Set(fs.readdirSync(logDir()));
     const fake = makeFakeChromiumCdpApi();
     httpControl.failCreateServer = true;
@@ -370,6 +398,33 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
         ?.size ?? 0;
     expect(registered("consoleAPICalled")).toBe(0);
     expect(registered("disconnected")).toBe(0);
+  });
+
+  it("leaves no listener on the shared client when the writer cannot be built", async () => {
+    // `LogFileWriter`'s constructor mkdir -p's ~/.argent/tmp, which an
+    // unwritable home makes throw. This client belongs to `ChromiumCdp` and
+    // outlives the failed factory, so a listener attached before that throw
+    // would emit into a service that never existed, for the life of the
+    // process.
+    const argentDir = path.join(os.homedir(), ".argent");
+    fs.mkdirSync(argentDir, { recursive: true });
+    fs.chmodSync(argentDir, 0o555);
+    const fake = makeFakeChromiumCdpApi();
+    try {
+      await expect(
+        chromiumJsRuntimeDebuggerBlueprint.factory({ chromium: fake.api }, "chromium-cdp-19222", {
+          device: chromiumDevice,
+        })
+      ).rejects.toThrow(/EACCES|permission denied/i);
+    } finally {
+      fs.chmodSync(argentDir, 0o755);
+    }
+
+    const registered = (event: string) =>
+      (fake.events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(event)
+        ?.size ?? 0;
+    expect(registered("disconnected")).toBe(0);
+    expect(registered("consoleAPICalled")).toBe(0);
   });
 
   it("keeps nothing when the renderer dies without having logged", async () => {

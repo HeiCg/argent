@@ -80,20 +80,15 @@ Use when starting a debug session or before calling other debugger-* tools. Fail
     // Not in the blueprint's factory: that runs for an IMPLICIT resolve too —
     // `debugger-log-registry` reconnects through it — and clearing there would
     // consume the breadcrumb one line before the read that exists to report it.
-    // Either spelling of the device, because the caller may have connected with
-    // either; the store files one teardown under both and spends them together,
-    // so the first hit is the whole of it.
-    let note: string | undefined;
-    for (const id of new Set(
-      [params.device_id, api.logicalDeviceId].filter((v): v is string => v !== undefined)
-    )) {
-      const entry = takeReapedSession("js-runtime-debugger", id);
-      if (!entry) continue;
-      if (entry.cause === "runtime-death") {
-        note = describeReapedSession(entry, "JS-runtime debugger session");
-      }
-      break;
-    }
+    //
+    // One lookup, on the id this call names: the store files a teardown under
+    // every id its device answered to and spends them all together, and
+    // `api.logicalDeviceId` is this session's, which Metro has just reissued.
+    const reaped = takeReapedSession("js-runtime-debugger", params.device_id);
+    const note =
+      reaped?.cause === "runtime-death"
+        ? describeReapedSession(reaped, "JS-runtime debugger session")
+        : undefined;
     return {
       port: api.port,
       projectRoot: api.projectRoot,

@@ -20,7 +20,7 @@ interface LogRegistryResponse extends LogStats {
   logicalDeviceId: string | undefined;
   /**
    * Whatever would make the rest of this answer misleading on its own, in the
-   * two states where something does:
+   * two states where something does — and both sentences when both hold:
    *
    * - The registry is empty because the previous session for this device was
    *   torn down holding console history — by a `stop-all-simulator-servers`, or
@@ -70,7 +70,7 @@ export function createDebuggerLogRegistryTool(
     },
     description: `Get a summary of all console logs captured from the app's JS runtime.
 Returns the log file path, entry counts by level, and message clusters (grouped by similarity). Works against Hermes (iOS / Android / Vega) and V8 (Chromium).
-Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. ALWAYS check { note } before acting on the rest: it appears only when something would otherwise mislead you, and it says which of two things it is. Either the previous debugger session for this device was torn down while holding captured logs — by a stop-all-simulator-servers, or by the app's JS runtime going away — so this registry starts empty for a reason that is not "the app logged nothing", and when that teardown left the old log file on disk (a crash or force-quit does) the note names its path to read instead. Or { file } could not be created, so it is not there to grep and the counts and clusters here are all there is. Absent a note, empty really does mean the app has logged nothing and { file } is readable.
+Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. ALWAYS check { note } before acting on the rest: it appears only when something would otherwise mislead you, and it says which of two things it is — or both, when both hold. Either the previous debugger session for this device was torn down while holding captured logs — by a stop-all-simulator-servers, or by the app's JS runtime going away — so this registry starts empty for a reason that is not "the app logged nothing", and when that teardown left the old log file on disk (a crash or force-quit does) the note names its path to read instead. Or { file } could not be created, so it is not there to grep and the counts and clusters here are all there is. Absent a note, empty really does mean the app has logged nothing and { file } is readable.
 When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } and no log file of its own — follow the guidance (do not retry in a loop). A crashed app reaches that state too, so check { note } there as well: when the dead session left its log file behind the note names it, and that file is readable even though the debugger is not. A "connected" result's stats may come from a session whose socket has since died — use debugger-status, not this tool, to judge debugger health.`,
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,
@@ -118,24 +118,32 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
                 api.logicalDeviceId,
               ])
             : undefined;
+        // Both can be true at once — an unwritable directory outlives the
+        // session that died in it — and they are about different files, the old
+        // session's and this one's, so neither may swallow the other.
+        const notes: string[] = [];
         if (reaped) {
           // The one answer that HAS a registry to account for, so the one that
           // says why this one is empty. `debugger-connect` and the
           // `not_connected` branch below report the same teardown without one.
-          response.note =
+          notes.push(
             `${reaped} This registry starts empty because a new session was minted, ` +
-            `not because the app logged nothing.`;
-        } else if (!api.logWriter.hasFile()) {
+              `not because the app logged nothing.`
+          );
+        }
+        if (!api.logWriter.hasFile()) {
           // Whatever the counts say, `file` names nothing: `open()` swallows its
           // failure and buffers, and the documented next step is to grep that
           // path. Checked on an empty registry too — a session that has not
           // logged yet is where an unwritable directory shows up first, and
           // saying so beats letting the caller find out by grepping.
-          response.note =
+          notes.push(
             `The log file at ${stats.file} could not be created, so the entries counted here ` +
-            `are only in this summary — do not try to read that path. Check that ` +
-            `~/.argent/tmp is writable.`;
+              `are only in this summary — do not try to read that path. Check that ` +
+              `~/.argent/tmp is writable.`
+          );
         }
+        if (notes.length > 0) response.note = notes.join(" ");
         return response;
       } catch (err) {
         const reason = classifyNotConnected(err);
