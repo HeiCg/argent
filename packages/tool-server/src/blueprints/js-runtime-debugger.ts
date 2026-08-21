@@ -385,8 +385,6 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         // explicit teardown removes the file.
         const runtimeDied = !cdp.isConnected();
         const captured = logWriter.getStats().totalEntries;
-        // A count is not a file: `open()` swallows its failure and buffers, so
-        // ask the writer whether there is anything to point at.
         const keptAt = runtimeDied && logWriter.hasFile() ? logWriter.getFilePath() : undefined;
         if (captured > 0) {
           const ids = [deviceId];

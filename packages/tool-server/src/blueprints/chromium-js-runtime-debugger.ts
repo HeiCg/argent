@@ -317,8 +317,6 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
         // the pruner reclaims a day later, which is the cheaper way to be wrong.
         const runtimeDied = !cdp.isConnected();
         const captured = logWriter.getStats().totalEntries;
-        // A count is not a file: `open()` swallows its failure and buffers, so
-        // ask the writer whether there is anything to point at.
         const keptAt = runtimeDied && logWriter.hasFile() ? logWriter.getFilePath() : undefined;
         if (captured > 0) {
           recordReapedSession(

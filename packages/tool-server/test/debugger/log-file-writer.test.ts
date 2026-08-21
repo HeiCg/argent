@@ -38,6 +38,46 @@ describe("LogFileWriter", () => {
     expect(writer.hasFile()).toBe(false);
   });
 
+  it("reports no file when the log could not be opened, though entries still count", () => {
+    // `open()` swallows its failure and buffers instead, so `totalEntries`
+    // rises for a file that never existed. A breadcrumb built from the count
+    // alone would tell an agent to read a path that has never been there.
+    const logDir = path.join(os.homedir(), ".argent", "tmp");
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.chmodSync(logDir, 0o555);
+    try {
+      const w = new LogFileWriter(8888);
+      w.write({ id: 1, timestamp: "t", level: "error", message: "buffered" });
+
+      expect(w.getStats().totalEntries).toBe(1);
+      expect(w.hasFile()).toBe(false);
+      w.close();
+    } finally {
+      fs.chmodSync(logDir, 0o755);
+    }
+  });
+
+  it("releases the fd on both close paths", () => {
+    // The other half of what `close` frees. One debugger session per connect,
+    // and the keep path's writer is closed by the same call that leaves its
+    // file on disk — so a descriptor held past it is one per crash for the
+    // life of the tool-server. Asked of the descriptor itself, since nulling
+    // the field is what every other reader of `fd` goes by and says nothing
+    // about the handle.
+    const fdOf = (w: LogFileWriter) => (w as unknown as { fd: number | null }).fd!;
+
+    const kept = new LogFileWriter(4545);
+    const keptFd = fdOf(kept);
+    kept.close({ keepFile: true });
+    expect(() => fs.fstatSync(keptFd)).toThrow(/EBADF/);
+    fs.rmSync(kept.getFilePath(), { force: true });
+
+    const dropped = new LogFileWriter(4546);
+    const droppedFd = fdOf(dropped);
+    dropped.close();
+    expect(() => fs.fstatSync(droppedFd)).toThrow(/EBADF/);
+  });
+
   describe("stale-log pruning", () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
     let logDir: string;
@@ -177,23 +217,6 @@ describe("LogFileWriter", () => {
       }
     });
 
-    it("reports no file when the log could not be opened, though entries still count", () => {
-      // `open()` swallows its failure and buffers instead, so `totalEntries`
-      // rises for a file that never existed. A breadcrumb built from the count
-      // alone would tell an agent to read a path that has never been there.
-      fs.chmodSync(logDir, 0o555);
-      try {
-        const w = new LogFileWriter(8888);
-        w.write({ id: 1, timestamp: "t", level: "error", message: "buffered" });
-
-        expect(w.getStats().totalEntries).toBe(1);
-        expect(w.hasFile()).toBe(false);
-        w.close();
-      } finally {
-        fs.chmodSync(logDir, 0o755);
-      }
-    });
-
     it("does not let the keepalive hold the process open", () => {
       // The tool-server exits when its work is done; an hourly ref'd interval
       // would keep the event loop alive for as long as any writer stayed open.
@@ -205,27 +228,6 @@ describe("LogFileWriter", () => {
       } finally {
         w.close();
       }
-    });
-
-    it("releases the fd on both close paths", () => {
-      // The other half of what `close` frees. One debugger session per connect,
-      // and the keep path's writer is closed by the same call that leaves its
-      // file on disk — so a descriptor held past it is one per crash for the
-      // life of the tool-server. Asked of the descriptor itself, since nulling
-      // the field is what every other reader of `fd` goes by and says nothing
-      // about the handle.
-      const fdOf = (w: LogFileWriter) => (w as unknown as { fd: number | null }).fd!;
-
-      const kept = new LogFileWriter(4545);
-      const keptFd = fdOf(kept);
-      kept.close({ keepFile: true });
-      expect(() => fs.fstatSync(keptFd)).toThrow(/EBADF/);
-      fs.rmSync(kept.getFilePath(), { force: true });
-
-      const dropped = new LogFileWriter(4546);
-      const droppedFd = fdOf(dropped);
-      dropped.close();
-      expect(() => fs.fstatSync(droppedFd)).toThrow(/EBADF/);
     });
 
     it("survives a keepalive tick whose touch cannot land", () => {

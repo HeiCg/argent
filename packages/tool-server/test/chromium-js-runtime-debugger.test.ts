@@ -408,10 +408,10 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
 
   it("closes the log writer when the factory throws before a dispose exists", async () => {
     // The console-log server bind is a documented hard-failure path, and it runs
-    // after the writer is open. Nothing else can ever close that writer — the
-    // factory never returns a dispose — so its fd, its file and its hourly
-    // keepalive would last as long as the process, and the keepalive would keep
-    // the file out of `pruneStaleLogs` for exactly that long.
+    // after the writer is open. Nothing else can close that writer — the factory
+    // never returns a dispose — so its fd, its file and its keepalive would
+    // outlive the failure, and the keepalive holds that file out of the sweep
+    // for as long as it runs.
     fs.mkdirSync(logDir(), { recursive: true });
     const before = new Set(fs.readdirSync(logDir()));
     const fake = makeFakeChromiumCdpApi();

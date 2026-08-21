@@ -70,16 +70,10 @@ Use when starting a debug session or before calling other debugger-* tools. Fail
     // it wrong anyway: from here the capture is this session's, so an empty
     // registry honestly means this app has logged nothing since.
     //
-    // Report it first when the app went away, because then it is not only an
-    // explanation: it carries the path of a log file still on disk, and this
-    // call is where the agent arrives holding it. Both `debugger-status`'s
-    // stale_connection guidance and the skill's crash row send it here after a
-    // restart-app, and by then `debugger-log-registry` has nothing left to
-    // report: it reads a breadcrumb only from a session it could resolve and
-    // found empty, or from the `not_connected` answer of one it could not
-    // resolve at all — and the relaunched app is neither, the moment it logs its
-    // first line. Dropping it silently would leave the file named by nothing
-    // until the pruner reclaims it.
+    // Report it first when the app went away: it carries the path of a log file
+    // still on disk, and the crash-recovery route — restart-app, then here —
+    // arrives after `debugger-log-registry` has anything left to report, since
+    // the relaunched app's first line makes that registry its own.
     //
     // Not in the blueprint's factory: that runs for an IMPLICIT resolve too —
     // `debugger-log-registry` reconnects through it — and clearing there would

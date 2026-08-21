@@ -94,7 +94,6 @@ export class LogFileWriter {
       // fd is still open, and the next connect from any tool-server would
       // unlink it out from under the tool that had already handed out its path.
       this.keepalive = setInterval(() => this.touch(), KEEPALIVE_MS);
-      // Never a reason to keep the process alive.
       this.keepalive.unref();
     } catch {
       // Nothing reopens the file: `write` buffers instead, and `hasFile` is how

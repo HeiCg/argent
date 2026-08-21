@@ -102,8 +102,9 @@ describe("guidance platform-correctness", () => {
 
 describe("guidance content", () => {
   // A crashed session's console log is reachable only through the note
-  // debugger-log-registry hands out, and these two strings are how the answers
-  // that do not carry one — debugger-status', above all — send the agent to it.
+  // debugger-log-registry and debugger-connect hand out, and these two strings
+  // are how the answers that carry none — debugger-status', above all — send
+  // the agent to the one that does.
   // Lose the clause and the answer that reports the app is gone says nothing
   // about the one artifact the crash left behind, and the agent relaunches over
   // it. An answer that IS carrying the note says so itself; that is pinned in

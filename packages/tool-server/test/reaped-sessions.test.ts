@@ -116,9 +116,9 @@ describe("the reaped-session key", () => {
 
   it("tells a Chromium session its death in its own terms", () => {
     // The Metro wording pinned above names two recoveries a Chromium session
-    // does not have: there is no Metro behind it, and `restart-app`'s handler is
-    // a documented no-op on Chromium — the guidance in the same answer says so
-    // itself. Naming them sends an agent after a restart that cannot happen.
+    // does not have: there is no Metro behind it, and `restart-app` declares no
+    // chromium platform, so that call is refused before it dispatches. Naming
+    // them sends an agent after a restart that cannot happen.
     recordReapedSession("js-runtime-debugger", "chromium-cdp-9222", "the log file is kept at /x", {
       cause: "runtime-death",
     });

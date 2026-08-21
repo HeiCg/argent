@@ -324,7 +324,7 @@ describe("console logs across an app crash", () => {
       expect(after.note).toContain("its debugger connection dropped instead of being closed");
       // The registry sentence belongs to an empty registry, and this answer has
       // none: it never resolved a session to read one from.
-      expect(after.note).not.toContain("This registry starts empty");
+      expect(after.note).not.toContain("The counts here are the new session's own");
       expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
     } finally {
       targetsGone = false;
@@ -456,10 +456,9 @@ describe("console logs across an app crash", () => {
   });
 
   it("closes the log writer when the factory throws before a dispose exists", async () => {
-    // Nothing else can ever close that writer — the factory never returns a
-    // dispose — so its fd, its file and its hourly keepalive would last as long
-    // as the process, and the keepalive would hold the file out of
-    // `pruneStaleLogs` for exactly that long.
+    // Nothing else can close that writer — the factory never returns a dispose
+    // — so its fd, its file and its keepalive would outlive the failure, and the
+    // keepalive holds that file out of the sweep for as long as it runs.
     fs.mkdirSync(logDir(), { recursive: true });
     const before = new Set(fs.readdirSync(logDir()));
     // By identity, not by count: sockets from earlier cases in this file can

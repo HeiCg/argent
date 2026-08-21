@@ -147,52 +147,30 @@ export function recordReapedSession(
   }
   const orphanedFiles = new Set<string>();
   for (const previous of displaced.values()) {
-    // Which of that event's copies this one did not take.
     const leftovers = [...previous.keys].filter((k) => !keys.has(k));
-    // It keeps them, and its file, when this event is a DIFFERENT device: it
-    // still answers under an id this one does not name, while this one names an
-    // id it never answered to. That is the shape `selectTarget`'s one-device
-    // fallback makes — a stranger's session minted on this device's
-    // logicalDeviceId — and taking the crashed device's entry there would take
-    // the log file it is holding for it.
-    //
-    // Two teardowns of one device mostly fail that test: their ids match, or
-    // shrink (a caller pushed onto the logicalDeviceId by that same refusal
-    // files one id where the crash filed two), or grow back — and the ones that
-    // grow leave nothing behind to keep. A second app on this port is the
-    // exception, since the app derives that id from its own bundle: the sets go
-    // incomparable and the older session's file waits for the sweep.
+    // A previous event keeps its copies, and its file, when this one is a
+    // DIFFERENT device: it still answers under an id this one does not name,
+    // while this one names an id it never answered to. That is `selectTarget`'s
+    // one-device fallback minting a stranger's session on this device's
+    // logicalDeviceId, and taking that entry would take the log file it is
+    // holding for the device that crashed. Two teardowns of one device match,
+    // shrink or grow instead, and the ones that grow leave nothing behind; a
+    // second app on this port goes incomparable, and the older file waits for
+    // the day-old sweep.
     const standsIn = [...keys].every((k) => previous.keys.has(k));
     if (!standsIn && leftovers.length > 0) continue;
     // Half an event explains nothing: a copy left behind would answer some
     // later, unrelated read.
     //
-    // Its kept file goes with it when this event keeps one of its own: nothing
-    // records that path any more, and reclaiming it here rather than waiting for
-    // the day-old sweep keeps an UNREAD crash loop to one kept file per device —
-    // every crash in such a loop keeps one, so the bound holds.
-    //
-    // A teardown keeps no file, and so reclaims none. What it would delete is
-    // precisely the log of a crash nobody has read: a read consumes the whole
-    // event, so anything still here to be superseded went unreported. The file
-    // outlives its last pointer either way — this teardown's own note speaks
-    // for its own session's entries and says nothing of the older ones — so the
-    // choice is between a file a developer can still open at
-    // ~/.argent/tmp until the day-old sweep, and entries that are simply gone.
-    //
-    // A loop whose notes are read is not bounded here, and deliberately so.
-    // restart-app then `debugger-connect` is both the prescribed recovery and
-    // ordinary iteration, and it consumes the breadcrumb and hands the agent the
-    // path, leaving no previous entry for the next teardown to supersede — so
-    // one file per cycle waits for the day-old sweep rather than being deleted
-    // out from under the agent that was just told to read it.
-    //
-    // One hand-out this cannot see: a `debugger-log-registry` read that lands
-    // between the socket dropping and the dispose returns `connected` with that
-    // session's own `file`, and the breadcrumb naming it does not exist yet. The
-    // skill's crash row, which sends the agent to exactly that answer, says to
-    // read the file before relaunching — a relaunch is what brings the next
-    // crash, and the next crash is what reclaims it.
+    // Its file goes with it only when this event keeps one of its own — nothing
+    // else records that path — which bounds an UNREAD crash loop to one kept
+    // file per device, since every crash in such a loop keeps one. A teardown
+    // keeps none and reclaims none: it would be spending an unread crash log to
+    // save a file the sweep collects anyway. A loop whose notes ARE read is not
+    // bounded here either, since the read spends the event and leaves nothing
+    // to supersede. And the one path this cannot protect is a file named by a
+    // `connected` read that landed before the dispose filed anything: the next
+    // crash on this device reclaims it.
     for (const k of leftovers) reaped.delete(k);
     if (previous.keptAt && opts.keptAt) orphanedFiles.add(previous.keptAt);
   }
@@ -244,10 +222,11 @@ export function takeReapedSession(
  * or another agent, that never touched this session. It does NOT name the culprit either —
  * the disposer sees a dropped socket, which a crash, a force-quit and a
  * `restart-app` all produce alike. Which of those an agent can act on is
- * platform-specific: a Chromium session has no Metro to have restarted and no
- * `restart-app` to have run (that handler is a documented no-op there), so it
- * gets the same sentence in its own terms — the same split the not-connected
- * guidance makes for the same reason.
+ * platform-specific: a Chromium session has no Metro to have restarted, and
+ * `restart-app` does not reach it at all — the tool's capability declares no
+ * chromium platform, so the call is refused before dispatch. It gets the same
+ * sentence in its own terms, the split the not-connected guidance makes for
+ * the same reason.
  */
 export function describeReapedSession(entry: ReapedSession, what: string): string {
   const secondsAgo = Math.max(0, Math.round((Date.now() - entry.atMs) / 1000));
