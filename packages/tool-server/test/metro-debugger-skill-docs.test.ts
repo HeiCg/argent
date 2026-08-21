@@ -115,10 +115,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
 
     // Offering restart-app to a reader who may be on Chromium obliges each
     // surface to name the relaunch that works, not merely fence restart-app off.
-    // The flag marks the surfaces reached while the app is still running:
-    // boot-device cannot end it, so those have to say how it exits. The
-    // failure-scenarios sends the reader to check whether the app exited rather
-    // than naming a quit step, so only the surfaces that own one assert it.
+    // The flag marks the surfaces that tell the user to quit the app; the
+    // failure-scenarios row instead sends the reader to check whether it already
+    // exited, so it owns no quit step.
     const surfaces: [string, string, boolean][] = [
       [DEBUGGER_SKILL, "Relaunch app on device", true],
       [FAILURE_SCENARIOS, "**Was connected, then tool fails**", false],
@@ -135,7 +134,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       expect(cell, file).toContain("`list-devices`");
       // boot-device never stops an app, so a relaunch aimed at a process that is
       // still up leaves a second copy holding the single-instance lock. Every
-      // surface has to put the app's exit before the relaunch.
+      // surface has to name the app's exit as part of the relaunch.
       expect(cell, file).toContain("exited");
       if (quitStep) expect(cell, file).toContain("quit");
     }
