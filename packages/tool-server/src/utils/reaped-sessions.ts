@@ -149,10 +149,12 @@ export function recordReapedSession(
     // logicalDeviceId — and taking the crashed device's entry there would take
     // the log file it is holding for it.
     //
-    // Two teardowns of ONE device fail that test: their ids either match, or
+    // Two teardowns of one device mostly fail that test: their ids match, or
     // shrink (a caller pushed onto the logicalDeviceId by that same refusal
     // files one id where the crash filed two), or grow back — and the ones that
-    // grow leave nothing behind to keep.
+    // grow leave nothing behind to keep. A second app on this port is the
+    // exception, since the app derives that id from its own bundle: the sets go
+    // incomparable and the older session's file waits for the sweep.
     const standsIn = [...keys].every((k) => previous.keys.has(k));
     if (!standsIn && leftovers.length > 0) continue;
     // Half an event explains nothing: a copy left behind would answer some

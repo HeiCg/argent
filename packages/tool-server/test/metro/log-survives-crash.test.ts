@@ -503,6 +503,26 @@ describe("console logs across an app crash", () => {
     expect(fs.readdirSync(logDir()).filter((n) => !filesBefore.has(n))).toEqual([]);
   });
 
+  it("hands the CDP socket back when the log writer cannot be built", async () => {
+    // The writer's constructor mkdir -p's ~/.argent/tmp, so a home the
+    // tool-server cannot write there is a factory throw from the one setup step
+    // that touches the filesystem — with the CDP socket open and, again, no
+    // dispose coming to close it.
+    const argentDir = path.join(os.homedir(), ".argent");
+    fs.rmSync(argentDir, { recursive: true, force: true });
+    fs.writeFileSync(argentDir, "a file where the directory goes");
+    const socketsBefore = new Set(wss.clients);
+    try {
+      await expect(
+        registry.invokeTool("debugger-connect", { port: mockPort, device_id: "homeless-device" })
+      ).rejects.toThrow(/ENOTDIR/);
+    } finally {
+      fs.rmSync(argentDir, { force: true });
+    }
+
+    expect(await countLeakedSockets(socketsBefore)).toBe(0);
+  });
+
   it("stops feeding the writer before the factory rollback closes it", async () => {
     // `LogFileWriter.write` throws once closed, and the rollback closes it and
     // then waits out a CDP close handshake with the client's message dispatch

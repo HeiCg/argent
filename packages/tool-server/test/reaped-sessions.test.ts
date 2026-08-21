@@ -334,6 +334,24 @@ describe("the reaped-session key", () => {
 
       expect(fs.existsSync(kept)).toBe(true);
     });
+
+    it("records the new session even though the file it supersedes is already gone", () => {
+      // That directory is shared with every other tool-server on the machine,
+      // any of which prunes it on its own connects. An unlink that threw here
+      // would take the whole recording of the new session with it — from a
+      // disposer, where the throw lands in the registry's teardown cascade.
+      const swept = path.join(dir, "argent-logs-1-4.log");
+      fs.writeFileSync(swept, "x");
+      recordReapedSession("js-runtime-debugger", UDID, "first", {
+        cause: "runtime-death",
+        keptAt: swept,
+      });
+      fs.rmSync(swept);
+
+      recordReapedSession("js-runtime-debugger", UDID, "second", { cause: "runtime-death" });
+
+      expect(takeReapedSession("js-runtime-debugger", UDID)?.salvage).toBe("second");
+    });
   });
 
   it("omits the salvage clause entirely when nothing survived", () => {

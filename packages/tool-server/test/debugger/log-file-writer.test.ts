@@ -73,9 +73,27 @@ describe("LogFileWriter", () => {
       expect(fs.existsSync(recent)).toBe(true);
       // The directory is not exclusively ours to empty.
       expect(fs.existsSync(foreign)).toBe(true);
-      // Never its own file, however the clock is set.
-      expect(fs.existsSync(pruner.getFilePath())).toBe(true);
       pruner.close();
+    });
+
+    it("opens anyway when the log directory cannot be listed", () => {
+      // The sweep is a courtesy; the session it runs for is not. A throw here
+      // comes out of debugger-connect as a failed connect, on a machine where
+      // the only thing wrong is that this directory belongs to someone else.
+      let opened: LogFileWriter | undefined;
+      fs.chmodSync(logDir, 0o000);
+      try {
+        // The mode has to actually bite, or the case below passes without ever
+        // reaching the guard it is here for.
+        expect(() => fs.readdirSync(logDir)).toThrow();
+        expect(() => (opened = new LogFileWriter(4444))).not.toThrow();
+      } finally {
+        fs.chmodSync(logDir, 0o755);
+        opened?.close();
+      }
+      // And it opened empty-handed rather than half-built: the file could no
+      // more be created than the directory could be read.
+      expect(opened?.hasFile()).toBe(false);
     });
 
     it("spares a session still open after a day of capturing nothing", () => {

@@ -99,3 +99,29 @@ describe("guidance platform-correctness", () => {
     expect(chromium.guidance).toContain("electronAppPath");
   });
 });
+
+describe("guidance content", () => {
+  // A crashed session's console log is reachable only through the note
+  // debugger-log-registry hands out, and these two reasons are how that crash
+  // reads from every debugger tool. Without the pointer in the guidance itself,
+  // the answer that reports the app is gone says nothing about the one artifact
+  // the crash left behind, and the agent relaunches over it.
+  it.each(["no_app_connected", "stale_connection"] as const)(
+    "%s guidance points at the note that names the kept log",
+    (reason) => {
+      const { guidance } = buildNotConnected(
+        reason,
+        coded(FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS),
+        {
+          port: 8081,
+          device_id: "emulator-5554",
+        }
+      );
+      expect(guidance).toContain("debugger-log-registry");
+      // Hedged, because a session that captured nothing keeps no file: guidance
+      // that promises one unconditionally sends readers after a path that will
+      // not be in the note.
+      expect(guidance).toContain("when there is one");
+    }
+  );
+});
