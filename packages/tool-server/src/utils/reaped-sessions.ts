@@ -140,24 +140,23 @@ export function recordReapedSession(
   }
   const orphanedFiles = new Set<string>();
   for (const previous of displaced.values()) {
-    // Only an event this one entirely stands in for. The two teardowns of one
-    // device need not file under the same ids — `selectTarget` refuses a udid
-    // once a second device shares the Metro, so the caller reconnects with the
-    // logicalDeviceId alone and the next teardown files one id where the crash
-    // filed two — but an id the previous event never answered to means another
-    // device: the same one-device fallback can mint a stranger's session on
-    // this logicalDeviceId, and its teardown must not take the crashed device's
-    // entry, nor the log file that entry is holding for it.
-    let standsIn = true;
-    for (const k of keys) {
-      if (!previous.keys.has(k)) {
-        standsIn = false;
-        break;
-      }
-    }
-    if (!standsIn) continue;
-    // A device gets one live event, and half an event explains nothing: a copy
-    // left behind would answer some later, unrelated read — and would still
+    // Which of that event's copies this one did not take.
+    const leftovers = [...previous.keys].filter((k) => !keys.has(k));
+    // It keeps them, and its file, when this event is a DIFFERENT device: it
+    // still answers under an id this one does not name, while this one names an
+    // id it never answered to. That is the shape `selectTarget`'s one-device
+    // fallback makes — a stranger's session minted on this device's
+    // logicalDeviceId — and taking the crashed device's entry there would take
+    // the log file it is holding for it.
+    //
+    // Two teardowns of ONE device fail that test: their ids either match, or
+    // shrink (a caller pushed onto the logicalDeviceId by that same refusal
+    // files one id where the crash filed two), or grow back — and the ones that
+    // grow leave nothing behind to keep.
+    const standsIn = [...keys].every((k) => previous.keys.has(k));
+    if (!standsIn && leftovers.length > 0) continue;
+    // Half an event explains nothing: a copy left behind would answer some
+    // later, unrelated read — and would still
     // name the file the reclaim below is about to take.
     //
     // Its kept file goes with it: nothing records that path any more, so
@@ -170,9 +169,7 @@ export function recordReapedSession(
     // the next teardown to supersede. One file per cycle then waits for the sweep
     // rather than being deleted out from under the agent that was just told to
     // read it.
-    for (const k of previous.keys) {
-      if (!keys.has(k)) reaped.delete(k);
-    }
+    for (const k of leftovers) reaped.delete(k);
     if (previous.keptAt) orphanedFiles.add(previous.keptAt);
   }
   for (const file of orphanedFiles) {

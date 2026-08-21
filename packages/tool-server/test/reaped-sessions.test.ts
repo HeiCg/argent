@@ -175,6 +175,29 @@ describe("the reaped-session key", () => {
       expect(fs.existsSync(newer)).toBe(true);
     });
 
+    it("reclaims the file of an event this one leaves no id to ask for", () => {
+      // The id set can grow back: a session keyed by the logicalDeviceId alone,
+      // then one that files both ids again. Every key the older event held is
+      // taken, so nothing can reach it or the file it named — which would then
+      // sit until the day-old sweep, one per crash.
+      const older = path.join(dir, "argent-logs-5-1.log");
+      const newer = path.join(dir, "argent-logs-5-2.log");
+      fs.writeFileSync(older, "first");
+      fs.writeFileSync(newer, "second");
+      recordReapedSession("js-runtime-debugger", ["logical-abc"], "first", {
+        cause: "runtime-death",
+        keptAt: older,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "second", {
+        cause: "runtime-death",
+        keptAt: newer,
+      });
+
+      expect(fs.existsSync(older)).toBe(false);
+      expect(fs.existsSync(newer)).toBe(true);
+      expect(takeReapedSession("js-runtime-debugger", "logical-abc")?.salvage).toBe("second");
+    });
+
     it("leaves another device's breadcrumb, and its file, to the device that owns it", () => {
       // `selectTarget` answers an unmatched device_id with its single remaining
       // target, so a second device's session is minted on THIS device's
