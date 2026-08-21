@@ -12,6 +12,8 @@ import type { Registry, ToolCapability } from "@argent/registry";
 import { DEBUGGER_NOT_CONNECTED_REASONS } from "@argent/telemetry";
 import { createRestartAppTool } from "../src/tools/restart-app";
 import { RN_ONLY_TOOL_CAPABILITY } from "../src/tools/debugger/debugger-service-ref";
+import { debuggerInspectElementTool } from "../src/tools/debugger/debugger-inspect-element";
+import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-component-tree";
 
 const SKILLS = path.resolve(__dirname, "../../skills/skills");
 const DEBUGGER_SKILL = path.join(SKILLS, "argent-metro-debugger/SKILL.md");
@@ -74,9 +76,17 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
     const tag = platformTag(RN_ONLY_TOOL_CAPABILITY);
     expect(row(DEBUGGER_SKILL, "`debugger-reload-metro`")).toContain(`on ${tag} (`);
 
-    // Two tables list the tool. Tagging one and not the other just moves the
-    // platform-agnostic reading to whichever row was left bare.
-    expect(row(DEBUGGER_SKILL, "Reload JS")).toContain(`(${tag})`);
+    // Every RN-only row in the Quick Reference carries the tag. A bare row
+    // beside tagged siblings reads as the platform-agnostic one of the set, so
+    // the tags are only meaningful if all of them are there.
+    const quickReference: [string, string][] = [
+      ["Reload JS", tag],
+      ["Inspect component at point", platformTag(debuggerInspectElementTool.capability)],
+      ["Full component tree", platformTag(debuggerComponentTreeTool.capability)],
+    ];
+    for (const [label, rowTag] of quickReference) {
+      expect(row(DEBUGGER_SKILL, label), label).toContain(`(${rowTag})`);
+    }
   });
 });
 
@@ -92,6 +102,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     expect(restartAppTool.description).toContain("electronAppPath");
     expect(restartAppTool.description).toContain("ask the user");
     expect(restartAppTool.description).toContain("chromium-cdp-<port>");
+    expect(restartAppTool.description).toContain("list-devices");
 
     // Offering restart-app to a reader who may be on Chromium obliges each
     // surface to name the relaunch that works, not merely fence restart-app off.
@@ -104,11 +115,12 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       const cell = row(file, label);
       expect(cell, file).toContain("Chromium");
       expect(cell, file).toContain("`boot-device` with `electronAppPath`");
-      // The browser half has no tool behind it, so it has to name an actor;
-      // and every relaunch mints a fresh port, so the id the reader arrived
-      // with is dead. Omitting either leaves the recovery unable to finish.
+      // Discovery probes only 9222, ARGENT_CHROMIUM_PORTS and ports boot-device
+      // itself opened, so a browser has to come back on the port it left; and an
+      // Electron relaunch draws a fresh one. A surface that names neither the
+      // actor nor where the id comes from cannot finish the recovery.
       expect(cell, file).toContain("ask the user");
-      expect(cell, file).toContain("`chromium-cdp-<port>`");
+      expect(cell, file).toContain("`list-devices`");
     }
   });
 
