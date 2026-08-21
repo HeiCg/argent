@@ -268,7 +268,8 @@ describe("console logs across an app crash", () => {
     // One entry, counted and worded as one.
     expect(after.note).toContain("the 1 captured console entry it holds");
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
-    // Never the reaped-by-stop-all wording: nothing was deleted here.
+    // The no-file arm belongs to a death that kept nothing; this one kept a
+    // file, so the note has a path to name.
     expect(after.note).not.toContain("no log file was left behind");
     // And never the teardown family either. No tool was called and no other
     // agent was involved — the app crashed — so a note that opens by blaming a

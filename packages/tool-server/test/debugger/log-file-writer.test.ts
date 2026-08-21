@@ -58,7 +58,8 @@ describe("LogFileWriter", () => {
   });
 
   it("releases the fd on both close paths", () => {
-    // The other half of what `close` frees. One debugger session per connect,
+    // The other half of what `close` frees, beside the keepalive. One debugger
+    // session per connect,
     // and the keep path's writer is closed by the same call that leaves its
     // file on disk — so a descriptor held past it is one per crash for the
     // life of the tool-server. Asked of the descriptor itself, since nulling
@@ -121,7 +122,7 @@ describe("LogFileWriter", () => {
       // out: `touch` runs off that timer and writes through the fd, and mtime is
       // the only thing that ever makes a kept file reclaimable — so a writer
       // that keeps both refreshes the file past every cutoff, and no sweep in
-      // any tool-server collects it. The fd half is pinned below.
+      // any tool-server collects it.
       vi.useFakeTimers();
       try {
         const idle = vi.getTimerCount();

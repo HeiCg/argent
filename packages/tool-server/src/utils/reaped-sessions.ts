@@ -166,11 +166,11 @@ export function recordReapedSession(
     // else records that path — which bounds an UNREAD crash loop to one kept
     // file per device, since every crash in such a loop keeps one. A teardown
     // keeps none and reclaims none: it would be spending an unread crash log to
-    // save a file the sweep collects anyway. A loop whose notes ARE read is not
-    // bounded here either, since the read spends the event and leaves nothing
-    // to supersede. And the one path this cannot protect is a file named by a
-    // `connected` read that landed before the dispose filed anything: the next
-    // crash on this device reclaims it.
+    // save a file the sweep collects anyway. Nor is a loop whose notes ARE read
+    // bounded here — the read spends the event, leaving nothing to supersede —
+    // and that is the point: the agent was just handed that path to read. The
+    // one file this cannot protect is one named by a `connected` read that
+    // landed before the dispose filed anything; the next crash reclaims it.
     for (const k of leftovers) reaped.delete(k);
     if (previous.keptAt && opts.keptAt) orphanedFiles.add(previous.keptAt);
   }

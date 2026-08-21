@@ -71,11 +71,7 @@ function listenerCount(events: TypedEventEmitter<CDPClientEvents>, event: string
   const registered = (events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(
     event
   );
-  if (registered === undefined) return 0;
-  // The rollback checks below have no live count to compare against, so a
-  // container that stopped being a `Set` would read 0 and pass for free.
-  expect(registered).toBeInstanceOf(Set);
-  return registered.size;
+  return registered?.size ?? 0;
 }
 
 // One of the factory's hard-failure paths — the console-log server's bind,

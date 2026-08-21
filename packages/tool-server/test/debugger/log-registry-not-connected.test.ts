@@ -153,10 +153,9 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.connected).toBe(false);
     expect(result.reason).toBe("metro_not_running");
     expect(result.guidance).toContain("Do not retry in a loop");
-    // Nothing was reaped here, and the answer says so: the shared string is
-    // written for `debugger-status`, which has no note field at all, and read
-    // from here it would send the agent back to this tool for a note this
-    // answer already failed to produce.
+    // Nothing was reaped here, and the answer says so. The lead is this tool's
+    // own: the shared guidance strings are written for `debugger-status`, whose
+    // answers never set `note`, so none of them accounts for one.
     expect(result.guidance).not.toContain("Read this result's note");
     expect(result.guidance.startsWith("This result has no note")).toBe(true);
     // What it says about the world is only what the store can know. Three states
@@ -166,8 +165,8 @@ describe("debugger-log-registry not-connected results", () => {
     // them apart, so it states the two conditions and explains none of them
     // away.
     // Scoped by both, since a Metro device holds one session per port: an
-    // answer that says only "on this device" invites a reader to conclude the
-    // other port's crash was never recorded.
+    // answer naming the device alone invites a reader to conclude the other
+    // port's crash was never recorded.
     expect(result.guidance).toContain(
       "no unread record of a previous session under this device id and port"
     );
@@ -269,7 +268,7 @@ describe("debugger-log-registry not-connected results", () => {
     expect("port" in result).toBe(false);
     expect(result.guidance.startsWith("This result has no note")).toBe(true);
     expect(result.guidance).toContain("previous session under this device id.");
-    expect(result.guidance).not.toContain("device and port");
+    expect(result.guidance).not.toContain("device id and port");
   });
 
   it("leads the guidance with the note when the answer is carrying one", async () => {

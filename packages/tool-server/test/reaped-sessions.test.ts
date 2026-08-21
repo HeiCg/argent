@@ -233,10 +233,15 @@ describe("the reaped-session key", () => {
         cause: "runtime-death",
         keptAt: owners,
       });
+      // The stranger keeps a file of its own, so the reclaim path is live: drop
+      // the guard and this call unlinks the log the crashed device is holding.
+      const strangers = path.join(dir, "argent-logs-5-1.log");
+      fs.writeFileSync(strangers, "stranger's own");
       recordReapedSession(
         "js-runtime-debugger",
         ["someone-elses-device", "logical-abc"],
-        "stranger"
+        "stranger",
+        { cause: "runtime-death", keptAt: strangers }
       );
 
       expect(fs.existsSync(owners)).toBe(true);

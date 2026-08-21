@@ -32,7 +32,8 @@ export const debuggerConnectTool: ToolDefinition<
     connected: boolean;
     /**
      * What became of the previous session's console history, present only when
-     * that session ended with the app itself going away. Names the log file the
+     * that session ended with its runtime going away — the app itself, or the
+     * route to it. Names the log file the
      * teardown left on disk, says it has since been reclaimed, or — when there
      * was no file to keep, because the writer never created one or something
      * removed it — that those entries went with it.
@@ -71,9 +72,10 @@ Use when starting a debug session or before calling other debugger-* tools. Fail
     // registry honestly means this app has logged nothing since.
     //
     // Report it first when the app went away: it carries the path of a log file
-    // still on disk, and the crash-recovery route — restart-app, then here —
-    // arrives after `debugger-log-registry` has anything left to report, since
-    // the relaunched app's first line makes that registry its own.
+    // still on disk, and by the time the crash-recovery route — restart-app,
+    // then here — arrives, `debugger-log-registry` has nothing left to report.
+    // It reads a breadcrumb only from an empty registry, and the relaunched
+    // app's first line makes that registry its own.
     //
     // Not in the blueprint's factory: that runs for an IMPLICIT resolve too —
     // `debugger-log-registry` reconnects through it — and clearing there would
