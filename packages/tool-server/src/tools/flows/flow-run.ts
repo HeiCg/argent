@@ -32,6 +32,7 @@ import {
   getFlowPath,
   isBlockStep,
   parseFlow,
+  precedesLeadingLaunch,
   runTargetName,
   type BlockStep,
   type FlowFile,
@@ -1563,7 +1564,7 @@ async function scanLeadingLaunch(
 ): Promise<{ app: Launch; flow: string } | typeof NO_EXECUTABLE_STEP | null> {
   const top = stack[stack.length - 1]!;
   for (const step of flow.steps) {
-    if (step.kind === "echo") continue;
+    if (precedesLeadingLaunch(step)) continue;
     if (step.kind === "launch") return { app: step.app, flow: top.display };
     if (step.kind !== "run") return null;
     let nested: FlowFile;

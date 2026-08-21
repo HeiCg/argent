@@ -787,13 +787,63 @@ export function isBlockStep(step: FlowStep): step is BlockStep {
 }
 
 /**
- * A flow is end-to-end iff it BEGINS by launching an app — its first step
- * (ignoring `echo` narration) is a `launch`. Such a flow controls its own
- * start state, so it is the natural standalone/suite entry point and must not
- * declare an `executionPrerequisite`. Everything else is a fragment.
+ * Is a `launch` behind this step still the launch the run BEGINS with?
+ *
+ * Two kinds are transparent to that question. `echo` narrates. `script` runs a
+ * Node process against a backend and never touches the device — which is the
+ * whole of the seed-then-launch ordering it exists for, so a flow that seeds an
+ * order and then launches its app is as launch-led as one that only launches.
+ * Every other kind settles the question where it stands: a launch behind it is
+ * not the flow's leading one.
+ *
+ * Both readers spelled this inline as an `echo`-only skip before — the chromium
+ * boot hoist (`scanLeadingLaunch`) and the prerequisite rule ({@link
+ * isE2eFlow}) — so `script` landed on the opaque side by inheritance rather
+ * than by decision, and a `script:`-led chromium flow hoisted no boot, bound to
+ * whatever browser happened to be up, and reported a launch it never performed
+ * as a pass. The same lead-in walked that flow past the `executionPrerequisite`
+ * refusal its `echo`-led twin is given. Neither reader is a `switch`, which is
+ * why the exhaustiveness tests could not see them; the `never` binding here is
+ * what makes the next kind answer this rather than inherit an answer.
+ */
+export function precedesLeadingLaunch(step: FlowStep): boolean {
+  switch (step.kind) {
+    case "echo":
+    case "script":
+      return true;
+    case "launch":
+    case "run":
+    case "when":
+    case "tool":
+    case "tap":
+    case "long-press":
+    case "type":
+    case "await":
+    case "assert":
+    case "idle":
+    case "wait":
+    case "scroll-to":
+    case "pinch":
+    case "rotate":
+    case "snapshot":
+      return false;
+    default: {
+      const unclassified: never = step;
+      void unclassified;
+      return false;
+    }
+  }
+}
+
+/**
+ * A flow is end-to-end iff it BEGINS by launching an app — the first step a
+ * launch cannot sit behind ({@link precedesLeadingLaunch}) is a `launch`. Such
+ * a flow controls its own start state, so it is the natural standalone/suite
+ * entry point and must not declare an `executionPrerequisite`. Everything else
+ * is a fragment.
  */
 export function isE2eFlow(flow: FlowFile): boolean {
-  const first = flow.steps.find((s) => s.kind !== "echo");
+  const first = flow.steps.find((s) => !precedesLeadingLaunch(s));
   return first?.kind === "launch";
 }
 

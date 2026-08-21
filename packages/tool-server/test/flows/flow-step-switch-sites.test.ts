@@ -4,16 +4,20 @@ import * as path from "node:path";
 import { BLOCK_DIRECTIVE_KEYS, type FlowStep } from "../../src/tools/flows/flow-utils";
 
 /**
- * The five switches that must have an arm for every `FlowStep` kind, and the
+ * The six switches that must have an arm for every `FlowStep` kind, and the
  * `never` bindings that make forgetting one a build error rather than a silent
  * wrong answer at run time.
  *
- * Four of the five would fail to compile anyway, because their arms dereference
- * fields a new kind would not carry. The fifth — `execLeafStep`'s — is the
- * hazard these tests exist for: its `default:` arm reads no field of `step`, so
- * before the binding was added a leaf kind with no case of its own compiled
- * cleanly and reported `error: unsupported step kind` at run time. A flow that
- * looks executed and is not.
+ * Four of the six would fail to compile anyway, because their arms dereference
+ * fields a new kind would not carry. The other two are the hazard these tests
+ * exist for, because their `default:` arms read no field of `step`:
+ * `execLeafStep`'s, where before the binding was added a leaf kind with no case
+ * of its own compiled cleanly and reported `error: unsupported step kind` at
+ * run time — a flow that looks executed and is not; and
+ * `precedesLeadingLaunch`'s, which arrived after a kind slipped past the two
+ * `echo`-only skips it replaced (a chromium flow led by `script:` hoisted no
+ * boot and passed a launch it never performed, and the same lead-in walked it
+ * past the `executionPrerequisite` refusal).
  */
 
 const SRC = path.resolve(__dirname, "../../src/tools/flows");
@@ -93,11 +97,12 @@ describe("execLeafStep's exhaustiveness guard", () => {
   });
 });
 
-describe("the other four switches over a step kind", () => {
+describe("the other five switches over a step kind", () => {
   it.each([
     ["flow-device.ts", "export function stepRequiresDevice("],
     ["flow-run.ts", "function stepTarget("],
     ["flow-utils.ts", "function toYamlStep("],
+    ["flow-utils.ts", "export function precedesLeadingLaunch("],
     ["flow-finish-recording.ts", "export function summarizeStep("],
   ])("%s %s binds `never` in its default arm", (file, signature) => {
     expect(functionBody(read(file), signature)).toMatch(
@@ -109,6 +114,7 @@ describe("the other four switches over a step kind", () => {
     ["flow-device.ts", "export function stepRequiresDevice("],
     ["flow-run.ts", "function stepTarget("],
     ["flow-utils.ts", "function toYamlStep("],
+    ["flow-utils.ts", "export function precedesLeadingLaunch("],
     ["flow-finish-recording.ts", "export function summarizeStep("],
   ])("%s %s has an arm for every step kind", (file, signature) => {
     const handled = handledKinds(functionBody(read(file), signature));
