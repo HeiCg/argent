@@ -53,8 +53,9 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
   runtime_unresponsive:
     "The runtime accepted the debugger connection but did not answer within the " +
     "timeout — it is likely frozen, or paused at a breakpoint. Do not retry in a " +
-    "loop (each attempt waits out the full timeout). Check the app; if it is hung, " +
-    "restart it (restart-app), then retry once.",
+    "loop (each attempt waits out the full timeout). Check the app first. If it is " +
+    "paused, ask the user to resume it — nothing here can, and restarting throws the " +
+    "debug session away. If it is hung, restart it (restart-app), then retry once.",
   stale_connection:
     "The cached debugger connection went stale; it has been discarded. Restart the app " +
     "(restart-app) if it is not running, then call debugger-connect — the next call " +
@@ -98,17 +99,21 @@ export function classifyNotConnected(err: unknown): DebuggerNotConnectedReason |
 }
 
 /**
- * How both Chromium overrides close. Hoisted because the id is only re-readable
- * on the port it was booted on: `getCandidateChromiumPorts` probes 9222, the env
- * list and the ports `boot-device` opened, so a browser the user brings back
- * anywhere else is discovered by nothing.
+ * How both Chromium overrides close. Hoisted because the id and the port are the
+ * same fact: `parseChromiumCdpPort` reads the port straight out of the id with no
+ * check against discovery, while `getCandidateChromiumPorts` probes only 9222, the
+ * env list and the ports `boot-device` opened. So a browser the user brings back
+ * elsewhere is invisible to `list-devices` and still perfectly drivable — which is
+ * the way out of the one state that would otherwise be a dead end.
  */
 const CHROMIUM_REREAD_ID =
   "After a relaunch, re-read the chromium-cdp-<port> id from boot-device / " +
   "list-devices, since a " +
   "relaunch on a new port is a new id — though list-devices only probes 9222, " +
   "ARGENT_CHROMIUM_PORTS and the ports boot-device opened, so a browser brought " +
-  "back on any other port is not listed at all. Then retry once.";
+  "back on any other port is not listed at all — if the user names the port, use " +
+  "chromium-cdp-<that port> directly, since the id carries the port and discovery " +
+  "is only how you find one you were not told. Then retry once.";
 
 /**
  * Reason guidance that must read differently on a Chromium target. Keyed
@@ -124,8 +129,9 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "Electron app boot-device takes a free port and returns the new id, and a browser " +
     "has to come back on a port nothing else holds. A detail about " +
     "page targets (none at all, or only devtools:// ones) means the app is still " +
-    "running and only lacks a window: ask the user to bring one back. Otherwise ask " +
-    "the user to quit it, then relaunch once it has exited — list-devices cannot " +
+    "running and only lacks a window: ask the user to bring one back. Otherwise " +
+    "nothing is answering that port at all: ask the user to quit the app if it is " +
+    "still up, then relaunch once it has exited — list-devices cannot " +
     "confirm the exit, since it drops an app that is up with no drivable page exactly " +
     "as it drops an exited one, " +
     "and relaunching a live app never recovers it: boot-device only starts an app and " +

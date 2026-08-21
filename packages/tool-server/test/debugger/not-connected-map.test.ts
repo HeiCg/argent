@@ -106,6 +106,12 @@ describe("guidance platform-correctness", () => {
     for (const r of [metro, chromium]) {
       expect(r.guidance).toMatch(/Do not retry in a loop/);
       expect(r.guidance).toMatch(/timeout/);
+      // Both name the paused state, so both owe it a branch. Nothing here can
+      // resume a runtime - there is no Debugger.resume anywhere in the tool-server -
+      // and the other instruction on offer ends the session the user is sitting in,
+      // on Metro through restart-app exactly as on Chromium through the quit.
+      expect(r.guidance).toContain("paused at a breakpoint");
+      pinsOnce(r.guidance, "If it is paused, ask the user to resume it — nothing here can");
     }
     expect(metro.guidance).toContain("restart-app");
 
@@ -115,7 +121,11 @@ describe("guidance platform-correctness", () => {
     // the quit as the only instruction on offer for both.
     expect(chromium.guidance).toContain("breakpoint");
     pinsOnce(chromium.guidance, "Check the app first.");
-    pinsOnce(chromium.guidance, "If it is paused, ask the user to resume it");
+    pinsOnce(
+      chromium.guidance,
+      "If it is paused, ask the user to resume it — nothing here can, and quitting throws " +
+        "the debug session away"
+    );
     pinsOnce(chromium.guidance, "If it is hung, ask the user to quit it");
   });
 
@@ -138,7 +148,23 @@ describe("guidance platform-correctness", () => {
       // broken-but-running one from an exited one, so the user is the only actor
       // that can end it - and the relaunch has to wait for that, or it lands on a
       // single-instance lock.
-      pinsOnce(guidance, "ask the user to quit it, then relaunch once it has exited", reason);
+      pinsOnce(guidance, "then relaunch once it has exited", reason);
+      // The order, not the wording: the two overrides phrase the quit differently
+      // (one knows the app is up, the other is reached only when nothing answers),
+      // and a relaunch-first rewrite keeps every needle above while telling the
+      // reader to relaunch into a running app. Positions are what rule that out.
+      const quitAt = guidance.indexOf("quit");
+      expect(quitAt, `${reason}: names a quit`).toBeGreaterThan(-1);
+      expect(quitAt, `${reason}: quit must precede any relaunch`).toBeLessThan(
+        guidance.indexOf("relaunch")
+      );
+      // The one retry-discipline clause each override has. Its twin's 'do not retry
+      // in a loop' is pinned above; without this one 'retry once' can become
+      // 'retry until it connects' on the reason that waits out a full timeout.
+      pinsOnce(guidance, "Then retry once.", reason);
+      // The way out of the one state list-devices cannot show: the id carries the
+      // port, so a browser the user names is drivable whether or not it is listed.
+      pinsOnce(guidance, "use chromium-cdp-<that port> directly", reason);
       // Both dead ends, on both overrides. restart-app is refused by the gate and
       // launch-app is a documented no-op that reports launched: true, so either
       // one named as an action manufactures a guaranteed second failure - and a
@@ -278,7 +304,7 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     pinsOnce(
       guidance,
       "page targets (none at all, or only devtools:// ones) means the app is still " +
-        "running and only lacks a window: ask the user to bring one back"
+        "running and only lacks a window: ask the user to bring one back. Otherwise"
     );
     // The third state cdp_unreachable covers, and no relaunch is its remedy. Only
     // two of CHROMIUM_CDP_INVALID_RESPONSE's three throw sites can reach a
@@ -286,7 +312,10 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // (browserWebSocketUrl) is called only from chromium-tabs, which throws
     // instead. Naming the unreachable one gives the reader a shape to match that
     // never arrives, so the list has to track the reachable sites, not the file's.
-    pinsOnce(guidance, "a non-2xx status, or a body that is not JSON");
+    pinsOnce(
+      guidance,
+      "a non-2xx status, or a body that is not JSON — means something else holds that port"
+    );
     expect(guidance, "names a shape no cdp_unreachable detail can carry").not.toContain(
       "browser socket"
     );
@@ -294,11 +323,14 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // there is no port-inspecting tool, so the actor is the user, and the id is
     // gone either way.
     pinsOnce(guidance, "pass on what the detail says, since nothing here can free a port");
+    // Its remedy, which deletes without a red otherwise - and is the step the
+    // create-flow row was missing.
+    pinsOnce(guidance, "for an Electron app boot-device takes a free port and returns the new id");
     pinsOnce(guidance, "a browser has to come back on a port nothing else holds");
-    // A sequence, not a condition on whether it exited: nothing in the catalogue
-    // can answer that condition, and quitting an app that already exited is a
-    // no-op anyway.
-    pinsOnce(guidance, "quit it, then relaunch once it has exited");
+    // This arm is reached only when nothing answered the port at all, so the quit
+    // is a precaution rather than a diagnosis - and it still has to come first,
+    // since the one case it guards against is an app that is somehow still up.
+    pinsOnce(guidance, "ask the user to quit the app if it is still up, then relaunch");
     // How the relaunch fails is per-app - a duplicate, an early exit behind
     // Electron's single-instance lock, a refusal behind Chrome's - so the
     // guidance states the rule and failure-scenarios.md carries the shapes.

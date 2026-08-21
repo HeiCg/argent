@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
-import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, type Registry } from "@argent/registry";
+import { createRestartAppTool } from "../../src/tools/restart-app";
+import { platformTag } from "../helpers/platform-tag";
 import { CDPClient } from "../../src/utils/debugger/cdp-client";
 
 let wss: WebSocketServer;
@@ -280,10 +282,20 @@ describe("CDPClient", () => {
       const err = await rejection(client.send("Runtime.enable", {}, 50));
       expect((err as Error).message).toMatch(/CDP request Runtime\.enable \(id=\d+\) timed out/);
       // This client is shared with the Chromium path, and its own comment says the
-      // message carries the recovery so skills need not re-explain it. restart-app
-      // is refused there by the capability gate, so a bare 'restart the app' is a
-      // wasted call on the one platform that cannot take it.
-      expect((err as Error).message).toContain("on Chromium it is refused");
+      // message carries the recovery so skills need not re-explain it. It is also
+      // the ONLY text a paused Chromium renderer reaches: the socket stays OPEN, so
+      // debugger-status answers "connected" and the branching guidance is never
+      // emitted. Both branches, through to their remedies - the message names the
+      // paused state, and quitting there throws the user's session away.
+      expect((err as Error).message).toContain(
+        "If it is paused, ask the user to resume it — quitting throws the debug session away."
+      );
+      // Derived from restart-app's own capability, not restated: the same tag on the
+      // skill rows is built this way, and a literal here drifts off it silently.
+      const restartApp = createRestartAppTool({} as unknown as Registry).capability;
+      expect((err as Error).message).toContain(
+        `restart-app on ${platformTag(restartApp)}; on Chromium it is refused, so the user has to quit it first`
+      );
       expect(getFailureSignal(err)).toMatchObject({
         error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
         failure_stage: "debugger_cdp_send",
