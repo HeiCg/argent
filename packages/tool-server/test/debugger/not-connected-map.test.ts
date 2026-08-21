@@ -106,7 +106,6 @@ describe("guidance platform-correctness", () => {
     }
     expect(metro.guidance).toContain("restart-app");
     expect(chromium.guidance).not.toContain("restart-app");
-    expect(chromium.guidance).toContain("electronAppPath");
 
     // A renderer paused at a breakpoint times out exactly like a wedged one, and
     // quitting the app throws the debug session away.
@@ -114,10 +113,9 @@ describe("guidance platform-correctness", () => {
   });
 
   it("gives both Chromium overrides the whole recovery, not half of it each", () => {
-    // Both route around restart-app, so each has to carry what the skill surfaces
-    // carry. They are asserted together because the halves drifted apart twice:
-    // one override named the actor without the wait, the other the wait without
-    // the guard against reading list-devices as proof of an exit.
+    // Both route around restart-app, so each has to carry the whole recovery the
+    // skill surfaces carry. Asserted in one loop: a per-reason assertion pins the
+    // half it names on one override and leaves the twin free to lose it.
     for (const [reason, code] of [
       ["cdp_unreachable", FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE],
       ["runtime_unresponsive", FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT],
@@ -128,7 +126,7 @@ describe("guidance platform-correctness", () => {
       });
       pinsOnce(guidance, "ask the user to start the browser again", reason);
       pinsOnce(guidance, "same CDP port", reason);
-      pinsOnce(guidance, "id from boot-device / list-devices", reason);
+      pinsOnce(guidance, "chromium-cdp-<port> id from boot-device / list-devices", reason);
       // boot-device never stops an app, and nothing in the catalogue can tell a
       // broken-but-running one from an exited one, so the user is the only actor
       // that can end it - and the relaunch has to wait for that, or it lands on a
@@ -144,6 +142,12 @@ describe("guidance platform-correctness", () => {
       // A negative regex cannot hold this: it passes for every wording that does
       // not spell out the one phrase it names, the false ones included.
       pinsOnce(guidance, "a relaunch on a new port is a new id", reason);
+      // Both relaunch mechanisms, on both reasons. An Electron app does not come
+      // back by restarting a browser, and a browser restarted without the flag
+      // exposes no CDP at all, so a surface carrying one branch strands whoever
+      // is on the other.
+      pinsOnce(guidance, "boot-device with electronAppPath relaunches an Electron app", reason);
+      pinsOnce(guidance, "with --remote-debugging-port", reason);
     }
   });
 });
@@ -209,8 +213,11 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // The clause that routes a live app away from a relaunch - both halves. The
     // diagnosis alone leaves the remedy free to become the relaunch this whole
     // branch exists to prevent.
-    pinsOnce(guidance, "only lacks a window");
-    pinsOnce(guidance, "ask the user to bring one back");
+    pinsOnce(
+      guidance,
+      "page targets (none at all, or only devtools:// ones) means the app is still " +
+        "running and only lacks a window: ask the user to bring one back"
+    );
     // The third state cdp_unreachable covers. CHROMIUM_CDP_INVALID_RESPONSE has
     // three throw sites in cdp-session.ts and none of them is a stopped app, so
     // this one is a relaunch away from a remedy too.

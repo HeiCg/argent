@@ -83,10 +83,19 @@ function proseTag(cell: string): string {
 }
 
 describe("argent-metro-debugger platform tags match the capability objects", () => {
-  it("tags restart-app with the platforms it actually supports", () => {
+  it("tags restart-app with the platforms it actually supports, in both tables", () => {
     // The paren anchors the whole tag, so prose wider than the capability fails
-    // as loudly as prose that is narrower.
-    expect(row(DEBUGGER_SKILL, "`restart-app`")).toContain(`(${platformTag(restartApp)})`);
+    // as loudly as prose that is narrower. Both copies are derived: the Reload &
+    // recovery row delegates Chromium readers to the Quick Reference one, which
+    // carries its own tag.
+    for (const label of ["`restart-app`", "Relaunch app on device"]) {
+      expect(row(DEBUGGER_SKILL, label), label).toContain(`(${platformTag(restartApp)})`);
+    }
+    // platformTag has no word for appleRemote, so the tags cannot show it moving.
+    // The description promises an Apple TV slice refresh, which only runs where
+    // the capability reaches an Apple TV.
+    expect(restartAppTool.description).toContain("Apple TV");
+    expect(restartApp?.appleRemote).toBeDefined();
   });
 
   it("tags every RN-only row, in each of the three tables that list one", () => {
@@ -133,30 +142,19 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     for (const [file, label] of rows) {
       const cell = row(file, label);
       expect(cell, file).toContain("Chromium");
-      expect(cell, file).toContain("`boot-device` with `electronAppPath`");
-      // The browser half is the user's to perform, and the id is derived from the
-      // port, so a relaunch can move it. A surface naming neither the actor nor
-      // where to re-read the id leaves the reader unable to finish. Each cell says
-      // "ask the user" twice and may name list-devices twice, so pin the
-      // occurrence that carries the step.
-      pinsOnce(cell, "ask the user to start the browser again", file);
     }
 
-    // Every surface that states the recovery, down to the create-flow row that
-    // states only its first step. boot-device stops nothing, so the exit is the user's to
-    // cause and the relaunch has to wait for it; a surface keeping the sequence
-    // but dropping the actor leaves the reader waiting on nobody, and one
-    // keeping the actor but dropping the sequence sends them to relaunch into a
-    // single-instance lock. Both halves are pinned, on all of them.
+    // Every surface that states the recovery. boot-device stops nothing, so the
+    // exit is the user's to cause and the relaunch has to wait for it; a surface
+    // keeping the sequence but dropping the actor leaves the reader waiting on
+    // nobody, and one keeping the actor but dropping the sequence sends them to
+    // relaunch into a single-instance lock. Both halves are pinned, on all of them.
     const spelledOut: [string, string | undefined][] = [
       ...rows.map(([file, label]): [string, string] => [file, row(file, label)]),
       ["restart-app's description", restartAppTool.description],
+      [CREATE_FLOW_RECOVERY, row(CREATE_FLOW_RECOVERY, "Chromium")],
     ];
-    const createFlowRow = row(CREATE_FLOW_RECOVERY, "Chromium");
-    for (const [where, text] of [
-      ...spelledOut,
-      [CREATE_FLOW_RECOVERY, createFlowRow] as [string, string],
-    ]) {
+    for (const [where, text] of spelledOut) {
       pinsOnce(text, "the user to quit it", where);
       pinsOnce(text, "once it has exited", where);
     }
@@ -167,16 +165,20 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // token (list-devices reports a Chromium entry under `id`, and ChromiumDevice
     // has no udid field, so naming it anything else sends the reader after a key
     // that is not in the response), both places it can be read, and the one
-    // condition that moves it - which restart-app's description had backwards on
-    // its own. Markdown backticks the identifiers and a tool description cannot,
-    // so match with them stripped.
+    // condition that moves it. Markdown backticks the identifiers and a tool
+    // description cannot, so match with them stripped.
     const unticked = (text: string | undefined) => (text ?? "").replace(/`/g, "");
     for (const [where, text] of spelledOut) {
       pinsOnce(unticked(text), "chromium-cdp-<port> id from boot-device / list-devices", where);
       pinsOnce(unticked(text), "a relaunch on a new port is a new id", where);
+      // Both branches. An Electron app does not come back by restarting a browser,
+      // and a browser restarted without the flag exposes no CDP, so a surface
+      // carrying one of them strands whoever is on the other. Each cell says "ask
+      // the user" more than once, so pin the occurrence that carries the step.
+      pinsOnce(unticked(text), "boot-device with electronAppPath", where);
+      pinsOnce(unticked(text), "ask the user to start the browser again", where);
+      pinsOnce(unticked(text), "--remote-debugging-port", where);
     }
-    // The create-flow row states only the first step, so it carries the id alone.
-    pinsOnce(unticked(createFlowRow), "new chromium-cdp-<port> id", CREATE_FLOW_RECOVERY);
 
     // The Reload & recovery row fences restart-app off and delegates rather than
     // restating the recovery, so the pointer is the only thing carrying it.
@@ -208,12 +210,15 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // both the narrowing and the remedy it points to are pinned. "devtools://"
     // alone is not: the row says it twice.
     pinsOnce(unreachable, "variant names the window");
-    pinsOnce(unreachable, "bring a window back");
+    pinsOnce(unreachable, "Ask the user to bring a window back");
     // The imperative itself. Naming the consequences and the alternative leaves
     // the instruction free to invert: "relaunch there once, at worst you get a
     // second copy" satisfies every pin above and sends the live case to the one
     // action this row exists to forbid.
     pinsOnce(unreachable, "Do not relaunch there");
+    // The dead-app half of this reason is not restated here; the pointer is all
+    // that carries it.
+    pinsOnce(unreachable, "**Was connected, then tool fails**");
   });
 
   it("answers every not-connected reason the debugger can report", () => {
