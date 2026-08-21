@@ -31,7 +31,7 @@ function decodeCapture(raw: Buffer, connectKey: string): PNG {
  * `uitest screenCap` always writes the panel at full resolution — there is no
  * scale flag — so a Mate 60 frame arrives as a ~250KB 1216x2688 RGBA PNG. The
  * downscale therefore happens here, through the same shared helper Vega uses,
- * so `ARGENT_SCREENSHOT_SCALE` and the 0.3 default mean the same thing on
+ * so `ARGENT_SCREENSHOT_SCALE` and the 0.25 default mean the same thing on
  * HarmonyOS as everywhere else.
  */
 export async function captureHarmonyScreenshotPng(opts: {

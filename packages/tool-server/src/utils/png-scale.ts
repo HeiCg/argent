@@ -11,7 +11,7 @@ import { resizeDecodedPng } from "../tools/screenshot-diff/resize";
  * simulator-server. Sharing one implementation is what keeps
  * `ARGENT_SCREENSHOT_SCALE` meaning the same thing on every platform: the
  * default and range handling come from `getScreenshotScale()` (which rejects
- * out-of-(0,1] values and falls back to 0.3), and the resample is the lanczos3
+ * out-of-(0,1] values and falls back to 0.25), and the resample is the lanczos3
  * `resizeDecodedPng()` that screenshot-diff uses, so a HarmonyOS baseline and an
  * Android one are comparable at the same quality.
  */

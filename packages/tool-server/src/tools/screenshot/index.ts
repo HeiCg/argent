@@ -41,7 +41,7 @@ const zodSchema = z.object({
     .max(1.0)
     .optional()
     .describe(
-      "Scale factor (0.01-1.0). Defaults to ARGENT_SCREENSHOT_SCALE env var, or 0.3 if unset for iOS/Android/HarmonyOS/Vega. " +
+      "Scale factor (0.01-1.0). Defaults to ARGENT_SCREENSHOT_SCALE env var, or 0.25 if unset for iOS/Android/HarmonyOS/Vega. " +
         "On Chromium the default is 1.0 (no downscale); pass <1 to opt in. Downscaling on Chromium requires the optional `sharp` dependency."
     ),
   includeImageInContext: z

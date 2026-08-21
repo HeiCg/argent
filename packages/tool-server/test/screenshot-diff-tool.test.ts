@@ -330,7 +330,7 @@ describe("screenshotDiffTool", () => {
     );
 
     expect(captureScreenshot).not.toHaveBeenCalled();
-    // Full resolution, not ARGENT_SCREENSHOT_SCALE's 0.3 default: a diff against
+    // Full resolution, not ARGENT_SCREENSHOT_SCALE's 0.25 default: a diff against
     // a full-res baseline is only as precise as the coarser of the two images.
     expect(captureHarmonyScreenshotPng).toHaveBeenCalledWith({
       connectKey: "025DEK236V035771",
