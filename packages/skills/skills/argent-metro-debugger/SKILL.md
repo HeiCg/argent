@@ -38,10 +38,10 @@ With two or more devices on one Metro, `debugger-connect` refuses a udid/serial 
 
 ### Reload & recovery
 
-| Tool                    | Purpose                                                                                                              |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `debugger-reload-metro` | Reload all connected apps on iOS / Android (like pressing "r" in Metro terminal). Needs a CDP target.                |
-| `restart-app`           | Terminate and relaunch the app by device id and bundleId (iOS / Android / Vega). Use when app lost Metro connection. |
+| Tool                    | Purpose                                                                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `debugger-reload-metro` | Reload all connected apps on iOS / Android (like pressing "r" in Metro terminal). Needs a CDP target.                                                         |
+| `restart-app`           | Terminate and relaunch the app by device id and bundleId (iOS / Android / Vega). Use when app lost Metro connection. On Chromium see the Quick Reference row. |
 
 ### Inspection & console
 
