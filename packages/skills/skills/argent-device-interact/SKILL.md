@@ -73,6 +73,7 @@ Common schemes: `messages://`, `settings://`, `maps://?q=<query>`, `tel://<numbe
 | Custom gesture    | `gesture-custom`    | Arbitrary touch sequences, optional interpolation                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Hardware key      | `button`            | Home, back, power, volume, appSwitch, actionButton                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Type text         | `keyboard`          | Every platform. Text or one named key per call, never both                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Paste text        | `paste`             | Only where a user would paste (OTP code, long link). Sim/emu only                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Rotate device     | `rotate`            | Orientation changes                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Shake device      | `shake`             | Shake handlers (sim/emu only), Undo-typing prompt, RN dev menu                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Wait for UI       | `await-ui-element`  | Block until an element is visible/hidden/exists/contains text                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -197,6 +198,18 @@ Rules:
 - Nothing outside those sources is reachable; never ask the user to paste a secret value into the conversation. Ask them to put it in a secrets file instead — a file edit applies to the next call, while an exported env var only reaches a tool-server started afterwards.
 - The project sources are found by walking up from the tool-server's working directory. If a project file is not being picked up, the failure's source list shows the paths actually consulted; `~/.argent/secrets.env` needs no project and always applies.
 
+### paste — Paste text into the focused field
+
+```json
+{ "udid": "<UDID>", "text": "482913" }
+```
+
+Puts `text` on the **device** clipboard (the host clipboard is untouched) and triggers the platform's paste shortcut. iOS simulator and Android emulator only; a TV target, a physical device, Chromium and Vega are rejected.
+
+`paste` is **not** a faster `keyboard`. `keyboard` types the way a user types and stays the default for every text entry — a search query, a login, a form field. Reach for `paste` only where a real user would paste: a 2FA / OTP code copied from another app, a long link or token, or to test how the app handles pasted input. It also carries what `keyboard` can't type on a given platform (multi-line text, non-ASCII on Android), but that alone is not a reason to paste — ask whether the user would.
+
+Tap the field first so it has focus; pasting with no focused field is a silent no-op, as with `keyboard`. `text` accepts the same `{{secret:<NAME>}}` placeholders as `keyboard`, with the same auto-screenshot skip.
+
 ### rotate — Change orientation
 
 ```json
@@ -297,7 +310,7 @@ Use the sequencing when:
 
 ### Allowed tools inside `run-sequence`
 
-`gesture-tap`, `gesture-swipe`, `gesture-scroll`, `gesture-drag`, `gesture-custom`, `gesture-pinch`, `gesture-rotate`, `button`, `keyboard`, `rotate`, `await-ui-element`
+`gesture-tap`, `gesture-swipe`, `gesture-scroll`, `gesture-drag`, `gesture-custom`, `gesture-pinch`, `gesture-rotate`, `button`, `keyboard`, `paste`, `rotate`, `shake`, `tv-remote`, `await-ui-element`
 
 The `udid` is shared — do **not** include it in each step's `args`. Optional `delayMs` per step (default 100ms).
 
