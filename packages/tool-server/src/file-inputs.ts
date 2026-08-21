@@ -62,14 +62,10 @@ export interface ResolveFileInputsResult {
   /**
    * Targets the CLIENT synthesized for this call, rather than the caller having
    * named them — so an error message can leave them out of the keys it reads
-   * back to the caller.
-   *
-   * Nearly every spec interpolates its own target (`path: "${flow_path}"`), so
-   * the wrapper carries the value the caller wrote. `flow_file` is the
-   * exception: its template is built from `project_root` plus `name` /
-   * `flow_name`, and its own `.describe()` tells callers to leave it unset.
-   * Only a target that arrived as a WRAPPER is listed — a plain value on the
-   * same key is a deliberate caller override and stays the caller's own.
+   * back. Nearly every spec interpolates its own target, so the wrapper carries
+   * what the caller wrote; `flow_file` is the exception, built from
+   * `project_root` plus `name`. Only a target that arrived as a WRAPPER is
+   * listed — a plain value on the same key is a caller override.
    */
   derivedTargets: string[];
   /**
@@ -129,9 +125,9 @@ function isParamSet(value: unknown): boolean {
 }
 
 /**
- * Whether ANY of a gate's named params is set. A gate may name several spellings
- * of one source (`name` and its `flow_name` alias), and any one of them makes
- * the call a dual-source one the tool's own validation has to diagnose.
+ * Whether ANY of a gate's named params is set. A gate may name several
+ * spellings of one source (`name` and its `flow_name` alias), and any one of
+ * them makes the call dual-source.
  */
 function isAnyParamSet(names: string | string[], args: Record<string, unknown>): boolean {
   return (typeof names === "string" ? [names] : names).some((n) => isParamSet(args[n]));

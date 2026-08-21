@@ -32,11 +32,10 @@ describe("resolveFileInputs", () => {
 
   it("reports which targets the CLIENT derived, so an error need not read them back", async () => {
     // The distinction is the spec's own template. `${input}` interpolates the
-    // target itself, so the wrapper carries the value the caller wrote;
-    // flow-execute's `flow_file` spec is built out of `project_root` + `name`,
-    // so the client synthesizes a key its `.describe()` tells callers to leave
-    // unset. Only the second kind may be dropped from a message's "You sent:"
-    // clause — dropping the first would hide a key the caller typed.
+    // target itself, so the wrapper carries what the caller wrote;
+    // flow-execute's `flow_file` spec is built from `project_root` + `name`, so
+    // the client synthesizes it. Only the second kind may be dropped from a
+    // "You sent:" clause.
     const filePath = path.join(tmpDir, "derived.yaml");
     await fs.writeFile(filePath, "steps: []\n");
     const st = await fs.stat(filePath);
