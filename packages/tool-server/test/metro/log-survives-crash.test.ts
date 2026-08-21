@@ -531,9 +531,9 @@ describe("console logs across an app crash", () => {
   });
 
   it("hands the console listener back when the session ends", async () => {
-    // The same rule on the dispose path, where the window is too narrow to
-    // provoke: the listener has to be gone before `close()`, since everything
-    // after it is a close handshake the runtime can still send frames into.
+    // The same rule on the dispose path: the listener has to be gone before
+    // `close()`, since everything after it is a close handshake the runtime can
+    // still send frames into — which is what the flood below sends it.
     await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "listener-device" });
     const api = await resolveDebuggerService(registry, {
       port: mockPort,
@@ -544,10 +544,19 @@ describe("console logs across an app crash", () => {
         "consoleAPICalled"
       )?.size ?? 0;
     expect(consoleListeners()).toBe(1);
-
-    await registry.disposeService(`JsRuntimeDebugger:${mockPort}:listener-device`);
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    let noise: string;
+    const stopFlood = stallAndFlood();
+    try {
+      await registry.disposeService(`JsRuntimeDebugger:${mockPort}:listener-device`);
+    } finally {
+      stopFlood();
+      noise = stderr.mock.calls.map((call) => String(call[0])).join("");
+      stderr.mockRestore();
+    }
 
     expect(consoleListeners()).toBe(0);
+    expect(noise).not.toContain("LogFileWriter is closed");
   });
 
   it("says there is no file at that path rather than sending a reader to grep it", async () => {

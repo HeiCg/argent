@@ -163,12 +163,12 @@ export function recordReapedSession(
     // reclaiming here rather than waiting for the day-old sweep keeps an UNREAD
     // crash loop to one kept file per device.
     //
-    // A loop whose notes are read is not bounded here, and deliberately so: the
-    // prescribed recovery is restart-app then `debugger-connect`, which consumes
-    // the breadcrumb and hands the agent the path, leaving no previous entry for
-    // the next teardown to supersede. One file per cycle then waits for the sweep
-    // rather than being deleted out from under the agent that was just told to
-    // read it.
+    // A loop whose notes are read is not bounded here, and deliberately so.
+    // restart-app then `debugger-connect` is both the prescribed recovery and
+    // ordinary iteration, and it consumes the breadcrumb and hands the agent the
+    // path, leaving no previous entry for the next teardown to supersede — so
+    // one file per cycle waits for the day-old sweep rather than being deleted
+    // out from under the agent that was just told to read it.
     for (const k of leftovers) reaped.delete(k);
     if (previous.keptAt) orphanedFiles.add(previous.keptAt);
   }
