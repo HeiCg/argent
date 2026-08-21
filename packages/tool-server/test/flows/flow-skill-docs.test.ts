@@ -165,10 +165,9 @@ describe("create-flow idle docs", () => {
 /**
  * The two agent-facing surfaces that ENUMERATE the directive answers rather
  * than citing them: the recorder-contract paragraph and flow-add-step's own
- * `description`. Both named nine directives and carved out two as having no
- * recording tool, while `directiveCommandHint` answered thirteen and five — so
- * a `scroll-to` author read that the recorder would name the tool that records
- * it, and then was told no tool does.
+ * `description`. Each must list every directive `directiveCommandHint` answers,
+ * or an author reads that the recorder names a recording tool and is then told
+ * no tool does.
  */
 describe("create-flow directive-answer docs", () => {
   const answered = STEP_DIRECTIVE_KEYS.filter((key) => directiveCommandHint(key) !== undefined);

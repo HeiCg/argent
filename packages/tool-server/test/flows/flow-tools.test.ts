@@ -1197,17 +1197,14 @@ describe("flow-add-step", () => {
   });
 
   it("names the flow_path the author wrote when the rewritten call is rejected", async () => {
-    // `rewriteSiblingFlowPath` mutates the very object handed to the nested
-    // invoke — `delete args.flow_path; args.name = stem` — so the registry,
-    // which can only describe what it was handed, closes with a `name` the
-    // author never typed and drops the `flow_path` they did. This is the third
-    // dispatcher that rewrites its forwarded args; the other two already
-    // re-render against the authored ones (run-sequence's injected `udid`, the
-    // flow runner's bound device key).
+    // `rewriteSiblingFlowPath` mutates the object handed to the nested invoke —
+    // `delete args.flow_path; args.name = stem` — so the registry closes with a
+    // `name` the author never typed and drops the `flow_path` they did. The
+    // other two dispatchers already re-render against the authored args.
     //
-    // A REAL registry, because the rejection has to come from the same schema
-    // the live dispatch parses — `platform: "iOS"` misses the lowercase enum,
-    // so flow-execute's own `execute` is never entered and no device is needed.
+    // A REAL registry, because the rejection must come from the same schema the
+    // live dispatch parses: `platform: "iOS"` misses the lowercase enum, so
+    // flow-execute's own `execute` is never entered and no device is needed.
     const registry = new Registry();
     registry.registerTool(createRunFlowTool(registry) as never);
     const tool = createFlowAddStepTool(registry);
@@ -1614,11 +1611,11 @@ describe("flow-add-step", () => {
     expect(parseFlow(await readFlowFile("compose-ambiguous")).steps).toEqual([]);
   });
 
-  // The alias spelling of the same dangerous shape. `flow_name` names a flow
-  // every bit as much as `name` does, so the bail-out has to see it: reading
-  // `name` alone lets the rewrite delete flow_path, substitute the file's stem,
-  // and RUN that flow — then record it as a plain `run:` success, permanently,
-  // with nothing saying the requested "checkout" was discarded.
+  // The alias spelling of the same dangerous shape. `flow_name` names a flow as
+  // much as `name` does, so the bail-out must see it: reading `name` alone lets
+  // the rewrite delete flow_path, substitute the file's stem, RUN that flow,
+  // and record it as a `run:` success with nothing saying "checkout" was
+  // discarded.
   it("hands a flow-execute that names flow_name and flow_path to flow-execute verbatim", async () => {
     const registry = createMockRegistry({ "flow-execute": { result: null, throws: true } });
     const tool = createFlowAddStepTool(registry);
@@ -1660,10 +1657,9 @@ describe("flow-add-step", () => {
   });
 
   it("resolves a direct execute() caller's flow_name the way it resolves name", async () => {
-    // The alias is folded in before resolveFlowSource for every call that comes
-    // through the tool, so the fold has to exist here too — otherwise a direct
-    // in-process caller passing only `flow_name` is told to pass a source it
-    // just passed.
+    // Every call through the tool folds the alias in before resolveFlowSource,
+    // so the fold must exist here too — otherwise a direct in-process caller
+    // passing only `flow_name` is told to pass a source it just passed.
     await fs.mkdir(path.join(tmpDir, ".argent", "flows"), { recursive: true });
     await writeSiblingFlow("aliased-direct", "steps:\n  - echo: hi\n");
     const resolved = await resolveFlowSource({ flow_name: "aliased-direct", project_root: tmpDir });
@@ -2931,14 +2927,12 @@ describe("summarizeStep rendering", () => {
   });
 
   it("renders a multi-field selector independently of its key order", () => {
-    // This render is also the step ANCHOR, and the anchor compares a selector
-    // the recorder built in memory — key order from the source object —
-    // against one that came back through `parseSelector`, whose key order is
-    // the zod schema's. Two spellings of the same selector rendering
-    // differently drops every verdict in the recording, with no hand edit
-    // involved and nothing in the payload to notice it. Unreachable today only
-    // because `deriveSelector` returns one field on every branch, so nothing
-    // else pins it.
+    // This render is also the step ANCHOR, which compares a selector the
+    // recorder built in memory — key order from the source object — against one
+    // that came back through `parseSelector`, whose key order is the zod
+    // schema's. Two spellings rendering differently drops every verdict in the
+    // recording. Unreachable today only because `deriveSelector` returns one
+    // field on every branch, so nothing else pins it.
     const a = summarizeStep({ kind: "tap", selector: { identifier: "b", text: "Go" } }, 1);
     const b = summarizeStep({ kind: "tap", selector: { text: "Go", identifier: "b" } }, 1);
     expect(a).toBe(b);

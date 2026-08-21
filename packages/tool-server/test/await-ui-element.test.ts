@@ -732,11 +732,10 @@ describe("await-ui-element tool", () => {
 
   // ── The cause an unmet wait reports ──────────────────────────────────────
   //
-  // Only one of the three causes judges the condition, and the callers that
-  // narrate a failed wait (`flow-add-step`) send an author to rewrite or delete
-  // a step on the strength of it. These drive the REAL tool and read the cause
-  // back through the REAL classifier, because the interesting cases are exactly
-  // the ones a hand-written note fixture cannot produce.
+  // Only one of the three causes judges the condition, and a caller that
+  // narrates a failed wait sends an author to rewrite the step on it. These
+  // drive the REAL tool and read the cause back through the REAL classifier,
+  // because a hand-written note fixture cannot produce the interesting cases.
 
   it("calls a wait that never got a readable tree unreadable, hint and all", async () => {
     // The AX backend is down, so `describeIos` returns an empty tree plus a
@@ -836,15 +835,13 @@ describe("await-ui-element tool", () => {
   }
 
   it("keeps a genuine miss unmet when only the final poll fails", async () => {
-    // `lastError` describes the LAST fetch alone, and `pollDescribeTree` clears
-    // it on every success — so reading the cause off the note turns one bad
-    // trailing read into "nothing was ever compared", for a step that will
-    // hard-fail at replay. The trusted read is one clamped sleep behind the
-    // deadline, well inside the blip tolerance.
+    // `lastError` describes the LAST fetch alone and is cleared on every
+    // success, so reading the cause off the note turns one bad trailing read
+    // into "nothing was ever compared" for a step that hard-fails at replay.
     //
     // `pollIntervalMs` exceeds `timeoutMs` deliberately: the sleep is clamped
     // to the deadline either way, so the shape is unchanged, but the tolerance
-    // it buys is the 2000ms ceiling against a ~600ms tail. At 500 the two were
+    // becomes the 2000ms ceiling against a ~600ms tail. At 500 the two were
     // 1000 and 600, and ~400ms of scheduler slip flipped the cause under load.
     const tool = createAwaitUiElementTool(makeMockRegistry({}));
 
@@ -864,12 +861,10 @@ describe("await-ui-element tool", () => {
   });
 
   it("holds `hidden` to a stricter bar than the dark-tail tolerance", async () => {
-    // Same fixture and same timings as the test above, which comes back
-    // `unmet`: one trusted read, then a failing one barely a poll interval
-    // behind the deadline — well inside the blip tolerance. `hidden` is the one
-    // condition that must NOT accept that, because ABSENCE is the transition
-    // being waited on and an unjudgeable final read leaves gone-ness
-    // unconfirmable. The selector matches the first tree, so the wait is a real
+    // Same fixture and timings as the test above, which comes back `unmet`.
+    // `hidden` is the one condition that must NOT accept that: ABSENCE is the
+    // transition being waited on, so an unjudgeable final read leaves gone-ness
+    // unconfirmable. The selector matches the first tree, so this is a real
     // "still there" case rather than a selector that never hit anything.
     const tool = createAwaitUiElementTool(makeMockRegistry({}));
 
@@ -909,12 +904,11 @@ describe("await-ui-element tool", () => {
     expect(unmetUiWaitCause(result)).toBe("unreadable");
   });
 
-  // An AX service that answers once and then stops answering: every later
-  // describe() hangs forever. Distinct from `makeChromiumApiThatDiesAfterOneRead`
-  // above, whose second read THROWS — the one variant that sets `lastError`.
-  // A source that simply goes silent (a blocked renderer, a wedged AX service,
-  // an Android `getHierarchy` RPC sitting on its 15s bound) leaves the loop
-  // holding a tree it read before the silence, with no error to mark it stale.
+  // An AX service that answers once and then hangs on every later describe().
+  // Distinct from `makeChromiumApiThatDiesAfterOneRead` above, whose second
+  // read THROWS — the one variant that sets `lastError`. A source that simply
+  // goes silent leaves the loop holding a tree read before the silence, with no
+  // error to mark it stale.
   function makeAXServiceThatHangsAfterOneRead(): AXServiceApi {
     let reads = 0;
     return {
@@ -929,10 +923,10 @@ describe("await-ui-element tool", () => {
   }
 
   it("calls a wait unreadable when the tree source went silent for most of the window", async () => {
-    // The screen was read once, at t≈0, and never again — so the note quotes a
-    // tree the wait stopped having any evidence for long before its deadline.
-    // Narrating that as `unmet` sends the recorder's author to delete a step
-    // over a condition nothing ever re-checked.
+    // The screen was read once at t≈0 and never again, so the note quotes a
+    // tree the wait stopped having evidence for long before its deadline.
+    // Narrating that as `unmet` sends an author to delete a step over a
+    // condition nothing re-checked.
     const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
 
     const result = await tool.execute(
@@ -979,10 +973,10 @@ describe("await-ui-element tool", () => {
     async (condition) => {
       // The over-correction guard. `pollIntervalMs` exceeds `timeoutMs`, so the
       // sleep is clamped to the deadline and the poll after it is issued with
-      // ~0ms of budget — it CANNOT complete, on any device. Treating that
+      // ~0ms of budget — it CANNOT complete on any device. Treating that
       // routine straddle as an untrusted final read would make every timeout
-      // here `unreadable`, `hidden` most of all. What keeps it honest is the
-      // tail: one trusted read, one interval back.
+      // here `unreadable`. The tail keeps it honest: one trusted read, one
+      // interval back.
       const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
 
       const result = await tool.execute(
@@ -1003,13 +997,11 @@ describe("await-ui-element tool", () => {
     }
   );
 
-  // The tolerance itself, bracketed. Both cases have exactly one trusted read
-  // at t≈0 and nothing after it, so the dark tail IS `timeoutMs` and the only
-  // variable is how many poll intervals it spans. 1.3 intervals must stay a
-  // blip and 2.6 must not, which pins the multiple to 2 — the nearest tests
-  // before this ran at 1.2 and 30 intervals, so raising it to 20 changed
-  // nothing. Scheduler slip only ever LENGTHENS a measured tail, so it can
-  // only push the first case toward its 700ms of headroom and pushes the
+  // The tolerance itself, bracketed. Both cases have one trusted read at t≈0
+  // and nothing after it, so the dark tail IS `timeoutMs` and the only variable
+  // is how many poll intervals it spans: 1.3 must stay a blip and 2.6 must not,
+  // which pins the multiple to 2. Scheduler slip only LENGTHENS a measured
+  // tail, so it pushes the first case toward its 700ms of headroom and the
   // second further into the clear.
   it.each([
     { intervals: "1.3", timeoutMs: 1300, cause: "unmet" },
@@ -1032,12 +1024,10 @@ describe("await-ui-element tool", () => {
   });
 
   it("stops a long poll interval buying a verdict for a window nobody watched", async () => {
-    // The tolerance is a MULTIPLE of the caller's interval, and `pollIntervalMs`
-    // is caller-supplied up to 5000ms — so two intervals would reach 10s. Here
-    // the source answers once at t≈0 and never again: 2.5s of unbroken silence,
-    // inside the 3000ms the multiple alone would allow. `unmet` is the one
-    // cause that licenses rewriting or deleting the step, so it must not be
-    // reachable by asking to poll rarely.
+    // The tolerance is a MULTIPLE of the caller's interval, which reaches
+    // 5000ms — so two intervals would allow 10s. Here the source answers once
+    // at t≈0 and never again: 2.5s of silence, inside the 3000ms the multiple
+    // alone would allow. `unmet` must not be reachable by polling rarely.
     const tool = createAwaitUiElementTool(iosRegistry(makeAXServiceThatHangsAfterOneRead()));
 
     const result = await tool.execute(
@@ -1055,13 +1045,11 @@ describe("await-ui-element tool", () => {
   });
 
   it("does not trust a final read that landed but was blind", async () => {
-    // The third term of the final-read test, and the only one no fixture
-    // produced: a fetch that SUCCEEDS and still cannot be judged. The screen is
-    // read once with the element on it, then goes blank — and an empty tree
-    // after a match is a transient blank frame, not evidence. `text` on a
-    // selector that matches with an expectedText that does not is the shape
-    // that keeps the wait running through it; `visible` would have resolved on
-    // the first read and `hidden` has its own guard for the same blank.
+    // The third term of the final-read test: a fetch that SUCCEEDS and still
+    // cannot be judged. The screen is read once with the element on it, then
+    // goes blank — and an empty tree after a match is a transient blank frame,
+    // not evidence. `text` with a matching selector and a non-matching
+    // expectedText is the shape that keeps the wait running through it.
     const { api } = makeSequencedAXService([
       axResponse([{ label: "Spinner", frame: FRAME, traits: [] }]),
       axResponse([]),
@@ -1104,12 +1092,11 @@ describe("await-ui-element tool", () => {
   });
 
   it("leaves `cause` off a wait that was met", async () => {
-    // "Set on every `success: false` return and never on a success" is half a
-    // contract, and only the first half was pinned. The second matters because
-    // the note fallback in `unmetUiWaitCause` reads `unmet` out of anything it
-    // does not recognise — so a stray `cause` on a passing wait would be a
-    // verdict against a check that held. Both success shapes: the plain one,
-    // and the `hidden` arm that returns a note of its own.
+    // The other half of "set on every `success: false` return and never on a
+    // success". It matters because `unmetUiWaitCause`'s note fallback reads
+    // `unmet` out of anything it does not recognise, so a stray `cause` on a
+    // passing wait is a verdict against a check that held. Both success shapes:
+    // the plain one, and the `hidden` arm that returns a note of its own.
     const { api } = makeSequencedAXService([
       axResponse([{ label: "Header", frame: FRAME, traits: [] }]),
     ]);
@@ -1205,10 +1192,9 @@ describe("await-ui-element tool", () => {
     expect(result.success).toBe(false);
     expect(result.note).toMatch(/no element matched/i);
     expect(result.note ?? "").not.toMatch(/did not complete/i);
-    // …and the CAUSE the same run produces, which is the half this test drove
-    // and never checked. One read at t≈0, nothing after it, a 120ms window:
-    // the note describes a screen 120ms of darkness old, so `unmet` — the one
-    // cause that licenses deleting the step — is not available here.
+    // …and the CAUSE the same run produces. One read at t≈0, nothing after it,
+    // a 120ms window: the note describes a screen 120ms of darkness old, so
+    // `unmet` — the one cause that licenses deleting the step — is unavailable.
     expect(unmetUiWaitCause(result)).toBe("unreadable");
   });
 

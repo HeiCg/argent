@@ -222,14 +222,11 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           }
           results.push({ tool: step.tool, result });
         } catch (err) {
-          // A schema miss is re-rendered from the STEP's own args rather than
-          // the merged ones: `udid` is injected into every step (the tool's own
-          // docs tell authors to leave it out), so the registry's message —
-          // which can only read the args it was handed — closes with
-          // "You sent: `xx`, `y`, `udid`", naming a key the author never typed
-          // beside the misspelling that list exists to expose. Re-rendering
-          // rather than pre-flighting keeps the dispatch, and with it the
-          // step's `toolInvoked`/`toolFailed` events.
+          // Re-render a schema miss from the STEP's own args, not the merged
+          // ones: `udid` is injected into every step, so the registry's
+          // "You sent:" list would name a key the author never typed beside the
+          // misspelling it exists to expose. Re-rendering rather than
+          // pre-flighting keeps the step's `toolInvoked`/`toolFailed` events.
           const reframed = describeNestedParamError(
             registry,
             err,
