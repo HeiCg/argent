@@ -113,7 +113,10 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // it is the surface most likely to be the only one read.
     expect(restartAppTool.description).toContain("Not supported on Chromium");
     expect(restartAppTool.description).toContain("electronAppPath");
-    expect(restartAppTool.description).toContain("ask the user");
+    // Pin the browser half specifically: a bare "ask the user" is already
+    // satisfied by the quit step, so it would survive dropping the actor here.
+    expect(restartAppTool.description).toContain("ask the user to start the browser again");
+    expect(restartAppTool.description).toContain("exited");
     expect(restartAppTool.description).toContain("chromium-cdp-<port>");
     expect(restartAppTool.description).toContain("list-devices");
     expect(restartAppTool.description).toContain("quit");
@@ -157,6 +160,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // is pinned against the throw sites in debugger/not-connected-map.test.ts.
     const unreachable = row(FAILURE_SCENARIOS, "**App unreachable**");
     expect(unreachable).toContain("second copy");
+    expect(unreachable).toContain("single-instance");
     expect(unreachable).toContain("inspector");
   });
 

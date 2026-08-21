@@ -103,29 +103,28 @@ export function classifyNotConnected(err: unknown): DebuggerNotConnectedReason |
  */
 const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
   cdp_unreachable:
-    "No page could be driven: the app's CDP endpoint was unreachable, answered as " +
-    "something other than CDP, or is up but has no usable page — detail says which. " +
-    "Relaunching an app that is still up never recovers it — boot-device stops " +
-    "nothing, so you get a second copy, or a single-instance Electron app quits the " +
-    "newcomer and the boot fails with an unexplained early exit. So when detail is " +
-    "about page targets (none at all, or only devtools:// ones) the app is still " +
+    "No page could be driven: the CDP endpoint was unreachable, answered as something " +
+    "other than CDP, or is up with no usable page — detail says which. A detail about " +
+    "page targets (none at all, or only devtools:// ones) means the app is still " +
     "running and only lacks a window: ask the user to bring one back. Otherwise ask " +
-    "the user whether it is still running, and to quit it if so — list-devices drops " +
-    "a broken-but-running app exactly as it drops an exited one, so it cannot answer " +
-    "that. Once the app is gone, launch-app cannot start a Chromium app: boot-device " +
-    "with electronAppPath relaunches an Electron app, and for a browser, ask the user " +
-    "to start it again on the same CDP port with --remote-debugging-port. Re-read the " +
-    "chromium-cdp-<port> id from boot-device / list-devices, since a relaunch on a " +
-    "new port is a new id, and retry once.",
+    "the user whether it exited, and to quit it if so — list-devices cannot answer " +
+    "that, since it drops a broken-but-running app exactly as it drops an exited one, " +
+    "and relaunching a live app never recovers it: boot-device stops nothing, so the " +
+    "relaunch either duplicates the app or fails. Once it is gone, launch-app cannot " +
+    "start a Chromium app: boot-device with electronAppPath relaunches an Electron " +
+    "app, and for a browser, ask the user to start the browser again on the same CDP " +
+    "port with --remote-debugging-port. Re-read the chromium-cdp-<port> id from " +
+    "boot-device / list-devices, since a relaunch on a new port is a new id, and " +
+    "retry once.",
   runtime_unresponsive:
     "The app accepted the debugger connection but did not answer within the " +
     "timeout — it is likely frozen, or paused at a breakpoint. Do not retry in a loop " +
     "(each attempt waits out the full timeout). Check the app first; if it is hung, " +
     "ask the user to quit it — boot-device only starts a Chromium app and never " +
-    "stops one. boot-device with electronAppPath then relaunches an Electron app, " +
-    "and a browser is the user's to start again on the same CDP port; re-read the " +
-    "chromium-cdp-<port> id from boot-device / list-devices, since a relaunch on a " +
-    "new port is a new id, then retry once.",
+    "stops one. boot-device with electronAppPath relaunches an Electron app, and " +
+    "for a browser, ask the user to start the browser again on the same CDP port. " +
+    "Re-read the chromium-cdp-<port> id from boot-device / list-devices, since a " +
+    "relaunch on a new port is a new id, and retry once.",
 };
 
 export function buildNotConnected(
