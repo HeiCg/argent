@@ -106,12 +106,8 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
 
 describe("the Chromium recovery names a relaunch that exists", () => {
   it("restart-app declares no chromium support, so every surface routes around it", () => {
-    // A chromium key here would make all three carve-outs below wrong in the
-    // opposite direction.
     expect(restartApp?.chromium).toBeUndefined();
 
-    // The tool description reaches an agent that has loaded no skill at all, so
-    // it is the surface most likely to be the only one read.
     expect(restartAppTool.description).toContain("Not supported on Chromium");
     expect(restartAppTool.description).toContain("electronAppPath");
     // Pin the browser half specifically: a bare "ask the user" is already
@@ -122,8 +118,6 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     expect(restartAppTool.description).toContain("list-devices");
     expect(restartAppTool.description).toContain("quit");
 
-    // Offering restart-app to a reader who may be on Chromium obliges each
-    // surface to name the relaunch that works, not merely fence restart-app off.
     const surfaces: [string, string][] = [
       [DEBUGGER_SKILL, "Relaunch app on device"],
       [FAILURE_SCENARIOS, "**Was connected, then tool fails**"],
@@ -137,19 +131,17 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // browser half is the user's to perform. A surface naming neither the
       // actor nor where to re-read the id leaves the reader unable to finish.
       // Each cell says "ask the user" twice and may name list-devices twice, so
-      // both need the occurrence that carries the step, not the token.
+      // pin the occurrence that carries the step.
       pinsOnce(cell, "ask the user to start the browser again", file);
       pinsOnce(cell, "`boot-device` / `list-devices`", file);
       // list-devices reports a Chromium entry's id under `id` - ChromiumDevice has
       // no udid field - so calling it one sends the reader looking for a key that
       // is not in the response.
       expect(cell, file).not.toMatch(/`chromium-cdp-<port>` udid/);
-      // boot-device never stops an app, so a relaunch aimed at a process that is
-      // still up recovers nothing: a second copy, or a boot that fails when the
-      // running app holds the single-instance lock and quits the newcomer. Every
-      // surface has to name the app's exit, and who ends it when it has not.
+      // boot-device never stops an app, so the relaunch has to wait on an exit only
+      // the user can cause.
       expect(cell, file).toContain("exited");
-      expect(cell, file).toContain("quit");
+      pinsOnce(cell, "ask the user to quit it", file);
     }
 
     // The Reload & recovery row fences restart-app off and delegates rather than
@@ -164,7 +156,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     const unreachable = row(FAILURE_SCENARIOS, "**App unreachable**");
     expect(unreachable).toContain("second copy");
     expect(unreachable).toContain("single-instance");
-    expect(unreachable).toContain("inspector");
+    expect(unreachable).toContain("devtools://");
   });
 
   it("answers every not-connected reason the debugger can report", () => {
@@ -175,8 +167,6 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     for (const reason of DEBUGGER_NOT_CONNECTED_REASONS) {
       expect(skill, `${reason} is missing from SKILL.md's reason list`).toContain(`\`${reason}\``);
       expect(table, `${reason} is missing from failure-scenarios.md`).toContain(reason);
-      // The tool's own description is the enumeration an agent reads before it
-      // has any skill open, and it is the one that returns these reasons.
       expect(
         debuggerStatusTool.description,
         `${reason} is missing from debugger-status's description`

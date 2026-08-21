@@ -115,9 +115,9 @@ describe("guidance platform-correctness", () => {
       pinsOnce(r.guidance, "same CDP port");
       pinsOnce(r.guidance, "id from boot-device / list-devices");
       // boot-device never stops an app, and nothing in the catalogue can tell a
-      // broken-but-running one from an exited one, so every relaunch these strings
-      // order has to name who ends it - the invariant the skill rows carry.
-      pinsOnce(r.guidance, "quit it");
+      // broken-but-running one from an exited one, so the user is the only actor
+      // that can end it.
+      pinsOnce(r.guidance, "ask the user to quit it");
       // The id tracks the port, so a relaunch that comes back on the same port
       // keeps it. Only a moved port mints a new id.
       expect(r.guidance).not.toMatch(/under a new chromium-cdp/);
@@ -175,20 +175,18 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     }
     // The clause that routes a live app away from a relaunch.
     pinsOnce(guidance, "only lacks a window");
-    // "if not" has to answer a question about the app having exited; pair it with
-    // the opposite question and the instruction becomes quit an app that already did.
-    pinsOnce(guidance, "whether it exited, and to quit it if not");
-    // Relaunching a live app fails differently per app - a second copy, a boot
-    // that dies as a bare early exit behind Electron's single-instance lock
-    // (boot-electron.ts, BOOT_CONFIRM_WINDOW_MS), or a browser refusing outright
-    // - so the rule is stated, not the list.
+    // Stated as a sequence, not a condition: a conditional here has been inverted
+    // twice, and quitting an app that already exited is a no-op either way.
+    pinsOnce(guidance, "quit it and relaunch once it has exited");
+    // The shapes differ per app (boot-electron.ts, BOOT_CONFIRM_WINDOW_MS), so the
+    // guidance states the rule and failure-scenarios.md carries the shapes.
     pinsOnce(guidance, "never recovers it");
 
-    // Only the inspector variant names a window; the ordinary closed-window case
-    // (no DevTools open) lands on the other one and gets a --remote-debugging-port
-    // question on a port that just answered. failure-scenarios.md's "App
-    // unreachable" row states that asymmetry, so a window hint added here makes
-    // the row stale — fix it there before relaxing this.
+    // Only the devtools:// variant names a window - the asymmetry
+    // failure-scenarios.md's "App unreachable" row states, so a window hint added
+    // here makes the row stale. Fix it there before relaxing this. (That the other
+    // message asks about --remote-debugging-port on a port that just answered is
+    // filed as #880.)
     expect(devtoolsOnly).toMatch(/window/i);
     expect(noPages, "the no-targets message gained a window hint").not.toMatch(/window/i);
   });
