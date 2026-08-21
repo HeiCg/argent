@@ -97,5 +97,22 @@ describe("guidance platform-correctness", () => {
     expect(metro.guidance).toContain("restart-app");
     expect(chromium.guidance).not.toContain("restart-app");
     expect(chromium.guidance).toContain("electronAppPath");
+
+    // The two Chromium overrides are the only recovery an agent meets with no
+    // skill open, so each carries what the skill surfaces carry: who performs
+    // the browser half, and where the id is re-read once a relaunch moves it.
+    for (const r of [
+      buildNotConnected("cdp_unreachable", coded(FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE), {
+        port: 8081,
+        device_id: "chromium-cdp-9222",
+      }),
+      chromium,
+    ]) {
+      expect(r.guidance).toContain("ask the user");
+      expect(r.guidance).toContain("same");
+    }
+    // The id is only new when the port is, so the flat claim must not come back.
+    expect(chromium.guidance).toContain("list-devices");
+    expect(chromium.guidance).not.toMatch(/under a new chromium-cdp/);
   });
 });
