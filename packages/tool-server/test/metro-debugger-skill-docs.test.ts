@@ -11,8 +11,8 @@ import * as path from "node:path";
 import type { Registry, ToolCapability } from "@argent/registry";
 import { DEBUGGER_NOT_CONNECTED_REASONS } from "@argent/telemetry";
 import { createRestartAppTool } from "../src/tools/restart-app";
-import { RN_ONLY_TOOL_CAPABILITY } from "../src/tools/debugger/debugger-service-ref";
 import { debuggerInspectElementTool } from "../src/tools/debugger/debugger-inspect-element";
+import { debuggerReloadMetroTool } from "../src/tools/debugger/debugger-reload-metro";
 import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-component-tree";
 
 const SKILLS = path.resolve(__dirname, "../../skills/skills");
@@ -60,6 +60,13 @@ function row(file: string, label: string): string {
   return matches[0]!;
 }
 
+/** The platform list a prose row states, e.g. "… on iOS / Android (like …" -> "iOS / Android". */
+function proseTag(cell: string): string {
+  const words = PLATFORM_WORDS.map(([, word]) => word).join("|");
+  const match = new RegExp(` on ((?:${words})(?: / (?:${words}))*)`).exec(cell);
+  return match?.[1] ?? "";
+}
+
 describe("argent-metro-debugger platform tags match the capability objects", () => {
   it("tags restart-app with the platforms it actually supports", () => {
     // The paren anchors the whole tag, so prose wider than the capability fails
@@ -67,25 +74,26 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
     expect(row(DEBUGGER_SKILL, "`restart-app`")).toContain(`(${platformTag(restartApp)})`);
   });
 
-  it("tags debugger-reload-metro as the narrower tool it is", () => {
-    // Left untagged beside a tagged restart-app, the row reads as the
-    // platform-agnostic one of the pair.
-    expect(RN_ONLY_TOOL_CAPABILITY.vega).toBeUndefined();
-    expect(RN_ONLY_TOOL_CAPABILITY.chromium).toBeUndefined();
+  it("tags every RN-only row, in each of the three tables that list one", () => {
+    // A bare row beside tagged siblings reads as the platform-agnostic one of
+    // the set, so a tag is only worth having where every RN-only row carries it.
+    // Each tool is listed twice: once in a Tool-and-Purpose table, which states
+    // the tag in the Purpose prose, and once in the Action-and-Tool Quick
+    // Reference, which appends it to the Tool cell.
+    const rnOnlyRows = [
+      [debuggerReloadMetroTool, "`debugger-reload-metro`", "Reload JS"],
+      [debuggerComponentTreeTool, "`debugger-component-tree`", "Full component tree"],
+      [debuggerInspectElementTool, "`debugger-inspect-element`", "Inspect component at point"],
+    ] as const;
 
-    const tag = platformTag(RN_ONLY_TOOL_CAPABILITY);
-    expect(row(DEBUGGER_SKILL, "`debugger-reload-metro`")).toContain(`on ${tag} (`);
+    for (const [tool, proseLabel, quickLabel] of rnOnlyRows) {
+      // platformTag has no word for chromium, so a tool gaining Chromium support
+      // would keep its tag; that is the drift the tag itself cannot catch.
+      expect(tool.capability?.chromium, tool.id).toBeUndefined();
 
-    // Every RN-only row in the Quick Reference carries the tag. A bare row
-    // beside tagged siblings reads as the platform-agnostic one of the set, so
-    // the tags are only meaningful if all of them are there.
-    const quickReference: [string, string][] = [
-      ["Reload JS", tag],
-      ["Inspect component at point", platformTag(debuggerInspectElementTool.capability)],
-      ["Full component tree", platformTag(debuggerComponentTreeTool.capability)],
-    ];
-    for (const [label, rowTag] of quickReference) {
-      expect(row(DEBUGGER_SKILL, label), label).toContain(`(${rowTag})`);
+      const tag = platformTag(tool.capability);
+      expect(proseTag(row(DEBUGGER_SKILL, proseLabel)), tool.id).toBe(tag);
+      expect(row(DEBUGGER_SKILL, quickLabel), tool.id).toContain(`(${tag})`);
     }
   });
 });
@@ -115,10 +123,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       const cell = row(file, label);
       expect(cell, file).toContain("Chromium");
       expect(cell, file).toContain("`boot-device` with `electronAppPath`");
-      // Discovery probes only 9222, ARGENT_CHROMIUM_PORTS and ports boot-device
-      // itself opened, so a browser has to come back on the port it left; and an
-      // Electron relaunch draws a fresh one. A surface that names neither the
-      // actor nor where the id comes from cannot finish the recovery.
+      // The id is derived from the port, so a relaunch can move it, and the
+      // browser half is the user's to perform. A surface naming neither the
+      // actor nor where to re-read the id leaves the reader unable to finish.
       expect(cell, file).toContain("ask the user");
       expect(cell, file).toContain("`list-devices`");
     }

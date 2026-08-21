@@ -47,8 +47,8 @@ With two or more devices on one Metro, `debugger-connect` refuses a udid/serial 
 
 | Tool                       | Purpose                                                                                                                                                                                                              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `debugger-component-tree`  | Full React fiber tree (names, depth, bounding rects, tap coordinates).                                                                                                                                               |
-| `debugger-inspect-element` | Inspect at (x, y) using **logical pixel coordinates** (not normalized 0-1): component hierarchy with source file:line and code fragment. See `references/source-maps.md`.                                            |
+| `debugger-component-tree`  | Full React fiber tree on iOS / Android (names, depth, bounding rects, tap coordinates).                                                                                                                              |
+| `debugger-inspect-element` | Inspect at (x, y) on iOS / Android using **logical pixel coordinates** (not normalized 0-1): component hierarchy with source file:line and code fragment. See `references/source-maps.md`.                           |
 | `debugger-log-registry`    | Get log summary (counts, clusters, file path). Then use `Grep`/`Read` on the flat log file for details. If it returns `status: "not_connected"`, there is **no** `file` — follow its `guidance` instead of grepping. |
 | `debugger-evaluate`        | Run a JS expression in the app runtime.                                                                                                                                                                              |
 
