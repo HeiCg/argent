@@ -206,10 +206,13 @@ describe("create-flow directive-answer docs", () => {
 
   it("names each directive that has no recording tool, on both surfaces", () => {
     expect(withoutRecordingTool.length).toBeGreaterThan(0);
-    const description = createFlowAddStepTool({} as Registry).description;
+    // `ToolDefinition.description` is optional on the type, and an absent one
+    // would otherwise read as a surface that lists nothing and agrees.
+    const { description } = createFlowAddStepTool({} as Registry);
+    expect(description, "flow-add-step no longer declares a description").toBeDefined();
     const clauses = [
       sentenceWith(recorderContract(), "have no recording tool"),
-      sentenceWith(description, "have no recording tool"),
+      sentenceWith(description!, "have no recording tool"),
     ];
     for (const clause of clauses) {
       for (const key of withoutRecordingTool) expect(clause, key).toContain(`\`${key}\``);
