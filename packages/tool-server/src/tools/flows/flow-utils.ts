@@ -215,18 +215,20 @@ export type OnDiskSpelling =
 
 /**
  * Classify the supplied basename against `dir`'s listing. One classifier serves
- * every route that turns a caller's spelling into a flow identity — replay's
- * `flow_path` and `name` (flow-run.ts) and the recorder's two nested
- * flow-execute targets (flow-add-step.ts) — so they can never drift apart in
- * which spellings they accept. That drift is the bug itself twice over: it let
+ * every route that turns a caller's spelling into a file it will open — the
+ * four that resolve a flow IDENTITY (replay's `flow_path` and `name` in
+ * flow-run.ts, the recorder's two nested flow-execute targets in
+ * flow-add-step.ts) and, since the `script:` step, one that resolves a plain
+ * `.mjs` — so they can never drift apart in which spellings they accept. That drift is the bug itself twice over: it let
  * a `name` key a report and `__baselines__/` under a spelling `flow_path`
  * refused two arms earlier, and it let the recorder bake a `run:` name whose
  * flow_path spelling its own neighbouring arm would have refused.
  *
  * readdir, not realpath: realpath rewrites a symlinked flow to its target's
  * name, and a flow deliberately runs — and composes — under the link's own
- * name. Every call site hands a pure-ASCII basename (flow-name charset +
- * ".yaml"), so Unicode-normalizing filesystems cannot make the comparison lie.
+ * name. Every call site hands a pure-ASCII basename (the flow-name charset,
+ * plus ".yaml" or ".mjs"), so Unicode-normalizing filesystems cannot make the
+ * comparison lie.
  *
  * `addressable` is the pattern the verdict is judged against — the flow-file
  * one by default, {@link SCRIPT_FILE_NAME_PATTERN} for a `script:` path. It
@@ -2673,8 +2675,10 @@ function completeRunExtension(value: string): string {
  * time limit, which is the common case — so the one spelling is the map.
  *
  * The sibling-key half of that rule costs no code here: `script` is listed in
- * {@link STEP_DIRECTIVE_KEYS}, so `fromYamlStep`'s single-key check already
- * rejects `script: seed.mjs` + `timeout: 30000` with its own message.
+ * {@link STEP_DIRECTIVE_KEYS}, which is what lets `fromYamlStep` read the entry
+ * as a script step with a stray sibling and reject `script: seed.mjs` +
+ * `timeout: 30000` as an unknown key — "step options go inside the `script:`
+ * value, not beside it".
  */
 function parseScriptStep(raw: unknown, body: unknown): FlowStep {
   if (typeof body === "string") {
@@ -2689,7 +2693,8 @@ function parseScriptStep(raw: unknown, body: unknown): FlowStep {
   const b = body as Record<string, unknown>;
   // `env` lands here too, and must: it is a real key of a later release, and a
   // flow written against a tool server that does not honour it yet would run
-  // with an empty environment and report green.
+  // with the bare allowlist environment — none of the values the flow spelled
+  // out — and report green.
   rejectUnknownKeys(raw, b, ["path", "timeout"], "script");
   const step: Extract<FlowStep, { kind: "script" }> = {
     kind: "script",

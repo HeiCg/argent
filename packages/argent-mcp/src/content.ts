@@ -241,8 +241,9 @@ export type FlowStepResult = {
    */
   artifacts?: Record<string, unknown>;
   /**
-   * A `script` step's captured stdout and stderr, in written order, already
-   * redacted and bounded by the tool server. Rendered as its own block under
+   * A `script` step's captured stdout and stderr, in written order, bounded by
+   * the tool server. Not redacted — it arrives as the script wrote it,
+   * credentials included. Rendered as its own block under
    * the step line — for a passing script too, since it is the only record of
    * what the step did to the backend. Untrusted wire data: a non-string is
    * ignored rather than interpolated.
@@ -303,9 +304,10 @@ function stepLabel(step: FlowStepResult): string {
 /**
  * Unpack flow-execute's structured step report into MCP content blocks. Only
  * steps that carry a tool result surface their (image-bearing) content inline;
- * directive steps (tap/assert/expect/run/skip) render as a status line. This
- * never calls toMcpContent on an undefined result, which would serialize to an
- * invalid (text: undefined) content block.
+ * every other kind renders as a status line, with a `script` step's captured
+ * output following it as a block of its own. This never calls toMcpContent on
+ * an undefined result, which would serialize to an invalid (text: undefined)
+ * content block.
  */
 export async function flowRunToMcpContent(
   result: FlowExecuteResult,

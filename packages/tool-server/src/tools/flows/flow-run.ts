@@ -192,7 +192,8 @@ export interface StepReport {
    * Machine-readable explanation of the outcome. Always set when the step did
    * not pass; also set on some passing reports whose result is self-narrating —
    * the `when:` guard marker (`condition met (…)`), snapshot passes (diff
-   * percentage, baseline written/updated), and a chromium `launch` whose
+   * percentage, baseline written/updated), a `script` step carrying an
+   * executor note ({@link scriptVerdict}), and a chromium `launch` whose
    * instance the runner booted and owns (naming it; a mid-run boot appends
    * `— run moved off <id>`, or `— retired <id> (same app relaunched)` when the
    * instance it left was the one killed — and `— run moved off <id>, retired
@@ -253,8 +254,10 @@ export interface StepReport {
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
   /**
-   * A `script` step's captured stdout and stderr, in written order, already
-   * redacted and possibly truncated by the executor. Present on every script
+   * A `script` step's captured stdout and stderr, in written order, possibly
+   * truncated by the executor. NOT redacted: the executor scrubs the secrets it
+   * is handed, and {@link runScriptStep} resolves none to hand it, so the text
+   * arrives exactly as the script wrote it. Present on every script
    * step that produced output, whatever its status — a passing seed script's
    * "created order 4711" is as load-bearing as a failing one's stack, since it
    * is the only record of what the flow did to the backend.
@@ -1006,9 +1009,11 @@ interface ExecState extends Omit<ActionEnv, "device"> {
   attachedAppPath?: string;
   /**
    * The caller's `project_root` — a `script:` step's first choice of working
-   * directory, so a script resolves its own relative paths and bare imports
-   * against the project the agent is working in rather than against wherever
-   * the flow file happens to sit.
+   * directory, so a script resolves its own relative `fs` paths against the
+   * project the agent is working in rather than against wherever the flow file
+   * happens to sit. Bare `import` specifiers are NOT among them: Node resolves
+   * those from the importing module's own directory upwards, so a shared script
+   * living outside the project reaches none of its dependencies.
    */
   projectRoot: string;
   /**
@@ -1064,8 +1069,8 @@ function displayFlowName(params: { name?: string; flow_path?: string }): string 
  * Yield every parsed step, recursing into a block directive's children through
  * {@link blockSteps} rather than testing one kind: this is the sole feeder of
  * {@link assertUploadSelfContained}, so a block absent from the recursion would
- * carry an uploaded flow's nested `run:`/`snapshot` past the preflight and let
- * an unrunnable flow report green.
+ * carry an uploaded flow's nested `run:`, `script:` or `snapshot` past the
+ * preflight and let an unrunnable flow report green.
  */
 function* walkSteps(steps: FlowStep[]): Generator<FlowStep> {
   for (const step of steps) {
@@ -2484,9 +2489,11 @@ async function runScriptStep(
   // case, so `path: scripts/CreateUser.mjs` opens a file really named
   // `createUser.mjs`: the flow runs, it passes, and it passes again every time
   // it is repeated — then the same files fail with ENOENT on Linux CI, with
-  // nothing in the flow file to show why. This is the third name Argent holds
-  // to this line (`classifyOnDiskSpelling` for a `run:` basename,
-  // `resolveFlowSource` for the root flow's), and it takes the same verdict
+  // nothing in the flow file to show why. Every route that turns a caller's
+  // spelling into a file is held to this line — a `run:` basename, the root
+  // flow's `flow_path` and `name`, the recorder's two nested flow-execute
+  // targets — and they all reach it through the one
+  // {@link classifyOnDiskSpelling}. A script path takes the same verdict
   // shape: only `case_folded` refuses. A basename matching nothing at all is an
   // ordinary missing file, reported below with the path it looked for, and an
   // unreadable listing vouches for nothing so it refuses nothing.

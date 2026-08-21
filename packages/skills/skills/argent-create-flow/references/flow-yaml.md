@@ -9,6 +9,7 @@ Read this reference when polishing, composing, or manually reviewing a flow.
 - [Prove a navigation](#prove-a-navigation-identity-then-readiness)
 - [Optional divergences](#optional-divergences)
 - [Composition and platform limits](#composition-and-platform-limits)
+- [Backend state: `script`](#backend-state-script)
 - [Snapshots and standalone runs](#snapshots-and-standalone-runs)
 - [YAML safety](#yaml-safety)
 
@@ -21,7 +22,7 @@ steps:
   - await: { idle: true }
 ```
 
-An e2e flow has a literal `launch:` as its first non-echo step. It cannot declare `executionPrerequisite`. Put the named start state in a leading echo.
+An e2e flow has a literal `launch:` as its first step that is not `echo:` or `script:`. A flow that seeds a backend and then launches its app still controls its own start state, so it is e2e too. It cannot declare `executionPrerequisite`. Put the named start state in a leading echo.
 
 A leading `run:` does not classify the outer flow as e2e, but the runner still follows the chain to the launch it reaches, and on Chromium that launch boots the app before step 1. A flow whose `run:` chain reaches a launch is refused an `executionPrerequisite` too: parse accepts the file, then the run rejects it. The one exception is a run pinned to a Chromium instance you brought to the required state yourself (`--device chromium-cdp-<port>`), where that leading launch only attaches.
 
@@ -192,34 +193,56 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 
 ## Backend state: `script`
 
-A `script:` step runs a local JavaScript file in a fresh Node process. It is how a flow reaches a backend before it touches a device: seed an order, create a test account, clean up what a run left behind. It drives no device — the steps around it do — so a flow of nothing but scripts runs with nothing booted.
+A `script:` step runs a local JavaScript file in a fresh Node process. It is how a flow reaches a backend rather than a device: seed an order, create a test account, clean up what a run left behind. It drives no device — the steps around it do — so a flow of nothing but scripts runs with nothing booted.
 
 ```yaml
-- script: { path: scripts/seed-order.mjs }
-- script: { path: scripts/seed-order.mjs, timeout: 60000 }
+- script: { path: ../../scripts/seed-order.mjs }
+- script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-**The value is always a map.** `script: scripts/seed.mjs` is rejected, and so is a `timeout:` written beside the directive key rather than inside its value. `path` is required; `timeout` is the hard limit in milliseconds and defaults to 30 seconds.
+**The value is always a map.** `script: scripts/seed.mjs` is rejected, and so is a `timeout:` written beside the directive key rather than inside its value. `path` is required. `timeout` is the step's time limit in milliseconds and defaults to 30 seconds.
 
-`path` obeys the same rules a `run:` target does, spelled for `.mjs`. It is resolved against the directory of the flow file **containing the step**, so a fragment reaches the same script whichever flow composed it, and `../` reaches a sibling directory:
+The host caps that limit with `scripts.maxTimeoutMs`, which is 5 minutes until the machine's global config sets another value. A larger `timeout:` runs at the cap, and the step report says it was clamped. A cap below 30 seconds lowers the default too.
+
+### Where `path` points
+
+`path` obeys the same rules a `run:` target does, spelled for `.mjs`. It resolves against the directory of the flow file **containing the step**, so a fragment reaches the same script whichever flow composed it. Each `../` moves up one directory. A flow under `.argent/flows/` is two levels below the project root, so a script in the project's own `scripts/` directory is two hops up — one more for each directory the flow file sits deeper:
 
 ```yaml
-# .argent/flows/checkout.yaml
+# .argent/flows/checkout.yaml -> <project>/scripts/seed.mjs
 - script: { path: ../../scripts/seed.mjs }
 
-# .argent/flows/onboarding/login.yaml — the same file
+# .argent/flows/onboarding/login.yaml -> the same file
 - script: { path: ../../../scripts/seed.mjs }
 ```
 
-Keep scripts in a `scripts/` directory. That is a convention this skill teaches, not a rule the runner enforces — the same way it does not enforce where a `run:` fragment lives.
+Keep scripts in one `scripts/` directory at the project root. That is a convention this skill teaches, not a rule the runner enforces — the same way it does not enforce where a `run:` fragment lives.
 
 The filename must end in a lowercase `.mjs` and use only letters, digits, `_` and `-` before it. The `.mjs` is load-bearing: it pins the module type whatever the project's `package.json` says, so one script behaves the same in every project. There is no bare-name completion — write the extension. **Spell the path exactly as the file is named.** macOS and Windows open a file whose case does not match, so a mis-cased path runs green locally and fails with `ENOENT` on Linux CI; the runner refuses the step rather than letting that through, and quotes the spelling on disk.
 
-The script's stdout and stderr come back on the step report and are printed under the step line, on a pass as well as a failure — it is the only record of what the step did to the backend. Anything the run resolved as a secret is redacted first.
+### What the script gets
 
-A script that throws, fails to load, or exits non-zero **fails** the step and stops the flow. A limit the host imposed — a time limit, a heap limit, a process it could not start — **errors** it instead: that distinction is what lets CI tell a regression from the machine it ran on.
+The working directory is `project_root`, not the directory the script file sits in. `fs.readFileSync("./fixtures/order.json")` therefore reads `<project_root>/fixtures/order.json`. A bare `import` does not follow that rule: Node resolves it from the script file's own directory upwards, so a shared script kept outside the project cannot import that project's dependencies.
 
-Two boundaries. A `script:` step needs the client and tool server to share a filesystem, so an uploaded flow is rejected: its `.mjs` never left the client. And a flow whose script step sits beside a `run:` step still resolves a device, because `run:` needs one whatever its fragment holds.
+The environment is an allowlist, not a copy of the tool server's. It carries `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. Everything else is absent — `NODE_ENV`, `DATABASE_URL`, `API_KEY`, and every value a project `.env` defines. Read what a script needs from a file the script opens itself. There is no `env:` key; parse rejects one.
+
+The script also gets an `output` global, which starts as an empty object. Nothing reads what it holds yet, but a value that cannot be serialized **fails** the step.
+
+### What comes back
+
+The script's stdout and stderr come back on the step report and print under the step line, on a pass as well as a failure — it is the only record of what the step did to the backend. Output is capped at 64 KiB for one step and 256 KiB for the whole run. A step whose output was cut says so on a line of its own.
+
+**Nothing in that log is redacted.** Never print a credential from a script: the value reaches the step report, the terminal, and every CI log that keeps the output.
+
+A script **fails** the step when the answer is the script's own: it threw, it did not load, it exited non-zero, or it wrote an `output` value that cannot be serialized. A script **errors** the step when the answer is the host's: a time limit, a heap limit, a signal, a process that would not start, a queue slot it never got, a cancelled run, or a `path` this machine matched only by case. That split is what lets CI tell a regression from the machine it ran on. Either verdict stops the flow.
+
+### Boundaries
+
+A `script:` step needs the client and tool server to share a filesystem, so an uploaded flow is rejected: its `.mjs` never left the client.
+
+A flow whose script step sits beside a `run:` step still resolves a device, because `run:` needs one whatever its fragment holds.
+
+On Chromium the leading `launch:` boots its app before step 1, so a `script:` step written above it runs against an app that is already up. iOS, Android and Vega restart the app at the `launch:` step itself, after the script.
 
 ## Snapshots and standalone runs
 

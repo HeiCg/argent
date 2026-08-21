@@ -57,8 +57,9 @@ export interface StepReport {
    */
   artifacts?: Record<string, unknown>;
   /**
-   * A `script` step's captured stdout and stderr, in written order, already
-   * redacted and possibly truncated by the tool server. Printed under the step
+   * A `script` step's captured stdout and stderr, in written order, possibly
+   * truncated by the tool server. Not redacted — it arrives as the script wrote
+   * it, credentials included. Printed under the step
    * line — for a passing script as much as a failing one, since it is the only
    * record of what the step did to the backend.
    */
