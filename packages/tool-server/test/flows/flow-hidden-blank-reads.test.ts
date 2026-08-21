@@ -1152,6 +1152,71 @@ describe("compatibility miss note: what it is scoped to", () => {
     expect(result.steps[0].reason).toMatch(/REORDERS/);
   });
 
+  it("neutralises a directional override in the SELECTOR, which prints first of all", async () => {
+    // The third carrier, and the worst placed: the selector opens the reason,
+    // so an override there reverses everything after it — the defused label,
+    // the expectation, and the codepoint note. It reaches a selector by the
+    // same route it reaches an expectation, the note's own "copy the characters
+    // the app actually renders".
+    currentFetch = () => ({
+      tree: screen([
+        n({ label: "Save\u202EChanges", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("rlo-selector", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { text: "Save\u202EChanges" },
+          expectedText: "nope",
+          textMatch: "equals",
+        },
+      ],
+    });
+
+    const result = await run("rlo-selector");
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).not.toContain("\u202E");
+    // Named where it sits, in the selector the message opens with.
+    expect(result.steps[0].reason).toMatch(/matched text="Save<U\+202E>Changes"/);
+  });
+
+  it("neutralises it in the selector of a MISS, where the miss note follows", async () => {
+    // The locator-miss reason is the one the selector-miss note is appended to,
+    // and that note is the long one: an override in the selector reversed the
+    // whole explanation of why the selector found nothing.
+    currentFetch = () => ({
+      tree: screen([
+        n({ label: "SaveChanges", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("rlo-selector-miss", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "visible",
+          selector: { text: "Save\u202E\u034FChanges" },
+        },
+      ],
+    });
+
+    const result = await run("rlo-selector-miss");
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).not.toContain("\u202E");
+    expect(result.steps[0].reason).toMatch(/selector text="Save<U\+202E>\u034FChanges"/);
+    // The explanation it was reversing is still there, the right way round.
+    expect(result.steps[0].reason).toMatch(/REORDERS/);
+  });
+
   it("leaves ordinary quoted text alone, so it stays copy-pasteable", async () => {
     currentFetch = () => ({
       tree: screen([

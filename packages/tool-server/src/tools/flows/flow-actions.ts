@@ -2309,7 +2309,15 @@ function assertReason(
   textMatch: TextMatchMode | undefined,
   matches: ReturnType<typeof findAll>
 ): string {
-  const sel = describeSelector(selector);
+  // Defused like the screen text below, and for the stronger reason: the
+  // selector prints FIRST, so an unbalanced U+202E in an authored `text:` value
+  // reverses the whole rest of the message — the quoted label, the expectation,
+  // and the codepoint note that explains the miss. An author arrives at such a
+  // selector by the route the note itself prescribes ("copy the characters the
+  // app actually renders"), and the fold deliberately keeps the controls that
+  // reorder, so this is the ordinary path rather than an exotic one. See
+  // quoteScreenText.
+  const sel = quoteScreenText(describeSelector(selector));
   switch (condition) {
     case "exists":
       return `no element matched selector ${sel}`;
