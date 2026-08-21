@@ -134,10 +134,9 @@ export function recordReapedSession(
     reaped.set(k, entry);
   }
   // A device gets one live event: this one replaced the previous one's entry
-  // under at least one id, and half an event explains nothing. Dropping the rest
-  // matters most where they cannot be read anyway — after a runtime death the
-  // `logicalDeviceId` copy is unresolvable, so left alone it would sit here for
-  // the life of the tool-server, one per crash.
+  // under at least one id, and half an event explains nothing. A copy left
+  // behind would answer some later, unrelated read — and would still name the
+  // file the reclaim below is about to take.
   //
   // Its kept file goes with it: nothing records that path any more, so
   // reclaiming here rather than waiting for the day-old sweep keeps an UNREAD
@@ -195,11 +194,11 @@ export function takeReapedSession(
  * names the family rather than asserting one member. `stop-all-simulator-servers`
  * is the common one and is named first, but it is not the only one:
  * `stop-simulator-server` on Chromium cascades into the debugger through
- * `ChromiumCdp` (its documented behaviour), and `react-profiler-start
- * { force: true }` disposes the debugger and the profiler session to reclaim
- * them. A `runtime-death` narrows that: the app itself went away, so pointing at
- * the teardown family would send an agent hunting for a tool call, or another
- * agent, that never touched this session. It does NOT name the culprit either —
+ * `ChromiumCdp` (its documented behaviour), and `react-profiler-start` disposes
+ * the debugger and the profiler session whenever it finds either in a state it
+ * cannot reuse. A `runtime-death` narrows that: the app itself went away, so
+ * pointing at the teardown family would send an agent hunting for a tool call,
+ * or another agent, that never touched this session. It does NOT name the culprit either —
  * the disposer sees a dropped socket, which a crash, a force-quit and a
  * `restart-app` all produce alike.
  */
@@ -212,7 +211,7 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
         `a device transport dropped) — which ends the session the same way a teardown does.`
       : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
         `another teardown that reaches the same services (a stop-simulator-server on Chromium, ` +
-        `or a react-profiler-start reclaiming the session with force). One tool-server serves ` +
+        `or a react-profiler-start clearing a session it could not reuse). One tool-server serves ` +
         `every agent using this argent install, so this may have been another agent rather ` +
         `than your own call.`;
   // The salvage clause was written when the file was there; a breadcrumb nobody

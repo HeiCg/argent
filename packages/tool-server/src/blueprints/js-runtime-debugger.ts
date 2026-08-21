@@ -297,9 +297,7 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     try {
       consoleServer = await createConsoleLogServer(consoleEvents, logWriter);
     } catch (err) {
-      // Off before close, for the reason dispose does it: `disconnect()` waits
-      // out a close handshake, and a frame delivered in that window would reach
-      // a closed writer, whose `write` throws.
+      // Off before close, for the reason the dispose below gives.
       cdp.events.off("consoleAPICalled", onConsoleAPI);
       logWriter.close();
       await cdp.disconnect();

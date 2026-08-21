@@ -27,9 +27,9 @@ interface LogRegistryResponse extends LogStats {
    *   logged nothing", the wrong conclusion to hand an agent debugging a silent
    *   app. Names the old log file when that teardown left it on disk, which a
    *   runtime death does.
-   * - {@link LogStats.file} names a path that was never created, because
-   *   `open()` failed and the writer buffered instead. The counts and clusters
-   *   are real; the file is not there to grep.
+   * - {@link LogStats.file} names a path that is not there: `open()` failed and
+   *   the writer buffered instead, or something removed the file after it was
+   *   written. The counts and clusters are real; the file is not.
    */
   note?: string;
 }
@@ -152,8 +152,7 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // file it kept — reading it back is the whole point of keeping it, and
         // nothing later in this flow would report it: the guidance sends the
         // agent through restart-app, and a restarted app leaves no trace of the
-        // one that died. No `logicalDeviceId` to add here, since resolving is
-        // what just failed.
+        // one that died.
         const note = takeReapedNote(params.device_id, debuggerReapedScope(params));
         return { ...buildNotConnected(reason, err, params), ...(note ? { note } : {}) };
       }

@@ -16,7 +16,7 @@ const zodSchema = z.object({
   device_id: z
     .string()
     .describe(
-      "Device id from list-devices: iOS simulator UDID, Android serial, Vega serial (amazon-...), or Chromium device id (chromium-cdp-<port>). Pass this SAME id as device_id to every subsequent debugger-* call to pin them to this device. The returned logicalDeviceId is informational (Metro's own per-connection handle, absent on Vega); you do not switch to it — forwarding it still resolves here, but the list-devices id is the stable one."
+      "Device id from list-devices: iOS simulator UDID, Android serial, Vega serial (amazon-...), or Chromium device id (chromium-cdp-<port>). Pass this SAME id as device_id to every subsequent debugger-* call to pin them to this device. The returned logicalDeviceId is informational (the app's own id for this device and bundle, absent on Vega); you do not switch to it — forwarding it still resolves here, but the list-devices id is the one every other tool takes."
     ),
 });
 
@@ -62,13 +62,12 @@ Use when starting a debug session or before calling other debugger-* tools. Fail
   async execute(services, params) {
     const api = services.debugger as JsRuntimeDebuggerApi;
     // Drop any teardown breadcrumb for this device, the way the screen-recording
-    // and native-profiler starts drop theirs. Its only consumer,
-    // `debugger-log-registry`, is gated on an EMPTY registry, so one left here
-    // survives every read that finds entries — and then attaches "a teardown ate
-    // your logs" to some later, unrelated empty read, which the tool description
-    // tells the agent to trust. An explicit connect makes it wrong anyway: from
-    // here the capture is this session's, so an empty registry honestly means
-    // this app has logged nothing since.
+    // and native-profiler starts drop theirs. `debugger-log-registry` reads one
+    // only when it has no entries of its own to explain, so a breadcrumb left
+    // here outlives every read that finds some — and then attaches "a teardown
+    // ate your logs" to a later, unrelated empty read. An explicit connect makes
+    // it wrong anyway: from here the capture is this session's, so an empty
+    // registry honestly means this app has logged nothing since.
     //
     // Report it first when the app went away, because then it is not only an
     // explanation: it carries the path of a log file still on disk, and this

@@ -71,8 +71,9 @@ describe("the reaped-session key", () => {
     // nothing that writes a breadcrumb knows which tool triggered it.
     // stop-all-simulator-servers is the common one, but stop-simulator-server on
     // Chromium cascades into the debugger through ChromiumCdp, and
-    // react-profiler-start { force: true } disposes it to reclaim the session —
-    // so the message names the family rather than asserting one member.
+    // react-profiler-start disposes it whenever it finds the session in a state
+    // it cannot reuse — so the message names the family rather than asserting
+    // one member.
     recordReapedSession("js-runtime-debugger", UDID);
 
     const message = describeReapedSession(
