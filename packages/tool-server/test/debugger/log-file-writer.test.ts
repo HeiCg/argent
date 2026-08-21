@@ -3,6 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { LogFileWriter, type RichLogEntry } from "../../src/utils/debugger/log-file-writer";
+import { scopeTempHome } from "../helpers/temp-home";
+
+scopeTempHome("argent-log-writer-home-");
 
 let writer: LogFileWriter;
 
