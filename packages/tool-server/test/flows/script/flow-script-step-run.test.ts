@@ -108,22 +108,6 @@ async function until(predicate: () => boolean, label: string, timeoutMs = 15_000
   throw new Error(`timed out waiting for ${label}`);
 }
 
-/**
- * Whether this filesystem opens a file under a spelling no directory entry
- * carries — true on macOS (APFS) and Windows (NTFS), false on Linux. The
- * casing check exists to do on the first two what the third does for free, so
- * its test can only run where the hazard exists.
- */
-function caseInsensitiveFs(): boolean {
-  const probe = path.join(root, "CaseProbe.mjs");
-  fsSync.writeFileSync(probe, "");
-  try {
-    return fsSync.existsSync(path.join(root, "caseprobe.mjs"));
-  } finally {
-    fsSync.rmSync(probe, { force: true });
-  }
-}
-
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "flow-script-step-"));
 });
@@ -267,6 +251,39 @@ describe("a script path is checked at its own step", () => {
     expect(result.steps[0]!.reason).toContain("is not a file");
   });
 
+  it("reports a path that walks THROUGH a file as an ordinary missing file", async () => {
+    // The kernel answers ENOTDIR, not ENOENT, when a directory component of the
+    // path is a regular file. Nothing is there either way, so the author reads
+    // the same sentence rather than an errno.
+    await write("scripts/seed.mjs", `console.log("ok");`);
+    await flow("through", "steps:\n  - script: { path: ../../scripts/seed.mjs/inner.mjs }\n");
+
+    const { result } = await runFlow("through");
+
+    expect(result.steps[0]).toMatchObject({ status: "fail", kind: "script" });
+    expect(result.steps[0]!.reason).toContain("does not exist");
+    expect(result.steps[0]!.reason).not.toContain("cannot be read");
+  });
+
+  it("reports a stat failure that is neither as its own text, not as absence", async () => {
+    // Everything else the kernel can answer — a locked parent directory, a
+    // dangling symlink, a name longer than the filesystem allows (used here
+    // because it needs no permission juggling and reproduces for any user) —
+    // is a fact about the host, and guessing "does not exist" for it would
+    // send the author looking for a file that may well be there.
+    const tooLong = `${"n".repeat(300)}.mjs`;
+    // The directory has to exist, or the missing component answers ENOENT
+    // first and this never reaches the arm under test.
+    await write("scripts/seed.mjs", `console.log("ok");`);
+    await flow("unreadable", `steps:\n  - script: { path: ../../scripts/${tooLong} }\n`);
+
+    const { result } = await runFlow("unreadable");
+
+    expect(result.steps[0]).toMatchObject({ status: "fail", kind: "script" });
+    expect(result.steps[0]!.reason).toContain("cannot be read: ");
+    expect(result.steps[0]!.reason).toContain("ENAMETOOLONG");
+  });
+
   it("never checks a path behind a guard that does not fire", async () => {
     // The check is at the step, not in a preflight pass — a preflight would
     // fail this flow over a path nothing ever opens.
@@ -291,25 +308,42 @@ describe("a script path is checked at its own step", () => {
     ]);
   });
 
-  it.runIf(process.platform === "darwin" || process.platform === "win32")(
-    "refuses a mis-cased path, quoting the spelling on disk",
-    async () => {
-      // The one authoring error a local run cannot find: APFS and NTFS open
-      // `CreateUser.mjs` for a file really named `createUser.mjs`, and the same
-      // tree then fails with ENOENT on Linux CI.
-      expect(caseInsensitiveFs()).toBe(true);
-      await write("scripts/createUser.mjs", `console.log("ok");`);
-      await flow("cased", "steps:\n  - script: { path: ../../scripts/CreateUser.mjs }\n");
+  it("refuses a mis-cased path, quoting the spelling on disk", async () => {
+    // The one authoring error a local run cannot find: APFS and NTFS open
+    // `CreateUser.mjs` for a file really named `createUser.mjs`, and the same
+    // tree then fails with ENOENT on Linux CI.
+    //
+    // Ungated, because the VERDICT is not the filesystem's. classifyOnDiskSpelling
+    // compares the supplied basename against readdir's own entries, lowercased —
+    // so the refusal reproduces on the case-sensitive platform the refusal
+    // exists to protect, which is also the only platform CI runs on.
+    await write("scripts/createUser.mjs", `console.log("ok");`);
+    await flow("cased", "steps:\n  - script: { path: ../../scripts/CreateUser.mjs }\n");
 
-      const { result } = await runFlow("cased");
+    const { result } = await runFlow("cased");
 
-      expect(result.steps[0]).toMatchObject({ status: "error" });
-      expect(result.steps[0]!.reason).toContain(
-        'mis-cased script path "../../scripts/CreateUser.mjs"'
-      );
-      expect(result.steps[0]!.reason).toContain('write it as "../../scripts/createUser.mjs"');
-    }
-  );
+    expect(result.steps[0]).toMatchObject({ status: "error" });
+    expect(result.steps[0]!.reason).toContain(
+      'mis-cased script path "../../scripts/CreateUser.mjs"'
+    );
+    expect(result.steps[0]!.reason).toContain('write it as "../../scripts/createUser.mjs"');
+  });
+
+  it("asks for a rename when the spelling on disk is one no path could name", async () => {
+    // The other half of the mis-cased arm: `ALT.MJS` case-folds onto the
+    // requested `alt.mjs`, so the file IS the one meant — but a path quoting it
+    // back would be refused by parseScriptPath (the extension must be a
+    // lowercase `.mjs`), so pointing there would be a dead end. Ask for the
+    // rename the file really needs instead.
+    await write("scripts/ALT.MJS", `console.log("ok");`);
+    await flow("noncase", "steps:\n  - script: { path: ../../scripts/alt.mjs }\n");
+
+    const { result } = await runFlow("noncase");
+
+    expect(result.steps[0]).toMatchObject({ status: "error" });
+    expect(result.steps[0]!.reason).toContain('rename "ALT.MJS" to "alt.mjs" to run it');
+    expect(result.steps[0]!.reason).not.toContain("write it as");
+  });
 
   it("treats a hyphen difference as an ordinary missing file, not a casing problem", async () => {
     // Only the CASE can differ: `create-user.mjs` names a different file than
@@ -368,6 +402,46 @@ describe("where a script path resolves", () => {
 
     expect(result.ok).toBe(true);
     expect(result.steps.find((s) => s.kind === "script")!.scriptLog).toContain("sideways");
+  });
+
+  it("resolves a `..` after a symlinked component with kernel semantics", async () => {
+    // .argent/flows/link is a symlink to lex/other, so on disk
+    // `link/../seed.mjs` means lex/seed.mjs — `..` names the parent of the
+    // link's TARGET. A lexical collapse of the spelling would instead name the
+    // flows-dir sibling seed.mjs, planted here as a decoy, so only
+    // kernel-faithful resolution runs the file the written path denotes. The
+    // property is `run:`-proven; a script path shares the resolver, and this is
+    // what pins that it keeps sharing it.
+    await fs.mkdir(path.join(root, "lex", "other"), { recursive: true });
+    await fs.writeFile(path.join(root, "lex", "seed.mjs"), `console.log("kernel-resolved");`);
+    await write(path.join(".argent", "flows", "seed.mjs"), `console.log("lexical decoy");`);
+    await flow("linked", "steps:\n  - script: { path: link/../seed.mjs }\n");
+    await fs.symlink(path.join(root, "lex", "other"), path.join(root, ".argent", "flows", "link"));
+
+    const { result } = await runFlow("linked");
+
+    expect(result.steps[0]).toMatchObject({ status: "pass", kind: "script" });
+    expect(result.steps[0]!.scriptLog).toContain("kernel-resolved");
+    expect(result.steps[0]!.scriptLog).not.toContain("lexical decoy");
+  });
+
+  it("runs a script reached through a symlink under the name the flow spells", async () => {
+    // The reason the casing check lists the SPELLED directory rather than
+    // realpath'ing first: an alias is a legitimate way to name a shared script,
+    // and readdir sees the link itself, so `alias.mjs` is an exact entry and
+    // the step runs. Realpath'ing first would compare against `real.mjs` and
+    // refuse the flow as mis-cased.
+    await write("scripts/real.mjs", `console.log("through the alias");`);
+    await fs.symlink(
+      path.join(root, "scripts", "real.mjs"),
+      path.join(root, "scripts", "alias.mjs")
+    );
+    await flow("alias", "steps:\n  - script: { path: ../../scripts/alias.mjs }\n");
+
+    const { result } = await runFlow("alias");
+
+    expect(result.steps[0]).toMatchObject({ status: "pass", kind: "script" });
+    expect(result.steps[0]!.scriptLog).toContain("through the alias");
   });
 
   it("anchors an explicit flow_path at that YAML's own directory", async () => {

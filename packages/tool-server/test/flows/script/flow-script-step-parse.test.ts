@@ -88,20 +88,43 @@ describe("script step rejections", () => {
   });
 
   it("refuses a missing, empty or non-string path", () => {
-    for (const body of ["{ timeout: 1000 }", "{ path: }", "{ path: 42 }", "{ path: true }"]) {
+    // `path: ` is YAML null and `path: ""` is the empty string: two different
+    // values reaching the same arm, and the second is the one a reader who
+    // quoted the key writes.
+    for (const body of [
+      "{ timeout: 1000 }",
+      "{ path: }",
+      '{ path: "" }',
+      "{ path: 42 }",
+      "{ path: true }",
+    ]) {
       expect(() => step(body), body).toThrow(/needs a `path`/);
     }
   });
 
   it("refuses a non-positive or non-finite timeout", () => {
+    // `.inf` and `.nan` are both typeof number, and `.nan` fails every
+    // comparison rather than being > 0 — so it is the one that would slip
+    // through a bare `value <= 0` check and leave the step with no deadline.
     for (const body of [
       "{ path: seed.mjs, timeout: 0 }",
       "{ path: seed.mjs, timeout: -1 }",
       "{ path: seed.mjs, timeout: .inf }",
+      "{ path: seed.mjs, timeout: .nan }",
       "{ path: seed.mjs, timeout: fast }",
     ]) {
       expect(() => step(body), body).toThrow(/script.timeout needs a positive number/);
     }
+  });
+
+  it("admits a fractional time limit, as every other millisecond option does", () => {
+    // Milliseconds are not required to be whole here any more than in
+    // `await: { timeout: }` — both take any positive finite number, and the
+    // executor's clamp and the timer below it both take a float. Pinned so a
+    // future integer check is a deliberate change rather than a silent one.
+    expect(step("{ path: seed.mjs, timeout: 1500.5 }")).toEqual([
+      { kind: "script", path: "seed.mjs", timeout: 1500.5 },
+    ]);
   });
 
   it("refuses a body that is not a map", () => {
