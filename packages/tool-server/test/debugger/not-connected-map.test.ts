@@ -179,8 +179,9 @@ describe("guidance platform-correctness", () => {
     // sentence that goes on to say it times out identically and to branch on it.
     pinsOnce(
       chromium.guidance,
-      "A renderer paused at a breakpoint does not reach this reason — it answers the enables " +
-        "and the viewport read, so the session resolves and debugger-status reports connected."
+      "A renderer paused at a breakpoint does not reach this reason — it answers the " +
+        "viewport read, which is the one send on this path that is not swallowed, so the " +
+        "session resolves and debugger-status reports connected."
     );
     // And no resume ask survives on the one state that is never paused, whoever
     // the sentence names as the actor.
@@ -440,8 +441,9 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       guidance,
       "means the app answered and has no drivable page (none at all, or only devtools:// " +
         "ones): it is still running and only lacks a window, so ask the user to bring one " +
-        "back. If the detail closes by asking about --remote-debugging-port, ignore it — the " +
-        "port answered, so the flag was passed."
+        "back — chromium-tabs cannot open one, since it needs an existing page. If the " +
+        "detail carrying it closes by asking about --remote-debugging-port, ignore that " +
+        "question: this port answered, so the flag was passed."
     );
     // The third state cdp_unreachable covers, and no relaunch is its remedy. Only
     // two of CHROMIUM_CDP_INVALID_RESPONSE's three throw sites can reach a

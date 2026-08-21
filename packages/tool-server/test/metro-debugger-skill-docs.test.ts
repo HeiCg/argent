@@ -21,6 +21,7 @@ import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-compon
 import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status";
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { listDevicesTool } from "../src/tools/devices/list-devices";
+import { DEFAULT_READY_TIMEOUT_MS } from "../src/tools/devices/boot-electron";
 import { expectNoForbiddenAdvice } from "./helpers/forbidden-advice";
 import { pinsOnce, pinsSentenceEnd, pinsUnqualified } from "./helpers/pins";
 import {
@@ -329,9 +330,11 @@ describe("the Chromium recovery names a relaunch that exists", () => {
         "closed connection — is the CDP socket failing after discovery answered, so the app " +
         "was up moments ago: have the user check it before anything else."
     );
-    // And that the quit-and-relaunch is the fallback, not the rule: the three arms
-    // above exist to route away from it.
-    pinsOnce(createFlow, "Otherwise ask the user to quit it");
+    // And that the quit-and-relaunch is gated on the app being gone rather than on
+    // "otherwise" - the three arms above partition the detail space exhaustively,
+    // so an "otherwise" tail governs nothing and the arm that routes into it has
+    // to jump there by name.
+    pinsOnce(createFlow, "Once the app is gone, ask the user to quit it");
 
     // Every surface that carries any of the recovery is held to the shared list of
     // instructions this change exists to prevent - the runtime guidance strings are
@@ -568,8 +571,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // against it.
     pinsOnce(
       bootDeviceParams.shape.bootTimeoutMs?.description,
-      "which polls CDP against its own 30s deadline, checked between attempts, so a port " +
-        "that accepts a connection and never answers can overrun it"
+      `which polls CDP against its own ${DEFAULT_READY_TIMEOUT_MS / 1000}s deadline, ` +
+        "checked between attempts, so a port that accepts a connection and never answers " +
+        "can overrun it"
     );
     expect(
       bootDeviceParams.shape.bootTimeoutMs?.description,

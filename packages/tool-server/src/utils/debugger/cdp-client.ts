@@ -257,7 +257,6 @@ export class CDPClient {
           new FailureError(
             `CDP request ${method} (id=${id}) timed out — the runtime accepted the ` +
               `connection but did not answer; it may be frozen, or paused at a breakpoint. ` +
-              `debugger-status can still report "connected" in this state (the socket is open). ` +
               `Do not retry in a loop. Nothing here tells the two apart — no tool reports ` +
               `pausedness, and once the session is established debugger-status reports ` +
               `"connected" either way — so have the user check the app before choosing. If it is paused, ask them to resume it — quitting ` +

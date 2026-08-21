@@ -84,7 +84,7 @@ const zodSchema = z.object({
     .max(900_000)
     .optional()
     .describe(
-      "Android/Vega: overall budget for the boot sequence. Default 480000 (8 min) on Android, 120000 (2 min) on Vega. Clamped to [30s, 15min]. Ignored on iOS and on Electron, which polls CDP against its own 30s deadline, checked between attempts, so a port that accepts a connection and never answers can overrun it."
+      "Android/Vega: overall budget for the boot sequence. Default 480000 (8 min) on Android, 120000 (2 min) on Vega. Rejected outside [30s, 15min]. Ignored on iOS and on Electron, which polls CDP against its own 30s deadline, checked between attempts, so a port that accepts a connection and never answers can overrun it."
     ),
   force: z
     .boolean()

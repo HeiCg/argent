@@ -146,7 +146,8 @@ describe("expectTagEndsTheClaim", () => {
 describe("expectNoForbiddenAdvice", () => {
   it("accepts prose that carries none of the barred instructions", () => {
     expectNoForbiddenAdvice(
-      "Ask the user to quit it, then relaunch once it has exited. Do not relaunch there.",
+      "Ask the user to quit it, then relaunch once it has exited. Do not relaunch there. " +
+        "A Chromium app cannot be relaunched with `restart-app`.",
       "surface"
     );
     expectNoForbiddenAdvice(undefined, "absent surface");
@@ -160,6 +161,7 @@ describe("expectNoForbiddenAdvice", () => {
       "A missing entry does mean the app exited.",
       "On Chromium it is relaunched with restart-app.",
       "That string means the app is still up, not that it failed to launch.",
+      "That string means the launch failed.",
       "It only lacks a window, so relaunch there once.",
     ])
       expect(() => expectNoForbiddenAdvice(text, "surface"), text).toThrow();

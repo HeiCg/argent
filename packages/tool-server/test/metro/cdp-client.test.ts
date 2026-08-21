@@ -315,13 +315,13 @@ describe("CDPClient", () => {
       expect(message, "does not promise connected on the connect surface").not.toMatch(
         /debugger-status says "connected" either way/i
       );
-      // The claim the two branches above rest on: a post-connect hang leaves the
-      // socket OPEN, so debugger-status reports "connected" and never reaches the
-      // branching guidance. Invert it and this message reads as the redundant copy
-      // of a guidance string the reader will in fact never see.
-      pinsOnce(
-        message,
-        'debugger-status can still report "connected" in this state (the socket is open).'
+      // The claim the two branches above rest on, and the ONLY copy of it: a
+      // post-connect hang leaves the socket OPEN, so debugger-status reports
+      // "connected" and never reaches the branching guidance. On the connect
+      // surface this message IS the detail of a not_connected result, so an
+      // unscoped second copy asserts a state the payload carrying it disproves.
+      expect(message, "states the debugger-status claim once, scoped").not.toMatch(
+        /debugger-status can still report "connected" in this state/
       );
       // Both ends of the retry discipline. Each attempt waits out this full timeout,
       // so a loosened "unless it looks slow" at one end or a "retry until it answers"

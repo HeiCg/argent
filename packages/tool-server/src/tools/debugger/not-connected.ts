@@ -154,8 +154,10 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "works again if the app comes back on it. " +
     "A detail carrying 'Chromium CDP on port' means the app answered and has no drivable " +
     "page (none at all, or only devtools:// ones): it is still running and only lacks a " +
-    "window, so ask the user to bring one back. If the detail closes by asking about " +
-    "--remote-debugging-port, ignore it — the port answered, so the flag was passed. " +
+    "window, so ask the user to bring one back — chromium-tabs cannot open one, since " +
+    "it needs an existing page. If the detail carrying it closes by asking about " +
+    "--remote-debugging-port, ignore that question: this port answered, so the flag was " +
+    "passed. " +
     "A detail carrying neither is the CDP socket failing after discovery had already " +
     "answered, so " +
     "the app was up moments ago. It may have lost only the page it was driving, which the " +
@@ -178,8 +180,8 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
   runtime_unresponsive:
     "The app accepted the debugger connection but did not answer within the timeout: " +
     "the renderer is frozen. A renderer paused at a breakpoint does not reach this " +
-    "reason — it answers the enables and the viewport read, so the session resolves and " +
-    "debugger-status reports connected. " +
+    "reason — it answers the viewport read, which is the one send on this path that is " +
+    "not swallowed, so the session resolves and debugger-status reports connected. " +
     DETAIL_NAMES_A_BREAKPOINT +
     "Do not retry in a loop " +
     "(each attempt waits out the full timeout). Ask the user to quit the app, then " +
