@@ -105,17 +105,18 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
   cdp_unreachable:
     "No page could be driven: the app's CDP endpoint was unreachable, answered as " +
     "something other than CDP, or is up but has no usable page — detail says which. " +
-    "A detail about page targets (none at all, or only devtools:// ones) means the " +
-    "app is still running and only lacks a window: ask the user to bring one back, " +
-    "since relaunching it would leave a second copy behind. Otherwise the app has to " +
-    "come back with --remote-debugging-port, and launch-app cannot start a Chromium " +
-    "app: ask the user whether it is still running and to quit it if so, since " +
-    "boot-device never stops one and relaunching a live app leaves that same second " +
-    "copy — list-devices drops a broken-but-running app exactly as it drops an exited " +
-    "one, so it cannot answer that. Once it is gone, boot-device with electronAppPath " +
-    "relaunches an Electron app, and for a browser, ask the user to start it again on " +
-    "the same port. Re-read the chromium-cdp-<port> id from boot-device / list-devices, " +
-    "since a relaunch on a new port is a new id, and retry once.",
+    "Relaunching an app that is still up never recovers it — boot-device stops " +
+    "nothing, so you get a second copy, or a single-instance Electron app quits the " +
+    "newcomer and the boot fails with an unexplained early exit. So when detail is " +
+    "about page targets (none at all, or only devtools:// ones) the app is still " +
+    "running and only lacks a window: ask the user to bring one back. Otherwise ask " +
+    "the user whether it is still running, and to quit it if so — list-devices drops " +
+    "a broken-but-running app exactly as it drops an exited one, so it cannot answer " +
+    "that. Once the app is gone, launch-app cannot start a Chromium app: boot-device " +
+    "with electronAppPath relaunches an Electron app, and for a browser, ask the user " +
+    "to start it again on the same CDP port with --remote-debugging-port. Re-read the " +
+    "chromium-cdp-<port> id from boot-device / list-devices, since a relaunch on a " +
+    "new port is a new id, and retry once.",
   runtime_unresponsive:
     "The app accepted the debugger connection but did not answer within the " +
     "timeout — it is likely frozen, or paused at a breakpoint. Do not retry in a loop " +

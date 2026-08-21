@@ -111,13 +111,14 @@ describe("guidance platform-correctness", () => {
       chromium,
     ]) {
       expect(r.guidance).toContain("ask the user");
-      expect(r.guidance).toContain("same");
-      // The id is only new when the port is, so the flat claim must not come back.
+      expect(r.guidance).toContain("same CDP port");
       expect(r.guidance).toContain("list-devices");
       // boot-device never stops an app, and nothing in the catalogue can tell a
       // broken-but-running one from an exited one, so every relaunch these strings
       // order has to name who ends it - the invariant the skill rows carry.
       expect(r.guidance).toContain("quit");
+      // The id tracks the port, so a relaunch that comes back on the same port
+      // keeps it. Only a moved port mints a new id.
       expect(r.guidance).not.toMatch(/under a new chromium-cdp/);
     }
     // A renderer paused at a breakpoint times out exactly like a wedged one, and
@@ -172,7 +173,13 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       expect(guidance).toContain(cue);
     }
     expect(guidance).toMatch(/still running/);
+    // Relaunching a live app fails two different ways and the agent has to
+    // recognise both: a second copy, or - when the app holds Electron's
+    // single-instance lock (boot-electron.ts, BOOT_CONFIRM_WINDOW_MS) - a boot
+    // that dies as a bare early exit, since only flow-run names that cause.
+    // Naming one shape leaves the other unrecognisable.
     expect(guidance).toMatch(/second copy/);
+    expect(guidance).toMatch(/single-instance/);
 
     // Only the inspector variant names a window; the ordinary closed-window case
     // (no DevTools open) lands on the other one and gets a --remote-debugging-port

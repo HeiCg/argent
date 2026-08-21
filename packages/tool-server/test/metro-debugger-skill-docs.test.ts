@@ -2,7 +2,10 @@
  * The skill's prose claims things only code knows — which platforms a tool
  * supports, which not-connected reasons it can report — so a capability or
  * reason change falsifies it silently. Derive every expectation below from the
- * source of truth; restating one as a literal reintroduces the same drift.
+ * source of truth; restating one as a literal reintroduces the same drift. The
+ * recovery wording below is the exception with no source to derive from: it is
+ * matched literally, and its facts are pinned against the code that produces
+ * them in debugger/not-connected-map.test.ts.
  */
 
 import { describe, it, expect } from "vitest";
@@ -131,8 +134,13 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // actor nor where to re-read the id leaves the reader unable to finish.
       expect(cell, file).toContain("ask the user");
       expect(cell, file).toContain("`list-devices`");
+      // list-devices reports a Chromium entry's id under `id` - ChromiumDevice has
+      // no udid field - so calling it one sends the reader looking for a key that
+      // is not in the response.
+      expect(cell, file).not.toMatch(/`chromium-cdp-<port>` udid/);
       // boot-device never stops an app, so a relaunch aimed at a process that is
-      // still up leaves a second copy holding the single-instance lock. Every
+      // still up recovers nothing: a second copy, or a boot that fails when the
+      // running app holds the single-instance lock and quits the newcomer. Every
       // surface has to name the app's exit, and who ends it when it has not.
       expect(cell, file).toContain("exited");
       expect(cell, file).toContain("quit");
@@ -159,7 +167,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     const skill = readFileSync(DEBUGGER_SKILL, "utf8");
     for (const reason of DEBUGGER_NOT_CONNECTED_REASONS) {
       expect(skill, `${reason} is missing from SKILL.md's reason list`).toContain(`\`${reason}\``);
-      expect(table, `${reason} has no row in failure-scenarios.md`).toContain(reason);
+      expect(table, `${reason} is missing from failure-scenarios.md`).toContain(reason);
       // The tool's own description is the enumeration an agent reads before it
       // has any skill open, and it is the one that returns these reasons.
       expect(
