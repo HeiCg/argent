@@ -31,16 +31,23 @@ import * as fs from "node:fs";
 export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
 
 /**
- * What ended the session. `runtime-death` is the app going away underneath it —
- * it crashed, was force-quit, or a tool such as `restart-app` terminated it;
- * `teardown` is a `dispose()` whose caller the disposer cannot see. The disposer
- * reads a dropped socket, which tells it the app is gone but not what took it.
+ * What ended the session. `runtime-death` is the CDP connection dropping under
+ * it rather than a `dispose()` closing it — the app went away, or the debugger
+ * lost its route to it; `teardown` is a `dispose()` whose caller the disposer
+ * cannot see. All the disposer reads is a socket that stopped being open, which
+ * says the far end is unreachable and nothing about what made it so.
  */
 export type ReapedSessionCause = "teardown" | "runtime-death";
 
 export interface ReapedSession {
   kind: ReapedSessionKind;
   deviceId: string;
+  /**
+   * The teardown this describes. One teardown is filed under every id its
+   * device answers to, and those copies are one event, not several — see
+   * {@link takeReapedSession}.
+   */
+  event: number;
   /** When the teardown ran, for "…N seconds ago" phrasing. */
   atMs: number;
   /** Why the session ended, so the message does not blame a tool for a crash. */
@@ -61,6 +68,7 @@ export interface ReapedSession {
 }
 
 const reaped = new Map<string, ReapedSession>();
+let nextEvent = 1;
 
 function key(kind: ReapedSessionKind, deviceId: string): string {
   return `${kind}:${deviceId.toLowerCase()}`;
@@ -73,49 +81,70 @@ function key(kind: ReapedSessionKind, deviceId: string): string {
  * routine cleanup, and recording it would make the next honest "no active
  * session" answer claim a teardown destroyed something.
  *
+ * Pass every id the device answers to — a debugger session is readable back
+ * under the id the caller connected with OR the `logicalDeviceId` Metro echoed,
+ * and only the disposer still knows both. They file one event, so consuming
+ * either spends all of them.
+ *
  * `cause` defaults to `"teardown"` — all a disposer can say when the only thing
  * it knows is that `dispose()` ran. Pass `"runtime-death"` only where the
- * disposer can tell the app went away, and `keptAt` when the teardown left a
- * file behind for the reader to open.
+ * disposer can tell the session's runtime went out from under it, and `keptAt`
+ * when the teardown left a file behind for the reader to open.
  */
 export function recordReapedSession(
   kind: ReapedSessionKind,
-  deviceId: string,
+  deviceIds: string | string[],
   salvage?: string,
   opts: { cause?: ReapedSessionCause; keptAt?: string } = {}
 ): void {
-  const k = key(kind, deviceId);
-  const previous = reaped.get(k);
-  const entry: ReapedSession = {
-    kind,
-    deviceId,
-    atMs: Date.now(),
-    cause: opts.cause ?? "teardown",
-  };
-  if (salvage) entry.salvage = salvage;
-  if (opts.keptAt) entry.keptAt = opts.keptAt;
-  reaped.set(k, entry);
-  // One breadcrumb per kind+device, so recording this one just made whatever the
-  // previous one named unreachable — nothing else records that path. Reclaim it
-  // here instead of leaving it for the log pruner a day later, which is what
-  // bounds a crash loop to one kept file per device rather than one per crash.
-  if (previous?.keptAt && previous.keptAt !== entry.keptAt) {
-    try {
-      fs.unlinkSync(previous.keptAt);
-    } catch {
-      // already gone, or never ours
+  const event = nextEvent++;
+  for (const deviceId of new Set(typeof deviceIds === "string" ? [deviceIds] : deviceIds)) {
+    const k = key(kind, deviceId);
+    const previous = reaped.get(k);
+    const entry: ReapedSession = {
+      kind,
+      deviceId,
+      event,
+      atMs: Date.now(),
+      cause: opts.cause ?? "teardown",
+    };
+    if (salvage) entry.salvage = salvage;
+    if (opts.keptAt) entry.keptAt = opts.keptAt;
+    reaped.set(k, entry);
+    // Recording this one just made whatever the previous event named
+    // unreachable — nothing else records that path — so reclaim it here rather
+    // than leaving it to the day-old sweep. That is what bounds a crash loop
+    // NOBODY READS to one kept file per device rather than one per crash; once a
+    // reader has consumed an event, there is no previous entry left to reclaim
+    // its file, which is the point: that path is in an agent's hands.
+    if (previous?.keptAt && previous.keptAt !== entry.keptAt) {
+      try {
+        fs.unlinkSync(previous.keptAt);
+      } catch {
+        // already gone, or never ours
+      }
     }
   }
 }
 
-/** Read and consume the breadcrumb for `kind`/`deviceId`, if there is one. */
+/**
+ * Read and consume the breadcrumb for `kind`/`deviceId`, if there is one.
+ *
+ * Consumes every copy of the same teardown, not just the one that matched. A
+ * reader knows only the id it was called with — after a runtime death, nothing
+ * can even resolve the `logicalDeviceId` the other copy is filed under — so a
+ * per-key delete would leave a twin behind to explain a later, unrelated read
+ * and to reclaim, on the next teardown, the very file this answer just named.
+ */
 export function takeReapedSession(
   kind: ReapedSessionKind,
   deviceId: string
 ): ReapedSession | undefined {
-  const k = key(kind, deviceId);
-  const entry = reaped.get(k);
-  if (entry) reaped.delete(k);
+  const entry = reaped.get(key(kind, deviceId));
+  if (!entry) return undefined;
+  for (const [k, sibling] of reaped) {
+    if (sibling.event === entry.event) reaped.delete(k);
+  }
   return entry;
 }
 
@@ -141,8 +170,10 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
   const secondsAgo = Math.max(0, Math.round((Date.now() - entry.atMs) / 1000));
   const why =
     entry.cause === "runtime-death"
-      ? `the app it was attached to went away — it crashed, was force-quit, or a tool such as ` +
-        `restart-app terminated it — which ends the session the same way a teardown does.`
+      ? `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
+        `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
+        `a device transport dropped) — which ends the session the same way a teardown does. ` +
+        `The reason field of this same answer, if there is one, says which.`
       : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
         `another teardown that reaches the same services (a stop-simulator-server on Chromium, ` +
         `or a react-profiler-start reclaiming the session with force). One tool-server serves ` +
@@ -154,9 +185,7 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
   const salvage =
     entry.keptAt && !fs.existsSync(entry.keptAt)
       ? `The log file it left at ${entry.keptAt} has since been reclaimed — a kept log is ` +
-        `swept by the next debugger session once it is a day old — so those entries are gone. ` +
-        `This registry ` +
-        `starts empty because a new session was minted, not because the app logged nothing.`
+        `swept by the next debugger session once it is a day old — so those entries are gone.`
       : entry.salvage;
   return (
     `The ${what} for device ${entry.deviceId} was torn down ${secondsAgo}s ago — ${why} ` +
@@ -170,25 +199,18 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
  * while it still held console history nobody had read.
  *
  * Pass `keptAt` — the log file's path — when the teardown left the file on
- * disk, which a runtime death does; omit it when the teardown unlinked it. The
- * count restarts at 0 either way, since the next resolve builds a new writer
- * over a new path, so what the clause has to settle is whether the old entries
- * are still readable somewhere. Why the session ended is the {@link
- * ReapedSessionCause} clause's job, not this one's.
+ * disk, which a runtime death does; omit it when the teardown unlinked it. What
+ * the clause settles is only whether the old entries are still readable
+ * somewhere: why the session ended is the {@link ReapedSessionCause} clause's
+ * job, and what an empty registry means belongs to the one consumer that has a
+ * registry — `debugger-connect` and a `not_connected` answer have none.
  */
 export function describeLostHistory(captured: number, keptAt?: string): string {
   const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;
   if (keptAt) {
-    return (
-      `The log file is kept at ${keptAt} — it holds the ${entries}, so read that file for them. ` +
-      `This registry starts empty because a new session was minted, not because the app logged ` +
-      `nothing.`
-    );
+    return `The log file is kept at ${keptAt} — it holds the ${entries}, so read that file for them.`;
   }
-  return (
-    `The ${entries} went with it — the log file is deleted on teardown, so this registry starts ` +
-    `empty rather than the app having logged nothing.`
-  );
+  return `The ${entries} went with it — the log file is deleted on teardown.`;
 }
 
 /** Test-only: drop all breadcrumbs so cases don't leak across tests. */

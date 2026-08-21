@@ -97,7 +97,8 @@ export class LogFileWriter {
       // Never a reason to keep the process alive.
       this.keepalive.unref();
     } catch {
-      // Will retry on next write or buffer until ready
+      // Nothing reopens the file: `write` buffers instead, and `hasFile` is how
+      // a caller finds out there is nothing on disk to read.
     }
   }
 

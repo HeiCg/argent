@@ -343,7 +343,10 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         // Only when there IS history to lose, and under both ids this device
         // answers to: the caller may read back with either the id it connected
         // with or the `logicalDeviceId` Metro echoed, and `forgetDeviceAlias`
-        // below removes the only thing that joins them.
+        // below removes the only thing that joins them. One call, so the two
+        // are one event and reading either spends both — after a runtime death
+        // the logical id is unresolvable, so a copy filed under it that a read
+        // left behind would never be read at all.
         //
         // The socket is the whole of "did the app die?" here, and the
         // `disconnected` event is not consulted at all: `CDPClient` nulls its
@@ -361,12 +364,12 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         // ask the writer whether there is anything to point at.
         const keptAt = runtimeDied && logWriter.hasFile() ? logWriter.getFilePath() : undefined;
         if (captured > 0) {
-          const salvage = describeLostHistory(captured, keptAt);
-          const opts = { cause: runtimeDied ? "runtime-death" : "teardown", keptAt } as const;
-          recordReapedSession("js-runtime-debugger", deviceId, salvage, opts);
-          if (api.logicalDeviceId && api.logicalDeviceId !== deviceId) {
-            recordReapedSession("js-runtime-debugger", api.logicalDeviceId, salvage, opts);
-          }
+          const ids = [deviceId];
+          if (api.logicalDeviceId) ids.push(api.logicalDeviceId);
+          recordReapedSession("js-runtime-debugger", ids, describeLostHistory(captured, keptAt), {
+            cause: runtimeDied ? "runtime-death" : "teardown",
+            keptAt,
+          });
         }
         forgetDeviceAlias(api.logicalDeviceId);
         forgetLogicalKeyedDevice(deviceId);

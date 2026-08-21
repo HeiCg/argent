@@ -137,6 +137,10 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     // reader at a file that was deleted a line earlier.
     expect(result.note).toContain("deleted on teardown");
     expect(result.note).not.toContain(".log");
+    // And it answers the question this tool's own empty answer raises. Only
+    // here: `debugger-connect` and a `not_connected` result report the same
+    // teardown with no registry to account for.
+    expect(result.note).toContain("This registry starts empty because a new session was minted");
   });
 
   it("stays silent when the previous session had captured nothing", async () => {
@@ -235,6 +239,21 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
 
       expect(viaConnectId.totalEntries).toBe(0);
       expect(viaConnectId.note).toContain("29 captured console entries");
+
+      // The other half of "whichever id": a fresh teardown, read back with the
+      // id Metro echoed rather than the one the caller connected with. Reading
+      // spends the whole event, so this needs its own teardown to read.
+      __resetReapedSessionsForTesting();
+      const second = await connectAndCapture(CONNECT_ID, 13);
+      await registry.disposeService(second);
+
+      const viaLogicalId = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: LOGICAL_ID,
+      })) as { totalEntries: number; note?: string };
+
+      expect(viaLogicalId.totalEntries).toBe(0);
+      expect(viaLogicalId.note).toContain("13 captured console entries");
     });
 
     it("spends BOTH breadcrumbs on that one read, so no copy outlives the event", async () => {

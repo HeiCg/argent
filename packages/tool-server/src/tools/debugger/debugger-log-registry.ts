@@ -31,23 +31,16 @@ interface LogRegistryResponse extends LogStats {
 }
 
 /**
- * Consume the breadcrumb the previous session's dispose left, under every id
- * this device answers to.
- *
- * Every id unconditionally — NOT `a ?? b`. The disposer writes ONE event under
- * two keys (the id the caller connected with and the `logicalDeviceId` Metro
- * echoed) so either spelling can read it back; short-circuiting consumes only
- * the key that matched and leaves the other behind, where it would attach a
- * stale explanation to a later, unrelated read — against the report-once
- * invariant the breadcrumb store states.
+ * Consume the breadcrumb the previous session's dispose left, under whichever
+ * of this device's ids is known here. The store files one teardown under every
+ * id it answers to and spends them together, so the first hit is the answer.
  */
 function takeReapedNote(ids: Array<string | undefined>): string | undefined {
-  let reaped: ReturnType<typeof takeReapedSession>;
   for (const id of new Set(ids.filter((id): id is string => id !== undefined))) {
     const entry = takeReapedSession("js-runtime-debugger", id);
-    reaped ??= entry;
+    if (entry) return describeReapedSession(entry, "JS-runtime debugger session");
   }
-  return reaped ? describeReapedSession(reaped, "JS-runtime debugger session") : undefined;
+  return undefined;
 }
 
 const zodSchema = z.object({
@@ -118,7 +111,23 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
             params.device_id,
             api.logicalDeviceId,
           ]);
-          if (note) response.note = note;
+          // The one answer that HAS a registry to account for, so the one that
+          // says why this one is empty. `debugger-connect` and the
+          // `not_connected` branch below report the same teardown without one.
+          if (note) {
+            response.note =
+              `${note} This registry starts empty because a new session was minted, ` +
+              `not because the app logged nothing.`;
+          }
+        } else if (!api.logWriter.hasFile()) {
+          // The counts and clusters above are real — they are held in memory —
+          // but `open()` swallows its failure and buffers, so `file` can name a
+          // path that has never existed, and the documented next step is to grep
+          // it.
+          response.note =
+            `The log file at ${stats.file} could not be created, so the entries counted here ` +
+            `are only in this summary — do not try to read that path. Check that ` +
+            `~/.argent/tmp is writable.`;
         }
         return response;
       } catch (err) {

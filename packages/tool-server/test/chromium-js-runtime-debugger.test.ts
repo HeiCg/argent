@@ -198,6 +198,8 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     // empty.
     __resetReapedSessionsForTesting();
     const fake = makeFakeChromiumCdpApi();
+    let socketOpen = true;
+    (fake.api.cdp as unknown as { isConnected: () => boolean }).isConnected = () => socketOpen;
     const instance = await chromiumJsRuntimeDebuggerBlueprint.factory(
       { chromium: fake.api },
       "chromium-cdp-19222",
@@ -211,6 +213,10 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     });
     const logPath = instance.api.logWriter.getFilePath();
 
+    // `CDPClient` nulls its socket in `cleanup()` before it emits, so a
+    // `disconnected` with a still-OPEN socket is a state production cannot
+    // reach.
+    socketOpen = false;
     fake.events.emit("disconnected", new Error("renderer gone"));
     await instance.dispose();
 
@@ -236,8 +242,9 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     // this dispose unregisters its own handler while the emit is still walking
     // the listener set. `TypedEventEmitter` iterates the live set, so the
     // handler is skipped and never runs. Reading only the event therefore reads
-    // false on exactly the path the keep-the-log rule exists for; against a real
-    // headless Chrome, closing the connected tab deleted the pre-crash log.
+    // false on exactly the path the keep-the-log rule exists for — closing the
+    // connected tab of a real headless Chrome is how that costs the pre-crash
+    // log — so the socket has to be the answer.
     __resetReapedSessionsForTesting();
     const fake = makeFakeChromiumCdpApi();
     let socketOpen = true;
@@ -287,20 +294,27 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     // keepalive would last as long as the process, and the keepalive would keep
     // the file out of `pruneStaleLogs` for exactly that long.
     const before = new Set(fs.readdirSync(logDir()));
+    const fake = makeFakeChromiumCdpApi();
     httpControl.failCreateServer = true;
     try {
       await expect(
-        chromiumJsRuntimeDebuggerBlueprint.factory(
-          { chromium: makeFakeChromiumCdpApi().api },
-          "chromium-cdp-19222",
-          { device: chromiumDevice }
-        )
+        chromiumJsRuntimeDebuggerBlueprint.factory({ chromium: fake.api }, "chromium-cdp-19222", {
+          device: chromiumDevice,
+        })
       ).rejects.toThrow(/no sockets left/);
     } finally {
       httpControl.failCreateServer = false;
     }
     const leaked = fs.readdirSync(logDir()).filter((n) => !before.has(n));
     expect(leaked).toEqual([]);
+    // The listeners are the other half: this client belongs to ChromiumCdp and
+    // outlives the failure, so a leaked `consoleAPICalled` handler would go on
+    // writing into the writer just closed above.
+    const registered = (event: string) =>
+      (fake.events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(event)
+        ?.size ?? 0;
+    expect(registered("consoleAPICalled")).toBe(0);
+    expect(registered("disconnected")).toBe(0);
   });
 
   it("keeps nothing when the renderer dies without having logged", async () => {

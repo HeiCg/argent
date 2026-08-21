@@ -27,10 +27,11 @@ export const debuggerConnectTool: ToolDefinition<
     isNewDebugger: boolean;
     connected: boolean;
     /**
-     * Present only when the previous session for this device ended with the app
-     * itself going away and left its console log on disk — the note names that
-     * file. Reported here because this call is the prescribed recovery step
-     * after a crash, and it consumes the record that names the file.
+     * What became of the previous session's console history, present only when
+     * that session ended with the app itself going away. Names the log file the
+     * teardown left on disk, or says it has since been reclaimed. Reported here
+     * because this call is the prescribed recovery step after a crash, and it
+     * consumes the record that names the file.
      */
     note?: string;
   }
@@ -46,7 +47,7 @@ export const debuggerConnectTool: ToolDefinition<
   description: `Connect to a JS runtime CDP debugger.
 iOS / Android / Vega: connects to Metro's CDP endpoint on the given port. Chromium: re-uses the page CDP session opened by boot-device — port is ignored.
 Returns connection info including port, projectRoot (empty on Chromium and on legacy Metro, e.g. Vega), deviceName, appName, logicalDeviceId (absent on Vega), and isNewDebugger. If already connected, returns the existing connection.
-Also returns { note } when the PREVIOUS session for this device ended because the app went away (a crash, a force-quit, a restart-app) while holding captured console logs: that teardown left the old log file on disk and the note names its path — read that file for the pre-crash logs, because nothing else reports it.
+Also returns { note } when the PREVIOUS session for this device ended because the app went away (a crash, a force-quit, a restart-app) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs, because nothing else reports that path — or says it has since been reclaimed.
 Use when starting a debug session or before calling other debugger-* tools. Fails if the runtime is unreachable (Metro down, or Chromium CDP terminated).`,
   zodSchema,
   capability: DEBUGGER_TOOL_CAPABILITY,
@@ -68,10 +69,12 @@ Use when starting a debug session or before calling other debugger-* tools. Fail
     // explanation: it carries the path of a log file still on disk, and this
     // call is where the agent arrives holding it. Both `debugger-status`'s
     // stale_connection guidance and the skill's crash row send it here after a
-    // restart-app, and the reconnected session stops being empty — the one state
-    // `debugger-log-registry` reports a breadcrumb in — as soon as the relaunched
-    // app logs its first line. Dropping it silently would leave the file named by
-    // nothing until the pruner reclaims it.
+    // restart-app, and by then `debugger-log-registry` has nothing left to
+    // report: it reads a breadcrumb only from a session it could resolve and
+    // found empty, or from the `not_connected` answer of one it could not
+    // resolve at all — and the relaunched app is neither, the moment it logs its
+    // first line. Dropping it silently would leave the file named by nothing
+    // until the pruner reclaims it.
     //
     // Not in the blueprint's factory: that runs for an IMPLICIT resolve too —
     // `debugger-log-registry` reconnects through it — and clearing there would

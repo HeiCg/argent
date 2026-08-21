@@ -211,7 +211,7 @@ describe("console logs across an app crash", () => {
     // agent was involved — the app crashed — so a note that opens by blaming a
     // stop-all sends the reader after a cause that does not exist, then
     // contradicts itself with a salvage clause about a dead runtime.
-    expect(after.note).toContain("the app it was attached to went away");
+    expect(after.note).toContain("its debugger connection dropped instead of being closed");
     expect(after.note).not.toContain("stop-all-simulator-servers");
     expect(after.note).not.toContain("another agent");
 
@@ -258,7 +258,7 @@ describe("console logs across an app crash", () => {
       expect(after.reason).toBe("no_app_connected");
       expect(after.note).toBeDefined();
       expect(after.note).toContain(logPath);
-      expect(after.note).toContain("the app it was attached to went away");
+      expect(after.note).toContain("its debugger connection dropped instead of being closed");
       expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
     } finally {
       targetsGone = false;
@@ -398,6 +398,48 @@ describe("console logs across an app crash", () => {
       await new Promise((r) => setTimeout(r, 50));
     }
     expect(wss.clients.size).toBe(socketsBefore);
+  });
+
+  it("says the log file could not be created rather than sending a reader to grep it", async () => {
+    // `open()` swallows its failure and buffers, so the counts and clusters are
+    // real while `file` names a path that has never existed — and the documented
+    // next step is to grep exactly that path.
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "argent-ro-home-"));
+    const logs = path.join(tmpHome, ".argent", "tmp");
+    fs.mkdirSync(logs, { recursive: true });
+    fs.chmodSync(logs, 0o555);
+    const savedHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+    try {
+      await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "nofile-device" });
+      cdpConn!.send(
+        JSON.stringify({
+          method: "Runtime.consoleAPICalled",
+          params: {
+            type: "error",
+            args: [{ type: "string", value: "buffered only" }],
+            executionContextId: 1,
+            timestamp: Date.now(),
+          },
+        })
+      );
+      await new Promise((r) => setTimeout(r, 200));
+
+      const result = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: "nofile-device",
+      })) as { totalEntries: number; file: string; note?: string };
+
+      expect(result.totalEntries).toBe(1);
+      expect(fs.existsSync(result.file)).toBe(false);
+      expect(result.note).toContain("could not be created");
+      expect(result.note).toContain(result.file);
+    } finally {
+      fs.chmodSync(logs, 0o755);
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
   });
 
   it("removes the log file on an explicit teardown", async () => {

@@ -143,12 +143,11 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
 
   // Deliberately NO recoverable() here. The registry's self-heal disposes the
   // recovering node before it retries, and this blueprint's dispose closes the
-  // LogFileWriter — which UNLINKS the session's captured console log from disk
-  // unless the renderer itself died (the `keepFile` decision in dispose below),
-  // and the one failure
-  // that would trigger a self-heal here is a tab switch, not a death — so a
-  // recovery pass would destroy the logs whether or
-  // not the retry then succeeds. It would also buy nothing: the one window
+  // LogFileWriter, ending the capture session whether or not the retry then
+  // succeeds: the registry mints a new one over a new path, and the old file is
+  // either unlinked or — since a self-heal fires on NOT_CONNECTED, which means a
+  // socket that is not OPEN — kept under a breadcrumb for a session that never
+  // died. It would also buy nothing: the one window
   // where a call fails while this node and its ChromiumCdp dependency stay
   // RUNNING is a tab switch, where CDPClient.reconnect() rejects in-flight
   // requests with CONNECTION_CLOSED (late sends with NOT_CONNECTED) but
@@ -192,14 +191,12 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
     // listeners symmetrically — otherwise the upstream `cdp.events` outlives
     // our blueprint and would emit into a disposed event bus.
     const events = new TypedEventEmitter<ServiceEvents>();
-    // Half of the "did the renderer die?" answer `dispose` needs; the socket is
-    // the other half, read there. This listener cannot carry it alone: when the
-    // renderer goes away, `ChromiumCdp`'s own handler for the same event runs
-    // first and cascades a teardown into us, and the dispose below removes this
-    // listener before the emit reaches it — see the comment at the read.
-    let sawDisconnect = false;
+    // Deliberately NOT where "did the renderer die?" is answered — dispose reads
+    // the socket for that. When the renderer goes away, `ChromiumCdp`'s own
+    // handler for this event runs first and cascades a teardown into us, and
+    // that dispose removes this listener before the emit reaches it, so a latch
+    // set here would still be false on the one path it would exist for.
     const onDisconnected = (error?: Error) => {
-      sawDisconnect = true;
       events.emit("terminated", error ?? new Error("Chromium CDP disconnected"));
     };
     cdp.events.on("disconnected", onDisconnected);
@@ -238,16 +235,22 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
     };
     cdp.events.on("consoleAPICalled", onConsoleAPI);
 
-    const consoleServer = await createConsoleLogServer(consoleEvents, logWriter).catch(
-      (err: unknown) => {
-        // No dispose exists until this factory returns, so a throw here leaves
-        // the writer with nothing to ever close it: its fd, its file and its
-        // keepalive would last as long as the process, and the file would be
-        // exempt from `pruneStaleLogs` for exactly as long.
-        logWriter.close();
-        throw err;
-      }
-    );
+    // No dispose exists until this factory returns, so a throw here leaves
+    // everything set up above with nothing to ever undo it: the writer's fd, its
+    // file and its keepalive would last as long as the process — the keepalive
+    // holding that file out of `pruneStaleLogs` for exactly that long — and the
+    // two listeners would stay on `ChromiumCdp`'s client, which survives this
+    // failure, feeding console entries to a closed writer. The client itself is
+    // that service's to disconnect, not ours.
+    let consoleServer: Awaited<ReturnType<typeof createConsoleLogServer>>;
+    try {
+      consoleServer = await createConsoleLogServer(consoleEvents, logWriter);
+    } catch (err) {
+      cdp.events.off("consoleAPICalled", onConsoleAPI);
+      cdp.events.off("disconnected", onDisconnected);
+      logWriter.close();
+      throw err;
+    }
 
     // Best-effort: bind a callback name so evaluateWithBinding works if a
     // future Chromium tool wants it. Failure is non-fatal — the existing
@@ -298,18 +301,19 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
         // `device.id` (set from it in the api above), so there is no second key
         // to write.
         //
-        // The socket, not just `sawDisconnect`, because on the path this exists
-        // for the flag is always false: a dead renderer closes the shared
-        // client, `ChromiumCdp`'s handler for that event runs before ours and
+        // The socket, not the `disconnected` event, because on the path this
+        // exists for that event never reaches us: a dead renderer closes the
+        // shared client, `ChromiumCdp`'s handler runs before ours and
         // synchronously cascades a teardown into this service, and the `off`
         // above then unregisters our handler mid-emit — `TypedEventEmitter`
         // iterates the live listener set, so it is skipped rather than called.
-        // `CDPClient` nulls its socket before emitting, so the socket is already
-        // the durable answer. Its one ambiguity is a tab switch, where
-        // `reconnect()` also leaves the client briefly socket-less with the
-        // renderer alive; a teardown landing inside that window keeps a file the
-        // pruner reclaims within a day, which is the cheaper way to be wrong.
-        const runtimeDied = sawDisconnect || !cdp.isConnected();
+        // `CDPClient` nulls its socket before emitting, so the socket is the
+        // durable form of the same fact. Its one ambiguity is a tab switch,
+        // where `reconnect()` also leaves the client briefly socket-less with
+        // the renderer alive; a teardown landing inside that window keeps a file
+        // the pruner reclaims within a day, which is the cheaper way to be
+        // wrong.
+        const runtimeDied = !cdp.isConnected();
         const captured = logWriter.getStats().totalEntries;
         // A count is not a file: `open()` swallows its failure and buffers, so
         // ask the writer whether there is anything to point at.

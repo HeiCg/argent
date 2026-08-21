@@ -99,15 +99,31 @@ describe("the reaped-session key", () => {
       takeReapedSession("js-runtime-debugger", UDID)!,
       "JS-runtime debugger session"
     );
-    expect(message).toContain("the app it was attached to went away");
+    expect(message).toContain("its debugger connection dropped instead of being closed");
     expect(message).not.toContain("stop-all-simulator-servers");
     expect(message).not.toContain("another agent");
-    // Nor does it name a culprit it cannot see — a crash, a force-quit and a
-    // restart-app all reach the disposer as the same dropped socket.
-    expect(message).toContain("restart-app terminated it");
+    // Nor does it name a culprit it cannot see: a crash, a force-quit, a
+    // restart-app and Metro going away all reach the disposer as the same
+    // dropped socket, so it offers the whole family and leaves the caller's own
+    // `reason` to narrow it.
+    expect(message).toContain("a restart-app");
+    expect(message).toContain("Metro restarted");
     // Still says the thing the breadcrumb exists to say.
     expect(message).toContain("It was not a session that never started.");
     expect(message).toContain("the log file is kept at /x");
+  });
+
+  it("spends every copy of one teardown, whichever id the reader knows", () => {
+    // A crashed app's `logicalDeviceId` cannot be resolved again — nothing can
+    // ask Metro for a target that is gone — so a copy filed under it that a read
+    // left behind would never be read at all, and would explain some later,
+    // unrelated answer instead.
+    recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "salvage", {
+      cause: "runtime-death",
+    });
+
+    expect(takeReapedSession("js-runtime-debugger", UDID)).toBeDefined();
+    expect(takeReapedSession("js-runtime-debugger", "logical-abc")).toBeUndefined();
   });
 
   it("defaults to the teardown family, so only a proven crash claims one", () => {
@@ -122,6 +138,30 @@ describe("the reaped-session key", () => {
     });
     afterEach(() => {
       fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("leaves the file alone once a reader has been given its path", () => {
+      // The reclaim exists to bound a crash loop nobody reads. A read consumes the
+      // whole event, so the next teardown finds nothing to replace — which is what
+      // keeps it from deleting the file the reader was just sent to.
+      const held = path.join(dir, "argent-logs-2-1.log");
+      const next = path.join(dir, "argent-logs-2-2.log");
+      fs.writeFileSync(held, "pre-crash");
+      fs.writeFileSync(next, "later");
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-first"], "kept", {
+        cause: "runtime-death",
+        keptAt: held,
+      });
+      expect(takeReapedSession("js-runtime-debugger", UDID)!.keptAt).toBe(held);
+
+      // The app relaunches and crashes again: Metro issues a fresh logical id, so
+      // this teardown files under a different second key either way.
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-second"], "kept", {
+        cause: "runtime-death",
+        keptAt: next,
+      });
+
+      expect(fs.existsSync(held)).toBe(true);
     });
 
     it("stops advertising it once it is gone", () => {
@@ -167,8 +207,10 @@ describe("the reaped-session key", () => {
     });
 
     it("keeps the file when the same path is recorded twice", () => {
-      // The Hermes disposer writes ONE event under both ids the device answers
-      // to; the second write must not delete the file the first just kept.
+      // `key()` lowercases the device id while the disposer compares its two
+      // ids case-sensitively, so a device whose udid and logicalDeviceId differ
+      // only in case writes twice into one slot, both naming the file it just
+      // kept. Reclaiming the previous path there would delete it.
       const kept = path.join(dir, "argent-logs-1-3.log");
       fs.writeFileSync(kept, "x");
       recordReapedSession("js-runtime-debugger", UDID, "same", {
