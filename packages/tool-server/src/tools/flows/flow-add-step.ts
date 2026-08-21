@@ -1391,12 +1391,13 @@ function nestedStepAttempted(result: unknown): boolean {
     return !Object.prototype.hasOwnProperty.call(result, "notice");
   }
   // The flow runner reports one entry per DECLARED step and marks the ones it
-  // never reached `skip`. `run-sequence` appends one entry per step it got to
-  // and stops there, so its entries are attempts — except the two it rejects
-  // before dispatch (a tool outside its allow-list, one the target platform
-  // does not support), which say so with `dispatched: false`. Those prove the
-  // opposite of an attempt, and a sequence rejected on its FIRST step touched
-  // nothing at all: warning there contradicts the same message's "after 0 of N
+  // never reached `skip`.
+  // `run-sequence` appends one entry per step it got to and stops there, so its
+  // entries are attempts — except the ones rejected before dispatch (a tool
+  // outside its allow-list, one the target platform does not support, args the
+  // registry's schema check refuses), which say so with `dispatched: false`.
+  // Those prove the opposite of an attempt, and a sequence rejected on its
+  // FIRST step touched nothing at all: warning there contradicts the same message's "after 0 of N
   // steps", and the caller passes this same value as `ranOnDevice`, which then
   // tells a superseded author to weigh undoing an action never performed.
   return steps.some((s) => {

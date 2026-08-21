@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { z } from "zod";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -1558,6 +1559,62 @@ describe("flow-add-step", () => {
     // Nothing reached the registry, which is what makes the silence provable.
     expect(inner.invokeTool).not.toHaveBeenCalled();
     expect(parseFlow(await onDisk("sequence-rejected")).steps).toEqual([]);
+  });
+
+  it("stays silent when run-sequence's first step failed its schema check", async () => {
+    // The registry's own parse is the third exit that precedes the device: the
+    // step's `execute` never runs, so the entry must carry the same marker as
+    // the two run-sequence rejects itself. Driven through a REAL registry,
+    // since only that parse produces the rejection.
+    const inner = new Registry();
+    const executed: string[] = [];
+    inner.registerTool({
+      id: "gesture-tap",
+      description: "test double for gesture-tap",
+      zodSchema: z.object({ udid: z.string(), x: z.number(), y: z.number() }),
+      services: () => ({}),
+      execute: async () => {
+        executed.push("gesture-tap");
+        return { tapped: true };
+      },
+    } as never);
+    const runSequence = createRunSequenceTool(inner);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown) =>
+        id === "run-sequence"
+          ? runSequence.execute({}, args as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "sequence-bad-args", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "sequence-bad-args",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({
+          udid: "ABC",
+          steps: [
+            { tool: "gesture-tap", args: { xx: 0.5, y: 0.3 }, delayMs: 0 },
+            { tool: "gesture-tap", args: { x: 0.5, y: 0.4 }, delayMs: 0 },
+          ],
+        }),
+      }
+    );
+
+    expect(result.message).toContain("step NOT recorded");
+    expect(result.message).not.toContain("may already have");
+    // Nothing reached the device, which is what makes the silence provable.
+    expect(executed).toEqual([]);
+    expect(parseFlow(await onDisk("sequence-bad-args")).steps).toEqual([]);
   });
 
   it("still warns when a rejected step follows one that DID run", async () => {
