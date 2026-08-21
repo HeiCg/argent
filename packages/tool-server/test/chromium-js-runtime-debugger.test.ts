@@ -66,13 +66,16 @@ function takeChromiumReaped() {
   );
 }
 
-/** How many console listeners the shared client is still carrying. */
-function consoleListeners(events: TypedEventEmitter<CDPClientEvents>): number {
-  return (
-    (events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(
-      "consoleAPICalled"
-    )?.size ?? 0
+/** How many listeners the shared client is still carrying for `event`. */
+function listenerCount(events: TypedEventEmitter<CDPClientEvents>, event: string): number {
+  const registered = (events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(
+    event
   );
+  if (registered === undefined) return 0;
+  // The rollback checks below have no live count to compare against, so a
+  // container that stopped being a `Set` would read 0 and pass all of them.
+  expect(registered).toBeInstanceOf(Set);
+  return registered.size;
 }
 
 // One of the factory's hard-failure paths — the console-log server's bind,
@@ -178,12 +181,13 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     );
     const received: unknown[] = [];
     instance.api.consoleEvents.on("log", (entry) => received.push(entry));
+    expect(listenerCount(fake.events, "consoleAPICalled")).toBe(1);
     await instance.dispose();
     // On the listener itself, not only on what it delivers: this client belongs
     // to ChromiumCdp and outlives the dispose, so a listener left on it writes
     // to a closed writer for the rest of the browser's life — and `write`
     // throwing is why nothing arrives below either way.
-    expect(consoleListeners(fake.events)).toBe(0);
+    expect(listenerCount(fake.events, "consoleAPICalled")).toBe(0);
     fake.events.emit("consoleAPICalled", {
       type: "log",
       args: [{ type: "string", value: "after-dispose" }],
@@ -426,11 +430,8 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
     // The listeners are the other half: this client belongs to ChromiumCdp and
     // outlives the failure, so a leaked `consoleAPICalled` handler would go on
     // writing into the writer just closed above.
-    const registered = (event: string) =>
-      (fake.events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(event)
-        ?.size ?? 0;
-    expect(registered("consoleAPICalled")).toBe(0);
-    expect(registered("disconnected")).toBe(0);
+    expect(listenerCount(fake.events, "consoleAPICalled")).toBe(0);
+    expect(listenerCount(fake.events, "disconnected")).toBe(0);
   });
 
   it("leaves no listener on the shared client when the writer cannot be built", async () => {
@@ -453,11 +454,8 @@ describe("ChromiumJsRuntimeDebugger blueprint", () => {
       fs.chmodSync(argentDir, 0o755);
     }
 
-    const registered = (event: string) =>
-      (fake.events as unknown as { listeners: Map<string, Set<unknown>> }).listeners.get(event)
-        ?.size ?? 0;
-    expect(registered("disconnected")).toBe(0);
-    expect(registered("consoleAPICalled")).toBe(0);
+    expect(listenerCount(fake.events, "disconnected")).toBe(0);
+    expect(listenerCount(fake.events, "consoleAPICalled")).toBe(0);
   });
 
   it("keeps nothing when the renderer dies without having logged", async () => {

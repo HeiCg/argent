@@ -97,9 +97,13 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  // The registry caches the service, so a session a previous case left
-  // connected would be reused — carrying its entry count into the next case.
-  await registry.disposeService(`JsRuntimeDebugger:${mockPort}:${LOGICAL_ID}`).catch(() => {});
+  // Every session, not just this file's usual one: the registry caches them
+  // across cases while `scopeTempHome` hands each case a new HOME, so one left
+  // running answers the next case through a log file whose directory has since
+  // been deleted — and carries its entry count over.
+  for (const urn of registry.getSnapshot().services.keys()) {
+    await registry.disposeService(urn).catch(() => {});
+  }
   __resetReapedSessionsForTesting();
 });
 
@@ -310,6 +314,32 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
         device_id: CONNECT_ID,
       })) as { note?: string };
       expect(owner.note).toContain("17 captured console entries");
+    });
+
+    it("leaves it alone for a CONNECT that landed here by that same fallback", async () => {
+      // The connect side of the same misresolve, and the costlier one: connect
+      // spends the breadcrumb whatever its cause and reports only a runtime
+      // death, so a teardown record it takes from another device is gone
+      // without ever being printed.
+      const urn = await connectAndCapture(CONNECT_ID, 23);
+      await registry.disposeService(urn);
+
+      const strangerUrn = `JsRuntimeDebugger:${mockPort}:someone-elses-device`;
+      await registry.invokeTool("debugger-connect", {
+        port: mockPort,
+        device_id: "someone-elses-device",
+      });
+      const stranger = await registry.resolveService<JsRuntimeDebuggerApi>(strangerUrn);
+      // The premise: the fallback really did land this connect on the reaped
+      // device's Metro target.
+      expect(stranger.logicalDeviceId).toBe(LOGICAL_ID);
+      await registry.disposeService(strangerUrn);
+
+      const owner = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: CONNECT_ID,
+      })) as { note?: string };
+      expect(owner.note).toContain("23 captured console entries");
     });
 
     it("spends BOTH breadcrumbs on that one read, so no copy outlives the event", async () => {

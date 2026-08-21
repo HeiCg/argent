@@ -411,13 +411,18 @@ describe("console logs across an app crash", () => {
       device_id: "closing-device",
     });
     const socketClosing = vi.spyOn(api.cdp, "isConnected").mockReturnValue(false);
-    const status = (await registry.invokeTool("debugger-status", {
-      port: mockPort,
-      device_id: "closing-device",
-    })) as { reason?: string };
-    socketClosing.mockRestore();
+    let reason: string | undefined;
+    try {
+      const status = (await registry.invokeTool("debugger-status", {
+        port: mockPort,
+        device_id: "closing-device",
+      })) as { reason?: string };
+      reason = status.reason;
+    } finally {
+      socketClosing.mockRestore();
+    }
 
-    expect(status.reason).toBe("stale_connection");
+    expect(reason).toBe("stale_connection");
     expect(fs.existsSync(before.file)).toBe(true);
     expect(fs.readFileSync(before.file, "utf-8")).toContain("CRITICAL pre-crash error");
 
@@ -505,7 +510,8 @@ describe("console logs across an app crash", () => {
     // writing to a closed writer. The emitter swallows what that throws, which
     // is what makes it worth pinning: nothing fails, it just prints.
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    const noise = () => stderr.mock.calls.map((call) => String(call[0])).join("");
+    // Read before the restore below, which clears the recorded calls with it.
+    let noise: string;
     let stopFlood = () => {};
     httpControl.onFail = () => (stopFlood = stallAndFlood());
     httpControl.failCreateServer = true;
@@ -517,10 +523,11 @@ describe("console logs across an app crash", () => {
       httpControl.failCreateServer = false;
       httpControl.onFail = undefined;
       stopFlood();
+      noise = stderr.mock.calls.map((call) => String(call[0])).join("");
       stderr.mockRestore();
     }
 
-    expect(noise()).not.toContain("LogFileWriter is closed");
+    expect(noise).not.toContain("LogFileWriter is closed");
   });
 
   it("hands the console listener back when the session ends", async () => {
@@ -649,9 +656,12 @@ describe("console logs across an app crash", () => {
       return true;
     });
 
-    await registry.disposeService(`JsRuntimeDebugger:${mockPort}:order-device`);
-    connected.mockRestore();
-    subscriber.close();
+    try {
+      await registry.disposeService(`JsRuntimeDebugger:${mockPort}:order-device`);
+    } finally {
+      connected.mockRestore();
+      subscriber.close();
+    }
 
     expect(subscriberAtRead).toBe(WebSocket.OPEN);
     // And a live socket at that moment means a teardown, which takes the file.
