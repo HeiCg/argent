@@ -361,16 +361,22 @@ describe("the reaped-session key", () => {
       // would take the whole recording of the new session with it — from a
       // disposer, where the throw lands in the registry's teardown cascade.
       const swept = path.join(dir, "argent-logs-1-4.log");
+      const replacement = path.join(dir, "argent-logs-1-6.log");
       fs.writeFileSync(swept, "x");
+      fs.writeFileSync(replacement, "y");
       recordReapedSession("js-runtime-debugger", UDID, "first", {
         cause: "runtime-death",
         keptAt: swept,
       });
       fs.rmSync(swept);
 
-      recordReapedSession("js-runtime-debugger", UDID, "second", { cause: "runtime-death" });
+      recordReapedSession("js-runtime-debugger", UDID, "second", {
+        cause: "runtime-death",
+        keptAt: replacement,
+      });
 
       expect(takeReapedSession("js-runtime-debugger", UDID)?.salvage).toBe("second");
+      expect(fs.existsSync(replacement)).toBe(true);
     });
   });
 

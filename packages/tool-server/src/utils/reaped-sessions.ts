@@ -158,16 +158,18 @@ export function recordReapedSession(
     const standsIn = [...keys].every((k) => previous.keys.has(k));
     if (!standsIn && leftovers.length > 0) continue;
     // Half an event explains nothing: a copy left behind would answer some
-    // later, unrelated read — and would still
-    // name the file the reclaim below is about to take.
+    // later, unrelated read.
     //
     // Its kept file goes with it when this event keeps one of its own: nothing
     // records that path any more, and reclaiming it here rather than waiting for
     // the day-old sweep keeps an UNREAD crash loop to one kept file per device —
-    // every crash in such a loop keeps a file, so the bound holds. A teardown
-    // that keeps nothing reclaims nothing: it would be spending the log a crash
-    // left, which the reader it was kept for may still reach by path, to save a
-    // file the sweep collects anyway.
+    // every crash in such a loop keeps one, so the bound holds.
+    //
+    // A teardown keeps no file, and so reclaims none. What it would delete is
+    // precisely the log of a crash nobody has read: a read consumes the whole
+    // event, so anything still here to be superseded was never reported. That
+    // costs one file per crash-then-teardown cycle, waiting for the day-old
+    // sweep — the rate the read path below already leaks at, deliberately.
     //
     // A loop whose notes are read is not bounded here, and deliberately so.
     // restart-app then `debugger-connect` is both the prescribed recovery and

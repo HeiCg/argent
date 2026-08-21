@@ -155,15 +155,26 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // at all.
         //
         // Except while that session is still being torn down. The dispose files
-        // the breadcrumb before it awaits anything and then spends up to a
-        // second on the CDP close handshake, so a read landing in that window
-        // gets `reconnecting` — whose guidance is to wait and ask again, and the
-        // asking again is what would find it spent.
+        // the breadcrumb before it awaits anything, and a read landing in the
+        // awaits that follow — the console server's close waits out the sockets
+        // attached to it — gets `reconnecting`, whose guidance is to wait and
+        // ask again. The asking again is what would find it spent.
         const note =
           reason === "reconnecting"
             ? undefined
             : takeReapedNote(params.device_id, debuggerReapedScope(params));
-        return { ...buildNotConnected(reason, err, params), ...(note ? { note } : {}) };
+        const result = buildNotConnected(reason, err, params);
+        if (!note) return result;
+        // `guidance` is the field an agent acts on, and these strings are shared
+        // with the tools that only point AT this one's note — so read from here
+        // they send it back for a note it is holding, and which this read has
+        // just spent. Two of the six reasons a note can ride on mention one at
+        // all; a Chromium crash reaches none of them.
+        return {
+          ...result,
+          note,
+          guidance: `Read this result's note first — it is the note the rest of this guidance refers to. ${result.guidance}`,
+        };
       }
     },
   };

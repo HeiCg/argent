@@ -147,9 +147,9 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
   // succeeds: the registry mints a new one over a new path, and the old file is
   // either unlinked or — since a self-heal fires on NOT_CONNECTED, which means a
   // socket that is not OPEN — kept under a breadcrumb for a session that never
-  // died. It would also buy nothing: the one window
-  // where a call fails while this node and its ChromiumCdp dependency stay
-  // RUNNING is a tab switch, where CDPClient.reconnect() rejects in-flight
+  // died. It would also buy nothing: the one window where a call fails while
+  // this node and its ChromiumCdp dependency stay RUNNING is a tab switch,
+  // where CDPClient.reconnect() rejects in-flight
   // requests with CONNECTION_CLOSED (late sends with NOT_CONNECTED) but
   // re-points the SAME client object at the new tab — the cached node heals
   // itself for the next call without any dispose. The failing call surfaces a

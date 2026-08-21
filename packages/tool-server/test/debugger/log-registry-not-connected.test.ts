@@ -128,6 +128,8 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.connected).toBe(false);
     expect(result.reason).toBe("metro_not_running");
     expect(result.guidance).toContain("Do not retry in a loop");
+    // Nothing was reaped here, so nothing is prefixed to it.
+    expect(result.guidance).not.toContain("Read this result's note");
     // No fabricated LogStats: agents must not be sent to grep a file that
     // does not exist.
     expect("file" in result).toBe(false);
@@ -165,9 +167,41 @@ describe("debugger-log-registry not-connected results", () => {
     expect(outcomeCalls()[0][1]).toMatchObject({ outcome: "cdp_unreachable" });
   });
 
+  it("leads the guidance with the note when the answer is carrying one", async () => {
+    // These strings are shared with the tools that only point AT this one's
+    // note, so read from a log-registry answer they send the agent back here
+    // for a note this answer is already holding — and that this read has just
+    // spent. Four of the six reasons a note can ride on do not mention one at
+    // all, and a Chromium crash reaches none of the two that do.
+    const port = await freePort();
+    const setup = makeSetup(jsRuntimeDebuggerBlueprint);
+    cleanups.push(async () => {
+      await setup.registry.dispose();
+      __resetReapedSessionsForTesting();
+    });
+    recordReapedSession(
+      "js-runtime-debugger",
+      "mock-device",
+      "The log file is kept at /tmp/kept.log",
+      { cause: "runtime-death", keptAt: "/tmp/kept.log", scope: String(port) }
+    );
+
+    const result = (await setup.invoke({ port, device_id: "mock-device" })) as Record<
+      string,
+      string
+    >;
+
+    expect(result.reason).toBe("metro_not_running");
+    expect(result.note).toContain("/tmp/kept.log");
+    expect(result.guidance.startsWith("Read this result's note first")).toBe(true);
+    // And the reason's own guidance is still all there behind it.
+    expect(result.guidance).toContain("Do not retry in a loop");
+  });
+
   /**
-   * A service parked in dispose until the returned `release`, which is the
-   * window a real teardown spends waiting out its CDP close handshake.
+   * A service parked in dispose until it is released in the cleanup below —
+   * standing in for the window a real dispose spends in the awaits that follow
+   * filing its breadcrumb.
    */
   async function teardownInFlight(deviceId: string) {
     let releaseDispose!: () => void;

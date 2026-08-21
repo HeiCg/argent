@@ -77,16 +77,20 @@ describe("LogFileWriter", () => {
     });
 
     it("lets a kept file age out once the session that kept it has closed", () => {
-      // The keep path is where the keepalive has to stop: mtime is the only
-      // thing that ever makes a kept file reclaimable, and a keepalive left
-      // running refreshes it hourly for the life of the process — so every crash
-      // would leave a file no sweep in any tool-server can collect.
+      // Both halves of the keep path's close, which the pruner then depends on:
+      // the timer is disarmed, and the fd released. An fd left open is what
+      // would let `touch` go on refreshing the kept file's mtime — the only
+      // thing that ever makes it reclaimable — so a crash would leave a file no
+      // sweep in any tool-server collects.
       vi.useFakeTimers();
       try {
+        const idle = vi.getTimerCount();
         const crashed = new LogFileWriter(7777);
+        expect(vi.getTimerCount()).toBe(idle + 1);
         crashed.write({ id: 1, timestamp: "t", level: "error", message: "CRITICAL pre-crash" });
         const kept = crashed.getFilePath();
         crashed.close({ keepFile: true });
+        expect(vi.getTimerCount()).toBe(idle);
         expect(fs.existsSync(kept)).toBe(true);
 
         vi.advanceTimersByTime(DAY_MS + 60 * 60 * 1000);

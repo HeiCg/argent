@@ -33,8 +33,9 @@ export const debuggerConnectTool: ToolDefinition<
     /**
      * What became of the previous session's console history, present only when
      * that session ended with the app itself going away. Names the log file the
-     * teardown left on disk, says it has since been reclaimed, or — when the
-     * writer never got a file to keep — that those entries went with it.
+     * teardown left on disk, says it has since been reclaimed, or — when there
+     * was no file to keep, because the writer never created one or something
+     * removed it — that those entries went with it.
      * Reported here because this call is the prescribed recovery step after a
      * crash, and it consumes the record that names the file.
      */
