@@ -110,9 +110,12 @@ describe("guidance platform-correctness", () => {
     ]) {
       expect(r.guidance).toContain("ask the user");
       expect(r.guidance).toContain("same");
+      // The id is only new when the port is, so the flat claim must not come back.
+      expect(r.guidance).toContain("list-devices");
+      expect(r.guidance).not.toMatch(/under a new chromium-cdp/);
     }
-    // The id is only new when the port is, so the flat claim must not come back.
-    expect(chromium.guidance).toContain("list-devices");
-    expect(chromium.guidance).not.toMatch(/under a new chromium-cdp/);
+    // A renderer paused at a breakpoint times out exactly like a wedged one, and
+    // quitting the app throws the debug session away.
+    expect(chromium.guidance).toContain("breakpoint");
   });
 });
