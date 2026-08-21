@@ -26,7 +26,7 @@
  *
  * One entry can also own a file: {@link ReapedSession.keptAt} names a log the
  * teardown left on disk for the breadcrumb to advertise, and this store unlinks
- * it when a later teardown supersedes the entry holding it. That makes the
+ * it when the event superseding that entry keeps a file of its own. That makes the
  * module a lifetime owner, not only a message board, so read that field's doc
  * before setting it — an artifact the user is meant to keep does not go there.
  */

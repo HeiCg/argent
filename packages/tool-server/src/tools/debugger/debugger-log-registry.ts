@@ -21,12 +21,12 @@ interface LogRegistryResponse extends LogStats {
    * Whatever would make the rest of this answer misleading on its own, in the
    * two states where something does — and both sentences when both hold:
    *
-   * - The registry is empty because the previous session for this device was
-   *   torn down holding console history — by a `stop-all-simulator-servers`, or
-   *   by its runtime going away. Without it an empty registry reads as "the app
-   *   logged nothing", the wrong conclusion to hand an agent debugging a silent
-   *   app. Names the old log file when that teardown left it on disk, which a
-   *   runtime death does.
+   * - This registry is a new session's, minted after the previous one for this
+   *   device was torn down holding console history — by a
+   *   `stop-all-simulator-servers`, or by its runtime going away. Without it a
+   *   zero here reads as "nothing was ever logged on this device", which is
+   *   wrong about the session that just died. Names the old log file when that
+   *   teardown left it on disk, which a runtime death does.
    * - {@link LogStats.file} names a path that is not there: `open()` failed and
    *   the writer buffered instead, or something removed the file after it was
    *   written. The counts and clusters are real; the file is not.
@@ -72,7 +72,7 @@ export function createDebuggerLogRegistryTool(
     },
     description: `Get a summary of all console logs captured from the app's JS runtime.
 Returns the log file path, entry counts by level, and message clusters (grouped by similarity). Works against Hermes (iOS / Android / Vega) and V8 (Chromium).
-Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. ALWAYS check { note } before acting on the rest: it appears only when something would otherwise mislead you, and it says which of two things it is — or both, when both hold. Either the previous debugger session for this device was torn down while holding captured logs — by a stop-all-simulator-servers, or by the app's JS runtime going away — so this registry starts empty for a reason that is not "the app logged nothing", and when that teardown left the old log file on disk (a crash or force-quit does) the note names its path to read instead. Or nothing is at { file } — the writer could not create it, or something has removed it since — so it is not there to grep and the counts and clusters here are all there is. Absent a note, empty means nothing has been captured since this session began, and { file } is readable.
+Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. ALWAYS check { note } before acting on the rest: it appears only when something would otherwise mislead you, and it says which of two things it is — or both, when both hold. Either the previous debugger session for this device was torn down while holding captured logs — by a stop-all-simulator-servers, or by the app's JS runtime going away — so the counts here are a new session's own and a zero says nothing about what the old one captured, and when that teardown left the old log file on disk (a crash or force-quit does) the note names its path to read instead. Or nothing is at { file } — the writer could not create it, or something has removed it since — so it is not there to grep and the counts and clusters here are all there is. Absent a note, empty means nothing has been captured since this session began, and { file } is readable.
 When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } and no log file of its own — follow the guidance (do not retry in a loop). A crashed app reaches that state too, so check { note } there as well: when the dead session left its log file behind the note names it, and that file is readable even though the debugger is not. The one exception is reason "reconnecting": the record is held for the retry that guidance asks for, so no note there says nothing about what the previous session left. A "connected" result's stats may come from a session whose socket has since died — use debugger-status, not this tool, to judge debugger health.`,
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,
