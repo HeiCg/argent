@@ -111,7 +111,7 @@ const zodSchema = z.object({
     .max(65535)
     .optional()
     .describe(
-      "Electron-only: CDP remote-debugging port to expose. Defaults to a free port; the resulting device id is `chromium-cdp-<port>`."
+      "Electron-only: CDP remote-debugging port to expose. Defaults to a free port; the resulting device id is `chromium-cdp-<port>`. Pin it only against a port nothing already serves CDP on: the new app cannot bind one that is taken and the readiness probe is answered by whatever holds it, so the boot reports success and the id you get back drives that app, not the one just launched."
     ),
   electronArgs: z
     .array(z.string())

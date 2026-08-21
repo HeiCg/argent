@@ -337,7 +337,9 @@ describe("CDPClient", () => {
       const restartApp = createRestartAppTool({} as unknown as Registry).capability;
       pinsOnce(
         message,
-        `restart-app on ${platformTag(restartApp)}; on Chromium it is refused, so the user has to quit it,`
+        `If it is hung, get the app restarted (restart-app on ${platformTag(restartApp)}; on ` +
+          `Chromium it is refused, so the user has to quit it and the relaunch has to wait ` +
+          `for the exit`
       );
       // The Chromium relaunch this message has to carry itself, for the same reason:
       // the guidance that spells it out is unreachable while the socket is open, and
@@ -345,6 +347,13 @@ describe("CDPClient", () => {
       pinsOnce(message, "boot-device with electronAppPath relaunches an Electron app");
       pinsOnce(message, "a browser has to be started again with --remote-debugging-port");
       pinsOnce(message, "launch-app cannot start one");
+      // The duplicate-boot guard its twin on this same fault code carries. Without it
+      // this message sends a reader to boot-device while the app is provably still up.
+      pinsOnce(
+        message,
+        "relaunching a live one duplicates it or dies on its single-instance lock as " +
+          "`child process exited with code N before CDP was ready`"
+      );
       expect(getFailureSignal(err)).toMatchObject({
         error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
         failure_stage: "debugger_cdp_send",

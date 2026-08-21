@@ -7,7 +7,7 @@ import {
   type FailureSignal,
 } from "@argent/registry";
 import { classifyNotConnected, buildNotConnected } from "../../src/tools/debugger/not-connected";
-import { pinsOnce } from "../helpers/pins";
+import { pinsOnce, pinsUnqualified } from "../helpers/pins";
 import { discoverPrimaryPage, ensureCdpReachable } from "../../src/chromium-server/cdp-session";
 import { getCandidateChromiumPorts } from "../../src/utils/chromium-discovery";
 import { CDPClient } from "../../src/utils/debugger/cdp-client";
@@ -112,14 +112,28 @@ describe("guidance platform-correctness", () => {
         /until it (answers|connects)/
       );
     }
-    // Metro owes the paused state a branch: nothing here can resume a runtime -
-    // there is no Debugger.resume anywhere in the tool-server - and the other
-    // instruction on offer ends the session the user is sitting in. The needle
-    // reaches its remedy and its rationale; stopping at "nothing here can" leaves
-    // both free to be rewritten into the advice the branch exists to prevent.
-    expect(metro.guidance).toContain("paused at a breakpoint");
-    pinsOnce(metro.guidance, "nothing here can, and restarting throws the debug session away");
-    pinsOnce(metro.guidance, "If it is hung, restart it (restart-app), then retry once.");
+    // Metro cannot be in the paused state here either, and for the same reason as
+    // Chromium: test/metro/paused-runtime-resolves.test.ts drives the real connect
+    // pipeline against a runtime that never answers an awaited evaluate and gets
+    // status "connected" back. So a resume ask here sends the user after a state
+    // the result cannot be reporting.
+    pinsOnce(
+      metro.guidance,
+      "A runtime paused at a breakpoint does not reach this reason — the inspector " +
+        "answers the enables while paused, and the two sends that wait on the JS thread " +
+        "are both swallowed, so the session resolves and debugger-status reports connected."
+    );
+    expect(metro.guidance, "no resume ask here").not.toMatch(/resume/i);
+    pinsOnce(metro.guidance, "Restart it (restart-app), then retry once.");
+    // The detail beside BOTH of these names a breakpoint; each has to say which
+    // half of its own detail applies or it contradicts itself in one response.
+    for (const r of [metro, chromium])
+      pinsOnce(
+        r.guidance,
+        'The detail says "frozen, or paused at a breakpoint" because it is the shared ' +
+          "request-timeout wording, which also covers debugger-evaluate; only the frozen " +
+          "half of it applies here."
+      );
 
     // Chromium cannot be in that state here, so it gets the opposite treatment.
     // Measured on Chrome 151 with a page stopped at a breakpoint (Debugger.paused
@@ -139,14 +153,6 @@ describe("guidance platform-correctness", () => {
     // And no resume ask survives on the one state that is never paused, whoever
     // the sentence names as the actor.
     expect(chromium.guidance, "no resume ask here").not.toMatch(/resume/i);
-    // The detail beside this guidance is the shared request-timeout message, which
-    // names a breakpoint. Unreconciled, the pair contradicts itself in one response.
-    pinsOnce(
-      chromium.guidance,
-      'The detail says "frozen, or paused at a breakpoint" because it is the shared ' +
-        "request-timeout wording, which also covers debugger-evaluate; only the frozen " +
-        "half of it applies here."
-    );
     pinsOnce(chromium.guidance, "(each attempt waits out the full timeout)");
     pinsOnce(chromium.guidance, "Ask the user to quit the app, then relaunch once it has exited");
     // Why absence is not the exit, in the state this reason is actually in: the
@@ -222,12 +228,17 @@ describe("guidance platform-correctness", () => {
       // one. The converse reads as the more useful statement - still listed, so
       // still up - and is false in the direction the reader needs, so the claim is
       // pinned together with the mechanism that makes it actionable.
-      pinsOnce(guidance, "list-devices cannot confirm the exit", reason);
+      pinsUnqualified(guidance, "list-devices cannot confirm the exit", reason);
       // The rule needs its consequence: without it a reader takes 'never recovers
       // it' for 'has no effect' and tries the relaunch anyway.
-      pinsOnce(guidance, "the relaunch either duplicates the app or fails", reason);
+      // Through the lock outcome and what it MEANS: boot-electron keeps none of the
+      // child's stderr, so this exit string is the only trace a caller gets that the
+      // app survived, and read as a launch failure it invites another relaunch.
+      pinsOnce(guidance, "duplicates the app or dies on its single-instance lock", reason);
+      pinsOnce(guidance, "child process exited with code N before CDP was ready", reason);
+      pinsOnce(guidance, "means the app is still up", reason);
       // Its premise. Without it "duplicates or fails" reads as a risk worth taking.
-      pinsOnce(guidance, "never recovers it", reason);
+      pinsUnqualified(guidance, "never recovers it", reason);
       // The id is re-readable only where discovery looks: getCandidateChromiumPorts
       // probes 9222, the env list and the ports boot-device opened. Without this the
       // new-port clause reads as an invitation to relaunch anywhere and re-read.
@@ -236,6 +247,10 @@ describe("guidance platform-correctness", () => {
       // A negative regex cannot hold this: it passes for every wording that does
       // not spell out the one phrase it names, the false ones included.
       pinsOnce(guidance, "a relaunch on a new port is a new id", reason);
+      pinsOnce(guidance, "re-read the chromium-cdp-<port> id", reason);
+      expect(guidance, `${reason}: never says to keep the dead id`).not.toMatch(
+        /keep (using )?the (old )?chromium-cdp/i
+      );
       // Both relaunch mechanisms, on both reasons. An Electron app does not come
       // back by restarting a browser, and a browser restarted without the flag
       // exposes no CDP at all, so a surface carrying one branch strands whoever
@@ -369,7 +384,7 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     pinsOnce(
       guidance,
       "'failed (HTTP <status>)' or 'returned a body that is not valid JSON' means something " +
-        "answered that is not a CDP endpoint"
+        "answered that is not a CDP endpoint, usually another service holding it"
     );
     expect(guidance, "names a shape no cdp_unreachable detail can carry").not.toContain(
       "browser socket"
@@ -388,7 +403,14 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // is a precaution rather than a diagnosis - and it still has to come first,
     // since the one case it guards against is an app that is somehow still up.
     pinsOnce(guidance, "Once the app is gone: ask the user to quit it if it is somehow still up");
-    pinsOnce(guidance, "That id is dead either way");
+    // Which half of arm 1 kills the id. A port that merely stopped answering does
+    // not: the id carries the port, so the same app coming back on it resolves again.
+    pinsOnce(guidance, "That id stays dead while something else holds the port");
+    pinsOnce(
+      guidance,
+      "After 'could not connect' the port is merely unanswered, so the same id works " +
+        "again if the app comes back on it."
+    );
     // The precondition on the one tool named after the quit. Without it the clause
     // reads as an alternative to the quit rather than the step that follows it.
     pinsOnce(guidance, "Once it is gone, launch-app cannot start a Chromium app");
@@ -478,7 +500,11 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     );
     pinsOnce(guidance, `A detail carrying '${DISCOVERY}' is the discovery request itself`);
     pinsOnce(guidance, `A detail carrying '${PORT_LEVEL}' means the app answered`);
-    pinsOnce(guidance, "'could not connect' means nothing answered the port");
+    pinsOnce(
+      guidance,
+      "'could not connect' means the request never got an answer — nothing listening, or " +
+        "something holding the port without answering"
+    );
     expect(guidance, "no positional routing — the detail is service-tagged").not.toMatch(
       /detail (starting|beginning|that starts|that begins)|opening words/i
     );

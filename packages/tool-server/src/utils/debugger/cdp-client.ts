@@ -260,7 +260,11 @@ export class CDPClient {
               `debugger-status can still report "connected" in this state (the socket is open). ` +
               `Do not retry in a loop. If it is paused, ask the user to resume it — quitting throws ` +
               `the debug session away. If it is hung, get the app restarted (restart-app on ` +
-              `iOS / Android / Vega; on Chromium it is refused, so the user has to quit it, then ` +
+              `iOS / Android / Vega; on Chromium it is refused, so the user has to quit it and the ` +
+              `relaunch has to wait for the exit — the app is up here, and boot-device only ` +
+              `starts an app, so relaunching a live one duplicates it or dies on its ` +
+              `single-instance lock as \`child process exited with code N before CDP was ` +
+              `ready\`; then ` +
               `boot-device with electronAppPath relaunches an Electron app and returns the ` +
               `chromium-cdp-<port> id to reconnect with, while a browser has to be started again ` +
               `with --remote-debugging-port, where that port is the id — chromium-cdp-<that port> ` +

@@ -202,7 +202,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // is not in the response.
       [
         "where the id is re-read",
-        "chromium-cdp-<port> id from boot-device / list-devices",
+        "the chromium-cdp-<port> id from boot-device / list-devices",
         statesRecovery,
       ],
       ["when the id changes", "a relaunch on a new port is a new id", statesRecovery],
@@ -210,7 +210,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // is named two clauses later - it drops a live-but-windowless app exactly as
       // it drops an exited one, so polling it for the exit relaunches into a
       // running app.
-      ["the exit cannot be read off list-devices", "cannot confirm the exit", statesRecovery],
+      ["the exit cannot be read off list-devices", "cannot confirm the exit", statesRecovery, true],
       // Where the new id can be read back at all. Without it the clause above
       // reads as an invitation to relaunch anywhere and look it up.
       [
@@ -224,7 +224,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // read without a debugger-status guidance in hand.
       [
         "the id drives without discovery",
-        "if the user names the port, use chromium-cdp-<that port> directly",
+        "if the user names the port, use chromium-cdp-<that port> directly, since the id " +
+          "carries the port",
         statesRecovery,
       ],
       // The precondition on the whole sequence, in the three claims it rests on.
@@ -235,7 +236,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // only the evidence is satisfied by a sentence that inverts the guard.
       [
         "the relaunch needs a gone app",
-        "only when the app is gone: a failure naming page targets means it is still up",
+        "only when the app is gone: a failure naming the port's pages — no page targets, or " +
+          "only devtools:// ones — means it is still up and only lacks a window, so have the " +
+          "user reopen one instead",
         listsRestartApp,
       ],
       // Which detail proves a squatted port, tied to the prefix only the discovery
@@ -244,16 +247,17 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // 500") and sends a healthy id to the relaunch.
       [
         "a squatted port is not a live app",
-        "a detail naming chromium cdp discovery: get confirms the exit when it says could " +
-          "not connect, and when it names a status or a bad body means the port answered as " +
-          "something that is not a cdp endpoint",
+        "a detail naming chromium cdp discovery: get says nothing answered that port when it " +
+          "says could not connect, which is consistent with the exit but not proof of it, " +
+          "since the app may be back on another port",
         listsRestartApp,
       ],
       // And the class that names neither prefix, which is the one the ws layer
       // produces after discovery has already answered.
       [
         "a socket-level detail is not a dead port",
-        "is the cdp socket failing after discovery answered, so the app was up moments ago",
+        "a detail naming neither the discovery get nor the port's pages is the cdp socket " +
+          "failing after discovery answered, so the app was up moments ago",
         listsRestartApp,
       ],
       // Through the imperative. The claim without it is satisfied by "so the app
@@ -289,8 +293,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // away from - and this row is a flow author's only copy of the split.
     pinsOnce(
       createFlow,
-      "the port answered with something that is not a CDP endpoint, usually another service " +
-        "holding it, which no relaunch on that port clears"
+      "A `detail` naming `Chromium CDP discovery: GET` with a status or a body that is not " +
+        "JSON means the port answered with something that is not a CDP endpoint, usually " +
+        "another service holding it, which no relaunch on that port clears"
     );
     pinsOnce(
       createFlow,
@@ -300,6 +305,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     );
     // The row's opening diagnosis, which decides which arm a reader looks at.
     pinsOnce(createFlow, "Still up with no window — the failure names page targets");
+    // And that the quit-and-relaunch is the fallback, not the rule: the three arms
+    // above exist to route away from it.
+    pinsOnce(createFlow, "Otherwise ask the user to quit it");
 
     // The Reload & recovery row fences restart-app off and delegates rather than
     // restating the recovery, so the pointer is the only thing carrying it - and
@@ -333,8 +341,24 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     pinsOnce(
       unreachable,
       "A `detail` naming `Chromium CDP discovery: GET` with a status or a body that is not " +
-        "JSON is neither of those: the port answered with something that is not a CDP endpoint"
+        "JSON is neither of those: the port answered with something that is not a CDP " +
+        "endpoint, usually another service holding it, which no relaunch on that port clears"
     );
+    // #2 — the row's own socket-level arm. Without it that detail matches neither
+    // remaining description and the reader picks the crashed-or-exited pointer,
+    // i.e. relaunches into a running app.
+    pinsOnce(
+      unreachable,
+      "A `detail` naming neither that GET nor the port's page targets is the CDP socket " +
+        "failing after discovery had already answered, so the app was up moments ago — have " +
+        "the user check it before relaunching anything."
+    );
+    // The row states no Chromium recovery of its own — it delegates. Inverted, the
+    // reader acts on this row's Metro-shaped defaults instead.
+    pinsOnce(unreachable, "Follow the `guidance`: it is platform-corrected");
+    // The literal a reader greps the server log for. It is deliberately NOT in the
+    // tool result, so a paraphrase leaves them with nothing to search.
+    pinsOnce(unreachable, "Failed to create …/SingletonLock: File exists");
     // And its own remedy, rather than the neighbouring one: "second copy" and
     // "bring a window back" answer a live app, which a squatted port is not. The
     // row states three states in one cell, so position is what keeps each remedy
@@ -362,7 +386,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     pinsOnce(
       listDevicesTool.description,
       "A missing Chromium entry does not mean the app exited: a probe needs a drivable page, " +
-        "so an app that is up with no window is dropped exactly as an exited one is."
+        "so an app that is up with no window is dropped exactly as an exited one is — and " +
+        "that probe failure also drops the port from the set this tool probes, so the entry " +
+        "may not come back when the app does. Keep the id boot-device returned."
     );
     // Section 1 is where a tap/describe agent arrives, and the only Chromium
     // instruction it reads: on an absent entry the obvious move is to boot, which
@@ -371,7 +397,20 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     pinsOnce(
       deviceInteract,
       "An absent Chromium entry is not proof nothing is running: `list-devices` drops an app " +
-        "that is up with no drivable page exactly as it drops an exited one"
+        "that is up with no drivable page exactly as it drops an exited one, so booting there " +
+        "gives you a second copy or a single-instance-lock failure"
+    );
+    // #20 — and the split it hands off: this section answers the live app, the
+    // Restart-an-app row answers the one that really exited.
+    pinsOnce(deviceInteract, "See **Restart an app** below for one that really is gone.");
+    // #13 — chromium-tabs is the first tool an agent reaches for on the windowless
+    // state this same file sends to the user, and this is the only place that says
+    // it cannot resolve there (its services() resolves the page service, which
+    // throws CHROMIUM_CDP_NO_PAGE_TARGET with zero pages).
+    pinsOnce(
+      deviceInteract,
+      "`chromium-tabs` (which needs an existing page, so it cannot reopen the last window " +
+        "once it is closed)"
     );
     // And its remedy. Section 1 pointed at the Restart-an-app row, whose leading
     // instruction is the quit - the wrong half for an app that is merely windowless.
@@ -419,7 +458,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // that carries it.
     pinsOnce(
       unreachable,
-      "lands here and recovers the same way as **Was connected, then tool fails**"
+      "lands here — `detail` `Chromium CDP discovery: GET … could not connect`, meaning " +
+        "nothing answered the port — and recovers the same way as **Was connected, then " +
+        "tool fails**"
     );
     pinsOnce(unreachable, "`launch-app`, which cannot start a Chromium app");
 
@@ -446,6 +487,15 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     expect(bootDeviceParams.shape.force?.description?.trimEnd()).toMatch(
       /pointed at the old app\.$/
     );
+    // The same outcome stated where it is CHOSEN. `force` is the only other surface
+    // that names it, and the same sentence tells a Chromium reader to skip the flag —
+    // so a reader who pins a port to keep its id stable never meets it there.
+    pinsUnqualified(
+      bootDeviceParams.shape.electronPort?.description,
+      "Pin it only against a port nothing already serves CDP on: the new app cannot bind one " +
+        "that is taken and the readiness probe is answered by whatever holds it, so the boot " +
+        "reports success and the id you get back drives that app, not the one just launched."
+    );
   });
 
   it("answers every not-connected reason the debugger can report", () => {
@@ -463,10 +513,15 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     }
     // cdp_unreachable covers three unlike states and the reason name says none of
     // them; the Chromium one is the reason the recovery had to split.
-    expect(debuggerStatusTool.description).toContain("(Chromium) is up with no drivable page");
+    pinsOnce(
+      debuggerStatusTool.description,
+      "the CDP endpoint is unreachable, answered malformed, or (Chromium) is up with no " +
+        "drivable page"
+    );
     // The one instruction attached to that list. Without it the reasons read as a
     // taxonomy, and the reason most likely to be retry-looped waits out a full CDP
     // timeout per attempt.
     pinsOnce(debuggerStatusTool.description, "Follow the guidance field — do not retry in a loop.");
+    pinsOnce(restartAppTool.description, "See the guidance on a debugger-status result.");
   });
 });
