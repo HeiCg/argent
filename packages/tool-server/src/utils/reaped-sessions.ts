@@ -167,9 +167,11 @@ export function recordReapedSession(
     //
     // A teardown keeps no file, and so reclaims none. What it would delete is
     // precisely the log of a crash nobody has read: a read consumes the whole
-    // event, so anything still here to be superseded was never reported. That
-    // costs one file per crash-then-teardown cycle, waiting for the day-old
-    // sweep — the rate the read path below already leaks at, deliberately.
+    // event, so anything still here to be superseded went unreported. The file
+    // outlives its last pointer either way — this teardown's own note speaks
+    // for its own session's entries and says nothing of the older ones — so the
+    // choice is between a file a developer can still open at
+    // ~/.argent/tmp until the day-old sweep, and entries that are simply gone.
     //
     // A loop whose notes are read is not bounded here, and deliberately so.
     // restart-app then `debugger-connect` is both the prescribed recovery and

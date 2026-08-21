@@ -54,8 +54,8 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
     "or ask the user, wait for it to report ready, then retry once.",
   no_app_connected:
     "Metro is running but no app is attached. A crashed app reads as this too, and a session " +
-    "that had captured console logs keeps its file: read debugger-log-registry's note before " +
-    "relaunching, since it names that file when there is one. Do not retry immediately — launch " +
+    "that had captured console logs keeps its file: debugger-log-registry names it in a note " +
+    "when there is one, so check that field before relaunching. Do not retry immediately — launch " +
     "or restart the RN app on the target device (launch-app / restart-app), wait a few seconds " +
     "for the bundle to load, then retry once.",
   device_mismatch:

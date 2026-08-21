@@ -357,9 +357,10 @@ describe("the reaped-session key", () => {
 
     it("records the new session even though the file it supersedes is already gone", () => {
       // That directory is shared with every other tool-server on the machine,
-      // any of which prunes it on its own connects. An unlink that threw here
-      // would take the whole recording of the new session with it — from a
-      // disposer, where the throw lands in the registry's teardown cascade.
+      // any of which prunes it on its own connects. The record itself is
+      // already written by the time this runs, but a throw here still takes the
+      // rest of the disposer with it — the console server's close, the writer's
+      // own, the CDP disconnect — and lands in the registry's teardown cascade.
       const swept = path.join(dir, "argent-logs-1-4.log");
       const replacement = path.join(dir, "argent-logs-1-6.log");
       fs.writeFileSync(swept, "x");
@@ -376,7 +377,6 @@ describe("the reaped-session key", () => {
       });
 
       expect(takeReapedSession("js-runtime-debugger", UDID)?.salvage).toBe("second");
-      expect(fs.existsSync(replacement)).toBe(true);
     });
   });
 

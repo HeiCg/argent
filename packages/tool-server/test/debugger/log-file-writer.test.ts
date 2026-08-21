@@ -77,11 +77,10 @@ describe("LogFileWriter", () => {
     });
 
     it("lets a kept file age out once the session that kept it has closed", () => {
-      // Both halves of the keep path's close, which the pruner then depends on:
-      // the timer is disarmed, and the fd released. An fd left open is what
-      // would let `touch` go on refreshing the kept file's mtime — the only
-      // thing that ever makes it reclaimable — so a crash would leave a file no
-      // sweep in any tool-server collects.
+      // The keep path returns early, and has to disarm the keepalive on its way
+      // out: `touch` runs off that timer, and mtime is the only thing that ever
+      // makes a kept file reclaimable, so a timer left armed refreshes the file
+      // past every cutoff and no sweep in any tool-server collects it.
       vi.useFakeTimers();
       try {
         const idle = vi.getTimerCount();
@@ -101,6 +100,27 @@ describe("LogFileWriter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("finishes the sweep when a candidate cannot be removed", () => {
+      // The sweep runs from every writer's constructor — inside every connect —
+      // and races every other tool-server on the machine for this directory, so
+      // a candidate can stop being there, or stop being ours, between the
+      // listing and the unlink. A directory wearing a log file's name is that
+      // same failure on demand.
+      const undeletable = path.join(logDir, "argent-logs-4321-1700000000000.log");
+      const stale = path.join(logDir, "argent-logs-4322-1700000000000.log");
+      fs.mkdirSync(undeletable);
+      fs.writeFileSync(stale, "x");
+      age(undeletable, DAY_MS + 60_000);
+      age(stale, DAY_MS + 60_000);
+
+      const pruner = new LogFileWriter(3334);
+
+      expect(fs.existsSync(undeletable)).toBe(true);
+      // And the one it could take went, whichever order the listing came back in.
+      expect(fs.existsSync(stale)).toBe(false);
+      pruner.close();
     });
 
     it("opens anyway when the log directory cannot be listed", () => {
@@ -179,6 +199,43 @@ describe("LogFileWriter", () => {
         expect(keepalive.hasRef()).toBe(false);
       } finally {
         w.close();
+      }
+    });
+
+    it("releases the fd on both close paths", () => {
+      // The other half of what `close` frees. One debugger session per connect,
+      // and the keep path's writer is closed by the same call that leaves its
+      // file on disk — so a descriptor held past it is one per crash for the
+      // life of the tool-server. Asked of the descriptor itself: nulling the
+      // field is what `getStats` reads, and says nothing about the handle.
+      const fdOf = (w: LogFileWriter) => (w as unknown as { fd: number | null }).fd!;
+
+      const kept = new LogFileWriter(4545);
+      const keptFd = fdOf(kept);
+      kept.close({ keepFile: true });
+      expect(() => fs.fstatSync(keptFd)).toThrow(/EBADF/);
+      fs.rmSync(kept.getFilePath(), { force: true });
+
+      const dropped = new LogFileWriter(4546);
+      const droppedFd = fdOf(dropped);
+      dropped.close();
+      expect(() => fs.fstatSync(droppedFd)).toThrow(/EBADF/);
+    });
+
+    it("survives a keepalive tick whose touch cannot land", () => {
+      // `touch` runs from a bare setInterval, so a throw there is not a failed
+      // tool call — it is an uncaught exception in a timer callback, which takes
+      // the tool-server down with every other agent's sessions on it. Closing
+      // the fd underneath it is the deterministic form of the filesystem
+      // refusing.
+      vi.useFakeTimers();
+      const w = new LogFileWriter(5151);
+      try {
+        fs.closeSync((w as unknown as { fd: number }).fd);
+        expect(() => vi.advanceTimersByTime(60 * 60 * 1000)).not.toThrow();
+      } finally {
+        w.close();
+        vi.useRealTimers();
       }
     });
 

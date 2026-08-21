@@ -168,12 +168,13 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // `guidance` is the field an agent acts on, and these strings are shared
         // with the tools that only point AT this one's note — so read from here
         // they send it back for a note it is holding, and which this read has
-        // just spent. Two of the six reasons a note can ride on mention one at
-        // all; a Chromium crash reaches none of them.
+        // just spent. Only `no_app_connected` mentions a note at all; the other
+        // four reasons that can carry one, a crashed Chromium renderer's
+        // `cdp_unreachable` among them, walk the agent straight past it.
         return {
           ...result,
           note,
-          guidance: `Read this result's note first — it is the note the rest of this guidance refers to. ${result.guidance}`,
+          guidance: `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`,
         };
       }
     },

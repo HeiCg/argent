@@ -171,8 +171,8 @@ describe("debugger-log-registry not-connected results", () => {
     // These strings are shared with the tools that only point AT this one's
     // note, so read from a log-registry answer they send the agent back here
     // for a note this answer is already holding — and that this read has just
-    // spent. Four of the six reasons a note can ride on do not mention one at
-    // all, and a Chromium crash reaches none of the two that do.
+    // spent. Only `no_app_connected` mentions a note at all, and a crashed
+    // Chromium renderer reaches `cdp_unreachable` instead, which does not.
     const port = await freePort();
     const setup = makeSetup(jsRuntimeDebuggerBlueprint);
     cleanups.push(async () => {
@@ -194,6 +194,9 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.reason).toBe("metro_not_running");
     expect(result.note).toContain("/tmp/kept.log");
     expect(result.guidance.startsWith("Read this result's note first")).toBe(true);
+    // Whatever it precedes has to be true of it: this reason's own guidance
+    // says nothing about a note.
+    expect(result.guidance).toContain("explains what became of the previous session's console log");
     // And the reason's own guidance is still all there behind it.
     expect(result.guidance).toContain("Do not retry in a loop");
   });
