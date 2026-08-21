@@ -126,4 +126,53 @@ describe("guidance content", () => {
       expect(guidance).toContain("when there is one");
     }
   );
+
+  // And scoped to the sessions that keep one: `keepFile` is
+  // `runtimeDied && captured > 0`, so an explicit teardown deletes the file
+  // however much it had captured. Promising the file to every session that
+  // logged sends a reader after a path no note will name.
+  it("no_app_connected: promises the file only to a session whose runtime died", () => {
+    const { guidance } = buildNotConnected(
+      "no_app_connected",
+      coded(FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS),
+      { port: 8081, device_id: "emulator-5554" }
+    );
+    expect(guidance).toContain("whose runtime died holding console logs keeps its file");
+  });
+
+  // The same errand read from the tool that runs it. debugger-log-registry
+  // reports the note itself, so this clause would send an agent holding the
+  // answer back to the tool that produced it — for a note that answer either
+  // already carries or has just said it does not have.
+  it("no_app_connected: the answer that reports the note itself does not send the reader to fetch it", () => {
+    const { guidance } = buildNotConnected(
+      "no_app_connected",
+      coded(FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS),
+      { port: 8081, device_id: "emulator-5554" },
+      { reportsOwnNote: true }
+    );
+    expect(guidance).not.toContain("debugger-log-registry");
+    // Still the same state, and still the same recovery.
+    expect(guidance).toContain("a crashed app reads as this too");
+    expect(guidance).toContain("launch-app / restart-app");
+  });
+
+  // Only the reasons whose shared string names the tool need an override, and
+  // the rest must keep reading identically from either caller — an override map
+  // that grew a second entry by accident would fork guidance no reason needs.
+  it("every other reason reads the same from the tool that reports the note", () => {
+    const params = { port: 8081, device_id: "emulator-5554" };
+    for (const reason of [
+      "metro_not_running",
+      "device_mismatch",
+      "cdp_unreachable",
+      "runtime_unresponsive",
+      "reconnecting",
+    ] as const) {
+      const err = coded(FAILURE_CODES.DEBUGGER_METRO_NOT_RUNNING);
+      expect(buildNotConnected(reason, err, params, { reportsOwnNote: true }).guidance).toBe(
+        buildNotConnected(reason, err, params).guidance
+      );
+    }
+  });
 });

@@ -160,17 +160,15 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // attached to it — gets `reconnecting`, whose guidance is to wait and
         // ask again. The asking again is what would find it spent.
         const withheld = reason === "reconnecting";
-        const note = withheld
-          ? undefined
-          : takeReapedNote(params.device_id, debuggerReapedScope(params));
-        const result = buildNotConnected(reason, err, params);
+        const scope = debuggerReapedScope(params);
+        const note = withheld ? undefined : takeReapedNote(params.device_id, scope);
+        const result = buildNotConnected(reason, err, params, { reportsOwnNote: true });
         // `guidance` is the field an agent acts on, and these strings are
-        // written for `debugger-status`, whose answers never carry a note: one
-        // sends the agent here to read one, and the four other reasons that can
-        // carry one — a crashed Chromium renderer's `cdp_unreachable` among
-        // them — mention none at all. Read from an answer that IS the note's,
-        // both are wrong in the same way, so this tool says what its own result
-        // holds before the rest of the guidance speaks for the general case.
+        // written for `debugger-status`, whose answers never carry a note: the
+        // four reasons that can carry one — a crashed Chromium renderer's
+        // `cdp_unreachable` among them — mention none at all. So this tool says
+        // what its own result holds before the rest of the guidance speaks for
+        // the general case.
         //
         // The withheld answer says neither: it is holding a breadcrumb it did
         // not spend, and "wait and ask again" is already what its reason's own
@@ -181,7 +179,9 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           ...(note ? { note } : {}),
           guidance: note
             ? `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`
-            : `This result has no note: no session ended on this device and port with console history left to report. ${result.guidance}`,
+            : `This result has no note: no unread record of a session ending on this ${
+                scope ? "device and port" : "device"
+              } — either none did, or an earlier read spent it. ${result.guidance}`,
         };
       }
     },

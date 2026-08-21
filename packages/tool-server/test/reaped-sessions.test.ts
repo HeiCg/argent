@@ -114,6 +114,28 @@ describe("the reaped-session key", () => {
     expect(message).toContain("the log file is kept at /x");
   });
 
+  it("tells a Chromium session its death in its own terms", () => {
+    // The Metro wording pinned above names two recoveries a Chromium session
+    // does not have: there is no Metro behind it, and `restart-app`'s handler is
+    // a documented no-op on Chromium — the guidance in the same answer says so
+    // itself. Naming them sends an agent after a restart that cannot happen.
+    recordReapedSession("js-runtime-debugger", "chromium-cdp-9222", "the log file is kept at /x", {
+      cause: "runtime-death",
+    });
+
+    const message = describeReapedSession(
+      takeReapedSession("js-runtime-debugger", "chromium-cdp-9222")!,
+      "JS-runtime debugger session"
+    );
+    expect(message).toContain("its debugger connection dropped instead of being closed");
+    expect(message).not.toContain("restart-app");
+    expect(message).not.toContain("Metro");
+    // And still offers the family it CAN see, in the terms that platform has.
+    expect(message).toContain("the page went away");
+    expect(message).toContain("the browser quitting");
+    expect(message).toContain("the log file is kept at /x");
+  });
+
   it("spends every copy of one teardown, whichever id the reader knows", () => {
     // A reader asks with one id and gets the whole event: a copy left behind
     // under the other would explain some later, unrelated answer, and would

@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import { AddressInfo } from "node:net";
 import {
+  FAILURE_CODES,
+  FailureError,
   Registry,
   TypedEventEmitter,
   type ServiceBlueprint,
@@ -19,6 +21,7 @@ import {
   jsRuntimeDebuggerBlueprint,
   JS_RUNTIME_DEBUGGER_NAMESPACE,
 } from "../../src/blueprints/js-runtime-debugger";
+import { chromiumJsRuntimeDebuggerBlueprint } from "../../src/blueprints/chromium-js-runtime-debugger";
 import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
 import type { DebuggerNotConnectedResult } from "../../src/tools/debugger/not-connected";
 import {
@@ -70,6 +73,28 @@ async function startMetroWithDeadCdp(deadWsPort: number): Promise<MockServer> {
           },
         ])
       );
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, () => resolve()));
+  return {
+    port: (server.address() as AddressInfo).port,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+/** Metro that is up and lists no debugger targets — a crashed app reads as this. */
+async function startMetroWithNoTargets(): Promise<MockServer> {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/status") {
+      res.end("packager-status:running");
+      return;
+    }
+    if (req.url === "/json/list") {
+      res.setHeader("Content-Type", "application/json");
+      res.end("[]");
       return;
     }
     res.statusCode = 404;
@@ -134,6 +159,11 @@ describe("debugger-log-registry not-connected results", () => {
     // answer already failed to produce.
     expect(result.guidance).not.toContain("Read this result's note");
     expect(result.guidance.startsWith("This result has no note")).toBe(true);
+    // What it says about the world is only what the store can know: the record
+    // is spent by whoever reads it first, so an empty store is not proof no
+    // session ended here — a concurrent agent's debugger-connect may have taken
+    // it while the file it named is still on disk.
+    expect(result.guidance).toContain("either none did, or an earlier read spent it");
     // No fabricated LogStats: agents must not be sent to grep a file that
     // does not exist.
     expect("file" in result).toBe(false);
@@ -169,6 +199,66 @@ describe("debugger-log-registry not-connected results", () => {
     expect(setup.failed).toEqual([]);
     expect(outcomeCalls()).toHaveLength(1);
     expect(outcomeCalls()[0][1]).toMatchObject({ outcome: "cdp_unreachable" });
+  });
+
+  it("no_app_connected: does not send the reader back here for the note this answer reports", async () => {
+    // The shared strings are written for `debugger-status`, which has no note
+    // field: from there, "read debugger-log-registry's note" is an errand. Read
+    // from the tool that runs it, it is a loop — and on the crash that captured
+    // nothing, one with no exit: the answer that just said it holds no note
+    // would be sending the agent back to itself for one.
+    const metro = await startMetroWithNoTargets();
+    const setup = makeSetup(jsRuntimeDebuggerBlueprint);
+    cleanups.push(async () => {
+      await setup.registry.dispose();
+      await metro.close();
+    });
+
+    const result = (await setup.invoke({
+      port: metro.port,
+      device_id: "mock-device",
+    })) as DebuggerNotConnectedResult;
+
+    expect(result.reason).toBe("no_app_connected");
+    expect(result.guidance).not.toContain("debugger-log-registry");
+    expect(result.guidance.startsWith("This result has no note")).toBe(true);
+    // The recovery this reason exists to give is still all there.
+    expect(result.guidance).toContain("launch-app / restart-app");
+  });
+
+  it("chromium: scopes the no-note sentence by the device alone, since its answer has no port", async () => {
+    // A Chromium session's CDP port lives inside its device id, so the answer
+    // omits `port` and the breadcrumb is filed unscoped. Telling that caller
+    // nothing was filed "on this device and port" invites a retry with another
+    // port, which this tool ignores — the same answer, twice.
+    const registry = new Registry();
+    registry.registerBlueprint(chromiumJsRuntimeDebuggerBlueprint);
+    registry.registerBlueprint({
+      namespace: "ChromiumCdp",
+      getURN: (deviceId: string) => `ChromiumCdp:${deviceId}`,
+      factory: () => {
+        throw new FailureError("no browser is listening on 9222", {
+          error_code: FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE,
+          failure_stage: "chromium_cdp_connect",
+          failure_area: "tool_server",
+          error_kind: "network",
+        });
+      },
+    } as unknown as ServiceBlueprint);
+    registry.registerTool(createDebuggerLogRegistryTool(registry));
+    cleanups.push(() => registry.dispose());
+
+    const result = (await registry.invokeTool(
+      "debugger-log-registry",
+      { port: 8081, device_id: "chromium-cdp-9222" },
+      { toolInvocationId: INVOCATION_ID }
+    )) as DebuggerNotConnectedResult;
+
+    expect(result.reason).toBe("cdp_unreachable");
+    expect("port" in result).toBe(false);
+    expect(result.guidance.startsWith("This result has no note")).toBe(true);
+    expect(result.guidance).toContain("ending on this device —");
+    expect(result.guidance).not.toContain("device and port");
   });
 
   it("leads the guidance with the note when the answer is carrying one", async () => {

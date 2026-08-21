@@ -23,9 +23,16 @@
  * Entries are CONSUMED by the read ({@link takeReapedSession}) — the breadcrumb
  * explains one confusing answer, once. Leaving it would make a genuine later
  * "you never started a recording" blame a teardown from an hour ago.
+ *
+ * One entry can also own a file: {@link ReapedSession.keptAt} names a log the
+ * teardown left on disk for the breadcrumb to advertise, and this store unlinks
+ * it when a later teardown supersedes the entry holding it. That makes the
+ * module a lifetime owner, not only a message board, so read that field's doc
+ * before setting it — an artifact the user is meant to keep does not go there.
  */
 
 import * as fs from "node:fs";
+import { CHROMIUM_ID_PREFIX } from "./device-info";
 
 /** Which session kind was reaped; scopes the key so two kinds can't collide. */
 export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
@@ -236,15 +243,24 @@ export function takeReapedSession(
  * pointing at the teardown family would send an agent hunting for a tool call,
  * or another agent, that never touched this session. It does NOT name the culprit either —
  * the disposer sees a dropped socket, which a crash, a force-quit and a
- * `restart-app` all produce alike.
+ * `restart-app` all produce alike. Which of those an agent can act on is
+ * platform-specific: a Chromium session has no Metro to have restarted and no
+ * `restart-app` to have run (that handler is a documented no-op there), so it
+ * gets the same sentence in its own terms — the same split the not-connected
+ * guidance makes for the same reason.
  */
 export function describeReapedSession(entry: ReapedSession, what: string): string {
   const secondsAgo = Math.max(0, Math.round((Date.now() - entry.atMs) / 1000));
+  const runtimeDeath = entry.deviceId.startsWith(CHROMIUM_ID_PREFIX)
+    ? `its debugger connection dropped instead of being closed — the page went away (a crash, ` +
+      `a tab or window closing, the browser quitting) or its CDP endpoint stopped being ` +
+      `reachable — which ends the session the same way a teardown does.`
+    : `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
+      `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
+      `a device transport dropped) — which ends the session the same way a teardown does.`;
   const why =
     entry.cause === "runtime-death"
-      ? `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
-        `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
-        `a device transport dropped) — which ends the session the same way a teardown does.`
+      ? runtimeDeath
       : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
         `another teardown that reaches the same services (a stop-simulator-server on Chromium, ` +
         `or a react-profiler-start clearing a session it could not reuse). One tool-server serves ` +

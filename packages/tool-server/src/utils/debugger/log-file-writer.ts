@@ -258,9 +258,10 @@ export class LogFileWriter {
    * arrive, and the buffer only ever holds what an `open()` failure left with
    * nowhere to go. `keepFile` leaves the log on disk: the caller is shutting
    * the writer down because the JS runtime died, and the entries captured
-   * before it died are the reason a developer would look. Everything kept this
-   * way is reclaimed by `pruneStaleLogs` on the first connect after it has gone
-   * a day untouched.
+   * before it died are the reason a developer would look. Reclaiming it is
+   * `pruneStaleLogs`' job, and it runs from this class's constructor: a kept
+   * file goes on the next debugger connect that finds it a day untouched, and
+   * on a host that stops debugging it stays until one does.
    */
   close(opts: { keepFile?: boolean } = {}): void {
     if (this.closed) return;

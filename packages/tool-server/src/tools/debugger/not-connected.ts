@@ -54,10 +54,10 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
     "or ask the user, wait for it to report ready, then retry once.",
   no_app_connected:
     "Metro is running but no app is attached. A crashed app reads as this too, and a session " +
-    "that had captured console logs keeps its file: read debugger-log-registry's note before " +
-    "relaunching, since it names that file when there is one. Do not retry immediately — launch " +
-    "or restart the RN app on the target device (launch-app / restart-app), wait a few seconds " +
-    "for the bundle to load, then retry once.",
+    "whose runtime died holding console logs keeps its file: read debugger-log-registry's note " +
+    "before relaunching, since it names that file when there is one. Do not retry immediately — " +
+    "launch or restart the RN app on the target device (launch-app / restart-app), wait a few " +
+    "seconds for the bundle to load, then retry once.",
   device_mismatch:
     "The device_id does not match any debugger target on this Metro. Re-target with the " +
     "logicalDeviceId listed in the detail message, or give the device its own Metro port.",
@@ -129,10 +129,31 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "electronAppPath and force: true), then retry once.",
 };
 
+/**
+ * Reason guidance that must read differently in debugger-log-registry's answer,
+ * the one that carries the note the shared strings send an agent to fetch.
+ * Read from there, "read debugger-log-registry's note" is an errand the answer
+ * in hand has already run — and on a crash that captured nothing it is one that
+ * cannot be run at all: the tool that just reported no note would be sending the
+ * agent back to itself for one. That answer says what it holds instead, in the
+ * sentence it leads its guidance with. Keyed sparsely, like the map above:
+ * `stale_connection` carries the same pointer and needs no entry, since
+ * debugger-status mints that reason itself and NOT_CONNECTED_CODE_MAP has no
+ * code for it — debugger-log-registry never emits it.
+ */
+const OWN_NOTE_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
+  no_app_connected:
+    "Metro is running but no app is attached; a crashed app reads as this too. Do not retry " +
+    "immediately — launch or restart the RN app on the target device (launch-app / " +
+    "restart-app), wait a few seconds for the bundle to load, then retry once.",
+};
+
 export function buildNotConnected(
   reason: DebuggerNotConnectedReason,
   err: unknown,
-  params: { port: number; device_id?: string }
+  params: { port: number; device_id?: string },
+  /** Set by the tool that reports the breadcrumb itself — see OWN_NOTE_GUIDANCE. */
+  opts?: { reportsOwnNote?: boolean }
 ): DebuggerNotConnectedResult {
   const isChromium = params.device_id?.startsWith(CHROMIUM_ID_PREFIX) ?? false;
   return {
@@ -141,7 +162,10 @@ export function buildNotConnected(
     ...(isChromium ? {} : { port: params.port }),
     reason,
     detail: err instanceof Error ? err.message : String(err),
-    guidance: (isChromium ? CHROMIUM_GUIDANCE[reason] : undefined) ?? GUIDANCE[reason],
+    guidance:
+      (isChromium ? CHROMIUM_GUIDANCE[reason] : undefined) ??
+      (opts?.reportsOwnNote ? OWN_NOTE_GUIDANCE[reason] : undefined) ??
+      GUIDANCE[reason],
   };
 }
 
