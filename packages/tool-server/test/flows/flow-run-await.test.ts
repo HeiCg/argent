@@ -142,10 +142,10 @@ describe("flow-execute with await-ui-element gating", () => {
   });
 
   it("keeps a nested orchestrator's own abort wording and payload on the skip", async () => {
-    // A nested run-sequence honours the cancel by returning a PARTIAL result,
+    // A nested run-sequence honours the cancel by returning a PARTIAL result
     // and knows how far it got. The generic "run aborted during tool" wording
-    // would throw that progress away, and a skip without `result`/`args` leaves
-    // the partial sequence unreadable in the report.
+    // would drop that progress, and a skip without `result` or `args` hides the
+    // partial sequence.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: run-sequence
@@ -185,10 +185,9 @@ steps:
   });
 
   it("calls a CANCELLED await-ui-element a skip, not a condition the app failed", async () => {
-    // A cancelled wait reports itself by returning unmet, the same shape as one
-    // that timed out. Scored on that shape alone it becomes "the app never
-    // settled" — blaming the app for the author's own cancel, and failing a run
-    // that was only stopped.
+    // A cancelled wait returns unmet, the same shape as one that timed out.
+    // Scored on the shape alone, it blames the app for the author's own cancel
+    // and fails a run that was only stopped.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: await-ui-element
@@ -225,10 +224,9 @@ steps:
   });
 
   it("keeps a plain tool that finished before the cancel a PASS", async () => {
-    // The cancel landed after the tap had already been dispatched and answered.
-    // That step ran in full, and the recorder records exactly this shape — a
-    // `skip` here would both contradict it and use `skip` for something other
-    // than "did not run".
+    // The cancel landed after the tap was dispatched and answered. That step
+    // ran in full, and the recorder records this shape. A `skip` here would
+    // contradict it and would mean something other than "did not run".
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: gesture-tap
@@ -255,9 +253,9 @@ steps:
   });
 
   it("keeps a nested step's FAILURE and its detail when the cancel lands too", async () => {
-    // A cancel arriving while a nested step was already failing must not
-    // overwrite the verdict: "run aborted" would hide that a step failed, and
-    // the generic wording would throw away the name of the step that did.
+    // A cancel that arrives while a nested step is failing must not overwrite
+    // the verdict. "run aborted" would hide the failure and drop the name of
+    // the step that caused it.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: run-sequence

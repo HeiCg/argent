@@ -163,14 +163,11 @@ export interface DirectiveOutcome {
    * blind/degraded tree), or a `hidden` check ended on a blind or failed
    * read after the element had matched.
    *
-   * Every reader turns it into "unknown", and each has its own way to say so.
-   * The `when:` guard probe errors rather than silently skip a block a broken
-   * tree source can't vouch for. A plain `assert` reports it as an ordinary
-   * failure. An `idle` step has no condition to fall back on, so the runner
-   * scores it `error` rather than `fail`. And the recorder's cross-tree
-   * re-probe (`probeAgainstRunnerTree` in flow-add-step.ts) neither errors nor
-   * fails: the recorded step already ran on the device, so it keeps the step
-   * and composes a warning that says the conversion is UNKNOWN, not known-bad.
+   * Every reader turns it into "unknown" its own way: the `when:` guard errors
+   * rather than skip a block it cannot vouch for, `assert` reports an ordinary
+   * failure, `idle` scores `error` rather than `fail`, and the recorder's
+   * cross-tree re-probe keeps the step and warns that the conversion is
+   * UNKNOWN, not known-bad.
    */
   indeterminate?: boolean;
   /**
@@ -366,19 +363,15 @@ const CONDITION_DARK_TAIL_TOLERANCE_MS = POLL_INTERVAL_MS * 2;
 /**
  * Evaluate a UI condition on the assert grace window — the same engine as
  * `assert`, and deliberately not an await-sized wait. `ok` is "condition met";
- * `indeterminate` separates an unreadable tree, which is unknown rather than
- * false, from a plainly unmet condition.
+ * `indeterminate` separates an unreadable tree (unknown) from a plainly unmet
+ * condition.
  *
  * Named for its first caller, the `when:` block guard, where the grace window
- * is the whole point: a skipped block must not add a dead wait to every clean
- * run, and the two outcomes map onto error (unknown) versus skip (unmet).
- *
- * The recorder's cross-tree re-probe (`probeAgainstRunnerTree` in
- * flow-add-step.ts) is a second caller and neither errors nor skips — it always
- * keeps the step and only chooses which warning to raise. It wants this
- * function for a different reason: the window it predicts is an `assert:`
- * conversion's, which is exactly the window this polls on. What it does NOT
- * inherit is the guard's tolerance for a slow read; see PROBE_BUDGET_MS there.
+ * is the point: a skipped block must not add a dead wait to every clean run.
+ * The recorder's cross-tree re-probe is a second caller — it neither errors nor
+ * skips, and wants this function because an `assert:` conversion polls on
+ * exactly this window. It does not inherit the guard's tolerance for a slow
+ * read; see PROBE_BUDGET_MS there.
  */
 export function probeWhenCondition(
   env: ActionEnv,
@@ -1383,7 +1376,7 @@ async function waitForCondition(
   const deadline = Date.now() + timeoutMs;
 
   let lastMatches: ReturnType<typeof findAll> = [];
-  // The last tree a trusted read produced — the evidence a miss note draws on.
+  // The last tree from a trusted read. A miss note searches it.
   let lastTree: DescribeNode | undefined;
   let fetchError: string | undefined;
   let everMatched = false;
@@ -1408,10 +1401,8 @@ async function waitForCondition(
         data.tree.children.length === 0 && Boolean(data.hint || data.should_restart || everMatched);
       if (!blind) {
         lastTrustedReadAt = Date.now();
-        // Only a trusted read updates lastTree, per its comment: a blind (empty +
-        // degraded) tree has nothing for a miss note to search, and letting it
-        // overwrite an earlier good tree would silently drop the note on a
-        // trailing blip.
+        // A blind tree is empty, so a miss note has nothing to search in it.
+        // It must not replace a good tree from an earlier read.
         lastTree = data.tree;
       }
       lastReadTrusted = !blind;
@@ -1523,12 +1514,10 @@ async function waitForCondition(
 }
 
 /**
- * The invisible-character note for the comparator the step actually used —
- * whole-string for `equals`, substring for `contains` (the default). `matches`
- * never reaches here; it gets the one-sided {@link ignorableTextNote}.
- *
- * Kept in one place because two callers must agree on it: the note itself, and
- * the compatibility note that stands down whenever this one applies.
+ * The invisible-character note for the comparator the step used: whole-string
+ * for `equals`, substring for `contains` (the default). `matches` uses the
+ * one-sided {@link ignorableTextNote} instead. Two callers must agree on this
+ * note, so it has one definition.
  */
 function confusableNoteFor(
   textMatch: TextMatchMode | undefined,
@@ -1541,53 +1530,15 @@ function confusableNoteFor(
 }
 
 /**
- * When a selector (or a `text` expectation) missed and the ONLY thing standing
- * between it and a match is a compatibility variant, say which one.
+ * Names the compatibility variant that alone prevents a match for a selector
+ * or a `text` expectation. The fold keeps those variants, because a
+ * blackletter name must not match the account it imitates. The usual miss is
+ * innocent - the author types `...` and the app renders `…`.
  *
- * Those variants are deliberately not folded away — a blackletter name must
- * not match the account it imitates — but the common case is innocent: an
- * author types `...` for a label the app renders with a single `…`, and gets
- * "no element matched", which points at nothing. Naming the character on
- * screen turns an unexplainable miss into a one-line fix.
- *
- * Only ever a note about a MISS. Three cases are therefore exempt, or the
- * advice — "copy the characters the app actually renders" — reads backwards:
- *
- * - `hidden` fails because an element the selector found is STILL on screen.
- *   Copying the rendered characters would make the selector match more, not
- *   fewer; the author wants it gone, not equated.
- * - `visible` WITH matches failed on zero-area frames, not on a miss: the
- *   locator worked, and assertReason says exactly that. Advising a rewrite of
- *   the text blames the wrong thing — and the whole-tree walk will happily
- *   find a look-alike elsewhere to blame it on. (Reachable on Vega, whose flow
- *   adapter keeps zero-area nodes; the other platforms prune them.)
- * - `matches` compares a regular expression, not literal text, so `wanted`
- *   would be the pattern. Folding a pattern's code points against a rendered
- *   label describes a mismatch that has nothing to do with the pattern that
- *   failed — the same exemption {@link confusableTextNote} draws, for the same
- *   reason. (An invisible in the text it was tested against still gets named;
- *   see {@link ignorableTextNote}.) This one belongs to the LOCATED branch
- *   only, and is applied there: it is a statement about the EXPECTATION, and
- *   the not-located branch never reads the expectation. What that branch
- *   compares is `selector.text`, which is a literal whatever comparator the
- *   step happens to use — so exempting it here dropped the explanation for the
- *   one comparator whose expectation had nothing to do with why the selector
- *   missed, and broke the invariant two bullets down.
- *
- * And it is scoped by what actually missed, which is a question about the
- * MATCH SET rather than about the condition:
- *
- * - Nothing matched, so the selector's own text is a needle that found
- *   nothing: search the WHOLE tree for what it nearly matched. That is every
- *   `exists` miss, and equally a `text` step whose LOCATOR missed — the same
- *   selector on the same screen must not be explained under `exists` and left
- *   bare under `text`.
- * - Something matched but its text was wrong: look only at THAT element's
- *   text. Searching the tree here let an UNRELATED node that merely happened
- *   to render a compat variant of the expected string hijack the note —
- *   telling an author whose element is simply in the wrong state to "copy the
- *   rendered characters" of a look-alike elsewhere on screen, which sends them
- *   down a dead end.
+ * The note explains a miss, so three conditions are exempt:
+ * - `hidden`: the selector found the element, so nothing missed.
+ * - `visible` with matches: a zero-area frame, not a locator miss.
+ * - `matches`: a pattern, not text. The located branch applies this one.
  */
 function compatibilityMissNote(
   tree: DescribeNode | undefined,
@@ -1606,66 +1557,41 @@ function compatibilityMissNote(
       ? (firstInReadingOrder(matches.filter(isVisible)) ?? firstInReadingOrder(matches))
       : undefined;
   if (located !== undefined) {
-    // The element WAS located; what missed is the expectation, not the locator.
-    // Scope strictly to the located element's own text — the very node
-    // assertReason quotes — so an unrelated look-alike cannot hijack the note.
-    //
-    // And this is where the `matches` exemption belongs: only here is the
-    // expectation what missed, and only here would it be compared as a
-    // pattern. See the third exemption above.
+    // The locator found the element, so the expectation missed. Read only the
+    // text of that element, or an unrelated look-alike gets the note. The
+    // `matches` exemption belongs here, where the expectation is a pattern.
     if (textMatch === "matches") return "";
     if (expectedText === undefined || expectedText === "") return "";
     const first = located;
     const shown = assertText(first);
     const own = nodeText(first);
-    // Defer to the confusable (invisible-character) note assertReason already
-    // emits: when the hoisted subtree text and the node's own text miss the
-    // expected string in DIFFERENT ways - one an invisible-only difference, the
-    // other a typographic variant - both notes would otherwise fire and print
-    // two conflicting explanations of one failure. The codepoint note is the
-    // more precise, so this note stands down whenever it applies.
+    // The subtree text and the node's own text can miss in different ways, so
+    // two notes can explain one failure. The codepoint note is more precise,
+    // so omit this one.
     if (
       confusableNoteFor(textMatch, shown, expectedText) !== undefined ||
       confusableNoteFor(textMatch, own, expectedText) !== undefined
     ) {
       return "";
     }
-    // Match the comparator the step actually used: `equals` asks about the
-    // whole string, `contains` (the default) about a substring.
+    // Use the comparator of the step: `equals` asks about the whole string,
+    // `contains` (the default) about a substring.
     const nearMiss = textMatch === "equals" ? compatibilityVariantOf : compatibilityVariantIn;
     hit = [shown, own].find((text) => text !== "" && nearMiss(text, expectedText));
   } else {
-    // Nothing was located, so the selector's own text is the needle that found
-    // nothing — search the whole tree for what it nearly matched. Reached by
-    // every `exists` miss, by `visible` with no matches at all, and by a `text`
-    // step whose locator missed.
+    // Nothing was located, so the text of the selector is a needle that found
+    // nothing. Search the whole tree for what it nearly matched.
     const wanted = selector.text;
     if (tree === undefined || wanted === undefined || wanted === "") return "";
-    // Search only among the nodes the step could actually have ACCEPTED. The
-    // text is the field that missed, so drop it and re-apply everything else
-    // the author named — role, id, and the within/after/next scopes — through
-    // the same resolver the step itself used.
-    //
-    // Testing the text alone named elements the selector could never have
-    // matched: `{ text: "Add more languages...", id: plain }` was told the
-    // screen shows "Add more languages…" about a DIFFERENT element, so the
-    // author changed the one field that was already correct and landed back on
-    // a bare miss. That is the same hijack the located branch is scoped to
-    // prevent, arriving through the other branch.
+    // Keep only the nodes the step can accept. The text is the field that
+    // missed, so drop it and re-apply the other fields through the resolver of
+    // the step. A search on the text alone names elements it can never match.
     const candidates = flowFindAll(tree, { ...selector, text: undefined });
-    // `visible` with no matches at all can still reach a zero-area node here
-    // (Vega's flow adapter keeps them; the other platforms prune them), and
-    // telling a `visible` step "the screen does show X" about a node the runner
-    // knows is not on screen sends the author to a rewrite that only flips the
-    // failure to "matched … but none was visible". `exists` deliberately
-    // accepts zero-area nodes, so it must not filter.
+    // A `visible` step must not name a zero-area node. Vega's flow adapter
+    // keeps them, and `exists` accepts them, so `exists` must not filter.
     const eligible = condition === "visible" ? candidates.filter(isVisible) : candidates;
-    // Both near-miss questions, in one place shared with the tool surface: an
-    // invisible-character difference as well as a typographic one. Asking only
-    // the compat question left an invisible-character miss on a SELECTOR ending
-    // in the bare "no element matched" this whole area exists to eliminate —
-    // the `text` expectation named the differing code points, and the selector
-    // that missed for the very same reason named nothing.
+    // Ask both near-miss questions - invisible characters and typography - so
+    // a selector miss gets the same explanation as a `text` expectation.
     return prefixNote(selectorMissNote(eligible, wanted));
   }
   return prefixNote(hit === undefined ? undefined : typographicVariantNote(hit));
@@ -2309,7 +2235,10 @@ function assertReason(
   textMatch: TextMatchMode | undefined,
   matches: ReturnType<typeof findAll>
 ): string {
-  const sel = describeSelector(selector);
+  // The selector holds authored text and prints first, so an unbalanced U+202E
+  // in it reverses the rest of the message, the codepoint note included. See
+  // quoteScreenText.
+  const sel = quoteScreenText(describeSelector(selector));
   switch (condition) {
     case "exists":
       return `no element matched selector ${sel}`;
@@ -2326,11 +2255,7 @@ function assertReason(
     case "text": {
       const first = firstInReadingOrder(matches.filter(isVisible)) ?? firstInReadingOrder(matches);
       if (!first) return `no element matched selector ${sel}`;
-      // Defused like the label below, and for the same reason: the expectation
-      // is authored text, JSON.stringify does not escape U+202E, and an
-      // unbalanced one here reverses everything printed after it — including
-      // the codepoint note this reason appends, which is the explanation the
-      // failure exists to give. See quoteScreenText.
+      // The expectation is authored text too. JSON.stringify does not escape U+202E.
       const wanted = quoteScreenText(
         describeTextExpectation(expectedText, textMatch, "infinitive")
       );
@@ -2339,45 +2264,19 @@ function assertReason(
       // the author may have been asserting against either.
       const shown = assertText(first);
       const own = nodeText(first);
-      // Defused before quoting, like every other place this reason prints screen
-      // text: an unbalanced U+202E in the label reverses everything after it, and
-      // what follows here is now the codepoint note — the very explanation this
-      // failure exists to give. See quoteScreenText.
+      // This is screen text, so quote it the same way.
       const ownNote = own && own !== shown ? ` (own text "${quoteScreenText(own)}")` : "";
-      // The two quoted strings can be indistinguishable on screen and still
-      // compare unequal — a ZWSP or a bidi mark that survived a copy-paste, or
-      // any other invisible the fold's explicit classes do not list. Say which
-      // codepoints differ rather than printing the same text twice and calling
-      // it a mismatch.
-      //
-      // The set is `Default_Ignorable_Code_Point`, NOT category Cf: the two
-      // disagree in both directions, and the property is right both times. It
-      // excludes the prepended concatenation marks (Cf, but they change how the
-      // digits after them render) and includes U+034F, which is Mn and would
-      // escape a Cf test despite being exactly the unexplainable invisible this
-      // note exists for. A variation selector is likewise Mn and IS ignorable —
-      // what keeps it out is that it BUILDS a glyph, not its category. See
-      // confusableTextNote. (A space-like difference never reaches here at all:
-      // the fold reduces NBSP and its kin to a plain space, so the check has
-      // already passed.)
-      //
-      // Only for the LITERAL modes: in `matches` the "expected" string is a
-      // regular expression, not text, so comparing its code points against the
-      // element's would describe a mismatch that has nothing to do with the
-      // pattern that failed. `matches` gets the one-sided note instead — it is
-      // exempt from folding as well as from this comparison, so without it the
-      // one mode the fold cannot rescue is the one left unexplained.
+      // The two quoted strings can look the same on screen and still compare
+      // unequal, so name the codepoints that differ. See {@link confusableTextNote}
+      // for the set that counts as invisible. `matches` holds a pattern, not
+      // text, so it gets the one-sided note instead.
       const confusable =
         expectedText === undefined
           ? undefined
           : textMatch === "matches"
             ? (ignorableTextNote(shown, expectedText) ?? ignorableTextNote(own, expectedText))
-            : // Match the comparator the step used, as the compat note does:
-              // `equals` asks whether the WHOLE strings are confusable,
-              // `contains` (the default) whether the needle is confusable with
-              // a substring of the label. Asking the whole-string question
-              // under `contains` left the note absent on every proper
-              // substring, which is the shape `contains` exists for.
+            : // See confusableNoteFor: `equals` compares whole strings,
+              // `contains` a substring of the label.
               (confusableNoteFor(textMatch, shown, expectedText) ??
               confusableNoteFor(textMatch, own, expectedText));
       return (

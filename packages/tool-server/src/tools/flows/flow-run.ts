@@ -86,16 +86,11 @@ import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flo
 import { describeVega } from "../describe/platforms/vega";
 import { pinStatusBar, restoreStatusBar } from "../../utils/status-bar";
 
-// `flow_name` is the parameter name callers reach for — the tool is
-// `flow-execute`, so "the flow's name" spells itself that way. Getting it
-// wrong used to answer with raw Zod JSON that names neither the field the
-// caller sent nor the one the tool wanted. `name` has always been `.optional()`
-// here (so `flow_path` can stand in), so a `flow_name` call never tripped a
-// missing-`name` check — it tripped the exactly-one-source rule below and came
-// back as
-// `[{"code":"custom","path":["flow_path"],"message":"Pass exactly one flow source: name or flow_path."}]`,
-// anchored on the one source field the caller had no reason to send. Accept the
-// alias instead of spending a turn on a rename.
+// `flow_name` is the parameter name callers reach for, since the tool is
+// `flow-execute`. `name` is `.optional()` here so `flow_path` can stand in, so
+// a `flow_name` call never tripped a missing-`name` check — it tripped the
+// exactly-one-source rule below, anchored on the one source field the caller
+// had no reason to send. Accept the alias instead of spending a turn on it.
 const zodSchema = z
   .object({
     name: z
@@ -166,12 +161,9 @@ const zodSchema = z
           : "Pass exactly one flow source: name or flow_path. flow-execute needs the flow's " +
             "name in `name` (`flow_name` is accepted as an alias) — it resolves " +
             "<project_root>/.argent/flows/<name>.yaml.",
-        // The ROOT, not `flow_path`: this rule spans the source fields and its
-        // message names them all, so anchoring it on one of them points the
-        // reader at the field they are as likely as not to have got right — and
-        // has `describeParamIssues` prefix the whole sentence with
-        // "`flow_path`:". The CLI renders an empty path as the message alone,
-        // which is what a whole-payload rule should read as.
+        // The ROOT, not `flow_path`: this rule spans the source fields, so
+        // anchoring it on one points the reader at a field they may well have
+        // got right and prefixes the sentence with "`flow_path`:".
         path: [],
       });
     }
@@ -181,53 +173,31 @@ type Params = z.infer<typeof zodSchema>;
 
 /**
  * The flow name, from `name` or its alias. Required, but deliberately not by
- * the schema: a Zod `required` failure names the field it wanted and never
- * the one the caller actually sent, which is the whole reason the alias
- * exists.
+ * the schema: a Zod `required` failure names the field it wanted and never the
+ * one the caller sent, which is why the alias exists.
  *
- * The message has to name the rejected spellings itself. Every other tool's
- * schema error closes with the caller's own keys ("You sent: `udidd`, …"), but
- * this check runs AFTER zod has stripped the unknown ones, so a caller who
- * wrote `flowName` is no longer distinguishable here from one who sent no name
- * at all — and the bare version of this text left that caller with nothing
- * saying their key had been dropped.
+ * The message names the rejected spellings itself. Every other tool's schema
+ * error closes with the caller's own keys, but this check runs AFTER zod has
+ * stripped the unknown ones, so a caller who wrote `flowName` is no longer
+ * distinguishable here from one who sent no name at all.
  *
  * `InvalidToolInputError`, not a plain `Error`: a missing name is a client
- * input error, so it must reach the HTTP boundary as a 400 (the class maps
- * there, matching the zod-validation path) and telemetry as a `validation`
- * signal. Making `name` optional (for the alias) moved this check out of zod,
- * so it has to carry that classification itself.
- *
- * What a plain `Error` would cost is the classification, not the bucket: thrown
- * from here it is inside `execute`'s try, so `ToolExecutionError` always wraps
- * it and `getFailureSignalOrFallback` answers
- * `REGISTRY_TOOL_EXECUTION_FAILED` / `error_kind: "unknown"` — the
- * `ARGENT_UNCLASSIFIED` fallback in the telemetry listener is never consulted.
- * So the gain is `unknown` → `validation`, plus the 400.
- *
- * Not a precedent this follows, though: `assertSafeFlowName` throws a bare
- * `FailureError`, and `http.ts` maps to 400 off the error CLASS, so it falls
- * past that arm to a 500 whose body says `error_kind: "validation"` —
- * `{"name":"../x"}` answers 500 where `{"name":""}` answers 400, inside one
- * tool. That is a pre-existing gap in the class-based mapping (it predates this
- * branch), not something this check should imitate.
+ * input error, so it must reach the HTTP boundary as a 400 and telemetry as a
+ * `validation` signal. Making `name` optional moved this check out of zod, so
+ * it carries that classification itself.
  */
 export function resolveFlowName(
   params: { name?: string; flow_name?: string },
   toolName = "flow-execute"
 ): string {
-  // `||`, not `??`: an empty `name` is not a name, and must not mask a valid
-  // alias — rejecting the call while pointing at the field it ignored is the
-  // exact confusion the alias exists to prevent.
+  // `||`, not `??`: an empty `name` is not a name and must not mask a valid
+  // alias.
   const name = params.name || params.flow_name;
   if (name === undefined || name === "") {
-    // Over the wire this throw is reachable ONLY for an empty-string `name` or
-    // `flow_name`: a call spelling the name `flowName` or `flow` sets no source
-    // at all, so the schema's exactly-one-source rule fires first and its
-    // message closes with "You sent: `flowName`, …" — naming the very key they
-    // typed. So this text must not claim to cover that caller; it would
-    // describe a case the reader is never in while reading it, and point away
-    // from the message that does name their key.
+    // Over the wire this is reachable ONLY for an empty-string `name` or
+    // `flow_name`: a call spelling it `flowName` sets no source at all, so the
+    // schema's exactly-one-source rule fires first and names their own key. So
+    // this text must not claim to cover that caller.
     throw new InvalidToolInputError(
       `${toolName} needs the flow's name in \`name\` (\`flow_name\` is accepted as an alias) — ` +
         "it resolves <project_root>/.argent/flows/<name>.yaml. An empty string is not a name, and " +
@@ -252,20 +222,17 @@ const fileInputs: FileInputSpec[] = [
     path: "${flow_path}",
     kind: "file",
     optional: true,
-    // Both spellings, because both name a flow: an alias-only caller who also
-    // sent a flow_path made the same dual-source mistake, and naming only
-    // `name` would have the boundary resolve their flow_path and answer with a
-    // 422 about a file the call never needed instead of the 400 that names the
-    // real mistake.
+    // Both spellings, because both name a flow: naming only `name` would have
+    // the boundary resolve an alias-only caller's flow_path and answer with a
+    // 422 about a file the call never needed, not the 400 for the real mistake.
     unwrapWhenSet: ["name", "flow_name"],
   },
   // Two specs, one target: the client interpolates whichever spelling the
   // caller sent, so the alias survives the file-input boundary. Without the
-  // `flow_name` spec an alias-only call interpolates no template, uploads
-  // nothing, and a REMOTE tool-server then reads a client-side path that is
-  // not on its host — the confusing ENOENT the alias exists to avoid. The
-  // `name` spec is LAST so it wins the client's last-write-wins merge when both
-  // are sent, matching `resolveFlowName`'s `name || flow_name` precedence.
+  // `flow_name` spec an alias-only call uploads nothing and a REMOTE
+  // tool-server reads a client-side path that is not on its host. The `name`
+  // spec is LAST so it wins the client's last-write-wins merge, matching
+  // `resolveFlowName`'s `name || flow_name` precedence.
   {
     target: "flow_file",
     path: "${project_root}/.argent/flows/${flow_name}.yaml",
@@ -314,6 +281,15 @@ export interface StepReport {
    * waited.
    */
   warning?: string;
+  /**
+   * The runner had begun this step when the run was cancelled, so its `skip` is
+   * NOT proof that the device is untouched. A `launch` reaches its abort only
+   * after `restart-app` relaunched the app. Set only on the skips a reached
+   * step produces. The pre-step guard and an unreached block leave it absent,
+   * which is what makes their silence provable. The flow recorder reads it to
+   * decide whether to warn that the recorded prefix may no longer reproduce.
+   */
+  reached?: true;
   /** Underlying tool id for `tool` steps. */
   tool?: string;
   /** Tool result for `tool` steps. */
@@ -637,13 +613,12 @@ async function androidDevtoolsReady(registry: Registry, device: DeviceInfo): Pro
  * {@link waitForNativeDevtools}) — there the launch is not what failed, and the
  * first selector read reports the impossibility. Otherwise the reason to report.
  *
- * The iOS wait is per BUNDLE, and that is load-bearing beyond readiness: a
- * later selector step reads through `resolveNativeTargetApp(api, undefined)`,
- * which auto-targets whatever is connected and frontmost-like and never
- * compares that against the bundle this step launched. Waiting for THIS bundle
- * to connect is the only thing coupling the two, so it must not be skipped per
- * bundle — a launch that returned without it could hand the next selector step
- * a different app's view hierarchy and report the run green.
+ * The iOS wait is per bundle, and it does more than confirm readiness. A later
+ * selector step calls `resolveNativeTargetApp(api, undefined)`, which
+ * auto-targets whatever is connected and frontmost, and never checks that
+ * against the bundle this step launched. This wait is the only thing that
+ * couples the two, so a launch that skips it can hand the next selector step
+ * another app's view hierarchy and still report the run green.
  */
 async function treeSourceGate(
   registry: Registry,
@@ -1281,10 +1256,9 @@ Pass exactly one flow source: name for a saved flow under project_root (\`flow_n
     services: () => ({}),
     async execute(_services, params, ctx?: ToolContext) {
       const signal = ctx?.signal;
-      // `flow_name` is an accepted alias, folded into `name` before the source
-      // resolver reads it so both spellings take one path. Resolved only for a
-      // name call: a flow_path call names no flow, and resolveFlowName would
-      // reject it for the missing name it is not supposed to have.
+      // Fold the `flow_name` alias into `name` so both spellings take one
+      // path. Only for a name call: a flow_path call names no flow, and
+      // `resolveFlowName` would reject it for a name it is not meant to have.
       const named = params.flow_path === undefined ? resolveFlowName(params) : undefined;
       const { filePath, flowName, viaUpload } = await resolveFlowSource(
         named === undefined ? params : { ...params, name: named },
@@ -2475,7 +2449,9 @@ async function execLeafStep(
       const r = await runLaunch(state, step.app);
       // A run cancelled mid-launch is a skip (matching the pre-step guard and
       // the directives), never a step failure — the app did nothing wrong.
-      if (r.aborted) return { ...base, status: "skip", reason: r.reason };
+      // Still `reached`: every abort exit in `runLaunch` is after the relaunch
+      // or the chromium attach.
+      if (r.aborted) return { ...base, status: "skip", reason: r.reason, reached: true };
       return { ...base, status: r.ok ? "pass" : "error", reason: r.reason };
     }
 
@@ -2494,8 +2470,10 @@ async function execLeafStep(
       try {
         const r = await runDirective(deviceEnv(state), step);
         // A run cancelled mid-directive is a skip (matching the pre-step guard
-        // and `wait`), never a step failure — the app did nothing wrong.
-        if (r.aborted) return { ...base, status: "skip", reason: r.reason };
+        // and `wait`), never a step failure — the app did nothing wrong. Still
+        // `reached`: the cancel can land after the gesture was dispatched, and
+        // the outcome does not say which side it landed on.
+        if (r.aborted) return { ...base, status: "skip", reason: r.reason, reached: true };
         // `indeterminate` is `idle`'s only non-passing outcome: a screen that
         // merely kept moving passes with a warning, and so does one that
         // rendered nothing, so what is left here is a wait that could not run
@@ -2593,29 +2571,25 @@ async function execLeafStep(
           state.treeOutage.proven = undefined;
         }
         const result = await invokeSubTool(registry, ctx, step.name, args);
-        // A cancelled `await-ui-element` reports itself by RETURNING unmet
-        // (`success: false`, note "wait was cancelled before the condition was
-        // met"), which the check below would score `fail` — telling the author
-        // the app failed to settle when what happened is that they cancelled the
-        // run. A skip, matching `wait` and the directives.
+        // A cancelled `await-ui-element` reports itself by RETURNING unmet, and
+        // the check below would score that `fail`. That blames the app for the
+        // author's own cancel. Score it a skip, as `wait` and the directives do.
         //
-        // Deliberately not a broader "the signal is set, so this step is a
-        // skip": every other cancellation here already lands correctly without
-        // one. A nested orchestrator cut short reports the cancel IN ITS OWN
-        // WORDS below, naming how far the run got and which step failed — a
-        // generic skip would replace all of that with "run aborted during
-        // tool" and drop the sub-report with it. Which verdict the two readers
-        // pick for that differs, and neither is this guard's business:
-        // `flow-execute` carries an `aborted` flag and reads it first, so it
-        // says `skip`; `run-sequence` has no such flag — a nested tool cancelled
-        // mid-flight returns or throws and becomes an ordinary error entry — so
-        // it says `fail`, which the RECORDER re-labels from the signal. And a
-        // tool that ran to completion before the cancel arrived did run:
-        // scoring that `skip` would contradict the recorder, which records
-        // exactly that step, and would use `skip` for something other than "did
-        // not run", which is what it means everywhere else in this file.
+        // Deliberately narrow, not "the signal is set, so this step is a skip".
+        // Every other cancellation here already lands correctly. A nested
+        // orchestrator reports the cancel IN ITS OWN WORDS below, and a generic
+        // skip would drop that sub-report. A tool that finished before the
+        // cancel arrived did run, and `skip` means "did not run" everywhere
+        // else in this file.
         if (signal?.aborted && isUnmetUiWaitResult(step.name, result)) {
-          return { ...base, status: "skip", tool: step.name, reason: "run aborted during wait" };
+          // The sub-tool ran and returned, unlike the pre-invoke delay skip.
+          return {
+            ...base,
+            status: "skip",
+            tool: step.name,
+            reason: "run aborted during wait",
+            reached: true,
+          };
         }
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;
@@ -2688,11 +2662,10 @@ async function execLeafStep(
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
-        // A schema miss is re-rendered from the step's RECORDED args, not the
-        // bound ones. `bindDeviceArgs` strips every device key off the step and
-        // re-injects the resolved one, so the registry's "You sent:" list would
-        // name a key the flow author cannot have written — the recorder strips
-        // it on the way in precisely so flows stay portable.
+        // Re-render a schema miss from the step's RECORDED args, not the bound
+        // ones: `bindDeviceArgs` re-injects the resolved device key, so the
+        // registry's "You sent:" list would name a key the flow author cannot
+        // have written.
         const reframed = describeNestedParamError(registry, err, step.name, args, step.args ?? {});
         return { ...base, status: "error", tool: step.name, reason: reframed ?? errMsg(err) };
       }
@@ -2757,12 +2730,10 @@ export async function resolveFlowSource(
   fileInput?: ResolvedFileInput,
   flowPathInput?: ResolvedFileInput
 ): Promise<{ filePath: string; flowName: string; viaUpload: boolean }> {
-  // Both spellings, matching the schemas: a direct caller who named the flow
-  // via the alias HAS named a source. Reading `name` alone, a `flow_name` +
-  // `flow_path` call looks single-source, falls into the flow_path branch, and
-  // complains about the file-input boundary instead of the two sources it was
-  // given. The tool's own execute() folds the alias in before calling, so this
-  // only ever fires for the direct callers the check exists for.
+  // Both spellings, matching the schemas: reading `name` alone, a `flow_name` +
+  // `flow_path` call looks single-source and complains about the file-input
+  // boundary instead of the two sources it was given. execute() folds the alias
+  // in first, so this only fires for direct callers.
   const named = params.name ?? params.flow_name;
   // The schemas' superRefine already enforces this for flow-execute and
   // flow-read-prerequisite; this copy covers direct execute() callers (tests,

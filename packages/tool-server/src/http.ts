@@ -109,8 +109,6 @@ function findDependencyMissing(err: unknown): DependencyMissingError | null {
 /**
  * A shallow copy without the named keys — for reading a caller's own parameter
  * names back to them after the file boundary has added its derived ones.
- * Absent keys are ignored, and nothing else about the object changes, so the
- * value every verdict is read from stays exactly what zod parsed.
  */
 function omitKeys(args: unknown, keys: readonly string[]): unknown {
   if (keys.length === 0 || args === null || typeof args !== "object" || Array.isArray(args)) {
@@ -785,27 +783,19 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           );
           // Not `parseResult.error.message`: that is the raw issue JSON, which
           // names the parameter the tool wanted and never the one the caller
-          // actually sent. See describeParamIssues.
+          // sent. See describeParamIssues.
           //
-          // Rendered against the caller's own keys, which `bodyArgs` is not:
-          // `resolveFileInputs` has run by here, and `flow_file` — whose
-          // `.describe()` tells callers to leave it unset — is derived by the
-          // client from `project_root` + `name`, so every flow-execute call
-          // built through `prepareFileInputs` carries it. Listing it beside the
-          // misspelling the "You sent:" clause exists to expose names a key the
-          // caller cannot have written, which is the same defect
-          // `describeNestedParamError` keeps the injected `udid` out of on the
-          // other two dispatchers. Dropped from the KEY LIST only — the values
-          // stay `bodyArgs`, so every verdict is still read off what zod parsed.
+          // Rendered against the caller's own KEYS, which `bodyArgs` is not:
+          // `resolveFileInputs` has run by here, so a derived `flow_file` would
+          // be listed beside the misspelling the "You sent:" clause exists to
+          // expose. Values stay `bodyArgs`, so every verdict is still read off
+          // what zod parsed.
           //
-          // `issues` carries the machine-readable form alongside it. Prose is
-          // right for the agent reading the message, but a programmatic client
-          // needs the paths: `argent run` maps each issue back to the FLAG the
-          // user typed (`--x`, not `x`), prints the tool's help block under it,
-          // and exits 2 — none of which it can do from a sentence. It used to
-          // read the issue list out of the message body; a separate field lets
-          // the message be prose without taking that away, and lets the client
-          // recognize input validation STRUCTURALLY rather than by wording.
+          // `issues` carries the machine-readable form alongside it: `argent
+          // run` maps each issue back to the FLAG the user typed, prints the
+          // tool's help block, and exits 2 — none of which it can do from a
+          // sentence. A separate field also lets the client recognize input
+          // validation structurally rather than by wording.
           res.status(400).json({
             error: describeParamIssues(parseResult.error, omitKeys(bodyArgs, derivedTargets)),
             issues: parseResult.error.issues,
@@ -1043,20 +1033,14 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           return;
         }
         // A schema miss the REGISTRY caught, rather than the HTTP layer's own
-        // copy of the same check above. One nested invoke reaches here:
-        // flow-add-step's sub-tool, where the outer call's own params parsed
-        // fine, so the same mistyped argument was a 400 sent directly and a 500
-        // sent inside a recording. The failure already carries
-        // `error_kind: "validation"`, so a 500 has the body contradicting its
-        // own status; this is the classification the registry's signal was
-        // given, applied at the boundary that reads it.
+        // copy of the check above. Only flow-add-step's sub-tool reaches here,
+        // where the outer call's params parsed fine — so the same mistyped
+        // argument was a 400 sent directly and a 500 sent inside a recording.
+        // The failure already carries `error_kind: "validation"`.
         //
-        // The other two dispatchers never get here, which matters to anyone
-        // deciding whether this arm may be reordered or which paths still need
-        // the `issues` field the boundary 400 carries: run-sequence catches
-        // every sub-invoke failure into `steps[].error` and breaks, and the
-        // flow runner returns its `tool:` steps as `status: "error"` inside the
-        // run report. Both answer 200.
+        // The other two dispatchers never get here: run-sequence catches every
+        // sub-invoke failure into `steps[].error`, and the flow runner returns
+        // its `tool:` steps as `status: "error"`. Both answer 200.
         if (getFailureSignal(err)?.error_code === FAILURE_CODES.TOOL_INPUT_INVALID) {
           res.status(400).json({ error: formatErrorForAgent(err), ...errorSignalFields(err) });
           return;

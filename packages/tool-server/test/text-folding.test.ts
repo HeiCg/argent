@@ -17,14 +17,8 @@ import {
 } from "../src/utils/ui-tree-match";
 import type { DescribeNode } from "../src/tools/describe/contract";
 
-// R10. Two strings that render identically compared unequal, because the
-// comparison was a plain `toLowerCase()`. The observed failure:
-//
-//   element matched but its text was "Amount, PLN 42.00"
-//   (wanted to equal "Amount, PLN 42.00")   success: false, elapsed: 15001
-//
-// — a non-breaking space in the currency label. Two sessions paid a full 15s
-// timeout per attempt for it, and in CI it is an unexplainable red build.
+// R10. The literal comparators fold the text before they compare it, so two
+// strings that render identically compare equal. A plain `toLowerCase()` does not.
 
 const NBSP = " ";
 const NARROW_NBSP = " ";
@@ -51,50 +45,39 @@ describe("foldText", () => {
   });
 
   it("keeps a soft hyphen, which PAINTS at a line break", () => {
-    // Invisible only while the line does not break there. When it does, the
-    // screen reads "kraft-", so folding it onto the unhyphenated spelling
-    // asserts text the app does not display.
+    // A soft hyphen paints a hyphen when the line breaks at that point.
     expect(foldText(`so${SOFT_HYPHEN}ft`)).not.toBe("soft");
     expect(equalsCI(`kraft${SOFT_HYPHEN}fahrzeug`, "kraftfahrzeug")).toBe(false);
   });
 
   it("keeps U+180E, which suppresses Arabic cursive joining as ZWNJ does", () => {
-    // Unicode 6.3 reclassified it from a space to a zero-width format control,
-    // which makes it LOOK inert; between two Arabic letters it breaks the
-    // connected run in two, exactly as U+200C does.
+    // Unicode 6.3 makes U+180E a zero-width format control, so it looks inert.
+    // Between two Arabic letters it breaks the connected run, as U+200C does.
     expect(foldText("a᠎b")).not.toBe("ab");
     expect(equalsCI("ب᠎ب", "بب")).toBe(false);
   });
 
   it("composes a grapheme even when an invisible sat between base and combining mark", () => {
-    // NFC must run AFTER invisibles are stripped: a ZWSP wedged between "a" and
-    // a combining acute would otherwise block composition and leave a decomposed
-    // grapheme that no longer equals its precomposed, identically-rendered twin.
+    // The fold removes the invisibles before it applies NFC. A ZWSP between "a"
+    // and a combining acute blocks the composition.
     expect(foldText("a​́")).toBe(foldText("á"));
     expect(foldText("a​́")).toBe("á");
   });
 
   it("composes AFTER the case fold, for letters whose precomposed form is lowercase-only", () => {
-    // `toLowerCase` is not NFC-preserving. U+01F0 (ǰ) has no uppercase
-    // precomposed twin, so NFC leaves "J̌" decomposed and lowercasing it yields
-    // a decomposed sequence, while the already-lowercase spelling composes.
-    // Normalizing before the case fold therefore left two identically-rendered
-    // spellings unequal — the inverse of what folding promises.
+    // `toLowerCase` does not preserve NFC, so the fold composes after the case
+    // fold. U+01F0 has no uppercase precomposed form to compose to before it.
     const UPPER_DECOMPOSED = "J̌anko"; // J + combining caron
     const LOWER_PRECOMPOSED = "ǰanko"; // ǰ
     expect(foldText(UPPER_DECOMPOSED)).toBe(foldText(LOWER_PRECOMPOSED));
     expect(equalsCI(UPPER_DECOMPOSED, LOWER_PRECOMPOSED)).toBe(true);
     expect(includesCI(`say ${UPPER_DECOMPOSED} now`, LOWER_PRECOMPOSED)).toBe(true);
-    // Same shape, different block: U+1E96 (ẖ) is likewise lowercase-only.
     expect(foldText("H̱i")).toBe(foldText("ẖi"));
   });
 
   it("keeps the joiners that BUILD a glyph", () => {
-    // Invisible alone, load-bearing in sequence. The transgender flag is
-    // U+1F3F3 VS16 ZWJ U+26A7 VS16 and renders as ONE glyph; folding the
-    // joiners away equated it with the two separate glyphs, so a check passed
-    // against a visibly different display name — and a broken sequence, a real
-    // rendering regression, became invisible to every check.
+    // The transgender flag is U+1F3F3 VS16 ZWJ U+26A7 VS16 and renders as one
+    // glyph. Without the joiners it renders as two glyphs.
     const FLAG = "\u{1F3F3}\uFE0F\u200D\u26A7\uFE0F";
     const SPLIT = "\u{1F3F3}\u26A7";
     expect(foldText(FLAG)).not.toBe(foldText(SPLIT));
@@ -103,72 +86,52 @@ describe("foldText", () => {
   });
 
   it("applies NFC, collapses whitespace runs, trims and lowercases", () => {
-    // Canonical: a decomposed "é" (e + U+0301) folds onto the precomposed one,
-    // because they render identically.
     expect(foldText("Cafe\u0301")).toBe(foldText("Café"));
     expect(foldText("  Save   Changes \n")).toBe("save changes");
     expect(foldText("Total:\t42")).toBe("total: 42");
   });
 
   it("keeps a LINE BREAK, which no number of spaces renders as", () => {
-    // The whitespace collapse is the horizontal kind only. A soft hyphen is
-    // kept for a hyphen it MIGHT paint; `\n` moves the glyphs after it every
-    // time, so folding it let `equals: "Sign in"` pass against a label the
-    // screen renders on two lines — and nothing downstream catches that,
-    // because the fold having equated them leaves confusableTextNote no
-    // difference to name.
+    // The collapse covers horizontal whitespace only, because a break moves the
+    // glyphs after it. A fold that equates the labels gives the note nothing to
+    // report either.
     expect(foldText("Sign\nin")).toBe("sign\nin");
     expect(equalsCI("Sign\nin", "Sign in")).toBe(false);
     expect(confusableTextNote("Sign\nin", "Sign in")).toBeUndefined();
     expect(includesCI("Line one\nLine two", "one Line")).toBe(false);
-    // A tab is horizontal, so it still folds.
     expect(equalsCI("a\tb", "a b")).toBe(true);
-    // As does U+2028 LINE SEPARATOR. U+0085 NEXT LINE gets there by a different
-    // route — JS `\s` does not match it, so it is never collapsed at all — but
-    // lands on the same answer.
     expect(equalsCI("Sign\u2028in", "Sign in")).toBe(false);
     expect(equalsCI("Sign\u0085in", "Sign in")).toBe(false);
   });
 
   it("still collapses a break run to ONE newline PER BREAK, spaces around it included", () => {
-    // CRLF is one break, not two, and the incidental indentation either side of
-    // a break is as invisible as a doubled space is.
+    // CRLF is one break, and the indentation beside a break is invisible.
     expect(foldText("Line one\r\nLine two")).toBe(foldText("Line one\nLine two"));
     expect(foldText("Line one \n  Line two")).toBe("line one\nline two");
   });
 
   it("keeps a BLANK LINE, which one break does not render as", () => {
-    // Collapsing the whole run to a single newline equated one break with two,
-    // so deleting a visible blank line could not fail an exact check — the same
-    // silently-wrong green the break itself is kept to prevent. The breaks in a
-    // run are counted, and the indentation between them still absorbed.
+    // A blank line is visible, so the fold counts the breaks in a run and does
+    // not collapse them to one. It still absorbs the indentation between them.
     expect(foldText("Line one\n\nLine two")).toBe("line one\n\nline two");
     expect(equalsCI("Line one\n\nLine two", "Line one\nLine two")).toBe(false);
     expect(includesCI("Line one\n\nLine two", "one\nLine")).toBe(false);
-    // A blank line spelled with indentation on it is still ONE blank line, and
-    // CRLF still counts once.
     expect(equalsCI("Line one\n \nLine two", "Line one\n\nLine two")).toBe(true);
     expect(equalsCI("Line one\r\n\r\nLine two", "Line one\n\nLine two")).toBe(true);
-    // Nothing downstream can rescue this either, so the fold has to: the two
-    // labels differ in a VISIBLE character, which is not what the note names.
     expect(confusableTextNote("Line one\n\nLine two", "Line one\nLine two")).toBeUndefined();
   });
 
   it("counts only an INTERIOR break, so outer whitespace stays a space", () => {
-    // A break at the label's edge separates no glyph from another, and foldText
-    // trims it away regardless — so the untrimmed foldLoose must not promote it
-    // either, or a `contains` needle's boundary space stops matching a label
-    // that happens to end in a newline.
+    // A break at the edge separates no glyphs, and foldText trims it. The
+    // untrimmed foldLoose leaves it a space, so a boundary needle still matches.
     expect(foldText("\nSign in\n")).toBe("sign in");
     expect(includesCI("  Save   Changes \n", "Changes ")).toBe(true);
     expect(equalsCI("Sign in\n", "Sign in")).toBe(true);
   });
 
   it("keeps COMPATIBILITY variants distinct — the eye can see those", () => {
-    // NFKC would fold every one of these onto plain ASCII, which made a
-    // blackletter display name compare equal to the account it imitates.
-    // Asserted POSITIVELY as well as negatively: a no-op foldText would satisfy
-    // every `not.toBe` here and pin nothing at all.
+    // NFC, not NFKC: NFKC equates a blackletter name with the plain account.
+    // Each case asserts positively too, because a no-change fold passes `not.toBe`.
     expect(foldText("𝕴𝖓𝖋𝖊𝖗𝖓𝖆𝖙𝖗𝖎𝖝")).toBe("𝕴𝖓𝖋𝖊𝖗𝖓𝖆𝖙𝖗𝖎𝖝".toLowerCase());
     expect(foldText("𝕴𝖓𝖋𝖊𝖗𝖓𝖆𝖙𝖗𝖎𝖝")).not.toBe(foldText("Infernatrix"));
     expect(foldText("Ａ")).toBe("ａ"); // fullwidth survives, lowercased
@@ -187,15 +150,26 @@ describe("foldText", () => {
     expect(foldText("PLN 42.00")).not.toBe(foldText("PLN 42.0"));
   });
 
-  it("keeps folding correctly once the cache has been cleared at its cap", () => {
-    // The cache is a plain size cap: at 4096 entries it is blown away wholesale
-    // and refilled. Nothing observed that the clear leaves results intact.
+  it("clears at its cap, and keeps folding correctly afterwards", () => {
+    // The cache clears completely at FOLD_CACHE_MAX entries. The loop finds the
+    // cap, so a change to the cap cannot make the test miss the clear.
     const probe = `Amount, PLN${NBSP}42.00`;
     const before = foldText(probe);
-    for (let i = 0; i < 4200; i++) foldText(`filler-${i}`);
+    const LIMIT = 200_000; // far above any plausible cap; a bound, not a target
+    let cleared = false;
+    let previous = uiTreeMatchInternals.foldCacheSize();
+    for (let i = 0; i < LIMIT && !cleared; i++) {
+      foldText(`filler-${i}`);
+      const size = uiTreeMatchInternals.foldCacheSize();
+      // The cache grows by one for each distinct key, so a drop is the clear.
+      cleared = size < previous;
+      previous = size;
+    }
+    expect(cleared).toBe(true);
+    expect(uiTreeMatchInternals.foldCacheSize()).toBeLessThan(LIMIT);
     expect(foldText(probe)).toBe(before);
     expect(equalsCI(probe, "Amount, PLN 42.00")).toBe(true);
-    // And a bidi-sensitive string still takes the conditional path afterwards.
+    // A bidi-sensitive string still takes the conditional path after a clear.
     expect(equalsCI("5‏-3", "5-3")).toBe(false);
   });
 });
@@ -215,9 +189,8 @@ describe("literal comparisons fold both sides", () => {
   });
 
   describe("a boundary space in a `contains` needle still constrains", () => {
-    // The standard low-tech word boundary: `contains: "Taps: 3"` is also
-    // satisfied by "Taps: 30", so an author writes a trailing space. Folding
-    // trimmed BOTH sides and threw that constraint away.
+    // `contains: "Taps: 3"` also matches "Taps: 30", so an author writes a
+    // trailing space. The fold keeps that space.
     it("does not let a trailing space match a longer word", () => {
       expect(includesCI("Saved successfully", "Save ")).toBe(false);
       expect(includesCI("Taps: 30", "Taps: 3 ")).toBe(false);
@@ -231,13 +204,11 @@ describe("literal comparisons fold both sides", () => {
       expect(includesCI("Save Changes", "Save ")).toBe(true);
       expect(includesCI("Taps: 3 times", "Taps: 3 ")).toBe(true);
       expect(includesCI("NOT OK", " OK")).toBe(true);
-      // Including across the fold's own substitutions.
       expect(includesCI(`Taps:${NBSP}3${NBSP}times`, "Taps: 3 ")).toBe(true);
     });
 
     it("still ignores the label's own incidental outer whitespace", () => {
       expect(includesCI("  Save   Changes \n", "Save Changes")).toBe(true);
-      // ...and a needle whose boundary sits at the label's own edge.
       expect(includesCI("  Save   Changes \n", "Changes ")).toBe(true);
     });
 
@@ -247,10 +218,8 @@ describe("literal comparisons fold both sides", () => {
     });
 
     it("treats a needle that is nothing BUT whitespace as a real constraint", () => {
-      // Loosely folded, " " is not empty, so it constrains the match to labels
-      // that actually show a space — which is what it did before folding
-      // existed. Testing the TRIMMED fold here instead rejected it outright,
-      // and `contains: " "` then failed against a label plainly showing one.
+      // The loose fold leaves " " non-empty, so it constrains the match to a
+      // label that shows a space. The trimmed fold rejects it outright.
       expect(includesCI("Save Changes", " ")).toBe(true);
       expect(includesCI("SaveChanges", " ")).toBe(false);
       expect(includesCI("Save Changes", "\t\n ")).toBe(true); // the run folds to " "
@@ -258,49 +227,37 @@ describe("literal comparisons fold both sides", () => {
   });
 
   it("never folds a `matches` (regex) comparison — a pattern carries its precision", () => {
-    // Only the regex exemption from the NOTES was covered; its exemption from
-    // FOLDING was not, and that is the load-bearing half.
     expect(textMatches(`PLN${NBSP}42`, "PLN 42", "matches")).toBe(false);
     expect(textMatches(`PLN${NBSP}42`, "PLN 42", "contains")).toBe(true);
     expect(textMatches("‪@bsky.app‬", "^@bsky\\.app$", "matches")).toBe(false);
     expect(textMatches("@bsky.app", "^@bsky\\.app$", "matches")).toBe(true);
-    // Case too: the literal modes fold it, `matches` does not.
     expect(textMatches("HOME", "^Home$", "matches")).toBe(false);
     expect(textMatches("HOME", "Home", "equals")).toBe(true);
   });
 
   it("does NOT fold identifiers — a machine key is not read off a screen", () => {
-    // Folding is justified by what the eye cannot distinguish; an identifier is
-    // never rendered, so two keys that differ by a character are two keys.
+    // An identifier never reaches a screen, so two keys that differ are two keys.
     expect(identifierMatches(`submit${ZWSP}`, "submit")).toBe(false);
     expect(identifierMatches("com.example.app:id/submit", `sub${ZWSP}mit`)).toBe(false);
-    // Merging distinct testids is the concrete harm.
     expect(identifierMatches("row:id/save ", "row:id/save")).toBe(false);
-    // Case-insensitive exact and the unqualified resource-id form still work.
     expect(identifierMatches("Submit", "submit")).toBe(true);
     expect(identifierMatches("com.example.app:id/submit", "submit")).toBe(true);
-    // Substring capture is still refused.
     expect(identifierMatches("autosave-banner", "save")).toBe(false);
   });
 
   it("resolves the `:id/` suffix path exactly, including its refusals", () => {
-    // The unqualified-name branch, which no test reached with anything but a
-    // clean input.
     expect(identifierMatches("com.example.app:id/save-button", "save-button")).toBe(true);
     expect(identifierMatches("com.example.app:id/Save-Button", "save-button")).toBe(true);
-    // A partial tail must not satisfy it — `:id/` anchors the whole name.
     expect(identifierMatches("com.example.app:id/save-button", "button")).toBe(false);
-    // Nor may an invisible in the actual id be folded away to make it fit.
     expect(identifierMatches(`com.example.app:id/save${ZWSP}-button`, "save-button")).toBe(false);
-    // A bare `:id/` names nothing and must not match every resource-id.
+    // A needle of only whitespace names nothing, so the suffix rule refuses it.
     expect(identifierMatches("com.example.app:id/save-button", " ")).toBe(false);
   });
 });
 
 describe("bidi wrappers", () => {
-  // An app that renders user-supplied names wraps every one of them. A census
-  // of four Bluesky web screens found 367 U+202A/U+202C pairs and not one
-  // NBSP — so this, not the currency space, is the common real instance.
+  // An app that renders user-supplied names wraps each one in LTR controls. An
+  // LTR wrapper around Latin text is the common real case.
   const LRE = "‪"; // U+202A LEFT-TO-RIGHT EMBEDDING
   const PDF = "‬"; // U+202C POP DIRECTIONAL FORMATTING
   const LRI = "⁦"; // U+2066 LEFT-TO-RIGHT ISOLATE
@@ -310,21 +267,17 @@ describe("bidi wrappers", () => {
     expect(equalsCI(`${LRE}@bsky.app${PDF}`, "@bsky.app")).toBe(true);
     expect(equalsCI(`${LRI}@bsky.app${PDI}`, "@bsky.app")).toBe(true);
     expect(includesCI(`${LRE}Jane Doe${PDF} posted`, "Jane Doe")).toBe(true);
-    // LRO and FSI resolve to "lay this out left to right" over LTR content too.
     expect(equalsCI("‭@bsky.app‬", "@bsky.app")).toBe(true);
     expect(equalsCI("⁨@bsky.app⁩", "@bsky.app")).toBe(true);
   });
 
   it("does not swallow the narrow no-break space next to that range", () => {
-    // U+202F sits one codepoint past the embeddings; it is a SPACE, not a
-    // formatting control, and must fold to " " rather than vanish.
+    // U+202F is a space, not a format control, so it folds to " ".
     expect(foldText(`a${NARROW_NBSP}b`)).toBe("a b");
   });
 
-  // The other half of the rule, and the reason the LTR set is conditional: a
-  // control that imposes a RIGHT-to-left order rewrites what the screen shows,
-  // in plain ASCII under dir="ltr". Every string below was rendered in Chromium
-  // and photographed; the comment records what it actually reads as.
+  // A control that imposes a right-to-left order changes what the screen shows,
+  // even in plain ASCII. Each comment below gives the Chromium rendering.
   describe("never folds a control that reorders the glyphs", () => {
     const RLM = "‏"; // U+200F
     const ALM = "؜"; // U+061C
@@ -339,7 +292,7 @@ describe("bidi wrappers", () => {
     });
 
     it("leaves an override that reverses a filename extension", () => {
-      // The classic spoof: what is on screen is `reportexe.txt`.
+      // The screen shows `reportexe.txt`.
       expect(equalsCI(`report${RLO}txt.exe`, "reporttxt.exe")).toBe(false);
       expect(includesCI(`report${RLO}txt.exe`, "reporttxt.exe")).toBe(false);
     });
@@ -351,40 +304,28 @@ describe("bidi wrappers", () => {
     });
 
     it("stops folding the LTR controls too once the string carries RTL text", () => {
-      // An LRE/PDF wrapper around RTL content is not inert — it forces an LTR
-      // base direction the content would not otherwise have, so the words
-      // render in a different order than the plain spelling does.
+      // The wrapper forces an LTR base direction on RTL text, so the word order changes.
       expect(equalsCI(`${LRE}عمر Smith 2024${PDF}`, "عمر Smith 2024")).toBe(false);
       expect(equalsCI(`${LRI}שלום${PDI}`, "שלום")).toBe(false);
-      // Folding half of a directional pair would rewrite the string without
-      // rewriting what it renders as, so a PDF next to an RLE stays put.
+      // A fold of one half of a pair changes the string, not the rendering.
       expect(equalsCI(`${RLE}abc${PDF}def`, "abcdef")).toBe(false);
     });
 
     it("decides the LTR strip once per COMPARISON, so a copied needle stays a substring", () => {
-      // The strip is conditional on the string being folded, and that is not
-      // monotonic under substring: a label carrying one RTL word keeps its
-      // wrappers, while a Latin-only fragment copied out of that same label
-      // does not — so the identical wrappers were stripped from the needle
-      // only, and a needle taken character-for-character off the screen no
-      // longer matched the screen.
+      // The strip depends on the whole string, so a label with one RTL word
+      // keeps wrappers that a fragment of it loses. The comparison decides once.
       const HEB = "שלום";
       const label = `${LRE}@alice${PDF} ${LRE}@bob${PDF} ${HEB}`;
       const needle = `${LRE}@alice${PDF} ${LRE}@bob${PDF}`;
       expect(label.includes(needle)).toBe(true); // a literal substring
       expect(includesCI(label, needle)).toBe(true);
-      // Control: the same needle against a label with no RTL word at all. Here
-      // both sides strip, and it matched before this rule too.
+      // Control: no RTL word at all, so both sides strip.
       expect(includesCI(`${LRE}@alice${PDF} ${LRE}@bob${PDF} hello`, needle)).toBe(true);
-      // The pair rule keeps the controls when EITHER side is sensitive, so it
-      // can only ever fold less — the wrapper around RTL text still does not
-      // equal the bare spelling.
       expect(equalsCI(`${LRE}${HEB}${PDF}`, HEB)).toBe(false);
     });
 
     it("still folds an LTR wrapper around text that merely LOOKS exotic", () => {
-      // No strong-RTL character anywhere, so the wrapper is provably inert and
-      // the common Bluesky case keeps working.
+      // No strong RTL character anywhere, so the wrapper is inert.
       expect(equalsCI(`${LRE}Ελένη Παπαδοπούλου${PDF}`, "Ελένη Παπαδοπούλου")).toBe(true);
       expect(equalsCI(`${LRE}日本語のなまえ${PDF}`, "日本語のなまえ")).toBe(true);
     });
@@ -392,8 +333,8 @@ describe("bidi wrappers", () => {
 });
 
 describe("compatibilityVariantOf", () => {
-  // NFC keeps these apart on purpose, so a miss needs an explanation rather
-  // than a fold. An author types `...`; the app renders one U+2026.
+  // NFC keeps these apart on purpose, so a miss needs an explanation, not a
+  // fold. An author types `...` where the app renders one U+2026.
   it("recognises a typed ellipsis against a rendered one", () => {
     expect(compatibilityVariantOf("Add more languages…", "Add more languages...")).toBe(true);
     expect(compatibilityVariantOf("ﬁle", "file")).toBe(true);
@@ -408,9 +349,8 @@ describe("compatibilityVariantOf", () => {
 });
 
 describe("confusableTextNote", () => {
-  // The note is the safety net for an invisible character the fold's explicit
-  // classes do NOT list — anything the fold handles compares equal, so the
-  // check passes and there is no message to annotate.
+  // The note explains an invisible character that the fold does not list.
+  // Anything the fold handles compares equal, so no check fails.
   const CGJ = "͏"; // U+034F COMBINING GRAPHEME JOINER
   const RLM = "‏"; // U+200F RIGHT-TO-LEFT MARK
 
@@ -421,97 +361,89 @@ describe("confusableTextNote", () => {
   });
 
   it("catches U+034F, which is Mn and so escaped a category-Cf test", () => {
-    // Genuinely zero-width and unpainted, deliberately NOT folded (it blocks
-    // canonical reordering), and category Mn — so the old Cf-keyed note stayed
-    // silent and reproduced the exact unexplainable message the note exists to
-    // remove: two identical-looking strings, quoted, declared unequal.
+    // U+034F is zero-width and unpainted, but the fold keeps it, because it
+    // blocks canonical reordering. It is category Mn, not category Cf.
     expect(equalsCI(`Save${CGJ}`, "Save")).toBe(false);
     expect(confusableTextNote(`Save${CGJ}`, "Save")).toContain("U+034F");
   });
 
+  it("asks its gate through the COMPARATOR, so a folded-away difference cannot silence it", () => {
+    // The gate asks the comparator that failed, and the comparator folds both
+    // sides. A raw `===` gate lets an NBSP beside the CGJ silence the note.
+    const label = `Amount${CGJ}${NBSP}PLN${NBSP}42`;
+    expect(equalsCI(label, "Amount PLN 42")).toBe(false);
+    expect(confusableTextNote(label, "Amount PLN 42")).toContain("U+034F");
+    expect(equalsCI(`Kraft${SOFT_HYPHEN}fahrzeug`, "kraftfahrzeug")).toBe(false);
+    expect(confusableTextNote(`Kraft${SOFT_HYPHEN}fahrzeug`, "kraftfahrzeug")).toContain(
+      "changes what IS drawn"
+    );
+    // A compatibility variant is a glyph the reader sees, so the note does not
+    // call it invisible. foldText applies NFC, never NFKC, so it fails the gate.
+    expect(confusableTextNote(`\uFB01le${ZWSP}`, "file")).toBeUndefined();
+    expect(confusableTextNote(`Add\u2026${ZWSP}`, "Add...")).toBeUndefined();
+    expect(confusableTextNote(`${ZWSP}${ZWSP}`, ZWSP)).toContain("U+200B");
+  });
+
   it("has a SUBSTRING form, so the note is not absent on the default comparator", () => {
-    // The whole-string gate could only ever fire under `contains` when the
-    // needle spanned the entire label — so on the proper-substring shape,
-    // which is what `contains` is for and the comparator most misses arrive
-    // through, the note was missing exactly when the label was longer.
+    // The whole-string gate applies under `contains` only when the needle spans
+    // the whole label. The substring form covers a proper substring.
     expect(includesCI(`Save${CGJ}Changes now`, "SaveChanges")).toBe(false);
     expect(confusableTextNote(`Save${CGJ}Changes now`, "SaveChanges")).toBeUndefined();
     const note = confusableTextNoteIn(`Save${CGJ}Changes now`, "SaveChanges")!;
     expect(note).toContain("differ only in invisible characters");
     expect(note).toContain("U+034F");
-    // It keeps the leads that tell the truth about what the character does.
     expect(confusableTextNoteIn(`kraft${SOFT_HYPHEN}fahrzeug GmbH`, "kraftfahrzeug")).toContain(
       "changes what IS drawn"
     );
-    // And says nothing when the ignorables are not why the needle missed.
     expect(confusableTextNoteIn("Totally other text", "SaveChanges")).toBeUndefined();
     expect(confusableTextNoteIn("Save Changes now", "Save")).toBeUndefined();
   });
 
   it("picks the lead from the character that BLOCKED the needle, not from the label", () => {
-    // Under a substring test the label also carries ignorables the needle never
-    // reached, and the lead was chosen from all of them: one unrelated RLM
-    // elsewhere in the label made a CGJ miss read as a reordering, and told the
-    // author the screen does not read the way the text does when it does.
+    // Under a substring test the label carries ignorables that the needle never
+    // reaches. An unrelated RLM does not make a CGJ miss read as a reordering.
     const blocked = `Total ${RLM}42. Save${CGJ}Changes`;
-    // Dropping the CGJ alone rescues the needle; dropping the RLM alone does
-    // not — which is exactly the question the note now asks.
+    // A drop of the CGJ alone makes the needle match. A drop of the RLM does not.
     expect(includesCI(`Total ${RLM}42. SaveChanges`, "SaveChanges")).toBe(true);
     expect(includesCI(`Total 42. Save${CGJ}Changes`, "SaveChanges")).toBe(false);
     const note = confusableTextNoteIn(blocked, "SaveChanges")!;
     expect(note).toContain("differ only in invisible characters");
     expect(note).not.toContain("REORDERS");
-    // Both strings are still printed whole, so the RLM is visible in the dump
-    // even though it did not pick the sentence.
     expect(note).toContain("U+200F");
-    // A directional control that IS the blocker still gets its own lead.
     expect(confusableTextNoteIn(`Save${RLM}Changes`, "SaveChanges")).toContain("REORDERS");
   });
 
   it("bounds the codepoint dump, and windows it on the blocker", () => {
-    // Under `contains` the dump is sized by the ELEMENT, and assertText prefers
-    // the hoisted subtreeText — a container's whole aggregated text — so one
-    // failed check carried an entire card at ~7 characters per code point: a
-    // 1,412-character label made an 11,532-character failure reason, of which
-    // the author needed about forty code points.
+    // Under `contains` the element sizes the dump, and assertText prefers the
+    // aggregated subtreeText. A 1,412-character card gives an 11,532-character reason.
     const card = `${"Total 42. ".repeat(140)}Save${CGJ}Changes`;
     const note = confusableTextNoteIn(card, "SaveChanges")!;
     expect(card.length).toBeGreaterThan(1400);
     expect(note.length).toBeLessThan(700);
-    // Windowed on the blocker, not truncated from the front — where in the
-    // label the intruder sits is what the dump is for.
+    // The window sits on the blocker, because its position in the label matters.
     expect(note).toContain("U+034F");
     expect(note).toContain("…");
-    // A string that fits is still printed whole, marker and all absent.
     const short = confusableTextNote(`Save${CGJ}Changes`, "SaveChanges")!;
     expect(short).not.toContain("…");
     expect(short).toContain("U+0053 U+0061 U+0076 U+0065 U+034F");
   });
 
   it("stays silent for a prepended concatenation mark, which is NOT ignorable", () => {
-    // U+110BD KAITHI NUMBER SIGN is category Cf but changes how the digits
-    // after it render, so calling it invisible would be a false explanation.
+    // U+110BD is category Cf, but it changes how the digits after it render.
     expect(confusableTextNote("PLN 42\u{110BD}", "PLN 42")).toBeUndefined();
   });
 
   it("does not call a ZWJ emoji sequence an invisible difference", () => {
-    // The module's flagship counter-example. The fold correctly refuses to
-    // equate a trans flag (ONE glyph) with the two separate glyphs of a broken
-    // sequence — and then this note called that difference invisible noise, so
-    // an author who believed it would "fix" the flow by copying the rendered
-    // text and mask a real rendering regression forever.
+    // The flag is one glyph and the broken sequence is two, a visible difference.
     const FLAG = "\u{1F3F3}️‍⚧️";
     const BROKEN = "\u{1F3F3}️⚧️";
     expect(confusableTextNote(FLAG, BROKEN)).toBeUndefined();
-    // Nor a variation selector or a ZWNJ, for the same reason.
     expect(confusableTextNote(`ok${VARIATION_SELECTOR_16}`, "ok")).toBeUndefined();
     expect(confusableTextNote("a‌b", "ab")).toBeUndefined();
   });
 
   it("says a directional difference REORDERS rather than calling it invisible", () => {
-    // U+200F draws nothing, so "invisible" is true of the character and false
-    // of the string: `5<RLM>-3` renders `53-`. Telling an author to copy what
-    // the app renders would be the same trap the emoji case sets.
+    // U+200F draws nothing, but `5<RLM>-3` renders as `53-`.
     const note = confusableTextNote("5‏-3", "5-3")!;
     expect(note).toContain("REORDERS");
     expect(note).not.toContain("differ only in invisible characters");
@@ -519,10 +451,7 @@ describe("confusableTextNote", () => {
   });
 
   it("says a soft hyphen is a RENDERING difference rather than calling it invisible", () => {
-    // SHY is Default_Ignorable, so it reached the note as ordinary inert noise
-    // — and the note then told the exact false story the fold keeps it to
-    // prevent: `kraft<SHY>fahrzeug` paints `kraft-` at a line break, so an
-    // author who "copies what the app renders" masks that permanently.
+    // SHY is Default_Ignorable, but `kraft<SHY>fahrzeug` paints `kraft-` at a break.
     expect(equalsCI(`kraft${SOFT_HYPHEN}fahrzeug`, "kraftfahrzeug")).toBe(false);
     const note = confusableTextNote(`kraft${SOFT_HYPHEN}fahrzeug`, "kraftfahrzeug")!;
     expect(note).not.toContain("differ only in invisible characters");
@@ -531,9 +460,7 @@ describe("confusableTextNote", () => {
   });
 
   it("says the same of U+180E, which does ZWNJ's job", () => {
-    // ZWNJ is dropped from the note outright; U+180E breaks the same Arabic
-    // cursive run for the same reason, so it must not be described as noise
-    // just because it is not in the sequence-building set.
+    // U+180E breaks the same Arabic cursive run that ZWNJ breaks.
     expect(equalsCI("ب᠎ب", "بب")).toBe(false);
     const note = confusableTextNote("ب᠎ب", "بب")!;
     expect(note).not.toContain("differ only in invisible characters");
@@ -542,15 +469,12 @@ describe("confusableTextNote", () => {
   });
 
   it("lets the reordering lead win a difference that is both", () => {
-    // A mixed difference gets the sharper claim; what matters is that neither
-    // branch calls it invisible.
     const note = confusableTextNote(`5‏-3${SOFT_HYPHEN}`, "5-3")!;
     expect(note).toContain("REORDERS");
     expect(note).not.toContain("differ only in invisible characters");
   });
 
   it("still calls a shared soft hyphen's OTHER difference invisible", () => {
-    // Both sides carry the SHY, so it is not what differs — the ZWSP is.
     const note = confusableTextNote(
       `kraft${SOFT_HYPHEN}fahr${ZWSP}zeug`,
       `kraft${SOFT_HYPHEN}fahrzeug`
@@ -560,21 +484,15 @@ describe("confusableTextNote", () => {
   });
 
   it("still calls a shared directional wrapper's OTHER difference invisible", () => {
-    // Both sides carry the same LRE/PDF pair, so the directional characters are
-    // not what differs — the ZWSP is, and that one really is inert.
     const note = confusableTextNote("‪Save​‬", "‪Save‬")!;
     expect(note).toContain("differ only in invisible characters");
     expect(note).toContain("U+200B");
   });
 
   it("names a MOVED control, which a count of the two strings cannot see", () => {
-    // Both sides hold exactly one U+202E, so a tally came out empty and the
-    // lead fell through to "invisible" — about an override that renders
-    // `report<RLO>txt.exe` as `reportexe.txt` and the other spelling as itself.
     const note = confusableTextNote("report\u202Etxt.exe", "reporttxt.exe\u202E")!;
     expect(note).toContain("REORDERS");
     expect(note).not.toContain("differ only in invisible characters");
-    // The same blindness covered the other two DELIBERATELY NOT FOLDED members.
     const shy = confusableTextNote(`kraft${SOFT_HYPHEN}fahrzeug`, `kraftfahrzeug${SOFT_HYPHEN}`)!;
     expect(shy).toContain("changes what IS drawn");
     expect(confusableTextNote("\u180Eبب", "بب\u180E")).toContain("changes what IS drawn");
@@ -586,42 +504,26 @@ describe("confusableTextNote", () => {
   });
 
   it("does not call a CASE difference invisible", () => {
-    // The literal comparators fold case, so a case-only pair passes and never
-    // reaches the note. A regex comparison is case-sensitive by design — and
-    // "Home" vs "HOME" differ in characters the eye reads perfectly well, so
-    // claiming otherwise would be a false explanation of the failure.
+    // The literal comparators fold case, so such a pair compares equal and
+    // never reaches the note. A difference of case is visible in any event.
     expect(confusableTextNote("Home", "HOME")).toBeUndefined();
   });
 
   it("does not call an NFKC compatibility difference invisible", () => {
-    // "ﬁ" vs "fi" is a visible difference in glyph, whatever NFKC says.
     expect(confusableTextNote("ﬁle", "file")).toBeUndefined();
   });
 
   it("says nothing for a difference the fold already absorbs", () => {
-    // An NBSP folds to a plain space, so the comparators compare EQUAL and the
-    // check passes without ever reaching the note. Called directly it must
-    // still stay quiet — NBSP is space-like (Zs), not a Cf format character, so
-    // it is not the "invisible difference" this note explains.
     expect(equalsCI(`PLN${NBSP}42`, "PLN 42")).toBe(true);
     expect(confusableTextNote(`PLN${NBSP}42`, "PLN 42")).toBeUndefined();
   });
 });
 
 describe("a needle that folds away to nothing", () => {
-  // Folding turned a non-empty selector value into an EMPTY one, and an empty
-  // needle is not a weak constraint — it is NO constraint: `"".includes()` is
-  // true of every string, so the check could never fail. That is the same
-  // unfalsifiable-gate defect the `hidden` evidence rule exists to prevent,
-  // arriving through a selector field instead.
-  //
-  // Only an INVISIBLE-only value does that, and only because folding exists:
-  // at base these were plain lowercased comparisons, and a ZWSP role needle
-  // matched nothing. A whitespace-only value is a different thing — it folds
-  // loosely to " ", which is not empty — so it lives in WHITESPACE_NEEDLES
-  // below and constrains the match instead of waving it through.
+  // The fold can turn a non-empty selector value into an empty one, and an
+  // empty needle is no constraint: `"".includes()` is true of every string.
+  // A whitespace-only value folds loosely to " " and still constrains a match.
   const BLANK_NEEDLES = ["​", "‪‬", "﻿"];
-  // Whitespace-only: a real constraint, not an absent one.
   const WHITESPACE_NEEDLES = [" ", " ", "\t\n "];
 
   it.each(BLANK_NEEDLES)("includesCI(%j) matches nothing", (needle) => {
@@ -638,48 +540,34 @@ describe("a needle that folds away to nothing", () => {
   );
 
   it.each(BLANK_NEEDLES)("equalsCI(_, %j) equals nothing — not even a textless node", (needle) => {
-    // Same guard, extended to the exact comparator: an expected that folds
-    // away is NO constraint, so a `text`/`equals` check against a textless
-    // element (whose folded text is "") must NOT pass. Without the guard
-    // `equalsCI("", ZWSP) === true` — a silently-passing assertion.
+    // The same guard on the exact comparator: without it `equalsCI("", ZWSP)`
+    // is true, and a `text`/`equals` check passes against a textless element.
     expect(equalsCI("", needle)).toBe(false);
     expect(equalsCI(undefined, needle)).toBe(false);
     expect(equalsCI("Button", needle)).toBe(false);
   });
 
   it.each(WHITESPACE_NEEDLES)("keeps %j answerable rather than unsatisfiable", (needle) => {
-    // Testing the TRIMMED fold swept these in with the blank ones and made them
-    // match nothing at all — so a label and an expectation that are
-    // byte-identical were reported as a mismatch, with confusableTextNote
-    // standing down at its `actual === expected` guard and nothing left to
-    // explain it. Compared untrimmed, one space is still distinguishable from
-    // no text at all.
+    // The guard reads the untrimmed fold, so one space stays distinct from no
+    // text. The trimmed fold rejects a needle equal to its own label.
     expect(equalsCI(needle, needle)).toBe(true);
     expect(equalsCI(" ", needle)).toBe(true);
     expect(equalsCI("", needle)).toBe(false);
     expect(equalsCI(undefined, needle)).toBe(false);
     expect(equalsCI("Button", needle)).toBe(false);
-    // As a substring it means "shows a space", which is what it meant at base.
     expect(includesCI("Save Changes", needle)).toBe(true);
     expect(includesCI("SaveChanges", needle)).toBe(false);
   });
 
   it("blocks the two inputs its gate is actually reachable for", () => {
-    // The blank-needle cases above cannot discriminate here: identifierMatches
-    // deliberately does not fold, so the un-gated body already returns false
-    // for every one of them, and deleting the gate left the whole suite green.
-    // These two are the inputs the gate genuinely decides.
-    //
-    // A node whose identifier is itself blank, matched by a blank needle —
-    // without the gate `" " === " "` accepts it.
+    // identifierMatches does not fold, so the body already refuses every blank
+    // needle above. The gate decides two other inputs. First, a blank id and a
+    // blank needle, which `" " === " "` accepts.
     expect(identifierMatches(" ", " ")).toBe(false);
     expect(identifierMatches("\u00a0", "\u00a0")).toBe(false);
-    // And an empty needle against an id that really does end in `:id/` —
-    // without the gate the suffix rule accepts every such id. The schema's
-    // .min(1) blocks this spelling too, so the gate is the second line.
+    // Second, an empty needle against an id that ends in `:id/`, where the
+    // suffix rule accepts every such id. The schema `.min(1)` also blocks it.
     expect(identifierMatches("com.example.app:id/", "")).toBe(false);
-    // The ordinary resource-id shape was never at risk: it does not end in
-    // `:id/`, so the suffix rule cannot fire on an empty needle.
     expect(identifierMatches("com.example.app:id/save-button", "")).toBe(false);
   });
 
@@ -687,18 +575,13 @@ describe("a needle that folds away to nothing", () => {
     expect(includesCI("Button", "butt")).toBe(true);
     expect(identifierMatches("com.example.app:id/save-button", "save-button")).toBe(true);
     expect(equalsCI("Save", "save")).toBe(true);
-    // A bidi-wrapped label still equals its plain form — the guard rejects only
-    // an expected that folds to EMPTY, never a real one.
     expect(equalsCI("‪@bsky.app‬", "@bsky.app")).toBe(true);
   });
 });
 
 describe("ranking prefers the literal spelling over one only the fold equates", () => {
-  // Folding is what LOCATES an element an author cannot otherwise name. But
-  // once two elements both match, ranking has to keep telling them apart, or
-  // the "smallest frame wins" tiebreak elects the decorative one: a 28x28
-  // icon-only button labelled "Sign<NBSP>in" beside the 420x70 button whose
-  // text is literally "Sign in". `tap` fired the icon, and reported pass.
+  // The fold locates an element that an author cannot otherwise name. Ranking
+  // separates two matches, or "smallest frame wins" takes a 28x28 icon.
   const icon: DescribeNode = {
     role: "button",
     label: `Sign${NBSP}in`,
@@ -723,27 +606,21 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
     expect(selectorToFrame(screen([icon, cta]), { text: "Sign in" })).toMatchObject({
       width: 0.35,
     });
-    // Order-independent: it is the grade that decides, not which came first.
+    // Order-independent: the grade decides, not the position in the children.
     expect(selectorToFrame(screen([cta, icon]), { text: "Sign in" })).toMatchObject({
       width: 0.35,
     });
   });
 
   it("still resolves a folded-only match when it is the ONLY one", () => {
-    // The fold has not been undone — with no literal spelling on screen, the
-    // NBSP label is still found, which is the whole point of folding.
     expect(selectorToFrame(screen([icon]), { text: "Sign in" })).toMatchObject({
       width: 0.023,
     });
   });
 
   it("grades a folded-exact match above one that merely CONTAINS the needle", () => {
-    // The tier the fold was added for, and the half nothing pinned: literal >
-    // folded was covered, folded > substring was not. Collapsing it (grading
-    // exactTextScore on the literal comparison instead of the folded one)
-    // leaves the fold-located element scoring zero, tying it with a node that
-    // merely contains the needle — and "smallest frame wins" then elects the
-    // link, with the step still reporting pass.
+    // The scale is literal, then folded, then substring. A grade on the literal
+    // comparison leaves the folded node at zero, tied with the substring node.
     const foldedExact: DescribeNode = {
       role: "button",
       label: `Sign${NBSP}in`,
@@ -767,11 +644,8 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
   });
 
   it("grades a regex that consumes the WHOLE string as a literal match", () => {
-    // A regex is never folded, so full consumption IS the literal grade — but
-    // nothing pinned the arm at two rather than one, and the difference
-    // retargets a tap. The full-consumption node is deliberately the larger and
-    // carries the weaker role grade, so only the regex arm's two points can
-    // keep it ahead: demoted to one it ties, and the smaller node wins.
+    // A regex never folds, so full consumption is the literal grade, worth two
+    // points. The whole-string node is larger and has the weaker role grade.
     const whole: DescribeNode = {
       role: `button${NBSP}`, // folded-equal to the selector's role, grade 1
       label: "Sign in",
@@ -792,15 +666,8 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
   });
 
   it("grades an EXACT identifier above one matched by its resource-id suffix", () => {
-    // The identifier gate is `identifierMatches`, which deliberately does not
-    // fold — so a folded-only identifier never reaches ranking at all, and a
-    // fixture built on one pins nothing. The two spellings that DO both reach
-    // it are the exact id and the unqualified `:id/` suffix, and only the
-    // former scores.
-    //
-    // The exact node is deliberately the LARGER one, so the grade has to be
-    // what decides: without it the two tie at zero and "smallest frame wins"
-    // elects the suffix match instead.
+    // identifierMatches does not fold, so only two spellings reach ranking: the
+    // exact id and the `:id/` suffix. The exact node here is the larger one.
     const exact: DescribeNode = {
       ...cta,
       identifier: "save",
@@ -817,18 +684,14 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
     expect(selectorToFrame(screen([suffix, exact]), { identifier: "save" })).toMatchObject({
       width: 0.4,
     });
-    // The suffix spelling is still a match when it is the only one.
     expect(selectorToFrame(screen([suffix]), { identifier: "save" })).toMatchObject({
       width: 0.02,
     });
   });
 
   it("grades an exact identifier at the LITERAL tier, not the folded one", () => {
-    // The test above only pins the arm above zero, so demoting it from two
-    // points to one survives it — and that demotion retargets a tap wherever a
-    // second field is what the other candidate is exact about. Same shape as
-    // the regex arm's test: the exact-identifier node is the larger and carries
-    // the weaker role grade, so only the identifier's two points keep it ahead.
+    // An exact identifier grades two points, not one. As in the regex case,
+    // only those two points keep the larger node with the weaker role ahead.
     const exactId: DescribeNode = {
       ...cta,
       identifier: "save", // exact, grade 2
@@ -847,10 +710,8 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
   });
 
   it("grades a literal role above one only the fold equates", () => {
-    // The other field the scale covers, and the one the old test named without
-    // asserting anything about. Both roles match (`role` is a folded substring
-    // test), so only the grade separates them — and again the literal node is
-    // the larger, so a collapsed scale would elect the other.
+    // `role` is a folded substring test, so both roles match and only the grade
+    // separates them. The literal node is again the larger one.
     const literalRole: DescribeNode = {
       ...cta,
       role: "button",
@@ -873,12 +734,8 @@ describe("ranking prefers the literal spelling over one only the fold equates", 
 });
 
 describe("end-to-end: a plain selector matches a bidi-wrapped label through findAll", () => {
-  // The comparators are exercised above in isolation; this pins the user-facing
-  // invariant that the fold actually reaches the MATCH pipeline
-  // (findAll -> evaluateCondition), so a plain authored selector resolves — and
-  // a `text`/`equals` step goes green against — a label wrapped the way Bluesky
-  // wraps every display name: LRE ... PDF (U+202A ... U+202C), the exact form
-  // captured off a real iPhone/Pixel screen.
+  // The cases above test the comparators alone. This one tests that the fold
+  // reaches findAll and evaluateCondition, for a label in an LRE ... PDF wrapper.
   const WRAPPED = "‪Eddie Robson‬";
   const leaf = (label: string): DescribeNode => ({
     role: "AXStaticText",
@@ -909,10 +766,8 @@ describe("end-to-end: a plain selector matches a bidi-wrapped label through find
 
 describe("the fold cache holds a whole worst-case tree", () => {
   it("does not clear before one tree's labels are in it", () => {
-    // A cap under the working set turns the wholesale clear from one refill
-    // into several per pass: the file bounds a tree at 12k nodes, includesCI
-    // folds a node's label and value separately, so one findAll inserts up to
-    // ~24k keys. At 4096 the per-node cost stepped exactly at the cap.
+    // The file bounds a tree at 12k nodes, and includesCI folds a label and a
+    // value for each node, so one findAll inserts up to 24k keys.
     const KEYS = 24_000;
     for (let i = 0; i < KEYS; i++) foldText(`Row label number ${i}`);
     expect(uiTreeMatchInternals.foldCacheSize()).toBeGreaterThanOrEqual(KEYS);
@@ -920,68 +775,50 @@ describe("the fold cache holds a whole worst-case tree", () => {
 });
 
 describe("the character sets are pinned member by member, not by a representative", () => {
-  // Each set was asserted at a couple of code points, so most individual
-  // members were held by nothing: dropping U+FEFF, LRM, RLE or the emoji tag
-  // block, or narrowing the quoting class to RLO alone, each left the whole
-  // suite green. They are not interchangeable — every case below is a distinct
-  // claim the module's own docstrings make.
+  // Each case below pins one member of a set, and not a representative.
 
   it("strips an INTERIOR U+FEFF, which the whitespace collapse cannot rescue", () => {
-    // A leading BOM folds away whatever INVISIBLE says, because JS `\s` matches
-    // U+FEFF and the trim takes it — so only an interior one tests membership.
-    // Dropped from INVISIBLE it survives to the collapse and becomes a SPACE.
+    // The trim removes a leading U+FEFF whatever INVISIBLE says, because JS
+    // `\s` matches it. Only an interior one tests the membership.
     expect(foldText(`a${BOM}b`)).toBe("ab");
     expect(equalsCI(`Save${BOM}Changes`, "SaveChanges")).toBe(true);
   });
 
   it("folds U+200E LRM, not just the embeddings either side of it", () => {
-    // The LTR set is a range plus singletons; LRM is the singleton, and an
-    // otherwise-LTR string carrying one renders identically without it.
     expect(equalsCI("a‎b", "ab")).toBe(true);
     expect(foldText("Total:‎ 42")).toBe("total: 42");
   });
 
   it("counts U+202B RLE as bidi-sensitive, so the LTR half of a pair stays", () => {
-    // RLE survives folding regardless — it is not in the LTR set. What its
-    // membership in BIDI_SENSITIVE decides is whether the PDF beside it is
-    // stripped, and folding half of a directional pair rewrites the string
-    // without rewriting what it renders as.
+    // RLE is not in the LTR set, so it survives either way. Its membership of
+    // BIDI_SENSITIVE decides whether the PDF beside it folds.
     const RLE = "‫";
     const PDF = "‬";
     expect(equalsCI(`${RLE}abc${PDF}`, `${RLE}abc`)).toBe(false);
-    // Same shape for the other RTL controls the set names.
     expect(equalsCI(`‮abc${PDF}`, "‮abc")).toBe(false);
     expect(equalsCI(`⁧abc⁩`, "⁧abc")).toBe(false);
   });
 
   it("treats the emoji TAG characters as sequence-building, not as noise", () => {
-    // U+E0020-U+E007F build a subdivision flag: England is U+1F3F4 plus five
-    // tag letters and a terminator, ONE glyph. They are Default_Ignorable, so
-    // without the tag arm the note would describe a BROKEN tag sequence — a
-    // real rendering regression — as an invisible difference, which is the
-    // outcome its docstring calls the thing it must never do.
+    // U+E0020-U+E007F build a subdivision flag: U+1F3F4 plus five tag letters
+    // and a terminator is one glyph, so a broken tag sequence is visible.
     const ENGLAND = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
     expect(confusableTextNote(ENGLAND, "\u{1F3F4}")).toBeUndefined();
     expect(foldText(ENGLAND)).not.toBe(foldText("\u{1F3F4}"));
   });
 
   it("spells out EVERY directional control in quoted screen text, not only RLO", () => {
-    // Narrowed to RLO, every other control stayed live in the quoted label and
-    // reversed the explanation printed after it.
     for (const ch of ["؜", "‎", "‏", "‪", "‫", "‬", "‭", "‮", "⁦", "⁧", "⁨", "⁩"]) {
       const cp = `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
       expect(quoteScreenText(`a${ch}b`), cp).toBe(`a<${cp}>b`);
     }
-    // Everything else is left alone, so the quoted text stays copy-pasteable.
     expect(quoteScreenText("Add more languages…")).toBe("Add more languages…");
   });
 
   it("keeps compatibilityVariantIn silent when the needle genuinely matches", () => {
-    // Without its includesCI guard the note fires on a label the selector
-    // already matches, describing a "near miss" that is not a miss at all.
+    // The includesCI guard keeps the note off a label the selector matches.
     expect(compatibilityVariantIn("Add more languages…", "more")).toBe(false);
     expect(compatibilityVariantIn("Add more languages…", "languages")).toBe(false);
-    // The real near miss still answers true.
     expect(compatibilityVariantIn("Add more languages…", "languages...")).toBe(true);
   });
 });

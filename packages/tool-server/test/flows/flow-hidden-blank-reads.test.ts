@@ -353,14 +353,11 @@ describe("dark-tail diagnostics (non-hidden conditions)", () => {
 });
 
 describe("compatibility miss note is scoped to a MISS", () => {
-  // A fullwidth "＠bsky.app" is a compatibility variant of "@bsky.app" (NFKC
-  // folds ＠→@) but is deliberately NOT folded together, so a selector for the
-  // plain form never matches it. The note names it only where naming it helps.
+  // A fullwidth "＠bsky.app" is an NFKC variant of "@bsky.app". The fold does
+  // not equate them, so a selector for the plain form never matches it.
 
   it("does not append backwards 'copy the rendered characters' advice to a hidden failure", async () => {
-    // `hidden` fails because the PLAIN handle is still on screen. Telling the
-    // author to copy the rendered characters of a fullwidth look-alike is
-    // backwards for an assertion that wants the element GONE.
+    // `hidden` requires the absence of the element, not a change of characters.
     currentFetch = () => ({
       tree: screen([
         n({ label: "‪@bsky.app‬", frame: { x: 0.1, y: 0.1, width: 0.5, height: 0.05 } }),
@@ -383,10 +380,7 @@ describe("compatibility miss note is scoped to a MISS", () => {
   });
 
   it("does not append the note to a regex `matches` failure (wanted is a pattern, not text)", async () => {
-    // The element renders a single "…"; the pattern uses three dots. The note
-    // would compare the pattern's code points to the rendered label, which has
-    // nothing to do with why the regex failed — the same exemption the
-    // confusable note draws.
+    // In `matches` mode the expected string is a pattern, not text.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -419,11 +413,10 @@ describe("compatibility miss note is scoped to a MISS", () => {
   });
 
   it("quotes the hoisted subtree text twice when the located container near-misses", async () => {
-    // What FLOW_TREE_MAX_DEPTH's cost note claims, pinned. On the arm where a
-    // `text` locator MATCHED, the note's candidate is the located node's
-    // hoisted subtreeText — the same string `assertReason` already quoted — so
-    // this reason carries it twice and grows at twice the rate the depth cap
-    // admits descendants. The other arm (below) walks label/value only.
+    // Pins the cost that `FLOW_TREE_MAX_DEPTH`'s note describes. When a `text`
+    // locator matches, the note quotes the located node's hoisted subtreeText,
+    // which `assertReason` already quoted. The reason carries that string twice,
+    // so it grows twice as fast as the cap admits descendants.
     const HOISTED = "row-a-content row-b-content Add more languages…";
     currentFetch = () => ({
       tree: screen([
@@ -457,9 +450,9 @@ describe("compatibility miss note is scoped to a MISS", () => {
   });
 
   it("does not quote hoisted subtree text on the whole-tree walk an `exists` miss takes", async () => {
-    // The arm the cost note exempts: nothing was located, so the walk compares
-    // each node's own label/value — never its subtreeText — which is why this
-    // one does not grow with the depth cap.
+    // The branch the cost note exempts. With nothing located, the walk reads each
+    // node's own label and value, never its subtreeText, so this reason does not
+    // grow with the cap.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -487,13 +480,11 @@ describe("compatibility miss note is scoped to a MISS", () => {
 
     expect(result.steps[0].status).toBe("fail");
     expect(reason).toMatch(/typographic variant/);
-    // The leaf's own label is quoted; the container's hoisted string is not.
+    // The leaf's own label is quoted. The container's hoisted string is not.
     expect(reason).not.toMatch(/row-a-content/);
   });
 
   it("still fires the note on a genuine miss (visible), so the guard is not over-broad", async () => {
-    // The intended case: a selector typed with three dots misses a label the app
-    // renders with one "…". Naming it turns an unexplainable miss into a fix.
     currentFetch = () => ({
       tree: screen([
         n({ label: "Add more languages…", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } }),
@@ -518,11 +509,8 @@ describe("compatibility miss note is scoped to a MISS", () => {
 
 describe("text/equals failure notes are wired through the runner and scoped to the element", () => {
   it("names the differing invisible codepoints when the two strings look identical", async () => {
-    // U+034F (COMBINING GRAPHEME JOINER) is not one of the fold's explicit
-    // classes, so it does NOT fold away — the check fails against two
-    // strings that read identically on screen. The reason must say which
-    // codepoints differ, not quote the same text twice (confusableTextNote,
-    // reached only through assertReason, which nothing else exercised end-to-end).
+    // U+034F (COMBINING GRAPHEME JOINER) is not one of the fold's classes, so
+    // the fold keeps it. The two strings look the same on screen.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -555,11 +543,8 @@ describe("text/equals failure notes are wired through the runner and scoped to t
   });
 
   it("emits only ONE note when own text and subtree text miss in different ways", async () => {
-    // A pathological node: its OWN text differs from "file" by an invisible
-    // (U+034F), while its hoisted SUBTREE text differs by a ligature ("ﬁle").
-    // The invisible-codepoint note (from assertReason) and the typographic
-    // variant note would both fire and print two conflicting explanations of one
-    // failure. The codepoint note is more precise, so the compat note stands down.
+    // The node's own text differs by an invisible U+034F. The hoisted subtree
+    // text differs by a ligature ("ﬁle"). The codepoint note is more precise.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -594,9 +579,6 @@ describe("text/equals failure notes are wired through the runner and scoped to t
   });
 
   it("names the invisible codepoints via the own-text fallback when subtree text differs visibly", async () => {
-    // The hoisted subtree text is a visibly different string, so the confusable
-    // note falls through to the node's OWN text, which differs from the expected
-    // only by an invisible U+034F. Exercises the second operand of the `??`.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -630,10 +612,7 @@ describe("text/equals failure notes are wired through the runner and scoped to t
   });
 
   it("does not add the invisible-codepoint note to a regex `matches` failure", async () => {
-    // The label carries an invisible U+034F; an anchored pattern fails on it.
-    // In `matches` mode the expected string is a pattern, not text, so the
-    // confusable note must not compare their codepoints (the same exemption the
-    // compat note draws, but for the confusable note reached via assertReason).
+    // Same exemption as the compat note: a pattern is not text.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -666,11 +645,7 @@ describe("text/equals failure notes are wired through the runner and scoped to t
   });
 
   it("does NOT let an unrelated compat-variant node hijack a genuine text miss", async () => {
-    // The located element (id=banner) genuinely renders "Loading" — a real
-    // mismatch for "More...". A DIFFERENT, unrelated node renders "More…" (one
-    // U+2026). The compat note is scoped to the located element, so it must stay
-    // silent rather than tell the author to copy the rendered characters of a
-    // look-alike that has nothing to do with why the banner failed.
+    // The note is scoped to the located element, not to look-alikes elsewhere.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -705,8 +680,6 @@ describe("text/equals failure notes are wired through the runner and scoped to t
   });
 
   it("still names the compat variant when it IS the located element's own text", async () => {
-    // The intended case survives the scoping: the located element itself renders
-    // "Add more languages…" (one U+2026) while the author typed three dots.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -739,13 +712,8 @@ describe("text/equals failure notes are wired through the runner and scoped to t
   });
 
   it("explains a LOCATOR miss under `matches` too, as `exists` is explained", async () => {
-    // The `matches` exemption is about the EXPECTATION, and the not-located
-    // branch never reads the expectation — it walks the tree for
-    // `selector.text`, which is a literal whatever comparator the step uses.
-    // Applied before the branch was chosen, it dropped the explanation for the
-    // one comparator whose expectation was irrelevant to why the selector
-    // missed, so the same selector on the same screen was explained under
-    // `exists` and left bare under `text`.
+    // The `matches` exemption is about the expectation. This branch never
+    // reads the expectation - it walks the tree for a literal `selector.text`.
     currentFetch = () => ({
       tree: screen([
         n({ label: "Add more languages…", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } }),
@@ -786,10 +754,7 @@ describe("text/equals failure notes are wired through the runner and scoped to t
 
 describe("compatibility miss note: what it is scoped to", () => {
   it("names only an element the REST of the selector could have accepted", async () => {
-    // The walk applied the text test alone, never re-applying role/id/scopes,
-    // so it named a node the step could never have matched. Taking the advice
-    // meant changing the one field that was already correct and landing back on
-    // a bare miss with no further hint.
+    // The walk must re-apply role, id and scopes, not the text test alone.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -822,8 +787,7 @@ describe("compatibility miss note: what it is scoped to", () => {
     expect(wrongId.steps[0].reason).not.toMatch(/typographic variant/);
     expect(wrongId.steps[0].reason).not.toMatch(/Add more languages…/);
 
-    // Control: with the id the look-alike actually carries, the note is the
-    // whole point and must still fire.
+    // Control: with the id the look-alike carries, the note must still fire.
     await writeFlow("compat-right-id", {
       executionPrerequisite: "",
       steps: [
@@ -841,13 +805,10 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("describes the very node assertReason quotes, not a zero-area shadow above it", async () => {
-    // The located element is picked visible-first so the note and the quoted
-    // text cannot contradict each other. Dropping that filter left the note
-    // describing a zero-area shadow while the reason quoted the visible
-    // element — two explanations of one failure, about different elements.
+    // The pick is visible-first, so the note and the quoted text name one node.
     currentFetch = () => ({
       tree: screen([
-        // Zero-area, and FIRST in reading order: what the unfiltered pick takes.
+        // Zero-area and first in reading order: what an unfiltered pick takes.
         n({
           role: "AXButton",
           label: "Add more languages…",
@@ -883,11 +844,8 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("asks the whole-string question for `equals` and the substring one for `contains`", async () => {
-    // The two are not interchangeable. Against a label that CONTAINS a compat
-    // variant plus more text, only `contains` can be rescued by copying the
-    // rendered characters — for `equals` the strings still would not match, so
-    // the note would send the author to a fix that cannot work. Inverted, each
-    // comparator gets the other's question and both answers flip.
+    // The label holds a compat variant plus more text. A copy of the rendered
+    // characters rescues `contains`, but never `equals`.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -933,11 +891,8 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("names the code points when only an invisible kept the SELECTOR from matching", async () => {
-    // The compat note was the only note reachable on the selector path, and it
-    // asks the NFKC question only — so an invisible-character miss on a
-    // selector still ended in the unexplained "no element matched" this area
-    // exists to eliminate, while the same difference in a `text` expectation
-    // was named code point by code point.
+    // The compat note asks the NFKC question only. The selector path also
+    // needs the codepoint note.
     currentFetch = () => ({
       tree: screen([
         n({ label: "SaveChanges", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } }),
@@ -948,7 +903,7 @@ describe("compatibility miss note: what it is scoped to", () => {
     await writeFlow("selector-invisible", {
       executionPrerequisite: "",
       steps: [
-        // U+034F in the selector, not on the screen: identical to the eye.
+        // U+034F in the selector, not on the screen: the two look the same.
         { kind: "assert", condition: "visible", selector: { text: "Save͏Changes" } },
       ],
     });
@@ -960,10 +915,7 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("does not name a zero-area node to a `visible` step that matched nothing", async () => {
-    // The `visible`-with-matches exemption does not cover this: with NO matches
-    // the walk runs, and could name a node the runner simultaneously knows is
-    // off screen. Following that advice only flips the failure to
-    // "matched … but none was visible".
+    // With no matches the walk runs, and must not name a node that is off screen.
     currentFetch = () => ({
       tree: screen([
         // The only look-alike is zero-area, so it is no answer for `visible`.
@@ -995,15 +947,13 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("stays quiet when `visible` failed on zero-area matches, not on a miss", async () => {
-    // The locator WORKED — assertReason says so ("none was visible"). Appending
-    // "copy the characters the app actually renders" then blames the wrong
-    // thing entirely. Reachable on Vega, whose flow adapter keeps zero-area
-    // nodes; iOS/Android/Chromium prune them.
+    // The locator worked, so the note has nothing to correct. Only Vega keeps
+    // zero-area nodes. iOS, Android and Chromium prune them.
     currentFetch = () => ({
       tree: screen([
         // The match itself, zero-area.
         n({ label: "Add more languages...", frame: { x: 0.1, y: 0.1, width: 0, height: 0 } }),
-        // A look-alike elsewhere that the whole-tree walk would seize on.
+        // A look-alike elsewhere, which a whole-tree walk names.
         n({ label: "Add more languages…", frame: { x: 0.1, y: 0.3, width: 0.8, height: 0.05 } }),
       ]),
       source: "native-devtools",
@@ -1024,9 +974,6 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("fires for a `text` condition whose LOCATOR missed, as `exists` already does", async () => {
-    // Same selector, same screen: `exists` explained the miss and `text` said
-    // nothing. The docstring justified the silence with "for `text` the element
-    // WAS located" — which is exactly what did not happen here.
     currentFetch = () => ({
       tree: screen([
         n({ label: "Add more languages…", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } }),
@@ -1056,11 +1003,8 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("never suggests hoisted subtree text, which no `text` selector can match", async () => {
-    // The card's hoisted string is a compat variant of the needle; no single
-    // node's label is. A selector's `text` is compared against label/value
-    // only, so quoting the hoisted string sent the author to a rewritten
-    // selector that still matched nothing. Silence beats advice that cannot
-    // work.
+    // A selector's `text` matches a label or a value only, so no selector can
+    // match the hoisted subtree string.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1097,8 +1041,7 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("still suggests a LEAF label on the same tree shape", async () => {
-    // The other half: the hoisted string is not what makes the note useful,
-    // the leaf's own label is — and that one a `text` selector can match.
+    // A `text` selector can match a leaf's own label, so the note names it.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1132,9 +1075,7 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("fires on a PARTIAL miss, the default comparator's own shape", async () => {
-    // `contains` and a selector's `text` are substring tests, but the note only
-    // ever asked whether the WHOLE strings were compat-variants — so under the
-    // default comparator it could never fire.
+    // A selector's `text` is a substring test, so a partial variant fires the note.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1159,12 +1100,8 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("neutralises a directional override in the SCREEN text it quotes", async () => {
-    // An unbalanced U+202E in a label reverses every character printed after
-    // it, so quoting screen text verbatim reverses the ~300 characters of
-    // advice that follow. The label survives the fold on purpose — a control
-    // that reorders is exactly what must not be stripped — so the message has
-    // to defuse it instead. The selector here is plain, to isolate the quoted
-    // SCREEN text as the source.
+    // An unbalanced U+202E reverses every character after it. The fold keeps
+    // the controls that reorder, so the message neutralises them instead.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1187,17 +1124,11 @@ describe("compatibility miss note: what it is scoped to", () => {
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/typographic variant/);
     expect(result.steps[0].reason).not.toContain("‮");
-    // Defused AND named, so the author can see what is in their label.
     expect(result.steps[0].reason).toMatch(/<U\+202E>/);
   });
 
   it("neutralises a directional override in the AUTHORED expectation too", async () => {
-    // The label is not the only carrier. The expectation is authored text,
-    // `JSON.stringify` does not escape U+202E, and the note this reason appends
-    // lands AFTER it — so an override in the expectation reverses the very
-    // explanation the failure exists to give. The advice that note carries is
-    // "copy the characters the app renders", and the fold deliberately keeps
-    // the ones that reorder, which is how such a string reaches an expectation.
+    // `JSON.stringify` does not escape U+202E, and the note prints after it.
     currentFetch = () => ({
       tree: screen([n({ label: "bedrock", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } })]),
       source: "native-devtools",
@@ -1221,7 +1152,63 @@ describe("compatibility miss note: what it is scoped to", () => {
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).not.toContain("\u202E");
     expect(result.steps[0].reason).toMatch(/<U\+202E>/);
-    // And the note it was reversing is still there, the right way round.
+    // The note that follows is still present and in the correct order.
+    expect(result.steps[0].reason).toMatch(/REORDERS/);
+  });
+
+  it("neutralises a directional override in the SELECTOR, which prints first of all", async () => {
+    // The selector opens the reason, so an override there reverses all of it.
+    currentFetch = () => ({
+      tree: screen([
+        n({ label: "Save\u202EChanges", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("rlo-selector", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { text: "Save\u202EChanges" },
+          expectedText: "nope",
+          textMatch: "equals",
+        },
+      ],
+    });
+
+    const result = await run("rlo-selector");
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).not.toContain("\u202E");
+    expect(result.steps[0].reason).toMatch(/matched text="Save<U\+202E>Changes"/);
+  });
+
+  it("neutralises it in the selector of a MISS, where the miss note follows", async () => {
+    currentFetch = () => ({
+      tree: screen([
+        n({ label: "SaveChanges", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 } }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("rlo-selector-miss", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "visible",
+          selector: { text: "Save\u202E\u034FChanges" },
+        },
+      ],
+    });
+
+    const result = await run("rlo-selector-miss");
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).not.toContain("\u202E");
+    expect(result.steps[0].reason).toMatch(/selector text="Save<U\+202E>\u034FChanges"/);
     expect(result.steps[0].reason).toMatch(/REORDERS/);
   });
 
@@ -1247,10 +1234,7 @@ describe("compatibility miss note: what it is scoped to", () => {
   });
 
   it("neutralises it in the TEXT-miss reason, where the codepoint note follows", async () => {
-    // The compat note was defused; the reason that quotes the located element's
-    // own text on every `text` failure was not — and that is the one the
-    // codepoint note is appended to, so an unbalanced U+202E reversed the whole
-    // explanation rather than a short suffix.
+    // "report<U+202E>txt.exe" renders as "reportexe.txt".
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1280,17 +1264,13 @@ describe("compatibility miss note: what it is scoped to", () => {
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).not.toContain("‮");
     expect(result.steps[0].reason).toMatch(/<U\+202E>/);
-    // The explanation it protects is still there, and still last.
     expect(result.steps[0].reason).toMatch(/REORDERS/);
   });
 });
 
 describe("a `matches` (regex) miss still explains an invisible it cannot see", () => {
   it("names the ignorable codepoints in the text the pattern was tested against", async () => {
-    // `matches` is exempt from folding, from the confusable note and from the
-    // compat note — so the ONE comparison mode the fold cannot rescue was the
-    // one left with no explanation at all: two identical-looking strings and
-    // nothing else.
+    // `matches` is exempt from the fold and both other notes, so it needs its own.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1320,15 +1300,12 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/U\+202A/);
     expect(result.steps[0].reason).toMatch(/U\+202C/);
-    // Still no codepoint comparison AGAINST the pattern — that would describe a
-    // mismatch that has nothing to do with the pattern that failed.
+    // The note does not compare code points against the pattern, which is not text.
     expect(result.steps[0].reason).not.toMatch(/vs expected \[/);
   });
 
   it("names a bidi wrapper as REORDERING, never as an invisible character", async () => {
-    // Its sibling refuses to describe the same code point that way, and for a
-    // reason that holds here too: a directional control draws nothing but moves
-    // the glyphs around it, so "invisible" is a false story about it.
+    // A directional control draws nothing but moves the glyphs around it.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1362,10 +1339,8 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
   });
 
   it("stays quiet when the ignorable is not why the pattern missed", async () => {
-    // No relevance gate, and the note fired on ANY `matches` failure whose text
-    // carried an ignorable. On an app that wraps every display name that is
-    // every failing assertion against a name, and "the pattern must account for
-    // them" then points at a wrapper the pattern never tripped over.
+    // Without a relevance gate the note fires on every `matches` failure whose
+    // text carries an ignorable, even when the ignorable is not the cause.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1394,9 +1369,8 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
 
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/but its text was/);
-    // Removing the wrapper would not have matched "Alice Jones" either, so no
-    // note. The `<U+202A>` still in the quoted label is quoteScreenText
-    // defusing it, which is a separate job and must keep happening.
+    // The text does not match "Alice Jones" with or without the wrapper, so
+    // there is no note. The `<U+202A>` in the quoted label is quoteScreenText.
     expect(result.steps[0].reason).not.toMatch(/must account for/);
     expect(result.steps[0].reason).not.toMatch(/the text carries/);
     expect(result.steps[0].reason).toMatch(/<U\+202A>/);
@@ -1437,13 +1411,8 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
 
 describe("evidence and tree-source gaps the widened match set now reaches", () => {
   it("keeps `hidden` unconfirmable once a FOLD-widened selector has matched", async () => {
-    // Characterisation, not a defect: the blind-read guard treats any empty
-    // tree after a match as untrustworthy, and folding enlarged the set of
-    // labels a selector matches — so labels carrying an invisible now reach a
-    // rule that plain ones always did. Verified identical on the pre-fold base
-    // build with a plain "Sign in" label, so the escalation is the guard's, not
-    // the fold's; this pins the interaction so a future change to either half
-    // has to acknowledge the other.
+    // Characterisation, not a defect. The blind-read guard distrusts any empty
+    // tree after a match, and the fold widens the set of labels that match.
     let reads = 0;
     currentFetch = () => {
       reads++;
@@ -1470,29 +1439,16 @@ describe("evidence and tree-source gaps the widened match set now reaches", () =
   });
 
   it("still emits the miss note when the FINAL read went blind", async () => {
-    // lastTree is only updated by a TRUSTED read, so a trailing degraded tree
-    // must not wipe out the evidence the note draws on. The blip has to land
-    // inside the dark-tail tolerance (2 poll intervals), or the verdict goes
-    // indeterminate and there is no reason left to annotate.
-    //
-    // So the blindness is keyed on the runner's OWN poll sequence rather than
-    // on a wall-clock cutoff: measured from the FIRST read (which the runner
-    // issues immediately after it anchors its deadline), every read up to and
-    // INCLUDING the first one at the end of the window is trusted, and only
-    // the reads after it go blind. Those are the deadline poll and its
-    // back-to-back final retry, issued with no sleep in between, so the dark
-    // tail is a fetch's own latency. A mid-window cutoff instead left a whole
-    // poll interval's sleep inside the tail, which a loaded machine stretched
-    // past the tolerance — flipping the verdict to indeterminate and taking
-    // the reason this test reads with it.
+    // Only a trusted read updates lastTree, so a trailing degraded tree must
+    // not erase the evidence the note needs. The blind read must occur inside
+    // the dark-tail tolerance of 2 poll intervals. The deadline poll and its
+    // final retry run with no sleep between them, so the tail is fetch latency.
     const ASSERT_WINDOW_MS = 1000; // DEFAULT_ASSERT_TIMEOUT_MS in flow-actions
     let firstReadAt: number | undefined;
     let servedWindowEnd = false;
     currentFetch = () => {
       firstReadAt ??= Date.now();
-      // A hair inside the window, so the read that trips it is the last one
-      // the runner takes with any budget left rather than one it might never
-      // take at all.
+      // Just inside the window, so this is the last read with budget left.
       const atWindowEnd = Date.now() - firstReadAt >= ASSERT_WINDOW_MS - 50;
       if (!atWindowEnd || !servedWindowEnd) {
         servedWindowEnd ||= atWindowEnd;
@@ -1506,7 +1462,7 @@ describe("evidence and tree-source gaps the widened match set now reaches", () =
           source: "native-devtools",
         };
       }
-      // Empty AND flagged degraded — a blind read, whatever everMatched says.
+      // Empty and flagged degraded: a blind read, whatever everMatched says.
       return { tree: screen([]), source: "native-devtools", hint: "AX is warming up" };
     };
 
