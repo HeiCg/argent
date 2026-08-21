@@ -21,7 +21,8 @@ const FAILURE_SCENARIOS = path.join(
 );
 const DEVICE_INTERACT_SKILL = path.join(SKILLS, "argent-device-interact/SKILL.md");
 
-const restartApp = createRestartAppTool({} as unknown as Registry).capability;
+const restartAppTool = createRestartAppTool({} as unknown as Registry);
+const restartApp = restartAppTool.capability;
 
 /** The skill's platform vocabulary, in the order its tables list it. */
 const PLATFORM_WORDS = [
@@ -72,6 +73,10 @@ describe("argent-metro-debugger platform tags match the capability objects", () 
 
     const tag = platformTag(RN_ONLY_TOOL_CAPABILITY);
     expect(row(DEBUGGER_SKILL, "`debugger-reload-metro`")).toContain(`on ${tag} (`);
+
+    // Two tables list the tool. Tagging one and not the other just moves the
+    // platform-agnostic reading to whichever row was left bare.
+    expect(row(DEBUGGER_SKILL, "Reload JS")).toContain(`(${tag})`);
   });
 });
 
@@ -80,6 +85,13 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // A chromium key here would make all three carve-outs below wrong in the
     // opposite direction.
     expect(restartApp?.chromium).toBeUndefined();
+
+    // The tool description reaches an agent that has loaded no skill at all, so
+    // it is the surface most likely to be the only one read.
+    expect(restartAppTool.description).toContain("Not supported on Chromium");
+    expect(restartAppTool.description).toContain("electronAppPath");
+    expect(restartAppTool.description).toContain("ask the user");
+    expect(restartAppTool.description).toContain("chromium-cdp-<port>");
 
     // Offering restart-app to a reader who may be on Chromium obliges each
     // surface to name the relaunch that works, not merely fence restart-app off.
@@ -92,6 +104,11 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       const cell = row(file, label);
       expect(cell, file).toContain("Chromium");
       expect(cell, file).toContain("`boot-device` with `electronAppPath`");
+      // The browser half has no tool behind it, so it has to name an actor;
+      // and every relaunch mints a fresh port, so the id the reader arrived
+      // with is dead. Omitting either leaves the recovery unable to finish.
+      expect(cell, file).toContain("ask the user");
+      expect(cell, file).toContain("`chromium-cdp-<port>`");
     }
   });
 
