@@ -104,7 +104,10 @@ export function classifyNotConnected(err: unknown): DebuggerNotConnectedReason |
 const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
   cdp_unreachable:
     "No page could be driven: the CDP endpoint was unreachable, answered as something " +
-    "other than CDP, or is up with no usable page — detail says which. A detail about " +
+    "other than CDP, or is up with no usable page — detail says which. A reply that is " +
+    "not CDP — a non-2xx status, a body that is not JSON, a /json/version with no " +
+    "browser socket — means something holds that port without speaking CDP: check " +
+    "what is on it rather than relaunching. A detail about " +
     "page targets (none at all, or only devtools:// ones) means the app is still " +
     "running and only lacks a window: ask the user to bring one back. Otherwise ask " +
     "the user to quit it, then relaunch once it has exited — list-devices cannot tell " +
@@ -125,7 +128,8 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "starts a Chromium app and never stops one, and list-devices cannot tell you " +
     "whether it exited, since it drops a broken-but-running app exactly as it " +
     "drops an exited one. boot-device with electronAppPath relaunches an Electron app, and " +
-    "for a browser, ask the user to start the browser again on the same CDP port. " +
+    "for a browser, ask the user to start the browser again on the same CDP port " +
+    "with --remote-debugging-port. " +
     "Re-read the chromium-cdp-<port> id from boot-device / list-devices, since a " +
     "relaunch on a new port is a new id, and retry once.",
 };

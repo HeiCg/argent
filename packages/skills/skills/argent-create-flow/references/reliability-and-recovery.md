@@ -72,11 +72,11 @@ A normally injectable app that is broken in the environment gets the same coordi
 
 While the required source is down, selector failures and raw-point capture are void. Restore the source and re-record affected taps.
 
-| Platform | Symptom                          | Recovery                                                                           |
-| -------- | -------------------------------- | ---------------------------------------------------------------------------------- |
-| Android  | Cannot reach the devtools helper | Unlock the device, allow `adb install -t`, and rerun                               |
-| Chromium | No reachable CDP session         | Ask the user to quit it, then boot again with `electronAppPath` once it has exited |
-| Vega     | Toolkit returns no page source   | Relaunch an app built with automation support                                      |
+| Platform | Symptom                          | Recovery                                                                                                                   |
+| -------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Android  | Cannot reach the devtools helper | Unlock the device, allow `adb install -t`, and rerun                                                                       |
+| Chromium | No reachable CDP session         | Ask the user to quit it, then boot again with `electronAppPath` once it has exited, under the new `chromium-cdp-<port>` id |
+| Vega     | Toolkit returns no page source   | Relaunch an app built with automation support                                                                              |
 
 On Android, healthy `describe` output does not prove the flow tree is available. It can fall back to legacy `uiautomator`, while the runner refuses that trimmed fallback.
 

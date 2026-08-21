@@ -140,13 +140,6 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // "ask the user" twice and may name list-devices twice, so pin the
       // occurrence that carries the step.
       pinsOnce(cell, "ask the user to start the browser again", file);
-      // One sentence, identical on all seven surfaces. It carries the token
-      // (list-devices reports a Chromium entry under `id`, and ChromiumDevice has
-      // no udid field, so naming it anything else sends the reader after a key
-      // that is not in the response), both places it can be read, and the one
-      // condition that moves it.
-      pinsOnce(cell, "`chromium-cdp-<port>` id from `boot-device` / `list-devices`", file);
-      pinsOnce(cell, "a relaunch on a new port is a new id", file);
     }
 
     // Every surface that states the recovery, down to the create-flow row that
@@ -155,15 +148,35 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // but dropping the actor leaves the reader waiting on nobody, and one
     // keeping the actor but dropping the sequence sends them to relaunch into a
     // single-instance lock. Both halves are pinned, on all of them.
-    const recoverySurfaces: [string, string | undefined][] = [
+    const spelledOut: [string, string | undefined][] = [
       ...rows.map(([file, label]): [string, string] => [file, row(file, label)]),
       ["restart-app's description", restartAppTool.description],
-      [CREATE_FLOW_RECOVERY, row(CREATE_FLOW_RECOVERY, "Chromium")],
     ];
-    for (const [where, text] of recoverySurfaces) {
+    const createFlowRow = row(CREATE_FLOW_RECOVERY, "Chromium");
+    for (const [where, text] of [
+      ...spelledOut,
+      [CREATE_FLOW_RECOVERY, createFlowRow] as [string, string],
+    ]) {
       pinsOnce(text, "the user to quit it", where);
       pinsOnce(text, "once it has exited", where);
     }
+
+    // The id re-read is one sentence on every surface that spells it out;
+    // both runtime guidance strings state it too and are pinned against
+    // buildNotConnected in debugger/not-connected-map.test.ts. It carries the
+    // token (list-devices reports a Chromium entry under `id`, and ChromiumDevice
+    // has no udid field, so naming it anything else sends the reader after a key
+    // that is not in the response), both places it can be read, and the one
+    // condition that moves it - which restart-app's description had backwards on
+    // its own. Markdown backticks the identifiers and a tool description cannot,
+    // so match with them stripped.
+    const unticked = (text: string | undefined) => (text ?? "").replace(/`/g, "");
+    for (const [where, text] of spelledOut) {
+      pinsOnce(unticked(text), "chromium-cdp-<port> id from boot-device / list-devices", where);
+      pinsOnce(unticked(text), "a relaunch on a new port is a new id", where);
+    }
+    // The create-flow row states only the first step, so it carries the id alone.
+    pinsOnce(unticked(createFlowRow), "new chromium-cdp-<port> id", CREATE_FLOW_RECOVERY);
 
     // The Reload & recovery row fences restart-app off and delegates rather than
     // restating the recovery, so the pointer is the only thing carrying it.
@@ -174,6 +187,15 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // second copy rather than recovering. The row has to separate the two, or it
     // sends the live case to the wrong remedy. Which detail carries the window hint
     // is pinned against the throw sites in debugger/not-connected-map.test.ts.
+    // Naming list-devices as the id source without this reads as an invitation to
+    // poll it for the exit, which it cannot answer - it drops a live-but-windowless
+    // app exactly as it drops an exited one. Both guidance strings carry the same
+    // guard, pinned in debugger/not-connected-map.test.ts.
+    pinsOnce(
+      row(FAILURE_SCENARIOS, "**Was connected, then tool fails**"),
+      "cannot tell you whether it exited"
+    );
+
     const unreachable = row(FAILURE_SCENARIOS, "**App unreachable**");
     pinsOnce(unreachable, "second copy");
     // Both lock shapes: Electron's newcomer exits 0 with no reason given, Chrome
@@ -187,6 +209,11 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // alone is not: the row says it twice.
     pinsOnce(unreachable, "variant names the window");
     pinsOnce(unreachable, "bring a window back");
+    // The imperative itself. Naming the consequences and the alternative leaves
+    // the instruction free to invert: "relaunch there once, at worst you get a
+    // second copy" satisfies every pin above and sends the live case to the one
+    // action this row exists to forbid.
+    pinsOnce(unreachable, "Do not relaunch there");
   });
 
   it("answers every not-connected reason the debugger can report", () => {
@@ -202,5 +229,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
         `${reason} is missing from debugger-status's description`
       ).toContain(reason);
     }
+    // cdp_unreachable covers three unlike states and the reason name says none of
+    // them; the Chromium one is the reason the recovery had to split.
+    expect(debuggerStatusTool.description).toContain("is up with no drivable page");
   });
 });

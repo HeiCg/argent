@@ -71,7 +71,9 @@ describe("guidance platform-correctness", () => {
     );
     // The Metro phrasing "Verify the app is running (launch-app)" must not
     // appear — following it on Chromium manufactures a guaranteed second
-    // failure. The actionable path is a relaunch with --remote-debugging-port.
+    // failure. What replaces it depends on whether the app is still up, so the
+    // override names --remote-debugging-port for the case that does relaunch
+    // without letting a relaunch stand as the answer to all of them.
     expect(result.guidance).not.toMatch(/\(launch-app\)/);
     expect(result.guidance).toContain("--remote-debugging-port");
     expect(result.guidance).toContain("launch-app cannot start a Chromium app");
@@ -156,12 +158,16 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as { port: number };
     try {
-      await discoverPrimaryPage(port);
-      throw new Error("expected discoverPrimaryPage to reject");
-    } catch (err) {
+      const caught = await discoverPrimaryPage(port).then(
+        () => undefined,
+        (err: unknown) => err
+      );
+      // Returning the resolved case as a detail would let a throw site that
+      // stopped throwing pass as one that throws something else.
+      expect(caught, "expected discoverPrimaryPage to reject").toBeDefined();
       return {
-        message: (err as Error).message,
-        code: String(getFailureSignal(err)?.error_code),
+        message: (caught as Error).message,
+        code: String(getFailureSignal(caught)?.error_code),
       };
     } finally {
       server.close();
@@ -205,6 +211,10 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
     // branch exists to prevent.
     pinsOnce(guidance, "only lacks a window");
     pinsOnce(guidance, "ask the user to bring one back");
+    // The third state cdp_unreachable covers. CHROMIUM_CDP_INVALID_RESPONSE has
+    // three throw sites in cdp-session.ts and none of them is a stopped app, so
+    // this one is a relaunch away from a remedy too.
+    pinsOnce(guidance, "check what is on it rather than relaunching");
     // A sequence, not a condition on whether it exited: nothing in the catalogue
     // can answer that condition, and quitting an app that already exited is a
     // no-op anyway.
