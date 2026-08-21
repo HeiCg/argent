@@ -53,9 +53,10 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
     "until Metro is started. Start Metro (e.g. `npx react-native start` or `npx expo start`) " +
     "or ask the user, wait for it to report ready, then retry once.",
   no_app_connected:
-    "Metro is running but no app is attached. Do not retry immediately — launch or restart " +
-    "the RN app on the target device (launch-app / restart-app), wait a few seconds for the " +
-    "bundle to load, then retry once.",
+    "Metro is running but no app is attached. A crashed app reads as this too, and its console " +
+    "log can outlive it: read debugger-log-registry's note before relaunching, since it names " +
+    "that file. Do not retry immediately — launch or restart the RN app on the target device " +
+    "(launch-app / restart-app), wait a few seconds for the bundle to load, then retry once.",
   device_mismatch:
     "The device_id does not match any debugger target on this Metro. Re-target with the " +
     "logicalDeviceId listed in the detail message, or give the device its own Metro port.",
@@ -68,7 +69,8 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
     "loop (each attempt waits out the full timeout). Check the app; if it is hung, " +
     "restart it (restart-app), then retry once.",
   stale_connection:
-    "The cached debugger connection went stale; it has been discarded. Restart the app " +
+    "The cached debugger connection went stale; it has been discarded. That discard keeps the " +
+    "session's console log, and debugger-log-registry's note names the file. Restart the app " +
     "(restart-app) if it is not running, then call debugger-connect — the next call " +
     "reconnects fresh.",
   reconnecting:

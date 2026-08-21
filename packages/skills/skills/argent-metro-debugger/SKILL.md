@@ -23,7 +23,7 @@ adb -s <serial> reverse tcp:8081 tcp:8081
 
 ## 2. Tool Overview
 
-All tools accept `port` (default 8081) AND `device_id` (the iOS Simulator UDID, Android serial, or Vega serial — a.k.a. `logicalDeviceId`, the CDP-reported id that matches the device). Vega's legacy inspector reports no `logicalDeviceId`, so there keep passing the serial. Always make sure you target the correct app on the correct device.
+All tools accept `port` (default 8081) AND `device_id` — the iOS Simulator UDID, Android serial, or Vega serial from `list-devices`. That is not the `logicalDeviceId`: Metro never sees a UDID, it knows the id the app derives from its own device and bundle, and argent maps between the two (Vega's legacy inspector reports none at all). Always make sure you target the correct app on the correct device.
 
 One Metro port can serve multiple connected devices (e.g. two simulators on `localhost:8081`, or an iOS simulator alongside an Android emulator with `adb reverse` set up). `device_id` pins every debugger/network/profiler call to a specific device so sessions do not collide.
 
@@ -45,12 +45,12 @@ With two or more devices on one Metro, `debugger-connect` refuses a udid/serial 
 
 ### Inspection & console
 
-| Tool                       | Purpose                                                                                                                                                                                                                                                                                      |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `debugger-component-tree`  | Full React fiber tree (names, depth, bounding rects, tap coordinates).                                                                                                                                                                                                                       |
-| `debugger-inspect-element` | Inspect at (x, y) using **logical pixel coordinates** (not normalized 0-1): component hierarchy with source file:line and code fragment. See `references/source-maps.md`.                                                                                                                    |
-| `debugger-log-registry`    | Get log summary (counts, clusters, file path). Then use `Grep`/`Read` on the flat log file for details. If it returns `status: "not_connected"`, there is **no** `file` — follow its `guidance`, but read its `note` first: after a crash the note names the log file the dead session left. |
-| `debugger-evaluate`        | Run a JS expression in the app runtime.                                                                                                                                                                                                                                                      |
+| Tool                       | Purpose                                                                                                                                                                                                                                                                               |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `debugger-component-tree`  | Full React fiber tree (names, depth, bounding rects, tap coordinates).                                                                                                                                                                                                                |
+| `debugger-inspect-element` | Inspect at (x, y) using **logical pixel coordinates** (not normalized 0-1): component hierarchy with source file:line and code fragment. See `references/source-maps.md`.                                                                                                             |
+| `debugger-log-registry`    | Get log summary (counts, clusters, file path). Then use `Grep`/`Read` on the flat log file for details. If it returns `status: "not_connected"`, there is **no** `file` — follow its `guidance`, but read its `note` first: when the dead session kept a log file, the note names it. |
+| `debugger-evaluate`        | Run a JS expression in the app runtime.                                                                                                                                                                                                                                               |
 
 ---
 

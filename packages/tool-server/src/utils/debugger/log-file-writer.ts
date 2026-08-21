@@ -301,7 +301,8 @@ const LOG_NAME_RE = /^argent-logs-\d+-\d+\.log$/;
  * The gaps are a tool-server old enough to predate the keepalive, and a
  * filesystem that refuses `futimes` (which `touch` swallows); both are why the
  * cutoff is a day rather than an hour, since the file has to look abandoned for
- * far longer than a session plausibly sits idle.
+ * far longer than a session plausibly sits idle. Opening a writer is the only
+ * thing that runs this, so a host that stops debugging keeps what it has.
  */
 function pruneStaleLogs(dir: string): void {
   const cutoff = Date.now() - STALE_LOG_AGE_MS;
