@@ -258,8 +258,10 @@ export class CDPClient {
             `CDP request ${method} (id=${id}) timed out — the runtime accepted the ` +
               `connection but did not answer; it may be frozen, or paused at a breakpoint. ` +
               `debugger-status can still report "connected" in this state (the socket is open). ` +
-              `Do not retry in a loop. If it is paused, ask the user to resume it — quitting throws ` +
-              `the debug session away. If it is hung, get the app restarted (restart-app on ` +
+              `Do not retry in a loop. Nothing here tells the two apart — no tool reports ` +
+              `pausedness, and debugger-status says "connected" either way — so have the user ` +
+              `check the app before choosing. If it is paused, ask them to resume it — quitting ` +
+              `throws the debug session away. If it is hung, get the app restarted (restart-app on ` +
               `iOS / Android / Vega; on Chromium it is refused, so the user has to quit it and the ` +
               `relaunch has to wait for the exit — the app is up here, and boot-device only ` +
               `starts an app, so relaunching a live one duplicates it or dies on its ` +

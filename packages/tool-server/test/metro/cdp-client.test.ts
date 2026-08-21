@@ -299,7 +299,16 @@ describe("CDPClient", () => {
       );
       pinsOnce(
         message,
-        "If it is paused, ask the user to resume it — quitting throws the debug session away."
+        "If it is paused, ask them to resume it — quitting throws the debug session away."
+      );
+      // The two arms are mutually destructive and this message names no way to choose
+      // between them — nothing in the catalogue reports pausedness, and the sentence
+      // above says debugger-status answers "connected" either way. Left unlabelled, an
+      // agent guesses, and guessing "hung" throws the session away.
+      pinsOnce(
+        message,
+        "Nothing here tells the two apart — no tool reports pausedness, and debugger-status " +
+          'says "connected" either way — so have the user check the app before choosing.'
       );
       // The claim the two branches above rest on: a post-connect hang leaves the
       // socket OPEN, so debugger-status reports "connected" and never reaches the
@@ -312,7 +321,7 @@ describe("CDPClient", () => {
       // Both ends of the retry discipline. Each attempt waits out this full timeout,
       // so a loosened "unless it looks slow" at one end or a "retry until it answers"
       // at the other undoes the reason the guidance is in the message at all.
-      pinsOnce(message, "Do not retry in a loop. If it is paused");
+      pinsOnce(message, "Do not retry in a loop. Nothing here tells the two apart");
       // The id source sits inside the Chromium parenthetical, and covers BOTH of its
       // branches: this message is the shared client's, so a Metro reader reaches it
       // too, and a chromium-cdp id is not a thing on their platform. The browser
@@ -351,8 +360,9 @@ describe("CDPClient", () => {
       // this message sends a reader to boot-device while the app is provably still up.
       pinsOnce(
         message,
-        "relaunching a live one duplicates it or dies on its single-instance lock as " +
-          "`child process exited with code N before CDP was ready`"
+        "the app is up here, and boot-device only starts an app, so relaunching a live one " +
+          "duplicates it or dies on its single-instance lock as `child process exited with " +
+          "code N before CDP was ready`"
       );
       expect(getFailureSignal(err)).toMatchObject({
         error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,

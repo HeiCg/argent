@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { pinsOnce, pinsUnqualified } from "./pins";
-import { CHROMIUM_WORDS, expectTagEndsTheClaim, platformTag } from "./platform-tag";
+import { pinsOnce, pinsSentenceEnd, pinsUnqualified } from "./pins";
+import {
+  CHROMIUM_WORDS,
+  expectNoPlatformBeyondTag,
+  expectTagEndsTheClaim,
+  platformTag,
+} from "./platform-tag";
 
 /**
  * The doc-pinning helpers only ever fail under a mutation, so nothing in a green
@@ -43,6 +48,12 @@ describe("pinsUnqualified", () => {
       " as long as you booted it yourself",
       " only when the app was booted elsewhere",
       " only if boot-device started it",
+      ", though a vanished entry settles it",
+      ", although boot-device started this one",
+      ", aside from an app boot-device started",
+      ", barring an app you booted yourself",
+      ", but an app boot-device started can be",
+      ", however an app boot-device started can be",
     ]) {
       expect(() => pinsUnqualified(`restart-app is ${claim}${tail}`, claim), tail).toThrow();
     }
@@ -53,6 +64,26 @@ describe("pinsUnqualified", () => {
     // closing marks rather than against the needle.
     expect(() => pinsUnqualified(`**${claim}** except for Electron`, claim)).toThrow();
     expect(() => pinsUnqualified(`"${claim}", unless you booted it`, claim)).toThrow();
+  });
+});
+
+describe("pinsSentenceEnd", () => {
+  const claim = "the ports `boot-device` opened";
+
+  it("accepts a claim that closes its sentence", () => {
+    for (const tail of ["."]) pinsSentenceEnd(`probes 9222 and ${claim}${tail}`, claim);
+    pinsSentenceEnd(`probes 9222 and ${claim}`, claim);
+    pinsSentenceEnd(`(probes 9222 and ${claim}). Use it early.`, claim);
+  });
+
+  it("fails on a clause appended after it", () => {
+    for (const tail of [
+      ", plus any port a Chromium process is listening on",
+      " and anything else that answers",
+      " — and any port you already know",
+    ]) {
+      expect(() => pinsSentenceEnd(`probes 9222 and ${claim}${tail}`, claim), tail).toThrow();
+    }
   });
 });
 
@@ -69,6 +100,20 @@ describe("CHROMIUM_WORDS", () => {
 
   it("does not match a row that names no Chromium runtime", () => {
     expect("Relaunch by bundleId (iOS / Android / Vega)").not.toMatch(CHROMIUM_WORDS);
+  });
+});
+
+describe("expectNoPlatformBeyondTag", () => {
+  const tag = platformTag({ apple: { simulator: true }, android: { emulator: true } });
+
+  it("accepts prose that claims only its tag", () => {
+    expectNoPlatformBeyondTag(`Full React fiber tree on ${tag} (names, depth)`, tag, "row");
+  });
+
+  it("rejects a platform claimed after the tag", () => {
+    expect(() =>
+      expectNoPlatformBeyondTag(`Full React fiber tree on ${tag} (names), and on Vega.`, tag, "row")
+    ).toThrow();
   });
 });
 

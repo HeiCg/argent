@@ -28,6 +28,21 @@ export function platformTag(capability: ToolCapability | undefined): string {
 }
 
 /**
+ * Assert `cell` claims no platform its `tag` does not. The prose rows state their
+ * tag mid-sentence, so a tag comparison reads the first platform run and stops —
+ * a second one appended after it ("… on iOS / Android (…), and on Vega") claims
+ * support the capability gate rejects while the comparison stays green.
+ */
+export function expectNoPlatformBeyondTag(cell: string, tag: string, label: string) {
+  for (const [, word] of PLATFORM_WORDS) {
+    if (tag.includes(word)) continue;
+    expect(cell, `${label}: claims ${word}, which is not in "${tag}"`).not.toMatch(
+      new RegExp(`\\b${word}\\b`, "i")
+    );
+  }
+}
+
+/**
  * The words this repo names a Chromium runtime with. A row for an RN-only tool
  * may not carry any of them: `platformTag` has no word for chromium, so a claim
  * of Chromium support is the one drift a tag comparison cannot show, and a

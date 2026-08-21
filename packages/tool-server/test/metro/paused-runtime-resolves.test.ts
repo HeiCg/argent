@@ -25,6 +25,7 @@ let wss: WebSocketServer;
 let mockPort: number;
 let registry: Registry;
 const seen: string[] = [];
+const withheld: string[] = [];
 
 function handle(ws: WebSocket, raw: string) {
   const { id, method, params } = JSON.parse(raw) as {
@@ -33,7 +34,10 @@ function handle(ws: WebSocket, raw: string) {
     params?: { awaitPromise?: boolean };
   };
   seen.push(method);
-  if (method === "Runtime.evaluate" && params?.awaitPromise) return; // paused: never answers
+  if (method === "Runtime.evaluate" && params?.awaitPromise) {
+    withheld.push(method); // paused: never answers
+    return;
+  }
   if (method === "Debugger.enable") {
     ws.send(JSON.stringify({ id, result: { debuggerId: "paused-mock" } }));
     return;
@@ -101,5 +105,11 @@ describe("a JS runtime that never answers an awaited evaluate", () => {
     // that far.
     expect(seen).toContain("Runtime.addBinding");
     expect(seen.filter((m) => m === "Runtime.evaluate").length).toBeGreaterThanOrEqual(2);
+    // And that the mock WITHHELD them. Reaching the sends is not the input under
+    // test: a mock that answers everything reaches them identically, so without
+    // this the paused model can be softened away and the test still passes.
+    expect(withheld.length, "the mock must leave every awaited evaluate unanswered").toBe(
+      seen.filter((m) => m === "Runtime.evaluate").length
+    );
   }, 40_000);
 });
