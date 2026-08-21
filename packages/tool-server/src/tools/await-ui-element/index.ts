@@ -351,15 +351,10 @@ function timeoutNote(
 ): string {
   if (fetchError) return `${TREE_FETCH_FAILED_NOTE_PREFIX}${fetchError}`;
   const matches = lastTree ? findAll(lastTree, params.selector) : [];
-  // Why the SELECTOR found nothing, when something on screen nearly matched —
-  // the same explanation the flow runner gives for the same miss on the same
-  // screen. Without it an author on the tool surface paid the full timeout and
-  // was told only "no element matched", which points at nothing.
-  //
-  // Scoped exactly as the runner scopes it: the text is the field that missed,
-  // so drop it and keep every other constraint, and never offer a zero-area
-  // node to a `visible` wait. `hidden` never reaches it — a selector that
-  // matches nothing SATISFIES `hidden`, so there is no miss to explain.
+  // Explains which element on screen nearly matched the selector. The text is
+  // the field that missed, so drop it and keep the other constraints. A
+  // `visible` wait must not get a zero-area node. `hidden` never reaches this
+  // note, because a selector that matches nothing satisfies `hidden`.
   const missNote = (): string => {
     if (lastTree === null || params.selector.text === undefined) return "";
     const candidates = findAll(lastTree, { ...params.selector, text: undefined });
@@ -378,31 +373,19 @@ function timeoutNote(
         base = `no element matched the selector before timeout${missNote()}`;
         break;
       }
-      // The two quoted strings can be indistinguishable on screen and still
-      // compare unequal — the same failure the flow runner's assertReason
-      // explains, and the one this tool's own result shape reported when it was
-      // first raised ("its text was X (wanted to equal X)", success: false,
-      // elapsed: 15001). It needs the codepoints just as much. This tool's
-      // textMatch is contains/equals only, so there is no regex spelling to
-      // exempt the way assertReason must.
+      // The two quoted strings can look the same on screen and still compare
+      // unequal. The note names the codepoints that differ.
       const shown = nodeText(first);
-      // Whole-string for `equals`, substring for `contains` (the default and
-      // this tool's other spelling): asking the whole-string question under
-      // `contains` left the note absent whenever the label was longer than the
-      // needle, which is the ordinary shape for a substring check.
+      // Use the comparator of the wait: `equals` asks about the whole string,
+      // `contains` about a substring.
       const confusable =
         params.expectedText === undefined
           ? undefined
           : params.textMatch === "equals"
             ? confusableTextNote(shown, params.expectedText)
             : confusableTextNoteIn(shown, params.expectedText);
-      // BOTH quoted strings are defused, not just the label: an unbalanced
-      // U+202E reverses every character printed after it, and what follows here
-      // is the codepoint note itself — the explanation this failure exists to
-      // give, rendered mirrored. The expectation is as likely a carrier as the
-      // label, because the note that precedes it tells the author to copy the
-      // characters the app renders, and the fold deliberately keeps the ones
-      // that reorder. See quoteScreenText.
+      // Quote both strings. An unbalanced U+202E reverses every character
+      // after it, and the expectation is authored text too. See quoteScreenText.
       base =
         `element matched but its text was "${quoteScreenText(shown)}" ` +
         `(wanted to ${wanted} "${quoteScreenText(params.expectedText ?? "")}")` +

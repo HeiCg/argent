@@ -341,11 +341,8 @@ describe("await-ui-element tool", () => {
   });
 
   it("`text` timeout note names the codepoints when the two strings LOOK identical", async () => {
-    // The failure this whole diagnostic was raised from is THIS tool's result
-    // shape: `its text was "X" (wanted to equal "X")`, success false, elapsed
-    // 15001. Quoting the same text twice and calling it a mismatch is what the
-    // note has to replace — the flow runner learned to explain it and this
-    // surface did not.
+    // The value holds U+034F after "42". The character is not visible on the
+    // screen, so the two strings look identical.
     const { api } = makeSequencedAXService([
       axResponse([{ label: "Amount", value: "PLN 42͏", frame: FRAME, traits: [] }]),
     ]);
@@ -370,10 +367,7 @@ describe("await-ui-element tool", () => {
   });
 
   it("explains a SELECTOR miss, as the flow runner explains the same one", async () => {
-    // The other half of the same gap: this arm gained the codepoint note for a
-    // located element, but a selector that matched NOTHING still timed out into
-    // a bare "no element matched" while the flow runner named the variant on
-    // screen. An author on the tool surface paid the full timeout for it.
+    // The label holds one U+2026 ellipsis. The selector holds three periods.
     const { api } = makeSequencedAXService([
       axResponse([{ label: "Loading…", value: "", frame: FRAME, traits: [] }]),
     ]);
@@ -396,10 +390,6 @@ describe("await-ui-element tool", () => {
   });
 
   it("names the code points when only an invisible kept a SELECTOR from matching", async () => {
-    // `text.equals` named the differing code points and the selector that
-    // missed for the very same reason named nothing — so the situation the
-    // codepoint note exists for (two strings identical on screen) still ended
-    // in an unexplained miss whenever it arrived through a selector.
     const { api } = makeSequencedAXService([
       axResponse([{ label: "SaveChanges", value: "", frame: FRAME, traits: [] }]),
     ]);
@@ -443,11 +433,8 @@ describe("await-ui-element tool", () => {
   });
 
   it("`text` timeout note defuses a directional override in the label it quotes", async () => {
-    // The label survives the fold on purpose — a control that reorders is
-    // exactly what must not be stripped — so quoting it verbatim reversed
-    // everything printed after it. That tail used to be the ~30-character
-    // "(wanted to …)" suffix; it is now the codepoint note itself, the whole
-    // explanation this surface was given.
+    // The label holds U+202E after "report". The character reverses the text
+    // that follows it, and the fold keeps such controls on purpose.
     const { api } = makeSequencedAXService([
       axResponse([{ label: "report‮txt.exe", value: "", frame: FRAME, traits: [] }]),
     ]);
@@ -468,17 +455,13 @@ describe("await-ui-element tool", () => {
 
     expect(result.success).toBe(false);
     expect(result.note).not.toContain("‮");
-    // Defused AND named, so the author can see what is in their label.
     expect(result.note).toMatch(/<U\+202E>/);
     expect(result.note).toMatch(/REORDERS/);
   });
 
   it("`text` timeout note defuses a directional override in the EXPECTATION too", async () => {
-    // The label is not the only carrier: the expectation is authored, and the
-    // note this message appends lands after it, so an override there reverses
-    // the explanation itself. Such a string reaches an expectation exactly
-    // because the note tells the author to copy what the app renders and the
-    // fold keeps the characters that reorder.
+    // The message prints the note after the expectation, so a U+202E in the
+    // expectation reverses the note.
     const { api } = makeSequencedAXService([
       axResponse([{ label: "bedrock", value: "", frame: FRAME, traits: [] }]),
     ]);
