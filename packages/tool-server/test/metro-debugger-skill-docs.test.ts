@@ -21,6 +21,7 @@ import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-compon
 import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status";
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { listDevicesTool } from "../src/tools/devices/list-devices";
+import { expectNoForbiddenAdvice } from "./helpers/forbidden-advice";
 import { pinsOnce, pinsSentenceEnd, pinsUnqualified } from "./helpers/pins";
 import {
   CHROMIUM_WORDS,
@@ -42,6 +43,7 @@ const CREATE_FLOW_RECOVERY = path.join(
   SKILLS,
   "argent-create-flow/references/reliability-and-recovery.md"
 );
+const ARGENT_RULE = path.resolve(__dirname, "../../skills/rules/argent.md");
 
 const restartAppTool = createRestartAppTool({} as unknown as Registry);
 const debuggerStatusTool = createDebuggerStatusTool({} as unknown as Registry);
@@ -290,40 +292,50 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // "no reachable CDP session" covers the live-but-windowless case too, where a
     // relaunch is the wrong remedy.
     const createFlow = row(CREATE_FLOW_RECOVERY, "Chromium");
-    pinsOnce(createFlow, "the failure names page targets, none at all or only devtools:// ones");
+    // Where the field these arms branch on comes from. A flow author reads this row
+    // without a debugger-status result in hand, and `detail` is a member of one.
+    pinsOnce(createFlow, "Read the `detail` on a `debugger-status` result.");
+    pinsOnce(
+      createFlow,
+      "One naming the port's pages, none at all or only devtools:// ones, is an app still " +
+        "up with no window"
+    );
     pinsOnce(createFlow, "ask for one back, since a relaunch recovers nothing there");
+    // The discovery arm's own split. Without it a `could not connect` detail matches
+    // no arm and falls to the "naming neither" one, which says the app was up
+    // moments ago - the opposite of what that phrase reports.
+    pinsOnce(
+      createFlow,
+      "`could not connect` means nothing answered that port, consistent with an exit but " +
+        "not proof of it, so take the quit-and-relaunch below"
+    );
     // Its third and fourth states. Without arms of their own they fall into the
     // row's "Otherwise", which is the quit-and-relaunch the guidance routes both
     // away from - and this row is a flow author's only copy of the split.
     pinsOnce(
       createFlow,
-      "A `detail` naming `Chromium CDP discovery: GET` with a status or a body that is not " +
-        "JSON means the port answered with something that is not a CDP endpoint, usually " +
-        "another service holding it, which no relaunch on that port clears"
+      "a status or a body that is not JSON means the port answered with something that is " +
+        "not a CDP endpoint, usually another service holding it, which no relaunch on that " +
+        "port clears"
     );
+    // Both halves of the squatter remedy: a user-started browser has no
+    // electronAppPath, so the Electron clause alone strands it.
+    pinsOnce(createFlow, "a browser has to come back on a port nothing else holds");
+    // Gated on both named phrases, not on "neither of the preceding conditions" -
+    // a `could not connect` detail satisfies the loose reading and lands here.
     pinsOnce(
       createFlow,
-      "A `detail` naming neither — a WebSocket error, a closed connection — is the CDP socket " +
-        "failing after discovery answered, so the app was up moments ago: have the user check " +
-        "it before anything else."
+      "One naming neither the discovery GET nor the port's pages — a WebSocket error, a " +
+        "closed connection — is the CDP socket failing after discovery answered, so the app " +
+        "was up moments ago: have the user check it before anything else."
     );
-    // The row's opening diagnosis, which decides which arm a reader looks at.
-    pinsOnce(createFlow, "Still up with no window — the failure names page targets");
     // And that the quit-and-relaunch is the fallback, not the rule: the three arms
     // above exist to route away from it.
     pinsOnce(createFlow, "Otherwise ask the user to quit it");
 
-    // A pin counts what a surface SAYS. Nothing in one stops the opposite being
-    // appended after it, and the appended sentence is the one a reader acts on
-    // last - so the handful of instructions this whole change exists to prevent
-    // are barred outright, on every surface that carries any of the recovery.
-    const forbidden: [RegExp, string][] = [
-      [/relaunch (it |the app )?anyway/i, "relaunching without the exit confirmed"],
-      [/keep using (it|the old|that)\b/i, "reusing an id across a relaunch"],
-      [/boot it again/i, "booting an app that is still up"],
-      [/does mean the app exited/i, "reading an exit off a missing list-devices entry"],
-      [/relaunched with `?restart-app/i, "restart-app on Chromium"],
-    ];
+    // Every surface that carries any of the recovery is held to the shared list of
+    // instructions this change exists to prevent - the runtime guidance strings are
+    // held to the same one in not-connected-map.test.ts.
     const chromiumSurfaces: [string, string | undefined][] = [
       ...statesRecovery,
       ["list-devices' description", listDevicesTool.description],
@@ -334,9 +346,7 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       [FAILURE_SCENARIOS, row(FAILURE_SCENARIOS, "**App unreachable**")],
       [DEBUGGER_SKILL, row(DEBUGGER_SKILL, "`restart-app`")],
     ];
-    for (const [where, text] of chromiumSurfaces)
-      for (const [pattern, what] of forbidden)
-        expect(text ?? "", `${where} must not advise ${what}`).not.toMatch(pattern);
+    for (const [where, text] of chromiumSurfaces) expectNoForbiddenAdvice(text, where);
 
     // The Reload & recovery row fences restart-app off and delegates rather than
     // restating the recovery, so the pointer is the only thing carrying it - and
@@ -453,10 +463,15 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     );
     // And its remedy. Section 1 pointed at the Restart-an-app row, whose leading
     // instruction is the quit - the wrong half for an app that is merely windowless.
+    // With the discriminator, since an absent list-devices entry is the same absence
+    // for both states and this section is where the fork is stated.
     pinsOnce(
       deviceInteract,
-      "If the app is up with no window, have the user reopen one — that is the whole recovery."
+      "Which of the two it is shows in the failure from driving the id you kept: a `detail` " +
+        "naming the port's pages — none at all, or only devtools:// ones — is the app " +
+        "answering to say it has no window."
     );
+    pinsOnce(deviceInteract, "Have the user reopen one; that is the whole recovery.");
     // The same probe set this file states a second time, in the prose a reader
     // meets before any table. Derived, like every other copy.
     pinsSentenceEnd(
@@ -543,6 +558,19 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     pinsSentenceEnd(
       bootDeviceParams.shape.electronPort?.description,
       "the id you get back drives that app, not the one just launched."
+    );
+  });
+
+  it("states the probe set in the rule file too, derived from the same constant", () => {
+    // The one copy of this clause that lives outside a skill: rules/argent.md is
+    // loaded for every argent session, so a reader can meet the probe set here and
+    // nowhere else. Its two SKILL.md twins are derived above; this one was not
+    // pinned at all, which is how a set stated in three places drifts in one.
+    pinsOnce(
+      readFileSync(ARGENT_RULE, "utf8"),
+      "auto-discovered on port `" +
+        defaultChromiumPorts().join("`, `") +
+        "`, `ARGENT_CHROMIUM_PORTS` and the ports `boot-device` opened"
     );
   });
 

@@ -302,13 +302,18 @@ describe("CDPClient", () => {
         "If it is paused, ask them to resume it — quitting throws the debug session away."
       );
       // The two arms are mutually destructive and this message names no way to choose
-      // between them — nothing in the catalogue reports pausedness, and the sentence
-      // above says debugger-status answers "connected" either way. Left unlabelled, an
-      // agent guesses, and guessing "hung" throws the session away.
+      // between them — nothing in the catalogue reports pausedness. Left unlabelled, an
+      // agent guesses, and guessing "hung" throws the session away. The debugger-status
+      // half has to stay scoped to an established session: this same message is the
+      // detail of a not_connected result when the connect pipeline is what timed out.
       pinsOnce(
         message,
-        "Nothing here tells the two apart — no tool reports pausedness, and debugger-status " +
-          'says "connected" either way — so have the user check the app before choosing.'
+        "Nothing here tells the two apart — no tool reports pausedness, and once the " +
+          'session is established debugger-status reports "connected" either way — so have ' +
+          "the user check the app before choosing."
+      );
+      expect(message, "does not promise connected on the connect surface").not.toMatch(
+        /debugger-status says "connected" either way/i
       );
       // The claim the two branches above rest on: a post-connect hang leaves the
       // socket OPEN, so debugger-status reports "connected" and never reaches the

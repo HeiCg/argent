@@ -7,6 +7,7 @@ import {
   type FailureSignal,
 } from "@argent/registry";
 import { classifyNotConnected, buildNotConnected } from "../../src/tools/debugger/not-connected";
+import { expectNoForbiddenAdvice } from "../helpers/forbidden-advice";
 import { pinsOnce, pinsUnqualified } from "../helpers/pins";
 import { discoverPrimaryPage, ensureCdpReachable } from "../../src/chromium-server/cdp-session";
 import { getCandidateChromiumPorts } from "../../src/utils/chromium-discovery";
@@ -119,9 +120,9 @@ describe("guidance platform-correctness", () => {
     // the result cannot be reporting.
     pinsOnce(
       metro.guidance,
-      "A runtime paused at a breakpoint does not reach this reason — the enables are " +
-        "answered by the inspector rather than by the JS thread, and the two sends that do " +
-        "wait on the JS thread are both swallowed, so the session resolves and " +
+      "A runtime paused at a breakpoint does not reach this reason — every send that can " +
+        "time out here is answered by the inspector rather than by the JS thread, and the " +
+        "two that do wait on the JS thread are both swallowed, so the session resolves and " +
         "debugger-status reports connected."
     );
     // And what that leaves as the observable. Metro has no un-swallowed send that
@@ -130,10 +131,22 @@ describe("guidance platform-correctness", () => {
     // here would be an inference the timeout cannot support.
     pinsOnce(
       metro.guidance,
-      "What timed out here is one of those enables, so the inspector itself has stopped " +
-        "answering."
+      "What timed out is one of those inspector-answered sends, so the inspector itself " +
+        "has stopped answering."
     );
-    expect(metro.guidance, "claims only what timed out").not.toMatch(/it is frozen/i);
+    // Two of the four un-swallowed connect sends are not enables -
+    // Debugger.setPauseOnExceptions and Runtime.addBinding - and the detail beside
+    // this guidance names whichever one timed out. Calling them enables contradicts
+    // the detail in half the cases.
+    expect(metro.guidance, "does not narrow the sends to the enables").not.toMatch(
+      /one of those enables/i
+    );
+    // Frozen is the likeliest cause, not the observable: what timed out is answered
+    // by the inspector, so the JS thread's state is an inference this reason cannot
+    // support. The needle has to admit main's hedge ("it is likely frozen") too.
+    expect(metro.guidance, "claims only what timed out").not.toMatch(
+      /\bis (likely |probably )?frozen\b/i
+    );
     expect(metro.guidance, "no resume ask here").not.toMatch(/resume/i);
     pinsOnce(
       metro.guidance,
@@ -197,6 +210,9 @@ describe("guidance platform-correctness", () => {
         port: 8081,
         device_id: "chromium-cdp-9222",
       });
+      // The same bar the prose surfaces are held to. These two strings are the
+      // highest-traffic copy of the recovery and were outside it.
+      expectNoForbiddenAdvice(guidance, `chromium ${reason}`);
       pinsOnce(guidance, "ask the user to start the browser again", reason);
       pinsOnce(guidance, "same CDP port", reason);
       pinsOnce(guidance, "chromium-cdp-<port> id from boot-device / list-devices", reason);
@@ -262,7 +278,12 @@ describe("guidance platform-correctness", () => {
       // app survived, and read as a launch failure it invites another relaunch.
       pinsOnce(guidance, "duplicates the app or dies on its single-instance lock", reason);
       pinsOnce(guidance, "child process exited with code N before CDP was ready", reason);
-      pinsOnce(guidance, "means the app is still up, not that it failed to launch", reason);
+      pinsOnce(
+        guidance,
+        "a string boot-device also emits for a launch that really failed, so it does not " +
+          "tell you which happened",
+        reason
+      );
       // Its premise. Without it "duplicates or fails" reads as a risk worth taking.
       pinsUnqualified(guidance, "never recovers it", reason);
       // The id is re-readable only where discovery looks: getCandidateChromiumPorts

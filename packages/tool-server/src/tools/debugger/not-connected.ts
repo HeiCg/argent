@@ -63,11 +63,11 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
     "(launch-app), then call debugger-connect and retry once.",
   runtime_unresponsive:
     "The runtime accepted the debugger connection but did not answer within the " +
-    "timeout. A runtime paused at a breakpoint does not reach this reason — the " +
-    "enables are answered by the inspector rather than by the JS thread, and the two " +
-    "sends that do wait on the JS thread are both swallowed, so the session resolves " +
-    "and debugger-status reports connected. What timed out here is one of those " +
-    "enables, so the inspector itself has stopped answering. " +
+    "timeout. A runtime paused at a breakpoint does not reach this reason — every " +
+    "send that can time out here is answered by the inspector rather than by the JS " +
+    "thread, and the two that do wait on the JS thread are both swallowed, so the " +
+    "session resolves and debugger-status reports connected. What timed out is one of " +
+    "those inspector-answered sends, so the inspector itself has stopped answering. " +
     DETAIL_NAMES_A_BREAKPOINT +
     "Do not retry in a loop (each attempt waits out the full timeout). Restart it " +
     "(restart-app), then retry once.",
@@ -89,9 +89,11 @@ const NOT_CONNECTED_CODE_MAP: Record<string, DebuggerNotConnectedReason> = {
   [FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED]: "cdp_unreachable",
   [FAILURE_CODES.DEBUGGER_CDP_CONNECTION_CLOSED]: "cdp_unreachable",
   // Reachable from the connect pipeline's enable/binding sends when the target
-  // accepts the socket but its JS runtime never answers (frozen, or paused at a
-  // breakpoint). Post-connect hangs are different: an OPEN socket still reports
-  // status "connected" (see the socket-state gate comment in debugger-status).
+  // accepts the socket but its inspector stops answering. A runtime paused at a
+  // breakpoint does not reach it: those sends are inspector-answered, and the two
+  // the pipeline aims at the JS thread are swallowed. Post-connect hangs are
+  // different: an OPEN socket still reports status "connected" (see the
+  // socket-state gate comment in debugger-status).
   [FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT]: "runtime_unresponsive",
   [FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE]: "cdp_unreachable",
   // "Reached but not CDP / malformed answer" — a non-CDP server squatting the
@@ -166,7 +168,8 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "and relaunching a live app never recovers it: boot-device only starts an app and " +
     "never stops one, so the relaunch either duplicates the app or dies on its " +
     "single-instance lock as 'child process exited with code N before CDP was ready' — " +
-    "which means the app is still up, not that it failed to launch. " +
+    "a string boot-device also emits for a launch that really failed, so it does not " +
+    "tell you which happened. " +
     "Once it is gone, launch-app cannot " +
     "start a Chromium app: boot-device with electronAppPath relaunches an Electron " +
     "app, and for a browser, ask the user to start the browser again on the same CDP " +
@@ -184,8 +187,9 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "exited: the app is up, so relaunching it yourself never recovers it — " +
     "boot-device only starts an app and never stops one, so the relaunch either " +
     "duplicates the app or dies on its single-instance lock as 'child process exited " +
-    "with code N before CDP was ready' — which means the app is still up, not that it " +
-    "failed to launch. launch-app cannot start a Chromium app. " +
+    "with code N before CDP was ready' — a string boot-device also emits for a launch " +
+    "that really failed, so it does not tell you which happened. " +
+    "launch-app cannot start a Chromium app. " +
     "list-devices cannot confirm the exit either: a wedged app keeps its page target " +
     "and stays listed, so when the entry goes it means the window was closed just as " +
     "readily as that the app exited. " +

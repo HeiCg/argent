@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { expectNoForbiddenAdvice } from "./forbidden-advice";
 import { pinsOnce, pinsSentenceEnd, pinsUnqualified } from "./pins";
 import {
   CHROMIUM_WORDS,
@@ -139,5 +140,28 @@ describe("expectTagEndsTheClaim", () => {
     ]) {
       expect(() => expectTagEndsTheClaim(cell, tag, "row"), cell).toThrow();
     }
+  });
+});
+
+describe("expectNoForbiddenAdvice", () => {
+  it("accepts prose that carries none of the barred instructions", () => {
+    expectNoForbiddenAdvice(
+      "Ask the user to quit it, then relaunch once it has exited. Do not relaunch there.",
+      "surface"
+    );
+    expectNoForbiddenAdvice(undefined, "absent surface");
+  });
+
+  it("rejects each barred instruction, including the two the lookbehind must let past", () => {
+    for (const text of [
+      "It may still be up — relaunch it anyway.",
+      "Keep using the old chromium-cdp-<port> id.",
+      "If nothing is listed, boot it again.",
+      "A missing entry does mean the app exited.",
+      "On Chromium it is relaunched with restart-app.",
+      "That string means the app is still up, not that it failed to launch.",
+      "It only lacks a window, so relaunch there once.",
+    ])
+      expect(() => expectNoForbiddenAdvice(text, "surface"), text).toThrow();
   });
 });
