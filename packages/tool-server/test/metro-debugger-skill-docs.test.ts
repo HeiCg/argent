@@ -279,6 +279,13 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // restart-app row is tagged for the three platforms that are not Chromium.
     pinsOnce(row(DEBUGGER_SKILL, "`restart-app`"), "On Chromium see the Quick Reference row");
 
+    // Two rows above the restart-app carve-out, so a Chromium reader refused there
+    // reads this one next. Its handler is a no-op that returns launched: true, and
+    // the guidance fences it by name - an unqualified "Always" here contradicts both.
+    pinsOnce(
+      row(DEVICE_INTERACT_SKILL, "Open an app"),
+      "on Chromium it confirms the running renderer and starts nothing"
+    );
     // The shared-surface summary a Chromium reader meets before any table.
     // gesture-swipe declares no chromium and the gate rejects it there, so the
     // verb in this list has to be the one that works.
