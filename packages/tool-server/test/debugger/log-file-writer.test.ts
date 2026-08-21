@@ -161,7 +161,11 @@ describe("LogFileWriter", () => {
         live.write({ id: 1, timestamp: "t", level: "error", message: "CRITICAL pre-crash" });
         const livePath = live.getFilePath();
 
-        vi.advanceTimersByTime(DAY_MS + 60 * 60 * 1000);
+        // Just past the cutoff, not an hour past it: a keepalive slower than
+        // STALE_LOG_AGE_MS — the one relation the constant's comment claims —
+        // would still have fired once inside a longer advance and saved the file
+        // for the wrong reason.
+        vi.advanceTimersByTime(DAY_MS + 1000);
         const other = new LogFileWriter(6666);
 
         expect(fs.existsSync(livePath)).toBe(true);

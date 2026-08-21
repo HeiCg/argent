@@ -273,6 +273,13 @@ describe("debugger-log-registry not-connected results", () => {
 
     expect(result.reason).toBe("reconnecting");
     expect(result.note).toBeUndefined();
+    // And says so in neither direction: this answer has no note because it kept
+    // one back, so a sentence about there being nothing to report would be the
+    // opposite of what the line below proves.
+    expect(result.guidance).toBe(
+      "The debugger connection is being re-established (the previous one was torn down or a " +
+        "tab switch is in progress). Wait a moment and retry once."
+    );
     expect(takeReapedSession("js-runtime-debugger", "dev2", "8081")?.salvage).toContain(
       "/tmp/kept.log"
     );

@@ -159,10 +159,10 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // awaits that follow — the console server's close waits out the sockets
         // attached to it — gets `reconnecting`, whose guidance is to wait and
         // ask again. The asking again is what would find it spent.
-        const note =
-          reason === "reconnecting"
-            ? undefined
-            : takeReapedNote(params.device_id, debuggerReapedScope(params));
+        const withheld = reason === "reconnecting";
+        const note = withheld
+          ? undefined
+          : takeReapedNote(params.device_id, debuggerReapedScope(params));
         const result = buildNotConnected(reason, err, params);
         // `guidance` is the field an agent acts on, and these strings are
         // written for `debugger-status`, whose answers never carry a note: one
@@ -171,12 +171,17 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         // them — mention none at all. Read from an answer that IS the note's,
         // both are wrong in the same way, so this tool says what its own result
         // holds before the rest of the guidance speaks for the general case.
+        //
+        // The withheld answer says neither: it is holding a breadcrumb it did
+        // not spend, and "wait and ask again" is already what its reason's own
+        // guidance says.
+        if (withheld) return result;
         return {
           ...result,
           ...(note ? { note } : {}),
           guidance: note
             ? `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`
-            : `This result has no note: nothing ended on this device and port that has not already been reported. ${result.guidance}`,
+            : `This result has no note: no session ended on this device and port with console history left to report. ${result.guidance}`,
         };
       }
     },
