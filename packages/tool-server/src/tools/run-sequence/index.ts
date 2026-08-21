@@ -17,6 +17,9 @@ const ALLOWED_TOOLS = new Set([
   "gesture-rotate",
   "button",
   "keyboard",
+  // `paste` belongs in a sequence for the same reason `keyboard` does: the
+  // focus tap, the paste and the submit are one user action.
+  "paste",
   "rotate",
   // Sequencing matters for shake: the interesting cases are races (shake while
   // a sheet is dismissing, shake right after typing), which need the steps
@@ -40,7 +43,7 @@ const zodSchema = z.object({
         tool: z
           .string()
           .describe(
-            "Tool name — one of: gesture-tap, gesture-swipe, gesture-scroll, gesture-drag, gesture-custom, gesture-pinch, gesture-rotate, button, keyboard, rotate, shake, tv-remote, await-ui-element. On a TV target (Apple TV / Android TV / Vega) use tv-remote (remote presses) and keyboard (text)."
+            "Tool name — one of: gesture-tap, gesture-swipe, gesture-scroll, gesture-drag, gesture-custom, gesture-pinch, gesture-rotate, button, keyboard, paste, rotate, shake, tv-remote, await-ui-element. On a TV target (Apple TV / Android TV / Vega) use tv-remote (remote presses) and keyboard (text)."
           ),
         args: z
           .record(z.string(), z.unknown())
@@ -128,6 +131,7 @@ Allowed tools and their args (udid is auto-injected, do NOT include it in args):
   button:         { button: "home"|"back"|"power"|"volumeUp"|"volumeDown"|"appSwitch"|"actionButton" }                  [ios/android]
   keyboard:       { text?: string, key?: string, delayMs?: number }  (text OR key per step, never both; TV: text only)  [ios/android/chromium/vega/tv]
                   text supports {{secret:<NAME>}} placeholders, resolved server-side from ARGENT_SECRET_<NAME> env vars or an argent secrets file — credentials never enter agent context
+  paste:          { text: string }  (device clipboard + paste shortcut; only where a user would paste, e.g. an OTP — keyboard otherwise)   [ios sim/android emu]
   rotate:         { orientation: "Portrait"|"LandscapeLeft"|"LandscapeRight"|"PortraitUpsideDown" }                     [ios/android]
   shake:          { count?: number }                                                                                    [ios sim/android emu]
   tv-remote:      { button: <remote button | array of them>, repeat?: number }                                          [apple tv/android tv/vega]
@@ -233,14 +237,11 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           }
           results.push({ tool: step.tool, result });
         } catch (err) {
-          // A schema miss is re-rendered from the STEP's own args rather than
-          // the merged ones: `udid` is injected into every step (the tool's own
-          // docs tell authors to leave it out), so the registry's message —
-          // which can only read the args it was handed — closes with
-          // "You sent: `xx`, `y`, `udid`", naming a key the author never typed
-          // beside the misspelling that list exists to expose. Re-rendering
-          // rather than pre-flighting keeps the dispatch, and with it the
-          // step's `toolInvoked`/`toolFailed` events.
+          // Re-render a schema miss from the STEP's own args, not the merged
+          // ones: `udid` is injected into every step, so the registry's
+          // "You sent:" list would name a key the author never typed beside the
+          // misspelling it exists to expose. Re-rendering rather than
+          // pre-flighting keeps the step's `toolInvoked`/`toolFailed` events.
           const reframed = describeNestedParamError(
             registry,
             err,

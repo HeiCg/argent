@@ -274,9 +274,9 @@ describe("tool interaction messages", () => {
 
   it("does not announce a recorded step on the paths that record nothing", () => {
     // The guidance paths (a nested recorder tool as `command`, a flow-directive
-    // name) return SUCCESSFULLY and append nothing, so the completion line fires
-    // — and used to read "Added echo step to flow hints" in the same log where
-    // the result body says "Nothing was executed and no step was recorded".
+    // name) return SUCCESSFULLY and append nothing, so the completion line
+    // fires — and must not read "Added echo step" in the same log where the
+    // result body says nothing was recorded.
     const completedMsg =
       definitionsById(createRegistry()).get("flow-add-step")!.interaction!.completedMsg!;
     const params = { name: "checkout", project_root: "/tmp/proj", command: "echo" };
@@ -294,14 +294,10 @@ describe("tool interaction messages", () => {
 
   it("joins the record-nothing RESULT to the line the registry actually logs", async () => {
     // The case above pins `completedMsg` against a hand-built result, and the
-    // recorder's own tests call `tool.execute()` directly, so the registry never
-    // fires `completedMsg` on a real return. Each half held, and nothing joined
-    // them: adding `recorded: ""` to `recordNothing`'s return flipped the
-    // logged line back to "Added echo step to flow checkout" — the very
-    // contradiction this discriminates against — with the whole suite green.
-    //
-    // So drive a real recording through a real Registry and read the message
-    // off the completion event.
+    // recorder's own tests call `execute()` directly, so nothing else joins the
+    // two halves: adding `recorded: ""` to `recordNothing` restores the
+    // contradiction with the whole suite green. So drive a real recording
+    // through a real Registry and read the completion event.
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "interaction-msg-"));
     try {
       await flowStartRecordingTool.execute(
