@@ -1117,7 +1117,7 @@ Pass exactly one flow source: name for a saved flow under project_root, or flow_
       // (scroll steps) stall on a throttled compositor. Covers the instance the
       // run starts on; a launch that boots one fronts it itself. Best-effort:
       // bringToFront can focus a page but cannot unhide a minimized window
-      // (gesture-tap/-drag/-scroll each fail fast on that case themselves, via
+      // (gesture-tap/-drag/-scroll carry their own guard for that case, via
       // assertChromiumWindowVisible).
       if (device?.platform === "chromium") await frontChromiumPage(registry, device);
 

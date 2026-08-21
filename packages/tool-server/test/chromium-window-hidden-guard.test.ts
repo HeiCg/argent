@@ -9,10 +9,10 @@ import { gestureScrollTool } from "../src/tools/gesture-scroll";
 // (measured live on an Electron testbed). tap, drag and scroll refuse up
 // front with an actionable error; keyboard skips the guard because key events
 // bypass hit-testing and stay fast on hidden windows, and button never reaches
-// it — its capability omits chromium. In practice the
-// guard is a backstop: primePageSession's focus emulation pins reported
-// visibility to "visible" while a session is attached, so the probe reads
-// "hidden" only on sessions where emulation could not be applied — exactly
+// it — its capability omits chromium. In practice the guard is a backstop:
+// argent-spawned apps carry anti-throttling flags, and a page with a CDP
+// session attached also has focus emulation pinning reported visibility to
+// "visible", so the probe reads "hidden" only where both are absent — exactly
 // where the stall is real.
 
 function fakeChromiumApi(visibility = "visible") {
@@ -47,7 +47,7 @@ describe("hidden-window guard on chromium mouse tools", () => {
         } as never
       )
     );
-    expect(err.message).toMatch(/hidden/);
+    expect(err.message).toMatch(/^Cannot tap: the Chromium window is hidden/);
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.CHROMIUM_WINDOW_HIDDEN);
     expect(getFailureSignal(err)?.failure_stage).toBe("chromium_tap_window_hidden");
     expect(api.dispatchMouseEvent).not.toHaveBeenCalled();
@@ -67,6 +67,7 @@ describe("hidden-window guard on chromium mouse tools", () => {
         } as never
       )
     );
+    expect(err.message).toMatch(/^Cannot drag: the Chromium window is hidden/);
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.CHROMIUM_WINDOW_HIDDEN);
     expect(getFailureSignal(err)?.failure_stage).toBe("chromium_drag_window_hidden");
     expect(api.dispatchMouseEvent).not.toHaveBeenCalled();
@@ -85,8 +86,10 @@ describe("hidden-window guard on chromium mouse tools", () => {
         } as never
       )
     );
+    expect(err.message).toMatch(/^Cannot scroll: the Chromium window is hidden/);
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.CHROMIUM_WINDOW_HIDDEN);
-    // The stage string is unchanged so old and new telemetry stay joinable.
+    // The scroll stage predates the CHROMIUM_WINDOW_HIDDEN migration, which kept
+    // the spelling so rows from either side of it stay joinable.
     expect(getFailureSignal(err)?.failure_stage).toBe("chromium_scroll_window_hidden");
   });
 
@@ -112,12 +115,36 @@ describe("hidden-window guard on chromium mouse tools", () => {
     // throw is a TypeError raised while reading `.send` off `undefined`, not a
     // rejected promise. The bare fakes in chromium-drag.test.ts and
     // tools/gesture-tap.test.ts are exactly this shape, so the guard has to
-    // stay transparent to them — but nothing pinned that until now, and those
-    // fakes only cover it for as long as neither of them grows a `cdp` key.
+    // stay transparent to them; those files only cover it incidentally, for as
+    // long as neither of them grows a `cdp` key.
     const api = {
       getViewport: () => ({ width: 800, height: 600, devicePixelRatio: 1 }),
       dispatchMouseEvent: vi.fn().mockResolvedValue(undefined),
     };
+    const result = (await gestureTapTool.execute(
+      { chromium: api } as never,
+      {
+        udid: "chromium-cdp-19222",
+        x: 0.5,
+        y: 0.5,
+      } as never
+    )) as { tapped: boolean };
+    expect(result.tapped).toBe(true);
+    expect(api.dispatchMouseEvent).toHaveBeenCalled();
+  });
+
+  // The other half of "only an explicit `hidden` refuses": a probe that resolves
+  // without a usable value. `Runtime.evaluate` answers this way when the
+  // expression itself threw or the page has no execution context yet, and a
+  // guard that refused on it would block tap/drag/scroll on a visible window.
+  it.each([
+    ["an empty result", {}],
+    ["a result with no value", { result: {} }],
+    ["a value of an unexpected shape", { result: { value: null } }],
+    ["a visibility state that is not `hidden`", { result: { value: "prerender" } }],
+  ])("proceeds when the probe resolves with %s", async (_label, resolved) => {
+    const api = fakeChromiumApi();
+    api.cdp.send = vi.fn().mockResolvedValue(resolved);
     const result = (await gestureTapTool.execute(
       { chromium: api } as never,
       {

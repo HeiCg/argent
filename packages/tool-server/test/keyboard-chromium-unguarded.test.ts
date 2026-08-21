@@ -1,21 +1,23 @@
 import { describe, it, expect, vi } from "vitest";
 import { Registry, type DeviceInfo } from "@argent/registry";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
+import { buttonTool } from "../src/tools/button";
+import { assertSupported } from "../src/utils/capability";
 
 // The mouse tools (gesture-tap/-drag/-scroll) refuse up front on a hidden
 // Chromium window because every mouse dispatch waits on compositor hit-testing.
 // Key events skip hit-testing and stay fast on the same window — measured on a
-// minimized Electron window, Input.dispatchKeyEvent returned in 1-14ms while
+// minimized Electron window carrying neither of the mitigations described on
+// assertChromiumWindowVisible, Input.dispatchKeyEvent returned in 1-14ms while
 // ten consecutive mouse moves cost 5002-5005ms each — so `keyboard` is
-// deliberately NOT guarded.
+// deliberately NOT guarded. These tests are what hold it that way: guarding
+// `keyboard` would make it refuse input that demonstrably works.
 //
-// That exemption lived only in a comment on assertChromiumWindowVisible, which
-// meant adding the guard to `keyboard` would have made it refuse input that
-// demonstrably works, with the suite staying green. This pins it.
-//
-// The sibling `button` tool needs no such test: its capability omits chromium
-// altogether, so it can never reach a Chromium device (chromium hardware
-// buttons exist only on the chromium-server HTTP surface).
+// The sibling `button` tool is exempt for a different reason, pinned below: its
+// capability omits chromium, so the dispatcher's gate rejects a Chromium device
+// before `execute` runs. A Chromium app has no hardware buttons anyway — the
+// chromium-server's WebSocket `button` command emulates `Back` alone, as an
+// Alt+Left chord, and throws for every other button.
 
 const chromiumDevice = {
   id: "chromium-cdp-9222",
@@ -69,5 +71,11 @@ describe("keyboard on chromium — deliberately unguarded on a hidden window", (
     expect(result).toEqual({ typed: "enter", keys: 1 });
     // keyDown + keyUp for the named key.
     expect(dispatchKeyEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects `button` on a Chromium device before it can reach the guard", () => {
+    expect(() => assertSupported("button", buttonTool.capability, chromiumDevice)).toThrow(
+      /no chromium support declared/
+    );
   });
 });
