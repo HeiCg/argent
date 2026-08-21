@@ -134,14 +134,15 @@ describe("hidden-window guard on chromium mouse tools", () => {
   });
 
   // The other half of "only an explicit `hidden` refuses": a probe that resolves
-  // with anything other than "hidden". `Runtime.evaluate` omits `value` when the
-  // expression threw, and `visibilityState` has states beyond visible/hidden — a
-  // guard that refused on those would block tap/drag/scroll on a live window.
+  // with anything else. `Runtime.evaluate` omits `value` when the expression
+  // throws an Error, and a page can redefine `visibilityState` to whatever it
+  // likes, so the literal "hidden" is the only thing that is evidence of a
+  // hidden window — refusing on anything else blocks a tap on a live one.
   it.each([
     ["an empty result", {}],
     ["a result with no value", { result: {} }],
     ["a value of an unexpected shape", { result: { value: null } }],
-    ["a visibility state that is not `hidden`", { result: { value: "prerender" } }],
+    ["a string other than `hidden`", { result: { value: "prerender" } }],
   ])("proceeds when the probe resolves with %s", async (_label, resolved) => {
     const api = fakeChromiumApi();
     api.cdp.send = vi.fn().mockResolvedValue(resolved);
