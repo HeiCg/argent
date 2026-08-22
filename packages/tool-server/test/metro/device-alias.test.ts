@@ -3,6 +3,9 @@ import {
   rememberDeviceAlias,
   canonicalDeviceId,
   forgetDeviceAlias,
+  rememberLogicalKeyedDevice,
+  isLogicalKeyedDevice,
+  forgetLogicalKeyedDevice,
   resetDeviceAliases,
 } from "../../src/utils/debugger/device-alias";
 import { debuggerServiceRef } from "../../src/tools/debugger/debugger-service-ref";
@@ -56,6 +59,42 @@ describe("debuggerServiceRef — collapses a forwarded logicalDeviceId onto one 
     rememberDeviceAlias(LOGICAL_ID, IOS_UDID);
     const forwardedRef = debuggerServiceRef({ port: 8081, device_id: LOGICAL_ID });
     expect(forwardedRef).toBe(connectRef);
+  });
+
+  it("marks only a session whose connect id IS the logicalDeviceId", () => {
+    // The marker means "no device-scoped teardown can name this session", and
+    // stop-all-simulator-servers reports every marked session as one it left
+    // running. A udid-keyed session IS reachable from a list-devices scope, so
+    // marking it would report a session that was reaped as one that survived.
+    rememberLogicalKeyedDevice(LOGICAL_ID, IOS_UDID);
+    expect(isLogicalKeyedDevice(IOS_UDID)).toBe(false);
+    expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(false);
+
+    // Vega and a legacy inspector report no logicalDeviceId at all; nothing to
+    // compare, so nothing to mark.
+    rememberLogicalKeyedDevice(undefined, IOS_UDID);
+    expect(isLogicalKeyedDevice(IOS_UDID)).toBe(false);
+
+    // Recorded in the spelling the connect used, read back in whichever the
+    // teardown holds: an id reaches the two sides from different places, so
+    // both ends fold. Written uppercase here, since the ids these tests use are
+    // already lower.
+    rememberLogicalKeyedDevice(LOGICAL_ID.toUpperCase(), LOGICAL_ID.toUpperCase());
+    expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(true);
+    expect(isLogicalKeyedDevice(LOGICAL_ID.toUpperCase())).toBe(true);
+
+    forgetLogicalKeyedDevice(LOGICAL_ID);
+    expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(false);
+  });
+
+  it("clears the logical-keyed markers along with the aliases", () => {
+    // Both halves of this module are module-global, so a reset that emptied
+    // only one would leak a marker into whatever test ran next.
+    rememberLogicalKeyedDevice(LOGICAL_ID, LOGICAL_ID);
+    rememberDeviceAlias(LOGICAL_ID, IOS_UDID);
+    resetDeviceAliases();
+    expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(false);
+    expect(canonicalDeviceId(LOGICAL_ID)).toBe(LOGICAL_ID);
   });
 
   it("does not disturb Chromium routing", () => {

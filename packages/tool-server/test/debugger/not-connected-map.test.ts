@@ -248,6 +248,18 @@ describe("guidance content", () => {
         "launch-app cannot start a Chromium app"
       );
     }
+    // The pointer itself differs by platform, and the Chromium half is the one
+    // that has to say WHY reading it first matters: its record is filed under
+    // the CDP port, and boot-device draws a free one, so a relaunch that does
+    // not pass the old port leaves the record answering to an id nothing will
+    // ask about again. A Metro device keeps its ids across a relaunch and needs
+    // no such warning.
+    expect(buildNotConnected("cdp_unreachable", err, chromium).guidance).toContain(
+      "relaunching on a port boot-device picks strands it"
+    );
+    expect(buildNotConnected("cdp_unreachable", err, metro).guidance).not.toContain(
+      "boot-device picks"
+    );
     // And the tool holding the record is not sent to fetch it from itself.
     for (const params of [metro, chromium]) {
       expect(

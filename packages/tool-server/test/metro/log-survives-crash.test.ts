@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
 import * as http from "node:http";
 import * as fs from "node:fs";
@@ -193,6 +193,14 @@ afterAll(async () => {
 });
 
 describe("console logs across an app crash", () => {
+  // Every case opens its own session before it reaches for the socket, and the
+  // handler above hands back whichever connected last. Cleared between cases so
+  // a case that somehow does not open one terminates nothing rather than the
+  // socket the case before it left behind.
+  beforeEach(() => {
+    cdpConn = null;
+  });
+
   it("keeps the log file on disk when the CDP socket drops", async () => {
     await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "mock-device" });
 
@@ -690,6 +698,48 @@ describe("console logs across an app crash", () => {
     } finally {
       fs.chmodSync(logs, 0o755);
     }
+  });
+
+  it("corrects the promise when the sweep took the file before anyone read the note", async () => {
+    // The breadcrumb keeps the path apart from the prose so the read can check
+    // it: a breadcrumb has no expiry and a kept log is swept once it is a day
+    // old, so an unread one outlives what it advertises. Without the path on
+    // the record there is nothing to check, and the note goes on telling the
+    // reader to grep a file that is gone. The Chromium blueprint's twin is
+    // asserted on the record itself; this is the Metro side of it.
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "swept-device" });
+    cdpConn!.send(
+      JSON.stringify({
+        method: "Runtime.consoleAPICalled",
+        params: {
+          type: "error",
+          args: [{ type: "string", value: "CRITICAL pre-crash error" }],
+          executionContextId: 1,
+          timestamp: Date.now(),
+        },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 200));
+
+    const before = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: "swept-device",
+    })) as { file: string; totalEntries: number };
+    expect(before.totalEntries).toBe(1);
+
+    cdpConn!.terminate();
+    await new Promise((r) => setTimeout(r, 500));
+    expect(fs.existsSync(before.file)).toBe(true);
+
+    // What the day-old sweep does to it, before anything reads the note.
+    fs.rmSync(before.file, { force: true });
+
+    const after = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: "swept-device",
+    })) as { note?: string };
+    expect(after.note).toContain("has since been reclaimed");
+    expect(after.note).not.toContain("grep that file");
   });
 
   it("reads the socket before the dispose awaits anything", async () => {

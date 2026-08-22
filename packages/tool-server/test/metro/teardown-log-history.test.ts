@@ -110,6 +110,10 @@ beforeEach(async () => {
     await registry.disposeService(urn).catch(() => {});
   }
   __resetReapedSessionsForTesting();
+  // Module-global too, and the dispose above is what normally empties it - so
+  // a case that fails before its own dispose would otherwise hand the next one
+  // a learned alias.
+  resetDeviceAliases();
 });
 
 async function connectAndCapture(deviceId: string, entries: number): Promise<string> {
