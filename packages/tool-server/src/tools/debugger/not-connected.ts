@@ -180,11 +180,11 @@ const OWN_NOTE_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
 
 /**
  * The Chromium overrides for that same caller. Needed because the platform
- * override is consulted first, and `cdp_unreachable` is the one reason
- * reachable on both platforms that also has a note pointer to drop: without an
- * entry here the documented old-port lookup — the call an agent makes BECAUSE
- * it knows that endpoint is dead — would answer by sending it to relaunch and
- * retry the port it just abandoned.
+ * override is consulted first, so without an entry here the Chromium answer
+ * keeps its note pointer — and `cdp_unreachable` is the one reason reachable on
+ * both platforms that has one. The documented old-port lookup is the call an
+ * agent makes BECAUSE it knows that endpoint is dead, and it would be sent to
+ * this same tool for the note it is already holding.
  */
 const CHROMIUM_OWN_NOTE_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
   cdp_unreachable: CHROMIUM_CDP_UNREACHABLE_RECOVERY,
