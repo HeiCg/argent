@@ -26,6 +26,11 @@ import {
 import { debuggerConnectTool } from "../../src/tools/debugger/debugger-connect";
 import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
 import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions";
+import {
+  canonicalDeviceId,
+  isLogicalKeyedDevice,
+  resetDeviceAliases,
+} from "../../src/utils/debugger/device-alias";
 import { scopeTempHome } from "../helpers/temp-home";
 
 // The JS-runtime-debugger blueprints build a real LogFileWriter, whose
@@ -160,6 +165,29 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     // here: `debugger-connect` and a `not_connected` result report the same
     // teardown with no registry to account for.
     expect(result.note).toContain("The counts here are the new session's own");
+  });
+
+  it("drops both ids it learned for the device when the session ends", async () => {
+    // Four device_id descriptions and the alias map's own doc rest on this:
+    // the key survives its session harmlessly, but the VALUE is the id the
+    // caller connected with, so an alias outliving its session forwards a
+    // later logicalDeviceId to a connection that is gone. The logical-keyed
+    // marker is read by stop-all-simulator-servers, which would go on naming a
+    // session that ended as one it left running.
+    resetDeviceAliases();
+    const udid = "dev-udid-0001";
+
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: udid });
+    expect(canonicalDeviceId(LOGICAL_ID)).toBe(udid);
+    await registry.disposeService(`JsRuntimeDebugger:${mockPort}:${udid}`);
+    expect(canonicalDeviceId(LOGICAL_ID)).toBe(LOGICAL_ID);
+
+    // The other half, which the alias has nothing to record: a connect whose id
+    // IS the logicalDeviceId, the shape selectTarget demands on a shared Metro.
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: LOGICAL_ID });
+    expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(true);
+    await registry.disposeService(`JsRuntimeDebugger:${mockPort}:${LOGICAL_ID}`);
+    expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(false);
   });
 
   it("stays silent when the previous session had captured nothing", async () => {

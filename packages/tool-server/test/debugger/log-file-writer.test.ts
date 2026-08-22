@@ -100,9 +100,12 @@ describe("LogFileWriter", () => {
       const stale = path.join(logDir, "argent-logs-1111-1700000000000.log");
       const recent = path.join(logDir, "argent-logs-2222-1700000000000.log");
       const foreign = path.join(logDir, "not-a-log.txt");
-      for (const f of [stale, recent, foreign]) fs.writeFileSync(f, "x");
-      age(stale, DAY_MS + 60_000);
-      age(foreign, DAY_MS + 60_000);
+      // Sorts ahead of every `argent-logs-` name, so a sweep that stopped at
+      // the first foreign entry rather than skipping past it would reach none
+      // of the files below it.
+      const foreignFirst = path.join(logDir, "0-not-a-log.txt");
+      for (const f of [stale, recent, foreign, foreignFirst]) fs.writeFileSync(f, "x");
+      for (const f of [stale, foreign, foreignFirst]) age(f, DAY_MS + 60_000);
       age(recent, DAY_MS - 60 * 60 * 1000);
 
       const pruner = new LogFileWriter(3333);
@@ -114,6 +117,7 @@ describe("LogFileWriter", () => {
       expect(fs.existsSync(recent)).toBe(true);
       // The directory is not exclusively ours to empty.
       expect(fs.existsSync(foreign)).toBe(true);
+      expect(fs.existsSync(foreignFirst)).toBe(true);
       pruner.close();
     });
 
