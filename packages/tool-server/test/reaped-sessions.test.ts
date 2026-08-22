@@ -235,12 +235,16 @@ describe("the reaped-session key", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     });
 
-    it("supersedes the whole previous event, not just the id it reuses", () => {
-      // The two teardowns of one device need not file under the same ids:
-      // `selectTarget` refuses a udid once a second device shares the Metro, so
-      // the caller reconnects with the logicalDeviceId alone. Superseding only
-      // the id the new event reuses leaves the udid copy behind, naming a file
-      // the reclaim below has already taken.
+    it("keeps the file of an event this one answers to fewer ids than", () => {
+      // Narrowing has two readings and no way to tell them apart. One device
+      // reconnecting with the logicalDeviceId alone, after `selectTarget`
+      // refused its udid, is the harmless one. The other is `selectTarget`'s
+      // one-device fallback binding the crashed device's id to a legacy
+      // inspector, which reports no logicalDeviceId — and there the earlier
+      // file is another device's crash log. Reclaim on the second reading and
+      // it is destroyed, and the note that survives names the wrong file with
+      // the right device on it; leave it and the harmless reading costs one
+      // file that waits for the day-old sweep.
       const older = path.join(dir, "argent-logs-3-1.log");
       const newer = path.join(dir, "argent-logs-3-2.log");
       fs.writeFileSync(older, "first");
@@ -254,9 +258,50 @@ describe("the reaped-session key", () => {
         keptAt: newer,
       });
 
-      expect(takeReapedSession("js-runtime-debugger", UDID)).toBeUndefined();
-      expect(fs.existsSync(older)).toBe(false);
+      expect(fs.existsSync(older)).toBe(true);
       expect(fs.existsSync(newer)).toBe(true);
+      // And the id the second event never named still answers for the first.
+      expect(takeReapedSession("js-runtime-debugger", UDID)?.keptAt).toBe(older);
+    });
+
+    it("says so when it replaced an event nobody had read", () => {
+      // A second crash before the first is reported is the one case where
+      // entries go missing with every individual answer still true: this note
+      // describes the newer session correctly and the older one not at all.
+      const older = path.join(dir, "argent-logs-3-3.log");
+      const newer = path.join(dir, "argent-logs-3-4.log");
+      fs.writeFileSync(older, "first");
+      fs.writeFileSync(newer, "second");
+      recordReapedSession("js-runtime-debugger", [UDID], "first", {
+        cause: "runtime-death",
+        keptAt: older,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID], "second", {
+        cause: "runtime-death",
+        keptAt: newer,
+      });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("nothing read its record before this one replaced it");
+      expect(fs.existsSync(older)).toBe(false);
+    });
+
+    it("says nothing about an earlier event when there was none", () => {
+      const kept = path.join(dir, "argent-logs-3-5.log");
+      fs.writeFileSync(kept, "only");
+      recordReapedSession("js-runtime-debugger", [UDID], "only", {
+        cause: "runtime-death",
+        keptAt: kept,
+      });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).not.toContain("An earlier session");
     });
 
     it("leaves the file of an event that never answered to every id this one names", () => {

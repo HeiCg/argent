@@ -25,7 +25,7 @@
  * across relaunches — a key that outlives its session still names the same
  * device, and it is cleared on dispose anyway. The VALUE carries no such
  * guarantee: it is whatever id the caller connected with, and `selectTarget`'s
- * one-device fallback answers an unmatched id with the last target on the port,
+ * one-device fallback answers an unmatched id with the one device left on the port,
  * so a connect aimed at a device that has gone teaches this map to send that
  * survivor's own logicalDeviceId to the dead device's id.
  */

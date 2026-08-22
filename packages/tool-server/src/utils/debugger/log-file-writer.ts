@@ -84,9 +84,10 @@ export class LogFileWriter {
     // Metro, and two connects to it do the same discovery and handshake in
     // lockstep, so they reach this line in the same millisecond often enough to
     // measure. Sharing a path costs more than interleaved lines now that a file
-    // outlives its session — the note would hand out this path with a count of
-    // entries the other session wrote, and that session's ordinary teardown
-    // would unlink the file the breadcrumb still names.
+    // outlives its session — the note would hand out this path with this
+    // session's count beside another session's lines, its `open()` having
+    // truncated ours, and that session's ordinary teardown would unlink the
+    // file the breadcrumb still names.
     const unique = `${process.pid}-${nextWriterSeq++}`;
     this.filePath = path.join(dir, `argent-logs-${port}-${timestamp}-${unique}.log`);
     this.open();
@@ -112,9 +113,10 @@ export class LogFileWriter {
   }
 
   /**
-   * Mark the file live for the pruner. Through the fd, which still names this
-   * file after another server has reclaimed the path — where `utimesSync` would
-   * refresh whatever holds it by then.
+   * Mark the file live for the pruner. Through the fd because that is what this
+   * writer owns: the path can be reclaimed under it — by a sweep from a
+   * tool-server old enough to predate this keepalive, or by the breadcrumb
+   * store — and `utimesSync` would throw there.
    */
   private touch(): void {
     if (this.fd === null) return;
@@ -267,10 +269,11 @@ export class LogFileWriter {
    * arrive, and the buffer only ever holds what an `open()` failure left with
    * nowhere to go. `keepFile` leaves the log on disk: the caller is shutting
    * the writer down because the JS runtime died, and the entries captured
-   * before it died are the reason a developer would look. Reclaiming it is
-   * `pruneStaleLogs`' job, and it runs from this class's constructor: a kept
-   * file goes on the next debugger connect that finds it a day untouched, and
-   * on a host that stops debugging it stays until one does.
+   * before it died are the reason a developer would look. Two things reclaim
+   * it: the breadcrumb store, when a later crash on this device files a kept
+   * file of its own, and `pruneStaleLogs` from this class's constructor, on the
+   * next debugger connect that finds it a day untouched. On a host that stops
+   * debugging entirely it stays until one of those runs.
    */
   close(opts: { keepFile?: boolean } = {}): void {
     if (this.closed) return;

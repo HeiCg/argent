@@ -272,9 +272,10 @@ describe("LogFileWriter", () => {
 
   // Two devices share one Metro, and two connects to it run the same discovery
   // and handshake in lockstep, so port-and-start-time alone collides often
-  // enough to measure. A shared path is no longer just interleaved lines: the
-  // note hands out the path with a count of entries the other session wrote,
-  // and that session's teardown unlinks the file the breadcrumb still names.
+  // enough to measure. A shared path costs more than interleaved lines once a
+  // file outlives its session: the note hands out the path with a count beside
+  // another session's lines, and that session's teardown unlinks the file the
+  // breadcrumb still names.
   it("gives two writers on one port distinct files", () => {
     const a = new LogFileWriter(7000);
     const b = new LogFileWriter(7000);

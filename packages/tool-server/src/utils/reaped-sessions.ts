@@ -41,8 +41,9 @@ export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-run
 
 /**
  * What ended the session. `runtime-death` is the CDP connection dropping under
- * it rather than a `dispose()` closing it — the app went away, or the debugger
- * lost its route to it; `teardown` is a `dispose()` whose caller the disposer
+ * it rather than a `dispose()` closing it — the app went away, the debugger
+ * lost its route to it, or Metro handed the one debugger slot this device has
+ * to someone else; `teardown` is a `dispose()` whose caller the disposer
  * cannot see. All the disposer reads is a socket that stopped being open, which
  * says the far end is unreachable and nothing about what made it so.
  */
@@ -59,6 +60,12 @@ export interface ReapedSession {
   event: number;
   /** When the teardown ran, for "…N seconds ago" phrasing. */
   atMs: number;
+  /**
+   * This event replaced an earlier one nobody had read. Recorded so the answer
+   * can say so: the displaced session is reported nowhere else, and where both
+   * kept a file the earlier one was reclaimed to bound the store.
+   */
+  superseded?: boolean;
   /** Why the session ended, so the message does not blame a tool for a crash. */
   cause: ReapedSessionCause;
   /**
@@ -148,19 +155,29 @@ export function recordReapedSession(
     reaped.set(key(kind, deviceId, opts.scope), entry);
   }
   const orphanedFiles = new Set<string>();
+  // Anything still in the store is unread — a read deletes every copy — so
+  // displacing one is the second crash arriving before the first was reported.
+  // Nothing else names that session afterwards, and its file may have gone with
+  // it, so the answer that does arrive has to say it is not the whole story.
+  if (displaced.size > 0) {
+    for (const deviceId of ids) {
+      const filed = reaped.get(key(kind, deviceId, opts.scope));
+      if (filed) filed.superseded = true;
+    }
+  }
   for (const previous of displaced.values()) {
     const leftovers = [...previous.keys].filter((k) => !keys.has(k));
-    // A previous event keeps its copies, and its file, unless it answered
-    // everywhere this one does — matched or narrowed, the only shapes that
-    // prove one device. An id THIS one names that the previous never answered
-    // to reads the same whether it is one device growing its id set back or
-    // `selectTarget`'s one-device fallback minting a stranger's session on the
-    // crashed device's logicalDeviceId, and on that second reading taking the
-    // entry takes the log file it is holding for the device that crashed. So
-    // the grown case leaves a file to the day-old sweep rather than the
-    // stranger's case losing a crash log outright; a second app on this port
-    // goes incomparable and waits for that sweep too.
-    const standsIn = [...keys].every((k) => previous.keys.has(k));
+    // A previous event keeps its copies, and its file, unless this one answers
+    // to exactly the same ids. Nothing weaker proves one device: an id set that
+    // differs either way is equally the shape `selectTarget`'s one-device
+    // fallback produces, minting a stranger's session on the crashed device's
+    // id — grown when that stranger reports a logicalDeviceId, narrowed when it
+    // is a legacy inspector and reports none — and taking the entry there takes
+    // the log file being held for the device that actually crashed. Every
+    // uncertain shape leaves its file to the day-old sweep instead, which is
+    // the failure that loses nothing.
+    const standsIn =
+      keys.size === previous.keys.size && [...keys].every((k) => previous.keys.has(k));
     if (!standsIn) continue;
     // Half an event explains nothing: a copy left behind would answer some
     // later, unrelated read.
@@ -228,11 +245,12 @@ export function takeReapedSession(
  * cannot reuse. That tool declares no chromium and no vega platform, and neither
  * a screen recording nor a native trace declares a dependency for any teardown
  * to cascade through, so a Vega debugger and those two kinds are where the
- * sentence stops after the first member. A `runtime-death` narrows that: the app itself went away, so
- * pointing at the teardown family would send an agent hunting for a tool call,
- * or another agent, that never touched this session. It does NOT name the culprit either —
- * the disposer sees a dropped socket, which a crash, a force-quit and a
- * `restart-app` all produce alike. Which of those an agent can act on is
+ * sentence stops after the first member. A `runtime-death` narrows that: no
+ * `dispose()` ran, so pointing at the teardown family would send an agent
+ * hunting for a tool call that never touched this session. It does NOT name the
+ * culprit either — the disposer sees a dropped socket, which a crash, a
+ * force-quit, a `restart-app` and Metro evicting this debugger for a new one
+ * all produce alike. Which of those an agent can act on is
  * platform-specific: a Chromium session has no Metro to have restarted, and
  * `restart-app` does not reach it at all — the tool's capability declares no
  * chromium platform, so the call is refused before dispatch. It gets the same
@@ -282,13 +300,20 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
   // path the log pruner has already reclaimed.
   const salvage =
     entry.keptAt && !fs.existsSync(entry.keptAt)
-      ? `The log file it left at ${entry.keptAt} has since been reclaimed — a kept log is ` +
-        `swept by the next debugger session once it is a day old — so those entries are gone.`
+      ? `The log file it left at ${entry.keptAt} has since been reclaimed — a later crash on ` +
+        `this device takes it, and a debugger session sweeps one a day old — so those entries ` +
+        `are gone.`
       : entry.salvage;
+  const earlier = entry.superseded
+    ? ` An earlier session for this device ended the same way and nothing read its record ` +
+      `before this one replaced it — what that one captured is reported nowhere, and its log ` +
+      `file went with it.`
+    : "";
   return (
     `The ${what} for device ${entry.deviceId} was torn down ${secondsAgo}s ago — ${why} ` +
     `It was not a session that never started.` +
-    (salvage ? ` ${salvage}` : "")
+    (salvage ? ` ${salvage}` : "") +
+    earlier
   );
 }
 
