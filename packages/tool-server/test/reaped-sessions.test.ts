@@ -145,6 +145,9 @@ describe("the reaped-session key", () => {
     // And still offers the family it CAN see, in the terms that platform has.
     expect(message).toContain("the page went away");
     expect(message).toContain("the browser quitting");
+    // And the same disclaimer the Metro arm carries: this platform has one
+    // cause fewer, but no more ability to say which of them it was.
+    expect(message).toContain("Nothing here separates the two");
     expect(message).toContain("the log file is kept at /x");
   });
 

@@ -638,6 +638,13 @@ describe("console logs across an app crash", () => {
       // And the new session's own file is still uncreatable, which the
       // breadcrumb says nothing about — the two are different files.
       expect(afterDeath.note).toContain("There is no log file at");
+      // The breadcrumb leads. It is what says whose entries this answer's zero
+      // is about; read the other way round, the sentence about this session's
+      // missing path arrives before the reader knows the zero is not the dead
+      // session's.
+      expect(afterDeath.note!.indexOf("no log file was left behind")).toBeLessThan(
+        afterDeath.note!.indexOf("There is no log file at")
+      );
     } finally {
       fs.chmodSync(logs, 0o755);
     }

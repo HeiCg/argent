@@ -263,7 +263,8 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
   const runtimeDeath = isChromium
     ? `its debugger connection dropped instead of being closed — the page went away (a crash, ` +
       `a tab or window closing, the browser quitting) or its CDP endpoint stopped being ` +
-      `reachable — which ends the session the same way a teardown does.`
+      `reachable — which ends the session the same way a teardown does. Nothing here ` +
+      `separates the two: the close reason that would is not kept.`
     : `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
       `a force-quit, a restart-app), the runtime stopped being reachable (Metro restarted, ` +
       `a device transport dropped), or another debugger attached and Metro closed this one, ` +

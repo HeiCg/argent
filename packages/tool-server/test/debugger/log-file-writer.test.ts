@@ -265,9 +265,23 @@ describe("LogFileWriter", () => {
   });
 
   it("creates a flat log file in ~/.argent/tmp", () => {
-    const filePath = writer.getFilePath();
-    expect(filePath).toMatch(/\.argent\/tmp\/argent-logs-9999-\d+-\d+-\d+\.log$/);
-    expect(fs.existsSync(filePath)).toBe(true);
+    const before = Date.now();
+    const fresh = new LogFileWriter(9999);
+    const after = Date.now();
+    try {
+      const filePath = fresh.getFilePath();
+      expect(filePath).toMatch(/\.argent\/tmp\/argent-logs-9999-\d+-\d+-\d+\.log$/);
+      expect(fs.existsSync(filePath)).toBe(true);
+      // The start time has to be the real one. pid is reused by the OS and the
+      // sequence restarts at 0 in a new process, so a tool-server that kept a
+      // crash log as writer #0, exited, and came back on the same pid would
+      // re-mint that path without it — and `open()` truncates.
+      const started = Number(/-(\d+)-\d+-\d+\.log$/.exec(filePath)![1]);
+      expect(started).toBeGreaterThanOrEqual(before);
+      expect(started).toBeLessThanOrEqual(after);
+    } finally {
+      fresh.close({ keepFile: false });
+    }
   });
 
   // Two devices share one Metro, and two connects to it run the same discovery
