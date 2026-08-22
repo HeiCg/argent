@@ -184,18 +184,45 @@ describe("guidance content", () => {
   // `stale_connection` names the tool and still needs none: debugger-status
   // mints it and debugger-log-registry never emits it, so no answer that
   // carries the note ever carries this string.
+  it("never sends the caller that holds the note back here for it", () => {
+    // Every reason `debugger-log-registry` can emit, on both platforms: the
+    // platform override is consulted before the own-note one, so a pointer
+    // added to a Chromium string would reach the answer carrying the note
+    // however clean the Metro column stayed - and would read as a loop, since
+    // the note it names is in the same result. `stale_connection` is absent
+    // because no code maps there, so this tool never emits it.
+    for (const device_id of ["emulator-5554", "chromium-cdp-9222"]) {
+      for (const reason of [
+        "metro_not_running",
+        "no_app_connected",
+        "device_mismatch",
+        "cdp_unreachable",
+        "runtime_unresponsive",
+        "reconnecting",
+      ] as const) {
+        const err = coded(FAILURE_CODES.DEBUGGER_METRO_NOT_RUNNING);
+        const params = { port: 8081, device_id };
+        expect(
+          buildNotConnected(reason, err, params, { reportsOwnNote: true }).guidance
+        ).not.toContain("debugger-log-registry");
+      }
+    }
+  });
+
   it("every other reason reads the same from the tool that reports the note", () => {
-    const params = { port: 8081, device_id: "emulator-5554" };
-    for (const reason of [
-      "metro_not_running",
-      "runtime_unresponsive",
-      "reconnecting",
-      "stale_connection",
-    ] as const) {
-      const err = coded(FAILURE_CODES.DEBUGGER_METRO_NOT_RUNNING);
-      expect(buildNotConnected(reason, err, params, { reportsOwnNote: true }).guidance).toBe(
-        buildNotConnected(reason, err, params).guidance
-      );
+    for (const device_id of ["emulator-5554", "chromium-cdp-9222"]) {
+      const params = { port: 8081, device_id };
+      for (const reason of [
+        "metro_not_running",
+        "runtime_unresponsive",
+        "reconnecting",
+        "stale_connection",
+      ] as const) {
+        const err = coded(FAILURE_CODES.DEBUGGER_METRO_NOT_RUNNING);
+        expect(buildNotConnected(reason, err, params, { reportsOwnNote: true }).guidance).toBe(
+          buildNotConnected(reason, err, params).guidance
+        );
+      }
     }
   });
 
