@@ -649,8 +649,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // rules/argent.md is loaded for every argent session and the debugger skill's
     // prerequisites paragraph is where an agent learns where a chromium-cdp-<port>
     // id comes from - so a reader can meet the probe set in either and nowhere
-    // else. No other test reads either file, and a restated set drifts wherever
-    // nothing derives it.
+    // else. Nothing else in the suite asserts on what either says, and a restated
+    // set drifts wherever nothing derives it.
     pinsOnce(
       readFileSync(ARGENT_RULE, "utf8"),
       "auto-discovered on port `" +
