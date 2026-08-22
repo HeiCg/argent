@@ -270,7 +270,7 @@ export class LogFileWriter {
    * nowhere to go. `keepFile` leaves the log on disk: the caller is shutting
    * the writer down because the JS runtime died, and the entries captured
    * before it died are the reason a developer would look. Two things reclaim
-   * it: the breadcrumb store, when a later crash on this device files a kept
+   * it: the breadcrumb store, when a later crash under the same ids files a kept
    * file of its own, and `pruneStaleLogs` from this class's constructor, on the
    * next debugger connect that finds it a day untouched. On a host that stops
    * debugging entirely it stays until one of those runs.

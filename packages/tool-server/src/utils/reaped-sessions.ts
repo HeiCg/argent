@@ -349,9 +349,9 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
   // path the log pruner has already reclaimed.
   const salvage =
     entry.keptAt && !fs.existsSync(entry.keptAt)
-      ? `The log file it left at ${entry.keptAt} has since been reclaimed — a later crash on ` +
-        `this device takes it, and a debugger session sweeps one a day old — so those entries ` +
-        `are gone.`
+      ? `The log file it left at ${entry.keptAt} has since been reclaimed — a later crash ` +
+        `filed under the same ids takes it, and a debugger session sweeps one a day old — so ` +
+        `those entries are gone.`
       : entry.salvage;
   const earlier = describeReplacedRecords(entry);
   return (
