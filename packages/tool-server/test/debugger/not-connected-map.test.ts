@@ -173,7 +173,7 @@ describe("guidance content", () => {
     expect(own).not.toContain("debugger-log-registry");
     // Same refusal and same recovery from either caller.
     for (const guidance of [shared, own]) {
-      expect(guidance).toContain("only a logicalDeviceId matches one");
+      expect(guidance).toContain("matched by its logicalDeviceId alone");
       expect(guidance).toContain("give the device its own Metro port");
     }
   });

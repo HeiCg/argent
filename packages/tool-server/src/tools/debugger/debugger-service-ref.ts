@@ -94,11 +94,14 @@ export function debuggerServiceRef(params: { port: number; device_id?: string })
  * blueprint that files the breadcrumb have to agree on. Same split as the ref
  * above: a Metro-backed device holds one session per port, each with its own
  * log file, while a Chromium session carries its port inside the device id.
+ *
+ * No `canonicalDeviceId` here, unlike the ref: only the Metro blueprint writes
+ * the alias map, so no Chromium id is ever a key or a value in it and
+ * canonicalizing could not change which side of this split an id falls on.
  */
 export function debuggerReapedScope(params: {
   port: number;
   device_id?: string;
 }): string | undefined {
-  const deviceId = canonicalDeviceId(params.device_id);
-  return deviceId?.startsWith(CHROMIUM_ID_PREFIX) ? undefined : String(params.port);
+  return params.device_id?.startsWith(CHROMIUM_ID_PREFIX) ? undefined : String(params.port);
 }

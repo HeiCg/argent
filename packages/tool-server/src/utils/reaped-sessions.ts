@@ -249,9 +249,10 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
     : `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
       `a force-quit, a restart-app), the runtime stopped being reachable (Metro restarted, ` +
       `a device transport dropped), or another debugger attached and Metro closed this one, ` +
-      `its inspector proxy allowing one per device — which ends the session the same way a ` +
-      `teardown does. A debugger-status that answers connected tells the last of the three ` +
-      `from the other two: the app is up, and only the session was lost.`;
+      `its inspector proxy allowing one per device and this one having lost the race — which ` +
+      `ends the session the same way a teardown does. Nothing here separates the three: the ` +
+      `close reason that would is not kept, and a later debugger-status answers for the ` +
+      `runtime as it is by then, not for the one that died.`;
   // Only a debugger session has another tool that can have disposed it, and not
   // on every platform: a Chromium one goes with the ChromiumCdp it declares
   // a dependency on, which `stop-simulator-server` and a `flow-run` reclaiming
