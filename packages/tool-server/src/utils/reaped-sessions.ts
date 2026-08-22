@@ -26,11 +26,11 @@
  *
  * One entry can also own a file: {@link ReapedSession.keptAt} names a log the
  * teardown left on disk for the breadcrumb to advertise, and this store unlinks
- * it when an event that answers ONLY where that entry did — the shape that proves
- * one device — keeps a file of its own. Anything wider leaves the file to the
- * day-old sweep. That makes the
- * module a lifetime owner, not only a message board, so read that field's doc
- * before setting it — an artifact the user is meant to keep does not go there.
+ * it when an event answering to exactly the same ids — the only shape that
+ * proves one device — keeps a file of its own. Every other shape, wider or
+ * narrower, leaves the file to the day-old sweep. That makes the module a
+ * lifetime owner, not only a message board, so read that field's doc before
+ * setting it — an artifact the user is meant to keep does not go there.
  */
 
 import * as fs from "node:fs";
@@ -61,15 +61,17 @@ export interface ReapedSession {
   /** When the teardown ran, for "…N seconds ago" phrasing. */
   atMs: number;
   /**
-   * This event replaced an earlier one nobody had read, and that one is gone
-   * from the store — so nothing else will ever report what it captured, and the
-   * answer has to say it is not the whole story.
+   * How many earlier events this one replaced outright — each gone from the
+   * store under every id it answered to, so nothing else will ever report what
+   * they captured and the answer has to say it is not the whole story. Absent
+   * where an earlier event kept a key of its own to go on answering under.
    */
-  superseded?: boolean;
+  superseded?: number;
   /**
    * …and the replaced event's kept log file was reclaimed with it, so there is
    * not even a file left to find. Separate from {@link superseded} because the
-   * reclaim needs both events to have kept one.
+   * reclaim needs both events to have kept one AND to have answered to the same
+   * ids, which at most one replaced event can have done.
    */
   supersededFileTaken?: boolean;
   /** Why the session ended, so the message does not blame a tool for a crash. */
@@ -119,8 +121,9 @@ function key(kind: ReapedSessionKind, deviceId: string, scope?: string): string 
  *
  * `scope` tells apart two sessions of one kind on one device, and readers must
  * pass the same one. A Metro-backed debugger is per port, each session with its
- * own log file, so without the port a teardown on 8082 supersedes the crash
- * breadcrumb from 8081 AND reclaims the file it named. Omit it where a device
+ * own log file, so without the port a session ending on 8082 supersedes the
+ * crash breadcrumb from 8081, and reclaims the file it named if it kept one of
+ * its own. Omit it where a device
  * holds at most one session of the kind (a recording, a profiler trace), and on
  * Chromium, whose port is already inside the device id.
  */
@@ -148,6 +151,7 @@ export function recordReapedSession(
     if (seen) seen.keys.add(k);
     else displaced.set(entry.event, { keys: new Set([k]), keptAt: entry.keptAt });
   }
+  const filedNow: ReapedSession[] = [];
   for (const deviceId of ids) {
     const entry: ReapedSession = {
       kind,
@@ -159,57 +163,59 @@ export function recordReapedSession(
     if (salvage) entry.salvage = salvage;
     if (opts.keptAt) entry.keptAt = opts.keptAt;
     reaped.set(key(kind, deviceId, opts.scope), entry);
+    filedNow.push(entry);
   }
   const orphanedFiles = new Set<string>();
   // Anything still in the store is unread — a read deletes every copy — so
   // replacing one is a second teardown arriving before the first was reported.
-  // Set only where the entry is really gone: one whose id set differed keeps
-  // its leftover keys below, and answers for itself under them.
-  let replacedUnread = false;
+  let replacedUnread = 0;
   for (const previous of displaced.values()) {
-    const leftovers = [...previous.keys].filter((k) => !keys.has(k));
-    // A previous event keeps its copies, and its file, unless this one answers
-    // to exactly the same ids. Nothing weaker proves one device: an id set that
-    // differs either way is equally the shape `selectTarget`'s one-device
-    // fallback produces, minting a stranger's session on the crashed device's
-    // id — grown when that stranger reports a logicalDeviceId, narrowed when it
-    // is a legacy inspector and reports none — and taking the entry there takes
-    // the log file being held for the device that actually crashed. Every
-    // uncertain shape leaves its file to the day-old sweep instead, which is
-    // the failure that loses nothing.
-    const standsIn =
-      keys.size === previous.keys.size && [...keys].every((k) => previous.keys.has(k));
-    if (!standsIn) continue;
-    // Half an event explains nothing: a copy left behind would answer some
-    // later, unrelated read.
+    // An event holding a key this one did not take goes on answering under it,
+    // so nothing of its has gone unreported. Count only the ones the write
+    // above left nowhere: every id they answered to now names this event.
+    if ([...previous.keys].some((k) => !keys.has(k))) continue;
+    replacedUnread++;
+    // Its FILE goes with it only where this event answers to exactly the same
+    // ids. Nothing weaker proves one device: an id set this one merely covers
+    // is equally the shape `selectTarget`'s one-device fallback produces,
+    // minting a stranger's session on the crashed device's id and filing it
+    // under the logicalDeviceId alone — and taking the file there takes the log
+    // being held for the device that actually crashed. Every uncertain shape
+    // leaves its file to the day-old sweep instead, the failure that loses
+    // nothing.
     //
-    // Its file goes with it only when this event keeps one of its own — nothing
-    // else records that path — which bounds an UNREAD crash loop that keeps
-    // reconnecting the same way to one kept file per device, since every crash
-    // in such a loop keeps one. A loop that alternates the connect id with the
-    // logicalDeviceId a mismatch told it to use is incomparable at every second
-    // step, and those files wait for the sweep instead. A teardown
-    // keeps none and reclaims none: it would be spending an unread crash log to
-    // save a file the sweep collects anyway. Nor is a loop whose notes ARE read
-    // bounded here — the read spends the event, leaving nothing to supersede —
-    // and that is the point: the agent was just handed that path to read. The
-    // one file this cannot protect is one named by a `connected` read that
-    // landed before the dispose filed anything; the next crash reclaims it.
-    for (const k of leftovers) reaped.delete(k);
-    replacedUnread = true;
-    if (previous.keptAt && opts.keptAt) orphanedFiles.add(previous.keptAt);
+    // It also needs this event to keep a file of its own — nothing else records
+    // that path — which bounds an UNREAD crash loop that keeps reconnecting the
+    // same way to one kept file per device, since every crash in such a loop
+    // keeps one. A loop that alternates the connect id with the logicalDeviceId
+    // a mismatch told it to use never files the same ids twice running, so no
+    // step of one is comparable and every file waits for the sweep. A teardown
+    // keeps none and reclaims
+    // none: it would be spending an unread crash log to save a file the sweep
+    // collects anyway. Nor is a loop whose notes ARE read bounded here — the
+    // read spends the event, leaving nothing to supersede — and that is the
+    // point: the agent was just handed that path to read. The one file this
+    // cannot protect is one named by a `connected` read that landed before the
+    // dispose filed anything; the next crash reclaims it.
+    // Never this event's own path: the unlink runs after the write above, so a
+    // file recorded twice would be taken from the answer advertising it. Both
+    // events named one file there, so nothing of the earlier one is missing.
+    if (
+      previous.keys.size === keys.size &&
+      previous.keptAt &&
+      opts.keptAt &&
+      previous.keptAt !== opts.keptAt
+    ) {
+      orphanedFiles.add(previous.keptAt);
+    }
   }
-  if (replacedUnread) {
-    for (const deviceId of ids) {
-      const filed = reaped.get(key(kind, deviceId, opts.scope));
-      if (filed) {
-        filed.superseded = true;
-        if (orphanedFiles.size > 0) filed.supersededFileTaken = true;
-      }
+  if (replacedUnread > 0) {
+    for (const entry of filedNow) {
+      entry.superseded = replacedUnread;
+      if (orphanedFiles.size > 0) entry.supersededFileTaken = true;
     }
   }
   for (const file of orphanedFiles) {
-    if (file === opts.keptAt) continue;
     try {
       fs.unlinkSync(file);
     } catch {
@@ -237,6 +243,37 @@ export function takeReapedSession(
     if (sibling.event === entry.event) reaped.delete(k);
   }
   return entry;
+}
+
+/**
+ * The clause for the events this one replaced before anything read them.
+ *
+ * Says neither what ended them nor whose device they were: a teardown replaces
+ * a crash as readily as the other way round, and the ids a replaced event
+ * answered to are this event's own or a subset of them — which is also what
+ * `selectTarget`'s one-device fallback files when it mints a stranger's session
+ * on this id. All that is certain is that they held console history, that
+ * nothing read it, and that no id reaches their record now.
+ */
+function describeReplacedRecords(entry: ReapedSession): string {
+  const count = entry.superseded ?? 0;
+  if (count === 0) return "";
+  const subject = count === 1 ? "An earlier session" : `${count} earlier sessions`;
+  const they = count === 1 ? "it" : "they";
+  // Only a debugger entry leaves a file this store knows the home of. A
+  // recording and a trace are written where the user asked for them, and the
+  // replaced entry took the only record of that path with it.
+  const file =
+    entry.kind !== "js-runtime-debugger"
+      ? ``
+      : entry.supersededFileTaken
+        ? ` The log file kept for it went with it.`
+        : ` Any log file left behind is still in ~/.argent/tmp, named by nothing.`;
+  return (
+    ` ${subject} answering to these ids ended holding output nobody read, and this event ` +
+    `replaced what ${they} filed, so what ${they} captured is reported nowhere.` +
+    file
+  );
 }
 
 /**
@@ -316,13 +353,7 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
         `this device takes it, and a debugger session sweeps one a day old — so those entries ` +
         `are gone.`
       : entry.salvage;
-  const earlier = entry.superseded
-    ? ` An earlier session for this device ended the same way and nothing read its record ` +
-      `before this one replaced it, so what that one captured is reported nowhere.` +
-      (entry.supersededFileTaken
-        ? ` Its log file went with it.`
-        : ` Any log file it left is still in ~/.argent/tmp, named by nothing.`)
-    : "";
+  const earlier = describeReplacedRecords(entry);
   return (
     `The ${what} for device ${entry.deviceId} was torn down ${secondsAgo}s ago — ${why} ` +
     `It was not a session that never started.` +

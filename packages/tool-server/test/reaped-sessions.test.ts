@@ -294,8 +294,8 @@ describe("the reaped-session key", () => {
         takeReapedSession("js-runtime-debugger", UDID)!,
         "JS-runtime debugger session"
       );
-      expect(message).toContain("nothing read its record before this one replaced it");
-      expect(message).toContain("Its log file went with it");
+      expect(message).toContain("An earlier session answering to these ids");
+      expect(message).toContain("The log file kept for it went with it");
       expect(fs.existsSync(older)).toBe(false);
     });
 
@@ -318,9 +318,9 @@ describe("the reaped-session key", () => {
         takeReapedSession("js-runtime-debugger", UDID)!,
         "JS-runtime debugger session"
       );
-      expect(message).toContain("nothing read its record before this one replaced it");
+      expect(message).toContain("An earlier session answering to these ids");
       expect(message).toContain("still in ~/.argent/tmp, named by nothing");
-      expect(message).not.toContain("Its log file went with it");
+      expect(message).not.toContain("went with it");
       expect(fs.existsSync(older)).toBe(true);
     });
 
@@ -337,6 +337,72 @@ describe("the reaped-session key", () => {
         "JS-runtime debugger session"
       );
       expect(message).not.toContain("An earlier session");
+    });
+
+    it("says so when a widened id set leaves an event reachable under nothing", () => {
+      // Growing the id set takes every key the earlier event had without
+      // matching it, so the file stays but the record is gone from the store
+      // outright. Silence here reads as a complete account of the device, and
+      // the listing fallback is the only thing that can still find those
+      // entries — an answer that never mentions them is what stops the agent
+      // going to look.
+      const older = path.join(dir, "argent-logs-6-1.log");
+      const newer = path.join(dir, "argent-logs-6-2.log");
+      fs.writeFileSync(older, "first");
+      fs.writeFileSync(newer, "second");
+      recordReapedSession("js-runtime-debugger", ["logical-abc"], "first", {
+        cause: "runtime-death",
+        keptAt: older,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "second", {
+        cause: "runtime-death",
+        keptAt: newer,
+      });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("An earlier session answering to these ids");
+      expect(message).toContain("still in ~/.argent/tmp, named by nothing");
+      expect(message).not.toContain("went with it");
+      expect(fs.existsSync(older)).toBe(true);
+    });
+
+    it("counts the events it replaced when one write covers several", () => {
+      // Two devices' crashes, then one event filed under both ids: each earlier
+      // record is reachable under nothing afterwards, and a note that says "an
+      // earlier session" understates how much of the port's history is gone.
+      recordReapedSession("js-runtime-debugger", [UDID], "first", { cause: "runtime-death" });
+      recordReapedSession("js-runtime-debugger", ["logical-abc"], "second", {
+        cause: "runtime-death",
+      });
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "third", {
+        cause: "runtime-death",
+      });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("2 earlier sessions answering to these ids");
+      expect(message).toContain("what they captured is reported nowhere");
+    });
+
+    it("does not send the reader to ~/.argent/tmp for a kind that keeps no log there", () => {
+      // A recording and a trace are written where the caller asked for them, so
+      // the replaced entry took the only record of its path with it. Naming the
+      // debugger's directory would send the agent to grep for a video.
+      recordReapedSession("screen-recording", UDID, "first recording");
+      recordReapedSession("screen-recording", UDID, "second recording");
+
+      const message = describeReapedSession(
+        takeReapedSession("screen-recording", UDID)!,
+        "screen recording"
+      );
+      expect(message).toContain("An earlier session answering to these ids");
+      expect(message).not.toContain("~/.argent/tmp");
+      expect(message).not.toContain("log file");
     });
 
     it("leaves the file of an event that never answered to every id this one names", () => {
@@ -503,6 +569,13 @@ describe("the reaped-session key", () => {
       });
 
       expect(fs.existsSync(kept)).toBe(true);
+      // And the note must not report the reclaim that was skipped: the file is
+      // the one its own salvage clause is sending the reader to.
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).not.toContain("went with it");
     });
 
     it("leaves a crash's file to the sweep when the teardown replacing it keeps nothing", () => {
