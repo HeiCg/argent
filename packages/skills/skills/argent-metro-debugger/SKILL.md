@@ -38,10 +38,10 @@ With two or more devices on one Metro, `debugger-connect` refuses a udid/serial 
 
 ### Reload & recovery
 
-| Tool                    | Purpose                                                                                       |
-| ----------------------- | --------------------------------------------------------------------------------------------- |
-| `debugger-reload-metro` | Reload all connected apps (like pressing "r" in Metro terminal). Needs a CDP target.          |
-| `restart-app`           | Terminate and relaunch the app by device id and bundleId. Use when app lost Metro connection. |
+| Tool                    | Purpose                                                                                                                                                                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `debugger-reload-metro` | Reload all connected apps (like pressing "r" in Metro terminal). Needs a CDP target.                                                                                                                                         |
+| `restart-app`           | Terminate and relaunch the app by device id and bundleId. Use when app lost Metro connection. RN only — it declares no chromium platform, so on a Chromium target relaunch with `boot-device` and `electronAppPath` instead. |
 
 ### Inspection & console
 
@@ -90,7 +90,7 @@ Logs are written to a flat log file on disk. Use the **log-registry → grep** p
 
 1. **Call `debugger-log-registry`** and check `status` first. On `"connected"` it returns: `file` (log path), `totalEntries`, `byLevel`, `clusters` (top message groups with counts and source file info). On `"not_connected"` it returns `reason`, `detail`, and `guidance` with **no `file` field** — follow the `guidance`.
    Either status may also carry a **`note`**, and it is the one thing to read before acting on the rest, because it appears only when something else in the answer would mislead you. Its absence is the weaker signal: on `reason: "reconnecting"` the record is held for the retry that guidance asks for, so retry once before concluding a dead session left nothing. It means one of two things, and carries both sentences when both hold:
-   - **This registry belongs to a new session, minted after the previous one for this device was torn down** — by another agent's teardown, or by its runtime going away. The counts are the new session's own, so a zero here is not evidence about what the old one captured (the relaunched app may also have logged nothing yet — the note settles the old session, not this one). When that session left its log file on disk the note names the path: grep it for the pre-crash output, which is readable even when `status` is `"not_connected"` and which a relaunched app's registry will not have. The note may instead say no log file was left behind (an explicit teardown deletes it, and a crash whose writer never created one — an unwritable `~/.argent/tmp` — or lost it since has none to keep) or that the kept one has since been reclaimed (the next debugger session sweeps one a day old) — then that session's entries are gone. It settles that session only: an earlier crash on the same device can still have left a file in `~/.argent/tmp` that no note names any more, which `references/failure-scenarios.md` shows how to find.
+   - **The previous session for this device was torn down** — by another agent's teardown, or by its runtime going away — and this answer is a new session's registry, or on `not_connected` no session at all. Where there are counts they are the new session's own, so a zero here is not evidence about what the old one captured (the relaunched app may also have logged nothing yet — the note settles the old session, not this one). When that session left its log file on disk the note names the path: grep it for the pre-crash output, which is readable even when `status` is `"not_connected"` and which a relaunched app's registry will not have. The note may instead say no log file was left behind (an explicit teardown deletes it, and a crash whose writer never created one — an unwritable `~/.argent/tmp` — or lost it since has none to keep) or that the kept one has since been reclaimed (the next debugger session sweeps one a day old) — then that session's entries are gone. It settles that session only: an earlier crash on the same device can still have left a file in `~/.argent/tmp` that no note names any more, which `references/failure-scenarios.md` shows how to find.
    - **There is no file at `file`** — the writer could not create it, or something has since removed it. The counts and clusters are still real; the file is not. Check that `~/.argent/tmp` is writable.
 2. **Search the file** using `Grep` or `Read` with patterns from the response.
 
@@ -130,7 +130,7 @@ When reading from the log file:
 | Diagnose / check connection       | `debugger-status`                                                   |
 | Connect to CDP (Metro / Chromium) | `debugger-connect`                                                  |
 | Reload JS (already connected)     | `debugger-reload-metro`                                             |
-| Relaunch app on device            | `restart-app`                                                       |
+| Relaunch app on device            | `restart-app` (RN); `boot-device` + `electronAppPath` (Chromium)    |
 | Inspect component at point        | `debugger-inspect-element`                                          |
 | Full component tree               | `debugger-component-tree`                                           |
 | Console log overview              | `debugger-log-registry` (summary + log file path for `Grep`/`Read`) |
