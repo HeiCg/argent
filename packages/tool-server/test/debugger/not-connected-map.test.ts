@@ -441,9 +441,10 @@ describe("cdp_unreachable guidance vs the live-app codes behind it", () => {
       guidance,
       "means the app answered and has no drivable page (none at all, or only devtools:// " +
         "ones): it is still running and only lacks a window, so ask the user to bring one " +
-        "back — chromium-tabs cannot open one, since it needs an existing page. If the " +
-        "detail carrying it closes by asking about --remote-debugging-port, ignore that " +
-        "question: this port answered, so the flag was passed."
+        "back — chromium-tabs cannot open one, since its own resolver needs an existing " +
+        "page. If the detail carrying that phrase closes by asking about " +
+        "--remote-debugging-port, ignore the question: this port answered, so the flag was " +
+        "passed."
     );
     // The third state cdp_unreachable covers, and no relaunch is its remedy. Only
     // two of CHROMIUM_CDP_INVALID_RESPONSE's three throw sites can reach a

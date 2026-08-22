@@ -194,7 +194,15 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       [
         "the quit comes first",
         "the user to quit it, then relaunch once it has exited",
-        statesRecovery,
+        listsRestartApp,
+      ],
+      // Same contiguity on the create-flow row, which carries the guard the other
+      // four do not: its tail is a step three arms route into rather than the
+      // recovery a reader arrives at already knowing the app is gone.
+      [
+        "the quit comes first",
+        "ask the user to quit it if it is somehow still up, then relaunch once it has exited",
+        [[CREATE_FLOW_RECOVERY, row(CREATE_FLOW_RECOVERY, "Chromium")]],
       ],
       // Both branches. An Electron app does not come back by restarting a browser,
       // and a browser restarted without the flag exposes no CDP, so a surface
@@ -347,11 +355,18 @@ describe("the Chromium recovery names a relaunch that exists", () => {
         "closed connection — is the CDP socket failing after discovery answered, so the app " +
         "was up moments ago: have the user check it before anything else."
     );
-    // And that the quit-and-relaunch is gated on the app being gone rather than on
-    // "otherwise" - the three arms above partition the detail space exhaustively,
-    // so an "otherwise" tail governs nothing and the arm that routes into it has
-    // to jump there by name.
-    pinsOnce(createFlow, "Once the app is gone, ask the user to quit it");
+    // The tail is a NAMED step the arms above route into, not a gate: they
+    // partition the detail space exhaustively, so an "otherwise" governs nothing,
+    // and a precondition ("once the app is gone") is one arm 2 has just said it
+    // cannot establish - besides ordering a quit for an app declared gone.
+    pinsOnce(
+      createFlow,
+      "The quit-and-relaunch those arms route to: ask the user to quit it if it is somehow " +
+        "still up, then relaunch once it has exited"
+    );
+    expect(createFlow, "the tail is not gated on a state arm 2 cannot establish").not.toMatch(
+      /(once|only when) the app is gone,? ask the user to quit/i
+    );
 
     // Every surface that carries any of the recovery is held to the shared list of
     // instructions this change exists to prevent - the runtime guidance strings are
