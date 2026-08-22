@@ -283,9 +283,9 @@ describe("debugger-log-registry not-connected results", () => {
 
   it("leads the guidance with the note when the answer is carrying one", async () => {
     // These strings are written for `debugger-status`, whose answers carry no
-    // note: every reason that can carry one — a crashed Chromium renderer's
-    // `cdp_unreachable` among them — mentions none at all. Read from the answer
-    // that IS carrying it, that silence is what misleads.
+    // note: a reason either points at this tool to fetch one — a crashed
+    // Chromium renderer's `cdp_unreachable` does — or mentions none at all.
+    // Read from the answer that IS carrying it, both mislead.
     const port = await freePort();
     const setup = makeSetup(jsRuntimeDebuggerBlueprint);
     cleanups.push(async () => {

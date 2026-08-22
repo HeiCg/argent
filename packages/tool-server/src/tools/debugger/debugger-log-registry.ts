@@ -169,9 +169,10 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         const result = buildNotConnected(reason, err, params, { reportsOwnNote: true });
         // `guidance` is the field an agent acts on, and these strings are
         // written for `debugger-status`, whose answers never carry a note — so
-        // one that mentions a note sends the reader HERE to fetch it, which is
-        // backwards in this tool's own answer, and the rest mention none at all,
-        // a crashed Chromium renderer's `cdp_unreachable` included. So this tool
+        // one that mentions a note — a crashed Chromium renderer's
+        // `cdp_unreachable` among them — sends the reader HERE to fetch it,
+        // which is backwards in this tool's own answer, and the rest mention
+        // none at all. So this tool
         // says what its own result holds beside the guidance, which speaks for
         // the general case.
         //

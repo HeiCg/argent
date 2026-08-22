@@ -64,17 +64,22 @@ export interface ReapedSession {
   /** When the teardown ran, for "…N seconds ago" phrasing. */
   atMs: number;
   /**
-   * How many earlier events this one replaced outright — each gone from the
-   * store under every id it answered to, so nothing else will ever report what
-   * they captured and the answer has to say it is not the whole story. Absent
-   * where an earlier event kept a key of its own to go on answering under.
+   * How many earlier events ended with nothing left to report them — this one
+   * took every id each answered under, so nothing else will ever report what
+   * they captured and the answer has to say it is not the whole story. Counts
+   * the chain rather than the step: a replaced event's own count is carried
+   * forward, since an unread crash loop replaces a replacer every time round.
+   * Absent where an earlier event kept a key of its own to go on answering
+   * under.
    */
   superseded?: number;
   /**
-   * …and the replaced event's kept log file was reclaimed with it, so there is
-   * not even a file left to find. Separate from {@link superseded} because the
-   * reclaim needs both events to have kept one AND to have answered to the same
-   * ids, which at most one replaced event can have done.
+   * …and the kept log file behind the event this write replaced directly was
+   * reclaimed with it, so there is not even a file left to find. Separate from
+   * {@link superseded} because the reclaim needs both events to have kept one
+   * AND to have answered to the same ids — true of that one event at most,
+   * never of the earlier ones its count carries, whose files this store no
+   * longer knows anything about.
    */
   supersededFileTaken?: boolean;
   /** Why the session ended, so the message does not blame a tool for a crash. */
@@ -275,12 +280,21 @@ function describeReplacedRecords(entry: ReapedSession): string {
   // Only a debugger entry leaves a file this store knows the home of. A
   // recording and a trace are written where the user asked for them, and the
   // replaced entry took the only record of that path with it.
+  //
+  // The flag answers for the one record this write replaced directly; the count
+  // reaches back past it, to records whose files went out of this store's sight
+  // a step earlier. So a taken file rules out nothing for the rest, and where
+  // the count carries, the pointer to the directory has to stand beside it —
+  // dropping it is what tells an agent the listing is not worth trying.
   const file =
     entry.kind !== "js-runtime-debugger"
       ? ``
       : entry.supersededFileTaken
-        ? ` The log file kept for it went with it.`
-        : ` Any log file left behind is still in ~/.argent/tmp, named by nothing.`;
+        ? count === 1
+          ? ` The log file it kept went with it.`
+          : ` The log file the last of them kept went with it. Anything the earlier ones left ` +
+            `is still in ~/.argent/tmp, named by nothing.`
+        : ` Any log file ${they} left is still in ~/.argent/tmp, named by nothing.`;
   return (
     ` ${subject} that answered here ended holding output nobody read, and this event ` +
     `replaced what ${they} filed, so what ${they} captured is reported nowhere.` +

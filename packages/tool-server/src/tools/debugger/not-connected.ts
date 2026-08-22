@@ -41,13 +41,6 @@ export interface DebuggerNotConnectedResult {
 }
 
 /**
- * Guidance strings for Metro-backed targets (iOS / Android / Vega). Chromium
- * ids get platform-corrected overrides below — on Chromium, launch-app cannot
- * start anything (its handler is a documented no-op) and it re-resolves the
- * very CDP service that just failed, so pointing an agent at it from a
- * cdp_unreachable result would manufacture a guaranteed second failure.
- */
-/**
  * `cdp_unreachable`'s two halves, kept apart because the second is dropped for
  * the tool that carries the record itself. Everything a crash leaves is behind
  * that pointer, and on Chromium this reason is the ONLY one a crashed renderer
@@ -71,6 +64,13 @@ const CHROMIUM_CDP_UNREACHABLE_NOTE_POINTER =
   "and debugger-log-registry's note names it — the record is filed under the CDP port, which " +
   "is the device id, so relaunching on a port boot-device picks strands it.";
 
+/**
+ * Guidance strings for Metro-backed targets (iOS / Android / Vega). Chromium
+ * ids get platform-corrected overrides below — on Chromium, launch-app cannot
+ * start anything (its handler is a documented no-op) and it re-resolves the
+ * very CDP service that just failed, so pointing an agent at it from a
+ * cdp_unreachable result would manufacture a guaranteed second failure.
+ */
 const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
   metro_not_running:
     "Metro is not running on this port. Do not retry in a loop — the result will not change " +

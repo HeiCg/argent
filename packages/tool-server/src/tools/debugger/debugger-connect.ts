@@ -34,12 +34,12 @@ export const debuggerConnectTool: ToolDefinition<
      * What became of the previous session's console history. Present when that
      * session's socket closed with no `dispose()` accounting for it — the app
      * went away, the route to it did, or Metro gave its one debugger slot to
-     * another client — and for the teardown that replaced an unread crash,
-     * which is the only record that an earlier session's output is reported
-     * nowhere. Names the log file the
-     * teardown left on disk, says it has since been reclaimed, or — when there
-     * was no file to keep, because the writer never created one or something
-     * removed it — that those entries went with it.
+     * another client — and for the teardown that replaced an unread earlier
+     * session, which is the only record that that session's output is reported
+     * nowhere. Names the log file the teardown left on disk, says it has since
+     * been reclaimed, or — when there was no file to keep, because the teardown
+     * deleted it, the writer never created one, or something removed it since —
+     * that those entries went with it.
      * Reported here because this call is the prescribed recovery step after a
      * crash, and it consumes the record that names the file.
      */
@@ -57,7 +57,7 @@ export const debuggerConnectTool: ToolDefinition<
   description: `Connect to a JS runtime CDP debugger.
 iOS / Android / Vega: connects to Metro's CDP endpoint on the given port. Chromium: re-uses the page CDP session opened by boot-device — port is ignored.
 Returns connection info including port, projectRoot (empty on Chromium and on legacy Metro, e.g. Vega), deviceName, appName, logicalDeviceId (absent on Vega), and isNewDebugger. If already connected, returns the existing connection.
-Also returns { note } when the PREVIOUS session for this device ended with its debugger connection dropping rather than being closed (a crash, a force-quit, the runtime becoming unreachable, or Metro handing this device's one debugger slot to another client) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says those entries are gone, because the file was reclaimed or never written. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line. Both tools spend the record, so whichever reads it first is the one that reports it — and this tool drops a plain teardown silently, because from this connect on the capture is your own. It does report a teardown that replaced an unread crash, since nothing else ever will.
+Also returns { note } when the PREVIOUS session for this device ended with its debugger connection dropping rather than being closed (a crash, a force-quit, the runtime becoming unreachable, or Metro handing this device's one debugger slot to another client) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says those entries are gone, because the teardown deleted the file, or it was reclaimed or never written. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line. Both tools spend the record, so whichever reads it first is the one that reports it — and this tool drops a plain teardown silently, because from this connect on the capture is your own. It does report a teardown that replaced an unread earlier session, since nothing else ever will.
 Use when starting a debug session or before calling other debugger-* tools. Fails if the runtime is unreachable (Metro down, or Chromium CDP terminated).`,
   zodSchema,
   capability: DEBUGGER_TOOL_CAPABILITY,
@@ -95,9 +95,10 @@ Use when starting a debug session or before calling other debugger-* tools. Fail
     );
     // A teardown record is dropped deliberately: from this connect on the
     // capture is your own, and someone else's stop-all is not this session's
-    // business. One that replaced an unread crash is — it is the only record
-    // that an earlier session's output is reported nowhere, and reading it here
-    // is what destroys it.
+    // business. One that replaced an unread session is — it is the only record
+    // that that session's output is reported nowhere, and reading it here is
+    // what destroys it. What ended the session it replaced does not matter: a
+    // teardown goes unread as readily as a crash.
     const note =
       reaped && (reaped.cause === "runtime-death" || reaped.superseded)
         ? describeReapedSession(reaped, "JS-runtime debugger session")

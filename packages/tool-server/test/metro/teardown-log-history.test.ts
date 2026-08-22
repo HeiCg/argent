@@ -225,8 +225,9 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
       device_id: LOGICAL_ID,
     })) as { note?: string };
 
-    // Silently. Connect reports only a runtime death, whose note carries a file
-    // path the agent still needs; an explicit teardown left no file, so saying
+    // Silently. A runtime death's note carries a file path the agent still
+    // needs, and a teardown that replaced an unread record is the only report
+    // that record will get; this teardown is neither. It left no file, so saying
     // "torn down, possibly by another agent" here would answer a question this
     // caller did not ask, about a session it just replaced.
     expect(connected.note).toBeUndefined();

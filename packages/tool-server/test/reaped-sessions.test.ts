@@ -302,7 +302,7 @@ describe("the reaped-session key", () => {
         "JS-runtime debugger session"
       );
       expect(message).toContain("An earlier session that answered here");
-      expect(message).toContain("The log file kept for it went with it");
+      expect(message).toContain("The log file it kept went with it");
       expect(fs.existsSync(older)).toBe(false);
     });
 
@@ -326,7 +326,7 @@ describe("the reaped-session key", () => {
         "JS-runtime debugger session"
       );
       expect(message).toContain("An earlier session that answered here");
-      expect(message).toContain("still in ~/.argent/tmp, named by nothing");
+      expect(message).toContain("Any log file it left is still in ~/.argent/tmp");
       expect(message).not.toContain("went with it");
       expect(fs.existsSync(older)).toBe(true);
     });
@@ -371,7 +371,7 @@ describe("the reaped-session key", () => {
         "JS-runtime debugger session"
       );
       expect(message).toContain("An earlier session that answered here");
-      expect(message).toContain("still in ~/.argent/tmp, named by nothing");
+      expect(message).toContain("Any log file it left is still in ~/.argent/tmp");
       expect(message).not.toContain("went with it");
       expect(fs.existsSync(older)).toBe(true);
     });
@@ -431,6 +431,65 @@ describe("the reaped-session key", () => {
         "JS-runtime debugger session"
       );
       expect(message).toContain("2 earlier sessions that answered here");
+    });
+
+    it("keeps the file clause singular when the count carries", () => {
+      // Only the record this write replaced directly can have its file taken:
+      // the ones its count carries lost theirs a step earlier, each to the
+      // event that replaced it. "kept for it" after "2 earlier sessions" reads
+      // as one of the two having had no file at all.
+      const files = ["8-1", "8-2", "8-3"].map((n) => path.join(dir, `argent-logs-${n}.log`));
+      for (const [i, file] of files.entries()) {
+        fs.writeFileSync(file, "x");
+        recordReapedSession("js-runtime-debugger", [UDID], `capture ${i}`, {
+          cause: "runtime-death",
+          keptAt: file,
+        });
+      }
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("2 earlier sessions that answered here");
+      expect(message).toContain("The log file the last of them kept went with it");
+      expect(fs.existsSync(files[0])).toBe(false);
+      expect(fs.existsSync(files[1])).toBe(false);
+    });
+
+    it("still points at the directory when the count reaches past the file it took", () => {
+      // The reclaim needs an exact id-set match, so a chain whose ids widen
+      // takes the newest file and leaves the one before it on disk while the
+      // count reaches back to both. Reporting only the take tells the agent the
+      // listing fallback is not worth trying, and that log is what it would
+      // have found.
+      const first = path.join(dir, "argent-logs-9-1.log");
+      const second = path.join(dir, "argent-logs-9-2.log");
+      const third = path.join(dir, "argent-logs-9-3.log");
+      for (const file of [first, second, third]) fs.writeFileSync(file, "x");
+      recordReapedSession("js-runtime-debugger", ["logical-abc"], "first", {
+        cause: "runtime-death",
+        keptAt: first,
+      });
+      for (const [salvage, keptAt] of [
+        ["second", second],
+        ["third", third],
+      ] as const) {
+        recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], salvage, {
+          cause: "runtime-death",
+          keptAt,
+        });
+      }
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("2 earlier sessions that answered here");
+      expect(message).toContain("The log file the last of them kept went with it");
+      expect(message).toContain("still in ~/.argent/tmp, named by nothing");
+      expect(fs.existsSync(second)).toBe(false);
+      expect(fs.existsSync(first)).toBe(true);
     });
 
     it("does not send the reader to ~/.argent/tmp for a kind that keeps no log there", () => {
