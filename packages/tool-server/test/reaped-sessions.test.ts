@@ -138,8 +138,9 @@ describe("the reaped-session key", () => {
 
   it("names a Chromium teardown only tools that reach a Chromium session", () => {
     // `react-profiler-start` carries RN_ONLY_TOOL_CAPABILITY, which declares no
-    // chromium platform, so it can never have been the disposer here; the tool
-    // that can is `stop-simulator-server`, which cascades through ChromiumCdp.
+    // chromium platform, so it can never have been the disposer here. What can
+    // is anything that reaps the ChromiumCdp this session declares a dependency
+    // on: `stop-simulator-server`, and a `flow-run` ending a booted Electron app.
     recordReapedSession("js-runtime-debugger", "chromium-cdp-9222", "");
 
     const message = describeReapedSession(
@@ -148,6 +149,10 @@ describe("the reaped-session key", () => {
     );
     expect(message).toContain("stop-all-simulator-servers");
     expect(message).toContain("a stop-simulator-server");
+    // flow-run reclaims a booted Electron app by disposing its ChromiumCdp,
+    // which is the same cascade, so a session lost at the end of a run must not
+    // be blamed on a stop tool nobody called.
+    expect(message).toContain("a flow-run reclaiming an Electron app it booted");
     expect(message).not.toContain("react-profiler-start");
   });
 

@@ -219,8 +219,8 @@ export function takeReapedSession(
  * On a `teardown` the disposer cannot see who triggered it — a blueprint's
  * `dispose()` is called by `Registry._teardown`, with no caller — so the message
  * names the family rather than asserting one member. `stop-all-simulator-servers`
- * is the common one and is named first; whether a SECOND member can be named at
- * all depends on what was reaped. Only a debugger session has one: on Chromium
+ * is the common one and is named first; whether any FURTHER member can be named
+ * depends on what was reaped. Only a debugger session has one: on Chromium
  * anything that reaps its `ChromiumCdp` cascades into it — `stop-simulator-server`
  * by its documented behaviour, and `flow-run` reclaiming an Electron app it
  * booted — and on Apple or Android `react-profiler-start` disposes the
@@ -249,13 +249,14 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
     : `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
       `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
       `a device transport dropped) — which ends the session the same way a teardown does.`;
-  // Only a debugger session has a second tool that can have disposed it, and
-  // then only on two platforms: `stop-simulator-server` reaches a Chromium one
-  // through the ChromiumCdp it declares a dependency on, and
-  // `react-profiler-start` clears an Apple or Android one it cannot reuse. A
-  // Vega session has neither, and a screen recording and a native trace declare
-  // no dependency for a teardown to cascade through, so naming either tool to
-  // those would send an agent after a call that could not have reached them.
+  // Only a debugger session has another tool that can have disposed it, and then
+  // only on two platforms: a Chromium one goes with the ChromiumCdp it declares
+  // a dependency on, which `stop-simulator-server` and a `flow-run` reclaiming
+  // an Electron app it booted both reap, and an Apple or Android one is cleared
+  // by `react-profiler-start` when it cannot reuse it. A Vega session has
+  // neither, and a screen recording and a native trace declare no dependency for
+  // a teardown to cascade through, so naming any of those tools to them would
+  // send an agent after a call that could not have reached them.
   const otherReacher =
     entry.kind !== "js-runtime-debugger"
       ? undefined
