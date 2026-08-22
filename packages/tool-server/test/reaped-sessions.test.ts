@@ -490,7 +490,9 @@ describe("the reaped-session key", () => {
       );
       expect(message).toContain("2 earlier sessions that answered here");
       expect(message).toContain("The log file the last of them kept went with it");
-      expect(message).toContain("still in ~/.argent/tmp, named by nothing");
+      expect(message).toContain(
+        "Anything the earlier ones left is still in ~/.argent/tmp, named by nothing"
+      );
       expect(fs.existsSync(second)).toBe(false);
       expect(fs.existsSync(first)).toBe(true);
     });
@@ -498,9 +500,21 @@ describe("the reaped-session key", () => {
     it("does not send the reader to ~/.argent/tmp for a kind that keeps no log there", () => {
       // A recording and a trace are written where the caller asked for them, so
       // the replaced entry took the only record of its path with it. Naming the
-      // debugger's directory would send the agent to grep for a video.
-      recordReapedSession("screen-recording", UDID, "first recording");
-      recordReapedSession("screen-recording", UDID, "second recording");
+      // debugger's directory would send the agent to grep for a video. `keptAt`
+      // is the store's option rather than the debugger's, so the answer has to
+      // hold even for a kind that hands one over.
+      const kept = path.join(dir, "capture-1.mp4");
+      const newer = path.join(dir, "capture-2.mp4");
+      for (const [file, salvage] of [
+        [kept, "first recording"],
+        [newer, "second recording"],
+      ] as const) {
+        fs.writeFileSync(file, "x");
+        recordReapedSession("screen-recording", UDID, salvage, {
+          cause: "runtime-death",
+          keptAt: file,
+        });
+      }
 
       const message = describeReapedSession(
         takeReapedSession("screen-recording", UDID)!,
@@ -733,6 +747,28 @@ describe("the reaped-session key", () => {
       );
       expect(message).toContain("An earlier session that answered here");
       expect(message).not.toContain("~/.argent/tmp");
+    });
+
+    it("carries a file forward through a record that kept none of its own", () => {
+      // The chain's middle link is a teardown: it takes no file and leaves none
+      // of its own, so unless it hands on what it was carrying, the crash's log
+      // at the head of the chain goes unmentioned while it sits on disk.
+      const older = path.join(dir, "argent-logs-12-1.log");
+      fs.writeFileSync(older, "first");
+      recordReapedSession("js-runtime-debugger", [UDID], "first", {
+        cause: "runtime-death",
+        keptAt: older,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID], "second", { cause: "teardown" });
+      recordReapedSession("js-runtime-debugger", [UDID], "third", { cause: "teardown" });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("2 earlier sessions that answered here");
+      expect(message).toContain("Any log file they left is still in ~/.argent/tmp");
+      expect(fs.existsSync(older)).toBe(true);
     });
 
     it("says nothing about a file when neither event ever kept one", () => {
