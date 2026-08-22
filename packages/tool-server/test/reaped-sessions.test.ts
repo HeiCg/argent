@@ -109,6 +109,15 @@ describe("the reaped-session key", () => {
     // `reason` to narrow it.
     expect(message).toContain("a restart-app");
     expect(message).toContain("Metro restarted");
+    // A second debugger attaching is the member of that family where the app is
+    // fine, and it is not rare: Metro's inspector proxy allows one debugger per
+    // device and closes the incumbent, and `CDPClient` keeps neither the close
+    // code nor the reason, so it arrives as that same dropped socket. Omitting
+    // it left the note asserting a crash and the guidance prescribing a
+    // relaunch for a live app, so the sentence names it and names the check
+    // that separates it from the two that did kill the runtime.
+    expect(message).toContain("another debugger attached");
+    expect(message).toContain("debugger-status that answers connected");
     // Still says the thing the breadcrumb exists to say.
     expect(message).toContain("It was not a session that never started.");
     expect(message).toContain("the log file is kept at /x");
