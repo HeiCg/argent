@@ -340,12 +340,12 @@ describe("console logs across an app crash", () => {
     }
   });
 
-  it("reports a teardown that replaced an unread crash, though it drops a plain one", async () => {
+  it("reports a teardown that replaced an unread record, though it drops a plain one", async () => {
     // Dropping a plain teardown is deliberate: from this connect on the capture
     // is your own, and someone else's stop-all is not this session's business.
-    // One that replaced an unread crash is the only record that an earlier
-    // session's output is reported nowhere - reading it here is what destroys
-    // it, so dropping that one spends the last pointer to ~/.argent/tmp.
+    // One that replaced an unread record is the only report that record will
+    // get - reading it here is what destroys it, so dropping that one spends
+    // the last pointer to ~/.argent/tmp.
     __resetReapedSessionsForTesting();
     const scope = String(mockPort);
     recordReapedSession("js-runtime-debugger", ["quiet-teardown"], "gone", {

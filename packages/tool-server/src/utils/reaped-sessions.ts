@@ -77,11 +77,19 @@ export interface ReapedSession {
    * …and the kept log file behind the event this write replaced directly was
    * reclaimed with it, so there is not even a file left to find. Separate from
    * {@link superseded} because the reclaim needs both events to have kept one
-   * AND to have answered to the same ids — true of that one event at most,
-   * never of the earlier ones its count carries, whose files this store no
-   * longer knows anything about.
+   * AND to have answered to the same ids — true of at most the one record this
+   * write replaced directly. What became of the files behind the ones its count
+   * carries is {@link supersededFileLeft}'s to say.
    */
   supersededFileTaken?: boolean;
+  /**
+   * …and one of the records it replaced kept a log file this write neither took
+   * nor named, so a listing of `~/.argent/tmp` is the only way left to it.
+   * Separate from {@link supersededFileTaken} because that one answers for the
+   * record replaced directly while {@link superseded} reaches past it: a chain
+   * can take the newest file and leave an older one sitting on disk.
+   */
+  supersededFileLeft?: boolean;
   /** Why the session ended, so the message does not blame a tool for a crash. */
   cause: ReapedSessionCause;
   /**
@@ -152,7 +160,10 @@ export function recordReapedSession(
     const previous = reaped.get(k);
     if (previous) collided.add(previous.event);
   }
-  const displaced = new Map<number, { keys: Set<string>; keptAt?: string; carried: number }>();
+  const displaced = new Map<
+    number,
+    { keys: Set<string>; keptAt?: string; carried: number; carriedFileLeft: boolean }
+  >();
   for (const [k, entry] of reaped) {
     if (!collided.has(entry.event)) continue;
     const seen = displaced.get(entry.event);
@@ -165,6 +176,7 @@ export function recordReapedSession(
         // replacer every time round, and counting only this step would report
         // one loss however many sessions have gone unreported.
         carried: entry.superseded ?? 0,
+        carriedFileLeft: entry.supersededFileLeft ?? false,
       });
   }
   const filedNow: ReapedSession[] = [];
@@ -185,6 +197,10 @@ export function recordReapedSession(
   // Anything still in the store is unread — a read deletes every copy — so
   // replacing one is a second teardown arriving before the first was reported.
   let replacedUnread = 0;
+  // A replaced record's file that this write neither takes nor names: the
+  // listing is the only route left to it, and saying nothing here is what tells
+  // an agent that route is not worth trying.
+  let fileLeftUnnamed = false;
   for (const previous of displaced.values()) {
     // An event holding a key this one did not take goes on answering under it,
     // so nothing of its has gone unreported. Count only the ones the write
@@ -206,29 +222,26 @@ export function recordReapedSession(
     // keeps one. A loop that alternates the connect id with the logicalDeviceId
     // a mismatch told it to use never files the same ids twice running, so no
     // step of one is comparable and every file waits for the sweep. A teardown
-    // keeps none and reclaims
-    // none: it would be spending an unread crash log to save a file the sweep
-    // collects anyway. Nor is a loop whose notes ARE read bounded here — the
-    // read spends the event, leaving nothing to supersede — and that is the
-    // point: the agent was just handed that path to read. The one file this
-    // cannot protect is one named by a `connected` read that landed before the
-    // dispose filed anything; the next crash reclaims it.
+    // keeps none and so reclaims none: it would spend an unread crash log to
+    // save a file the sweep collects anyway. A loop whose notes ARE read is not
+    // bounded here either — the read spends the event, leaving nothing to
+    // supersede — and that is the point: the agent was just handed that path.
+    //
     // Never this event's own path: the unlink runs after the write above, so a
-    // file recorded twice would be taken from the answer advertising it. Both
-    // events named one file there, so nothing of the earlier one is missing.
-    if (
-      previous.keys.size === keys.size &&
-      previous.keptAt &&
-      opts.keptAt &&
-      previous.keptAt !== opts.keptAt
-    ) {
-      orphanedFiles.add(previous.keptAt);
+    // file recorded twice would be taken from the answer advertising it — and
+    // being advertised, it is not one the listing has to find either.
+    const keptAt = previous.keptAt;
+    if (keptAt !== undefined && keptAt !== opts.keptAt) {
+      if (opts.keptAt !== undefined && previous.keys.size === keys.size) orphanedFiles.add(keptAt);
+      else fileLeftUnnamed = true;
     }
+    if (previous.carriedFileLeft) fileLeftUnnamed = true;
   }
   if (replacedUnread > 0) {
     for (const entry of filedNow) {
       entry.superseded = replacedUnread;
       if (orphanedFiles.size > 0) entry.supersededFileTaken = true;
+      if (fileLeftUnnamed) entry.supersededFileLeft = true;
     }
   }
   for (const file of orphanedFiles) {
@@ -281,20 +294,23 @@ function describeReplacedRecords(entry: ReapedSession): string {
   // recording and a trace are written where the user asked for them, and the
   // replaced entry took the only record of that path with it.
   //
-  // The flag answers for the one record this write replaced directly; the count
-  // reaches back past it, to records whose files went out of this store's sight
-  // a step earlier. So a taken file rules out nothing for the rest, and where
-  // the count carries, the pointer to the directory has to stand beside it —
-  // dropping it is what tells an agent the listing is not worth trying.
+  // The two flags are measured on different records — the take on the one
+  // replaced directly, the leave on any of them — so each speaks only for
+  // itself. Where neither is set there is nothing of theirs to find: they kept
+  // no file, or the only one they kept is the one this answer already names.
   const file =
     entry.kind !== "js-runtime-debugger"
       ? ``
       : entry.supersededFileTaken
-        ? count === 1
-          ? ` The log file it kept went with it.`
-          : ` The log file the last of them kept went with it. Anything the earlier ones left ` +
-            `is still in ~/.argent/tmp, named by nothing.`
-        : ` Any log file ${they} left is still in ~/.argent/tmp, named by nothing.`;
+        ? // A take and a leave together can only mean the leave was an earlier
+          // one's: the record replaced directly is the one whose file went.
+          ` The log file ${count === 1 ? "it" : "the last of them"} kept went with it.` +
+          (entry.supersededFileLeft
+            ? ` Anything the earlier ones left is still in ~/.argent/tmp, named by nothing.`
+            : ``)
+        : entry.supersededFileLeft
+          ? ` Any log file ${they} left is still in ~/.argent/tmp, named by nothing.`
+          : ``;
   return (
     ` ${subject} that answered here ended holding output nobody read, and this event ` +
     `replaced what ${they} filed, so what ${they} captured is reported nowhere.` +

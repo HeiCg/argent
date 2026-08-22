@@ -303,6 +303,7 @@ describe("the reaped-session key", () => {
       );
       expect(message).toContain("An earlier session that answered here");
       expect(message).toContain("The log file it kept went with it");
+      expect(message).not.toContain("~/.argent/tmp");
       expect(fs.existsSync(older)).toBe(false);
     });
 
@@ -414,6 +415,7 @@ describe("the reaped-session key", () => {
       );
       expect(message).toContain("An earlier session that answered here");
       expect(message).not.toContain("went with it");
+      expect(message).not.toContain("~/.argent/tmp");
       expect(fs.existsSync(kept)).toBe(true);
     });
 
@@ -436,8 +438,8 @@ describe("the reaped-session key", () => {
     it("keeps the file clause singular when the count carries", () => {
       // Only the record this write replaced directly can have its file taken:
       // the ones its count carries lost theirs a step earlier, each to the
-      // event that replaced it. "kept for it" after "2 earlier sessions" reads
-      // as one of the two having had no file at all.
+      // event that replaced it. So the clause has one file to report however
+      // far the count reaches, and a subject that stays singular with it.
       const files = ["8-1", "8-2", "8-3"].map((n) => path.join(dir, `argent-logs-${n}.log`));
       for (const [i, file] of files.entries()) {
         fs.writeFileSync(file, "x");
@@ -453,6 +455,7 @@ describe("the reaped-session key", () => {
       );
       expect(message).toContain("2 earlier sessions that answered here");
       expect(message).toContain("The log file the last of them kept went with it");
+      expect(message).not.toContain("~/.argent/tmp");
       expect(fs.existsSync(files[0])).toBe(false);
       expect(fs.existsSync(files[1])).toBe(false);
     });
@@ -678,6 +681,52 @@ describe("the reaped-session key", () => {
         takeReapedSession("js-runtime-debugger", UDID)!,
         "JS-runtime debugger session"
       );
+      expect(message).not.toContain("went with it");
+      expect(message).not.toContain("~/.argent/tmp");
+    });
+
+    it("names the subject of the directory sentence when the count carries", () => {
+      // A chain of crashes ended by a teardown, which keeps no file and so
+      // takes none: the newest crash's log is still there, and the sentence
+      // sending the agent to it has to agree with the subject above it.
+      const first = path.join(dir, "argent-logs-10-1.log");
+      const second = path.join(dir, "argent-logs-10-2.log");
+      for (const [file, salvage] of [
+        [first, "first"],
+        [second, "second"],
+      ] as const) {
+        fs.writeFileSync(file, "x");
+        recordReapedSession("js-runtime-debugger", [UDID], salvage, {
+          cause: "runtime-death",
+          keptAt: file,
+        });
+      }
+      recordReapedSession("js-runtime-debugger", [UDID], "third", { cause: "teardown" });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("2 earlier sessions that answered here");
+      expect(message).toContain("Any log file they left is still in ~/.argent/tmp");
+      expect(fs.existsSync(first)).toBe(false);
+      expect(fs.existsSync(second)).toBe(true);
+    });
+
+    it("says nothing about a file when neither event ever kept one", () => {
+      // Two teardowns running, the first unread: the widened connect gate
+      // reports this, and both closes deleted their own file. Sending the agent
+      // to list a directory that cannot hold either one costs it a detour and,
+      // since the listing names nothing, no way to reject what it finds there.
+      recordReapedSession("js-runtime-debugger", [UDID], "first", { cause: "teardown" });
+      recordReapedSession("js-runtime-debugger", [UDID], "second", { cause: "teardown" });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("An earlier session that answered here");
+      expect(message).not.toContain("~/.argent/tmp");
       expect(message).not.toContain("went with it");
     });
 
