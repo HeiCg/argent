@@ -7,10 +7,10 @@
  * file instead; that path is covered in `log-survives-crash.test.ts`.)
  *
  * The deletion itself is fine: the next resolve builds a new writer over a new
- * path, so nothing could ever read this session's file again. What was not fine
- * is that the victim's `debugger-log-registry` transparently reconnected and
- * reported `totalEntries: 0` with no error and no warning — indistinguishable
- * from an app that has logged nothing, which is the opposite conclusion.
+ * path, so nothing could ever read this session's file again. What the victim's
+ * `debugger-log-registry` must not do is reconnect transparently and report
+ * `totalEntries: 0` with no error and no warning — indistinguishable from an
+ * app that has logged nothing, which is the opposite conclusion.
  *
  * Drives the real Registry → JsRuntimeDebugger → debugger-log-registry path
  * against a mock Metro, disposing the service exactly as the teardown does.
@@ -28,8 +28,8 @@ import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger
 import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions";
 import { scopeTempHome } from "../helpers/temp-home";
 
-// The JS-runtime-debugger / network blueprints build a real LogFileWriter,
-// whose constructor mkdir -p's os.homedir()/.argent/tmp. Keep that out of the
+// The JS-runtime-debugger blueprints build a real LogFileWriter, whose
+// constructor mkdir -p's os.homedir()/.argent/tmp. Keep that out of the
 // developer's real home.
 scopeTempHome("argent-metro-teardown-log-home-");
 
@@ -364,12 +364,20 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
         device_id: CONNECT_ID,
       })) as { note?: string };
       expect(owner.note).toContain("23 captured console entries");
+      // And the stranger's own note must not claim the owner's record: the
+      // owner kept a key of its own, so nothing of it went unreported.
+      const strangerNote = (await registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: "someone-elses-device",
+      })) as { note?: string };
+      expect(strangerNote.note).toContain("1 captured console entry");
+      expect(strangerNote.note).not.toContain("earlier session");
     });
 
     it("spends BOTH breadcrumbs on that one read, so no copy outlives the event", async () => {
-      // The read consumed one key and left the other, so a later unrelated
-      // empty read — a fresh session that genuinely logged nothing — collected
-      // the leftover and blamed a teardown that had already been explained.
+      // A read that consumed one key and left the other would leave a later
+      // unrelated empty read — a fresh session that genuinely logged nothing —
+      // collecting the leftover and blaming a teardown already explained.
       const urn = await connectAndCapture(CONNECT_ID, 7);
       await registry.disposeService(urn);
 

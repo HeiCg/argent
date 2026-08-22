@@ -14,10 +14,12 @@ import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions
 import { scopeTempHome } from "../helpers/temp-home";
 
 /**
- * The console log file must outlive the app: when the CDP socket drops
- * (the app crashed or was force-quit) the registry's terminated cascade
- * disposes the debugger service, and the log written before the crash is
- * exactly the artifact the developer came for.
+ * The console log file must outlive the app: when the CDP socket drops the
+ * registry's terminated cascade disposes the debugger service, and the log
+ * written before it dropped is exactly the artifact the developer came for.
+ * What dropped it is not knowable from here — the app going away, the route to
+ * it going away, and Metro handing the one debugger slot to someone else all
+ * look the same — which is why the file has to survive all of them.
  */
 
 // One of the factory's hard-failure paths — the console-log server's bind,
@@ -275,8 +277,8 @@ describe("console logs across an app crash", () => {
     expect(after.note).not.toContain("no log file was left behind");
     // And never the teardown family either. No tool was called and no other
     // agent was involved — the app crashed — so a note that opens by blaming a
-    // stop-all sends the reader after a cause that does not exist, then
-    // contradicts itself with a salvage clause about a dead runtime.
+    // stop-all sends the reader after a cause that does not exist, and does it
+    // beside a salvage clause that only a dead runtime leaves behind.
     expect(after.note).toContain("its debugger connection dropped instead of being closed");
     expect(after.note).not.toContain("stop-all-simulator-servers");
     expect(after.note).not.toContain("another agent");
@@ -339,8 +341,9 @@ describe("console logs across an app crash", () => {
     // `debugger-connect` consumes the breadcrumb — deliberately, so a stale one
     // cannot explain some later unrelated empty read — and it is also exactly
     // where the crash-recovery guidance sends the agent (`debugger-status`'s
-    // stale_connection guidance, and the skill's "app may have crashed" row,
-    // both say restart-app then debugger-connect). Consuming it silently makes
+    // stale_connection guidance, and the "Was connected, then tool fails"
+    // row of the skill's failure-scenarios reference, both say restart-app
+    // then debugger-connect). Consuming it silently makes
     // the kept file unreachable: nothing else records the path, and the
     // reconnected session stops being empty — the one state
     // `debugger-log-registry` reports a breadcrumb in — as soon as the
@@ -460,8 +463,10 @@ describe("console logs across an app crash", () => {
 
   it("closes the log writer when the factory throws before a dispose exists", async () => {
     // Nothing else can close that writer — the factory never returns a dispose
-    // — so its fd, its file and its keepalive would outlive the failure, and the
-    // keepalive holds that file out of the sweep for as long as it runs.
+    // — so an unclosed one leaves its file behind for good: the keepalive holds
+    // it out of the sweep for as long as it runs. The absent file is the
+    // observable end of `close()` from here; that it also frees the fd and the
+    // keepalive is pinned on the writer itself, in log-file-writer.test.ts.
     fs.mkdirSync(logDir(), { recursive: true });
     const before = new Set(fs.readdirSync(logDir()));
     // By identity, not by count: sockets from earlier cases in this file can
@@ -554,8 +559,9 @@ describe("console logs across an app crash", () => {
 
   it("hands the console listener back when the session ends", async () => {
     // The same rule on the dispose path: the listener has to be gone before
-    // `close()`, since everything after it is a close handshake the runtime can
-    // still send frames into — which is what the flood below sends it.
+    // `close()`, since the dispose goes on to file its breadcrumb and await two
+    // shutdowns, and the runtime can send frames into all of it — which is what
+    // the flood below sends it.
     await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "listener-device" });
     const api = await resolveDebuggerService(registry, {
       port: mockPort,
