@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
 import { AddressInfo } from "node:net";
 import {
   FAILURE_CODES,
@@ -36,6 +38,14 @@ import { scopeTempHome } from "../helpers/temp-home";
 // whose constructor mkdir -p's os.homedir()/.argent/tmp. Keep that out of the
 // developer's real home.
 scopeTempHome("argent-log-registry-nc-home-");
+
+// A real file, so which branch of the salvage clause runs is decided here and
+// not by whatever the developer's /tmp happens to hold: an absent path takes
+// the "has since been reclaimed" arm, and `toContain(path)` passes on both.
+const keptDir = fs.mkdtempSync(path.join(os.tmpdir(), "argent-kept-"));
+const keptLog = path.join(keptDir, "kept.log");
+const otherLog = path.join(keptDir, "k.log");
+for (const file of [keptLog, otherLog]) fs.writeFileSync(file, "logged");
 
 const mockTrack = vi.mocked(track);
 const outcomeCalls = () =>
@@ -281,6 +291,36 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.guidance).not.toContain("debugger-log-registry's note");
   });
 
+  it("carries the replaced-records clause through to this tool's answer", async () => {
+    // The clause rides on the same string as everything else in the note, and
+    // `debugger-connect` is the only consumer anything pins it through - but
+    // this is the tool the guidance for a crashed app sends the agent to
+    // FIRST, so it is the answer that has to carry the loss.
+    const port = await freePort();
+    const setup = makeSetup(jsRuntimeDebuggerBlueprint);
+    cleanups.push(async () => {
+      await setup.registry.dispose();
+      __resetReapedSessionsForTesting();
+    });
+    recordReapedSession("js-runtime-debugger", "mock-device", `kept at ${keptLog}`, {
+      cause: "runtime-death",
+      keptAt: keptLog,
+      scope: String(port),
+    });
+    recordReapedSession("js-runtime-debugger", "mock-device", "the 3 entries went with it", {
+      cause: "teardown",
+      scope: String(port),
+    });
+
+    const result = (await setup.invoke({ port, device_id: "mock-device" })) as Record<
+      string,
+      string
+    >;
+
+    expect(result.note).toContain("An earlier session that answered here");
+    expect(result.note).toContain(`Any log file it left is still in ~/.argent/tmp`);
+  });
+
   it("leads the guidance with the note when the answer is carrying one", async () => {
     // These strings are written for `debugger-status`, whose answers carry no
     // note: a reason either points at this tool to fetch one — a crashed
@@ -295,8 +335,8 @@ describe("debugger-log-registry not-connected results", () => {
     recordReapedSession(
       "js-runtime-debugger",
       "mock-device",
-      "The log file is kept at /tmp/kept.log",
-      { cause: "runtime-death", keptAt: "/tmp/kept.log", scope: String(port) }
+      `The log file is kept at ${keptLog}`,
+      { cause: "runtime-death", keptAt: keptLog, scope: String(port) }
     );
 
     const result = (await setup.invoke({ port, device_id: "mock-device" })) as Record<
@@ -305,7 +345,8 @@ describe("debugger-log-registry not-connected results", () => {
     >;
 
     expect(result.reason).toBe("metro_not_running");
-    expect(result.note).toContain("/tmp/kept.log");
+    expect(result.note).toContain(keptLog);
+    expect(result.note).not.toContain("has since been reclaimed");
     expect(result.guidance.startsWith("Read this result's note first")).toBe(true);
     // Whatever it precedes has to be true of it: this reason's own guidance
     // says nothing about a note.
@@ -328,10 +369,10 @@ describe("debugger-log-registry not-connected results", () => {
     recordReapedSession(
       "js-runtime-debugger",
       "mock-device",
-      "The log file is kept at /tmp/k.log",
+      `The log file is kept at ${otherLog}`,
       {
         cause: "runtime-death",
-        keptAt: "/tmp/k.log",
+        keptAt: otherLog,
         scope: String(port),
       }
     );
@@ -340,7 +381,7 @@ describe("debugger-log-registry not-connected results", () => {
       string,
       string
     >;
-    expect(first.note).toContain("/tmp/k.log");
+    expect(first.note).toContain(otherLog);
 
     const second = (await setup.invoke({ port, device_id: "mock-device" })) as Record<
       string,
@@ -408,9 +449,9 @@ describe("debugger-log-registry not-connected results", () => {
     // answer that says to ask again leaves the asking again with nothing, and
     // nothing else names the file that session kept.
     const setup = await teardownInFlight("dev2");
-    recordReapedSession("js-runtime-debugger", "dev2", "The log file is kept at /tmp/kept.log", {
+    recordReapedSession("js-runtime-debugger", "dev2", `The log file is kept at ${keptLog}`, {
       cause: "runtime-death",
-      keptAt: "/tmp/kept.log",
+      keptAt: keptLog,
       scope: "8081",
     });
 
@@ -428,9 +469,7 @@ describe("debugger-log-registry not-connected results", () => {
       "The debugger connection is being re-established (the previous one was torn down or a " +
         "tab switch is in progress). Wait a moment and retry once."
     );
-    expect(takeReapedSession("js-runtime-debugger", "dev2", "8081")?.salvage).toContain(
-      "/tmp/kept.log"
-    );
+    expect(takeReapedSession("js-runtime-debugger", "dev2", "8081")?.salvage).toContain(keptLog);
   });
 
   it("connected path: returns the LogStats superset — guards against an over-broad catch", async () => {

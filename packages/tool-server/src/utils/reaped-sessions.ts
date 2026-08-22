@@ -96,6 +96,13 @@ export interface ReapedSession {
    * session, which is why the file was left rather than taken.
    */
   supersededFilesLeft?: string[];
+  /**
+   * Every key this event was filed under, which the store stops being able to
+   * reconstruct: a later write takes keys off it one at a time, and what is
+   * left is what it still answers to, not what it answered for. The file
+   * reclaim needs the original — see {@link recordReapedSession}.
+   */
+  filedKeys: readonly string[];
   /** Why the session ended, so the message does not blame a tool for a crash. */
   cause: ReapedSessionCause;
   /**
@@ -168,7 +175,13 @@ export function recordReapedSession(
   }
   const displaced = new Map<
     number,
-    { keys: Set<string>; keptAt?: string; carried: number; carriedFiles: string[] }
+    {
+      keys: Set<string>;
+      filedKeys: readonly string[];
+      keptAt?: string;
+      carried: number;
+      carriedFiles: string[];
+    }
   >();
   for (const [k, entry] of reaped) {
     if (!collided.has(entry.event)) continue;
@@ -177,6 +190,7 @@ export function recordReapedSession(
     else
       displaced.set(entry.event, {
         keys: new Set([k]),
+        filedKeys: entry.filedKeys,
         keptAt: entry.keptAt,
         // What it was already answering for. An unread crash loop replaces a
         // replacer every time round, and counting only this step would report
@@ -186,6 +200,7 @@ export function recordReapedSession(
       });
   }
   const filedNow: ReapedSession[] = [];
+  const filedKeys = [...keys];
   for (const deviceId of ids) {
     const entry: ReapedSession = {
       kind,
@@ -193,6 +208,7 @@ export function recordReapedSession(
       event,
       atMs: Date.now(),
       cause: opts.cause ?? "teardown",
+      filedKeys,
     };
     if (salvage) entry.salvage = salvage;
     if (opts.keptAt) entry.keptAt = opts.keptAt;
@@ -236,9 +252,16 @@ export function recordReapedSession(
     // Never this event's own path: the unlink runs after the write above, so a
     // file recorded twice would be taken from the answer advertising it — and
     // being advertised, it is not one the listing has to find either.
+    //
+    // Against the ids it was FILED under, not the ones it still answers to: a
+    // write that took one key off a two-id record leaves it answering to one,
+    // and a narrower write after that would otherwise read as the exact match
+    // this rule is the whole guard against.
+    const sameIds =
+      previous.filedKeys.length === keys.size && previous.filedKeys.every((k) => keys.has(k));
     const keptAt = previous.keptAt;
     if (keptAt !== undefined && keptAt !== opts.keptAt) {
-      if (opts.keptAt !== undefined && previous.keys.size === keys.size) orphanedFiles.add(keptAt);
+      if (opts.keptAt !== undefined && sameIds) orphanedFiles.add(keptAt);
       else filesLeftUnnamed.add(keptAt);
     }
     for (const carried of previous.carriedFiles) filesLeftUnnamed.add(carried);
@@ -406,9 +429,8 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
   // path the log pruner has already reclaimed.
   const salvage =
     entry.keptAt && !fs.existsSync(entry.keptAt)
-      ? `The log file it left at ${entry.keptAt} has since been reclaimed — a later crash ` +
-        `filed under the same ids takes it, and a debugger session sweeps one a day old — so ` +
-        `those entries are gone.`
+      ? `The log file it left at ${entry.keptAt} has since been reclaimed — a debugger ` +
+        `session sweeps one a day old — so those entries are gone.`
       : entry.salvage;
   const earlier = describeReplacedRecords(entry);
   return (
