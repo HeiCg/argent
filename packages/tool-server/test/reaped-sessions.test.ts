@@ -152,10 +152,11 @@ describe("the reaped-session key", () => {
   });
 
   it("names no second tool for a kind nothing else can have reached", () => {
-    // `describeReapedSession` serves all three kinds. A screen recording and a
-    // native trace have no dependents and are not among the URNs
-    // `react-profiler-start` disposes, so naming that tool to their owner sends
-    // an agent after a call that cannot have taken their capture.
+    // `describeReapedSession` serves all three kinds. A teardown cascades to a
+    // service that DECLARES a dependency on what it reaped, and neither a screen
+    // recording nor a native trace declares one; nor are they among the URNs
+    // `react-profiler-start` disposes. Naming that tool to their owner sends an
+    // agent after a call that cannot have taken their capture.
     recordReapedSession("screen-recording", UDID, "");
 
     const message = describeReapedSession(

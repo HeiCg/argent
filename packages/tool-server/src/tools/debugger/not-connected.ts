@@ -135,8 +135,8 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
  * Read from there, "read debugger-log-registry's note" is an errand the answer
  * in hand has already run — and on a crash that captured nothing it is one that
  * cannot be run at all: the tool that just reported no note would be sending the
- * agent back to itself for one. That answer says what it holds instead, in the
- * sentence it leads its guidance with. Keyed sparsely, like the map above:
+ * agent back to itself for one. That answer says what it holds instead, in a
+ * sentence of its own beside the guidance. Keyed sparsely, like the map above:
  * `stale_connection` carries the same pointer and needs no entry, since
  * debugger-status mints that reason itself and NOT_CONNECTED_CODE_MAP has no
  * code for it — debugger-log-registry never emits it.
