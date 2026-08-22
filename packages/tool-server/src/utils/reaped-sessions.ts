@@ -79,17 +79,23 @@ export interface ReapedSession {
    * {@link superseded} because the reclaim needs both events to have kept one
    * AND to have answered to the same ids — true of at most the one record this
    * write replaced directly. What became of the files behind the ones its count
-   * carries is {@link supersededFileLeft}'s to say.
+   * carries is {@link supersededFilesLeft}'s to say.
    */
   supersededFileTaken?: boolean;
   /**
-   * …and one of the records it replaced kept a log file this write neither took
-   * nor named, so a listing of `~/.argent/tmp` is the only way left to it.
+   * …and the log files the replaced records kept that this write neither took
+   * nor named, so a listing of `~/.argent/tmp` is the only way left to them.
    * Separate from {@link supersededFileTaken} because that one answers for the
    * record replaced directly while {@link superseded} reaches past it: a chain
    * can take the newest file and leave an older one sitting on disk.
+   *
+   * Paths rather than a flag for the reason {@link keptAt} keeps one: a
+   * breadcrumb has no expiry and the day-old sweep does, so whether there is
+   * still anything to list is a question only the read can answer. They are
+   * never shown — an id set this write could not match is equally a stranger's
+   * session, which is why the file was left rather than taken.
    */
-  supersededFileLeft?: boolean;
+  supersededFilesLeft?: string[];
   /** Why the session ended, so the message does not blame a tool for a crash. */
   cause: ReapedSessionCause;
   /**
@@ -162,7 +168,7 @@ export function recordReapedSession(
   }
   const displaced = new Map<
     number,
-    { keys: Set<string>; keptAt?: string; carried: number; carriedFileLeft: boolean }
+    { keys: Set<string>; keptAt?: string; carried: number; carriedFiles: string[] }
   >();
   for (const [k, entry] of reaped) {
     if (!collided.has(entry.event)) continue;
@@ -176,7 +182,7 @@ export function recordReapedSession(
         // replacer every time round, and counting only this step would report
         // one loss however many sessions have gone unreported.
         carried: entry.superseded ?? 0,
-        carriedFileLeft: entry.supersededFileLeft ?? false,
+        carriedFiles: entry.supersededFilesLeft ?? [],
       });
   }
   const filedNow: ReapedSession[] = [];
@@ -197,10 +203,10 @@ export function recordReapedSession(
   // Anything still in the store is unread — a read deletes every copy — so
   // replacing one is a second teardown arriving before the first was reported.
   let replacedUnread = 0;
-  // A replaced record's file that this write neither takes nor names: the
-  // listing is the only route left to it, and saying nothing here is what tells
-  // an agent that route is not worth trying.
-  let fileLeftUnnamed = false;
+  // The replaced records' files this write neither takes nor names: the listing
+  // is the only route left to them, and saying nothing here is what tells an
+  // agent that route is not worth trying.
+  const filesLeftUnnamed = new Set<string>();
   for (const previous of displaced.values()) {
     // An event holding a key this one did not take goes on answering under it,
     // so nothing of its has gone unreported. Count only the ones the write
@@ -233,15 +239,16 @@ export function recordReapedSession(
     const keptAt = previous.keptAt;
     if (keptAt !== undefined && keptAt !== opts.keptAt) {
       if (opts.keptAt !== undefined && previous.keys.size === keys.size) orphanedFiles.add(keptAt);
-      else fileLeftUnnamed = true;
+      else filesLeftUnnamed.add(keptAt);
     }
-    if (previous.carriedFileLeft) fileLeftUnnamed = true;
+    for (const carried of previous.carriedFiles) filesLeftUnnamed.add(carried);
   }
   if (replacedUnread > 0) {
+    const left = [...filesLeftUnnamed];
     for (const entry of filedNow) {
       entry.superseded = replacedUnread;
       if (orphanedFiles.size > 0) entry.supersededFileTaken = true;
-      if (fileLeftUnnamed) entry.supersededFileLeft = true;
+      if (left.length > 0) entry.supersededFilesLeft = left;
     }
   }
   for (const file of orphanedFiles) {
@@ -298,6 +305,10 @@ function describeReplacedRecords(entry: ReapedSession): string {
   // replaced directly, the leave on any of them — so each speaks only for
   // itself. Where neither is set there is nothing of theirs to find: they kept
   // no file, or the only one they kept is the one this answer already names.
+  // Checked here, not where it was recorded: the sweep runs on a schedule of
+  // its own, and the same breadcrumb that outlives this session's file outlives
+  // theirs.
+  const anyLeft = entry.supersededFilesLeft?.some((file) => fs.existsSync(file)) ?? false;
   const file =
     entry.kind !== "js-runtime-debugger"
       ? ``
@@ -305,10 +316,10 @@ function describeReplacedRecords(entry: ReapedSession): string {
         ? // A take and a leave together can only mean the leave was an earlier
           // one's: the record replaced directly is the one whose file went.
           ` The log file ${count === 1 ? "it" : "the last of them"} kept went with it.` +
-          (entry.supersededFileLeft
+          (anyLeft
             ? ` Anything the earlier ones left is still in ~/.argent/tmp, named by nothing.`
             : ``)
-        : entry.supersededFileLeft
+        : anyLeft
           ? ` Any log file ${they} left is still in ~/.argent/tmp, named by nothing.`
           : ``;
   return (

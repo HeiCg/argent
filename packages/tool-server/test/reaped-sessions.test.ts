@@ -713,6 +713,28 @@ describe("the reaped-session key", () => {
       expect(fs.existsSync(second)).toBe(true);
     });
 
+    it("stops pointing at the directory once the sweep has been through it", () => {
+      // A breadcrumb has no expiry and the day-old sweep does, so what was on
+      // disk when the record was replaced need not be there when someone reads
+      // about it. The same answer already re-checks its own file; a promise
+      // about theirs is worth no less.
+      const older = path.join(dir, "argent-logs-11-1.log");
+      fs.writeFileSync(older, "first");
+      recordReapedSession("js-runtime-debugger", [UDID], "first", {
+        cause: "runtime-death",
+        keptAt: older,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID], "second", { cause: "teardown" });
+      fs.rmSync(older);
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("An earlier session that answered here");
+      expect(message).not.toContain("~/.argent/tmp");
+    });
+
     it("says nothing about a file when neither event ever kept one", () => {
       // Two teardowns running, the first unread: the widened connect gate
       // reports this, and both closes deleted their own file. Sending the agent
