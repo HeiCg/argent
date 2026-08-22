@@ -221,8 +221,9 @@ export function takeReapedSession(
  * names the family rather than asserting one member. `stop-all-simulator-servers`
  * is the common one and is named first; whether a SECOND member can be named at
  * all depends on what was reaped. Only a debugger session has one: on Chromium
- * `stop-simulator-server` cascades into it through `ChromiumCdp` (its documented
- * behaviour), and on Apple or Android `react-profiler-start` disposes the
+ * anything that reaps its `ChromiumCdp` cascades into it — `stop-simulator-server`
+ * by its documented behaviour, and `flow-run` reclaiming an Electron app it
+ * booted — and on Apple or Android `react-profiler-start` disposes the
  * debugger and the profiler session whenever it finds either in a state it
  * cannot reuse. That tool declares no chromium and no vega platform, and neither
  * a screen recording nor a native trace declares a dependency for any teardown
@@ -259,8 +260,8 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
     entry.kind !== "js-runtime-debugger"
       ? undefined
       : isChromium
-        ? `a stop-simulator-server, which cascades into the debugger through the Chromium CDP ` +
-          `session it reaps`
+        ? `a stop-simulator-server, or a flow-run reclaiming an Electron app it booted, either ` +
+          `of which cascades into the debugger through the Chromium CDP session it reaps`
         : classifyDevice(entry.deviceId) === "vega"
           ? undefined
           : `a react-profiler-start clearing a debugger session it could not reuse`;
