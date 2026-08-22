@@ -61,6 +61,8 @@ const LEVEL_DISPLAY: Record<string, string> = {
 // [L:<id>] <timestamp> <LEVEL> <source> | <message>
 const LINE_RE = /^\[L:(\d+)\] (\S+) (\S+)\s+(\S+) \| (.*)$/;
 
+let nextWriterSeq = 0;
+
 export class LogFileWriter {
   private filePath: string;
   private fd: number | null = null;
@@ -78,7 +80,15 @@ export class LogFileWriter {
     const dir = path.join(os.homedir(), ".argent", "tmp");
     fs.mkdirSync(dir, { recursive: true });
     pruneStaleLogs(dir);
-    this.filePath = path.join(dir, `argent-logs-${port}-${timestamp}.log`);
+    // pid and sequence, not just port and start time: two devices share one
+    // Metro, and two connects to it do the same discovery and handshake in
+    // lockstep, so they reach this line in the same millisecond often enough to
+    // measure. Sharing a path costs more than interleaved lines now that a file
+    // outlives its session — the note would hand out this path with a count of
+    // entries the other session wrote, and that session's ordinary teardown
+    // would unlink the file the breadcrumb still names.
+    const unique = `${process.pid}-${nextWriterSeq++}`;
+    this.filePath = path.join(dir, `argent-logs-${port}-${timestamp}-${unique}.log`);
     this.open();
   }
 
@@ -289,7 +299,9 @@ export class LogFileWriter {
 const STALE_LOG_AGE_MS = 24 * 60 * 60 * 1000;
 /** Comfortably inside STALE_LOG_AGE_MS, so a live file is never a candidate. */
 const KEEPALIVE_MS = 60 * 60 * 1000;
-const LOG_NAME_RE = /^argent-logs-\d+-\d+\.log$/;
+// The trailing pair is optional so the sweep still reaches files named by a
+// tool-server from before they were added; nothing else writes this directory.
+const LOG_NAME_RE = /^argent-logs-\d+-\d+(?:-\d+-\d+)?\.log$/;
 
 /**
  * Drop log files left behind by earlier sessions — the writer keeps its file

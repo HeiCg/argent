@@ -266,8 +266,31 @@ describe("LogFileWriter", () => {
 
   it("creates a flat log file in ~/.argent/tmp", () => {
     const filePath = writer.getFilePath();
-    expect(filePath).toMatch(/\.argent\/tmp\/argent-logs-9999-\d+\.log$/);
+    expect(filePath).toMatch(/\.argent\/tmp\/argent-logs-9999-\d+-\d+-\d+\.log$/);
     expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  // Two devices share one Metro, and two connects to it run the same discovery
+  // and handshake in lockstep, so port-and-start-time alone collides often
+  // enough to measure. A shared path is no longer just interleaved lines: the
+  // note hands out the path with a count of entries the other session wrote,
+  // and that session's teardown unlinks the file the breadcrumb still names.
+  it("gives two writers on one port distinct files", () => {
+    const a = new LogFileWriter(7000);
+    const b = new LogFileWriter(7000);
+    try {
+      expect(a.getFilePath()).not.toBe(b.getFilePath());
+      a.write(makeEntry(0));
+      b.write(makeEntry(1));
+      expect(a.getStats().totalEntries).toBe(1);
+      expect(fs.readFileSync(a.getFilePath(), "utf8")).not.toContain("[L:1]");
+      // And one closing does not take the other's file with it.
+      b.close({ keepFile: false });
+      expect(fs.existsSync(a.getFilePath())).toBe(true);
+    } finally {
+      a.close({ keepFile: false });
+      b.close({ keepFile: false });
+    }
   });
 
   it("writes entries as flat text lines", () => {

@@ -21,10 +21,13 @@
  * builds its service ref. No Metro round-trip on the hot path, so the tools'
  * `services()` callbacks stay synchronous.
  *
- * A logicalDeviceId names one device+bundle, so the map is 1:1 and never
- * mis-collapses two distinct devices. It is also stable across relaunches, so a
- * key that outlives its session still points at the same device — and it is
- * cleared on dispose anyway.
+ * A logicalDeviceId names one device+bundle, so the key is 1:1 and stable
+ * across relaunches — a key that outlives its session still names the same
+ * device, and it is cleared on dispose anyway. The VALUE carries no such
+ * guarantee: it is whatever id the caller connected with, and `selectTarget`'s
+ * one-device fallback answers an unmatched id with the last target on the port,
+ * so a connect aimed at a device that has gone teaches this map to send that
+ * survivor's own logicalDeviceId to the dead device's id.
  */
 const logicalIdToConnectId = new Map<string, string>();
 
