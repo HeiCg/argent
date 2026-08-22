@@ -172,13 +172,10 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         const note = withheld ? undefined : takeReapedNote(params.device_id, scope);
         const result = buildNotConnected(reason, err, params, { reportsOwnNote: true });
         // `guidance` is the field an agent acts on, and these strings are
-        // written for `debugger-status`, whose answers never carry a note — so
-        // one that mentions a note — a crashed Chromium renderer's
-        // `cdp_unreachable` among them — sends the reader HERE to fetch it,
-        // which is backwards in this tool's own answer, and the rest mention
-        // none at all. So this tool
-        // says what its own result holds beside the guidance, which speaks for
-        // the general case.
+        // written for `debugger-status`, which carries no note: one that names a
+        // note sends the reader here to fetch it, which is backwards in this
+        // tool's own answer, and the rest name none at all. So this tool says
+        // what its own result holds beside the guidance.
         //
         // The withheld answer says neither: it is holding a breadcrumb it did
         // not spend, and "wait and ask again" is already what its reason's own

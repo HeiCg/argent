@@ -2,18 +2,15 @@
  * Process-global record of capture sessions a teardown reaped while they still
  * held data nobody had retrieved.
  *
- * `stop-all-simulator-servers` disposes every device-owned service, which since
- * the `devices` scope landed includes the three that hold captured output —
- * `ScreenRecordingSession` (a video), `NativeProfilerSession` (a trace) and
- * `JsRuntimeDebugger` (a console-log file). Disposing them is deliberate: each
- * owns a spawned process or an open fd that must not outlive the session.
+ * `stop-all-simulator-servers` disposes every device-owned service, including
+ * the three that hold captured output. Disposing them is deliberate: each owns a
+ * spawned process or an open fd that must not outlive the session.
  *
  * What is not deliberate is what the owner is then told. `Registry._teardown`
  * nulls the node's instance, so the next tool call resolves a FRESH service
- * whose api is indistinguishable from one that never ran — and the stop tools
- * answer "no active session, call start first" for a capture that did run and
- * whose output may still be on disk. That reads as "you never started one",
- * which is the one thing that is certainly false.
+ * indistinguishable from one that never ran, and the stop tools answer "no
+ * active session, call start first" for a capture that did run and whose output
+ * may still be on disk — the one thing that is certainly false.
  *
  * So the disposer leaves a breadcrumb here and the tool that would otherwise
  * report absence reports the teardown instead. Module-global for the same
@@ -24,13 +21,9 @@
  * explains one confusing answer, once. Leaving it would make a genuine later
  * "you never started a recording" blame a teardown from an hour ago.
  *
- * One entry can also own a file: {@link ReapedSession.keptAt} names a log the
- * teardown left on disk for the breadcrumb to advertise, and this store unlinks
- * it when an event answering to exactly the same ids — the only shape that
- * proves one device — keeps a file of its own. Every other shape, wider or
- * narrower, leaves the file to the day-old sweep. That makes the module a
- * lifetime owner, not only a message board, so read that field's doc before
- * setting it — an artifact the user is meant to keep does not go there.
+ * One entry can also own a file: this store unlinks the log a {@link
+ * ReapedSession.keptAt} names when a later teardown supersedes the entry, so it
+ * is a lifetime owner, not only a message board. Read that field's doc first.
  */
 
 import * as fs from "node:fs";
@@ -40,73 +33,36 @@ import { classifyDevice } from "./device-info";
 export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
 
 /**
- * What ended the session. `runtime-death` is a closed socket that no
- * `dispose()` accounts for — the app went away, the debugger lost its route to
- * it, or Metro handed the one debugger slot this device has to someone else;
- * `teardown` is a `dispose()` whose caller the disposer cannot see.
+ * What ended the session: `runtime-death` is a closed socket no `dispose()`
+ * accounts for, `teardown` a `dispose()` whose caller the disposer cannot see.
  *
- * The socket is all the disposer reads, which says the far end is unreachable
- * and nothing about what made it so — and files a Chromium dispose landing
- * inside a tab switch, where the client is briefly between sockets, as a
- * death.
+ * The socket is all the disposer reads, so a Chromium dispose landing inside a
+ * tab switch — the client briefly between sockets — is filed as a death.
  */
 type ReapedSessionCause = "teardown" | "runtime-death";
 
 export interface ReapedSession {
   kind: ReapedSessionKind;
   deviceId: string;
-  /**
-   * The teardown this describes. One teardown is filed under every id its
-   * device answers to, and those copies are one event, not several — see
-   * {@link takeReapedSession}.
-   */
+  /** Ties the copies filed under one device's several ids into one teardown. */
   event: number;
   /** When the teardown ran, for "…N seconds ago" phrasing. */
   atMs: number;
   /**
-   * How many earlier events ended with nothing left to report them — this one
-   * took every id each answered under, so nothing else will ever report what
-   * they captured and the answer has to say it is not the whole story. Counts
-   * the chain rather than the step: a replaced event's own count is carried
-   * forward, since an unread crash loop replaces a replacer every time round.
-   * Absent where an earlier event kept a key of its own to go on answering
-   * under.
+   * Earlier events this one left with no key to report under, so nothing else
+   * will ever mention what they captured. Counts the chain, not the step: an
+   * unread crash loop replaces a replacer every time round.
    */
   superseded?: number;
-  /**
-   * …and the kept log file behind one of the events this write replaced was
-   * reclaimed with it, so there is not even a file left to find. Separate from
-   * {@link superseded} because the reclaim needs both events to have kept one
-   * AND to have answered to the same ids — true of at most one of them, since
-   * two live events never share a filed id set. What became of the files behind
-   * the rest is {@link supersededFilesLeft}'s to say.
-   */
+  /** …and the log one of them kept was unlinked with it. At most one ever is. */
   supersededFileTaken?: boolean;
   /**
-   * …and the log files the replaced records kept that this write neither took
-   * nor named, so a listing of `~/.argent/tmp` is the only way left to them.
-   * Separate from {@link supersededFileTaken} because that one answers for the
-   * single record whose ids matched while {@link superseded} reaches past it: a
-   * write can take one replaced record's file and leave another's on disk,
-   * either way round.
-   *
-   * Paths rather than a flag for the reason {@link keptAt} keeps one: a
-   * breadcrumb has no expiry and the day-old sweep does, so whether there is
-   * still anything to list is a question only the read can answer. They are
-   * never shown: a path reaches here because the ids did not match, or because
-   * this write kept no file of its own to compare against, and the directory is
-   * the one route that reads true either way — an id set this write could not
-   * match is equally a stranger's session, and no sentence can name that.
+   * …and the logs the rest kept, reachable only by listing `~/.argent/tmp`.
+   * Paths, not a flag: the sweep may have taken them before anything reads this.
    */
   supersededFilesLeft?: string[];
-  /**
-   * Every key this event was filed under, which the store stops being able to
-   * reconstruct: a later write takes keys off it one at a time, and what is
-   * left is what it still answers to, not what it answered for. The file
-   * reclaim needs the original — see {@link recordReapedSession}.
-   */
+  /** Keys this event was filed under; later writes narrow what it answers to. */
   filedKeys: readonly string[];
-  /** Why the session ended, so the message does not blame a tool for a crash. */
   cause: ReapedSessionCause;
   /**
    * What survived, as a ready-to-read clause (e.g. naming a salvaged file), or
@@ -115,14 +71,9 @@ export interface ReapedSession {
    */
   salvage?: string;
   /**
-   * A file this store may delete: the one {@link salvage} points at, kept apart
-   * from the prose so the read can check it is still there — a breadcrumb has no
-   * expiry, while a kept debugger log is swept once it is a day old, so an unread
-   * breadcrumb outlives what it advertises — and so superseding this entry can
-   * reclaim it (see {@link recordReapedSession}). Set it only for a file whose
-   * lifetime the breadcrumb owns; an artifact the user is meant to keep, like the
-   * recording and trace paths the other two kinds salvage, belongs in
-   * {@link salvage} alone.
+   * A file this store may DELETE. Held apart from {@link salvage} so the read
+   * can check it survived the day-old sweep. Set it only where the breadcrumb
+   * owns the file's lifetime — a recording or trace the user keeps does not.
    */
   keptAt?: string;
 }
@@ -137,27 +88,25 @@ function key(kind: ReapedSessionKind, deviceId: string, scope?: string): string 
 /**
  * Note that `kind`'s session for `deviceId` was disposed with data unretrieved.
  *
- * Call ONLY when there was something to lose: a dispose of an idle session is
- * routine cleanup, and recording it would make the next honest "no active
- * session" answer claim a teardown destroyed something.
+ * Call ONLY when there was something to lose: recording an idle session's
+ * routine dispose would make the next honest "no active session" answer claim a
+ * teardown destroyed something.
  *
  * Pass every id the device answers to — a debugger session is readable back
  * under the id the caller connected with OR the `logicalDeviceId` Metro echoed,
- * and only the disposer still knows both. They file one event, so consuming
- * either spends all of them.
+ * and only the disposer knows both. They file one event, so consuming either
+ * spends all of them.
  *
- * `cause` defaults to `"teardown"` — all a disposer can say when the only thing
- * it knows is that `dispose()` ran. Pass `"runtime-death"` only where the
- * disposer can tell the session's runtime went out from under it, and `keptAt`
- * when the teardown left a file behind for the reader to open.
+ * `cause` defaults to `"teardown"`, all a disposer can say when it knows only
+ * that `dispose()` ran; pass `"runtime-death"` where it can tell the runtime
+ * went out from under the session, and `keptAt` where it left a file to read.
  *
  * `scope` tells apart two sessions of one kind on one device, and readers must
- * pass the same one. A Metro-backed debugger is per port, each session with its
- * own log file, so without the port a session ending on 8082 supersedes the
- * crash breadcrumb from 8081, and reclaims the file it named if it kept one of
- * its own. Omit it where a device holds at most one session of the kind (a
- * recording, a profiler trace), and on Chromium, whose port is already inside
- * the device id.
+ * pass the same one. A Metro-backed debugger is per port, each with its own log
+ * file, so without the port a session ending on 8082 supersedes the crash
+ * breadcrumb from 8081 and reclaims the file it named. Omit it where a device
+ * holds at most one session of the kind (a recording, a profiler trace), and on
+ * Chromium, whose port is already inside the device id.
  */
 export function recordReapedSession(
   kind: ReapedSessionKind,
@@ -168,9 +117,8 @@ export function recordReapedSession(
   const event = nextEvent++;
   const ids = new Set(typeof deviceIds === "string" ? [deviceIds] : deviceIds);
   const keys = new Set([...ids].map((id) => key(kind, id, opts.scope)));
-  // Read before the write below overwrites any of it: every event this one
-  // lands on top of, with every key it holds — the ones this call is about to
-  // take, and the ones it leaves.
+  // Read before the write below overwrites any of it: every event this one lands
+  // on top of, with every key it holds — the ones taken here and the ones left.
   const collided = new Set<number>();
   for (const k of keys) {
     const previous = reaped.get(k);
@@ -195,9 +143,7 @@ export function recordReapedSession(
         keys: new Set([k]),
         filedKeys: entry.filedKeys,
         keptAt: entry.keptAt,
-        // What it was already answering for. An unread crash loop replaces a
-        // replacer every time round, and counting only this step would report
-        // one loss however many sessions have gone unreported.
+        // What it was already answering for; see {@link ReapedSession.superseded}.
         carried: entry.superseded ?? 0,
         carriedFiles: entry.supersededFilesLeft ?? [],
       });
@@ -222,40 +168,25 @@ export function recordReapedSession(
   // Anything still in the store is unread — a read deletes every copy — so
   // replacing one is a second teardown arriving before the first was reported.
   let replacedUnread = 0;
-  // The replaced records' files this write neither takes nor names: the listing
-  // is the only route left to them, and saying nothing here is what tells an
-  // agent that route is not worth trying.
+  // The replaced records' files this write neither takes nor names: a listing of
+  // ~/.argent/tmp is the only route left to them.
   const filesLeftUnnamed = new Set<string>();
   for (const previous of displaced.values()) {
-    // An event holding a key this one did not take goes on answering under it,
-    // so nothing of its has gone unreported. Count only the ones the write
-    // above left nowhere: every id they answered to now names this event.
+    // An event still holding a key this one did not take goes on answering under
+    // it, so nothing of its has gone unreported.
     if ([...previous.keys].some((k) => !keys.has(k))) continue;
     replacedUnread += 1 + previous.carried;
     // Its FILE goes with it only where this event answers to exactly the same
     // ids. Nothing weaker proves one device: `selectTarget`'s one-device
-    // fallback mints a stranger's session on the crashed device's
-    // logicalDeviceId and files it under both of its own ids, so a set this one
-    // merely covers, or that covers this one, is equally that stranger and the
-    // crashed device — and taking the file there takes the log being held for
-    // the device that actually crashed. Every uncertain shape leaves its file
-    // to the day-old sweep instead, the failure that loses nothing.
+    // fallback mints a stranger's session on a crashed device's logicalDeviceId,
+    // so a set this one merely covers is equally that stranger, and taking the
+    // file there takes the log kept for the device that actually crashed.
     //
-    // It also needs this event to keep a file of its own — nothing else records
-    // that path — which bounds an UNREAD crash loop that keeps reconnecting the
-    // same way to one kept file per device, since every crash in such a loop
-    // keeps one. A loop that alternates the connect id with the logicalDeviceId
-    // a mismatch told it to use matches only every other step — the comparison
-    // reaches every record a write displaces, not just the one before it — so it
-    // reclaims every second file and leaves the rest to the sweep. A teardown
-    // keeps none and so reclaims none: it would spend an unread crash log to
-    // save a file the sweep collects anyway. A loop whose notes ARE read is not
-    // bounded here either — the read spends the event, leaving nothing to
-    // supersede — and that is the point: the agent was just handed that path.
+    // It also needs a file of this event's own — nothing else records the
+    // replaced path — which bounds an unread crash loop to one file per device.
     //
     // Never this event's own path: the unlink runs after the write above, so a
-    // file recorded twice would be taken from the answer advertising it — and
-    // being advertised, it is not one the listing has to find either.
+    // file recorded twice would be taken from the answer advertising it.
     //
     // Against the ids it was FILED under, not the ones it still answers to: a
     // write that took one key off a two-id record leaves it answering to one,
@@ -270,10 +201,9 @@ export function recordReapedSession(
     }
     for (const carried of previous.carriedFiles) filesLeftUnnamed.add(carried);
   }
-  // Before the flags below, so they answer for what is on disk rather than for
-  // what was intended: an unlink the filesystem refuses leaves a file only a
-  // listing can reach, which is a leave. One already gone is a take either way
-  // — no route to it is what the take reports.
+  // Before the flags below, so they answer for what is on disk rather than what
+  // was intended: an unlink the filesystem refuses leaves a file only a listing
+  // can reach, which is a leave. One already gone is a take either way.
   let anyTaken = false;
   for (const file of orphanedFiles) {
     try {
@@ -318,41 +248,27 @@ export function takeReapedSession(
 /**
  * The clause for the events this one replaced before anything read them.
  *
- * Says neither what ended them nor whose device they were: a teardown replaces
- * a crash as readily as the other way round, and the ids a replaced event
- * answered to are this event's own or a subset of them — which is also what
- * `selectTarget`'s one-device fallback files when it mints a stranger's session
- * on this id. Nor what they were holding — the clause is reached by all three
- * kinds. All that is certain is that they held output, that nothing read it,
- * and that no id reaches their record now.
+ * Names neither what ended them, whose device they were, nor what they held: a
+ * teardown replaces a crash as readily as the reverse, `selectTarget`'s
+ * one-device fallback can file a stranger's session under this id, and all three
+ * kinds reach this clause. Only three things are certain — they held output,
+ * nothing read it, and no id reaches their record now.
  */
 function describeReplacedRecords(entry: ReapedSession): string {
   const count = entry.superseded ?? 0;
   if (count === 0) return "";
   const subject = count === 1 ? "An earlier session" : `${count} earlier sessions`;
   const they = count === 1 ? "it" : "they";
-  // Both clauses are the debugger's alone: `keptAt` is passed by the two
-  // debugger blueprints and by nothing else, so neither flag is ever set for a
-  // recording or a trace — which is right, since those are written where the
-  // caller asked for them and the replaced entry took the only record of that
-  // path with it. Anything that starts keeping one for another kind needs
-  // wording of its own here, not this directory.
-  //
-  // The two flags are measured on different records — the take on the one whose
-  // ids matched, the leave on any of them — so each speaks only for itself.
-  // Where neither is set there is nothing of theirs to find: they kept no file,
-  // the only one they kept is the one this answer already names, or the sweep
-  // has been through what they left.
-  // Checked here, not where it was recorded: the sweep runs on a schedule of
-  // its own, and the same breadcrumb that outlives this session's file outlives
-  // theirs.
+  // Debugger-only wording: `keptAt` comes from the two debugger blueprints and
+  // nothing else, so a kind that starts keeping files needs its own directory
+  // named here. Existence is re-checked at read time because the day-old sweep
+  // runs on a schedule of its own.
   const anyLeft = entry.supersededFilesLeft?.some((file) => fs.existsSync(file)) ?? false;
   const file = entry.supersededFileTaken
     ? // Which of them lost its file is not sayable past a count of one: a write
-      // replaces every record its ids reach, and the take falls on whichever of
-      // those was filed under exactly this id set — as readily the oldest as the
-      // newest. Naming an order here would send a reader to ~/.argent/tmp for
-      // the one file that is not there.
+      // replaces every record its ids reach, and the take falls on whichever was
+      // filed under exactly this id set — as readily the oldest as the newest.
+      // An order here would send a reader after the one file that is not there.
       ` The log file ${count === 1 ? "it" : "one of them"} kept went with it.` +
       (anyLeft ? ` Anything the others left is still in ~/.argent/tmp, named by nothing.` : ``)
     : anyLeft
@@ -370,32 +286,12 @@ function describeReplacedRecords(entry: ReapedSession): string {
  * happened, says it is not necessarily this agent's own doing (one tool-server
  * serves every agent), and points at whatever survived.
  *
- * On a `teardown` the disposer cannot see who triggered it — a blueprint's
- * `dispose()` is called by `Registry._teardown`, with no caller — so the message
- * names the family rather than asserting one member. `stop-all-simulator-servers`
- * is the common one and is named first; whether any FURTHER member can be named
- * depends on what was reaped. Only a debugger session has any: on Chromium
- * anything that reaps its `ChromiumCdp` cascades into it — `stop-simulator-server`
- * by its documented behaviour, and `flow-run` reclaiming an Electron app it
- * booted — and on Apple or Android `react-profiler-start` disposes the
- * debugger and the profiler session whenever it finds either in a state it
- * cannot reuse. That tool declares no chromium and no vega platform, and neither
- * a screen recording nor a native trace declares a dependency for any teardown
- * to cascade through, so a Vega debugger and those two kinds are where the
- * sentence stops after the first member. A `runtime-death` narrows that: on
- * every path but one the socket closed with nothing having called `dispose()`,
- * so pointing at the teardown family would send an agent hunting for a tool
- * call that never touched this session. The exception is a Chromium teardown
- * landing inside a tab switch, where the client is briefly socket-less with the
- * renderer alive and a real dispose reads the same. It does NOT name the
- * culprit either — the disposer sees a dropped socket, which a crash, a
- * force-quit, a `restart-app` and Metro evicting this debugger for a new one
- * all produce alike. Which of those an agent can act on is
- * platform-specific: a Chromium session has no Metro to have restarted, and
- * `restart-app` does not reach it at all — the tool's capability declares no
- * chromium platform, so the call is refused before dispatch. It gets the same
- * sentence in its own terms, the split the not-connected guidance makes for
- * the same reason.
+ * Neither cause names a culprit. A disposer cannot see who triggered a
+ * `teardown` — `Registry._teardown` calls `dispose()` with no caller — so the
+ * message names the family; a `runtime-death` is a dropped socket, which a
+ * crash, a force-quit, a `restart-app` and Metro evicting this debugger for a
+ * new one all produce alike. Which of those an agent can act on is
+ * platform-specific, so a Chromium session gets the sentence in its own terms.
  */
 export function describeReapedSession(entry: ReapedSession, what: string): string {
   const secondsAgo = Math.max(0, Math.round((Date.now() - entry.atMs) / 1000));
@@ -414,13 +310,10 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
       `close reason that would is not kept, and a later debugger-status answers for the ` +
       `runtime as it is by then, not for the one that died.`;
   // Only a debugger session has another tool that can have disposed it, and not
-  // on every platform: a Chromium one goes with the ChromiumCdp it declares
-  // a dependency on, which `stop-simulator-server` and a `flow-run` reclaiming
-  // an Electron app it booted both reap, and an Apple or Android one is cleared
-  // by `react-profiler-start` when it cannot reuse it. A Vega session has
-  // neither, and a screen recording and a native trace declare no dependency for
-  // a teardown to cascade through, so naming any of those tools to them would
-  // send an agent after a call that could not have reached them.
+  // on every platform: a Chromium one goes with the `ChromiumCdp` that
+  // `stop-simulator-server` and an Electron-reclaiming `flow-run` both reap, and
+  // an Apple or Android one is cleared by `react-profiler-start`. A Vega session
+  // has neither, and a recording and a trace declare no dependency to cascade.
   const otherReacher =
     entry.kind !== "js-runtime-debugger"
       ? undefined
@@ -438,8 +331,7 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
         `. One tool-server serves every agent using this argent install, so this may have been ` +
         `another agent rather than your own call.`;
   // The salvage clause was written when the file was there; a breadcrumb nobody
-  // read can outlive it, so correct the promise rather than send the reader at a
-  // path the log pruner has already reclaimed.
+  // read can outlive it, so correct the promise rather than name a reclaimed path.
   const salvage =
     entry.keptAt && !fs.existsSync(entry.keptAt)
       ? `The log file it left at ${entry.keptAt} has since been reclaimed — a debugger ` +
@@ -458,14 +350,11 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
  * The {@link ReapedSession.salvage} clause for a debugger session torn down
  * while it still held console history nobody had read.
  *
- * Pass `keptAt` — the log file's path — when the teardown left the file on
- * disk, which a runtime death does whenever the writer had one; omit it when
- * there is nothing to read, whether the teardown unlinked the file, the writer
- * never opened one, or something has removed it since. What
- * the clause settles is only whether the old entries are still readable
- * somewhere: why the session ended is the {@link ReapedSessionCause} clause's
- * job, and what an empty registry means belongs to the one consumer that has a
- * registry — `debugger-connect` and a `not_connected` answer have none.
+ * Pass `keptAt` — the log file's path — when the teardown left the file on disk,
+ * which a runtime death does whenever the writer had one; omit it when there is
+ * nothing to read. The clause settles only whether the old entries are still
+ * readable somewhere: why the session ended is the {@link ReapedSessionCause}
+ * clause's job.
  */
 export function describeLostHistory(captured: number, keptAt?: string): string {
   const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;

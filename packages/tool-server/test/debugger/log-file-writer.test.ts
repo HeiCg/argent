@@ -58,13 +58,11 @@ describe("LogFileWriter", () => {
   });
 
   it("releases the fd on both close paths", () => {
-    // The other half of what `close` frees, beside the keepalive. One debugger
-    // session per connect,
-    // and the keep path's writer is closed by the same call that leaves its
-    // file on disk — so a descriptor held past it is one per crash for the
-    // life of the tool-server. Asked of the descriptor itself, since nulling
-    // the field is what every other reader of `fd` goes by and says nothing
-    // about the handle.
+    // The other half of what `close` frees, beside the keepalive: one debugger
+    // session per connect, and the keep path's writer is closed by the same call
+    // that leaves its file on disk, so a descriptor held past it is one per
+    // crash for the life of the tool-server. Asked of the descriptor itself,
+    // since nulling the field says nothing about the handle.
     const fdOf = (w: LogFileWriter) => (w as unknown as { fd: number | null }).fd!;
 
     const kept = new LogFileWriter(4545);

@@ -276,11 +276,11 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
   describe("when the connect id and the logicalDeviceId differ", () => {
     // Every case above connects with LOGICAL_ID, so `api.logicalDeviceId ===
     // deviceId` and the disposer files one id rather than two — the Chromium
-    // shape, where the two are one string by construction. Vega reaches the
-    // same single key the other way: a legacy inspector reports no
-    // logicalDeviceId, so the guard never pushes a second one. On iOS/Android the caller connects with
-    // a udid/serial and Metro echoes its own logical id, so one teardown writes
-    // two breadcrumbs. They describe one event and must be spent as one.
+    // shape, where the two are one string by construction. Vega reaches the same
+    // single key the other way: a legacy inspector reports no logicalDeviceId,
+    // so the guard never pushes a second one. On iOS/Android the caller connects
+    // with a udid/serial and Metro echoes its own logical id, so one teardown
+    // writes two breadcrumbs. They describe one event and must be spent as one.
     const CONNECT_ID = "00000000-0000-0000-0000-0000000000ab";
 
     beforeEach(async () => {
