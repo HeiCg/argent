@@ -2491,13 +2491,17 @@ async function execLeafStep(
           // error text lives (device_mismatch's guidance points the agent at
           // the logicalDeviceIds "listed in the detail message", and the
           // metro_not_running `got:` fragment names what actually answered the
-          // port). The full structured result rides along like a passing
-          // step's would, so nothing the tool returned is dropped.
+          // port). And `note`, because the guidance that comes with one opens
+          // by telling the reader to read it: the CLI renders no tool-step
+          // result at all (see flow.ts's `onStepReport`), so a pointer left in
+          // this line alone names a field nothing there prints.
           return {
             ...base,
             status: "fail",
             tool: step.name,
-            reason: `debugger not connected (${result.reason}): ${result.detail} — ${result.guidance}`,
+            reason:
+              `debugger not connected (${result.reason}): ${result.detail} — ${result.guidance}` +
+              (result.note ? ` ${result.note}` : ``),
             result,
             outputHint,
             args,

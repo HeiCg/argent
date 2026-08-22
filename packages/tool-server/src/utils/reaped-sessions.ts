@@ -323,7 +323,8 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
           `of which cascades into the debugger through the Chromium CDP session it reaps`
         : classifyDevice(entry.deviceId) === "vega"
           ? undefined
-          : `a react-profiler-start clearing a debugger session it could not reuse`;
+          : `a react-profiler-start, which disposes the debugger session along with its own ` +
+            `whenever either is in a state it cannot reuse`;
   const why =
     entry.cause === "runtime-death"
       ? runtimeDeath

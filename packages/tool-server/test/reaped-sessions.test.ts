@@ -70,10 +70,10 @@ describe("the reaped-session key", () => {
     // A blueprint's dispose() is called by Registry._teardown with no caller, so
     // nothing that writes a breadcrumb knows which tool triggered it.
     // stop-all-simulator-servers is the common one, but react-profiler-start
-    // disposes the session too whenever it finds it in a state it cannot reuse —
-    // so the message names the family rather than asserting one member. It names
-    // only the members that reach an RN session: `stop-simulator-server` reaches
-    // the debugger through ChromiumCdp, which this device has none of.
+    // disposes the session too — so the message names the family rather than
+    // asserting one member. It names only the members that reach an RN session:
+    // `stop-simulator-server` reaches the debugger through ChromiumCdp, which
+    // this device has none of.
     recordReapedSession("js-runtime-debugger", UDID);
 
     const message = describeReapedSession(
@@ -83,6 +83,11 @@ describe("the reaped-session key", () => {
     expect(message).toContain("stop-all-simulator-servers");
     expect(message).toContain("react-profiler-start");
     expect(message).not.toContain("a stop-simulator-server");
+    // `disposeAndWait` takes BOTH urns, and fires when the ReactProfilerSession
+    // alone is unusable — so it clears a debugger that was RUNNING with an open
+    // socket. Blaming a debugger the tool "could not reuse" names the wrong one.
+    expect(message).toContain("disposes the debugger session along with its own");
+    expect(message).not.toMatch(/react-profiler-start clearing a debugger session/);
     // The claim that made it wrong two ways out of three.
     expect(message).not.toMatch(/torn down \d+s ago by a stop-all-simulator-servers/);
   });
