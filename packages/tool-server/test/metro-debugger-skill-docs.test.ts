@@ -379,8 +379,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     );
 
     // Every surface that carries any of the recovery is held to the shared list of
-    // instructions this change exists to prevent - the runtime guidance strings are
-    // held to the same one in not-connected-map.test.ts.
+    // barred instructions; the runtime guidance strings are held to the same one in
+    // not-connected-map.test.ts.
     const chromiumSurfaces: [string, string | undefined][] = [
       ...statesRecovery,
       ["list-devices' description", listDevicesTool.description],
@@ -445,9 +445,14 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       "But a _running_ app that merely has no open window reports this reason too, and a " +
         "`detail` about page targets"
     );
-    // The literal a reader greps the server log for. It is deliberately NOT in the
-    // tool result, so a paraphrase leaves them with nothing to search.
-    pinsOnce(unreachable, "Failed to create …/SingletonLock: File exists");
+    // Where the losing copy's output went, and that there may be none of it: a
+    // reader who is told only that the exit code reaches them will read the
+    // silent code 0 of a browser handing off its URL as a different failure.
+    pinsOnce(
+      unreachable,
+      "anything the losing copy said is in the server log, not in the result — and a " +
+        "browser that hands its URL to the running instance quits silently with code 0"
+    );
     // And its own remedy, rather than the neighbouring one: "second copy" and
     // "bring a window back" answer a live app, which a squatted port is not. The
     // row states three states in one cell, so position is what keeps each remedy
@@ -529,9 +534,9 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // BOOTS (boot-electron resolves { booted: true }), so attaching the exit to
     // both leaves a reader who got a clean result concluding no copy was made.
     // Row 11 routes a crashed app to row 15, whose first instruction is the quit.
-    // It may not tell that reader to drop it: `could not connect` is the detail the
-    // rest of this change is careful to call inconclusive, so the quit is the
-    // precaution for the app being up after all, not a step the routing can skip.
+    // It may not tell that reader to drop it: `could not connect` says only that
+    // nothing answered THIS port, so the quit is the precaution for the app being
+    // up after all, not a step the routing can skip.
     pinsOnce(
       unreachable,
       "Keep that row's quit step: `could not connect` says only that nothing answered this " +
@@ -644,8 +649,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // rules/argent.md is loaded for every argent session and the debugger skill's
     // prerequisites paragraph is where an agent learns where a chromium-cdp-<port>
     // id comes from - so a reader can meet the probe set in either and nowhere
-    // else. Both were edited by this change and neither was derived from the
-    // constant, which is how a set stated in six places drifts in one.
+    // else. No other test reads either file, and a restated set drifts wherever
+    // nothing derives it.
     pinsOnce(
       readFileSync(ARGENT_RULE, "utf8"),
       "auto-discovered on port `" +
