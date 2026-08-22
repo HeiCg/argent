@@ -447,6 +447,16 @@ describe("LogFileWriter", () => {
     expect(() => writer.close()).not.toThrow();
   });
 
+  it("a second close does not take the file the first one kept", () => {
+    // `keepFile` gives a repeat close a destructive meaning: with default opts
+    // it unlinks, and the path it would unlink is the one a crash breadcrumb
+    // has just been handed to advertise.
+    const kept = writer.getFilePath();
+    writer.close({ keepFile: true });
+    writer.close();
+    expect(fs.existsSync(kept)).toBe(true);
+  });
+
   it("write() throws after close", () => {
     writer.close();
     expect(() => writer.write(makeEntry(0))).toThrow("LogFileWriter is closed");

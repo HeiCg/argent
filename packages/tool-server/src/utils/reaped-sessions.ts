@@ -40,11 +40,12 @@ import { classifyDevice } from "./device-info";
 export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
 
 /**
- * What ended the session. `runtime-death` is the CDP connection dropping under
- * it rather than a `dispose()` closing it — the app went away, the debugger
- * lost its route to it, or Metro handed the one debugger slot this device has
- * to someone else; `teardown` is a `dispose()` whose caller the disposer
- * cannot see. All the disposer reads is a socket that stopped being open, which
+ * What ended the session. `runtime-death` is a closed socket where no
+ * `dispose()` accounts for it — the app went away, the debugger lost its route
+ * to it, or Metro handed the one debugger slot this device has to someone else.
+ * It is read from the socket, so a Chromium dispose landing inside a tab
+ * switch, which leaves the client briefly between sockets, is filed here too.
+ * `teardown` is a `dispose()` whose caller the disposer cannot see. All the disposer reads is a socket that stopped being open, which
  * says the far end is unreachable and nothing about what made it so.
  */
 type ReapedSessionCause = "teardown" | "runtime-death";
@@ -144,12 +145,20 @@ export function recordReapedSession(
     const previous = reaped.get(k);
     if (previous) collided.add(previous.event);
   }
-  const displaced = new Map<number, { keys: Set<string>; keptAt?: string }>();
+  const displaced = new Map<number, { keys: Set<string>; keptAt?: string; carried: number }>();
   for (const [k, entry] of reaped) {
     if (!collided.has(entry.event)) continue;
     const seen = displaced.get(entry.event);
     if (seen) seen.keys.add(k);
-    else displaced.set(entry.event, { keys: new Set([k]), keptAt: entry.keptAt });
+    else
+      displaced.set(entry.event, {
+        keys: new Set([k]),
+        keptAt: entry.keptAt,
+        // What it was already answering for. An unread crash loop replaces a
+        // replacer every time round, and counting only this step would report
+        // one loss however many sessions have gone unreported.
+        carried: entry.superseded ?? 0,
+      });
   }
   const filedNow: ReapedSession[] = [];
   for (const deviceId of ids) {
@@ -174,15 +183,15 @@ export function recordReapedSession(
     // so nothing of its has gone unreported. Count only the ones the write
     // above left nowhere: every id they answered to now names this event.
     if ([...previous.keys].some((k) => !keys.has(k))) continue;
-    replacedUnread++;
+    replacedUnread += 1 + previous.carried;
     // Its FILE goes with it only where this event answers to exactly the same
-    // ids. Nothing weaker proves one device: an id set this one merely covers
-    // is equally the shape `selectTarget`'s one-device fallback produces,
-    // minting a stranger's session on the crashed device's id and filing it
-    // under the logicalDeviceId alone — and taking the file there takes the log
-    // being held for the device that actually crashed. Every uncertain shape
-    // leaves its file to the day-old sweep instead, the failure that loses
-    // nothing.
+    // ids. Nothing weaker proves one device: `selectTarget`'s one-device
+    // fallback mints a stranger's session on the crashed device's
+    // logicalDeviceId and files it under both of its own ids, so a set this one
+    // merely covers, or that covers this one, is equally that stranger and the
+    // crashed device — and taking the file there takes the log being held for
+    // the device that actually crashed. Every uncertain shape leaves its file
+    // to the day-old sweep instead, the failure that loses nothing.
     //
     // It also needs this event to keep a file of its own — nothing else records
     // that path — which bounds an UNREAD crash loop that keeps reconnecting the
@@ -252,8 +261,9 @@ export function takeReapedSession(
  * a crash as readily as the other way round, and the ids a replaced event
  * answered to are this event's own or a subset of them — which is also what
  * `selectTarget`'s one-device fallback files when it mints a stranger's session
- * on this id. All that is certain is that they held console history, that
- * nothing read it, and that no id reaches their record now.
+ * on this id. Nor what they were holding — the clause is reached by all three
+ * kinds. All that is certain is that they held output, that nothing read it,
+ * and that no id reaches their record now.
  */
 function describeReplacedRecords(entry: ReapedSession): string {
   const count = entry.superseded ?? 0;

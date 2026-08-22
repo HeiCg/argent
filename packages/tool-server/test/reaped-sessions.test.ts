@@ -396,6 +396,43 @@ describe("the reaped-session key", () => {
       expect(message).toContain("what they captured is reported nowhere");
     });
 
+    it("does not claim the replaced event's file when that one never had one", () => {
+      // A teardown files a breadcrumb and keeps no file, so a crash replacing
+      // it has nothing to reclaim. Saying its file went too would send the
+      // reader past the only path this answer names - the crash's own.
+      const kept = path.join(dir, "argent-logs-7-1.log");
+      fs.writeFileSync(kept, "second");
+      recordReapedSession("js-runtime-debugger", [UDID], "first", { cause: "teardown" });
+      recordReapedSession("js-runtime-debugger", [UDID], "second", {
+        cause: "runtime-death",
+        keptAt: kept,
+      });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("An earlier session that answered here");
+      expect(message).not.toContain("went with it");
+      expect(fs.existsSync(kept)).toBe(true);
+    });
+
+    it("carries forward what the event it replaced was already answering for", () => {
+      // An unread crash loop replaces a replacer every time round. Counting
+      // only this step would report one loss however many sessions have gone
+      // unreported, and in a same-ids loop each step also reclaims the file
+      // before it - so the earlier ones are not merely unnamed, they are gone.
+      for (const salvage of ["first", "second", "third"]) {
+        recordReapedSession("js-runtime-debugger", [UDID], salvage, { cause: "runtime-death" });
+      }
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("2 earlier sessions that answered here");
+    });
+
     it("does not send the reader to ~/.argent/tmp for a kind that keeps no log there", () => {
       // A recording and a trace are written where the caller asked for them, so
       // the replaced entry took the only record of its path with it. Naming the

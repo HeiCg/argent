@@ -10,7 +10,10 @@ import { debuggerConnectTool } from "../../src/tools/debugger/debugger-connect";
 import { createDebuggerLogRegistryTool } from "../../src/tools/debugger/debugger-log-registry";
 import { createDebuggerStatusTool } from "../../src/tools/debugger/debugger-status";
 import { resolveDebuggerService } from "../../src/tools/debugger/not-connected";
-import { __resetReapedSessionsForTesting } from "../../src/utils/reaped-sessions";
+import {
+  __resetReapedSessionsForTesting,
+  recordReapedSession,
+} from "../../src/utils/reaped-sessions";
 import { scopeTempHome } from "../helpers/temp-home";
 
 /**
@@ -335,6 +338,39 @@ describe("console logs across an app crash", () => {
       targetsGone = false;
       fs.rmSync(logPath, { force: true });
     }
+  });
+
+  it("reports a teardown that replaced an unread crash, though it drops a plain one", async () => {
+    // Dropping a plain teardown is deliberate: from this connect on the capture
+    // is your own, and someone else's stop-all is not this session's business.
+    // One that replaced an unread crash is the only record that an earlier
+    // session's output is reported nowhere - reading it here is what destroys
+    // it, so dropping that one spends the last pointer to ~/.argent/tmp.
+    __resetReapedSessionsForTesting();
+    const scope = String(mockPort);
+    recordReapedSession("js-runtime-debugger", ["quiet-teardown"], "gone", {
+      cause: "teardown",
+      scope,
+    });
+    const plain = (await registry.invokeTool("debugger-connect", {
+      port: mockPort,
+      device_id: "quiet-teardown",
+    })) as { note?: string };
+    expect(plain.note).toBeUndefined();
+
+    recordReapedSession("js-runtime-debugger", ["replaced-crash"], "crash output", {
+      cause: "runtime-death",
+      scope,
+    });
+    recordReapedSession("js-runtime-debugger", ["replaced-crash"], "later teardown", {
+      cause: "teardown",
+      scope,
+    });
+    const replaced = (await registry.invokeTool("debugger-connect", {
+      port: mockPort,
+      device_id: "replaced-crash",
+    })) as { note?: string };
+    expect(replaced.note).toContain("An earlier session that answered here");
   });
 
   it("reports the kept file from debugger-connect, the step crash recovery prescribes", async () => {
