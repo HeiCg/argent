@@ -186,8 +186,10 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       // The tool is offered on these surfaces, so the refusal is what the reader
       // needs first; everything else is advice they only reach after it.
       ["restart-app is refused", "not supported on chromium", listsRestartApp, true],
-      // Why the recovery is manual at all.
-      ["boot-device cannot stop it", "only starts an app and never stops one", listsRestartApp],
+      // Why the recovery is manual at all. Every surface that states the quit needs
+      // it, the create-flow row included: without it the quit reads as a step the
+      // agent could take itself, next to two boot-device mentions.
+      ["boot-device cannot stop it", "only starts an app and never stops one", statesRecovery],
       // One contiguous clause, not two substrings that happen to both be present:
       // a relaunch-first rewrite keeps both halves and still orders a relaunch
       // into a running app.
@@ -197,8 +199,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
         listsRestartApp,
       ],
       // Same contiguity on the create-flow row, which carries the guard the other
-      // four do not: its tail is a step three arms route into rather than the
-      // recovery a reader arrives at already knowing the app is gone.
+      // four do not: its tail is a named step rather than the recovery a reader
+      // arrives at already knowing the app is gone.
       [
         "the quit comes first",
         "ask the user to quit it if it is somehow still up, then relaunch once it has exited",
@@ -358,14 +360,21 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // The tail is a NAMED step the arms above route into, not a gate: they
     // partition the detail space exhaustively, so an "otherwise" governs nothing,
     // and a precondition ("once the app is gone") is one arm 2 has just said it
-    // cannot establish - besides ordering a quit for an app declared gone.
+    // cannot establish - besides ordering a quit for an app declared gone. It also
+    // may not claim the arms route here: two of the three route AWAY from it, and
+    // a restrictive clause saying otherwise pulls their readers into the relaunch
+    // those arms exist to forbid.
     pinsOnce(
       createFlow,
-      "The quit-and-relaunch those arms route to: ask the user to quit it if it is somehow " +
-        "still up, then relaunch once it has exited"
+      "The quit-and-relaunch, for the arms that name it: `boot-device` only starts an app " +
+        "and never stops one, so ask the user to quit it if it is somehow still up, then " +
+        "relaunch once it has exited"
     );
     expect(createFlow, "the tail is not gated on a state arm 2 cannot establish").not.toMatch(
       /(once|only when) the app is gone,? ask the user to quit/i
+    );
+    expect(createFlow, "the tail does not claim the arms route into it").not.toMatch(
+      /those arms route to|the arms above route (in)?to|all three arms/i
     );
 
     // Every surface that carries any of the recovery is held to the shared list of
@@ -518,9 +527,19 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // Which of the two relaunch outcomes carries the early exit. A second copy
     // BOOTS (boot-electron resolves { booted: true }), so attaching the exit to
     // both leaves a reader who got a clean result concluding no copy was made.
-    // Row 11 routes a crashed app to row 15, whose first instruction is the quit -
-    // the one step an app that already died does not need.
-    pinsOnce(unreachable, "minus its quit step: that row does not know the app is already gone");
+    // Row 11 routes a crashed app to row 15, whose first instruction is the quit.
+    // It may not tell that reader to drop it: `could not connect` is the detail the
+    // rest of this change is careful to call inconclusive, so the quit is the
+    // precaution for the app being up after all, not a step the routing can skip.
+    pinsOnce(
+      unreachable,
+      "Keep that row's quit step: `could not connect` says only that nothing answered this " +
+        "port, so the app may be back on another one, and the quit is the precaution for " +
+        "exactly that."
+    );
+    expect(unreachable, "does not tell the reader to drop the quit").not.toMatch(
+      /minus its quit|skip(ping)? the quit|without the quit/i
+    );
     pinsOnce(
       unreachable,
       "a second copy — which boots successfully, so nothing in the result says you now have " +
