@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
 import { FAILURE_CODES, getFailureSignal, type Registry } from "@argent/registry";
 import { createRestartAppTool } from "../../src/tools/restart-app";
+import { expectNoForbiddenAdvice } from "../helpers/forbidden-advice";
 import { pinsOnce } from "../helpers/pins";
 import { platformTag } from "../helpers/platform-tag";
 import { CDPClient } from "../../src/utils/debugger/cdp-client";
@@ -289,6 +290,10 @@ describe("CDPClient", () => {
       // emitted. Both branches, through to their remedies - the message names the
       // paused state, and quitting there throws the user's session away.
       const message = (err as Error).message;
+      // The third runtime string, held to the same bar as the two CHROMIUM_GUIDANCE
+      // ones. It is the only text a paused Chromium renderer ever reaches, and it
+      // was the one surface the shared list did not cover.
+      expectNoForbiddenAdvice(message, "the CDP request-timeout message");
       // The diagnosis itself. Both remedies below are chosen off "reachable but not
       // answering"; a message that instead reports the runtime as gone sends the
       // reader straight past them to a relaunch.

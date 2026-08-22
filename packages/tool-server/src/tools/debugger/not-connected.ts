@@ -88,12 +88,12 @@ const NOT_CONNECTED_CODE_MAP: Record<string, DebuggerNotConnectedReason> = {
   [FAILURE_CODES.DEBUGGER_CDP_SOCKET_CLOSED_BEFORE_OPEN]: "cdp_unreachable",
   [FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED]: "cdp_unreachable",
   [FAILURE_CODES.DEBUGGER_CDP_CONNECTION_CLOSED]: "cdp_unreachable",
-  // Reachable from the connect pipeline's enable/binding sends when the target
-  // accepts the socket but its inspector stops answering. A runtime paused at a
-  // breakpoint does not reach it: those sends are inspector-answered, and the two
-  // the pipeline aims at the JS thread are swallowed. Post-connect hangs are
-  // different: an OPEN socket still reports status "connected" (see the
-  // socket-state gate comment in debugger-status).
+  // Reachable from either connect pipeline when the target accepts the socket and
+  // then stops answering a send. A runtime paused at a breakpoint does not reach it
+  // on either platform, but for different reasons - see the two runtime_unresponsive
+  // guidance strings, which state each. Post-connect hangs are different: an OPEN
+  // socket still reports status "connected" (see the socket-state gate comment in
+  // debugger-status).
   [FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT]: "runtime_unresponsive",
   [FAILURE_CODES.CHROMIUM_CDP_UNREACHABLE]: "cdp_unreachable",
   // "Reached but not CDP / malformed answer" — a non-CDP server squatting the

@@ -355,7 +355,8 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       createFlow,
       "One naming neither the discovery GET nor the port's pages — a WebSocket error, a " +
         "closed connection — is the CDP socket failing after discovery answered, so the app " +
-        "was up moments ago: have the user check it before anything else."
+        "was up moments ago: have the user check it before anything else, and take the " +
+        "quit-and-relaunch below only if they say it has exited."
     );
     // The tail is a NAMED step the arms above route into, not a gate: they
     // partition the detail space exhaustively, so an "otherwise" governs nothing,
@@ -639,16 +640,23 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     ).not.toMatch(/clamp/i);
   });
 
-  it("states the probe set in the rule file too, derived from the same constant", () => {
-    // The one copy of this clause that lives outside a skill: rules/argent.md is
-    // loaded for every argent session, so a reader can meet the probe set here and
-    // nowhere else. Its two SKILL.md twins are derived above; this one was not
-    // pinned at all, which is how a set stated in three places drifts in one.
+  it("derives every copy of the probe set, in the two files no other test reads", () => {
+    // rules/argent.md is loaded for every argent session and the debugger skill's
+    // prerequisites paragraph is where an agent learns where a chromium-cdp-<port>
+    // id comes from - so a reader can meet the probe set in either and nowhere
+    // else. Both were edited by this change and neither was derived from the
+    // constant, which is how a set stated in six places drifts in one.
     pinsOnce(
       readFileSync(ARGENT_RULE, "utf8"),
       "auto-discovered on port `" +
         defaultChromiumPorts().join("`, `") +
         "`, `ARGENT_CHROMIUM_PORTS` and the ports `boot-device` opened"
+    );
+    pinsSentenceEnd(
+      readFileSync(DEBUGGER_SKILL, "utf8"),
+      "auto-discovered by `list-devices` on `" +
+        defaultChromiumPorts().join("`, `") +
+        "`, `ARGENT_CHROMIUM_PORTS` and the ports `boot-device` opened)"
     );
   });
 
