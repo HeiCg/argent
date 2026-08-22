@@ -436,10 +436,10 @@ describe("the reaped-session key", () => {
     });
 
     it("keeps the file clause singular when the count carries", () => {
-      // Only the record this write replaced directly can have its file taken:
-      // the ones its count carries lost theirs a step earlier, each to the
-      // event that replaced it. So the clause has one file to report however
-      // far the count reaches, and a subject that stays singular with it.
+      // At most one replaced record can have its file taken - no two live
+      // events share a filed id set - so the clause has one file to report
+      // however far the count reaches, and a subject that stays singular with
+      // it.
       const files = ["8-1", "8-2", "8-3"].map((n) => path.join(dir, `argent-logs-${n}.log`));
       for (const [i, file] of files.entries()) {
         fs.writeFileSync(file, "x");
@@ -454,7 +454,7 @@ describe("the reaped-session key", () => {
         "JS-runtime debugger session"
       );
       expect(message).toContain("2 earlier sessions that answered here");
-      expect(message).toContain("The log file the last of them kept went with it");
+      expect(message).toContain("The log file one of them kept went with it");
       expect(message).not.toContain("~/.argent/tmp");
       expect(fs.existsSync(files[0])).toBe(false);
       expect(fs.existsSync(files[1])).toBe(false);
@@ -462,10 +462,9 @@ describe("the reaped-session key", () => {
 
     it("still points at the directory when the count reaches past the file it took", () => {
       // The reclaim needs an exact id-set match, so a chain whose ids widen
-      // takes the newest file and leaves the one before it on disk while the
-      // count reaches back to both. Reporting only the take tells the agent the
-      // listing fallback is not worth trying, and that log is what it would
-      // have found.
+      // takes one file and leaves another on disk while the count reaches back
+      // to both. Reporting only the take tells the agent the listing fallback
+      // is not worth trying, and that log is what it would have found.
       const first = path.join(dir, "argent-logs-9-1.log");
       const second = path.join(dir, "argent-logs-9-2.log");
       const third = path.join(dir, "argent-logs-9-3.log");
@@ -489,9 +488,9 @@ describe("the reaped-session key", () => {
         "JS-runtime debugger session"
       );
       expect(message).toContain("2 earlier sessions that answered here");
-      expect(message).toContain("The log file the last of them kept went with it");
+      expect(message).toContain("The log file one of them kept went with it");
       expect(message).toContain(
-        "Anything the earlier ones left is still in ~/.argent/tmp, named by nothing"
+        "Anything the others left is still in ~/.argent/tmp, named by nothing"
       );
       expect(fs.existsSync(second)).toBe(false);
       expect(fs.existsSync(first)).toBe(true);
@@ -828,6 +827,151 @@ describe("the reaped-session key", () => {
       );
       expect(message).toContain("An earlier session that answered here");
       expect(message).toContain("Any log file it left is still in ~/.argent/tmp");
+    });
+
+    it("orders neither file when one write replaces two records at once", () => {
+      // The take falls on whichever replaced record was filed under exactly
+      // these ids, and a write reaches every record its ids touch rather than
+      // only the one before it - so the match can be the OLDEST of them while a
+      // newer one's file is what survives. An ordinal here sends the reader to
+      // ~/.argent/tmp for the one file that is not in it.
+      const oldest = path.join(dir, "argent-logs-15-1.log");
+      const newest = path.join(dir, "argent-logs-15-2.log");
+      const own = path.join(dir, "argent-logs-15-3.log");
+      for (const file of [oldest, newest, own]) fs.writeFileSync(file, "x");
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "both ids", {
+        cause: "runtime-death",
+        keptAt: oldest,
+      });
+      // A device_mismatch sends the next connect at the logicalDeviceId alone,
+      // which is the id the session then answers to by itself.
+      recordReapedSession("js-runtime-debugger", ["logical-abc"], "logical only", {
+        cause: "runtime-death",
+        keptAt: newest,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "both ids again", {
+        cause: "runtime-death",
+        keptAt: own,
+      });
+
+      // The exact-ids match is the FIRST record, not the last.
+      expect(fs.existsSync(oldest)).toBe(false);
+      expect(fs.existsSync(newest)).toBe(true);
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("2 earlier sessions that answered here");
+      expect(message).toContain("The log file one of them kept went with it");
+      expect(message).toContain(
+        "Anything the others left is still in ~/.argent/tmp, named by nothing"
+      );
+      expect(message).not.toContain("the last of them");
+      expect(message).not.toContain("the earlier ones");
+    });
+
+    it("keeps the file of a record filed under as many ids as this one, but not the same ones", () => {
+      // Cardinality is not identity. Two bundles on one device share the udid
+      // and differ by logicalDeviceId, so a two-id write lands on a two-id
+      // record whose second id it never named - the stranger-session shape the
+      // exact-match rule exists to refuse, arriving at the same size.
+      const kept = path.join(dir, "argent-logs-16-1.log");
+      const other = path.join(dir, "argent-logs-16-2.log");
+      const own = path.join(dir, "argent-logs-16-3.log");
+      for (const file of [kept, other, own]) fs.writeFileSync(file, "x");
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "first bundle", {
+        cause: "runtime-death",
+        keptAt: kept,
+      });
+      // Takes logical-abc off the first record, leaving it answering under the
+      // udid alone - so the write below covers it and reaches the file rule.
+      recordReapedSession("js-runtime-debugger", ["logical-abc"], "re-targeted", {
+        cause: "runtime-death",
+        keptAt: other,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-xyz"], "second bundle", {
+        cause: "runtime-death",
+        keptAt: own,
+      });
+
+      expect(fs.existsSync(kept)).toBe(true);
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("An earlier session that answered here");
+      expect(message).toContain("Any log file it left is still in ~/.argent/tmp");
+    });
+
+    it("leaves an event reachable under the id filed SECOND out of the count", () => {
+      // Which of a record's ids the narrower write keeps is not the store's to
+      // choose: reading the residual set one key at a time and stopping at the
+      // first would find the kept id and call the record covered. Its mirror
+      // above narrows to the id filed second; this one narrows to the first.
+      const kept = path.join(dir, "argent-logs-17-1.log");
+      const own = path.join(dir, "argent-logs-17-2.log");
+      for (const file of [kept, own]) fs.writeFileSync(file, "x");
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "both ids", {
+        cause: "runtime-death",
+        keptAt: kept,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID], "udid only", {
+        cause: "runtime-death",
+        keptAt: own,
+      });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).not.toContain("ended holding output nobody read");
+      // Still answering under the id this write did not name, file and all.
+      expect(fs.existsSync(kept)).toBe(true);
+      expect(takeReapedSession("js-runtime-debugger", "logical-abc")?.salvage).toBe("both ids");
+    });
+
+    it("calls a file the filesystem would not let it unlink a leave, not a take", () => {
+      // The take is the one claim with nothing behind it to check later: the
+      // leave is re-read against disk when the message is composed, so only
+      // this one can go on asserting a deletion that never happened. A read-only
+      // ~/.argent/tmp is the reachable way there - the writer holds its fd from
+      // before, so it keeps appending to a file it can no longer remove.
+      const locked = fs.mkdtempSync(path.join(dir, "locked-"));
+      const kept = path.join(locked, "argent-logs-18-1.log");
+      const own = path.join(dir, "argent-logs-18-2.log");
+      const probe = path.join(locked, "probe");
+      for (const file of [kept, own, probe]) fs.writeFileSync(file, "x");
+      recordReapedSession("js-runtime-debugger", [UDID], "first", {
+        cause: "runtime-death",
+        keptAt: kept,
+      });
+      fs.chmodSync(locked, 0o500);
+      try {
+        // Root ignores the mode, and then there is nothing here to pin. Probed
+        // on a file that exists: an unlink of a missing one reports ENOENT
+        // before it reports the mode, so it cannot tell the two apart.
+        let refused = false;
+        try {
+          fs.unlinkSync(probe);
+        } catch {
+          refused = true;
+        }
+        if (!refused) return;
+        recordReapedSession("js-runtime-debugger", [UDID], "second", {
+          cause: "runtime-death",
+          keptAt: own,
+        });
+
+        expect(fs.existsSync(kept)).toBe(true);
+        const message = describeReapedSession(
+          takeReapedSession("js-runtime-debugger", UDID)!,
+          "JS-runtime debugger session"
+        );
+        expect(message).not.toContain("went with it");
+        expect(message).toContain("Any log file it left is still in ~/.argent/tmp");
+      } finally {
+        fs.chmodSync(locked, 0o700);
+      }
     });
 
     it("says nothing about a file when neither event ever kept one", () => {

@@ -39,10 +39,10 @@ export const debuggerConnectTool: ToolDefinition<
      * nowhere. Names the log file the teardown left on disk, says it has since
      * been reclaimed, or — when there was no file to keep, because the teardown
      * deleted it, the writer never created one, or something removed it since —
-     * that those entries went with it. Where it reports a replaced session too,
-     * it says separately whether that one's file went with it, or is still in
-     * `~/.argent/tmp` under no name — and says neither where there is nothing
-     * of theirs left for the agent to reach.
+     * that those entries went with it. Where it reports replaced sessions too,
+     * it says separately that one of their files went with it, that anything
+     * they left is in `~/.argent/tmp` under no name, or both — and neither
+     * where there is nothing of theirs left for the agent to reach.
      * Reported here because this call is the prescribed recovery step after a
      * crash, and it consumes the record that names the file.
      */

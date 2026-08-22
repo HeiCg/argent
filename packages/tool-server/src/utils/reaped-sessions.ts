@@ -74,20 +74,21 @@ export interface ReapedSession {
    */
   superseded?: number;
   /**
-   * …and the kept log file behind the event this write replaced directly was
+   * …and the kept log file behind one of the events this write replaced was
    * reclaimed with it, so there is not even a file left to find. Separate from
    * {@link superseded} because the reclaim needs both events to have kept one
-   * AND to have answered to the same ids — true of at most the one record this
-   * write replaced directly. What became of the files behind the ones its count
-   * carries is {@link supersededFilesLeft}'s to say.
+   * AND to have answered to the same ids — true of at most one of them, since
+   * two live events never share a filed id set. What became of the files behind
+   * the rest is {@link supersededFilesLeft}'s to say.
    */
   supersededFileTaken?: boolean;
   /**
    * …and the log files the replaced records kept that this write neither took
    * nor named, so a listing of `~/.argent/tmp` is the only way left to them.
    * Separate from {@link supersededFileTaken} because that one answers for the
-   * record replaced directly while {@link superseded} reaches past it: a chain
-   * can take the newest file and leave an older one sitting on disk.
+   * single record whose ids matched while {@link superseded} reaches past it: a
+   * write can take one replaced record's file and leave another's on disk,
+   * either way round.
    *
    * Paths rather than a flag for the reason {@link keptAt} keeps one: a
    * breadcrumb has no expiry and the day-old sweep does, so whether there is
@@ -242,8 +243,9 @@ export function recordReapedSession(
     // that path — which bounds an UNREAD crash loop that keeps reconnecting the
     // same way to one kept file per device, since every crash in such a loop
     // keeps one. A loop that alternates the connect id with the logicalDeviceId
-    // a mismatch told it to use never files the same ids twice running, so no
-    // step of one is comparable and every file waits for the sweep. A teardown
+    // a mismatch told it to use matches only every other step — the comparison
+    // reaches every record a write displaces, not just the one before it — so it
+    // reclaims every second file and leaves the rest to the sweep. A teardown
     // keeps none and so reclaims none: it would spend an unread crash log to
     // save a file the sweep collects anyway. A loop whose notes ARE read is not
     // bounded here either — the read spends the event, leaving nothing to
@@ -266,19 +268,26 @@ export function recordReapedSession(
     }
     for (const carried of previous.carriedFiles) filesLeftUnnamed.add(carried);
   }
-  if (replacedUnread > 0) {
-    const left = [...filesLeftUnnamed];
-    for (const entry of filedNow) {
-      entry.superseded = replacedUnread;
-      if (orphanedFiles.size > 0) entry.supersededFileTaken = true;
-      if (left.length > 0) entry.supersededFilesLeft = left;
-    }
-  }
+  // Before the flags below, so they answer for what is on disk rather than for
+  // what was intended: an unlink the filesystem refuses leaves a file only a
+  // listing can reach, which is a leave. One already gone is a take either way
+  // — no route to it is what the take reports.
+  let anyTaken = false;
   for (const file of orphanedFiles) {
     try {
       fs.unlinkSync(file);
     } catch {
       // already gone, or never ours
+    }
+    if (fs.existsSync(file)) filesLeftUnnamed.add(file);
+    else anyTaken = true;
+  }
+  if (replacedUnread > 0) {
+    const left = [...filesLeftUnnamed];
+    for (const entry of filedNow) {
+      entry.superseded = replacedUnread;
+      if (anyTaken) entry.supersededFileTaken = true;
+      if (left.length > 0) entry.supersededFilesLeft = left;
     }
   }
 }
@@ -327,21 +336,23 @@ function describeReplacedRecords(entry: ReapedSession): string {
   // path with it. Anything that starts keeping one for another kind needs
   // wording of its own here, not this directory.
   //
-  // The two flags are measured on different records — the take on the one
-  // replaced directly, the leave on any of them — so each speaks only for
-  // itself. Where neither is set there is nothing of theirs to find: they kept
-  // no file, or the only one they kept is the one this answer already names.
+  // The two flags are measured on different records — the take on the one whose
+  // ids matched, the leave on any of them — so each speaks only for itself.
+  // Where neither is set there is nothing of theirs to find: they kept no file,
+  // the only one they kept is the one this answer already names, or the sweep
+  // has been through what they left.
   // Checked here, not where it was recorded: the sweep runs on a schedule of
   // its own, and the same breadcrumb that outlives this session's file outlives
   // theirs.
   const anyLeft = entry.supersededFilesLeft?.some((file) => fs.existsSync(file)) ?? false;
   const file = entry.supersededFileTaken
-    ? // A take and a leave together can only mean the leave was an earlier
-      // one's: the record replaced directly is the one whose file went.
-      ` The log file ${count === 1 ? "it" : "the last of them"} kept went with it.` +
-      (anyLeft
-        ? ` Anything the earlier ones left is still in ~/.argent/tmp, named by nothing.`
-        : ``)
+    ? // Which of them lost its file is not sayable past a count of one: a write
+      // replaces every record its ids reach, and the take falls on whichever of
+      // those was filed under exactly this id set — as readily the oldest as the
+      // newest. Naming an order here would send a reader to ~/.argent/tmp for
+      // the one file that is not there.
+      ` The log file ${count === 1 ? "it" : "one of them"} kept went with it.` +
+      (anyLeft ? ` Anything the others left is still in ~/.argent/tmp, named by nothing.` : ``)
     : anyLeft
       ? ` Any log file ${they} left is still in ~/.argent/tmp, named by nothing.`
       : ``;
