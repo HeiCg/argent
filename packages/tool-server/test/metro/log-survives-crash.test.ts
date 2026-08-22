@@ -266,7 +266,9 @@ describe("console logs across an app crash", () => {
     // The path, and a file actually there to be read at it.
     expect(after.note).toContain(logPath);
     // One entry, counted and worded as one.
-    expect(after.note).toContain("the 1 captured console entry it holds");
+    // A kept log runs to MAX_ENTRIES, so the note must not send an agent to read
+    // the whole file.
+    expect(after.note).toContain("grep that file for the 1 captured console entry it holds");
     expect(fs.readFileSync(logPath, "utf-8")).toContain("CRITICAL pre-crash error");
     // The no-file arm belongs to a death that kept nothing; this one kept a
     // file, so the note has a path to name.

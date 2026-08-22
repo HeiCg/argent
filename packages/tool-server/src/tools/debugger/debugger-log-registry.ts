@@ -167,10 +167,11 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
         const note = withheld ? undefined : takeReapedNote(params.device_id, scope);
         const result = buildNotConnected(reason, err, params, { reportsOwnNote: true });
         // `guidance` is the field an agent acts on, and these strings are
-        // written for `debugger-status`, whose answers never carry a note: the
-        // five reasons that can carry one — a crashed Chromium renderer's
-        // `cdp_unreachable` among them — mention none at all. So this tool says
-        // what its own result holds before the rest of the guidance speaks for
+        // written for `debugger-status`, whose answers never carry a note — so
+        // one that mentions a note sends the reader HERE to fetch it, which is
+        // backwards in this tool's own answer, and the rest mention none at all,
+        // a crashed Chromium renderer's `cdp_unreachable` included. So this tool
+        // says what its own result holds beside the guidance, which speaks for
         // the general case.
         //
         // The withheld answer says neither: it is holding a breadcrumb it did
@@ -182,11 +183,9 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           ...(note ? { note } : {}),
           guidance: note
             ? `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`
-            : `This result has no note: no unread record of a previous session under this ${
-                scope ? "device id and port" : "device id"
-              }. One is filed only for a session that ended holding console history, and the first read of it spends it. ${
-                result.guidance
-              }`,
+            : `${result.guidance} This result has no note: no unread record of a previous session ` +
+              `under this ${scope ? "device id and port" : "device id"}. One is filed only for a ` +
+              `session that ended holding console history, and the first read of it spends it.`,
         };
       }
     },

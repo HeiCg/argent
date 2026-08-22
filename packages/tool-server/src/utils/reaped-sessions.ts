@@ -152,14 +152,14 @@ export function recordReapedSession(
     const leftovers = [...previous.keys].filter((k) => !keys.has(k));
     // A previous event keeps its copies, and its file, unless it answered
     // everywhere this one does — matched or narrowed, the only shapes that
-    // prove one device. An id it holds and this one does not name reads the
-    // same whether that is `selectTarget`'s one-device fallback minting a
-    // stranger's session on the crashed device's logicalDeviceId or one device
-    // growing its id set back, and on the first reading taking the entry takes
-    // the log file it is holding for the device that crashed. So the grown case
-    // leaves a file to the day-old sweep rather than the stranger's case losing
-    // a crash log outright; a second app on this port goes incomparable and
-    // waits for that sweep too.
+    // prove one device. An id THIS one names that the previous never answered
+    // to reads the same whether it is one device growing its id set back or
+    // `selectTarget`'s one-device fallback minting a stranger's session on the
+    // crashed device's logicalDeviceId, and on that second reading taking the
+    // entry takes the log file it is holding for the device that crashed. So
+    // the grown case leaves a file to the day-old sweep rather than the
+    // stranger's case losing a crash log outright; a second app on this port
+    // goes incomparable and waits for that sweep too.
     const standsIn = [...keys].every((k) => previous.keys.has(k));
     if (!standsIn) continue;
     // Half an event explains nothing: a copy left behind would answer some
@@ -224,9 +224,10 @@ export function takeReapedSession(
  * `stop-simulator-server` cascades into it through `ChromiumCdp` (its documented
  * behaviour), and on Apple or Android `react-profiler-start` disposes the
  * debugger and the profiler session whenever it finds either in a state it
- * cannot reuse. That tool declares no chromium and no vega platform, and nothing
- * depends on a screen recording or a native trace at all, so those keep the
- * unnarrowed family. A `runtime-death` narrows that: the app itself went away, so
+ * cannot reuse. That tool declares no chromium and no vega platform, and neither
+ * a screen recording nor a native trace declares a dependency for any teardown
+ * to cascade through, so for those the sentence stops after the first member. A
+ * `runtime-death` narrows that: the app itself went away, so
  * pointing at the teardown family would send an agent hunting for a tool call,
  * or another agent, that never touched this session. It does NOT name the culprit either —
  * the disposer sees a dropped socket, which a crash, a force-quit and a
@@ -248,9 +249,12 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
       `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
       `a device transport dropped) — which ends the session the same way a teardown does.`;
   // Only a debugger session has a second tool that can have disposed it, and
-  // which one depends on the platform. Nothing depends on a screen recording or
-  // a native trace, so naming either tool to those would send an agent after a
-  // call that could not have reached them.
+  // then only on two platforms: `stop-simulator-server` reaches a Chromium one
+  // through the ChromiumCdp it declares a dependency on, and
+  // `react-profiler-start` clears an Apple or Android one it cannot reuse. A
+  // Vega session has neither, and a screen recording and a native trace declare
+  // no dependency for a teardown to cascade through, so naming either tool to
+  // those would send an agent after a call that could not have reached them.
   const otherReacher =
     entry.kind !== "js-runtime-debugger"
       ? undefined
@@ -263,8 +267,8 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
   const why =
     entry.cause === "runtime-death"
       ? runtimeDeath
-      : `by a stop-all-simulator-servers, which reaps every service a device owns, or by ` +
-        (otherReacher ?? `another teardown that reaches the same services`) +
+      : `by a stop-all-simulator-servers, which reaps every service a device owns` +
+        (otherReacher ? `, or by ${otherReacher}` : ``) +
         `. One tool-server serves every agent using this argent install, so this may have been ` +
         `another agent rather than your own call.`;
   // The salvage clause was written when the file was there; a breadcrumb nobody

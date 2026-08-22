@@ -162,8 +162,7 @@ describe("the reaped-session key", () => {
       takeReapedSession("screen-recording", UDID)!,
       "screen recording"
     );
-    expect(message).toContain("stop-all-simulator-servers");
-    expect(message).toContain("another teardown that reaches the same services");
+    expect(message).toContain("reaps every service a device owns. One tool-server");
     expect(message).not.toContain("react-profiler-start");
     expect(message).not.toContain("a stop-simulator-server");
   });
@@ -177,7 +176,7 @@ describe("the reaped-session key", () => {
       takeReapedSession("js-runtime-debugger", "amazon-4a27df03c9777152")!,
       "JS-runtime debugger session"
     );
-    expect(message).toContain("another teardown that reaches the same services");
+    expect(message).toContain("reaps every service a device owns. One tool-server");
     expect(message).not.toContain("react-profiler-start");
   });
 
@@ -242,7 +241,7 @@ describe("the reaped-session key", () => {
       expect(fs.existsSync(newer)).toBe(true);
     });
 
-    it("leaves the file of an event whose ids this one does not cover", () => {
+    it("leaves the file of an event that never answered to every id this one names", () => {
       // The id set can grow back: a session keyed by the logicalDeviceId alone,
       // then one that files both ids again. Nothing can reach the older record
       // afterwards, but that shape is the stranger's fallback shape as well —

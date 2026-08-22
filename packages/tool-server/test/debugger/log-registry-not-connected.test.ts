@@ -157,7 +157,9 @@ describe("debugger-log-registry not-connected results", () => {
     // own: the shared guidance strings are written for `debugger-status`, whose
     // answers never set `note`, so none of them accounts for one.
     expect(result.guidance).not.toContain("Read this result's note");
-    expect(result.guidance.startsWith("This result has no note")).toBe(true);
+    // The reason's own instruction leads; the absence is explained after it.
+    expect(result.guidance.startsWith("Metro is not running on this port")).toBe(true);
+    expect(result.guidance).toContain("This result has no note");
     // What it says about the world is only what the store can know. Three states
     // reach an empty store — no session ended here, one ended having logged
     // nothing (the record is gated on `captured > 0`), or an earlier read spent
@@ -231,7 +233,8 @@ describe("debugger-log-registry not-connected results", () => {
 
     expect(result.reason).toBe("no_app_connected");
     expect(result.guidance).not.toContain("debugger-log-registry");
-    expect(result.guidance.startsWith("This result has no note")).toBe(true);
+    expect(result.guidance.startsWith("Metro is running but no app is attached")).toBe(true);
+    expect(result.guidance).toContain("This result has no note");
     // The recovery this reason exists to give is still all there.
     expect(result.guidance).toContain("launch-app / restart-app");
   });
@@ -266,7 +269,8 @@ describe("debugger-log-registry not-connected results", () => {
 
     expect(result.reason).toBe("cdp_unreachable");
     expect("port" in result).toBe(false);
-    expect(result.guidance.startsWith("This result has no note")).toBe(true);
+    expect(result.guidance.startsWith("The app's CDP endpoint could not be reached")).toBe(true);
+    expect(result.guidance).toContain("This result has no note");
     expect(result.guidance).toContain("previous session under this device id.");
     expect(result.guidance).not.toContain("device id and port");
   });
