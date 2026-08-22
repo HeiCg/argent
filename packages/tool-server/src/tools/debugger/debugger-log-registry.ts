@@ -26,7 +26,8 @@ interface LogRegistryResponse extends LogStats {
    *   `stop-all-simulator-servers`, or by its runtime going away. Without it a
    *   zero here reads as "nothing was ever logged on this device", which is
    *   wrong about the session that just died. Names the old log file when that
-   *   teardown left it on disk, which a runtime death does.
+   *   teardown left it on disk, which a runtime death does unless its writer
+   *   never opened one.
    * - {@link LogStats.file} names a path that is not there: `open()` failed and
    *   the writer buffered instead, or something removed the file after it was
    *   written. The counts and clusters are real; the file is not.
@@ -55,7 +56,7 @@ const zodSchema = z.object({
   device_id: z
     .string()
     .describe(
-      "Device id from list-devices — the SAME id you passed to debugger-connect (iOS simulator UDID, Android serial, Vega serial, or Chromium device id). The logicalDeviceId debugger-connect returns also resolves here, but prefer the stable list-devices id."
+      "Device id from list-devices — the SAME id you passed to debugger-connect (iOS simulator UDID, Android serial, Vega serial, or Chromium device id). The logicalDeviceId debugger-connect returns also resolves here for as long as that session lives, but prefer the stable list-devices id: once the session ends the alias goes with it, so the same logicalDeviceId then opens a SECOND debugger session for one device."
     ),
 });
 
@@ -72,7 +73,7 @@ export function createDebuggerLogRegistryTool(
     },
     description: `Get a summary of all console logs captured from the app's JS runtime.
 Returns the log file path, entry counts by level, and message clusters (grouped by similarity). Works against Hermes (iOS / Android / Vega) and V8 (Chromium).
-Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. ALWAYS check { note } before acting on the rest: it appears only when something would otherwise mislead you, and it says which of two things it is — or both, when both hold. Either the previous debugger session for this device was torn down while holding captured logs — by a stop-all-simulator-servers, or by the app's JS runtime going away — so the counts here are a new session's own and a zero says nothing about what the old one captured, and when that teardown left the old log file on disk (a crash or force-quit does) the note names its path to read instead. Or nothing is at { file } — the writer could not create it, or something has removed it since — so it is not there to grep and the counts and clusters here are all there is. Absent a note, empty means nothing has been captured since this session began, and { file } is readable.
+Use when investigating warnings, errors, or unexpected output — call this first for an overview, then read the returned file for details. ALWAYS check { note } before acting on the rest: it appears only when something would otherwise mislead you, and it says which of two things it is — or both, when both hold. Either the previous debugger session for this device was torn down while holding captured logs — by a stop-all-simulator-servers, or by the app's JS runtime going away — so the counts here are a new session's own and a zero says nothing about what the old one captured, and when that teardown left the old log file on disk (a crash or force-quit does, unless the writer never opened one) the note names its path to read instead. Or nothing is at { file } — the writer could not create it, or something has removed it since — so it is not there to grep and the counts and clusters here are all there is. Absent a note, empty means nothing has been captured since this session began, and { file } is readable.
 When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } and no log file of its own — follow the guidance (do not retry in a loop). A crashed app reaches that state too, so check { note } there as well: when the dead session left its log file behind the note names it, and that file is readable even though the debugger is not. The one exception is reason "reconnecting": the record is held for the retry that guidance asks for, so no note there says nothing about what the previous session left. A "connected" result's stats may come from a session whose socket has since died — use debugger-status, not this tool, to judge debugger health.`,
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,

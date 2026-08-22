@@ -247,8 +247,11 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
       `a tab or window closing, the browser quitting) or its CDP endpoint stopped being ` +
       `reachable — which ends the session the same way a teardown does.`
     : `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
-      `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
-      `a device transport dropped) — which ends the session the same way a teardown does.`;
+      `a force-quit, a restart-app), the runtime stopped being reachable (Metro restarted, ` +
+      `a device transport dropped), or another debugger attached and Metro closed this one, ` +
+      `its inspector proxy allowing one per device — which ends the session the same way a ` +
+      `teardown does. A debugger-status that answers connected tells the last of the three ` +
+      `from the other two: the app is up, and only the session was lost.`;
   // Only a debugger session has another tool that can have disposed it, and not
   // on every platform: a Chromium one goes with the ChromiumCdp it declares
   // a dependency on, which `stop-simulator-server` and a `flow-run` reclaiming
@@ -293,8 +296,9 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
  * while it still held console history nobody had read.
  *
  * Pass `keptAt` — the log file's path — when the teardown left the file on
- * disk, which a runtime death does; omit it when there is nothing to read,
- * whether the teardown unlinked the file or it was never created. What
+ * disk, which a runtime death does whenever the writer had one; omit it when
+ * there is nothing to read, whether the teardown unlinked the file, the writer
+ * never opened one, or something has removed it since. What
  * the clause settles is only whether the old entries are still readable
  * somewhere: why the session ended is the {@link ReapedSessionCause} clause's
  * job, and what an empty registry means belongs to the one consumer that has a

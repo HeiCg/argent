@@ -59,8 +59,12 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
     "launch or restart the RN app on the target device (launch-app / restart-app), wait a few " +
     "seconds for the bundle to load, then retry once.",
   device_mismatch:
-    "The device_id does not match any debugger target on this Metro. Re-target with the " +
-    "logicalDeviceId listed in the detail message, or give the device its own Metro port.",
+    "The device_id does not match any debugger target on this Metro; while two or more devices " +
+    "share the port, only a logicalDeviceId matches one, so a list-devices udid or serial is " +
+    "refused every time. A dead session's console-log record is filed under the id you asked " +
+    "with, and a re-targeted call asks under a different one — read debugger-log-registry's " +
+    "note with this same device_id first. Then re-target with the logicalDeviceId listed in " +
+    "the detail message, or give the device its own Metro port.",
   cdp_unreachable:
     "The runtime's CDP endpoint could not be reached. Verify the app is running " +
     "(launch-app), then call debugger-connect and retry once.",
@@ -142,6 +146,11 @@ const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
  * code for it — debugger-log-registry never emits it.
  */
 const OWN_NOTE_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
+  device_mismatch:
+    "The device_id does not match any debugger target on this Metro; while two or more devices " +
+    "share the port, only a logicalDeviceId matches one, so a list-devices udid or serial is " +
+    "refused every time. Re-target with the logicalDeviceId listed in the detail message, or " +
+    "give the device its own Metro port.",
   no_app_connected:
     "Metro is running but no app is attached; a crashed app reads as this too. Do not retry " +
     "immediately — launch or restart the RN app on the target device (launch-app / " +

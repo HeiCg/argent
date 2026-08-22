@@ -158,14 +158,36 @@ describe("guidance content", () => {
     expect(guidance).toContain("launch-app / restart-app");
   });
 
+  // The re-target this reason asks for is the one action that changes the id the
+  // next call asks under, and the record is filed under the id that was refused
+  // — so the shared string has to name the tool, and the tool that carries the
+  // note has to not be sent back to itself for it.
+  it("device_mismatch: the shared string sends the reader to the note, its own answer does not", () => {
+    const params = { port: 8081, device_id: "emulator-5554" };
+    const err = coded(FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH);
+    const shared = buildNotConnected("device_mismatch", err, params).guidance;
+    expect(shared).toContain("read debugger-log-registry's note with this same device_id first");
+    const own = buildNotConnected("device_mismatch", err, params, {
+      reportsOwnNote: true,
+    }).guidance;
+    expect(own).not.toContain("debugger-log-registry");
+    // Same refusal and same recovery from either caller.
+    for (const guidance of [shared, own]) {
+      expect(guidance).toContain("only a logicalDeviceId matches one");
+      expect(guidance).toContain("give the device its own Metro port");
+    }
+  });
+
   // Only the reasons whose shared string names the tool need an override, and
   // the rest must keep reading identically from either caller — an override map
-  // that grew a second entry by accident would fork guidance no reason needs.
+  // that grew an entry by accident would fork guidance no reason needs.
+  // `stale_connection` names the tool and still needs none: debugger-status
+  // mints it and debugger-log-registry never emits it, so no answer that
+  // carries the note ever carries this string.
   it("every other reason reads the same from the tool that reports the note", () => {
     const params = { port: 8081, device_id: "emulator-5554" };
     for (const reason of [
       "metro_not_running",
-      "device_mismatch",
       "cdp_unreachable",
       "runtime_unresponsive",
       "reconnecting",
