@@ -4,8 +4,8 @@ import { expect } from "vitest";
  * The instructions the Chromium recovery exists to prevent. A pin counts what a
  * surface SAYS; nothing in one stops the opposite being appended after it, and
  * the appended sentence is the one a reader acts on last. Shared so the runtime
- * guidance strings and the prose surfaces are held to the same list — the two
- * drifted apart once already.
+ * guidance strings and the prose surfaces are held to one list rather than two
+ * that can drift apart.
  */
 const FORBIDDEN: [RegExp, string][] = [
   [/relaunch (it |the app )?anyway/i, "relaunching without the exit confirmed"],

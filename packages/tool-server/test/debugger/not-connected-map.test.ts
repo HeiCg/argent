@@ -143,7 +143,7 @@ describe("guidance platform-correctness", () => {
     );
     // Frozen is the likeliest cause, not the observable: what timed out is answered
     // by the inspector, so the JS thread's state is an inference this reason cannot
-    // support. The needle has to admit main's hedge ("it is likely frozen") too.
+    // support. The hedged form ("it is likely frozen") claims it just as much.
     expect(metro.guidance, "claims only what timed out").not.toMatch(
       /\bis (likely |probably )?frozen\b/i
     );
