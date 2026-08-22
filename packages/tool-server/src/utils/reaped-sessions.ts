@@ -3,14 +3,15 @@
  * held data nobody had retrieved.
  *
  * `stop-all-simulator-servers` disposes every device-owned service, including
- * the three that hold captured output. Disposing them is deliberate: each owns a
+ * those that hold captured output. Disposing them is deliberate: each owns a
  * spawned process or an open fd that must not outlive the session.
  *
  * What is not deliberate is what the owner is then told. `Registry._teardown`
  * nulls the node's instance, so the next tool call resolves a FRESH service
  * indistinguishable from one that never ran, and the stop tools answer "no
  * active session, call start first" for a capture that did run and whose output
- * may still be on disk — the one thing that is certainly false.
+ * may still be on disk. It reads as "you never started one", the one thing that
+ * is certainly false.
  *
  * So the disposer leaves a breadcrumb here and the tool that would otherwise
  * report absence reports the teardown instead. Module-global for the same
@@ -259,10 +260,10 @@ function describeReplacedRecords(entry: ReapedSession): string {
   if (count === 0) return "";
   const subject = count === 1 ? "An earlier session" : `${count} earlier sessions`;
   const they = count === 1 ? "it" : "they";
-  // Debugger-only wording: `keptAt` comes from the two debugger blueprints and
-  // nothing else, so a kind that starts keeping files needs its own directory
-  // named here. Existence is re-checked at read time because the day-old sweep
-  // runs on a schedule of its own.
+  // Naming ~/.argent/tmp is the debugger's alone: `keptAt` comes from the two
+  // debugger blueprints and nothing else, so a kind that starts keeping files
+  // needs wording of its own here. Existence is re-checked at read time because
+  // the day-old sweep runs on a schedule of its own.
   const anyLeft = entry.supersededFilesLeft?.some((file) => fs.existsSync(file)) ?? false;
   const file = entry.supersededFileTaken
     ? // Which of them lost its file is not sayable past a count of one: a write
