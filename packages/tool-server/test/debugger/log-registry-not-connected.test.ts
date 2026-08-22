@@ -273,6 +273,12 @@ describe("debugger-log-registry not-connected results", () => {
     expect(result.guidance).toContain("This result has no note");
     expect(result.guidance).toContain("previous session under this device id.");
     expect(result.guidance).not.toContain("device id and port");
+    // And it must not send this caller after the note it is itself holding.
+    // This IS the call the reference prescribes once a Chromium relaunch has
+    // stranded the record under the old port: made because that endpoint is
+    // known dead, and answered on the shared string by "make sure the app is
+    // running ... then retry once".
+    expect(result.guidance).not.toContain("debugger-log-registry's note");
   });
 
   it("leads the guidance with the note when the answer is carrying one", async () => {
