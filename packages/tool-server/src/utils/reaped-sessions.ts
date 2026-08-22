@@ -293,9 +293,12 @@ function describeReplacedRecords(entry: ReapedSession): string {
  * cannot reuse. That tool declares no chromium and no vega platform, and neither
  * a screen recording nor a native trace declares a dependency for any teardown
  * to cascade through, so a Vega debugger and those two kinds are where the
- * sentence stops after the first member. A `runtime-death` narrows that: no
- * `dispose()` ran, so pointing at the teardown family would send an agent
- * hunting for a tool call that never touched this session. It does NOT name the
+ * sentence stops after the first member. A `runtime-death` narrows that: on
+ * every path but one the socket closed with nothing having called `dispose()`,
+ * so pointing at the teardown family would send an agent hunting for a tool
+ * call that never touched this session. The exception is a Chromium teardown
+ * landing inside a tab switch, where the client is briefly socket-less with the
+ * renderer alive and a real dispose reads the same. It does NOT name the
  * culprit either — the disposer sees a dropped socket, which a crash, a
  * force-quit, a `restart-app` and Metro evicting this debugger for a new one
  * all produce alike. Which of those an agent can act on is
@@ -310,9 +313,10 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
   const isChromium = classifyDevice(entry.deviceId) === "chromium";
   const runtimeDeath = isChromium
     ? `its debugger connection dropped instead of being closed — the page went away (a crash, ` +
-      `a tab or window closing, the browser quitting) or its CDP endpoint stopped being ` +
-      `reachable — which ends the session the same way a teardown does. Nothing here ` +
-      `separates the two: the close reason that would is not kept.`
+      `a tab or window closing, the browser quitting), its CDP endpoint stopped being ` +
+      `reachable, or a teardown landed while a tab switch had the client between sockets — ` +
+      `which ends the session the same way a teardown does. Nothing here separates the ` +
+      `three: the close reason that would is not kept.`
     : `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
       `a force-quit, a restart-app), the runtime stopped being reachable (Metro restarted, ` +
       `a device transport dropped), or another debugger attached and Metro closed this one, ` +

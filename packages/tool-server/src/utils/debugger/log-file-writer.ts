@@ -114,9 +114,8 @@ export class LogFileWriter {
 
   /**
    * Mark the file live for the pruner. Through the fd because that is what this
-   * writer owns: the path can be reclaimed under it — by a sweep from a
-   * tool-server old enough to predate this keepalive, or by the breadcrumb
-   * store — and `utimesSync` would throw there.
+   * writer owns: nothing stops the path being unlinked under a live writer, and
+   * `utimesSync` would throw there while the fd goes on working.
    */
   private touch(): void {
     if (this.fd === null) return;

@@ -242,8 +242,10 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
 
   describe("when the connect id and the logicalDeviceId differ", () => {
     // Every case above connects with LOGICAL_ID, so `api.logicalDeviceId ===
-    // deviceId` and the disposer files one id rather than two —
-    // that is the Chromium/Vega shape. On iOS/Android the caller connects with
+    // deviceId` and the disposer files one id rather than two — the Chromium
+    // shape, where the two are one string by construction. Vega reaches the
+    // same single key the other way: a legacy inspector reports no
+    // logicalDeviceId, so the guard never pushes a second one. On iOS/Android the caller connects with
     // a udid/serial and Metro echoes its own logical id, so one teardown writes
     // two breadcrumbs. They describe one event and must be spent as one.
     const CONNECT_ID = "00000000-0000-0000-0000-0000000000ab";
@@ -345,8 +347,8 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     it("keeps the reaped device's history when a stranger's session is torn down on it", async () => {
       // The write side of the same misresolve: the stranger's own teardown
       // files under the logicalDeviceId it borrowed, so a supersede on that one
-      // shared id would drop the crashed device's breadcrumb — and reclaim the
-      // log file it was holding for it — before the owner ever read it.
+      // shared id would drop the owner's breadcrumb before the owner read it,
+      // and answer for a device the stranger's session never ran on.
       const urn = await connectAndCapture(CONNECT_ID, 23);
       await registry.disposeService(urn);
 

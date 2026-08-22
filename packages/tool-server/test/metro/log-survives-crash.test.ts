@@ -651,11 +651,10 @@ describe("console logs across an app crash", () => {
   });
 
   it("reads the socket before the dispose awaits anything", async () => {
-    // The read decides whether the file is kept, and everything it can see
-    // changes under an await: the console server's close drops its subscribers,
-    // and `disconnect()` runs a close handshake. Taken after either one, an
-    // explicit teardown starts reporting itself as a crash and keeping files
-    // nothing will ever reclaim but the pruner.
+    // The read decides whether the file is kept, and the socket it reads is
+    // closed by the `disconnect()` this same dispose awaits two statements
+    // later. Moved below that, an explicit teardown starts reporting itself as
+    // a crash and keeping files nothing will ever reclaim but the pruner.
     await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "order-device" });
     cdpConn!.send(
       JSON.stringify({

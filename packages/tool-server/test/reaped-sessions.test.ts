@@ -145,9 +145,11 @@ describe("the reaped-session key", () => {
     // And still offers the family it CAN see, in the terms that platform has.
     expect(message).toContain("the page went away");
     expect(message).toContain("the browser quitting");
-    // And the same disclaimer the Metro arm carries: this platform has one
-    // cause fewer, but no more ability to say which of them it was.
-    expect(message).toContain("Nothing here separates the two");
+    // And the same disclaimer the Metro arm carries, over the same count: a
+    // teardown landing while a tab switch has the client between sockets is
+    // filed as a death, so a dispose IS among the causes this cannot rule out.
+    expect(message).toContain("a teardown landed while a tab switch had the client");
+    expect(message).toContain("Nothing here separates the three");
     expect(message).toContain("the log file is kept at /x");
   });
 
@@ -214,14 +216,19 @@ describe("the reaped-session key", () => {
   });
 
   it("still reports a teardown whose two ids differ only in case", () => {
-    // `key()` lowercases, so both spellings land in one slot: the second write
-    // must not read the first as a previous event and supersede itself, which
-    // would drop the only record of a teardown that did happen.
+    // `key()` lowercases, so both spellings land in one slot. The collision
+    // scan runs before the writes for this reason: reading the store after
+    // them, one event would find its own first copy and report itself as
+    // having replaced a session that never existed.
     recordReapedSession("js-runtime-debugger", [UDID, UDID.toLowerCase()], "same device", {
       cause: "runtime-death",
     });
 
-    expect(takeReapedSession("js-runtime-debugger", UDID)?.salvage).toBe("same device");
+    const entry = takeReapedSession("js-runtime-debugger", UDID);
+    expect(entry?.salvage).toBe("same device");
+    expect(describeReapedSession(entry!, "JS-runtime debugger session")).not.toContain(
+      "earlier session"
+    );
   });
 
   it("defaults to the teardown family, so only a proven crash claims one", () => {
