@@ -188,7 +188,6 @@ describe("guidance content", () => {
     const params = { port: 8081, device_id: "emulator-5554" };
     for (const reason of [
       "metro_not_running",
-      "cdp_unreachable",
       "runtime_unresponsive",
       "reconnecting",
       "stale_connection",
@@ -197,6 +196,36 @@ describe("guidance content", () => {
       expect(buildNotConnected(reason, err, params, { reportsOwnNote: true }).guidance).toBe(
         buildNotConnected(reason, err, params).guidance
       );
+    }
+  });
+
+  // The one reason both platforms reach that also has a pointer to drop, so it
+  // is the only one whose guidance varies along both axes at once. On Chromium
+  // it is also the ONLY reason a crashed renderer produces, which is what makes
+  // the missing pointer cost the whole log rather than an ordering hint.
+  it("points cdp_unreachable at the note, except in the answer that carries it", () => {
+    const err = coded(FAILURE_CODES.DEBUGGER_CDP_CONNECT_FAILED);
+    const metro = { port: 8081, device_id: "emulator-5554" };
+    const chromium = { port: 8081, device_id: "chromium-cdp-9222" };
+
+    expect(buildNotConnected("cdp_unreachable", err, metro).guidance).toContain(
+      "debugger-log-registry's note names it"
+    );
+    expect(buildNotConnected("cdp_unreachable", err, chromium).guidance).toContain(
+      "debugger-log-registry's note names it"
+    );
+    // Chromium keeps its own recovery in both, rather than falling back to the
+    // RN wording the caller override is written in.
+    for (const opts of [undefined, { reportsOwnNote: true }]) {
+      expect(buildNotConnected("cdp_unreachable", err, chromium, opts).guidance).toContain(
+        "launch-app cannot start a Chromium app"
+      );
+    }
+    // And the tool holding the record is not sent to fetch it from itself.
+    for (const params of [metro, chromium]) {
+      expect(
+        buildNotConnected("cdp_unreachable", err, params, { reportsOwnNote: true }).guidance
+      ).not.toContain("debugger-log-registry's note");
     }
   });
 });

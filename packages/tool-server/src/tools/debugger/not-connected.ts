@@ -47,6 +47,30 @@ export interface DebuggerNotConnectedResult {
  * very CDP service that just failed, so pointing an agent at it from a
  * cdp_unreachable result would manufacture a guaranteed second failure.
  */
+/**
+ * `cdp_unreachable`'s two halves, kept apart because the second is dropped for
+ * the tool that carries the record itself. Everything a crash leaves is behind
+ * that pointer, and on Chromium this reason is the ONLY one a crashed renderer
+ * produces — a non-OPEN socket is `reconnecting`, and the re-resolve after the
+ * terminated cascade fails here — so an agent that follows this guidance
+ * straight to a relaunch never learns the kept log exists.
+ */
+const CDP_UNREACHABLE_RECOVERY =
+  "The runtime's CDP endpoint could not be reached. Verify the app is running " +
+  "(launch-app), then call debugger-connect and retry once.";
+const CDP_UNREACHABLE_NOTE_POINTER =
+  " Before you relaunch anything: a session whose runtime died holding console logs keeps " +
+  "its file, and debugger-log-registry's note names it.";
+const CHROMIUM_CDP_UNREACHABLE_RECOVERY =
+  "The app's CDP endpoint could not be reached (or did not answer like CDP — see " +
+  "detail). launch-app cannot start a Chromium app; make sure the app is running " +
+  "with --remote-debugging-port (for an Electron app, boot-device with " +
+  "electronAppPath relaunches it), then retry once.";
+const CHROMIUM_CDP_UNREACHABLE_NOTE_POINTER =
+  " Before you relaunch anything: a renderer that died holding console logs keeps its file, " +
+  "and debugger-log-registry's note names it — the record is filed under the CDP port, which " +
+  "is the device id, so relaunching on a port boot-device picks strands it.";
+
 const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
   metro_not_running:
     "Metro is not running on this port. Do not retry in a loop — the result will not change " +
@@ -66,9 +90,7 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
     "debugger-log-registry's note with this same device_id first. Then re-target with a " +
     "logicalDeviceId from the detail message, or give the device its own Metro port, which is " +
     "the only route for a legacy inspector that reports no logicalDeviceId at all.",
-  cdp_unreachable:
-    "The runtime's CDP endpoint could not be reached. Verify the app is running " +
-    "(launch-app), then call debugger-connect and retry once.",
+  cdp_unreachable: CDP_UNREACHABLE_RECOVERY + CDP_UNREACHABLE_NOTE_POINTER,
   runtime_unresponsive:
     "The runtime accepted the debugger connection but did not answer within the " +
     "timeout — it is likely frozen, or paused at a breakpoint. Do not retry in a " +
@@ -122,11 +144,7 @@ export function classifyNotConnected(err: unknown): DebuggerNotConnectedReason |
  * sparsely: reasons without an override fall back to GUIDANCE.
  */
 const CHROMIUM_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
-  cdp_unreachable:
-    "The app's CDP endpoint could not be reached (or did not answer like CDP — see " +
-    "detail). launch-app cannot start a Chromium app; make sure the app is running " +
-    "with --remote-debugging-port (for an Electron app, boot-device with " +
-    "electronAppPath relaunches it), then retry once.",
+  cdp_unreachable: CHROMIUM_CDP_UNREACHABLE_RECOVERY + CHROMIUM_CDP_UNREACHABLE_NOTE_POINTER,
   runtime_unresponsive:
     "The app accepted the debugger connection but did not answer within the " +
     "timeout — it is likely frozen. Do not retry in a loop (each attempt waits out " +
@@ -157,6 +175,19 @@ const OWN_NOTE_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
     "Metro is running but no app is attached; a crashed app reads as this too. Do not retry " +
     "immediately — launch or restart the RN app on the target device (launch-app / " +
     "restart-app), wait a few seconds for the bundle to load, then retry once.",
+  cdp_unreachable: CDP_UNREACHABLE_RECOVERY,
+};
+
+/**
+ * The Chromium overrides for that same caller. Needed because the platform
+ * override is consulted first, and `cdp_unreachable` is the one reason
+ * reachable on both platforms that also has a note pointer to drop: without an
+ * entry here the documented old-port lookup — the call an agent makes BECAUSE
+ * it knows that endpoint is dead — would answer by sending it to relaunch and
+ * retry the port it just abandoned.
+ */
+const CHROMIUM_OWN_NOTE_GUIDANCE: Partial<Record<DebuggerNotConnectedReason, string>> = {
+  cdp_unreachable: CHROMIUM_CDP_UNREACHABLE_RECOVERY,
 };
 
 export function buildNotConnected(
@@ -174,6 +205,7 @@ export function buildNotConnected(
     reason,
     detail: err instanceof Error ? err.message : String(err),
     guidance:
+      (isChromium && opts?.reportsOwnNote ? CHROMIUM_OWN_NOTE_GUIDANCE[reason] : undefined) ??
       (isChromium ? CHROMIUM_GUIDANCE[reason] : undefined) ??
       (opts?.reportsOwnNote ? OWN_NOTE_GUIDANCE[reason] : undefined) ??
       GUIDANCE[reason],
