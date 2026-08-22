@@ -930,7 +930,7 @@ describe("the reaped-session key", () => {
       expect(takeReapedSession("js-runtime-debugger", "logical-abc")?.salvage).toBe("both ids");
     });
 
-    it("calls a file the filesystem would not let it unlink a leave, not a take", () => {
+    it("calls a file the filesystem would not let it unlink a leave, not a take", (ctx) => {
       // The take is the one claim with nothing behind it to check later: the
       // leave is re-read against disk when the message is composed, so only
       // this one can go on asserting a deletion that never happened. A read-only
@@ -956,7 +956,7 @@ describe("the reaped-session key", () => {
         } catch {
           refused = true;
         }
-        if (!refused) return;
+        if (!refused) ctx.skip();
         recordReapedSession("js-runtime-debugger", [UDID], "second", {
           cause: "runtime-death",
           keptAt: own,

@@ -25,15 +25,15 @@ import { scopeTempHome } from "../helpers/temp-home";
  * look the same — which is why the file has to survive all of them.
  */
 
-// One of the factory's hard-failure paths — the console-log server's bind,
-// reached through `http.createServer`. Everything else here, this file's own
-// mock Metro included, needs a working one, so the flag is off by default and
-// flipped for exactly one call.
 // LogFileWriter mkdir -p's os.homedir()/.argent/tmp and this file asserts on
 // that directory's contents, which is only meaningful when nothing else writes
 // there — including the tool-server this developer may be running.
 scopeTempHome("argent-log-crash-home-");
 
+// One of the factory's hard-failure paths — the console-log server's bind,
+// reached through `http.createServer`. Everything else here, this file's own
+// mock Metro included, needs a working one, so the flag is off by default and
+// flipped for exactly one call.
 const httpControl = vi.hoisted(() => ({
   failCreateServer: false,
   /** Runs at the moment the bind fails, i.e. on the factory's way into its rollback. */

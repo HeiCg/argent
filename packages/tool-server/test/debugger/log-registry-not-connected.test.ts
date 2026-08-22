@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, afterAll, vi } from "vitest";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -46,6 +46,7 @@ const keptDir = fs.mkdtempSync(path.join(os.tmpdir(), "argent-kept-"));
 const keptLog = path.join(keptDir, "kept.log");
 const otherLog = path.join(keptDir, "k.log");
 for (const file of [keptLog, otherLog]) fs.writeFileSync(file, "logged");
+afterAll(() => fs.rmSync(keptDir, { recursive: true, force: true }));
 
 const mockTrack = vi.mocked(track);
 const outcomeCalls = () =>
