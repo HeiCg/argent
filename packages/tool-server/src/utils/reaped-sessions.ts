@@ -40,13 +40,15 @@ import { classifyDevice } from "./device-info";
 export type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
 
 /**
- * What ended the session. `runtime-death` is a closed socket where no
- * `dispose()` accounts for it — the app went away, the debugger lost its route
- * to it, or Metro handed the one debugger slot this device has to someone else.
- * It is read from the socket, so a Chromium dispose landing inside a tab
- * switch, which leaves the client briefly between sockets, is filed here too.
- * `teardown` is a `dispose()` whose caller the disposer cannot see. All the disposer reads is a socket that stopped being open, which
- * says the far end is unreachable and nothing about what made it so.
+ * What ended the session. `runtime-death` is a closed socket that no
+ * `dispose()` accounts for — the app went away, the debugger lost its route to
+ * it, or Metro handed the one debugger slot this device has to someone else;
+ * `teardown` is a `dispose()` whose caller the disposer cannot see.
+ *
+ * The socket is all the disposer reads, which says the far end is unreachable
+ * and nothing about what made it so — and files a Chromium dispose landing
+ * inside a tab switch, where the client is briefly between sockets, as a
+ * death.
  */
 type ReapedSessionCause = "teardown" | "runtime-death";
 
@@ -124,9 +126,9 @@ function key(kind: ReapedSessionKind, deviceId: string, scope?: string): string 
  * pass the same one. A Metro-backed debugger is per port, each session with its
  * own log file, so without the port a session ending on 8082 supersedes the
  * crash breadcrumb from 8081, and reclaims the file it named if it kept one of
- * its own. Omit it where a device
- * holds at most one session of the kind (a recording, a profiler trace), and on
- * Chromium, whose port is already inside the device id.
+ * its own. Omit it where a device holds at most one session of the kind (a
+ * recording, a profiler trace), and on Chromium, whose port is already inside
+ * the device id.
  */
 export function recordReapedSession(
   kind: ReapedSessionKind,

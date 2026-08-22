@@ -119,10 +119,9 @@ describe("LogFileWriter", () => {
 
     it("lets a kept file age out once the session that kept it has closed", () => {
       // The keep path returns early, and has to disarm the keepalive on its way
-      // out: `touch` runs off that timer and writes through the fd, and mtime is
-      // the only thing a sweep reads — so a writer
-      // that keeps both refreshes the file past every cutoff, and no sweep in
-      // any tool-server collects it.
+      // out: `touch` runs off that timer and writes through the fd, and mtime
+      // is the only thing a sweep reads — so a writer that keeps both refreshes
+      // the file past every cutoff, and no sweep in any tool-server collects it.
       vi.useFakeTimers();
       try {
         const idle = vi.getTimerCount();
