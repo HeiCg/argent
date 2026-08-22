@@ -93,10 +93,10 @@ export interface ReapedSession {
    * Paths rather than a flag for the reason {@link keptAt} keeps one: a
    * breadcrumb has no expiry and the day-old sweep does, so whether there is
    * still anything to list is a question only the read can answer. They are
-   * never shown: a path reaches here either because the ids did not match — and
-   * an id set this write could not match is equally a stranger's session — or
-   * because this write kept no file of its own to record one against, and
-   * neither case leaves anything worth naming a stranger's log for.
+   * never shown: a path reaches here because the ids did not match, or because
+   * this write kept no file of its own to compare against, and the directory is
+   * the one route that reads true either way — an id set this write could not
+   * match is equally a stranger's session, and no sentence can name that.
    */
   supersededFilesLeft?: string[];
   /**

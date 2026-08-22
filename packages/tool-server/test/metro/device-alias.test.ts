@@ -63,9 +63,11 @@ describe("debuggerServiceRef — collapses a forwarded logicalDeviceId onto one 
 
   it("marks only a session whose connect id IS the logicalDeviceId", () => {
     // The marker means "no device-scoped teardown can name this session", and
-    // stop-all-simulator-servers reports every marked session as one it left
-    // running. A udid-keyed session IS reachable from a list-devices scope, so
-    // marking it would report a session that was reaped as one that survived.
+    // stop-all-simulator-servers reports the marked sessions its scope did NOT
+    // reach as left_running. A udid-keyed session is one a scope could have
+    // named, so marking it would report another agent's ordinary session on a
+    // device this caller never asked about - which that report exists to leave
+    // alone.
     rememberLogicalKeyedDevice(LOGICAL_ID, IOS_UDID);
     expect(isLogicalKeyedDevice(IOS_UDID)).toBe(false);
     expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(false);
@@ -83,7 +85,13 @@ describe("debuggerServiceRef — collapses a forwarded logicalDeviceId onto one 
     expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(true);
     expect(isLogicalKeyedDevice(LOGICAL_ID.toUpperCase())).toBe(true);
 
+    // Forgotten in whichever spelling the dispose holds - the third place this
+    // id is folded, and the one that decides whether the marker outlives its
+    // session. Asked here in the spelling the write did NOT store.
     forgetLogicalKeyedDevice(LOGICAL_ID);
+    expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(false);
+    rememberLogicalKeyedDevice(LOGICAL_ID, LOGICAL_ID);
+    forgetLogicalKeyedDevice(LOGICAL_ID.toUpperCase());
     expect(isLogicalKeyedDevice(LOGICAL_ID)).toBe(false);
   });
 
