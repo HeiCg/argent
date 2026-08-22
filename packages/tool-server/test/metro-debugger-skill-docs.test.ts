@@ -18,6 +18,7 @@ import { createRestartAppTool } from "../src/tools/restart-app";
 import { debuggerInspectElementTool } from "../src/tools/debugger/debugger-inspect-element";
 import { debuggerReloadMetroTool } from "../src/tools/debugger/debugger-reload-metro";
 import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-component-tree";
+import { debuggerConnectTool } from "../src/tools/debugger/debugger-connect";
 import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status";
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { listDevicesTool } from "../src/tools/devices/list-devices";
@@ -293,6 +294,22 @@ describe("the Chromium recovery names a relaunch that exists", () => {
     // "no reachable CDP session" covers the live-but-windowless case too, where a
     // relaunch is the wrong remedy.
     const createFlow = row(CREATE_FLOW_RECOVERY, "Chromium");
+    // debugger-connect is what SKILL.md's Quick Reference names for Chromium, and
+    // it THROWS rather than classifying - so its one sentence about failure is the
+    // whole diagnosis a reader gets there. "Chromium CDP terminated" alone routes a
+    // windowless app to the relaunch every surface here forbids for that state.
+    pinsOnce(
+      debuggerConnectTool.description,
+      "the Chromium CDP endpoint gone or serving no drivable page, which an app that is " +
+        "up with its last window closed also produces"
+    );
+    pinsOnce(
+      debuggerConnectTool.description,
+      "It throws rather than classifying: call debugger-status for the discriminated " +
+        "reason and its recovery guidance."
+    );
+    expectNoForbiddenAdvice(debuggerConnectTool.description, "debugger-connect's description");
+
     // Where the field these arms branch on comes from. A flow author reads this row
     // without a debugger-status result in hand, and `detail` is a member of one.
     pinsOnce(createFlow, "Read the `detail` on a `debugger-status` result.");
@@ -579,6 +596,13 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       bootDeviceParams.shape.bootTimeoutMs?.description,
       "does not state the Electron wait as a bound"
     ).not.toMatch(/fixed 30s|at most 30s|no more than 30s/i);
+    // zod .min/.max REJECT; nothing in tool-server clamps a boot budget. An agent
+    // that trusts "clamped" passes 20000 and gets a validation error instead.
+    pinsOnce(bootDeviceParams.shape.bootTimeoutMs?.description, "Rejected outside [30s, 15min]");
+    expect(
+      bootDeviceParams.shape.bootTimeoutMs?.description,
+      "does not promise clamping"
+    ).not.toMatch(/clamp/i);
   });
 
   it("states the probe set in the rule file too, derived from the same constant", () => {
