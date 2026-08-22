@@ -541,6 +541,46 @@ describe("debugger-log-registry not-connected results", () => {
     expect(factorySpy).toHaveBeenCalledTimes(1);
   });
 
+  it("does not tell the CLI nothing was captured on an answer that names a kept log", () => {
+    // The not_connected line is displayed beside a note that can name a log
+    // file with N entries in it, so a completion message asserting there are
+    // none contradicts the answer it is summarising.
+    const registry = new Registry();
+    cleanups.push(() => registry.dispose());
+    const completedMsg = createDebuggerLogRegistryTool(registry).interaction!.completedMsg!;
+
+    const params = { port: 8081, device_id: "dev1" };
+    expect(
+      completedMsg({
+        params,
+        result: {
+          status: "not_connected",
+          connected: false,
+          reason: "no_app_connected",
+          detail: "no app",
+          guidance: "reconnect",
+          note: "The log file is kept at /tmp/x.log - grep that file for the 3 entries it holds.",
+        },
+      })
+    ).toBe("JavaScript debugger is not connected");
+    expect(
+      completedMsg({
+        params,
+        result: {
+          status: "connected",
+          file: "/tmp/x.log",
+          totalEntries: 0,
+          byLevel: {},
+          fileSizeBytes: 0,
+          clusters: [],
+          deviceName: "dev",
+          appName: "app",
+          logicalDeviceId: undefined,
+        },
+      })
+    ).toBe("Read app logs");
+  });
+
   it("unexpected error: rethrows (toolFailed, no outcome event, no structured shape)", async () => {
     const brokenBlueprint: ServiceBlueprint<Record<string, never>, string> = {
       namespace: JS_RUNTIME_DEBUGGER_NAMESPACE,
