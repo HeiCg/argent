@@ -184,7 +184,7 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           ...result,
           ...(note ? { note } : {}),
           guidance: note
-            ? `Read this result's note first — it explains what became of the previous session's console log. ${result.guidance}`
+            ? `Read this result's note first — it explains what became of the previous session's console log, and of any session whose record that one replaced unread. ${result.guidance}`
             : `${result.guidance} This result has no note: no unread record of a previous session ` +
               `under this ${scope ? "device id and port" : "device id"}. One is filed only for a ` +
               `session that ended holding console history, and the first read of it spends it.`,

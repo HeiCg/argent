@@ -297,9 +297,12 @@ function describeReplacedRecords(entry: ReapedSession): string {
   if (count === 0) return "";
   const subject = count === 1 ? "An earlier session" : `${count} earlier sessions`;
   const they = count === 1 ? "it" : "they";
-  // Only a debugger entry leaves a file this store knows the home of. A
-  // recording and a trace are written where the user asked for them, and the
-  // replaced entry took the only record of that path with it.
+  // Both clauses are the debugger's alone: `keptAt` is passed by the two
+  // debugger blueprints and by nothing else, so neither flag is ever set for a
+  // recording or a trace — which is right, since those are written where the
+  // caller asked for them and the replaced entry took the only record of that
+  // path with it. Anything that starts keeping one for another kind needs
+  // wording of its own here, not this directory.
   //
   // The two flags are measured on different records — the take on the one
   // replaced directly, the leave on any of them — so each speaks only for
@@ -309,19 +312,16 @@ function describeReplacedRecords(entry: ReapedSession): string {
   // its own, and the same breadcrumb that outlives this session's file outlives
   // theirs.
   const anyLeft = entry.supersededFilesLeft?.some((file) => fs.existsSync(file)) ?? false;
-  const file =
-    entry.kind !== "js-runtime-debugger"
-      ? ``
-      : entry.supersededFileTaken
-        ? // A take and a leave together can only mean the leave was an earlier
-          // one's: the record replaced directly is the one whose file went.
-          ` The log file ${count === 1 ? "it" : "the last of them"} kept went with it.` +
-          (anyLeft
-            ? ` Anything the earlier ones left is still in ~/.argent/tmp, named by nothing.`
-            : ``)
-        : anyLeft
-          ? ` Any log file ${they} left is still in ~/.argent/tmp, named by nothing.`
-          : ``;
+  const file = entry.supersededFileTaken
+    ? // A take and a leave together can only mean the leave was an earlier
+      // one's: the record replaced directly is the one whose file went.
+      ` The log file ${count === 1 ? "it" : "the last of them"} kept went with it.` +
+      (anyLeft
+        ? ` Anything the earlier ones left is still in ~/.argent/tmp, named by nothing.`
+        : ``)
+    : anyLeft
+      ? ` Any log file ${they} left is still in ~/.argent/tmp, named by nothing.`
+      : ``;
   return (
     ` ${subject} that answered here ended holding output nobody read, and this event ` +
     `replaced what ${they} filed, so what ${they} captured is reported nowhere.` +

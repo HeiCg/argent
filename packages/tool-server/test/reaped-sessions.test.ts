@@ -500,21 +500,9 @@ describe("the reaped-session key", () => {
     it("does not send the reader to ~/.argent/tmp for a kind that keeps no log there", () => {
       // A recording and a trace are written where the caller asked for them, so
       // the replaced entry took the only record of its path with it. Naming the
-      // debugger's directory would send the agent to grep for a video. `keptAt`
-      // is the store's option rather than the debugger's, so the answer has to
-      // hold even for a kind that hands one over.
-      const kept = path.join(dir, "capture-1.mp4");
-      const newer = path.join(dir, "capture-2.mp4");
-      for (const [file, salvage] of [
-        [kept, "first recording"],
-        [newer, "second recording"],
-      ] as const) {
-        fs.writeFileSync(file, "x");
-        recordReapedSession("screen-recording", UDID, salvage, {
-          cause: "runtime-death",
-          keptAt: file,
-        });
-      }
+      // debugger's directory would send the agent to grep for a video.
+      recordReapedSession("screen-recording", UDID, "first recording");
+      recordReapedSession("screen-recording", UDID, "second recording");
 
       const message = describeReapedSession(
         takeReapedSession("screen-recording", UDID)!,
@@ -769,6 +757,39 @@ describe("the reaped-session key", () => {
       expect(message).toContain("2 earlier sessions that answered here");
       expect(message).toContain("Any log file they left is still in ~/.argent/tmp");
       expect(fs.existsSync(older)).toBe(true);
+    });
+
+    it("keeps pointing at the directory while any one of the files is still there", () => {
+      // A chain can leave more than one file behind - a widened id set leaves
+      // the first, and the teardown ending the chain leaves the second - and
+      // the sweep takes them one at a time. Reading the newest, or requiring
+      // all of them, stops the pointer while the older log is still readable.
+      const first = path.join(dir, "argent-logs-13-1.log");
+      const second = path.join(dir, "argent-logs-13-2.log");
+      fs.writeFileSync(first, "first");
+      fs.writeFileSync(second, "second");
+      recordReapedSession("js-runtime-debugger", ["logical-abc"], "first", {
+        cause: "runtime-death",
+        keptAt: first,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], "second", {
+        cause: "runtime-death",
+        keptAt: second,
+      });
+      for (const salvage of ["third", "fourth"]) {
+        recordReapedSession("js-runtime-debugger", [UDID, "logical-abc"], salvage, {
+          cause: "teardown",
+        });
+      }
+      fs.rmSync(second);
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("3 earlier sessions that answered here");
+      expect(message).toContain("Any log file they left is still in ~/.argent/tmp");
+      expect(fs.existsSync(first)).toBe(true);
     });
 
     it("says nothing about a file when neither event ever kept one", () => {

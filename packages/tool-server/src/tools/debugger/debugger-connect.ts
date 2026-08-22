@@ -40,8 +40,9 @@ export const debuggerConnectTool: ToolDefinition<
      * been reclaimed, or — when there was no file to keep, because the teardown
      * deleted it, the writer never created one, or something removed it since —
      * that those entries went with it. Where it reports a replaced session too,
-     * it says separately whether that one's file went with it, is still in
-     * `~/.argent/tmp` under no name, or was never there to find.
+     * it says separately whether that one's file went with it, or is still in
+     * `~/.argent/tmp` under no name — and says neither where there is nothing
+     * of theirs left for the agent to reach.
      * Reported here because this call is the prescribed recovery step after a
      * crash, and it consumes the record that names the file.
      */
@@ -59,7 +60,7 @@ export const debuggerConnectTool: ToolDefinition<
   description: `Connect to a JS runtime CDP debugger.
 iOS / Android / Vega: connects to Metro's CDP endpoint on the given port. Chromium: re-uses the page CDP session opened by boot-device — port is ignored.
 Returns connection info including port, projectRoot (empty on Chromium and on legacy Metro, e.g. Vega), deviceName, appName, logicalDeviceId (absent on Vega), and isNewDebugger. If already connected, returns the existing connection.
-Also returns { note } when the PREVIOUS session for this device ended with its debugger connection dropping rather than being closed (a crash, a force-quit, the runtime becoming unreachable, or Metro handing this device's one debugger slot to another client) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says those entries are gone, because the file was reclaimed or never written. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line. Both tools spend the record, so whichever reads it first is the one that reports it — and this tool drops a plain teardown silently, because from this connect on the capture is your own. It does report a teardown that replaced an unread earlier session, since nothing else ever will: a teardown deletes its own log file, so its own entries are gone, and the note says separately what became of the replaced session's.
+Also returns { note } when the PREVIOUS session for this device ended with its debugger connection dropping rather than being closed (a crash, a force-quit, the runtime becoming unreachable, or Metro handing this device's one debugger slot to another client) while holding captured console logs: the note names the log file that teardown left on disk — read it for the pre-crash logs — or says those entries are gone, because the file was reclaimed or never written. debugger-log-registry reports the same thing while its registry is still empty; this is where it surfaces once the relaunched app has logged its first line. Both tools spend the record, so whichever reads it first is the one that reports it — and this tool drops a plain teardown silently, because from this connect on the capture is your own. It does report a teardown that replaced an unread earlier session, since nothing else ever will: a teardown deletes its own log file, so its own entries are gone, and the note says separately where the replaced session's log stands when there is anywhere to send you.
 Use when starting a debug session or before calling other debugger-* tools. Fails if the runtime is unreachable (Metro down, or Chromium CDP terminated).`,
   zodSchema,
   capability: DEBUGGER_TOOL_CAPABILITY,
