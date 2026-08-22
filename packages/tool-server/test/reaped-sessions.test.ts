@@ -301,7 +301,7 @@ describe("the reaped-session key", () => {
         takeReapedSession("js-runtime-debugger", UDID)!,
         "JS-runtime debugger session"
       );
-      expect(message).toContain("An earlier session answering to these ids");
+      expect(message).toContain("An earlier session that answered here");
       expect(message).toContain("The log file kept for it went with it");
       expect(fs.existsSync(older)).toBe(false);
     });
@@ -325,7 +325,7 @@ describe("the reaped-session key", () => {
         takeReapedSession("js-runtime-debugger", UDID)!,
         "JS-runtime debugger session"
       );
-      expect(message).toContain("An earlier session answering to these ids");
+      expect(message).toContain("An earlier session that answered here");
       expect(message).toContain("still in ~/.argent/tmp, named by nothing");
       expect(message).not.toContain("went with it");
       expect(fs.existsSync(older)).toBe(true);
@@ -370,7 +370,7 @@ describe("the reaped-session key", () => {
         takeReapedSession("js-runtime-debugger", UDID)!,
         "JS-runtime debugger session"
       );
-      expect(message).toContain("An earlier session answering to these ids");
+      expect(message).toContain("An earlier session that answered here");
       expect(message).toContain("still in ~/.argent/tmp, named by nothing");
       expect(message).not.toContain("went with it");
       expect(fs.existsSync(older)).toBe(true);
@@ -392,7 +392,7 @@ describe("the reaped-session key", () => {
         takeReapedSession("js-runtime-debugger", UDID)!,
         "JS-runtime debugger session"
       );
-      expect(message).toContain("2 earlier sessions answering to these ids");
+      expect(message).toContain("2 earlier sessions that answered here");
       expect(message).toContain("what they captured is reported nowhere");
     });
 
@@ -407,7 +407,7 @@ describe("the reaped-session key", () => {
         takeReapedSession("screen-recording", UDID)!,
         "screen recording"
       );
-      expect(message).toContain("An earlier session answering to these ids");
+      expect(message).toContain("An earlier session that answered here");
       expect(message).not.toContain("~/.argent/tmp");
       expect(message).not.toContain("log file");
     });

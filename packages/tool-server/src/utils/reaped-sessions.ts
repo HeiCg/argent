@@ -270,7 +270,7 @@ function describeReplacedRecords(entry: ReapedSession): string {
         ? ` The log file kept for it went with it.`
         : ` Any log file left behind is still in ~/.argent/tmp, named by nothing.`;
   return (
-    ` ${subject} answering to these ids ended holding output nobody read, and this event ` +
+    ` ${subject} that answered here ended holding output nobody read, and this event ` +
     `replaced what ${they} filed, so what ${they} captured is reported nowhere.` +
     file
   );
