@@ -61,11 +61,17 @@ export interface ReapedSession {
   /** When the teardown ran, for "…N seconds ago" phrasing. */
   atMs: number;
   /**
-   * This event replaced an earlier one nobody had read. Recorded so the answer
-   * can say so: the displaced session is reported nowhere else, and where both
-   * kept a file the earlier one was reclaimed to bound the store.
+   * This event replaced an earlier one nobody had read, and that one is gone
+   * from the store — so nothing else will ever report what it captured, and the
+   * answer has to say it is not the whole story.
    */
   superseded?: boolean;
+  /**
+   * …and the replaced event's kept log file was reclaimed with it, so there is
+   * not even a file left to find. Separate from {@link superseded} because the
+   * reclaim needs both events to have kept one.
+   */
+  supersededFileTaken?: boolean;
   /** Why the session ended, so the message does not blame a tool for a crash. */
   cause: ReapedSessionCause;
   /**
@@ -156,15 +162,10 @@ export function recordReapedSession(
   }
   const orphanedFiles = new Set<string>();
   // Anything still in the store is unread — a read deletes every copy — so
-  // displacing one is the second crash arriving before the first was reported.
-  // Nothing else names that session afterwards, and its file may have gone with
-  // it, so the answer that does arrive has to say it is not the whole story.
-  if (displaced.size > 0) {
-    for (const deviceId of ids) {
-      const filed = reaped.get(key(kind, deviceId, opts.scope));
-      if (filed) filed.superseded = true;
-    }
-  }
+  // replacing one is a second teardown arriving before the first was reported.
+  // Set only where the entry is really gone: one whose id set differed keeps
+  // its leftover keys below, and answers for itself under them.
+  let replacedUnread = false;
   for (const previous of displaced.values()) {
     const leftovers = [...previous.keys].filter((k) => !keys.has(k));
     // A previous event keeps its copies, and its file, unless this one answers
@@ -195,7 +196,17 @@ export function recordReapedSession(
     // one file this cannot protect is one named by a `connected` read that
     // landed before the dispose filed anything; the next crash reclaims it.
     for (const k of leftovers) reaped.delete(k);
+    replacedUnread = true;
     if (previous.keptAt && opts.keptAt) orphanedFiles.add(previous.keptAt);
+  }
+  if (replacedUnread) {
+    for (const deviceId of ids) {
+      const filed = reaped.get(key(kind, deviceId, opts.scope));
+      if (filed) {
+        filed.superseded = true;
+        if (orphanedFiles.size > 0) filed.supersededFileTaken = true;
+      }
+    }
   }
   for (const file of orphanedFiles) {
     if (file === opts.keptAt) continue;
@@ -307,8 +318,10 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
       : entry.salvage;
   const earlier = entry.superseded
     ? ` An earlier session for this device ended the same way and nothing read its record ` +
-      `before this one replaced it — what that one captured is reported nowhere, and its log ` +
-      `file went with it.`
+      `before this one replaced it, so what that one captured is reported nowhere.` +
+      (entry.supersededFileTaken
+        ? ` Its log file went with it.`
+        : ` Any log file it left is still in ~/.argent/tmp, named by nothing.`)
     : "";
   return (
     `The ${what} for device ${entry.deviceId} was torn down ${secondsAgo}s ago — ${why} ` +

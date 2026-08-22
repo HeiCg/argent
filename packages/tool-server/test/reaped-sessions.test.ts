@@ -263,7 +263,13 @@ describe("the reaped-session key", () => {
 
       expect(fs.existsSync(older)).toBe(true);
       expect(fs.existsSync(newer)).toBe(true);
-      // And the id the second event never named still answers for the first.
+      // The first event is still readable under the id the second never named,
+      // so the second must not claim to have replaced it.
+      const second = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", "logical-abc")!,
+        "JS-runtime debugger session"
+      );
+      expect(second).not.toContain("An earlier session");
       expect(takeReapedSession("js-runtime-debugger", UDID)?.keptAt).toBe(older);
     });
 
@@ -289,7 +295,33 @@ describe("the reaped-session key", () => {
         "JS-runtime debugger session"
       );
       expect(message).toContain("nothing read its record before this one replaced it");
+      expect(message).toContain("Its log file went with it");
       expect(fs.existsSync(older)).toBe(false);
+    });
+
+    it("does not claim the replaced event's file when it kept none of its own", () => {
+      // The reclaim needs both events to have kept a file, so a teardown
+      // landing on an unread crash replaces the record without touching the
+      // log. Saying it went too would send the reader past a file that is
+      // still there — the listing fallback is all that can find it now.
+      const older = path.join(dir, "argent-logs-3-6.log");
+      fs.writeFileSync(older, "first");
+      recordReapedSession("js-runtime-debugger", [UDID], "first", {
+        cause: "runtime-death",
+        keptAt: older,
+      });
+      recordReapedSession("js-runtime-debugger", [UDID], "second", {
+        cause: "teardown",
+      });
+
+      const message = describeReapedSession(
+        takeReapedSession("js-runtime-debugger", UDID)!,
+        "JS-runtime debugger session"
+      );
+      expect(message).toContain("nothing read its record before this one replaced it");
+      expect(message).toContain("still in ~/.argent/tmp, named by nothing");
+      expect(message).not.toContain("Its log file went with it");
+      expect(fs.existsSync(older)).toBe(true);
     });
 
     it("says nothing about an earlier event when there was none", () => {
