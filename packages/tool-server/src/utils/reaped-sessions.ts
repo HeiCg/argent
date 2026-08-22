@@ -220,15 +220,15 @@ export function takeReapedSession(
  * `dispose()` is called by `Registry._teardown`, with no caller — so the message
  * names the family rather than asserting one member. `stop-all-simulator-servers`
  * is the common one and is named first; whether any FURTHER member can be named
- * depends on what was reaped. Only a debugger session has one: on Chromium
+ * depends on what was reaped. Only a debugger session has any: on Chromium
  * anything that reaps its `ChromiumCdp` cascades into it — `stop-simulator-server`
  * by its documented behaviour, and `flow-run` reclaiming an Electron app it
  * booted — and on Apple or Android `react-profiler-start` disposes the
  * debugger and the profiler session whenever it finds either in a state it
  * cannot reuse. That tool declares no chromium and no vega platform, and neither
  * a screen recording nor a native trace declares a dependency for any teardown
- * to cascade through, so for those the sentence stops after the first member. A
- * `runtime-death` narrows that: the app itself went away, so
+ * to cascade through, so a Vega debugger and those two kinds are where the
+ * sentence stops after the first member. A `runtime-death` narrows that: the app itself went away, so
  * pointing at the teardown family would send an agent hunting for a tool call,
  * or another agent, that never touched this session. It does NOT name the culprit either —
  * the disposer sees a dropped socket, which a crash, a force-quit and a
@@ -249,8 +249,8 @@ export function describeReapedSession(entry: ReapedSession, what: string): strin
     : `its debugger connection dropped instead of being closed — the app went away (a crash, ` +
       `a force-quit, a restart-app) or the runtime stopped being reachable (Metro restarted, ` +
       `a device transport dropped) — which ends the session the same way a teardown does.`;
-  // Only a debugger session has another tool that can have disposed it, and then
-  // only on two platforms: a Chromium one goes with the ChromiumCdp it declares
+  // Only a debugger session has another tool that can have disposed it, and not
+  // on every platform: a Chromium one goes with the ChromiumCdp it declares
   // a dependency on, which `stop-simulator-server` and a `flow-run` reclaiming
   // an Electron app it booted both reap, and an Apple or Android one is cleared
   // by `react-profiler-start` when it cannot reuse it. A Vega session has
