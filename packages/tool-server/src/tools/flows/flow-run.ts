@@ -2492,9 +2492,10 @@ async function execLeafStep(
           // the logicalDeviceIds "listed in the detail message", and the
           // metro_not_running `got:` fragment names what actually answered the
           // port). And `note`, because the guidance that comes with one opens
-          // by telling the reader to read it: the CLI renders no tool-step
-          // result at all (see flow.ts's `onStepReport`), so a pointer left in
-          // this line alone names a field nothing there prints.
+          // by telling the reader to read it, and the CLI renders no tool-step
+          // result at all — `renderStepLine` prints this string and nothing
+          // else — so a pointer left in the result alone names a field nothing
+          // there shows.
           return {
             ...base,
             status: "fail",
