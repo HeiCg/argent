@@ -1149,6 +1149,34 @@ describe("output references", () => {
     );
   });
 
+  it("names the constraint where two spellings parse the same", () => {
+    // The step does not remember which spelling it was written as, so these
+    // paths name the constraint rather than a key the file carries. Pinned so
+    // the residue is a documented limit rather than something a later reader
+    // rediscovers — the message quotes the offending value beside the path,
+    // which is what locates it in these cases.
+    const fieldNamed = (yaml: string): string => {
+      try {
+        parseFlow(yaml);
+      } catch (err) {
+        return /`([^`]+)` holds an output reference/.exec(
+          err instanceof Error ? err.message : ""
+        )![1]!;
+      }
+      throw new Error(`expected parseFlow to reject: ${yaml}`);
+    };
+
+    // A bare-string target carries no key at all.
+    expect(fieldNamed('steps:\n  - tap: "{{output:row}}"\n')).toBe("tap.text");
+    expect(
+      fieldNamed('steps:\n  - scroll-to: { target: "{{output:row}}", direction: down }\n')
+    ).toBe("scroll-to.target.text");
+    // An `on:` with no option beside it round-trips without the wrapper, so the
+    // path follows the spelling the file would be rewritten to, not the one it
+    // was read from.
+    expect(fieldNamed('steps:\n  - tap: { on: { id: "{{output:row}}" } }\n')).toBe("tap.id");
+  });
+
   it("names the step, so a reference inside a block says which one", () => {
     let message = "";
     try {

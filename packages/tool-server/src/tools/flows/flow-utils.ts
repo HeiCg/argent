@@ -218,8 +218,10 @@ export type OnDiskSpelling =
  * every route that turns a caller's spelling into a file it will open — the
  * four that resolve a flow IDENTITY (replay's `flow_path` and `name` in
  * flow-run.ts, the recorder's two nested flow-execute targets in
- * flow-add-step.ts) and, since the `script:` step, one that resolves a plain
- * `.mjs` — so they can never drift apart in which spellings they accept. That drift is the bug itself twice over: it let
+ * flow-add-step.ts) and the two that resolve a file a flow NAMES, a `run:`
+ * basename and, since the `script:` step, a plain `.mjs` (both through
+ * flow-file-refs.ts) — so they can never drift apart in which spellings they
+ * accept. That drift is the bug itself twice over: it let
  * a `name` key a report and `__baselines__/` under a spelling `flow_path`
  * refused two arms earlier, and it let the recorder bake a `run:` name whose
  * flow_path spelling its own neighbouring arm would have refused.
@@ -2639,7 +2641,8 @@ function parseRunTarget(raw: unknown, value: unknown): string {
  * directory and a bare target anchors to their own.
  *
  * Completed HERE rather than at resolution time so exactly one spelling
- * reaches everything downstream: canonicalFlowPath's read, the fragment's
+ * reaches everything downstream: canonicalFlowPath's read (flow-file-refs.ts),
+ * the fragment's
  * on-disk casing check, the report's `target`, and runDisplayName — which
  * slices a fixed `".yaml".length` off the target and would truncate a real
  * path segment given a bare one (see flow-run.ts). Re-serializing a parsed
@@ -2831,8 +2834,8 @@ function* selectorFields(sel: FlowSelector, where: string): Generator<StepField>
  * stack. `seen` holds the containers on the current path only: a node visited
  * twice down two different branches is two real leaves and must be yielded
  * twice, while a node that contains itself is dropped at the point it closes
- * the loop. {@link summarizeStep} tolerates the same shape, by the same
- * reasoning.
+ * the loop. `summarizeStep` (flow-finish-recording.ts) tolerates the same
+ * shape, by the same reasoning.
  */
 function* argFields(
   value: unknown,
@@ -2903,10 +2906,11 @@ function* conditionFields(
     cond.condition === "text" ? `${kind}.text.in` : `${kind}.${cond.condition}`
   );
   if (cond.expectedText !== undefined && cond.textMatch !== "matches") {
-    // Name the comparator the file actually carries. Every construction site
-    // sets one, so the bare fallback is unreachable through the parser — but
-    // `validateFlow` now also sees steps the recorder BUILT, and guessing a
-    // comparator there would name a key the flow does not have.
+    // Name the comparator the file actually carries. `parseWaitFields` is the
+    // only construction site and always sets one, so the bare fallback is
+    // unreachable — but the field is optional on the type, and a guessed
+    // comparator would name a key the flow does not have, where `${kind}.text`
+    // is a real ancestor of whichever one it carries.
     yield {
       where: cond.textMatch ? `${kind}.text.${cond.textMatch}` : `${kind}.text`,
       value: cond.expectedText,
@@ -2945,10 +2949,14 @@ function* conditionFields(
  * two the same and the message names one field for two places — and a gesture's
  * target moves under `on:` the moment the step carries an option.
  *
- * One elision remains, and it is harmless: a bare-string target carries no key
- * of its own, so `tap: "Save"` is reported as `tap.text`, naming the constraint
- * the sugar stands for rather than a key the file spells. The message quotes
- * the offending value beside the path either way.
+ * Where two spellings PARSE THE SAME the path cannot be exact, because the step
+ * no longer remembers which was written, and both residues name the constraint
+ * rather than a key: a bare-string target (`tap: "Save"` reads as `tap.text`,
+ * `scroll-to: "Save"` as `scroll-to.target.text`, neither of which the sugar
+ * spells), and an `on:` written with no option beside it (`tap: { on: {...} }`
+ * reads as `tap.text`, since {@link gestureTargetPath} follows the spelling the
+ * file would round-trip to). The message quotes the offending value beside the
+ * path, which is what actually locates it in all four cases.
  */
 function* outputReferenceFields(step: FlowStep): Generator<StepField> {
   switch (step.kind) {

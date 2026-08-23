@@ -23,11 +23,11 @@ A recorded `flow-execute` has two names. The top-level `name` identifies the rec
 
 `flow-add-script` runs a local `.mjs` file and records it as a `script:` step. `path` resolves against the flow file being recorded, not against `project_root`; `timeout` is milliseconds. Both are the step's own keys, recorded verbatim, and it runs the file the way replay will. It takes no device. Read [Flow YAML](flow-yaml.md#local-scripts-script) for the `path` rules, including the on-disk casing it refuses.
 
-Two return fields are not self-evident. `reason` carries the executor's note on a pass, which is where a clamped `timeout` shows up. `durationMs` is absent when the path was refused before anything ran.
+Three return fields are not self-evident. `reason` carries the executor's note on a pass, which is where a clamped `timeout` shows up. `durationMs` is absent when the path was refused before anything ran. `output` is present only on a pass.
 
 **A script that does not pass records nothing.** That is the one place a step call differs from `flow-add-step`, which appends whenever the call returns. The rest of the walkthrough would otherwise be recorded against state the failed script did not establish. Its side effects are real all the same; the `message` says whether anything ran, so retry only when the re-run is safe to repeat.
 
-`flow-add-script` is refused when the recording's `project_root` is not on the tool server's filesystem: the `.mjs` never left your machine. Record against a co-located tool server. Hand-adding the step after finishing also works, and is the one case the unrecorded-insertion rule below does not cover.
+`flow-add-script` is refused when the recording's `project_root` is not on the tool server's filesystem: the `.mjs` never left your machine. Record against a co-located tool server. Failing that, finish the recording and add the `script:` step to the saved YAML by hand — authoring outside the recorder, because no recorder can reach the file, rather than an insertion into a recorded flow.
 
 Obey these lifecycle rules:
 
@@ -72,7 +72,7 @@ steps:
 
 The path is relative to `.argent/flows/`. Copy the live boot arguments verbatim, and omit `args` when the boot passed none. This packaging exception represents the boot already exercised live. It does not permit a rehearsed UI path.
 
-Record a setup `script:` with `flow-add-script` here too, but a Chromium flow's leading `launch:` boots before step 1, so a script written above it still runs with the app already up. Record it where the walkthrough needs it, not first.
+Record a setup `script:` with `flow-add-script` here too, but a Chromium flow's leading `launch:` boots before step 1, so a script written above it still runs with the app already up. Record it where the walkthrough needs it, and do not rely on it running first.
 
 ### Fragments
 
