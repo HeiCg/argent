@@ -21,6 +21,14 @@ args: "{\"udid\":\"DEVICE\",\"x\":0.5,\"y\":0.35}"
 
 A recorded `flow-execute` has two names. The top-level `name` identifies the recording. `args.name` identifies the sibling flow captured as `run:`.
 
+`flow-add-script` runs a local `.mjs` file and records it as a `script:` step. It takes `path` — the file, resolved against the flow file being recorded, not against `project_root` — and an optional `timeout` in milliseconds. Both are the step's own keys and are recorded verbatim. It takes no device, because a script drives none. It runs the file the way replay will: same path resolution, same working directory, same environment allowlist, same time limit. Only the 64 KiB per-step log limit applies here; the per-run one does not. Read [Flow YAML](flow-yaml.md#local-scripts-script) for the `path` rules, including the on-disk casing it refuses.
+
+It returns `status`, and `reason` whenever the outcome needs one — why a script failed, or the note saying a `timeout` was clamped to the host cap. `log`, `logTruncated`, `durationMs` and `output` are present when they apply: no `log` if the script printed nothing, `logTruncated: true` if the limit cut it, no `durationMs` if the path was refused before anything ran, and `output` only on a pass. `output` is the document the script returned, shown so you can see its shape; no step can reference it yet.
+
+**A script that does not pass records nothing.** That is the one place a step call differs from `flow-add-step`, which appends whenever the call returns. The rest of the walkthrough would be recorded against state a failed script did not establish, so a known-red step would sit ahead of every step that depends on it. Its side effects are real all the same: a script that created two of three records and then threw did not roll them back. The `message` says which case you are in. Retry only if the re-run is safe to repeat; otherwise clean up first.
+
+`flow-add-script` is refused for a recording whose `project_root` is not on the tool server's filesystem. The `.mjs` file stays on your machine, so the server has nothing to resolve `path` against and nothing to run. Record against a co-located tool server instead. Adding the `script:` step by hand after finishing also works, and is the one case the unrecorded-insertion rule below does not cover — the tool cannot run there, so there is nothing to record.
+
 Obey these lifecycle rules:
 
 1. Pass the same `name` and absolute `project_root` to every recording tool.
@@ -28,7 +36,7 @@ Obey these lifecycle rules:
 3. Give concurrent recordings separate devices. Their files are isolated, but their live device actions are not.
 4. Treat `flow-start-recording` as destructive. It always truncates the named YAML, including a finished or committed flow. `restarted` reports only a displaced live take.
 5. If a call says the recording is inactive, do not restart under that name. The completed take can still be on disk. Copy it aside or record under a fresh name.
-6. Inspect `toolResult`, `message`, and `recorded` after each call. A call that errors records nothing, but a call that returns normally while reporting an unmet condition **does** append the step, and `message` says the step was added either way. `await-ui-element` is the case that turns up in practice (see [Live waits and checks](#live-waits-and-checks)). Only `flow-start-recording` and `flow-finish-recording` return the whole YAML as `flowFile`. A step call returns `recorded` — one summary line for the step it appended — plus a running `stepCount`. Read `recorded`: the recorder does not always store the tool call you made, and that line is where a rewrite shows up. To see the whole file mid-recording, read it at `savedTo`. A `savedTo` that comes back `null` means the write failed on your side. The step is still in the recording, so continue: the next step rewrites the whole file, and `flow-finish-recording` returns `flowFile` regardless.
+6. Inspect `toolResult`, `message`, and `recorded` after each call. A call that errors records nothing, but a call that returns normally while reporting an unmet condition **does** append the step, and `message` says the step was added either way. `flow-add-script` is the exception: a failed script returns normally and appends nothing. `await-ui-element` is the case that turns up in practice (see [Live waits and checks](#live-waits-and-checks)). Only `flow-start-recording` and `flow-finish-recording` return the whole YAML as `flowFile`. A step call returns `recorded` — one summary line for the step it appended — plus a running `stepCount`. Read `recorded`: the recorder does not always store the tool call you made, and that line is where a rewrite shows up. To see the whole file mid-recording, read it at `savedTo`. A `savedTo` that comes back `null` means the write failed on your side. The step is still in the recording, so continue: the next step rewrites the whole file, and `flow-finish-recording` returns `flowFile` regardless.
 7. Edit or reorder the YAML only after `flow-finish-recording`. An active remote recording can overwrite mid-recording edits.
 
 ## Start in the correct order
@@ -36,8 +44,11 @@ Obey these lifecycle rules:
 ### iOS, Android, and Vega e2e flows
 
 1. Call `flow-start-recording` before launching or touching the app.
-2. Record a plain `restart-app` as the first non-echo action. Pass only the device id and app id. The recorder converts it to `launch:`.
-3. Record `await-ui-element` for the real first screen immediately after restart.
+2. Record any setup `script:` with `flow-add-script`, before the restart it prepares state for. That is where it runs at replay, so it is where the walkthrough has to establish that state too.
+3. Record a plain `restart-app` as the first action that is neither an echo nor a script. Pass only the device id and app id. The recorder converts it to `launch:`.
+4. Record `await-ui-element` for the real first screen immediately after restart.
+
+A leading script does not make the flow a fragment. The launch after it still leads the run, so the flow is e2e and must not declare `executionPrerequisite`.
 
 Extra restart arguments prevent `launch:` conversion. An Android `activity`, for example, leaves a raw tool step and therefore a fragment.
 
@@ -60,6 +71,8 @@ steps:
 ```
 
 The path is relative to `.argent/flows/`. Copy the live boot arguments verbatim, and omit `args` when the boot passed none. This packaging exception represents the boot already exercised live. It does not permit a rehearsed UI path.
+
+Record a setup `script:` with `flow-add-script` here too, but not for the same reason: a Chromium flow's leading `launch:` boots the app before step 1, so a script written above it still runs with the app already up ([Flow YAML](flow-yaml.md#local-scripts-script)). Record it where the walkthrough needs it, and do not rely on it running first.
 
 ### Fragments
 
@@ -159,7 +172,6 @@ Only these unrecorded insertions are allowed, at states observed live:
 
 - A planned `snapshot:` for pixel-level evidence.
 - `await: { idle: true }` after a navigation identity check.
-- A `script:` step for setup or cleanup that no recorded step can do. See [Flow YAML](flow-yaml.md#local-scripts-script).
 - The Chromium launch that packages the live boot.
 
 Keep raw forms only when conversion changes behavior. Examples include point-anchored or panning pinch, velocity-sensitive swipe, or rotation with a tested start angle, radius, pivot, duration, or speed. Keep screenshots for human evidence. Use `snapshot:` for automated visual comparison. Read [Flow YAML](flow-yaml.md) for syntax.
@@ -172,7 +184,12 @@ If polish reveals a missing action or structural check, restore its preceding st
 
 ```text
 flow-start-recording { FLOW }
-flow-add-echo { FLOW, message: "Restart Acme Notes; expect Home" }
+flow-add-echo { FLOW, message: "Seed a note, restart Acme Notes; expect Home" }
+flow-add-script { FLOW, path: "../../scripts/seed-note.mjs", timeout: 30000 }
+# ran here; recorded (block style, like every recorded step) as:
+#   - script:
+#       path: ../../scripts/seed-note.mjs
+#       timeout: 30000
 flow-add-step { FLOW, command: "restart-app", args: "{\"udid\":\"ABC\",\"bundleId\":\"com.acme.notes\"}" }
 # captured as: - launch: com.acme.notes
 flow-add-step { FLOW, command: "await-ui-element", args: "{\"udid\":\"ABC\",\"condition\":\"visible\",\"selector\":{\"identifier\":\"home-screen\"}}" }
@@ -187,7 +204,10 @@ After meaning-preserving conversion:
 
 ```yaml
 steps:
-  - echo: Restart Acme Notes. Expect Home
+  - echo: Seed a note, restart Acme Notes. Expect Home
+  - script:
+      path: ../../scripts/seed-note.mjs
+      timeout: 30000
   - launch: com.acme.notes
   - await: { visible: { id: home-screen } }
   - await: { idle: true }

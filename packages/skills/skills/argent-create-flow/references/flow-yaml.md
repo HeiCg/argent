@@ -204,6 +204,8 @@ A `script:` step runs a local JavaScript file in a new Node process. Use it for 
 
 The machine config caps that limit with `scripts.maxTimeoutMs` (default 300000, five minutes). A larger `timeout:` runs at the cap, and the report shows the clamp. A cap below 30000 also lowers the default.
 
+Record one live with `flow-add-script` rather than typing it in afterward. It runs the file the way replay will and appends the step only when it passes. See [Live authoring](live-authoring.md#recorder-contract).
+
 ### Where `path` points
 
 `path` obeys the rules of a `run:` target, but for `.mjs` files. It resolves against the directory of the flow file that **contains the step**. A fragment therefore finds the same script in each flow that composes it:
@@ -226,11 +228,11 @@ The filename must end with a lowercase `.mjs`, and use only letters, digits, `_`
 
 - The working directory is `project_root`, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
 - The environment is an allowlist: `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. All other names are absent, such as `NODE_ENV`, `DATABASE_URL`, `API_KEY`, and each value in a project `.env`. Let the script read what it needs from a file. There is no `env:` key; parse rejects one.
-- The `output` global starts as an empty object. Nothing reads it yet, but a value that the runner cannot serialize **fails** the step.
+- The `output` global starts as an empty object. `flow-add-script` returns the document the script leaves in it, so you can see its shape. No flow step can read it yet. Writing `{{output:...}}` into one is refused, in the fields a later release will resolve it in: an echo message, a typed or expected text, a selector's text, id or role, and a string in `tool.args`. Patterns are not among them — `matches:` takes a regular expression, and a `{{` in one is a literal. A value the runner cannot serialize **fails** the step.
 
 ### What the step reports
 
-The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. If the runner cuts the output, it says so on a line of its own.
+The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run; a `flow-add-script` recording is one step at a time, so only the first applies there. If the runner cuts the output, it says so on a line of its own.
 
 **The log has no redaction.** Do not print a credential from a script. The value goes to the step report, the terminal, and each CI log.
 
