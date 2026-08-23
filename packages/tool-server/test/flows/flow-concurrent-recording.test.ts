@@ -1412,13 +1412,14 @@ describe("a restart that lands while a step is still running", () => {
     expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
     expect((err as Error).message).toContain("Nothing was added to the flow file");
     expect((err as Error).message).toContain("the script already ran");
-    expect((err as Error).message).toContain("nothing it did was rolled back");
     expect((err as Error).message).not.toContain("already ran on the device");
     expect((err as Error).message).toContain("fresh name");
     // …and the recorder's own half says the run happened and what it cost. The
     // result object never reaches the caller on this path, so the error is the
     // only place the log and the output document can be reported as lost.
-    expect((err as Error).message).toMatch(/ran and passed in \d+ms/);
+    expect((err as Error).message).toMatch(
+      /ran and passed in \d+ms and nothing it did was rolled back/
+    );
     expect((err as Error).message).toContain("logs and output document are lost");
 
     // The new take is empty — the superseded script left nothing behind in it.

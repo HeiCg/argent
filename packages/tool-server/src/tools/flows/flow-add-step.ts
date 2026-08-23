@@ -430,7 +430,7 @@ async function captureRunTarget(
     // is a symlink out of the flows dir the two anchors can name different
     // files, so require them to canonicalize to the same one, matching the
     // runner's own canonicalization on both sides (canonicalFlowPath in
-    // flow-run.ts realpaths before reading). An executed path that cannot be
+    // flow-file-refs.ts realpaths before reading). An executed path that cannot be
     // canonicalized (e.g. ENOENT) means nothing verifiable ran from the flows
     // dir, and the raw step is then the honest record: it replays via name +
     // project_root, i.e. the file that actually ran.

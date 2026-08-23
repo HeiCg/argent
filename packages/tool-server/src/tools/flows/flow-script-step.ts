@@ -35,7 +35,7 @@ interface FlowScriptStepOutcome {
 }
 
 /** What one script step produced: its verdict, and the executor's own result. */
-export interface FlowScriptStepRun {
+interface FlowScriptStepRun {
   outcome: FlowScriptStepOutcome;
   /**
    * The executor's result — absent exactly when the step was refused before any
@@ -45,7 +45,7 @@ export interface FlowScriptStepRun {
   result?: FlowScriptResult;
 }
 
-export interface FlowScriptStepRequest {
+interface FlowScriptStepRequest {
   /**
    * Directory of the flow file that NAMES the step — the resolution anchor and
    * the executor's working-directory fallback. Canonical (symlink-resolved),
@@ -107,7 +107,7 @@ export async function runFlowScriptStep(
   // spelling into a file is held to this line — a `run:` basename, the root
   // flow's `flow_path` and `name`, the recorder's two nested flow-execute
   // targets — and they all reach it through the one
-  // {@link classifyOnDiskSpelling}. A script path takes the same verdict
+  // `classifyOnDiskSpelling` in flow-utils.ts. A script path takes the same verdict
   // shape: only `case_folded` refuses. A basename matching nothing at all is an
   // ordinary missing file, reported below with the path it looked for, and an
   // unreadable listing vouches for nothing so it refuses nothing.
@@ -232,9 +232,10 @@ async function scriptFileProblem(canonical: string): Promise<string | null> {
  * ACTUALLY did, and dropping them on a pass is how a script that silently ran
  * somewhere else stays silent.
  *
- * Exported so the recorder reports the same verdict for the same executor
- * result that a replay will. A second table would be free to drift, and the
- * drift would show up as a step recorded green that replays red.
+ * Exported for the test that pins the recorder's verdict and the runner's
+ * against it, kind for kind. Neither caller reaches it directly — both come
+ * through {@link runFlowScriptStep}, which is what makes them agree — so the
+ * export buys the proof, not the property.
  */
 export function scriptVerdict(
   result: FlowScriptResult

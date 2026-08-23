@@ -114,7 +114,7 @@ export const flowAddScriptTool: ToolDefinition<z.infer<typeof zodSchema>, FlowAd
 Use when a flow needs backend state before it touches the device: seed an order, create a test account, read a one-time code. The script drives nothing on the device; the steps around it do. Record it at the point in the walkthrough where it belongs — a setup script goes BEFORE the restart-app it prepares state for, because that is where it runs at replay.
 It runs the file exactly as a replay will: same path resolution (relative to the flow file being recorded), same environment allowlist, same time limit, and the same working directory — this recording's \`project_root\`, which is what a replay launched from that root also uses.
 Returns { message, status, reason?, log?, logTruncated?, durationMs?, output?, stepCount, recorded?, savedTo? }.
-UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. Its side effects are still real — a script that created two of three records and then threw did not roll them back, so fix and re-run, or clean up first.
+UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. A script that ran before it stopped did not roll back what it created; the \`message\` says whether anything ran, so you can fix and re-run or clean up first.
 \`output\` is the document the script returned. It is shown so you can see the shape a later release will read; no flow step can reference it yet.
 Refused for a recording whose project root is not on this tool server's filesystem: the .mjs file stays on the client, so there is nothing here to resolve the path against or to run.`,
   zodSchema,
@@ -185,10 +185,9 @@ Refused for a recording whose project root is not on this tool server's filesyst
     // session-wide budget would silently truncate the tenth script's logs
     // during authoring, which is the moment those logs matter most. The
     // per-step limit still applies.
-    // The signal is the run's, not the step's: a caller that gave up should not
-    // leave a script holding an executor slot until its own time limit. Replay
-    // passes the same thing, so a cancelled recording behaves like a cancelled
-    // run rather than like a divergence.
+    // A caller that gave up should not leave a script holding an executor slot
+    // until the step's own time limit. Replay hands the executor its run's
+    // signal for the same reason; this hands it the tool call's.
     const { outcome, result } = await runFlowScriptStep({
       flowDir,
       step,
@@ -251,8 +250,8 @@ Refused for a recording whose project root is not on this tool server's filesyst
           failure_area: "tool_server",
           error_kind: "validation",
         },
-        `The script "${step.path}" ran and passed in ${result!.durationMs}ms, and nothing it did ` +
-          `was rolled back — but recording it failed, so the step is not in the flow, and its ` +
+        `The script "${step.path}" ran and passed in ${result!.durationMs}ms and nothing it did ` +
+          `was rolled back, but recording it failed — so the step is not in the flow, and its ` +
           `logs and output document are lost with this error. ` +
           `${err instanceof Error ? err.message : String(err)}`
       );

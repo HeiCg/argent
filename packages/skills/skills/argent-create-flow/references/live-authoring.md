@@ -21,13 +21,13 @@ args: "{\"udid\":\"DEVICE\",\"x\":0.5,\"y\":0.35}"
 
 A recorded `flow-execute` has two names. The top-level `name` identifies the recording. `args.name` identifies the sibling flow captured as `run:`.
 
-`flow-add-script` runs a local `.mjs` file and records it as a `script:` step. It takes `path` — the file, resolved against the flow file being recorded, not against `project_root` — and an optional `timeout` in milliseconds. Both are the step's own keys and are recorded verbatim. It takes no device, because a script drives none. It runs the file the way replay will: same path resolution, same working directory, same environment allowlist, same time limit. Only the 64 KiB per-step log limit applies here; the per-run one does not. Read [Flow YAML](flow-yaml.md#local-scripts-script) for the `path` rules, including the on-disk casing it refuses.
+`flow-add-script` runs a local `.mjs` file and records it as a `script:` step. `path` resolves against the flow file being recorded, not against `project_root`; `timeout` is milliseconds. Both are the step's own keys, recorded verbatim, and it runs the file the way replay will. It takes no device. Read [Flow YAML](flow-yaml.md#local-scripts-script) for the `path` rules, including the on-disk casing it refuses.
 
-It returns `status`, and `reason` whenever the outcome needs one — why a script failed, or the note saying a `timeout` was clamped to the host cap. `log`, `logTruncated`, `durationMs` and `output` are present when they apply: no `log` if the script printed nothing, `logTruncated: true` if the limit cut it, no `durationMs` if the path was refused before anything ran, and `output` only on a pass. `output` is the document the script returned, shown so you can see its shape; no step can reference it yet.
+Two return fields are not self-evident. `reason` carries the executor's note on a pass, which is where a clamped `timeout` shows up. `durationMs` is absent when the path was refused before anything ran.
 
-**A script that does not pass records nothing.** That is the one place a step call differs from `flow-add-step`, which appends whenever the call returns. The rest of the walkthrough would be recorded against state a failed script did not establish, so a known-red step would sit ahead of every step that depends on it. Its side effects are real all the same: a script that created two of three records and then threw did not roll them back. The `message` says which case you are in. Retry only if the re-run is safe to repeat; otherwise clean up first.
+**A script that does not pass records nothing.** That is the one place a step call differs from `flow-add-step`, which appends whenever the call returns. The rest of the walkthrough would otherwise be recorded against state the failed script did not establish. Its side effects are real all the same; the `message` says whether anything ran, so retry only when the re-run is safe to repeat.
 
-`flow-add-script` is refused for a recording whose `project_root` is not on the tool server's filesystem. The `.mjs` file stays on your machine, so the server has nothing to resolve `path` against and nothing to run. Record against a co-located tool server instead. Adding the `script:` step by hand after finishing also works, and is the one case the unrecorded-insertion rule below does not cover — the tool cannot run there, so there is nothing to record.
+`flow-add-script` is refused when the recording's `project_root` is not on the tool server's filesystem: the `.mjs` never left your machine. Record against a co-located tool server. Hand-adding the step after finishing also works, and is the one case the unrecorded-insertion rule below does not cover.
 
 Obey these lifecycle rules:
 
@@ -72,7 +72,7 @@ steps:
 
 The path is relative to `.argent/flows/`. Copy the live boot arguments verbatim, and omit `args` when the boot passed none. This packaging exception represents the boot already exercised live. It does not permit a rehearsed UI path.
 
-Record a setup `script:` with `flow-add-script` here too, but not for the same reason: a Chromium flow's leading `launch:` boots the app before step 1, so a script written above it still runs with the app already up ([Flow YAML](flow-yaml.md#local-scripts-script)). Record it where the walkthrough needs it, and do not rely on it running first.
+Record a setup `script:` with `flow-add-script` here too, but a Chromium flow's leading `launch:` boots before step 1, so a script written above it still runs with the app already up. Record it where the walkthrough needs it, not first.
 
 ### Fragments
 
@@ -186,10 +186,7 @@ If polish reveals a missing action or structural check, restore its preceding st
 flow-start-recording { FLOW }
 flow-add-echo { FLOW, message: "Seed a note, restart Acme Notes; expect Home" }
 flow-add-script { FLOW, path: "../../scripts/seed-note.mjs", timeout: 30000 }
-# ran here; recorded (block style, like every recorded step) as:
-#   - script:
-#       path: ../../scripts/seed-note.mjs
-#       timeout: 30000
+# ran here; recorded as the block-style `script:` step below
 flow-add-step { FLOW, command: "restart-app", args: "{\"udid\":\"ABC\",\"bundleId\":\"com.acme.notes\"}" }
 # captured as: - launch: com.acme.notes
 flow-add-step { FLOW, command: "await-ui-element", args: "{\"udid\":\"ABC\",\"condition\":\"visible\",\"selector\":{\"identifier\":\"home-screen\"}}" }

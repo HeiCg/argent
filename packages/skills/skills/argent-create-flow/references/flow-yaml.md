@@ -204,7 +204,7 @@ A `script:` step runs a local JavaScript file in a new Node process. Use it for 
 
 The machine config caps that limit with `scripts.maxTimeoutMs` (default 300000, five minutes). A larger `timeout:` runs at the cap, and the report shows the clamp. A cap below 30000 also lowers the default.
 
-Record one live with `flow-add-script` rather than typing it in afterward. It runs the file the way replay will and appends the step only when it passes. See [Live authoring](live-authoring.md#recorder-contract).
+Record one live with `flow-add-script` rather than typing it in afterward. See [Live authoring](live-authoring.md#recorder-contract).
 
 ### Where `path` points
 

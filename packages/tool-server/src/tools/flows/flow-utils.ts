@@ -2576,7 +2576,7 @@ export function runTargetName(target: string): string {
  * `../shared/login.yaml` is a documented layout. Only the SHAPE is checked
  * here; nothing about WHERE the path lands. At run time execRunStep joins it
  * onto the containing flow file's own directory and resolves the result with
- * kernel semantics (see canonicalFlowPath in flow-run.ts) — deliberately not a
+ * kernel semantics (see canonicalFlowPath in flow-file-refs.ts) — deliberately not a
  * lexical collapse, since a `..` after a symlinked component names the parent
  * of the link's target, not of the spelling. There is no path fence at that
  * point: a target runs if the tool server can read it, and fails with that
@@ -2714,7 +2714,7 @@ function parseScriptStep(raw: unknown, body: unknown): FlowStep {
  * and parents — so scripts are not required to live in one directory either.
  * `..` is admitted for the same reason it is there: shared code may
  * legitimately sit outside the directory of the flow using it, and there is no
- * path fence at resolution time (see resolveFlowRelativeFile in flow-run.ts).
+ * path fence at resolution time (see resolveFlowRelativeFile in flow-file-refs.ts).
  * `scripts/` is a convention the authoring skill teaches, not a rule this
  * enforces.
  *
@@ -2779,8 +2779,8 @@ export function parseScriptPath(raw: unknown, value: unknown): string {
  * no deadline at all. The executor clamps whatever survives to the host's
  * configured maximum and says so in the step's report.
  *
- * Exported alongside {@link parseScriptPath}, and for the same reason: the
- * recorder's `timeout` parameter is this key, so it is validated by this rule.
+ * Exported alongside {@link parseScriptPath}: the recorder's `timeout`
+ * parameter is this key.
  */
 export function parseScriptTimeout(raw: unknown, value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -2802,12 +2802,22 @@ interface StepField {
   value: string;
 }
 
-/** A selector's own reference-bearing fields, through its whole relation tree. */
+/**
+ * A selector's reference-bearing fields, through its whole relation tree.
+ *
+ * The recursion carries the path rather than flattening with
+ * {@link selectorTree}: a constraint buried in a `within`/`after`/`next` scope
+ * is a different field from the target's own, and reporting one at the other's
+ * path would send an author to a key holding an innocent value —
+ * `within: { text: "{{output:x}}" }` blamed on a `text: "Ok"` one level up.
+ */
 function* selectorFields(sel: FlowSelector, where: string): Generator<StepField> {
-  for (const s of selectorTree(sel)) {
-    if (s.text !== undefined) yield { where: `${where}.text`, value: s.text };
-    if (s.identifier !== undefined) yield { where: `${where}.id`, value: s.identifier };
-    if (s.role !== undefined) yield { where: `${where}.role`, value: s.role };
+  if (sel.text !== undefined) yield { where: `${where}.text`, value: sel.text };
+  if (sel.identifier !== undefined) yield { where: `${where}.id`, value: sel.identifier };
+  if (sel.role !== undefined) yield { where: `${where}.role`, value: sel.role };
+  for (const relation of SELECTOR_RELATIONS) {
+    const nested = sel[relation];
+    if (nested !== undefined) yield* selectorFields(nested, `${where}.${relation}`);
   }
 }
 
@@ -2855,6 +2865,21 @@ function* argFields(
 }
 
 /**
+ * Where a gesture step's target sits: under `on:` when the step carries an
+ * option beside it, and directly under the directive key when it does not.
+ * The condition is {@link toYamlStep}'s own, asked of the same fields.
+ */
+function gestureTargetPath(
+  step: Extract<FlowStep, { kind: "tap" | "long-press" | "pinch" | "rotate" }>
+): string {
+  const wrapped =
+    step.kind === "pinch" ||
+    step.kind === "rotate" ||
+    (step.kind === "tap" ? step.times !== undefined : step.duration !== undefined);
+  return wrapped ? `${step.kind}.on` : step.kind;
+}
+
+/**
  * The reference-bearing fields of one UI condition — an `await`, an `assert`, or
  * a `when` guard, which carry the same three fields under the same keys.
  *
@@ -2878,7 +2903,14 @@ function* conditionFields(
     cond.condition === "text" ? `${kind}.text.in` : `${kind}.${cond.condition}`
   );
   if (cond.expectedText !== undefined && cond.textMatch !== "matches") {
-    yield { where: `${kind}.text.${cond.textMatch ?? "equals"}`, value: cond.expectedText };
+    // Name the comparator the file actually carries. Every construction site
+    // sets one, so the bare fallback is unreachable through the parser — but
+    // `validateFlow` now also sees steps the recorder BUILT, and guessing a
+    // comparator there would name a key the flow does not have.
+    yield {
+      where: cond.textMatch ? `${kind}.text.${cond.textMatch}` : `${kind}.text`,
+      value: cond.expectedText,
+    };
   }
 }
 
@@ -2907,10 +2939,16 @@ function* conditionFields(
  * would name the wrong step.
  *
  * `where` is the field's YAML path, because that is what an author has to go
- * and edit. Two of them are worth the extra care: a selector under a condition
- * hangs off the CONDITION key (`await: { visible: … }` vs `await: { text: { in:
- * … } }`), and an expectation hangs off its comparator — spell them the same
- * and the message names one field for two places.
+ * and edit, and three of them are worth the extra care: a selector under a
+ * condition hangs off the CONDITION key (`await: { visible: … }` vs `await: {
+ * text: { in: … } }`), an expectation hangs off its comparator — spell those
+ * two the same and the message names one field for two places — and a gesture's
+ * target moves under `on:` the moment the step carries an option.
+ *
+ * One elision remains, and it is harmless: a bare-string target carries no key
+ * of its own, so `tap: "Save"` is reported as `tap.text`, naming the constraint
+ * the sugar stands for rather than a key the file spells. The message quotes
+ * the offending value beside the path either way.
  */
 function* outputReferenceFields(step: FlowStep): Generator<StepField> {
   switch (step.kind) {
@@ -2935,7 +2973,11 @@ function* outputReferenceFields(step: FlowStep): Generator<StepField> {
     case "long-press":
     case "pinch":
     case "rotate":
-      if (step.selector) yield* selectorFields(step.selector, step.kind);
+      // The four gesture kinds take a bare target OR an options map that hangs
+      // it under `on:`, and {@link toYamlStep} writes the map exactly when an
+      // option is present — always, for `pinch`/`rotate`, whose scale and angle
+      // are required.
+      if (step.selector) yield* selectorFields(step.selector, gestureTargetPath(step));
       return;
     case "scroll-to":
       yield* selectorFields(step.target, "scroll-to.target");
@@ -3265,10 +3307,11 @@ export function serializeFlow(flow: FlowFile): string {
  * invariants, and the per-step content rules that read a finished step rather
  * than its raw spelling.
  *
- * Called from {@link parseFlow}, and — the reason the output-reference scan
- * lives here rather than beside the parse of each entry — from {@link
- * appendStep} and the client-mode branch of {@link appendStepToFlow}, in both
- * cases BEFORE the flow is serialized and written. A recorder appends a step
+ * Called from {@link parseFlow}, from `flow-start-recording` on the empty flow
+ * it registers, and — the reason the output-reference scan lives here rather
+ * than beside the parse of each entry — from {@link appendStep} and the
+ * client-mode branch of {@link appendStepToFlow}, in both of those BEFORE the
+ * flow is serialized and written. A recorder appends a step
  * that was never YAML, so a parse-time check would only see it after
  * {@link appendStepToFlow} had already written the file and re-read it: the
  * rejected step would be on disk, and every later call on that recording —
@@ -3806,13 +3849,13 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
   // An `echo` cost nothing. A `script` ran a process that may have created
   // backend state, and it never touched a device — telling its caller the step
   // "ran on the device" would send them looking for something to undo there.
-  // Everything else is a device action.
+  // Everything else is a device action. What the script did with that state is
+  // `flow-add-script`'s to report, and it does; this says only what was spent.
   const alreadySpent =
     step.kind === "echo"
       ? ". "
       : step.kind === "script"
-        ? ", but the script already ran — repeating it repeats whatever it did, and nothing it " +
-          "did was rolled back. "
+        ? ", but the script already ran — repeating it repeats whatever it did. "
         : ", but the step itself already ran on the device — repeating it repeats that action. ";
   const recovery = `Nothing was added to the flow file` + alreadySpent + whatIsAtStake;
   throw new FailureError(

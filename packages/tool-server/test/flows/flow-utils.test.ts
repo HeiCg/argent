@@ -1095,6 +1095,60 @@ describe("output references", () => {
     ).toBe("scroll-to.target.id");
   });
 
+  it("addresses a relation scope apart from the target it narrows", () => {
+    // The path has to descend, or a reference in a `within`/`after`/`next`
+    // scope is reported at the key one level up — which holds a different,
+    // innocent value, and sends the author to the wrong line.
+    const fieldNamed = (yaml: string): string => {
+      try {
+        parseFlow(yaml);
+      } catch (err) {
+        return /`([^`]+)` holds an output reference/.exec(
+          err instanceof Error ? err.message : ""
+        )![1]!;
+      }
+      throw new Error(`expected parseFlow to reject: ${yaml}`);
+    };
+
+    expect(
+      fieldNamed('steps:\n  - await: { visible: { text: Ok, within: { text: "{{output:x}}" } } }\n')
+    ).toBe("await.visible.within.text");
+    expect(
+      fieldNamed('steps:\n  - tap: { id: a, within: { id: b, after: { id: "{{output:x}}" } } }\n')
+    ).toBe("tap.within.after.id");
+  });
+
+  it("addresses a gesture target under `on:` exactly when the step spells it there", () => {
+    // The four gesture kinds hang their target under `on:` the moment they
+    // carry an option beside it — always, for pinch and rotate, whose scale and
+    // angle are required — so a fixed prefix would name a key half of them do
+    // not have.
+    const fieldNamed = (yaml: string): string => {
+      try {
+        parseFlow(yaml);
+      } catch (err) {
+        return /`([^`]+)` holds an output reference/.exec(
+          err instanceof Error ? err.message : ""
+        )![1]!;
+      }
+      throw new Error(`expected parseFlow to reject: ${yaml}`);
+    };
+
+    expect(fieldNamed('steps:\n  - tap: { id: "{{output:row}}" }\n')).toBe("tap.id");
+    expect(fieldNamed('steps:\n  - tap: { on: { id: "{{output:row}}" }, times: 2 }\n')).toBe(
+      "tap.on.id"
+    );
+    expect(
+      fieldNamed('steps:\n  - long-press: { on: { id: "{{output:row}}" }, duration: 900 }\n')
+    ).toBe("long-press.on.id");
+    expect(fieldNamed('steps:\n  - pinch: { on: { id: "{{output:map}}" }, scale: 2 }\n')).toBe(
+      "pinch.on.id"
+    );
+    expect(fieldNamed('steps:\n  - rotate: { on: { id: "{{output:map}}" }, by: 45 }\n')).toBe(
+      "rotate.on.id"
+    );
+  });
+
   it("names the step, so a reference inside a block says which one", () => {
     let message = "";
     try {
