@@ -229,6 +229,37 @@ describe("the recorder reports the verdict the runner will", () => {
     }
   );
 
+  it.each([
+    ["queue", false],
+    ["spawn", false],
+    ["invalid", false],
+    ["runtime", true],
+    ["timeout", true],
+    ["cancelled", true],
+  ] as [FlowScriptFailureKind, boolean][])(
+    "tells the author whether a %s failure left anything behind",
+    async (kind, ran) => {
+      // The executor answers three of its failures WITHOUT forking anything, so
+      // "there is a result" does not mean "something ran" — and telling an
+      // author to clean up after a queue that was full sends them hunting for
+      // state that was never created. `cancelled` counts as ran on purpose: it
+      // can land either side of the fork and the result does not say which.
+      executeMock.mockResolvedValue(outcome({ failure: { kind, message: `the ${kind} message` } }));
+
+      const recorded = await recordScript();
+
+      expect(recorded.status).not.toBe("pass");
+      if (ran) {
+        expect(recorded.message).toContain("is still done");
+        expect(recorded.message).toContain("failed");
+      } else {
+        expect(recorded.message).toContain("Nothing ran, so there is nothing to clean up");
+        expect(recorded.message).toContain("could not be run");
+      }
+      expect(await recordedSteps()).toEqual([]);
+    }
+  );
+
   it("agrees on a pass, and only then records the step", async () => {
     const result = outcome({ ok: true, output: { order: { id: 7 } }, notes: ["a note."] });
     executeMock.mockResolvedValue(result);

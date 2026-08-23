@@ -117,6 +117,15 @@ Returns { message, status, reason?, log?, logTruncated?, durationMs?, output?, s
 UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. A script that ran before it stopped did not roll back what it created; the \`message\` says whether anything ran, so you can fix and re-run or clean up first.
 \`output\` is the document the script returned. It is shown so you can see the shape a later release will read; no flow step can reference it yet.
 Refused for a recording whose project root is not on this tool server's filesystem: the .mjs file stays on the client, so there is nothing here to resolve the path against or to run.`,
+  // A script's default limit is 30s and its host cap is five minutes, both of
+  // which outlive the MCP adapter's per-request fetch budget. Without this the
+  // adapter aborts a slow call and RETRIES it — re-running a script whose whole
+  // purpose is a side effect, up to five times, while the agent sees a
+  // transport error instead of the "nothing was recorded" result this tool
+  // takes such care to produce. It also keeps the server's idle timer warm for
+  // the call's duration, so auto-shutdown cannot reap the host mid-script.
+  // `flow-execute`, which runs the same executor, is declared the same way.
+  longRunning: true,
   zodSchema,
   services: () => ({}),
   async execute(_services, params, ctx) {
@@ -188,7 +197,7 @@ Refused for a recording whose project root is not on this tool server's filesyst
     // A caller that gave up should not leave a script holding an executor slot
     // until the step's own time limit. Replay hands the executor its run's
     // signal for the same reason; this hands it the tool call's.
-    const { outcome, result } = await runFlowScriptStep({
+    const { outcome, result, ran } = await runFlowScriptStep({
       flowDir,
       step,
       projectRoot: params.project_root,
@@ -212,19 +221,20 @@ Refused for a recording whose project root is not on this tool server's filesyst
       // step did not create. An unmet `await-ui-element` costs one stale step;
       // a recorded failing script costs every step after it.
       //
-      // What to do next depends on whether anything RAN, and only the caller of
-      // the executor knows: a path this step could not resolve forked nothing,
-      // so telling its author to weigh a cleanup sends them hunting for state
-      // that was never created — the same false advice a superseded echo used
-      // to get.
-      const nextMove = result
+      // What to do next turns on whether a child actually ran, which is not the
+      // same as whether there is a result: a path this step could not resolve
+      // forked nothing, and neither did a queue that was full or a process that
+      // would not start. Telling any of their authors to weigh a cleanup sends
+      // them hunting for state that was never created — the same false advice a
+      // superseded echo used to get.
+      const nextMove = ran
         ? `Whatever the script did before it stopped is still done: nothing was rolled back, so ` +
           `either make the re-run safe to repeat or clean up first, then call this again.`
-        : `Nothing ran, so there is nothing to clean up — fix the path and call this again.`;
+        : `Nothing ran, so there is nothing to clean up — the reason above says what stopped it.`;
       return {
         ...common,
         message:
-          `The script "${step.path}" ${result ? "failed" : "could not be run"} — nothing was ` +
+          `The script "${step.path}" ${ran ? "failed" : "could not be run"} — nothing was ` +
           `recorded in "${params.name}", so the flow is exactly as it was. ${nextMove}`,
         stepCount: await recordedStepCount(session),
       };

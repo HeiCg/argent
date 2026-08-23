@@ -211,6 +211,15 @@ describe("recording a script step", () => {
     expect((await addScript("deviceless", "../../scripts/seed.mjs")).status).toBe("pass");
   });
 
+  it("is declared longRunning, because a script may outlive the MCP fetch budget", async () => {
+    // A script's default limit is 30s and its host cap is five minutes. Without
+    // this the adapter aborts the call and RETRIES it, re-running a script
+    // whose whole purpose is a side effect — and the agent never sees the
+    // "nothing was recorded" result, only a transport error. `flow-execute`,
+    // which runs the same executor, carries the same declaration.
+    expect(flowAddScriptTool.longRunning).toBe(true);
+  });
+
   it("runs in the working directory replay gives it", async () => {
     // Same executor inputs as `runScriptStep`, so a script that reads a project
     // file during recording reads the same one at replay.

@@ -38,11 +38,18 @@ interface FlowScriptStepOutcome {
 interface FlowScriptStepRun {
   outcome: FlowScriptStepOutcome;
   /**
-   * The executor's result — absent exactly when the step was refused before any
-   * fork, so a caller that reports a duration or an output document can tell
-   * "the script ran and failed" from "the script never started".
+   * The executor's result — absent exactly when the step was refused before the
+   * executor was reached at all, so a caller can report a duration and an
+   * output document only when there is one.
    */
   result?: FlowScriptResult;
+  /**
+   * Whether a child process actually ran. This is what a caller needs to say
+   * whether there may be state to clean up, and it is NOT the same question as
+   * "is there a result": the executor answers several failures without forking
+   * anything (see {@link scriptRan}).
+   */
+  ran: boolean;
 }
 
 interface FlowScriptStepRequest {
@@ -124,6 +131,7 @@ export async function runFlowScriptStep(
       : `rename "${spelling.actual}" to "${suppliedBase}" to run it — a script filename must ` +
         `match ${SCRIPT_FILE_NAME_PATTERN}`;
     return {
+      ran: false,
       outcome: {
         status: "error",
         reason:
@@ -142,6 +150,7 @@ export async function runFlowScriptStep(
   const missing = await scriptFileProblem(canonical);
   if (missing) {
     return {
+      ran: false,
       outcome: {
         status: "fail",
         reason: `script "${target}" ${missing} (resolved to ${canonical})`,
@@ -177,7 +186,33 @@ export async function runFlowScriptStep(
       ...(result.logTruncated ? { scriptLogTruncated: true } : {}),
     },
     result,
+    ran: scriptRan(result),
   };
+}
+
+/**
+ * The failure kinds the executor reports WITHOUT ever forking a child: a
+ * request it could not use, a process it could not start, and a step that never
+ * left the queue.
+ */
+const NEVER_FORKED: ReadonlySet<FlowScriptFailureKind> = new Set(["invalid", "spawn", "queue"]);
+
+/**
+ * Whether a child process actually ran — the question "does this leave state
+ * behind" turns on, and one a result's mere presence does not answer: the
+ * executor returns a full result for a queue it could not admit the step to and
+ * for a spawn that never happened.
+ *
+ * Everything else answers yes, `cancelled` included, and that asymmetry is
+ * deliberate: a cancellation can land before the fork or after the script has
+ * already reached the system it talks to, the result does not say which, and
+ * "nothing ran" is the more dangerous of the two to claim wrongly. Same
+ * doctrine as {@link scriptVerdict}'s, which calls a cancellation an error
+ * rather than a skip for the same reason.
+ */
+function scriptRan(result: FlowScriptResult): boolean {
+  if (result.ok || !result.failure) return true;
+  return !NEVER_FORKED.has(result.failure.kind);
 }
 
 /**
