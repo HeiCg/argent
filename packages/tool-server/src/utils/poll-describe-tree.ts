@@ -55,6 +55,17 @@ export interface PollDescribeTreeResult<R> {
   lastData: DescribeTreeData | null;
   /** Most recent fetch error / timeout message, if the last fetch failed. */
   lastError?: string;
+  /**
+   * How the FINAL fetch attempt ended: it returned a `tree`, it threw
+   * (`error`), or it never came back before the loop stopped waiting for it
+   * (`unsettled`).
+   *
+   * `lastError` cannot answer this. It is cleared on every successful fetch,
+   * and left unset for both an abandoned fetch and one that failed with no
+   * budget left, so that the caller can still build a note from an older tree.
+   * An unset `lastError` therefore does NOT mean the last attempt succeeded.
+   */
+  lastAttempt: "tree" | "error" | "unsettled";
 }
 
 /**
@@ -87,6 +98,7 @@ export async function pollDescribeTree<R>(
   let polls = 0;
   let lastData: DescribeTreeData | null = null;
   let lastError: string | undefined;
+  let lastAttempt: PollDescribeTreeResult<R>["lastAttempt"] = "unsettled";
 
   const outcome = (result: R | undefined, aborted: boolean): PollDescribeTreeResult<R> => ({
     result,
@@ -95,6 +107,7 @@ export async function pollDescribeTree<R>(
     elapsedMs: Date.now() - start,
     lastData,
     lastError,
+    lastAttempt,
   });
 
   for (;;) {
@@ -112,10 +125,13 @@ export async function pollDescribeTree<R>(
     polls += 1;
 
     if (settled.type === "aborted") return outcome(undefined, true);
+    lastAttempt =
+      settled.type === "timeout" ? "unsettled" : settled.type === "error" ? "error" : "tree";
     if (settled.type === "timeout") {
       // Only synthesize a "did not complete" error when we never got a usable
       // tree; a final fetch that merely straddled the deadline leaves lastData
       // in place so the caller can build a content-based note from it.
+      // `lastAttempt` is what tells that stale tree from a fresh one.
       if (lastData === null) {
         lastError ??= `tree fetch did not complete within the ${timeoutMs}ms wait budget`;
       }
