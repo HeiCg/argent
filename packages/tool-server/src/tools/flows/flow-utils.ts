@@ -2727,8 +2727,12 @@ function parseScriptStep(raw: unknown, body: unknown): FlowStep {
  *   have no such history, and the explicit extension is load-bearing;
  * - the basename charset is {@link SCRIPT_FILE_NAME_PATTERN}, the `.mjs`
  *   spelling of the one behind FLOW_FILE_NAME_PATTERN.
+ *
+ * Exported so `flow-add-script` validates its `path` parameter through this
+ * very function rather than restating the rules: a path the recorder accepts is
+ * a path this parser accepts, by construction and not by two lists agreeing.
  */
-function parseScriptPath(raw: unknown, value: unknown): string {
+export function parseScriptPath(raw: unknown, value: unknown): string {
   // Uncoerced, exactly as parseRunTarget is: YAML renders a valueless
   // `path:` as null and a bare scalar as a boolean/number, and String()-ing
   // those first would turn a key the author left empty into a live reference
@@ -2774,12 +2778,236 @@ function parseScriptPath(raw: unknown, value: unknown): string {
  * overflowing literal) is typeof number and > 0, and would leave the step with
  * no deadline at all. The executor clamps whatever survives to the host's
  * configured maximum and says so in the step's report.
+ *
+ * Exported alongside {@link parseScriptPath}, and for the same reason: the
+ * recorder's `timeout` parameter is this key, so it is validated by this rule.
  */
-function parseScriptTimeout(raw: unknown, value: unknown): number {
+export function parseScriptTimeout(raw: unknown, value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     badEntry(raw, "script.timeout needs a positive number of milliseconds (e.g. `timeout: 30000`)");
   }
   return value as number;
+}
+
+/**
+ * The `{{output:` opener of an output reference. A later release resolves one
+ * of these against the document a `script:` step returned; this release has no
+ * flow output at all, so a reference reaching a step is literal text.
+ */
+const OUTPUT_REFERENCE_MARKER = "{{output:";
+
+/** One string a step carries, with the field name to report it under. */
+interface StepField {
+  where: string;
+  value: string;
+}
+
+/** A selector's own reference-bearing fields, through its whole relation tree. */
+function* selectorFields(sel: FlowSelector, where: string): Generator<StepField> {
+  for (const s of selectorTree(sel)) {
+    if (s.text !== undefined) yield { where: `${where}.text`, value: s.text };
+    if (s.identifier !== undefined) yield { where: `${where}.id`, value: s.identifier };
+    if (s.role !== undefined) yield { where: `${where}.role`, value: s.role };
+  }
+}
+
+/**
+ * Every string leaf of a `tool` step's args, addressed by its own path.
+ *
+ * `args:` is the one step body the parser does not constrain, and a YAML anchor
+ * may legitimately make it CYCLIC (`args: &a { self: *a }`) — the yaml library
+ * materializes that as a cyclic object, and a hand-edit mid-recording is a
+ * documented workflow, so the walk has to survive one rather than blow the
+ * stack. `seen` holds the containers on the current path only: a node visited
+ * twice down two different branches is two real leaves and must be yielded
+ * twice, while a node that contains itself is dropped at the point it closes
+ * the loop. {@link summarizeStep} tolerates the same shape, by the same
+ * reasoning.
+ */
+function* argFields(
+  value: unknown,
+  where: string,
+  seen: Set<object> = new Set()
+): Generator<StepField> {
+  if (typeof value === "string") {
+    yield { where, value };
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const [i, item] of value.entries()) yield* argFields(item, `${where}[${i}]`, seen);
+  } else if (value instanceof Map) {
+    // `%YAML 1.1` + `!!omap` materializes a real Map, whose entries
+    // Object.entries reports as none — so a leaf inside one would be invisible
+    // to a walk that only asked for own properties.
+    for (const [key, item] of value) yield* argFields(item, `${where}.${String(key)}`, seen);
+  } else if (value instanceof Set) {
+    // `!!set`, likewise: its members are the values.
+    for (const item of value) yield* argFields(item, `${where}{}`, seen);
+  } else {
+    for (const [key, item] of Object.entries(value))
+      yield* argFields(item, `${where}.${key}`, seen);
+  }
+  seen.delete(value);
+}
+
+/**
+ * The reference-bearing fields of one UI condition — an `await`, an `assert`, or
+ * a `when` guard, which carry the same three fields under the same keys.
+ *
+ * The expectation is skipped under `matches`: that comparator's value is a
+ * regular expression, and no regular expression is on the supported list (see
+ * {@link outputReferenceFields}). `contains` and `equals` are literals, and are.
+ */
+function* conditionFields(
+  kind: string,
+  cond: {
+    condition: WaitCondition;
+    selector: FlowSelector;
+    expectedText?: string;
+    textMatch?: TextMatchMode;
+  }
+): Generator<StepField> {
+  // The selector hangs off the condition key, except under `text`, where the
+  // condition body holds it at `in`.
+  yield* selectorFields(
+    cond.selector,
+    cond.condition === "text" ? `${kind}.text.in` : `${kind}.${cond.condition}`
+  );
+  if (cond.expectedText !== undefined && cond.textMatch !== "matches") {
+    yield { where: `${kind}.text.${cond.textMatch ?? "equals"}`, value: cond.expectedText };
+  }
+}
+
+/**
+ * Every field an output reference will be RESOLVED in once flow output lands —
+ * the list that release declares supported, and nothing else.
+ *
+ * That list is the whole point. This function feeds a REJECTION today and a
+ * resolution later, over the same fields, so the set an author may not write a
+ * reference into is exactly the set that will one day read it. A field left off
+ * both is static by design: script and `run:` paths, launch definitions,
+ * snapshot names, time limits, gesture numbers, tool names — a reference there
+ * would have to be resolved before the file is even anchored.
+ *
+ * **No regular expression is on it.** A pattern is not a literal: a `{{` in one
+ * is a quantifier-shaped character sequence the author meant, and the supported
+ * list carries neither the selector's `text: { matches }` nor an `await`/
+ * `assert`/`when` `matches` comparator. Those two spell the same thing at two
+ * levels, so they take the same answer — and the `matches` half matters twice
+ * over, because a value resolved INTO a live pattern would splice unescaped
+ * metacharacters into it, which is a question the release that resolves
+ * references has to answer before it opens that field.
+ *
+ * Own fields only. A block directive's children are walked by
+ * {@link assertNoOutputReferences} itself — reporting one against its parent
+ * would name the wrong step.
+ *
+ * `where` is the field's YAML path, because that is what an author has to go
+ * and edit. Two of them are worth the extra care: a selector under a condition
+ * hangs off the CONDITION key (`await: { visible: … }` vs `await: { text: { in:
+ * … } }`), and an expectation hangs off its comparator — spell them the same
+ * and the message names one field for two places.
+ */
+function* outputReferenceFields(step: FlowStep): Generator<StepField> {
+  switch (step.kind) {
+    case "echo":
+      yield { where: "echo", value: step.message };
+      return;
+    case "tool":
+      yield* argFields(step.args, "args");
+      return;
+    case "type":
+      yield* selectorFields(step.into, "type.into");
+      yield { where: "type.text", value: step.text };
+      return;
+    case "await":
+    case "assert":
+      yield* conditionFields(step.kind, step);
+      return;
+    case "when":
+      if (step.condition.kind === "ui") yield* conditionFields("when", step.condition);
+      return;
+    case "tap":
+    case "long-press":
+    case "pinch":
+    case "rotate":
+      if (step.selector) yield* selectorFields(step.selector, step.kind);
+      return;
+    case "scroll-to":
+      yield* selectorFields(step.target, "scroll-to.target");
+      if (step.within) yield* selectorFields(step.within, "scroll-to.within");
+      return;
+    case "snapshot":
+      if (step.cropOn) yield* selectorFields(step.cropOn, "snapshot.cropOn");
+      return;
+    // A script step's own two keys are a file path and a number. Its `env:`
+    // values ARE on the supported list, and they arrive with the release that
+    // adds the key — which is why this arm is spelled out rather than grouped
+    // with the ones below: that release yields them here.
+    case "script":
+      return;
+    // Carry no text a reference could be resolved in: a launch is app ids and
+    // paths, a `run:` is a file path, `idle`/`wait` are numbers.
+    case "launch":
+    case "run":
+    case "idle":
+    case "wait":
+      return;
+    default: {
+      // A new step kind must decide whether its text is reference-bearing. The
+      // wrong default is silence: it would let an author write a reference the
+      // later release then resolves, in a field this release printed literally.
+      const unclassified: never = step;
+      void unclassified;
+      return;
+    }
+  }
+}
+
+/**
+ * Refuse a flow whose steps spell an output reference, naming the one that does.
+ *
+ * The reference syntax has no meaning in this release: there is no flow output
+ * to read, so `{{output:user.id}}` in a `type:` would be TYPED, character for
+ * character, and the step would pass having entered the wrong thing. Silence is
+ * the one outcome that cannot be tolerated here — the same reasoning that makes
+ * a `script` step's unreleased `env:` key a parse error rather than an ignored
+ * one. Refusing means the flow never runs at all, which is the only report an
+ * author can act on.
+ *
+ * The trail is the step's position, one component per nesting level, so a
+ * reference buried in a `when:` block reads as `Step 3.2` rather than as a
+ * second step 2.
+ */
+function assertNoOutputReferences(steps: FlowStep[], trail: number[] = []): void {
+  steps.forEach((step, i) => {
+    const at = [...trail, i + 1];
+    for (const field of outputReferenceFields(step)) {
+      if (!field.value.includes(OUTPUT_REFERENCE_MARKER)) continue;
+      const rendered =
+        field.value.length > MAX_ENTRY_RENDER_CHARS
+          ? `${field.value.slice(0, MAX_ENTRY_RENDER_CHARS)}…`
+          : field.value;
+      throw new FailureError(
+        `Step ${at.join(".")} (\`${step.kind}\`): \`${field.where}\` holds an output reference ` +
+          `(\`${OUTPUT_REFERENCE_MARKER}…}}\`), which arrives with a later release — this one has ` +
+          `no flow output to read, so the text would be used literally and the step would pass ` +
+          `having done the wrong thing. Remove it and write the value the flow needs: ` +
+          `${JSON.stringify(rendered)}`,
+        {
+          error_code: FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED,
+          failure_stage: "flow_output_reference",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        }
+      );
+    }
+    const inner = blockSteps(step);
+    if (inner) assertNoOutputReferences(inner, at);
+  });
 }
 
 function fromYamlStep(raw: YamlStep, blockDepth = 0): FlowStep {
@@ -3031,8 +3259,24 @@ export function serializeFlow(flow: FlowFile): string {
   return yamlStringify(doc, { blockQuote: false });
 }
 
-/** Validate cross-field invariants that are checkable without other files. */
+/**
+ * Validate what one flow file can be judged on alone: its cross-field
+ * invariants, and the per-step content rules that read a finished step rather
+ * than its raw spelling.
+ *
+ * Called from {@link parseFlow}, and — the reason the output-reference scan
+ * lives here rather than beside the parse of each entry — from {@link
+ * appendStep} and the client-mode branch of {@link appendStepToFlow}, in both
+ * cases BEFORE the flow is serialized and written. A recorder appends a step
+ * that was never YAML, so a parse-time check would only see it after
+ * {@link appendStepToFlow} had already written the file and re-read it: the
+ * rejected step would be on disk, and every later call on that recording —
+ * including its finish — would fail re-parsing it, leaving the take
+ * unrecoverable without the mid-recording hand edit the authoring skill tells
+ * agents not to make.
+ */
 export function validateFlow(flow: FlowFile): void {
+  assertNoOutputReferences(flow.steps);
   if (isE2eFlow(flow) && flow.executionPrerequisite) {
     throw new FailureError(
       "A flow that starts with a launch step must not declare executionPrerequisite — it launches its own app and controls its start state. Drop the leading launch to make it a fragment, or drop executionPrerequisite.",
@@ -3557,12 +3801,19 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
       `under a fresh name rather than restarting this one.`
     : `The key is now free, but the finished take is on disk and flow-start-recording truncates ` +
       `it unconditionally, so re-record under a fresh name rather than restarting this one.`;
-  const recovery =
-    `Nothing was added to the flow file` +
-    (step.kind === "echo"
+  // What the caller has already spent, which decides whether retrying is free.
+  // An `echo` cost nothing. A `script` ran a process that may have created
+  // backend state, and it never touched a device — telling its caller the step
+  // "ran on the device" would send them looking for something to undo there.
+  // Everything else is a device action.
+  const alreadySpent =
+    step.kind === "echo"
       ? ". "
-      : ", but the step itself already ran on the device — repeating it repeats that action. ") +
-    whatIsAtStake;
+      : step.kind === "script"
+        ? ", but the script already ran — repeating it repeats whatever it did, and nothing it " +
+          "did was rolled back. "
+        : ", but the step itself already ran on the device — repeating it repeats that action. ";
+  const recovery = `Nothing was added to the flow file` + alreadySpent + whatIsAtStake;
   throw new FailureError(
     `Recording of "${session.name}" in ${session.projectRoot} is no longer active — ${why}. ` +
       recovery,

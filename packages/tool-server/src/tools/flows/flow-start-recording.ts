@@ -94,8 +94,10 @@ After starting, use flow-add-step to append tool calls — each step is executed
 LIVE so you can verify it works before it gets recorded. For a self-contained
 e2e flow, record a restart-app of the app under test as the FIRST step (captured
 as the flow's \`launch\` step); for a reusable fragment, skip that and pass
-executionPrerequisite instead. Use flow-add-echo to add labels. Call
-flow-finish-recording when done.
+executionPrerequisite instead. Use flow-add-echo to add labels, and
+flow-add-script to run a local .mjs file and record it as a \`script:\` step —
+record a setup script BEFORE the restart-app whose state it prepares, since that
+is where it runs at replay. Call flow-finish-recording when done.
 
 If a recorded step turns out to be wrong, you can edit the .yaml file directly
 to remove or reorder steps. Against a remote client, only after
