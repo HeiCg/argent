@@ -1143,6 +1143,23 @@ describe("output references", () => {
     ).toThrow(/output reference/);
   });
 
+  it("reaches a leaf inside the two containers own properties do not show", () => {
+    // A `%YAML 1.1` document materializes `!!set` and `!!omap` as a real Set
+    // and Map, whose contents Object.entries reports as none — so a walk that
+    // only asked for own properties would call an args block clean because it
+    // could not see into it.
+    expect(() =>
+      parseFlow(
+        '%YAML 1.1\n---\nsteps:\n  - tool: t\n    args:\n      inner: !!set\n        ? "{{output:x}}"\n'
+      )
+    ).toThrow(/`args.inner` holds an output reference/);
+    expect(() =>
+      parseFlow(
+        '%YAML 1.1\n---\nsteps:\n  - tool: t\n    args: !!omap\n      - k: "{{output:x}}"\n'
+      )
+    ).toThrow(/`args.k` holds an output reference/);
+  });
+
   it("leaves fields off the supported list alone", () => {
     // The scan is the later release's list, not "every string in the file". A
     // launch app id is static by design — it is resolved before any step runs —

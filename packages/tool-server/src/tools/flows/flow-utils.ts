@@ -2844,8 +2844,9 @@ function* argFields(
     // to a walk that only asked for own properties.
     for (const [key, item] of value) yield* argFields(item, `${where}.${String(key)}`, seen);
   } else if (value instanceof Set) {
-    // `!!set`, likewise: its members are the values.
-    for (const item of value) yield* argFields(item, `${where}{}`, seen);
+    // `!!set`, likewise: its members ARE the values, so they carry no key of
+    // their own and the container is the field an author would go and edit.
+    for (const item of value) yield* argFields(item, where, seen);
   } else {
     for (const [key, item] of Object.entries(value))
       yield* argFields(item, `${where}.${key}`, seen);
