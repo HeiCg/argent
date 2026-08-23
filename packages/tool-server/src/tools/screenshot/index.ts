@@ -12,7 +12,9 @@ import {
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
-import { getScreenshotScale, httpScreenshot } from "../../utils/simulator-client";
+import { getScreenshotScale } from "../../utils/simulator-client";
+import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
+import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
@@ -33,7 +35,7 @@ const zodSchema = z.object({
     .enum(["Portrait", "LandscapeLeft", "LandscapeRight", "PortraitUpsideDown"])
     .optional()
     .describe(
-      "Orientation override for the screenshot (rotates the captured image after Page.captureScreenshot on Chromium). Rejected on HarmonyOS, which captures the display in its current orientation and has no override."
+      "Orientation override for the screenshot (rotates the captured image after Page.captureScreenshot on Chromium). On Android the capture already follows the device's rotation. Rejected on HarmonyOS, which captures the display in its current orientation and has no override."
     ),
   scale: z
     .number()
@@ -213,11 +215,14 @@ Fails if the simulator-server / emulator backend / Chromium CDP / \`hdc\` is not
 
       const ref = simulatorServerRef(device);
       const api = (await registry.resolveService(ref.urn, ref.options)) as SimulatorServerApi;
-      const { path: capturedPath } = await httpScreenshot(
+      const { path: capturedPath } = await captureScreenshotUpright(
         api,
+        device,
         params.rotation,
         signal,
-        params.scale
+        params.scale,
+        undefined,
+        androidDevtoolsRotationPeek(registry, device)
       );
       const image = await requireArtifacts(ctx).register(capturedPath, { mimeType: "image/png" });
       return { image };

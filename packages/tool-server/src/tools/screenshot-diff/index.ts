@@ -5,7 +5,9 @@ import path from "path";
 import { z } from "zod";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import type {
+  DeviceInfo,
   FileInputSpec,
+  Registry,
   ServiceRef,
   ToolContext,
   ToolCapability,
@@ -17,6 +19,9 @@ import { InvalidToolInputError } from "../../utils/capability";
 import { captureHarmonyScreenshotPng } from "../../utils/harmony-screen";
 import { ensureDep } from "../../utils/check-deps";
 import { httpScreenshot } from "../../utils/simulator-client";
+import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
+import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
+import type { RotationPeek } from "../../utils/device-orientation";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
 import { diffPngFiles } from "./screenshot-diff";
 
@@ -137,11 +142,31 @@ Fails if the input sources are invalid, PNG files cannot be read, outputDir cann
   },
 };
 
+/**
+ * The registered form: same tool, but live captures can read a rotated Android
+ * device's rotation from the android-devtools helper when it is already running
+ * (~1 ms) instead of probing over adb (~8 ms). `screenshotDiffTool` itself stays
+ * registry-free for callers and tests that have no registry.
+ */
+export function createScreenshotDiffTool(
+  registry: Registry
+): ToolDefinition<Params, ScreenshotDiffResult> {
+  return {
+    ...screenshotDiffTool,
+    async execute(services, params, options) {
+      return executeScreenshotDiffTool(services, params, options, httpScreenshot, (device) =>
+        androidDevtoolsRotationPeek(registry, device)
+      );
+    },
+  };
+}
+
 export async function executeScreenshotDiffTool(
   services: Record<string, unknown>,
   params: Params,
   options?: Partial<ToolContext>,
-  captureScreenshot: CaptureScreenshot = httpScreenshot
+  captureScreenshot: CaptureScreenshot = httpScreenshot,
+  peekFor?: (device: DeviceInfo) => RotationPeek
 ): Promise<ScreenshotDiffResult> {
   const outputDir = await resolveOutputDir(params, options);
 
@@ -150,7 +175,8 @@ export async function executeScreenshotDiffTool(
     params,
     outputDir,
     options,
-    captureScreenshot
+    captureScreenshot,
+    peekFor
   );
 
   const result = await diffPngFiles({
@@ -221,11 +247,12 @@ async function resolveInputPaths(
   params: Params,
   outputDir: string,
   options: Partial<ToolContext> | undefined,
-  captureScreenshot: CaptureScreenshot
+  captureScreenshot: CaptureScreenshot,
+  peekFor?: (device: DeviceInfo) => RotationPeek
 ): Promise<{ baselinePath: string; currentPath: string }> {
   validateInputSources(params);
 
-  const capture = liveCapture(services, params, options, captureScreenshot);
+  const capture = liveCapture(services, params, options, captureScreenshot, peekFor);
 
   const baselinePath = params.captureBaseline
     ? await captureLiveInput({ capture, outputDir, name: "baseline" })
@@ -249,7 +276,8 @@ function liveCapture(
   services: Record<string, unknown>,
   params: Params,
   options: Partial<ToolContext> | undefined,
-  captureScreenshot: CaptureScreenshot
+  captureScreenshot: CaptureScreenshot,
+  peekFor?: (device: DeviceInfo) => RotationPeek
 ): () => Promise<string> {
   const device = resolveDevice(params.udid);
 
@@ -286,10 +314,32 @@ function liveCapture(
     // back to the server's default scale, which captures reliably; same-aspect
     // normalization in diffPngFiles keeps a scaled capture diff-compatible with a
     // baseline saved at any scale. Full-res is preserved wherever it works (iOS).
+    // Captured upright so a rotated Android device does not diff at ~100%
+    // against an upright saved baseline.
     try {
-      return (await captureScreenshot(api, params.rotation, options?.signal, 1.0)).path;
+      return (
+        await captureScreenshotUpright(
+          api,
+          device,
+          params.rotation,
+          options?.signal,
+          1.0,
+          captureScreenshot,
+          peekFor?.(device)
+        )
+      ).path;
     } catch {
-      return (await captureScreenshot(api, params.rotation, options?.signal)).path;
+      return (
+        await captureScreenshotUpright(
+          api,
+          device,
+          params.rotation,
+          options?.signal,
+          undefined,
+          captureScreenshot,
+          peekFor?.(device)
+        )
+      ).path;
     }
   };
 }

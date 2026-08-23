@@ -12,6 +12,19 @@ import { captureHarmonyScreenshotPng } from "../src/utils/harmony-screen";
 vi.mock("../src/utils/harmony-screen", () => ({ captureHarmonyScreenshotPng: vi.fn() }));
 vi.mock("../src/utils/check-deps", () => ({ ensureDep: vi.fn(async () => {}) }));
 
+// Stands in for the adb rotation probe, which has no device to answer it here.
+// null is what an unreadable rotation looks like, so every test that does not
+// set a rotation sees the unrotated request path.
+const readAndroidSurfaceRotation = vi.hoisted(() =>
+  vi.fn(async (_serial: string): Promise<0 | 1 | 2 | 3 | null> => null)
+);
+vi.mock("../src/utils/device-orientation", async (importOriginal) => {
+  // The surface-rotation mapping and the aspect guard stay REAL, so the
+  // assertion below exercises the actual table rather than restating it.
+  const actual = await importOriginal<typeof import("../src/utils/device-orientation")>();
+  return { ...actual, readAndroidSurfaceRotation };
+});
+
 describe("screenshotDiffTool", () => {
   it("rejects public tuning options so defaults stay internal", () => {
     const result = screenshotDiffTool.zodSchema!.safeParse({
@@ -147,6 +160,33 @@ describe("screenshotDiffTool", () => {
     expect(result.diffPath).toMatchObject({
       hostPath: path.join(dir, `${liveBaseName}-diff.png`),
     });
+  });
+
+  it("asks for the rotation a landscape Android device is actually in", async () => {
+    // #609 through this tool: the live side has to come back upright or it
+    // diffs at ~100% against an upright saved baseline. The rotation reaches
+    // the backend only if the simulator-server branch captures through
+    // `captureScreenshotUpright`.
+    readAndroidSurfaceRotation.mockResolvedValueOnce(1);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-rotated-"));
+    const baselinePath = path.join(dir, "baseline.png");
+    const capturedPath = path.join(dir, "captured.png");
+    await writePng(baselinePath, 2, 2, { r: 0, g: 0, b: 0 });
+    await writePng(capturedPath, 2, 2, { r: 0, g: 0, b: 0 });
+    const captureScreenshot = vi.fn(async (_api: unknown, _rotation?: string) => ({
+      url: "http://localhost/current.png",
+      path: capturedPath,
+    }));
+
+    await executeScreenshotDiffTool(
+      { simulatorServer: { apiUrl: "http://localhost:4949" } },
+      { baselinePath, captureCurrent: true, udid: "emulator-5554", outputDir: dir },
+      { artifacts: new ArtifactStore() },
+      captureScreenshot as never
+    );
+
+    expect(readAndroidSurfaceRotation).toHaveBeenCalledWith("emulator-5554", undefined);
+    expect(captureScreenshot.mock.calls[0]![1]).toBe("LandscapeLeft");
   });
 
   it("falls back to the default scale when the full-resolution capture fails (Android framebuffer mismatch)", async () => {
