@@ -971,6 +971,213 @@ const BLOCK_DIRECTIVE_SIBLING_REJECTIONS: Record<
   },
 };
 
+// ── Output references ────────────────────────────────────────────────
+
+/**
+ * `{{output:...}}` is the syntax a later release resolves against the document
+ * a `script:` step returned. This release has no flow output at all, so a
+ * reference reaching a step would be used LITERALLY — typed into a field,
+ * printed by an echo, matched against a screen — and the step would pass having
+ * done the wrong thing. Green and wrong, with nothing in the report to show it.
+ *
+ * So the parser refuses one, in exactly the fields that later release declares
+ * it will resolve, and nowhere else. The two lists are the same list on
+ * purpose: a field an author may not write a reference into today is a field
+ * that will one day read it.
+ */
+describe("output references", () => {
+  const REFUSALS: [label: string, yaml: string][] = [
+    ["an echo message", 'steps:\n  - echo: "created {{output:user.id}}"\n'],
+    ["typed text", 'steps:\n  - type: { into: { id: name }, text: "{{output:user.name}}" }\n'],
+    ["a typed-into selector", 'steps:\n  - type: { into: { id: "{{output:field}}" }, text: hi }\n'],
+    ["selector text", 'steps:\n  - tap: { text: "{{output:user.name}}" }\n'],
+    ["a selector identifier", 'steps:\n  - tap: { id: "{{output:row}}" }\n'],
+    ["a selector role", 'steps:\n  - tap: { id: row, role: "{{output:kind}}" }\n'],
+    [
+      "a nested relation's selector",
+      'steps:\n  - tap: { id: row, within: { id: "{{output:card}}" } }\n',
+    ],
+    ["an await selector", 'steps:\n  - await: { visible: { id: "{{output:row}}" } }\n'],
+    [
+      "an await expectation",
+      'steps:\n  - await: { text: { in: total, equals: "{{output:sum}}" } }\n',
+    ],
+    [
+      "the selector an await text condition locates",
+      'steps:\n  - await: { text: { in: { id: "{{output:row}}" }, contains: Done } }\n',
+    ],
+    [
+      "an assert expectation",
+      'steps:\n  - assert: { text: { in: total, contains: "{{output:sum}}" } }\n',
+    ],
+    [
+      "a when guard selector",
+      'steps:\n  - when: { visible: { id: "{{output:row}}" } }\n    steps:\n      - echo: hi\n',
+    ],
+    [
+      "a when guard expectation",
+      'steps:\n  - when: { text: { in: total, equals: "{{output:sum}}" } }\n    steps:\n      - echo: hi\n',
+    ],
+    [
+      "a scroll-to target",
+      'steps:\n  - scroll-to: { target: { id: "{{output:row}}" }, direction: down }\n',
+    ],
+    [
+      "a scroll-to container",
+      'steps:\n  - scroll-to: { target: row, direction: down, within: { id: "{{output:list}}" } }\n',
+    ],
+    ["a long-press selector", 'steps:\n  - long-press: { on: { id: "{{output:row}}" } }\n'],
+    ["a pinch selector", 'steps:\n  - pinch: { on: { id: "{{output:map}}" }, scale: 2 }\n'],
+    ["a rotate selector", 'steps:\n  - rotate: { on: { id: "{{output:map}}" }, by: 45 }\n'],
+    [
+      "a snapshot crop selector",
+      'steps:\n  - snapshot: { name: home, cropOn: { id: "{{output:row}}" } }\n',
+    ],
+    ["a tool arg", 'steps:\n  - tool: keyboard\n    args: { text: "{{output:code}}" }\n'],
+    [
+      "a tool arg nested in an array",
+      'steps:\n  - tool: run-sequence\n    args: { steps: [{ args: { text: "{{output:code}}" } }] }\n',
+    ],
+    [
+      "a step inside a when block",
+      'steps:\n  - when: { visible: { id: row } }\n    steps:\n      - echo: "{{output:user.id}}"\n',
+    ],
+  ];
+
+  it.each(REFUSALS)("refuses one in %s", (_label, yaml) => {
+    expect(() => parseFlow(yaml)).toThrow(/output reference/);
+  });
+
+  it("names the field and says the syntax arrives later", () => {
+    // The message is the author's whole diagnosis: which field carries it, and
+    // that waiting for a release is the answer rather than a different spelling.
+    let message = "";
+    try {
+      parseFlow('steps:\n  - type: { into: { id: name }, text: "{{output:user.name}}" }\n');
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("`type.text`");
+    expect(message).toContain("{{output:");
+    expect(message).toContain("arrives with a later release");
+  });
+
+  it("addresses a condition's selector and its expectation apart", () => {
+    // Both used to render as `await.text`, which named one field for two
+    // places — the one message an author has to act on, pointing at either.
+    const fieldNamed = (yaml: string): string => {
+      try {
+        parseFlow(yaml);
+      } catch (err) {
+        return /`([^`]+)` holds an output reference/.exec(
+          err instanceof Error ? err.message : ""
+        )![1]!;
+      }
+      throw new Error(`expected parseFlow to reject: ${yaml}`);
+    };
+
+    expect(
+      fieldNamed('steps:\n  - await: { text: { in: { id: "{{output:row}}" }, contains: Done } }\n')
+    ).toBe("await.text.in.id");
+    expect(
+      fieldNamed('steps:\n  - await: { text: { in: total, contains: "{{output:sum}}" } }\n')
+    ).toBe("await.text.contains");
+    expect(fieldNamed('steps:\n  - assert: { visible: { id: "{{output:row}}" } }\n')).toBe(
+      "assert.visible.id"
+    );
+    expect(
+      fieldNamed(
+        'steps:\n  - when: { text: { in: total, equals: "{{output:sum}}" } }\n    steps:\n      - echo: hi\n'
+      )
+    ).toBe("when.text.equals");
+    expect(
+      fieldNamed('steps:\n  - scroll-to: { target: { id: "{{output:row}}" }, direction: down }\n')
+    ).toBe("scroll-to.target.id");
+  });
+
+  it("names the step, so a reference inside a block says which one", () => {
+    let message = "";
+    try {
+      parseFlow(
+        'steps:\n  - echo: first\n  - when: { visible: { id: row } }\n    steps:\n      - echo: ok\n      - echo: "{{output:user.id}}"\n'
+      );
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("Step 2.2 (`echo`)");
+  });
+
+  it("addresses a tool arg by its own path through the args", () => {
+    let message = "";
+    try {
+      parseFlow(
+        'steps:\n  - tool: run-sequence\n    args: { steps: [{ args: { text: "{{output:code}}" } }] }\n'
+      );
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("`args.steps[0].args.text`");
+  });
+
+  it("carries the parser's own entry failure code", () => {
+    let signal;
+    try {
+      parseFlow('steps:\n  - echo: "{{output:user.id}}"\n');
+    } catch (err) {
+      signal = getFailureSignal(err);
+    }
+    expect(signal?.error_code).toBe(FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED);
+  });
+
+  it("survives a cyclic tool-args anchor rather than blowing the stack", () => {
+    // `args:` is unconstrained, so a YAML anchor can make it cyclic, and a
+    // hand-edit mid-recording is a documented workflow. The scan has to walk
+    // one without recursing forever — and still find a reference beside it.
+    expect(() =>
+      parseFlow("steps:\n  - tool: keyboard\n    args: &a\n      self: *a\n")
+    ).not.toThrow();
+    expect(() =>
+      parseFlow(
+        'steps:\n  - tool: keyboard\n    args: &a\n      self: *a\n      text: "{{output:code}}"\n'
+      )
+    ).toThrow(/output reference/);
+  });
+
+  it("leaves fields off the supported list alone", () => {
+    // The scan is the later release's list, not "every string in the file". A
+    // launch app id is static by design — it is resolved before any step runs —
+    // so a reference there is an ordinary (wrong) app id, not a parse error.
+    // Refusing it here would refuse a flow that release still would not resolve.
+    expect(parseFlow('steps:\n  - launch: "com.acme.{{output:app}}"\n').steps[0]).toEqual({
+      kind: "launch",
+      app: "com.acme.{{output:app}}",
+    });
+  });
+
+  it("leaves a pattern alone, at both levels that spell one", () => {
+    // A regular expression is not a literal, and no regex is on the supported
+    // list — refusing a `{{` inside one would refuse a flow the later release
+    // still would not resolve. The marker is UNESCAPED in both patterns here:
+    // an escaped `\\{\\{output:` does not contain the marker at all, so it would
+    // pass whether or not the field were scanned, and pin nothing.
+    expect(parseFlow('steps:\n  - tap: { text: { matches: "{{output:.*" } }\n').steps[0]).toEqual({
+      kind: "tap",
+      selector: { textMatches: "{{output:.*" },
+    });
+    expect(
+      parseFlow('steps:\n  - assert: { text: { in: total, matches: "{{output:.*" } }\n').steps[0]
+    ).toMatchObject({ kind: "assert", expectedText: "{{output:.*", textMatch: "matches" });
+  });
+
+  it("does not confuse a secret placeholder for one", () => {
+    // `{{secret:NAME}}` is a released syntax with its own resolution layer.
+    expect(
+      parseFlow('steps:\n  - type: { into: { id: pw }, text: "{{secret:APP_PASSWORD}}" }\n')
+        .steps[0]
+    ).toMatchObject({ kind: "type", text: "{{secret:APP_PASSWORD}}" });
+  });
+});
+
 // The parser's block list and blockSteps' runtime answer are the same claim
 // asked twice; a directive only one of them knows drops its whole block from
 // every skip expansion and from the upload preflight, silently.

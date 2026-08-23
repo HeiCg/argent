@@ -7,6 +7,7 @@ import type { Registry } from "@argent/registry";
 
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
 import { flowInsertEchoTool } from "../../src/tools/flows/flow-insert-echo";
+import { flowAddScriptTool } from "../../src/tools/flows/flow-add-script";
 import { flowFinishRecordingTool } from "../../src/tools/flows/flow-finish-recording";
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { createRunFlowTool } from "../../src/tools/flows/flow-run";
@@ -143,6 +144,17 @@ function addStep(root: string, name: string, marker: string) {
 
 function addEcho(root: string, name: string, message: string) {
   return flowInsertEchoTool.execute({}, { name, project_root: root, message });
+}
+
+/** Record a `script` step, writing the `.mjs` it names first. */
+async function addScript(root: string, name: string, source = "output.ok = true;") {
+  await fs.mkdir(path.join(root, "scripts"), { recursive: true });
+  await fs.writeFile(path.join(root, "scripts", "seed.mjs"), source, "utf8");
+  return flowAddScriptTool.execute({}, {
+    name,
+    project_root: root,
+    path: "../../scripts/seed.mjs",
+  } as never);
 }
 
 function finish(root: string, name: string) {
@@ -1372,6 +1384,45 @@ describe("a restart that lands while a step is still running", () => {
     expect((err as Error).message).toContain("Nothing was added to the flow file");
     expect((err as Error).message).toContain("fresh name");
     expect((err as Error).message).not.toContain("already ran on the device");
+  });
+
+  it("tells a superseded SCRIPT that the script ran, not that a device did", async () => {
+    // The third branch of that caveat. A script step touched no device and its
+    // author must not be sent looking for one to undo — but it is also not free
+    // like an echo: the process ran, and whatever it created is still there. So
+    // it gets its own wording, and both halves are pinned here.
+    const root = await makeRoot("supersede-script");
+    await start(root, "alpha");
+
+    // flow-add-script runs the script BEFORE it takes the flow-file lock — so a
+    // restart queued ahead of it lands first, exactly as it would for a script
+    // that took minutes. Hold the lock, queue the restart, then call it.
+    const gate = openGate();
+    const held = withFlowFileLock(root, "alpha", () => gate.promise);
+    const restarting = start(root, "alpha");
+    const recording = addScript(root, "alpha");
+
+    gate.open();
+    await held;
+    expect((await restarting).restarted).toBe(true);
+
+    const err = await captureFailure(recording);
+    // The append's own diagnosis survives, signal included — the recorder wraps
+    // it rather than replacing it.
+    expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
+    expect((err as Error).message).toContain("Nothing was added to the flow file");
+    expect((err as Error).message).toContain("the script already ran");
+    expect((err as Error).message).toContain("nothing it did was rolled back");
+    expect((err as Error).message).not.toContain("already ran on the device");
+    expect((err as Error).message).toContain("fresh name");
+    // …and the recorder's own half says the run happened and what it cost. The
+    // result object never reaches the caller on this path, so the error is the
+    // only place the log and the output document can be reported as lost.
+    expect((err as Error).message).toMatch(/ran and passed in \d+ms/);
+    expect((err as Error).message).toContain("logs and output document are lost");
+
+    // The new take is empty — the superseded script left nothing behind in it.
+    expect(await readMarkers(root, "alpha")).toEqual([]);
   });
 
   it("truncates and re-registers only once the flow's lock is free", async () => {

@@ -4,6 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Registry } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../../src/tools/flows/flow-run";
+import { flowStartRecordingTool } from "../../../src/tools/flows/flow-start-recording";
+import { flowAddScriptTool } from "../../../src/tools/flows/flow-add-script";
+import { scriptVerdict } from "../../../src/tools/flows/flow-script-step";
+import { __resetRecordingsForTesting, parseFlow } from "../../../src/tools/flows/flow-utils";
 import type {
   FlowScriptFailureKind,
   FlowScriptResult,
@@ -66,7 +70,24 @@ async function runScript(): Promise<FlowRunResult["steps"][number]> {
   return result.steps[0]!;
 }
 
+/** Record the same one script step, and hand back the recorder's answer. */
+async function recordScript() {
+  await flowStartRecordingTool.execute({}, { name: "recorded", project_root: root });
+  return flowAddScriptTool.execute({}, {
+    name: "recorded",
+    project_root: root,
+    path: "../../scripts/seed.mjs",
+  } as never);
+}
+
+/** The steps the recording actually holds on disk. */
+async function recordedSteps() {
+  return parseFlow(await fs.readFile(path.join(root, ".argent", "flows", "recorded.yaml"), "utf8"))
+    .steps;
+}
+
 beforeEach(async () => {
+  __resetRecordingsForTesting();
   root = await fs.mkdtemp(path.join(os.tmpdir(), "flow-script-verdict-"));
   await fs.mkdir(path.join(root, ".argent", "flows"), { recursive: true });
   await fs.mkdir(path.join(root, "scripts"), { recursive: true });
@@ -82,6 +103,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  __resetRecordingsForTesting();
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -176,5 +198,48 @@ describe("an executor note on the step report", () => {
       status: "error",
       reason: "The script ran past its 1000ms limit. timeout clamped to 1000ms.",
     });
+  });
+});
+
+/**
+ * The recorder's verdict and the runner's, for one executor result.
+ *
+ * They must never disagree: a step recorded green that replays red is the
+ * failure the whole tool exists to prevent, and it would be invisible — the
+ * recording reported a pass. Since PR 2.5 there is one {@link scriptVerdict}
+ * and one path to it, so this asks the property of the pair rather than
+ * restating the table a second time.
+ */
+describe("the recorder reports the verdict the runner will", () => {
+  it.each(Object.keys(VERDICTS) as FlowScriptFailureKind[])(
+    "agrees with the runner about a %s failure",
+    async (kind) => {
+      const result = outcome({ failure: { kind, message: `the ${kind} message` } });
+      executeMock.mockResolvedValue(result);
+
+      const replayed = await runScript();
+      const recorded = await recordScript();
+
+      expect(recorded.status).toBe(scriptVerdict(result).status);
+      expect(recorded.status).toBe(replayed.status);
+      expect(recorded.reason).toBe(replayed.reason);
+      // And no failing verdict, on either side of the fail/error line, puts a
+      // step into the flow file.
+      expect(await recordedSteps()).toEqual([]);
+    }
+  );
+
+  it("agrees on a pass, and only then records the step", async () => {
+    const result = outcome({ ok: true, output: { order: { id: 7 } }, notes: ["a note."] });
+    executeMock.mockResolvedValue(result);
+
+    const replayed = await runScript();
+    const recorded = await recordScript();
+
+    expect(recorded.status).toBe("pass");
+    expect(recorded.status).toBe(replayed.status);
+    expect(recorded.reason).toBe(replayed.reason);
+    expect(recorded.output).toEqual({ order: { id: 7 } });
+    expect(await recordedSteps()).toEqual([{ kind: "script", path: "../../scripts/seed.mjs" }]);
   });
 });

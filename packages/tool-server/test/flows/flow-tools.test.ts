@@ -359,6 +359,67 @@ describe("flow-add-echo", () => {
   });
 });
 
+// ── the checks that run before a step is written ─────────────────────
+
+/**
+ * A step the recorder BUILDS was never YAML, so a rule enforced only where an
+ * entry is parsed sees it for the first time on the way back in — after the
+ * file has been written. `validateFlow` is the seam that runs before the
+ * serialize, on both persistence modes, and the `{{output:` refusal is there
+ * for exactly that reason: refused this way it costs one call, refused the
+ * other way it costs the take.
+ */
+describe("a step the recorder refuses", () => {
+  it("leaves the flow file exactly as it was, and the recording usable", async () => {
+    await flowStartRecordingTool.execute({}, { name: "poison", project_root: tmpDir });
+    await flowInsertEchoTool.execute({}, { name: "poison", project_root: tmpDir, message: "one" });
+
+    const err = await flowInsertEchoTool
+      .execute({}, { name: "poison", project_root: tmpDir, message: "created {{output:user.id}}" })
+      .catch((e: unknown) => e as Error);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("output reference");
+    // Nothing reached disk — so the NEXT call still reads a file it can parse,
+    // and the recording finishes normally instead of being stuck re-throwing
+    // on a step nobody can remove without a mid-recording hand edit.
+    expect(parseFlow(await onDisk("poison")).steps).toEqual([{ kind: "echo", message: "one" }]);
+
+    await flowInsertEchoTool.execute({}, { name: "poison", project_root: tmpDir, message: "two" });
+    const finished = await flowFinishRecordingTool.execute({}, {
+      name: "poison",
+      project_root: tmpDir,
+    } as never);
+    expect(finished.steps).toBe(2);
+  });
+
+  it("keeps a client-mode recording just as clean", async () => {
+    // The client-mode branch never parses at all — the in-memory copy IS the
+    // take there — so this rule reaches it only through `validateFlow`, and its
+    // rollback is what keeps the rejected step out of that copy.
+    const clientRoot = path.join(os.tmpdir(), "not-on-this-host", "agent-project");
+    const ctx = {
+      artifacts: new ArtifactStore(),
+      fileInputs: {
+        project_root: { clientPath: clientRoot, presentOnHost: false, viaUpload: false },
+      },
+    } as unknown as ToolContext;
+    await flowStartRecordingTool.execute({}, { name: "poison", project_root: clientRoot }, ctx);
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "poison", project_root: clientRoot, message: "one" }
+    );
+
+    const err = await flowInsertEchoTool
+      .execute({}, { name: "poison", project_root: clientRoot, message: "{{output:user.id}}" })
+      .catch((e: unknown) => e as Error);
+
+    expect((err as Error).message).toContain("output reference");
+    const session = await getRecordingSession(clientRoot, "poison");
+    expect(session?.flow.steps).toEqual([{ kind: "echo", message: "one" }]);
+  });
+});
+
 // ── flow-add-step ────────────────────────────────────────────────────
 
 describe("flow-add-step", () => {
