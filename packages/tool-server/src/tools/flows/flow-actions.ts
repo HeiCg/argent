@@ -22,6 +22,7 @@ import {
 } from "../../utils/ui-tree-match";
 import { settleWithin, sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool } from "../../utils/sub-invoke";
+import { isIosPhysicalDevice } from "../../utils/device-info";
 import { bindDeviceArgs } from "./flow-device";
 import { fetchFlowTree, supportsFlowTree } from "./flow-tree";
 import {
@@ -807,6 +808,19 @@ export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise
         step.kind === "pinch"
           ? "pinch is unsupported on chromium — desktop apps have no uniform pinch-zoom mapping (they zoom via ctrl+wheel or their own controls); drive the app's zoom UI with tap/keyboard instead"
           : "rotate is unsupported on chromium — desktop apps have no rotate-gesture idiom; drive the app's rotate controls with tap/keyboard instead",
+    };
+  }
+  // Physical iOS: not "no backend" either — the XCUITest runner drives
+  // single-finger gestures only (XCTest exposes no two-finger coordinate API
+  // on hardware), so fail here rather than let a selector pinch pay the full
+  // auto-wait and then surface simulator-server's internal wiring error.
+  if ((step.kind === "pinch" || step.kind === "rotate") && isIosPhysicalDevice(env.device)) {
+    return {
+      ok: false,
+      reason:
+        step.kind === "pinch"
+          ? "pinch is unsupported on a physical iOS device — the XCUITest runner drives single-finger gestures only (XCTest exposes no two-finger coordinate API on hardware); run this flow on a simulator or drive the app's zoom UI with tap steps instead"
+          : "rotate is unsupported on a physical iOS device — the XCUITest runner drives single-finger gestures only (XCTest exposes no two-finger coordinate API on hardware); run this flow on a simulator or drive the app's rotate controls with tap steps instead",
     };
   }
   switch (step.kind) {
