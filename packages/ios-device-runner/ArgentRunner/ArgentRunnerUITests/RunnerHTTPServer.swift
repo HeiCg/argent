@@ -27,7 +27,7 @@ final class RunnerHTTPServer {
 
   /// One command per request keeps the protocol trivially recoverable; a body
   /// larger than this is a client bug, not a bigger command.
-  private let maxRequestBytes = 2 * 1024 * 1024
+  private static let maxRequestBytes = 2 * 1024 * 1024
   private let queue = DispatchQueue(label: "argent.runner.transport")
   private let dispatch: (Data, @escaping (Reply) -> Void) -> Void
   private let onFinish: () -> Void
@@ -84,17 +84,25 @@ final class RunnerHTTPServer {
       }
       var buffer = buffered
       buffer.append(data)
-      if buffer.count > self.maxRequestBytes {
+      if buffer.count > Self.maxRequestBytes {
         self.send(
-          Reply(status: 413, body: Self.oversizedRequestBody(limit: self.maxRequestBytes)),
+          Reply(status: 413, body: Self.oversizedRequestBody(limit: Self.maxRequestBytes)),
           over: connection
         )
         return
       }
-      if let body = Self.completeRequestBody(in: buffer) {
+      switch Self.requestVerdict(in: buffer) {
+      case .complete(let body):
         self.dispatch(body) { reply in self.send(reply, over: connection) }
-      } else {
+      case .incomplete:
         self.receive(on: connection, buffered: buffer)
+      case .malformed:
+        self.send(Reply(status: 400, body: Self.malformedRequestBody()), over: connection)
+      case .oversized:
+        self.send(
+          Reply(status: 413, body: Self.oversizedRequestBody(limit: Self.maxRequestBytes)),
+          over: connection
+        )
       }
     }
   }
@@ -125,10 +133,23 @@ final class RunnerHTTPServer {
     )
   }
 
-  /// Returns the request body once the buffer holds the complete header block
-  /// and Content-Length bytes; nil while more data is still expected.
-  static func completeRequestBody(in buffer: Data) -> Data? {
-    guard let headEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+  /// Verdict on the bytes buffered so far for one request.
+  enum RequestVerdict: Equatable {
+    /// Header block or declared body still in flight; keep receiving.
+    case incomplete
+    /// A full request; the payload is the raw body bytes.
+    case complete(Data)
+    /// The header block ended without a usable Content-Length (missing,
+    /// non-numeric, negative, or overflowing). No later bytes can repair a
+    /// finished header block, so waiting for more would hang the connection.
+    case malformed
+    /// The declared Content-Length alone exceeds `maxRequestBytes`, so the
+    /// request is doomed before its body arrives.
+    case oversized
+  }
+
+  static func requestVerdict(in buffer: Data) -> RequestVerdict {
+    guard let headEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else { return .incomplete }
     let head = String(decoding: buffer.subdata(in: buffer.startIndex..<headEnd.lowerBound), as: UTF8.self)
     var contentLength: Int?
     for line in head.split(separator: "\r\n") {
@@ -138,15 +159,23 @@ final class RunnerHTTPServer {
         contentLength = Int(parts[1].trimmingCharacters(in: .whitespaces))
       }
     }
-    guard let contentLength, contentLength >= 0 else { return nil }
+    guard let contentLength, contentLength >= 0 else { return .malformed }
+    guard contentLength <= maxRequestBytes else { return .oversized }
     let bodyStart = headEnd.upperBound
-    guard buffer.distance(from: bodyStart, to: buffer.endIndex) >= contentLength else { return nil }
-    return buffer.subdata(in: bodyStart..<buffer.index(bodyStart, offsetBy: contentLength))
+    guard buffer.distance(from: bodyStart, to: buffer.endIndex) >= contentLength else { return .incomplete }
+    return .complete(buffer.subdata(in: bodyStart..<buffer.index(bodyStart, offsetBy: contentLength)))
   }
 
   private static func oversizedRequestBody(limit: Int) -> Data {
     Data(
       #"{"ok":false,"error":{"code":"INVALID_REQUEST","message":"request body exceeds \#(limit) bytes"}}"#
+        .utf8
+    )
+  }
+
+  private static func malformedRequestBody() -> Data {
+    Data(
+      #"{"ok":false,"error":{"code":"INVALID_REQUEST","message":"request headers lack a usable Content-Length"}}"#
         .utf8
     )
   }
