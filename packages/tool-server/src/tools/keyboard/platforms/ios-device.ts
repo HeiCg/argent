@@ -25,9 +25,10 @@ export function makeIosDeviceImpl(
             "Type text into the focused field, or use gesture-tap to press on-screen keys."
         );
       }
-      if (!params.text && !key) {
-        throw new InvalidToolInputError("keyboard requires `text`, `key`, or both.");
-      }
+      // The empty request is the tool's documented no-op (see ../index.ts).
+      // Return before requiring a tracked app or resolving the runner, so it
+      // touches no device — matching the simulator and Android branches.
+      if (!params.text && !key) return { typed: "", keys: 0 };
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const ref = iosDeviceRunnerRef(device);
       const api = await registry.resolveService<IosDeviceRunnerApi>(ref.urn, ref.options);
