@@ -143,13 +143,12 @@ describe("screenshot tool", () => {
 
     // Both halves verbatim, not the two ends of the sentence: matching only
     // those leaves the middle free, and the middle is where a platform gets
-    // sorted into the wrong list. A tethered iPhone belongs to the first —
-    // `classifyDevice` calls it `ios`, and no branch in `execute` splits it from
-    // a simulator, so it leaves on the same wire asserted above.
+    // sorted into the wrong list. A tethered iPhone belongs in neither — its
+    // UDID does not match the iOS-simulator shape `classifyDevice` tests, so
+    // nothing routes it through a rotation-capable path.
     const description = createScreenshotTool(registry).zodSchema!.shape.rotation.description!;
-    expect(description).toContain(
-      "Applied on Android, on local iOS simulators and on tethered iPhones"
-    );
+    expect(description).toContain("Applied on Android and on local iOS simulators");
+    expect(description).not.toContain("tethered");
     expect(description).toContain(
       "Apple TV, Vega and remote iOS simulators accept it and capture unrotated"
     );
@@ -157,7 +156,7 @@ describe("screenshot tool", () => {
 
   it("hands Chromium no scale of its own, so nothing is downscaled by default", async () => {
     // The other half of the split this tool's `scale` description and
-    // argent-device-interact both state: 30% on iOS/Android, untouched on
+    // argent-device-interact both state: 25% on iOS/Android, untouched on
     // Chromium. `execute` resolves getScreenshotScale() just above this branch
     // and deliberately does not pass it, which is exactly the line a
     // platform-unifying cleanup collapses.

@@ -11,6 +11,15 @@ import { createRegistry } from "../src/utils/setup-registry";
 import { definitionsById } from "./helpers/catalog";
 import { agentFacingText, sentencesClaimingSize } from "./helpers/size-claims";
 
+// The live-capture tests use an android-shaped udid, so every capture runs the
+// real rotation probe against the host's adb server before the mocked HTTP
+// layer: a rotated ambient emulator changes body 1 and a missing one costs
+// seconds of adb timeouts. Rotation is orthogonal to what these tests pin.
+vi.mock("../src/utils/device-orientation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/device-orientation")>()),
+  readAndroidSurfaceRotation: vi.fn(async () => null),
+}));
+
 describe("screenshotDiffTool", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
