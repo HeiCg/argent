@@ -56,8 +56,10 @@ export interface StepReport {
    */
   scriptLog?: string;
   /**
-   * A log limit dropped some of that output. The text carries no marker of its
-   * own, so without this the log reads as complete.
+   * Some of that output is missing from the log. A log limit is one cause; the
+   * executor also sets it when it collapses a fatal error's frame dump. The
+   * text carries no marker of its own, so without this the log reads as
+   * complete.
    */
   scriptLogTruncated?: boolean;
 }

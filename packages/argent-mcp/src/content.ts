@@ -225,7 +225,10 @@ export type FlowStepResult = {
    * non-string is ignored rather than interpolated.
    */
   scriptLog?: string;
-  /** A log limit dropped some of that output; the text carries no marker. */
+  /**
+   * Some of that output is missing from the log — a log limit, or the executor
+   * collapsing a fatal error's frame dump. The text carries no marker.
+   */
   scriptLogTruncated?: boolean;
   /** Legacy field from pre-report flow-execute results. */
   error?: string;

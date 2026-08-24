@@ -250,10 +250,12 @@ export interface StepReport {
    */
   scriptLog?: string;
   /**
-   * A log limit dropped some of that script's output. The log text carries no
-   * marker of its own, and a run-wide budget an earlier step exhausted drops a
-   * later script's output entirely — so this flag can be set with no
-   * {@link scriptLog} at all.
+   * Some of that script's output is missing from the log. A log limit is one
+   * cause; the executor also sets it when it collapses a fatal error's frame
+   * dump, which no limit caused — so neither renderer names a cause. The log
+   * text carries no marker of its own, and a run-wide budget an earlier step
+   * exhausted drops a later script's output entirely — so this flag can be set
+   * with no {@link scriptLog} at all.
    */
   scriptLogTruncated?: boolean;
   /**
