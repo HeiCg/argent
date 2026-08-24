@@ -65,9 +65,6 @@ const channelHandle = /** @type {{ fd?: number } | undefined} */ (
 );
 const channelFd = typeof channelHandle?.fd === "number" ? channelHandle.fd : -1;
 
-/** How long a verdict sent from inside `process.exit` waits for pipe room. */
-const EXIT_FLUSH_MS = 2_000;
-
 /**
  * `JSON.stringify` and `JSON.parse` as they were before any script code ran: a
  * patch the script's dependency tree installs on the global would otherwise
@@ -746,6 +743,14 @@ function finishSynchronously(response) {
  * the frame is the encoded message and a newline. The descriptor is
  * non-blocking, so a full pipe answers `EAGAIN`, and the parent is reading, so
  * waiting for room is a sleep rather than a spin.
+ *
+ * The wait carries no clock of its own. The parent's loop blocks for seconds at
+ * a time — `stop-metro` alone shells out to `lsof` and `netstat` — and a window
+ * that ends inside one of those stalls cuts the frame in half and loses the
+ * verdict this path exists to deliver. The deadline watchdog is what ends a
+ * wait the parent never answers, and it ends the process rather than the write,
+ * so the parent reads the step as the timeout it is instead of a clean exit
+ * with nothing captured.
  */
 function sendSynchronously(message) {
   if (channelFd < 0) return false;
@@ -755,21 +760,25 @@ function sendSynchronously(message) {
   } catch {
     return false;
   }
-  const waitUntil = Date.now() + EXIT_FLUSH_MS;
+  // One slot for the whole wait: a long stall is thousands of one-millisecond
+  // sleeps, and a buffer per sleep is that much garbage in a process that is
+  // leaving.
+  const slot = new Int32Array(new SharedArrayBuffer(4));
   let written = 0;
   while (written < payload.length) {
     try {
       written += fs.writeSync(channelFd, payload, written);
     } catch (err) {
-      if (err && err.code === "EAGAIN" && Date.now() < waitUntil) {
+      if (err && err.code === "EAGAIN") {
         // A blocked thread rather than a busy one: the parent needs a turn of
         // its own loop to empty the pipe.
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+        Atomics.wait(slot, 0, 0, 1);
         continue;
       }
-      // Half a frame is already out, and a second copy behind it would be a
-      // line the parent cannot parse — which it parses inside its own stream
-      // callback. Sending again is worse than sending nothing.
+      // The parent is gone rather than slow. Half a frame may already be out,
+      // and a second copy behind it would be a line the parent cannot parse —
+      // which it parses inside its own stream callback. Sending again is worse
+      // than sending nothing.
       return written > 0;
     }
   }

@@ -42,6 +42,17 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** One block of the vitest loop, `lengthMs` long, starting at `startMs`. */
+function stallFor(startMs: number, lengthMs: number): () => void {
+  const timer = setTimeout(() => {
+    const until = Date.now() + lengthMs;
+    while (Date.now() < until) {
+      /* block */
+    }
+  }, startMs);
+  return () => clearTimeout(timer);
+}
+
 async function readPidFile(
   file: string,
   timeoutMs = 10_000,
@@ -468,6 +479,48 @@ describe("flow script executor — exit classification", () => {
 
     expect(result.failure).toBeUndefined();
     expect((result.output?.blob as string).length).toBe(900 * 1024);
+  }, 30_000);
+
+  const EXITS_WITH_A_FULL_PIPE = `output.blob = "x".repeat(900 * 1024);
+     process.exit(0);`;
+
+  it("keeps that output when the server's loop stalls for seconds", async () => {
+    const ws = workspace();
+    // The write fills the pipe and then waits for the parent to empty it. A
+    // flush window of the child's own, shorter than this stall, cut the frame
+    // in half and left the parent with the very "no output was captured"
+    // verdict this path exists to prevent.
+    const script = ws.write("big-exit-stalled.mjs", EXITS_WITH_A_FULL_PIPE);
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 20_000,
+    });
+    const endStall = stallFor(25, 3_000);
+    const result = await pending;
+    endStall();
+
+    expect(result.failure).toBeUndefined();
+    expect((result.output?.blob as string).length).toBe(900 * 1024);
+  }, 30_000);
+
+  it("still reports a timeout when nothing ever empties the pipe", async () => {
+    const ws = workspace();
+    // The wait has no clock of its own, so the deadline watchdog is what ends
+    // it — and it ends the process, not the write. That is what keeps a step
+    // whose limit passed while the pipe stayed full out of the exit row.
+    const script = ws.write("big-exit-lost.mjs", EXITS_WITH_A_FULL_PIPE);
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 400,
+    });
+    const endStall = stallFor(25, 8_000);
+    const result = await pending;
+    endStall();
+
+    expect(result.failure?.kind).toBe(TIMEOUT);
+    expect(result.failure?.message).toContain("time limit");
   }, 30_000);
 
   it("still fails a script that set process.exitCode and then exited", async () => {
