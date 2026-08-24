@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { getDescribeTapPoint } from "../src/tools/describe/contract";
 import {
+  captureSnapshot,
   getViewport,
   toPoints,
   type RunnerViewport,
@@ -38,6 +39,36 @@ describe("toPoints (physical iOS 0-1 contract)", () => {
     const inset: RunnerViewport = { x: 0, y: 20, width: 390, height: 824 };
     const point = toPoints(inset, 0.5, 0.5);
     expect(point).toEqual({ x: 195, y: 20 + 412 });
+  });
+});
+
+describe("captureSnapshot single-flight", () => {
+  it("coalesces identical concurrent requests onto one runner command", async () => {
+    let release!: (value: unknown) => void;
+    const gate = new Promise((resolve) => (release = resolve));
+    const run = vi.fn().mockImplementation(() => gate);
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    const first = captureSnapshot(api, "com.example.app");
+    const second = captureSnapshot(api, "com.example.app");
+    release({ nodes: [], quality: null });
+
+    expect(await first).toEqual({ nodes: [], quality: null });
+    expect(await second).toEqual({ nodes: [], quality: null });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps differing options and sequential calls separate", async () => {
+    const run = vi.fn().mockResolvedValue({ nodes: [], quality: null });
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    await Promise.all([
+      captureSnapshot(api, "com.example.app"),
+      captureSnapshot(api, "com.example.app", { interactiveOnly: true }),
+    ]);
+    await captureSnapshot(api, "com.example.app");
+
+    expect(run).toHaveBeenCalledTimes(3);
   });
 });
 

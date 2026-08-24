@@ -6,10 +6,7 @@ import {
   type ServiceEvents,
   type ServiceInstance,
 } from "@argent/registry";
-import {
-  deviceInfoDetails,
-  ensureDeviceReady,
-} from "../utils/ios-device/devicectl";
+import { deviceInfoDetails, ensureDeviceReady } from "../utils/ios-device/devicectl";
 import {
   ensureRunnerArtifact,
   isProfileMissingDeviceFailure,
@@ -24,6 +21,7 @@ import {
 } from "../utils/ios-device/runner-build";
 import * as fs from "node:fs/promises";
 import { createRunnerRouteResolver } from "../utils/ios-device/runner-route";
+import { readRunnerCrashSummary } from "../utils/ios-device/runner-crash";
 import {
   createRunnerClient,
   waitForRunnerReady,
@@ -31,6 +29,32 @@ import {
 } from "../utils/ios-device/runner-client";
 
 const IOS_DEVICE_RUNNER_NAMESPACE = "ios-device-runner";
+
+/**
+ * Recent runner deaths that interrupted an app-scoped command, keyed
+ * `udid|bundleId`. Outlives the service instance on purpose: each death tears
+ * the instance down, and the signal that matters — "every fresh runner dies
+ * touching this app" — only exists across instances. Entries expire after
+ * CRASH_MEMORY_MS; a repeat within the window escalates the error to name the
+ * likely cause (the app's current screen state) and the recovery (restart-app).
+ */
+const CRASH_MEMORY_MS = 10 * 60 * 1000;
+const recentAppCrashes = new Map<string, number[]>();
+
+function recordAppCrash(udid: string, bundleId: string): number {
+  const key = `${udid}|${bundleId}`;
+  const now = Date.now();
+  const kept = (recentAppCrashes.get(key) ?? []).filter((t) => now - t < CRASH_MEMORY_MS);
+  kept.push(now);
+  recentAppCrashes.set(key, kept);
+  return kept.length;
+}
+
+/** Transport shapes a dead runner produces; only meaningful once the child exited. */
+function looksTransportDead(error: unknown): boolean {
+  const message = String((error as Error)?.message ?? "");
+  return /not listening|ECONNREFUSED|did not accept connection|timed out connecting/i.test(message);
+}
 
 /**
  * Per-device XCUITest runner service for PHYSICAL iOS devices.
@@ -44,12 +68,18 @@ const IOS_DEVICE_RUNNER_NAMESPACE = "ios-device-runner";
  */
 export interface IosDeviceRunnerApi {
   /** Low-level escape hatch: send a raw runner command. */
-  run(command: Record<string, unknown>, opts?: { readOnly?: boolean; timeoutMs?: number }): Promise<unknown>;
+  run(
+    command: Record<string, unknown>,
+    opts?: { readOnly?: boolean; timeoutMs?: number }
+  ): Promise<unknown>;
   /** The device UDID this runner drives. */
   udid: string;
 }
 
-export function iosDeviceRunnerRef(device: DeviceInfo): { urn: string; options: { device: DeviceInfo } } {
+export function iosDeviceRunnerRef(device: DeviceInfo): {
+  urn: string;
+  options: { device: DeviceInfo };
+} {
   return {
     urn: `${IOS_DEVICE_RUNNER_NAMESPACE}:${device.id}`,
     options: { device },
@@ -92,9 +122,14 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
 
     const signing = resolveRunnerSigningConfig();
 
+    // Kept for the crash post-mortem: xcodebuild records a crashed session's
+    // failure text in the newest .xcresult under this derived data.
+    let lastDerivedDataPath = "";
+
     const startRunner = async (
       artifact: RunnerArtifact
     ): Promise<{ launched: LaunchedRunner; client: RunnerClient }> => {
+      lastDerivedDataPath = artifact.derivedDataPath;
       const port = await getFreePort();
       const xctestrunPath = await prepareXctestrunWithPort(artifact.xctestrunPath, port);
       const launched = await launchRunner({
@@ -147,7 +182,12 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
 
     const events = new TypedEventEmitter<ServiceEvents>();
     let disposed = false;
+    // undefined = still running; the exit code (possibly null) once dead.
+    let exitCode: number | null | undefined;
+    const exitWaiters: Array<() => void> = [];
     launched.child.on("exit", (code) => {
+      exitCode = code;
+      for (const wake of exitWaiters.splice(0)) wake();
       if (!disposed) {
         events.emit(
           "terminated",
@@ -156,9 +196,50 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       }
     });
 
+    /** Resolves once the child has exited, or after `ms` — whichever first. */
+    const settleExit = (ms: number): Promise<void> =>
+      exitCode !== undefined
+        ? Promise.resolve()
+        : new Promise((resolve) => {
+            const timer = setTimeout(resolve, ms);
+            exitWaiters.push(() => {
+              clearTimeout(timer);
+              resolve();
+            });
+          });
+
     const api: IosDeviceRunnerApi = {
       udid,
-      run: (command, opts) => client.run(command, opts),
+      run: async (command, opts) => {
+        try {
+          return await client.run(command, opts);
+        } catch (error) {
+          // A transport-dead shape is only the death story when the child
+          // really exited; give a straggling exit event a beat to land so the
+          // race between the failed dial and the exit callback can't hide it.
+          if (!looksTransportDead(error)) throw error;
+          await settleExit(1_500);
+          if (exitCode === undefined) throw error;
+          const bundleId = typeof command.appBundleId === "string" ? command.appBundleId : null;
+          const deaths = bundleId ? recordAppCrash(udid, bundleId) : 0;
+          const crash = await readRunnerCrashSummary(lastDerivedDataPath);
+          // "runner exited" keeps recoverable() matching, so the registry
+          // still tears the instance down and the next call respawns.
+          const recovery =
+            deaths >= 2 && bundleId
+              ? ` This is runner death #${deaths} touching ${bundleId} in the last ` +
+                `${CRASH_MEMORY_MS / 60_000} minutes — the app's current screen state is likely ` +
+                `crashing XCTest itself; call restart-app for ${bundleId} to reset that state, then retry.`
+              : ` The runner respawns on the next call; re-observe the screen and retry.`;
+          throw new Error(
+            `iOS device runner exited (code ${exitCode}) while executing '${String(command.command)}'` +
+              (crash ? ` — recorded crash: ${crash}.` : ".") +
+              recovery +
+              ` Log: ${launched.logPath}`,
+            { cause: error }
+          );
+        }
+      },
     };
 
     return {

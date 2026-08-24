@@ -166,19 +166,43 @@ interface SnapshotData {
   quality?: RunnerSnapshotQuality;
 }
 
+/**
+ * Identical snapshot requests in flight at once share one runner command.
+ * Snapshots are the runner's heaviest read, and callers can overlap — a wait
+ * tool's poll abandons a slow fetch client-side while the runner is still
+ * chewing on it, then issues the next. Without coalescing those stack up on
+ * the runner's serial queue and pile heavy AX work onto an already-struggling
+ * process; with it, concurrent identical reads ride the same reply.
+ */
+const inFlightSnapshots = new Map<
+  string,
+  Promise<{ nodes: RunnerSnapshotNode[]; quality: RunnerSnapshotQuality | null }>
+>();
+
 export async function captureSnapshot(
   api: IosDeviceRunnerApi,
   bundleId: string,
   opts: { interactiveOnly?: boolean; depth?: number } = {}
 ): Promise<{ nodes: RunnerSnapshotNode[]; quality: RunnerSnapshotQuality | null }> {
-  const data = (await api.run(
-    {
-      command: "snapshot",
-      appBundleId: bundleId,
-      interactiveOnly: opts.interactiveOnly ?? false,
-      ...(opts.depth != null ? { depth: opts.depth } : {}),
-    },
-    { readOnly: true, timeoutMs: 45_000 }
-  )) as SnapshotData;
-  return { nodes: data.nodes ?? [], quality: data.quality ?? null };
+  const key = `${api.udid}|${bundleId}|${opts.interactiveOnly ?? false}|${opts.depth ?? ""}`;
+  const pending = inFlightSnapshots.get(key);
+  if (pending) return pending;
+  const request = (async () => {
+    const data = (await api.run(
+      {
+        command: "snapshot",
+        appBundleId: bundleId,
+        interactiveOnly: opts.interactiveOnly ?? false,
+        ...(opts.depth != null ? { depth: opts.depth } : {}),
+      },
+      { readOnly: true, timeoutMs: 45_000 }
+    )) as SnapshotData;
+    return { nodes: data.nodes ?? [], quality: data.quality ?? null };
+  })();
+  inFlightSnapshots.set(key, request);
+  try {
+    return await request;
+  } finally {
+    inFlightSnapshots.delete(key);
+  }
 }

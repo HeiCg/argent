@@ -27,6 +27,7 @@ extension ArgentRunnerSession {
   func captureSnapshot(_ request: CommandRequest, of app: XCUIApplication) -> Envelope {
     var root: XCUIElementSnapshot?
     var lastError = ""
+
     for attempt in 0..<2 {
       if attempt > 0 { Thread.sleep(forTimeInterval: 0.4) }
       do {
@@ -36,6 +37,7 @@ extension ArgentRunnerSession {
         lastError = String(describing: error)
       }
     }
+
     guard let root else {
       return .failure(
         .snapshotFailed,
@@ -43,12 +45,15 @@ extension ArgentRunnerSession {
         hint: "Retry after the UI settles, or use screenshot as visual truth."
       )
     }
+
     let nodes = Self.flatten(
       root,
       interactiveOnly: request.interactiveOnly ?? false,
       maxDepth: request.depth ?? 60
     )
+
     let capped = nodes.count >= Self.snapshotNodeBudget
+
     return .success(
       SnapshotPayload(
         nodes: nodes,
@@ -114,6 +119,7 @@ extension ArgentRunnerSession {
       var childParentIndex = item.parentIndex
       var childEmittedDepth = item.emittedDepth
       var childAnchor = item.scrollAnchor
+
       if include && !duplicate {
         seen.insert(key)
         let index = nodes.count
@@ -127,6 +133,7 @@ extension ArgentRunnerSession {
         childEmittedDepth += 1
         childAnchor = scrollAnchor(snapshot, index: index) ?? item.scrollAnchor
       }
+
       for child in snapshot.children.reversed() {
         stack.append(
           WorkItem(
@@ -144,6 +151,7 @@ extension ArgentRunnerSession {
       if hiddenAbove.contains(index) { nodes[index].hiddenContentAbove = true }
       if hiddenBelow.contains(index) { nodes[index].hiddenContentBelow = true }
     }
+
     return nodes
   }
 
@@ -154,6 +162,7 @@ extension ArgentRunnerSession {
     if interactiveTypes.contains(snapshot.elementType) { return true }
     if interactiveOnly { return false }
     if scrollContainerTypes.contains(snapshot.elementType) { return true }
+
     return !snapshot.label.isEmpty || !snapshot.identifier.isEmpty
       || valueText(snapshot.value) != nil
   }
@@ -172,8 +181,12 @@ extension ArgentRunnerSession {
       label: snapshot.label.isEmpty ? nil : snapshot.label,
       identifier: snapshot.identifier.isEmpty ? nil : snapshot.identifier,
       value: valueText(snapshot.value),
+      // Sanitized: a geometry-less element reports CGRect.null (infinite
+      // origin), and JSONEncoder refuses non-finite doubles — one such node
+      // must not degrade the whole reply to the encode-failure fallback.
       rect: SnapshotRect(
-        x: frame.minX, y: frame.minY, width: frame.width, height: frame.height
+        x: finite(frame.minX), y: finite(frame.minY),
+        width: finite(frame.width), height: finite(frame.height)
       ),
       enabled: snapshot.isEnabled,
       focused: snapshot.hasFocus ? true : nil,
@@ -192,9 +205,27 @@ extension ArgentRunnerSession {
   /// identical type, texts, and geometry; emitting both only pads the tree.
   private static func identity(_ snapshot: XCUIElementSnapshot) -> String {
     let frame = snapshot.frame
+
     return
       "\(snapshot.elementType.rawValue)|\(snapshot.label)|\(snapshot.identifier)|"
-      + "\(Int(frame.minX)),\(Int(frame.minY)),\(Int(frame.width)),\(Int(frame.height))"
+      + "\(keyCoordinate(frame.minX)),\(keyCoordinate(frame.minY)),"
+      + "\(keyCoordinate(frame.width)),\(keyCoordinate(frame.height))"
+  }
+
+  /// Integer-ish dedup-key text for one frame coordinate. `Int(_: Double)`
+  /// TRAPS on non-finite or > Int.max input — and geometry-less elements
+  /// genuinely reach this walk with CGRect.null frames (infinite origin),
+  /// which killed the whole runner process mid-snapshot. A trap cannot be
+  /// caught in-process, so every conversion here must be total; the key only
+  /// needs to be stable, not exact.
+  private static func keyCoordinate(_ v: CGFloat) -> String {
+    guard v.isFinite else { return String(describing: v) }
+    return String(Int(min(max(v.rounded(), -1e15), 1e15)))
+  }
+
+  /// Non-finite coordinates collapse to 0 for the wire payload (see makeNode).
+  private static func finite(_ v: CGFloat) -> Double {
+    v.isFinite ? Double(v) : 0
   }
 
   private static func scrollAnchor(
