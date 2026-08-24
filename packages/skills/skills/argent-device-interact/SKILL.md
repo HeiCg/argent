@@ -76,7 +76,7 @@ Common schemes: `messages://`, `settings://`, `maps://?q=<query>`, `tel://<numbe
 | Paste text        | `paste`             | Only where a user would paste (OTP code, long link). Sim/emu only |
 | Rotate device     | `rotate`            | Orientation changes                                               |
 | Shake device      | `shake`             | Shake handlers (sim/emu only), Undo-typing prompt, RN dev menu    |
-| Device setting    | `system-settings`   | Dark mode, text size, a11y toggles; Android radios/location      |
+| Device setting    | `system-settings`   | Dark mode, text size, a11y toggles; Android radios/location       |
 | Wait for UI       | `await-ui-element`  | Block until an element is visible/hidden/exists/contains text     |
 | Wait for idle     | `await-screen-idle` | Block until a non-empty screen tree stops changing                |
 
