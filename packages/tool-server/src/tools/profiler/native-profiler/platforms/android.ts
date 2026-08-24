@@ -137,9 +137,16 @@ export async function startNativeProfilerAndroid(
 
 export interface AndroidStopResult {
   traceFile: string;
-  exportedFiles: Record<string, string | null>;
+  exportedFiles: Record<AndroidExportKey, string | null>;
   warning?: string;
 }
+
+/**
+ * The single export an Android stop produces: the pulled `.pftrace` itself.
+ * Keyed like {@link IosExportKey} on iOS so kind-classifying consumers are
+ * compiler-checked — see native-profiler-stop.
+ */
+export type AndroidExportKey = "pftrace";
 
 export async function stopNativeProfilerAndroid(
   api: NativeProfilerSessionApi
@@ -223,7 +230,8 @@ export async function stopNativeProfilerAndroid(
   }
 
   const { hostTracePath, warning } = stopResult;
-  api.exportedFiles = { pftrace: hostTracePath };
+  const exportedFiles: Record<AndroidExportKey, string | null> = { pftrace: hostTracePath };
+  api.exportedFiles = exportedFiles;
   if (api.appProcess) {
     await writeAndroidNativeProfilerMetadata(hostTracePath, {
       platform: "android",
@@ -234,7 +242,7 @@ export async function stopNativeProfilerAndroid(
 
   const result: AndroidStopResult = {
     traceFile: hostTracePath,
-    exportedFiles: api.exportedFiles,
+    exportedFiles,
   };
   if (warning) result.warning = warning;
   return result;
