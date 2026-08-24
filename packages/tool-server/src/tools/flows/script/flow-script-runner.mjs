@@ -257,7 +257,6 @@ function guardRunnerListeners() {
 }
 
 /**
- * Read the output when a script ends the process itself successfully:
  * `beforeExit` does not fire after an explicit exit, so the common
  * `main().then(() => process.exit(0))` would report as self-termination with no
  * output. A non-zero exit is left to the parent's `exit` verdict.
@@ -284,11 +283,11 @@ function reportOnScriptExit() {
 }
 
 /**
- * Take the protocol channel away from the script. `fork` leaves a working
- * `process.send` in the child and the executor trusts whatever arrives on it,
- * so a script that pings its parent could tear down a healthy run or forge its
- * own verdict. The channel stays open for the runner; script code gets a `send`
- * that accepts and drops and a `disconnect` that closes nothing.
+ * `fork` leaves a working `process.send` in the child and the executor trusts
+ * whatever arrives on it, so a script that pings its parent could tear down a
+ * healthy run or forge its own verdict. The channel stays open for the runner;
+ * script code gets a `send` that accepts and drops and a `disconnect` that
+ * closes nothing.
  *
  * Both stubs must still *answer* the way Node does, or a script awaiting the
  * send callback or the `disconnect` event parks with an empty event loop —
@@ -460,8 +459,6 @@ function isLoaderFailure(err) {
 }
 
 /**
- * Validate the output document, then encode what was validated.
- *
  * Validation cannot happen in the parent: the IPC channel serializes as JSON,
  * so a function or `undefined` vanishes silently, `NaN` and `Infinity` arrive
  * as `null`, and a BigInt or cycle throws inside `send`.
@@ -545,7 +542,6 @@ function walk(value, path, ancestors) {
     };
   }
   if (typeof value.toJSON === "function") {
-    // Walk what `JSON.stringify` would actually have encoded, and keep that.
     // Recorded first, because the transform is a route back up the tree the
     // author cannot see: `{ toJSON() { return this; } }` would otherwise
     // recurse until V8 gave up, and report a stack overflow in place of the
@@ -615,14 +611,13 @@ function describeBytes(bytes) {
 }
 
 /**
- * An error as a message, carrying the causes Node itself would have printed —
- * `fetch failed` with the real `ECONNREFUSED` in `.cause`, or every attempt in
- * `AggregateError.errors`. The runner's `uncaughtException` handler claims the
- * exception, so Node's printout never runs and the log has no second copy.
+ * Carries the causes Node itself would have printed — `fetch failed` with the
+ * real `ECONNREFUSED` in `.cause`, or every attempt in `AggregateError.errors`.
+ * The runner's `uncaughtException` handler claims the exception, so Node's
+ * printout never runs and the log has no second copy.
  *
- * Rendering, depth bound and skip-what-is-already-said follow the parent's
- * `formatErrorForAgent`, which this file cannot import. The bound also guards a
- * `.cause` that points back up its own chain.
+ * Follows the parent's `formatErrorForAgent`, which this file cannot import.
+ * The depth bound also guards a `.cause` that points back up its own chain.
  */
 function errorMessage(err) {
   if (!(err instanceof Error)) return describeThrown(err);
@@ -681,10 +676,9 @@ function safeStringify(value) {
 }
 
 /**
- * Send the verdict, flush both standard streams, then leave. `process.stdout`
- * is asynchronous when it is a pipe, so a bare `process.exit` would discard
- * buffered log output; the callback of an empty write on each stream runs after
- * every earlier write has flushed.
+ * `process.stdout` is asynchronous when it is a pipe, so a bare `process.exit`
+ * would discard buffered log output; the callback of an empty write on each
+ * stream runs after every earlier write has flushed.
  *
  * The exit code is always 0 — the parent classifies on the terminal message.
  */
@@ -739,18 +733,15 @@ function finishSynchronously(response) {
  * is the idiom this whole path exists for.
  *
  * The channel carries newline-delimited JSON, which is what `fork` uses unless
- * the parent asks for `serialization: "advanced"` — the executor does not — so
- * the frame is the encoded message and a newline. The descriptor is
- * non-blocking, so a full pipe answers `EAGAIN`, and the parent is reading, so
- * waiting for room is a sleep rather than a spin.
+ * the parent asks for `serialization: "advanced"` — the executor does not. The
+ * descriptor is non-blocking, so a full pipe answers `EAGAIN`, and the parent
+ * is reading, so waiting for room is a sleep rather than a spin.
  *
- * The wait carries no clock of its own. The parent's loop blocks for seconds at
- * a time — `stop-metro` alone shells out to `lsof` and `netstat` — and a window
- * that ends inside one of those stalls cuts the frame in half and loses the
- * verdict this path exists to deliver. The deadline watchdog is what ends a
- * wait the parent never answers, and it ends the process rather than the write,
- * so the parent reads the step as the timeout it is instead of a clean exit
- * with nothing captured.
+ * The wait carries no clock of its own: the parent's loop blocks for seconds at
+ * a time, and a window that ended inside one of those stalls would cut the
+ * frame in half. The deadline watchdog ends a wait the parent never answers,
+ * and it ends the process rather than the write, so the parent reads the step
+ * as the timeout it is instead of a clean exit with nothing captured.
  */
 function sendSynchronously(message) {
   if (channelFd < 0) return false;
@@ -797,8 +788,7 @@ function boundFailureText(response) {
 }
 
 /**
- * Cut runner-controlled text to a ceiling, saying how much was left out. The
- * marker counts against the ceiling: left outside it the result exceeds the
+ * The marker counts against the ceiling: left outside it the result exceeds the
  * ceiling, and the parent re-clamps at that same number, dropping this marker
  * and writing one that reports only the marker's own length.
  */
@@ -821,8 +811,8 @@ function omissionMarker(omitted) {
 }
 
 /**
- * Queue an empty write so the callback runs after everything already buffered.
- * A script may have ended the stream itself, and writing to an ended stream
+ * An empty write, so the callback runs after everything already buffered. A
+ * script may have ended the stream itself, and writing to an ended stream
  * raises an unhandled `error` event that would land in the step's own log.
  */
 function flushStream(stream, done) {

@@ -233,24 +233,18 @@ export interface StepReport {
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
   /**
-   * A `script` step's captured stdout and stderr, in arrival order, possibly
-   * truncated. Arrival order is not written order: a burst to both streams
-   * inside one event-loop turn can land in either stream's order, so only each
-   * stream's own sequence carries causality. NOT redacted: the executor scrubs
-   * only the secrets it is handed, and `runFlowScriptStep`
-   * (flow-script-step.ts) hands it none. Set whatever the step's status while
-   * the run's shared log budget lasts — a run an earlier script exhausted drops
-   * a later one's output entirely — since a passing script's log is the only
-   * record of what it did.
+   * A `script` step's stdout and stderr in arrival order — which is not written
+   * order, so only each stream's own sequence carries causality. NOT redacted:
+   * the executor scrubs only the secrets it is handed, and `runFlowScriptStep`
+   * (flow-script-step.ts) hands it none. Set whatever the step's status, while
+   * the run's shared log budget lasts.
    */
   scriptLog?: string;
   /**
-   * Some of that script's output is missing from the log. A log limit is one
-   * cause; the executor also sets it when it collapses a fatal error's frame
-   * dump, which no limit caused — so neither renderer names a cause. The log
-   * text carries no marker of its own, and a run-wide budget an earlier step
-   * exhausted drops a later script's output entirely — so this flag can be set
-   * with no {@link scriptLog} at all.
+   * A log limit is one cause; the executor also sets it when it collapses a
+   * fatal error's frame dump, which no limit caused — so neither renderer names
+   * a cause. A run-wide budget an earlier step exhausted drops a later script's
+   * output entirely, so this can be set with no {@link scriptLog} at all.
    */
   scriptLogTruncated?: boolean;
   /**
@@ -953,13 +947,12 @@ interface ExecState extends Omit<ActionEnv, "device"> {
    */
   attachedAppPath?: string;
   /**
-   * The caller's `project_root` — a `script:` step's first choice of working
-   * directory, so a script resolves its own relative `fs` paths against the
-   * project the agent is working in rather than against wherever the flow file
-   * happens to sit.
+   * A `script:` step's first choice of working directory, so a script resolves
+   * its relative `fs` paths against the project the agent is working in rather
+   * than wherever the flow file happens to sit.
    */
   projectRoot: string;
-  /** The log allowance every `script` step in this run draws from: one per run, not per step. */
+  /** The log allowance every `script` step in this run draws from: one per run. */
   scriptLogBudget: FlowScriptLogBudget;
   /** Live progress hook: receives every report the moment it is appended. */
   onStepReport?: (report: StepReport) => void;
@@ -2167,13 +2160,10 @@ async function execRunStep(
   // and a case-insensitive one (APFS, NTFS) opens a file really named
   // "frag.yaml" for `run: Frag.yaml`. Every expanded step is then attributed to
   // a fragment no directory entry carries, and the identical tree fails with
-  // ENOENT on a case-sensitive volume (Linux CI). parseRunTarget already holds
-  // this line for the ".yaml" extension of this same string, and
-  // resolveFlowSource for the root flow's own basename. Only a case-folded
-  // verdict refuses: a basename matching nothing at all is an ordinary missing
-  // fragment, which the read's own ENOENT reports far better, and an unreadable
-  // listing vouches for nothing so it must refuse nothing. Only the basename is
-  // checked, matching the two root-flow routes' scope.
+  // ENOENT on a case-sensitive volume (Linux CI). Only a case-folded verdict
+  // refuses: a basename matching nothing at all is an ordinary missing fragment,
+  // which the read's own ENOENT reports far better, and an unreadable listing
+  // vouches for nothing so it must refuse nothing.
   const suppliedBase = path.posix.basename(target);
   if (spelling.state === "case_folded") {
     // Quote a replacement target only when parseRunTarget would accept one —

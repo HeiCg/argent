@@ -700,10 +700,9 @@ export type FlowStep =
   | { kind: "rotate"; selector?: FlowSelector; by: number }
   | { kind: "snapshot"; name: string; maxMismatch?: number; cropOn?: FlowSelector }
   /**
-   * Run a local `.mjs` file in a fresh Node process, for work the device
-   * directives cannot do. `path` is the as-written YAML path, resolved against
-   * the containing file's directory exactly as a `run:` target is; `timeout` is
-   * the hard limit in milliseconds. The runner routes the step no device.
+   * Runs a local `.mjs` in a fresh Node process. `path` is the as-written YAML
+   * path, resolved against the containing file's directory exactly as a `run:`
+   * target is; `timeout` is in milliseconds. The runner routes it no device.
    */
   | { kind: "script"; path: string; timeout?: number };
 
@@ -2552,10 +2551,7 @@ function completeRunExtension(value: string): string {
 
 /**
  * A `script:` step body. **Always a map** — a bare `script: seed.mjs` is
- * rejected, and so is an option written beside the directive key.
- *
- * Deliberately unlike the directives whose bare form carries their subject
- * (`tap`, `long-press`, `scroll-to`, `snapshot`): a bare `script: seed.mjs`
+ * rejected, and so is an option written beside the directive key: a bare form
  * could not carry `timeout`, so adding a time limit would mean respelling the
  * step.
  */
