@@ -388,19 +388,17 @@ function unmetWaitWarningFor(cause: UnmetUiWaitCause): string {
   return UNMET_WAIT_WARNING;
 }
 
-// The indeterminate reason is quoted verbatim, and on iOS it can end "provide
-// bundleId explicitly" — advice written for the native tools. Correct it rather
-// than honour it.
+// The indeterminate reason is quoted verbatim, and it carries whatever recovery
+// fits: on iOS `queryFullHierarchyTree` writes one per failure branch, having
+// dropped the shared native-target error's "provide bundleId explicitly" line
+// that a flow selector step cannot act on. So name no remedy here — a second one
+// would contradict it. Add only what the reason cannot see: this step.
 function indeterminateReasonCaveat(udid: unknown): string {
   if (platformOf(udid) !== "ios") return "";
   return (
-    ". That reason may tell you to pass `bundleId` — it is quoted from the shared native-target " +
-    "error, and it does not apply here: the probe predicts an `await:`/`assert:` directive, and " +
-    "no directive takes a bundleId, so neither this probe nor the runner accepts one (the " +
-    "`bundleId` on this step reached the live wait only). What the runner's iOS tree needs is an " +
-    "app with argent's instrumentation loaded — relaunch it with `launch-app` or a flow `launch:` " +
-    "step. An app that cannot load it at all, such as a `com.apple.*` system app, can never be " +
-    "probed or converted: keep the check as a raw `tool:` step"
+    ". One thing that reason cannot see is this step: the probe predicts an `await:`/`assert:` " +
+    "directive, and no directive takes a bundleId, so neither this probe nor the runner accepts " +
+    "one (the `bundleId` on this step reached the live wait only)"
   );
 }
 
