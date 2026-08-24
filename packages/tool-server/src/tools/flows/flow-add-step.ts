@@ -880,23 +880,22 @@ function nestedRecordRefusal(
   // verdict-first read would file the author's own cancel as a failed nested
   // step. `skip` is the reader's own abort branch, so it speaks for itself.
   //
-  // `attempted` is the third condition, because a cancel can only affect an
+  // `reached` is the third condition, because a cancel can only affect an
   // outcome the run got far enough to have. A `flow-execute` prerequisite
   // notice reached no step, so the wrapper would report a cancel of something
   // that never started.
-  const attempted = nestedStepAttempted(result);
   const reason =
-    aborted && attempted && outcome.status !== "skip"
+    aborted && outcome.reached && outcome.status !== "skip"
       ? `${command} was cancelled (${outcome.reason})`
       : outcome.reason;
-  return { reason, mayHaveMutated: attempted };
+  return { reason, mayHaveMutated: outcome.reached };
 }
 
 /**
  * The advice asks for a CHECK, not a restore.
  *
- * The result cannot show whether an attempted step moved the device (see
- * {@link nestedStepAttempted}), so this fires on read-only nested runs too. A
+ * The result cannot show whether a reached step moved the device (see
+ * `NestedOutcome.reached`), so this fires on read-only nested runs too. A
  * composed flow of only `assert`s reaches a step and trips it. "Restore the
  * device" would invite a relaunch, and a relaunch shows the start screen, not
  * the state the recorded prefix leaves.
@@ -909,44 +908,6 @@ function partialMutationWarning(command: "flow-execute" | "run-sequence"): strin
     "leaves it in before adding the next step, and put it back by hand if it has moved; " +
     "relaunching the app does NOT reproduce that prefix."
   );
-}
-
-/**
- * Whether the nested run ATTEMPTED a step. This is the trigger for the warning
- * that the device may no longer be where the recorded prefix leaves it.
- *
- * Not "did a step succeed". A step often acts and THEN fails. A `scroll-to`
- * scrolls to the end of the list before it reports a miss. A `keyboard` types
- * part of its text before it throws. Both leave `passed` and `completed` at 0
- * while the screen moved. The result settles only whether a step was reached.
- *
- * A false warning is safe, because the message says "may" and asks for a check.
- * Silence leaves the author recording against a screen the prefix cannot reach.
- */
-function nestedStepAttempted(result: unknown): boolean {
-  if (typeof result !== "object" || result === null) return true;
-  const steps = (result as { steps?: unknown }).steps;
-  if (!Array.isArray(steps)) {
-    // Only `flow-execute`'s prerequisite notice has no step list, because it
-    // ran nothing. Any other unknown shape must assume that a step ran.
-    return !Object.prototype.hasOwnProperty.call(result, "notice");
-  }
-  // The flow runner reports one entry per DECLARED step and marks the ones it
-  // never reached `skip`. A step CUT SHORT by a cancel is a skip too, and that
-  // one can have acted. A `launch` becomes cancellable only after `restart-app`
-  // relaunched the app. The runner marks those `reached`.
-  //
-  // `run-sequence` appends one entry per step it got to, so its entries are
-  // attempts. The exceptions carry `dispatched: false`: an unlisted tool, one
-  // the platform does not support, or args the registry refuses. A sequence
-  // rejected on its FIRST step touched nothing, and a warning there would
-  // contradict "after 0 of N steps" in the same message.
-  return steps.some((s) => {
-    if (typeof s !== "object" || s === null) return true;
-    const entry = s as { status?: unknown; reached?: unknown; dispatched?: unknown };
-    if (entry.status === "skip") return entry.reached === true;
-    return entry.dispatched !== false;
-  });
 }
 
 // A fragment replayed mid-recording through `flow-execute` would record

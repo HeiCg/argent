@@ -26,10 +26,51 @@ export const RUN_SEQUENCE_TOOL_ID = "run-sequence";
 export interface NestedOutcome {
   status: StepStatus;
   reason: string;
+  /**
+   * Whether the nested run got as far as a step AT THE DEVICE. Read by the
+   * RUNNER to mark a cancelled nested step `reached`, and by
+   * the RECORDER to decide whether to warn that the device may no longer be
+   * where the recorded prefix leaves it. One answer, so the two agree.
+   *
+   * Not "did a step succeed". A step often acts and THEN fails. A `scroll-to`
+   * scrolls to the end of the list before it reports a miss. A `keyboard`
+   * types part of its text before it throws. Both leave `passed` and
+   * `completed` at 0 while the screen moved. The result settles only whether a
+   * step was reached.
+   *
+   * `true` when the shape is unrecognised: a false warning costs a check the
+   * author can make, and silence leaves them recording against a screen the
+   * prefix cannot reach.
+   */
+  reached: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/**
+ * Whether a nested run's step list shows a step was reached.
+ *
+ * The flow runner reports one entry per DECLARED step and marks the ones it
+ * never reached `skip`. A step CUT SHORT by a cancel is a skip too, and that one
+ * can have acted, so the runner marks those `reached`.
+ *
+ * `run-sequence` appends one entry per step it got to, so its entries are
+ * attempts. The exceptions carry `dispatched: false`: an unlisted tool, one the
+ * platform does not support, or args the registry refuses. A sequence rejected
+ * on its FIRST step touched nothing, and a warning there would contradict
+ * "after 0 of N steps" in the same message.
+ */
+function reachedAStep(steps: unknown): boolean {
+  // Only a prerequisite notice has no step list, because it ran nothing, and
+  // that branch answers directly. Any other shape must assume a step ran.
+  if (!Array.isArray(steps)) return true;
+  return steps.some((entry) => {
+    if (!isRecord(entry)) return true;
+    if (entry.status === "skip") return entry.reached === true;
+    return entry.dispatched !== false;
+  });
 }
 
 function firstFailingStep(steps: unknown): string | undefined {
@@ -72,6 +113,7 @@ function flowExecuteOutcome(result: Record<string, unknown>): NestedOutcome | un
       reason:
         `flow "${flow}" did not run — its execution prerequisite was not acknowledged${prerequisite}. ` +
         `Add prerequisiteAcknowledged: true to the step's args, or compose with run: instead.`,
+      reached: false,
     };
   }
 
@@ -88,6 +130,7 @@ function flowExecuteOutcome(result: Record<string, unknown>): NestedOutcome | un
     return {
       status: "skip",
       reason: `flow "${flow}" was aborted${detail ? ` (${detail})` : ""}`,
+      reached: reachedAStep(result.steps),
     };
   }
 
@@ -98,6 +141,7 @@ function flowExecuteOutcome(result: Record<string, unknown>): NestedOutcome | un
       reason:
         `flow "${flow}" failed: ${count(result.passed)} passed, ${count(result.failed)} failed, ` +
         `${count(result.errored)} errored${detail ? ` (${detail})` : ""}`,
+      reached: reachedAStep(result.steps),
     };
   }
 
@@ -132,6 +176,7 @@ function runSequenceOutcome(result: Record<string, unknown>): NestedOutcome | un
       reason:
         `run-sequence stopped at ${tool} after ${count(result.completed)} of ` +
         `${count(result.total)} steps: ${why}`,
+      reached: reachedAStep(steps),
     };
   }
 
@@ -142,6 +187,7 @@ function runSequenceOutcome(result: Record<string, unknown>): NestedOutcome | un
     return {
       status: "skip",
       reason: `run-sequence was aborted after ${count(result.completed)} of ${total} steps`,
+      reached: reachedAStep(steps),
     };
   }
 

@@ -259,10 +259,13 @@ export interface StepReport {
   /**
    * The runner had begun this step when the run was cancelled, so its `skip` is
    * NOT proof that the device is untouched. A `launch` reaches its abort only
-   * after `restart-app` relaunched the app. Set only on the skips a reached
-   * step produces. The pre-step guard and an unreached block leave it absent,
-   * which is what makes their silence provable. The flow recorder reads it to
-   * decide whether to warn that the recorded prefix may no longer reproduce.
+   * after `restart-app` relaunched the app. Set on every skip a reached step
+   * produces: a cancelled `launch`, a cancelled directive, a cancelled
+   * `await-ui-element` tool step, and a cancelled nested orchestrator whose own
+   * report says it reached one of ITS steps. The pre-step guard, a fixed
+   * `wait`, and an unreached block leave it absent, which is what makes their
+   * silence provable. The flow recorder reads it to decide whether to warn that
+   * the recorded prefix may no longer reproduce.
    */
   reached?: true;
   /** Underlying tool id for `tool` steps. */
@@ -2471,6 +2474,13 @@ async function execLeafStep(
           return {
             ...base,
             status: nested.status,
+            // The sub-orchestrator's own cancel arrives here as a `skip`, and
+            // it is the one skip in this function whose reach is not decided by
+            // the branch it came from: the nested run reports which of ITS
+            // steps ran, and `nested.reached` reads that. Without the marker a
+            // cancelled nested run is an unmarked skip, and the recorder scores
+            // a whole batch that dispatched at the device as "nothing moved".
+            ...(nested.status === "skip" && nested.reached ? { reached: true as const } : {}),
             tool: step.name,
             reason: nested.reason,
             result,

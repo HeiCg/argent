@@ -1681,6 +1681,82 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("sequence-rejected-late")).steps).toEqual([]);
   });
 
+  it("warns when a cancelled composed sequence had already dispatched", async () => {
+    // The whole chain as the field sees it: the recorder over a real
+    // flow-execute over a real run-sequence, with only the leaf gesture doubled
+    // so every dispatch is observed rather than inferred. The cancel lands
+    // after the first swipe went out, so BOTH reports come back `skip` — the
+    // status that everywhere else means "did not run". Only the runner's
+    // `reached` marker separates this from a composed run that never started.
+    const controller = new AbortController();
+    const dispatched: string[] = [];
+    const inner = {
+      invokeTool: vi.fn(async (id: string) => {
+        dispatched.push(id);
+        controller.abort();
+        return { swiped: true };
+      }),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    // A REAL registry for the runner: `bindDeviceArgs` reads the registered
+    // tool's derived `inputSchema` to know that run-sequence takes `udid`, and
+    // a stub `getTool` leaves the nested call device-less.
+    const runnerRegistry = new Registry();
+    runnerRegistry.registerTool(createRunSequenceTool(inner) as never);
+    const runFlow = createRunFlowTool(runnerRegistry);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown, opts?: unknown) =>
+        id === "flow-execute"
+          ? runFlow.execute({}, args as never, opts as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute({}, { name: "compose-cancelled", project_root: tmpDir });
+    await writeSiblingFlow(
+      "frag-seq",
+      [
+        'executionPrerequisite: ""',
+        "steps:",
+        "  - tool: run-sequence",
+        "    args:",
+        "      steps:",
+        "        - tool: gesture-swipe",
+        "          args: { fromX: 0.5, fromY: 0.8, toX: 0.5, toY: 0.2 }",
+        "          delayMs: 0",
+        "        - tool: gesture-swipe",
+        "          args: { fromX: 0.5, fromY: 0.8, toX: 0.5, toY: 0.2 }",
+        "          delayMs: 0",
+        "",
+      ].join("\n")
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-cancelled",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify({
+          name: "frag-seq",
+          project_root: tmpDir,
+          device: "00000000-0000-0000-0000-0000000000ab",
+        }),
+      },
+      { signal: controller.signal } as never
+    );
+
+    // The device moved, and it is the swipe the leaf double recorded — not
+    // something the composed report's own counters had to be trusted for.
+    expect(dispatched).toEqual(["gesture-swipe"]);
+    expect(result.message).toContain("step NOT recorded");
+    expect(result.message).toContain("Prior composed steps may already have changed the device");
+    expect(result.recorded).toBeUndefined();
+    expect(parseFlow(await onDisk("compose-cancelled")).steps).toEqual([]);
+  });
+
   it("does not record run: when flow-execute returned a prerequisite notice", async () => {
     const registry = createMockRegistry({
       "flow-execute": {
