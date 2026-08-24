@@ -1393,7 +1393,10 @@ class ScriptLogCapture {
       : Math.max(0, pending.length - partialSecretTail(pending, secrets));
     const emit = scrubSecretValues(pending.slice(0, split), secrets);
     state.holdback = pending.slice(split);
-    this.release(state, held, emit);
+    // The released text, which is only *part* of what was held when a value
+    // overlaps itself: `abca` held for `abcab` keeps `ab` once `b` arrives, so
+    // the split lands inside the hold-back rather than past it.
+    this.release(state, held.slice(0, split), emit);
     // A collapsed frame dump is output the report does not carry, which is what
     // `logTruncated` means.
     if (state.collapser?.collapsed) this.truncatedFlag = true;
@@ -1410,17 +1413,21 @@ class ScriptLogCapture {
    * The hold-back is per stream and the buffer is shared, so released text held
    * from an earlier chunk belongs *before* whatever the other stream wrote in
    * between — appending it now would move it past that text.
+   *
+   * `released` is the part of the hold-back this chunk let go of, never the
+   * whole of it: a value that overlaps itself can hold text back across the
+   * chunk that arrived after it.
    */
-  private release(state: StreamState, held: string, emit: string): void {
+  private release(state: StreamState, released: string, emit: string): void {
     const at = state.holdbackAt;
     if (at === undefined || !emit) {
       this.append(state.collapser ? state.collapser.write(emit) : emit);
       return;
     }
-    // Scrubbing the held text on its own says how much of `emit` is that text,
-    // whenever no value spans the join. A value that does span it has no side
-    // to belong to, so its replacement goes with the chunk that completed it.
-    const head = scrubSecretValues(held, this.secrets());
+    // Scrubbing the released text on its own says how much of `emit` is that
+    // text, whenever no value spans the join. A value that does span it has no
+    // side to belong to, so its replacement goes with the chunk that completed it.
+    const head = scrubSecretValues(released, this.secrets());
     const headText = emit.startsWith(head) ? head : "";
     // The collapser is a stream transform, so it has to see the two in order.
     this.append(state.collapser ? state.collapser.write(headText) : headText, at);

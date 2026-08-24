@@ -325,6 +325,49 @@ describe("flow script executor — order", () => {
 
     expect(result.log).toBe("token={{secret:TOKEN}}\n");
   });
+
+  it("keeps that order for a value that overlaps itself", async () => {
+    const ws = workspace();
+    // `abcab` starts with its own tail, so the chunk carrying `b` completes a
+    // prefix while extending another one: the split lands *inside* what was
+    // held rather than past it. Releasing all of the hold-back there would
+    // append the head after text written later, and leave the value whole.
+    const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       for (const piece of ["[", "abca", "b", "]"]) {
+         process.stdout.write(piece);
+         await wait(60);
+       }`;
+    const result = await executor().execute({
+      scriptPath: ws.write("self-overlap.mjs", source),
+      projectRoot: ws.dir,
+      secrets: [{ name: "S", value: "abcab" }],
+    });
+
+    expect(result.log).toBe("[{{secret:S}}]");
+  });
+
+  it("keeps that order for a self-overlapping value with the other stream between", async () => {
+    const ws = workspace();
+    const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       const writes = [
+         [process.stdout, "["],
+         [process.stdout, "abca"],
+         [process.stderr, "MID"],
+         [process.stdout, "b"],
+         [process.stdout, "]"],
+       ];
+       for (const [stream, piece] of writes) {
+         stream.write(piece);
+         await wait(60);
+       }`;
+    const result = await executor().execute({
+      scriptPath: ws.write("self-overlap-streams.mjs", source),
+      projectRoot: ws.dir,
+      secrets: [{ name: "S", value: "abcab" }],
+    });
+
+    expect(result.log).toBe("[{{secret:S}}MID]");
+  });
 });
 
 describe("flow script executor — redaction", () => {
