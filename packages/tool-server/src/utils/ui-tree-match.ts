@@ -39,7 +39,7 @@ export const selectorFieldsSchema = z
       })
       .optional()
       .describe(
-        "Case-insensitive substring of the element's visible label or value. Compared on FOLDED text: a non-breaking space matches a plain one, a run of spaces or tabs matches a single space, and an LTR bidi wrapper around otherwise left-to-right text is ignored, so you can type what you see. Characters that change which glyphs are drawn, or their order, are NOT folded (bidi controls that reorder, a soft hyphen, emoji ZWJ/variation selectors, and a line break, which no number of spaces matches). One that only moves where a line breaks IS folded away (a zero-width space, a word joiner, a byte-order mark). A leading or trailing space is significant and constrains the match; a value with no visible character at all is rejected."
+        "Case-insensitive substring of the element's visible label or value. Compared on FOLDED text: a non-breaking space matches a plain one, a run of spaces or tabs matches a single space, and an LTR bidi wrapper around otherwise left-to-right text is ignored, so you can type what you see. Characters that change which glyphs are drawn, or their order, are NOT folded (bidi controls that reorder, a soft hyphen, emoji ZWJ/variation selectors, and a line break, which no number of spaces matches — but take the break from the text `describe` prints, not from the layout, because a label the screen draws on two lines usually reaches the tree as one). One that only moves where a line breaks IS folded away (a zero-width space, a word joiner, a byte-order mark). A leading or trailing space is significant and constrains the match; a value with no visible character at all is rejected."
       ),
     identifier: z
       .string()
