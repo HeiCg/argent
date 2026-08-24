@@ -39,8 +39,7 @@ export interface KeyboardResult {
    * Present (and `true`) only when `clear` was requested and the clear
    * completed without error.
    *
-   * How much that is worth depends on what the backend can observe, and only
-   * one of them can observe anything:
+   * How much that is worth depends on what the backend can observe:
    *
    * - Chromium reads the field before and after, and throws when it observes
    *   the value survive. It cannot always observe: a page it can't read (a
