@@ -45,7 +45,9 @@ A flow has one of two shapes:
 
 A fragment declares its start state in a prerequisite. The prerequisite is a sentence, for example "The Settings screen is open". Before a replay, the agent reads the prerequisite and puts the app into that state.
 
-A flow can contain more than taps and text. A step can wait for an element, wait for the screen to settle, check a condition, take a screenshot and compare it to a baseline, or run a different flow. See [Baselines in flows](/docs/features/visual-regression#baselines-in-flows) for the screenshot comparison.
+A flow can contain more than taps and text. A step can wait for an element, wait for the screen to settle, check a condition, take a screenshot and compare it to a baseline, run a different flow, or run a local script. See [Baselines in flows](/docs/features/visual-regression#baselines-in-flows) for the screenshot comparison.
+
+A script step does work that no device step does. For example, a script calls an API that puts the backend into a known state before the flow opens the screen that shows that state. Argent runs the script on the machine that holds the project, and the step drives no device.
 
 The file is plain text. You can commit the file, review the file in a pull request and edit a step by hand.
 
@@ -53,7 +55,7 @@ The file is plain text. You can commit the file, review the file in a pull reque
 
 You ask the agent to run a flow by its name. The agent replays each step in order on the connected device. When a step fails, Argent stops the flow. Argent reports the later steps as skipped. At the end, the agent receives a report with the result of each step.
 
-A flow also runs without an agent. The `argent flow run` command replays a flow from the terminal. The command prints the result of each step and exits with a status code. Thus a flow runs in a CI job or in a script. The command runs one flow, a flow file in a different location, or all flows in a directory.
+A flow also runs without an agent. The `argent flow run` command replays a flow from the terminal. The command prints the result of each step and exits with a status code. Thus a flow runs in a CI job or in a shell script. The command runs one flow, a flow file in a different location, or all flows in a directory.
 
 ## Example instructions
 
