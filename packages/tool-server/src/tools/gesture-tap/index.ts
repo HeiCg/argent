@@ -26,7 +26,8 @@ const zodSchema = z.object({
     .describe(
       "Number of taps/clicks dispatched as ONE multi-tap gesture (2 = double-tap / double-click). " +
         "The taps land inside the OS double-tap window; on Chromium each click carries an escalating " +
-        "CDP clickCount so dblclick actually fires. Default 1."
+        "CDP clickCount so dblclick actually fires; on physical iOS the whole multi-tap is one " +
+        "on-device runner gesture (2 = the native double-tap). Default 1."
     ),
 });
 
@@ -127,10 +128,10 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const viewport = await getViewport(runner, bundleId);
       const point = toPoints(viewport, params.x, params.y);
-      for (let i = 1; i <= clickCount; i++) {
-        if (i > 1) await sleep(MULTI_TAP_GAP_MS);
-        await tapAt(runner, bundleId, point);
-      }
+      // The whole multi-tap is ONE runner command: per-tap wire round-trips
+      // have uncontrolled latency (see GESTURE_TIMEOUT_MS in runner-commands),
+      // so only on-device inter-tap timing keeps the double-tap window.
+      await tapAt(runner, bundleId, point, clickCount);
       return { tapped: true, timestampMs };
     }
     const api = services.simulatorServer as SimulatorServerApi;

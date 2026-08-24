@@ -28,6 +28,7 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 | `statusCommandId`     | `status`            | Journal lookup key.                                                     |
 | `appBundleId`         | app-scoped commands | Target app. Required — never inferred.                                  |
 | `x`, `y`              | `tap`, `longPress`  | Absolute points in the app's space.                                     |
+| `numberOfTaps`        | `tap`               | Taps in the one gesture (default 1; 2 = native double-tap).             |
 | `fromX/fromY/toX/toY` | `drag`              | Absolute start/end points.                                              |
 | `durationMs`          | `longPress`, `drag` | Press duration / movement duration.                                     |
 | `settle`              | `drag`              | Rest at the destination before lifting (~0 release velocity, no fling). |
@@ -41,7 +42,10 @@ App-scoped (require `appBundleId`; the runner foregrounds the target first):
   keyboard included). Same rect describe normalizes against, so 0–1 tap
   coordinates invert that mapping.
 - `tap`, `longPress`, `drag` → `{message}` — coordinate gestures via
-  XCUICoordinate (public API; orientation-safe).
+  XCUICoordinate (public API; orientation-safe). `tap` executes
+  `numberOfTaps` taps as one on-device gesture: 2 maps to the native
+  `doubleTap()`, >2 to a tight tap loop (no native N-tap API; inter-tap
+  latency stays on-device, inside the OS multi-tap window).
 - `type` → `{message}` — types into the current first responder.
   `TEXT_INPUT_NOT_FOCUSED` when nothing has keyboard focus.
 - `keyboardReturn` → `{message}`.

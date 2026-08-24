@@ -18,7 +18,26 @@ extension ArgentRunnerSession {
       return .failure(.invalidRequest, "tap requires x and y")
     }
 
-    point(app, x, y).tap()
+    let taps = request.numberOfTaps ?? 1
+    guard taps >= 1 else {
+      return .failure(.invalidRequest, "tap requires numberOfTaps >= 1")
+    }
+
+    let coordinate = point(app, x, y)
+    switch taps {
+    case 1:
+      coordinate.tap()
+    case 2:
+      coordinate.doubleTap()
+    default:
+      // XCUICoordinate has no N-tap API. A tight on-device loop approximates
+      // N-tap timing: dispatch between taps is microseconds-scale with no
+      // wire round-trips, so inter-tap latency stays far inside the OS
+      // multi-tap window.
+      for _ in 0..<taps {
+        coordinate.tap()
+      }
+    }
 
     return .success(MessagePayload(message: "tapped"))
   }

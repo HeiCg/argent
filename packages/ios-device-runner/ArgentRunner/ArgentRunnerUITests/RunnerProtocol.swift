@@ -85,6 +85,10 @@ struct CommandRequest: Codable {
   /// `tap`/`longPress`: absolute point (in points) in the app's coordinate space.
   let x: Double?
   let y: Double?
+  /// `tap`: taps in the one gesture (default 1; 2 = native double-tap timing).
+  /// The whole multi-tap rides a single command so inter-tap latency stays
+  /// on-device, inside the OS double-tap window.
+  let numberOfTaps: Int?
   /// `drag`: absolute start and end points.
   let fromX: Double?
   let fromY: Double?

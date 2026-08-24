@@ -75,13 +75,27 @@ export function toPoints(
  */
 const GESTURE_TIMEOUT_MS = 90_000;
 
+/**
+ * Tap at a point. A multi-tap (`numberOfTaps` > 1) rides this ONE command —
+ * the runner owns the inter-tap timing on-device (2 = native double-tap,
+ * >2 = tight tap loop), so wire latency between taps cannot push the gesture
+ * outside the OS double-tap window. Single taps omit the field, keeping
+ * their wire shape unchanged.
+ */
 export async function tapAt(
   api: IosDeviceRunnerApi,
   bundleId: string,
-  point: { x: number; y: number }
+  point: { x: number; y: number },
+  numberOfTaps?: number
 ): Promise<void> {
   await api.run(
-    { command: "tap", appBundleId: bundleId, x: point.x, y: point.y },
+    {
+      command: "tap",
+      appBundleId: bundleId,
+      x: point.x,
+      y: point.y,
+      ...(numberOfTaps != null && numberOfTaps > 1 ? { numberOfTaps } : {}),
+    },
     { timeoutMs: GESTURE_TIMEOUT_MS }
   );
 }

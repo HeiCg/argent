@@ -3,6 +3,7 @@ import { getDescribeTapPoint } from "../src/tools/describe/contract";
 import {
   captureSnapshot,
   getViewport,
+  tapAt,
   toPoints,
   type RunnerViewport,
 } from "../src/utils/ios-device/runner-commands";
@@ -39,6 +40,55 @@ describe("toPoints (physical iOS 0-1 contract)", () => {
     const inset: RunnerViewport = { x: 0, y: 20, width: 390, height: 824 };
     const point = toPoints(inset, 0.5, 0.5);
     expect(point).toEqual({ x: 195, y: 20 + 412 });
+  });
+});
+
+describe("tapAt wire shape", () => {
+  it("keeps the single-tap request identical to the pre-numberOfTaps shape", async () => {
+    const run = vi.fn().mockResolvedValue({});
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    await tapAt(api, "com.example.app", { x: 195, y: 422 });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][0]).toEqual({
+      command: "tap",
+      appBundleId: "com.example.app",
+      x: 195,
+      y: 422,
+    });
+  });
+
+  it("carries a multi-tap as ONE command with numberOfTaps", async () => {
+    const run = vi.fn().mockResolvedValue({});
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    await tapAt(api, "com.example.app", { x: 10, y: 20 }, 3);
+
+    // The runner owns the inter-tap timing; the client sends exactly one
+    // command, never a per-tap round-trip.
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][0]).toEqual({
+      command: "tap",
+      appBundleId: "com.example.app",
+      x: 10,
+      y: 20,
+      numberOfTaps: 3,
+    });
+  });
+
+  it("normalizes an explicit numberOfTaps of 1 back to the legacy shape", async () => {
+    const run = vi.fn().mockResolvedValue({});
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    await tapAt(api, "com.example.app", { x: 1, y: 2 }, 1);
+
+    expect(run.mock.calls[0][0]).toEqual({
+      command: "tap",
+      appBundleId: "com.example.app",
+      x: 1,
+      y: 2,
+    });
   });
 });
 
