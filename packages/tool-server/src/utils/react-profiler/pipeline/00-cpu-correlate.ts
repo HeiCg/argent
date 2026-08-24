@@ -224,6 +224,7 @@ export function queryCpuWindow(
 
     entries.push({
       name,
+      nodeId,
       selfMs: Math.round(ms * 100) / 100,
       totalMs: Math.round((totalMsByNode.get(nodeId) ?? ms) * 100) / 100,
       url: node.callFrame.url || undefined,
@@ -243,7 +244,8 @@ export function queryCpuWindow(
   };
 }
 
-function buildChildToParent(nodeMap: Map<number, HermesProfileNode>): Map<number, number> {
+/** Child id → parent id, from the call tree. Exported for query tools merging rows by node ancestry. */
+export function buildChildToParent(nodeMap: Map<number, HermesProfileNode>): Map<number, number> {
   const childToParent = new Map<number, number>();
   for (const node of nodeMap.values()) {
     for (const childId of node.children ?? []) childToParent.set(childId, node.id);

@@ -155,7 +155,11 @@ function renderByComponent(
       reason: formatReason(entries[0]!),
       parentName: entries[0]!.parentName ?? "—",
     }))
-    .sort((a, b) => b.maxSubtree - a.maxSubtree)
+    // Rank by self time, the additive column — the same key every other
+    // grouping site uses. `maxSubtree` is an order statistic over one
+    // instance, so letting it pick the truncated set would drop commits where
+    // the component did more total work.
+    .sort((a, b) => b.totalSelf - a.totalSelf)
     .slice(0, topN);
 
   const lines: string[] = [

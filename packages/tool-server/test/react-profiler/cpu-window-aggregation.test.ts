@@ -8,14 +8,18 @@ import type { HermesProfileNode } from "../../src/utils/react-profiler/types/inp
  * and they need opposite treatment.
  *
  * Across commit windows — disjoint stretches of wall clock — a function's
- * inclusive time in one window cannot overlap its time in another, so both
- * columns add. Within a window the same function can arrive as several
- * call-tree nodes, and a recursive frame's inclusive time already contains its
- * own inner frame's, so those cannot.
+ * inclusive time in one cannot overlap its time in another, so both columns add.
  *
- * Getting the first axis wrong is visible in the output: an exclusive column
- * summed against an inclusive column maxed prints rows whose `Self` exceeds
- * their own `Total`, which no single frame can do.
+ * Within a window the same function can arrive as several call-tree NODES:
+ * - disjoint nodes (the same helper called from two unrelated call sites) are
+ *   separate subtrees, so both columns add;
+ * - nested nodes (recursion) overlap — the outer frame's inclusive time already
+ *   contains the inner one's — so self still adds but inclusive keeps the larger.
+ *
+ * Getting either axis wrong is visible in the output: summing nested inclusive
+ * times inflates them past what the tree contains, and an exclusive column summed
+ * against an inclusive column maxed prints rows whose `Self` exceeds their own
+ * `Total`, which no single frame can do.
  */
 const { renderComponentCpu } = __testables;
 
@@ -61,6 +65,69 @@ function flatIndex(sampleEndsMs: number[]): CpuSampleIndex {
 // covered and each one's self-time comes to its own 5ms width.
 const everyMs = Array.from({ length: 15 }, (_, i) => i + 1);
 const firstCommitOnly = everyMs.slice(0, 5);
+
+function frame(functionName: string): HermesProfileNode["callFrame"] {
+  return { functionName, url: "", scriptId: "0", lineNumber: -1, columnNumber: -1 };
+}
+
+/**
+ * Two DISTINCT `parse` nodes under different parents — the same helper called
+ * from two unrelated call sites. Samples alternate between them inside one
+ * window, so each ends up with 5ms of self time.
+ */
+function siblingIndex(): CpuSampleIndex {
+  const nodeMap = new Map<number, HermesProfileNode>();
+  const mk = (id: number, name: string, children: number[]): HermesProfileNode => ({
+    id,
+    hitCount: 0,
+    callFrame: frame(name),
+    children,
+  });
+  nodeMap.set(1, mk(1, "(root)", [2, 3]));
+  nodeMap.set(2, mk(2, "helperA", [4]));
+  nodeMap.set(3, mk(3, "helperB", [5]));
+  nodeMap.set(4, mk(4, "parse", []));
+  nodeMap.set(5, mk(5, "parse", []));
+  const n = 10;
+  return {
+    timestampsMs: Float64Array.from({ length: n }, (_, i) => i + 1),
+    intervalStartsMs: Float64Array.from({ length: n }, (_, i) => i),
+    sampleNodeIds: Array.from({ length: n }, (_, i) => (i % 2 === 0 ? 4 : 5)),
+    nodeMap,
+    durationMs: n,
+  };
+}
+
+/**
+ * Recursive `walk`: the outer frame (node 2) holds 2ms of self, its inner frame
+ * (node 3) holds 5ms. The outer's inclusive time is 7ms and already contains
+ * the inner's 5ms.
+ */
+function nestedIndex(): CpuSampleIndex {
+  const nodeMap = new Map<number, HermesProfileNode>();
+  const mk = (id: number, name: string, children: number[]): HermesProfileNode => ({
+    id,
+    hitCount: 0,
+    callFrame: frame(name),
+    children,
+  });
+  nodeMap.set(1, mk(1, "(root)", [2]));
+  nodeMap.set(2, mk(2, "walk", [3]));
+  nodeMap.set(3, mk(3, "walk", []));
+  const n = 7;
+  return {
+    timestampsMs: Float64Array.from({ length: n }, (_, i) => i + 1),
+    intervalStartsMs: Float64Array.from({ length: n }, (_, i) => i),
+    sampleNodeIds: Array.from({ length: n }, (_, i) => (i < 2 ? 2 : 3)),
+    nodeMap,
+    durationMs: n,
+  };
+}
+
+/** One commit covering the whole index, on `Login`. */
+const oneCommit = {
+  commits: [{ commitIndex: 0, timestamp: 0, commitDuration: 10, componentName: "Login" }],
+};
 
 /** Two commits, 10 ms apart, each 5 ms long — disjoint windows. */
 const twoCommits = {
@@ -116,5 +183,30 @@ describe("renderComponentCpu — aggregating one function across commit windows"
     const { total } = readRow(markdown, "parse");
     const commitTotal = Number(/\*\*Total commit time:\*\* ([\d.]+)ms/.exec(markdown)![1]);
     expect(total).toBeLessThanOrEqual(commitTotal);
+  });
+});
+
+describe("renderComponentCpu — one function arriving as several nodes in ONE window", () => {
+  it("adds both columns for disjoint same-name nodes", () => {
+    const { self, total } = readRow(
+      renderComponentCpu(siblingIndex(), oneCommit, "Login", 10),
+      "parse"
+    );
+    expect(self).toBeCloseTo(10, 5);
+    expect(total).toBeCloseTo(10, 5);
+    expect(self).toBeLessThanOrEqual(total);
+  });
+
+  it("keeps the larger inclusive time for nested same-name frames", () => {
+    const nested = {
+      commits: [{ commitIndex: 0, timestamp: 0, commitDuration: 7, componentName: "Login" }],
+    };
+    const md = renderComponentCpu(nestedIndex(), nested, "Login", 10);
+    const { self, total } = readRow(md, "walk");
+    // self adds: 2ms outer + 5ms inner. Inclusive must be the outer frame's
+    // whole subtree (7ms), not the sum of the two overlapping figures (12ms).
+    expect(self).toBeCloseTo(7, 5);
+    expect(total).toBeCloseTo(7, 5);
+    expect(self).toBeLessThanOrEqual(total);
   });
 });

@@ -7,6 +7,7 @@ import {
 } from "../../../blueprints/react-profiler-session";
 import {
   buildCpuSampleIndex,
+  buildChildToParent,
   queryCpuWindow,
   deserializeCpuSampleIndex,
   isArgentProfilerFunction,
@@ -389,29 +390,43 @@ function renderComponentCpu(
     { selfMs: number; totalMs: number; url?: string; lineNumber?: number }
   >();
 
+  const childToParent = index.childToParent ?? buildChildToParent(index.nodeMap);
+
   for (const window of commitWindows.values()) {
     const { hotspots } = queryCpuWindow(index, window.start, window.end, 50);
     // Fold each window down to one row per function BEFORE adding it to the
     // running totals, because the two axes this loop walks need opposite
     // treatment.
     //
-    // Within a window, `queryCpuWindow` emits one row per call-tree NODE, so a
-    // function reached at several depths arrives several times and a recursive
-    // frame's `totalMs` already contains its own inner frame's. Those cannot be
-    // added; keep the largest, which is a real call's subtree.
+    // Within a window, `queryCpuWindow` emits one row per call-tree NODE, so
+    // one function name can arrive several times. Self time is exclusive —
+    // even nested frames own disjoint sample intervals — so it always adds.
+    // Inclusive time adds only when the nodes are disjoint (the same helper
+    // called from two unrelated call sites); when they nest (recursion), the
+    // outer frame's figure already contains the inner one's, so keep the
+    // larger.
     const perWindow = new Map<
       string,
-      { selfMs: number; totalMs: number; url?: string; lineNumber?: number }
+      { selfMs: number; totalMs: number; nodeId?: number; url?: string; lineNumber?: number }
     >();
     for (const hs of hotspots) {
       const seen = perWindow.get(hs.name);
       if (seen) {
         seen.selfMs += hs.selfMs;
-        seen.totalMs = Math.max(seen.totalMs, hs.totalMs);
+        if (
+          seen.nodeId != null &&
+          hs.nodeId != null &&
+          nodesShareCallTree(seen.nodeId, hs.nodeId, childToParent)
+        ) {
+          seen.totalMs = Math.max(seen.totalMs, hs.totalMs);
+        } else {
+          seen.totalMs += hs.totalMs;
+        }
       } else {
         perWindow.set(hs.name, {
           selfMs: hs.selfMs,
           totalMs: hs.totalMs,
+          nodeId: hs.nodeId,
           url: hs.url,
           lineNumber: hs.lineNumber,
         });
@@ -467,6 +482,32 @@ function renderComponentCpu(
 function shortenUrl(url: string): string {
   const parts = url.replace(/\\/g, "/").split("/");
   return parts.slice(-2).join("/");
+}
+
+/**
+ * True when one Hermes profile node is an ancestor of the other, so the outer
+ * frame's inclusive time already contains the inner one's and the two cannot
+ * be added. Either direction counts; a cycle guard bounds the walk.
+ */
+function nodesShareCallTree(
+  a: number,
+  b: number,
+  childToParent: Map<number, number> | undefined
+): boolean {
+  if (!childToParent) return false;
+  if (a === b) return true;
+  const reaches = (from: number, target: number) => {
+    const seen = new Set<number>([from]);
+    let current = from;
+    while (childToParent.has(current)) {
+      current = childToParent.get(current)!;
+      if (current === target) return true;
+      if (seen.has(current)) return false;
+      seen.add(current);
+    }
+    return false;
+  };
+  return reaches(a, b) || reaches(b, a);
 }
 
 /** Exposed for tests: the aggregation whose inclusive-duration handling is load-bearing. */

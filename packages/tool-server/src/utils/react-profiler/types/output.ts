@@ -32,6 +32,8 @@ export interface CpuCommitHotspot {
   name: string;
   selfMs: number;
   totalMs: number;
+  /** Hermes profile node this row was computed from; lets callers tell same-name frames apart when merging rows. */
+  nodeId?: number;
   url?: string;
   lineNumber?: number;
 }

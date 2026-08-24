@@ -128,7 +128,7 @@ function renderAllClear(input: RenderInput, maxMs: number): string {
     `No performance hotspots found. Consider these proactive checks:`,
     ``,
     `- Run \`react-profiler-component-source\` on your most-rendered components to verify memoization is in place.`,
-    `- Run \`react-profiler-renders\` for a live view of render counts — components with high counts may benefit from \`React.memo\`${input.sessionContext.reactCompilerEnabled ? " or compiler-compatible patterns" : ""}.`,
+    `- Run \`react-profiler-renders\` for a live view of which components cost the most render time. Its instance column counts what is mounted — not re-renders — so \`React.memo\`${input.sessionContext.reactCompilerEnabled ? " and compiler-compatible patterns" : ""} decisions should come from commit data.`,
     `- Re-profile under heavier load (longer interaction, more data) to catch issues that don't appear in short sessions.`,
   ];
   return lines.join("\n");
