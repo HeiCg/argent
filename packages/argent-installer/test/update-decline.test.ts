@@ -84,9 +84,15 @@ let projDir: string;
 let originalCwd: string;
 let savedHome: string | undefined;
 let savedUserProfile: string | undefined;
+let savedAgent: string | undefined;
 let exitSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
+  // detectPackageManager() reads npm_config_user_agent, so the install/update
+  // commands these tests assert on are whichever package manager runs the
+  // suite. Unset it to pin the npm shape.
+  savedAgent = process.env.npm_config_user_agent;
+  delete process.env.npm_config_user_agent;
   vi.clearAllMocks();
   // clearAllMocks keeps implementations, and the tests below install their own
   // on execFileSync — reset it so one test's package-manager stub cannot decide
@@ -118,6 +124,8 @@ beforeEach(() => {
 afterEach(() => {
   exitSpy.mockRestore();
   process.chdir(originalCwd);
+  if (savedAgent === undefined) delete process.env.npm_config_user_agent;
+  else process.env.npm_config_user_agent = savedAgent;
   if (savedHome === undefined) delete process.env.HOME;
   else process.env.HOME = savedHome;
   if (savedUserProfile === undefined) delete process.env.USERPROFILE;
