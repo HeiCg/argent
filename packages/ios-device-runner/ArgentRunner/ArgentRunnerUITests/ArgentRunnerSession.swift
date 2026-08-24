@@ -42,6 +42,25 @@ final class ArgentRunnerSession: XCTestCase {
 
   // MARK: - Issue filtering
 
+  /// The suppression matchers, verbatim. This wording is Apple-owned —
+  /// XCTIssue exposes no stable code for these shapes, so classification
+  /// substring-matches `compactDescription` — and an Xcode release that
+  /// rewords any of these strings makes suppression miss silently: recorded
+  /// issues accumulate and healthy mutations start failing as
+  /// XCTEST_RECORDED_FAILURE. The health payload's `suppressedIssues` /
+  /// `recordedFailures` counters make that miss observable from the host
+  /// (`suppressedIssues` flat while `recordedFailures` climbs is the drift
+  /// signal); PROTOCOL.md's `status` section pins the same strings as part of
+  /// the contract. Exact strings matched:
+  ///   gate         — "Failed to get matching snapshot"
+  ///   keepRecorded — "Timed out while evaluating UI query"
+  ///   noise        — "kAXError", "No matches found for"
+  enum SuppressedIssueWording {
+    static let gate = "Failed to get matching snapshot"
+    static let keepRecorded = "Timed out while evaluating UI query"
+    static let noise = ["kAXError", "No matches found for"]
+  }
+
   /// XCTest tears the whole test down once recorded issues accumulate — fatal
   /// for a server that must outlive thousands of commands. Two issue shapes
   /// are pure accessibility noise on heavy screens and are muted: an AX
@@ -51,9 +70,9 @@ final class ArgentRunnerSession: XCTestCase {
   /// evaluating UI query" shape stays recorded on purpose: it marks a
   /// genuinely hung query, which the recorded-failure check must keep seeing.
   static func isSuppressedAccessibilityIssue(_ description: String) -> Bool {
-    guard description.contains("Failed to get matching snapshot") else { return false }
-    if description.contains("Timed out while evaluating UI query") { return false }
-    return description.contains("kAXError") || description.contains("No matches found for")
+    guard description.contains(SuppressedIssueWording.gate) else { return false }
+    if description.contains(SuppressedIssueWording.keepRecorded) { return false }
+    return SuppressedIssueWording.noise.contains { description.contains($0) }
   }
 
   override func record(_ issue: XCTIssue) {
@@ -180,8 +199,21 @@ final class ArgentRunnerSession: XCTestCase {
     case .wedged: state = "wedged"
     }
     return .success(
-      HealthPayload(uptimeMs: Date().timeIntervalSince(launchedAt) * 1000, state: state)
+      HealthPayload(
+        uptimeMs: Date().timeIntervalSince(launchedAt) * 1000,
+        state: state,
+        suppressedIssues: currentSuppressedIssueCount(),
+        // Informational monotonic counter; reading it off the main thread is
+        // fine for health reporting — status must answer while a command runs.
+        recordedFailures: testRun?.totalFailureCount ?? 0
+      )
     )
+  }
+
+  private func currentSuppressedIssueCount() -> Int {
+    suppressedIssuesLock.lock()
+    defer { suppressedIssuesLock.unlock() }
+    return suppressedIssueCount
   }
 
   private func attachToInFlight(

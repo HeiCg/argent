@@ -168,6 +168,15 @@ struct HealthPayload: Encodable {
   let uptimeMs: Double
   /// "idle" | "busy" | "wedged" — the main-thread gate's view of the runner.
   let state: String
+  /// XCTIssues muted as accessibility noise since launch. Suppression keys on
+  /// Apple-owned wording (`ArgentRunnerSession.SuppressedIssueWording`), so a
+  /// count stuck at zero while `recordedFailures` climbs on healthy mutations
+  /// means an Xcode release reworded the strings and suppression is missing.
+  let suppressedIssues: Int
+  /// XCTest's cumulative recorded-failure count for the session
+  /// (`testRun.totalFailureCount`) — the counter that, past suppression,
+  /// converts successful mutations into XCTEST_RECORDED_FAILURE.
+  let recordedFailures: Int
 }
 
 struct CommandStatusPayload: Encodable {

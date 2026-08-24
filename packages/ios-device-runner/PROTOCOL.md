@@ -20,17 +20,17 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 
 ## Request fields
 
-| Field                      | Used by             | Meaning                                                                 |
-| -------------------------- | ------------------- | ----------------------------------------------------------------------- |
-| `command`                  | all                 | Command name (below).                                                   |
-| `commandId`                | all but `status`    | Client-stamped id for send-once tracking.                               |
-| `statusCommandId`          | `status`            | Journal lookup key.                                                     |
-| `appBundleId`              | app-scoped commands | Target app. Required — never inferred.                                  |
-| `x`, `y`                   | `tap`, `longPress`  | Absolute points in the app's space.                                     |
-| `fromX/fromY/toX/toY`      | `drag`              | Absolute start/end points.                                              |
-| `durationMs`               | `longPress`, `drag` | Press duration / movement duration.                                     |
-| `settle`                   | `drag`              | Rest at the destination before lifting (~0 release velocity, no fling). |
-| `text`                     | `type`              | Text for the focused input.                                             |
+| Field                 | Used by             | Meaning                                                                 |
+| --------------------- | ------------------- | ----------------------------------------------------------------------- |
+| `command`             | all                 | Command name (below).                                                   |
+| `commandId`           | all but `status`    | Client-stamped id for send-once tracking.                               |
+| `statusCommandId`     | `status`            | Journal lookup key.                                                     |
+| `appBundleId`         | app-scoped commands | Target app. Required — never inferred.                                  |
+| `x`, `y`              | `tap`, `longPress`  | Absolute points in the app's space.                                     |
+| `fromX/fromY/toX/toY` | `drag`              | Absolute start/end points.                                              |
+| `durationMs`          | `longPress`, `drag` | Press duration / movement duration.                                     |
+| `settle`              | `drag`              | Rest at the destination before lifting (~0 release velocity, no fling). |
+| `text`                | `type`              | Text for the focused input.                                             |
 
 ## Commands
 
@@ -48,8 +48,19 @@ App-scoped (require `appBundleId`; the runner foregrounds the target first):
 
 Device-scoped:
 
-- `status` — without `statusCommandId`: `{uptimeMs, state}` where state is
-  `idle | busy | wedged`. With it: the journaled fate of that command:
+- `status` — without `statusCommandId`: `{uptimeMs, state, suppressedIssues,
+recordedFailures}`. `state` is `idle | busy | wedged`. `suppressedIssues`
+  counts the XCTest issues muted as accessibility noise since launch;
+  `recordedFailures` is XCTest's cumulative recorded-failure count — the
+  counter that, past suppression, converts successful mutations into
+  `XCTEST_RECORDED_FAILURE`. Suppression substring-matches Apple-owned
+  issue wording, pinned here as part of the contract — muted: a
+  `Failed to get matching snapshot` description that also contains
+  `kAXError` or `No matches found for`; kept recorded: `Timed out while
+evaluating UI query`. If an Xcode release rewords those strings,
+  suppression misses silently: `suppressedIssues` stops moving while
+  `recordedFailures` climbs on healthy mutations. Watch the pair for that
+  drift. With `statusCommandId`: the journaled fate of that command:
   `{commandId, state: notAccepted|accepted|started|completed|failed,
 command?, responseOk?, responseJson?, errorCode?, errorMessage?,
 errorHint?}`. `responseJson` is the completed command's full envelope
