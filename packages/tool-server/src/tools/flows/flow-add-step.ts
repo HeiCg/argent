@@ -1227,9 +1227,13 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     stepCount: number;
     /**
      * The flow line just appended, and the discriminator for "was anything
-     * recorded at all". Every path that records NOTHING still returns normally
-     * with the unchanged `stepCount`, so the caller can see its take was left
-     * alone. Those paths are:
+     * recorded at all". A path that records NOTHING returns normally with the
+     * unchanged `stepCount`, so the caller can see its take was left alone —
+     * unless the recording was finished, restarted or evicted while the call
+     * was in flight, which every one of them reports by THROWING
+     * `FLOW_NO_ACTIVE_RECORDING` from {@link activeFlowState}. There is no
+     * `stepCount` to compare then, and no absent `recorded` to read. Those
+     * paths are:
      *
      * - a `command` that names a recorder tool, or a flow-file directive
      *   instead of a tool. Both answer with the call to make.
