@@ -218,9 +218,8 @@ export type FlowStepResult = {
   /**
    * A `script` step's captured stdout and stderr, in written order, bounded by
    * the tool server. Not redacted — it arrives as the script wrote it,
-   * credentials included. Rendered as its own block under
-   * the step line — for a passing script too, since it is the only record of
-   * what the step did to the backend. Untrusted wire data: a non-string is
+   * credentials included. Rendered for a passing script too, since it is the
+   * only record of what the script did. Untrusted wire data: a non-string is
    * ignored rather than interpolated.
    */
   scriptLog?: string;
@@ -309,10 +308,10 @@ export async function flowRunToMcpContent(
       text: `[${num}] ${glyph}${stepIndent(step.depth)}${stepLabel(step)}${suffix}${warning}`,
     });
 
-    // A script step's output, kept out of the step line so a multi-line log
-    // stays readable and so the line's own reason is not buried in it. The
-    // truncation notice stands on its own when a run-wide budget dropped the
-    // output entirely — silence would read as a script that printed nothing.
+    // Kept out of the step line so a multi-line log does not bury the line's
+    // own reason. The truncation notice stands on its own when a run-wide
+    // budget dropped the output entirely — silence would read as a script that
+    // printed nothing.
     const scriptLog = typeof step.scriptLog === "string" ? step.scriptLog : "";
     const scriptLogTruncated = step.scriptLogTruncated === true;
     if (scriptLog || scriptLogTruncated) {

@@ -10,20 +10,15 @@ import type {
 } from "../../../src/tools/flows/script/flow-script-executor";
 
 /**
- * The translation from an executor outcome to a step verdict: which side of the
- * fail/error line each failure kind falls on, and what reaches
- * `StepReport.reason`.
+ * The translation from an executor outcome to a step verdict.
  *
  * The executor is mocked here, and only here. Four of its twelve failure kinds
  * are reachable from a real script (it threw, it exited, it ran long, the run
  * was cancelled) and are covered against real processes in
  * flow-script-step-run.test.ts. The other eight need a host in trouble — a
  * process that will not start, a heap ceiling, a full queue, a runner that
- * broke its own protocol — and the split those eight take is the split the
- * reference doc tells CI to read: a `fail` is a regression in the flow or the
- * backend it talks to, an `error` is the machine it ran on. Reaching them
- * through the seam is what makes the whole table testable rather than a third
- * of it.
+ * broke its own protocol — so the seam is what makes the whole table testable
+ * rather than a third of it.
  */
 
 const { executeMock } = vi.hoisted(() => ({ executeMock: vi.fn() }));
@@ -36,7 +31,6 @@ vi.mock("../../../src/tools/flows/script/flow-script-executor", async (importOri
 
 let root: string;
 
-/** An executor result, with only the fields a case is about spelled out. */
 function outcome(over: Partial<FlowScriptResult>): FlowScriptResult {
   return {
     ok: false,
@@ -57,7 +51,6 @@ function mockRegistry(): Registry {
   } as unknown as Registry;
 }
 
-/** Run a one-script device-free flow and hand back its only step. */
 async function runScript(): Promise<FlowRunResult["steps"][number]> {
   const result = (await createRunFlowTool(mockRegistry()).execute({}, {
     name: "verdict",
@@ -88,18 +81,15 @@ afterEach(async () => {
 /**
  * Every failure kind and the verdict it takes, forced complete BY THE COMPILER:
  * `Record` over the union rejects a missing kind and an extra one alike, so a
- * kind added to the executor without a row here fails `typecheck:tests` — the
- * same guard the function's own `never` binding gives the implementation.
+ * kind added to the executor without a row here fails `typecheck:tests`.
  */
 const VERDICTS: Record<FlowScriptFailureKind, "fail" | "error"> = {
-  // The script's own answer: it threw, it never loaded, it returned something
-  // that cannot cross into flow state, or it stopped its own process.
+  // The script's own answer.
   load: "fail",
   runtime: "fail",
   output: "fail",
   exit: "fail",
-  // Everything the runner did to it: a process it could not start, a limit it
-  // hit, a signal it did not choose, a queue it never left.
+  // Everything the runner did to it.
   protocol: "error",
   timeout: "error",
   cancelled: "error",
@@ -139,9 +129,9 @@ describe("which side of the fail/error line a script failure lands on", () => {
 describe("an executor note on the step report", () => {
   it("rides into the reason of a step that PASSED", async () => {
     // Notes are how the executor says a time limit was clamped to the host's
-    // maximum, or that the working directory it was given did not exist. Facts
-    // about what the step actually did — and a script that silently ran
-    // somewhere else is exactly the one whose pass must not stay silent.
+    // maximum, or that the working directory it was given did not exist — and a
+    // script that silently ran somewhere else is exactly the pass that must not
+    // stay silent.
     executeMock.mockResolvedValue(
       outcome({
         ok: true,

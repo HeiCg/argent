@@ -3164,9 +3164,7 @@ describe("flow validation", () => {
   it("a leading script does not hide the launch step from the e2e check", () => {
     // Seeding a backend and then launching the app IS controlling your own
     // start state — the seed establishes it — so such a flow is e2e and must
-    // not name a prerequisite its own launch would throw away. Read as a
-    // fragment instead, it took the handshake: the caller was asked to
-    // establish state, and the acknowledged run then relaunched over it.
+    // not name a prerequisite its own launch would throw away.
     expect(() =>
       parseFlow(
         "executionPrerequisite: nope\n" +

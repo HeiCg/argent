@@ -48,9 +48,8 @@ export interface StepReport {
   /**
    * A `script` step's captured stdout and stderr, in written order, possibly
    * truncated by the tool server. Not redacted — it arrives as the script wrote
-   * it, credentials included. Printed under the step
-   * line — for a passing script as much as a failing one, since it is the only
-   * record of what the script did.
+   * it, credentials included. Printed for a passing script as much as a failing
+   * one, since it is the only record of what the script did.
    */
   scriptLog?: string;
   /**
@@ -302,10 +301,9 @@ export function renderUnderStepLine(s: StepReport, n: number, text: string): str
  * A `script` step's captured output, one indented line per line the script
  * wrote, so it reads as the step's own output rather than as the CLI's.
  *
- * Untrusted wire data: the tool server redacts and bounds it, but the value
- * still arrives over the wire, so a non-string is dropped rather than
- * interpolated. A trailing newline is not a blank line — scripts end their
- * output with one — so the split drops exactly one.
+ * Untrusted wire data, so a non-string is dropped rather than interpolated. A
+ * trailing newline is not a blank line — scripts end their output with one —
+ * so the split drops exactly one.
  */
 export function renderScriptLogLines(s: StepReport, n: number): string[] {
   const log = typeof s.scriptLog === "string" ? s.scriptLog : "";

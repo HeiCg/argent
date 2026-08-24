@@ -374,8 +374,6 @@ describe("argent flow run", () => {
     // The live renderer is a second, independent path over the same report: it
     // prints each step as its event arrives instead of rendering the finished
     // report, so nothing renderReport covers is covered here by implication.
-    // Driven by invoking the onProgress the CLI hands the client, which is what
-    // a streaming server does.
     const steps: StepFixture[] = [
       { index: 0, kind: "echo", status: "pass", message: "seeding" },
       {

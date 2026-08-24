@@ -305,8 +305,7 @@ describe("flowRunToMcpContent", () => {
   });
 
   it("renders a script step's captured output as its own block", async () => {
-    // Its own block, not appended to the step line: a multi-line log inline
-    // would bury the step's own reason.
+    // A multi-line log appended to the step line would bury the step's reason.
     const input: FlowExecuteResult = {
       flow: "f",
       steps: [
@@ -329,9 +328,8 @@ describe("flowRunToMcpContent", () => {
   });
 
   it("indents a nested script step's output block with its step line", async () => {
-    // A script inside a composed fragment reports `depth`, and the log block
-    // has to carry the same indent as the step line above it — otherwise a
-    // nested script's output reads as if it belonged to the outer flow.
+    // Without the step line's indent, a nested script's output reads as if it
+    // belonged to the outer flow.
     const blocks = await flowRunToMcpContent({
       flow: "f",
       steps: [

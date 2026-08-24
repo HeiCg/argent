@@ -4,31 +4,18 @@ import * as path from "node:path";
 import { BLOCK_DIRECTIVE_KEYS, type FlowStep } from "../../src/tools/flows/flow-utils";
 
 /**
- * The six switches that must have an arm for every `FlowStep` kind, and the
- * `never` bindings that make forgetting one a build error rather than a silent
- * wrong answer at run time.
- *
- * Four of the six would fail to compile anyway, because their arms dereference
- * fields a new kind would not carry. The other two are the hazard these tests
- * exist for, because their `default:` arms read no field of `step`:
- * `execLeafStep`'s, where before the binding was added a leaf kind with no case
- * of its own compiled cleanly and reported `error: unsupported step kind` at
- * run time — a flow that looks executed and is not; and
- * `precedesLeadingLaunch`'s, which arrived after a kind slipped past the two
- * `echo`-only skips it replaced (a chromium flow led by `script:` hoisted no
- * boot and passed a launch it never performed, and the same lead-in walked it
- * past the `executionPrerequisite` refusal).
+ * The six switches over a step's kind, and the `never` bindings that make
+ * forgetting a kind a build error rather than a silent wrong answer at run
+ * time.
  */
 
 const SRC = path.resolve(__dirname, "../../src/tools/flows");
 const read = (file: string): string => readFileSync(path.join(SRC, file), "utf8");
 
 /**
- * Every step kind, forced complete BY THE COMPILER: `Record` over the union
- * rejects a missing key and an extra one alike, so a kind added to `FlowStep`
- * without a row here fails `typecheck:tests`. That is what makes the coverage
- * assertions below mean something — they compare the switches against a list
- * that cannot go stale.
+ * `Record` over the union rejects a missing key and an extra one alike, so a
+ * kind added to `FlowStep` without a row here fails `typecheck:tests` — which
+ * is what keeps the coverage assertions below from going stale.
  */
 const ALL_STEP_KINDS: Record<FlowStep["kind"], true> = {
   "echo": true,
@@ -50,7 +37,6 @@ const ALL_STEP_KINDS: Record<FlowStep["kind"], true> = {
   "script": true,
 };
 
-/** The text of one function, from its signature to the next top-level `}`. */
 function functionBody(source: string, signature: string): string {
   const start = source.indexOf(signature);
   expect(start, `${signature} is missing`).toBeGreaterThanOrEqual(0);
@@ -59,16 +45,14 @@ function functionBody(source: string, signature: string): string {
   return source.slice(start, end);
 }
 
-/** The kinds a switch body has a `case "…":` label for. */
 function handledKinds(body: string): Set<string> {
   return new Set([...body.matchAll(/case "([^"]+)":/g)].map((m) => m[1]!));
 }
 
 /**
- * The kinds {@link execLeafStep} is NOT responsible for: `run:`, dispatched by
- * execRunStep, and every registered block directive, dispatched by
- * execBlockStep. Read from the block registry rather than restated, so a new
- * block kind does not have to be remembered here too.
+ * The kinds {@link execLeafStep} is NOT responsible for: `run:` and the block
+ * directives, dispatched before it. Read from the block registry rather than
+ * restated, so a new block kind does not have to be remembered here too.
  */
 const DISPATCHED_BEFORE_THE_LEAF_SWITCH = new Set<string>(["run", ...BLOCK_DIRECTIVE_KEYS]);
 
@@ -87,9 +71,8 @@ describe("execLeafStep's exhaustiveness guard", () => {
   });
 
   it("leaves the two dispatched-elsewhere kinds out, rather than as dead arms", () => {
-    // They are excluded from the parameter type instead. That is what lets the
-    // default arm bind `never` honestly, and what keeps a NEW block directive
-    // from being forced into a leaf switch that must never execute it.
+    // Excluded from the parameter type instead, which is what lets the default
+    // arm bind `never` honestly.
     const body = functionBody(read("flow-run.ts"), "async function execLeafStep(");
     for (const kind of DISPATCHED_BEFORE_THE_LEAF_SWITCH) {
       expect(handledKinds(body), kind).not.toContain(kind);
@@ -125,12 +108,11 @@ describe("the other five switches over a step kind", () => {
 });
 
 /**
- * The guard itself, in miniature, checked by `typecheck:tests` rather than at
- * run time: a switch that leaves a kind unhandled binds something other than
- * `never` in its default arm, so the assignment is an error. `@ts-expect-error`
- * inverts that — if the binding ever stopped erroring, the typecheck fails
- * here, which is the proof that the same binding in `execLeafStep` is load
- * bearing rather than decorative.
+ * The guard in miniature, checked by `typecheck:tests` rather than at run time:
+ * a switch that leaves a kind unhandled binds something other than `never` in
+ * its default arm, so `@ts-expect-error` fails the typecheck if that binding
+ * ever stops erroring — the proof that the same binding in `execLeafStep` is
+ * load bearing.
  */
 function _theNeverBindingReallyFires(step: Extract<FlowStep, { kind: "echo" | "wait" }>): void {
   switch (step.kind) {

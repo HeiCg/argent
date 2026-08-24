@@ -7,12 +7,6 @@ import {
   type StepReport,
 } from "../src/flow.js";
 
-/**
- * A `script` step's captured output in the CLI's text report. It is the only
- * record of what the step did to the backend, so it prints on a PASS as well as
- * a failure — and, in batch mode, beside the failed steps that need attention.
- */
-
 function report(steps: StepReport[]): FlowReport {
   const counted = steps.filter((s) => s.kind !== "echo");
   return {
@@ -53,7 +47,7 @@ describe("script log rendering", () => {
 
   it("prints the truncation notice alone when the whole log was dropped", () => {
     // A run-wide budget an earlier script exhausted leaves a later step with no
-    // text at all; printing nothing would read as a script that printed nothing.
+    // text at all.
     const lines = renderScriptLogLines(
       { ...PASSING, scriptLog: undefined, scriptLogTruncated: true },
       1

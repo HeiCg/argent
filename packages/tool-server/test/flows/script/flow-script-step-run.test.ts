@@ -8,13 +8,9 @@ import { createRunFlowTool, type FlowRunResult } from "../../../src/tools/flows/
 import { stepRequiresDevice } from "../../../src/tools/flows/flow-device";
 
 /**
- * The `script:` step in a run: where its path resolves, what it reports, and
- * what it does to the flow around it. Every flow here is device-free unless the
- * test is about a device, and every script is a few lines of plain ESM — the
- * executor's own behaviour is covered beside it, in flow-script-run.test.ts.
- *
- * Real child processes, so the budgets are generous; nothing here polls without
- * a deadline.
+ * The `script:` step in a run; the executor's own behaviour is covered beside
+ * it, in flow-script-run.test.ts. Real child processes, hence the generous
+ * timeout.
  */
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -43,7 +39,6 @@ function mockRegistry(opts: { booted?: string[] } = {}) {
   return { registry, invokeTool };
 }
 
-/** Write a file under the project root, creating its directories. */
 async function write(relative: string, contents: string): Promise<string> {
   const file = path.join(root, relative);
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -51,7 +46,6 @@ async function write(relative: string, contents: string): Promise<string> {
   return file;
 }
 
-/** A saved flow under `.argent/flows`, written as raw YAML. */
 function flow(name: string, yaml: string): Promise<string> {
   return write(path.join(".argent", "flows", `${name}.yaml`), yaml);
 }
@@ -71,7 +65,6 @@ function boundaryCtx(flowPath: string): ToolContext {
   };
 }
 
-/** Whether the run looked for a device at all. */
 function listedDevices(invokeTool: { mock: { calls: unknown[][] } }): boolean {
   return invokeTool.mock.calls.some((call) => call[0] === "list-devices");
 }
@@ -91,14 +84,12 @@ async function run(
   );
 }
 
-/** Run a saved flow, device-free unless the test says otherwise. */
 async function runFlow(name: string, opts: { booted?: string[]; device?: string } = {}) {
   const { registry, invokeTool } = mockRegistry(opts);
   const result = await run(registry, { name, ...(opts.device ? { device: opts.device } : {}) });
   return { result, invokeTool };
 }
 
-/** Poll until `predicate` holds, or fail with `label`. */
 async function until(predicate: () => boolean, label: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -130,16 +121,13 @@ describe("a script step in a run", () => {
       target: "../../scripts/seed.mjs",
     });
     expect(result.steps[0]!.scriptLog).toContain("seeded order 4711");
-    // Device-free: nothing was ever looked up, and the run is not attributed to
-    // whatever happens to be booted on the machine running the suite.
     expect(result.device).toBe("");
     expect(listedDevices(invokeTool)).toBe(false);
   });
 
   it("carries stderr into the same log as stdout", async () => {
-    // One log, not two fields: a script's diagnostics and its progress belong in
-    // one place. Cross-STREAM interleaving is the kernel's to decide (stdout and
-    // stderr are separate pipes), so only each stream's own order is pinned.
+    // Cross-STREAM interleaving is the kernel's to decide (stdout and stderr
+    // are separate pipes), so only each stream's own order is pinned.
     await write(
       "scripts/noisy.mjs",
       `console.log("one");\nconsole.error("problem");\nconsole.log("three");`
@@ -156,8 +144,8 @@ describe("a script step in a run", () => {
   });
 
   it("flags a log a limit cut short, because the text carries no marker", async () => {
-    // 64 KiB is the per-step ceiling; a chatty script silently losing the tail
-    // would read as a complete record of what it did.
+    // 64 KiB is the per-step ceiling; a silently dropped tail would read as a
+    // complete record of what the script did.
     await write(
       "scripts/chatty.mjs",
       `for (let i = 0; i < 4000; i++) console.log("line " + i + " " + "x".repeat(40));`
@@ -192,7 +180,7 @@ describe("a script step that fails", () => {
     expect(result.ok).toBe(false);
     expect(result.steps[0]).toMatchObject({ kind: "script", status: "fail" });
     expect(result.steps[0]!.reason).toContain("seed API returned 500");
-    // A failed leaf step hard-stops the flow, exactly like every other kind.
+    // A failed leaf step hard-stops the flow, like every other kind.
     expect(result.steps.slice(1).map((s) => [s.kind, s.status])).toEqual([
       ["echo", "skip"],
       ["wait", "skip"],
@@ -234,9 +222,8 @@ describe("a script path is checked at its own step", () => {
 
     expect(result.steps[0]).toMatchObject({ status: "fail", kind: "script" });
     expect(result.steps[0]!.reason).toContain('script "../../scripts/gone.mjs" does not exist');
-    // The path is the one the runner formed — the flow file's own directory
-    // with the target concatenated on, `..` intact, since a lexical collapse is
-    // exactly what resolution must not do.
+    // Nothing exists to realpath, so the reason quotes the join the runner
+    // formed — flow directory plus target, `..` never collapsed lexically.
     expect(result.steps[0]!.reason).toMatch(
       /resolved to \S*[/\\]\.argent[/\\]flows[/\\]\.\.[/\\]\.\.[/\\]scripts[/\\]gone\.mjs\)$/
     );
@@ -253,8 +240,7 @@ describe("a script path is checked at its own step", () => {
 
   it("reports a path that walks THROUGH a file as an ordinary missing file", async () => {
     // The kernel answers ENOTDIR, not ENOENT, when a directory component of the
-    // path is a regular file. Nothing is there either way, so the author reads
-    // the same sentence rather than an errno.
+    // path is a regular file. Nothing is there either way, so both read alike.
     await write("scripts/seed.mjs", `console.log("ok");`);
     await flow("through", "steps:\n  - script: { path: ../../scripts/seed.mjs/inner.mjs }\n");
 
@@ -266,11 +252,9 @@ describe("a script path is checked at its own step", () => {
   });
 
   it("reports a stat failure that is neither as its own text, not as absence", async () => {
-    // Everything else the kernel can answer — a locked parent directory, a
-    // dangling symlink, a name longer than the filesystem allows (used here
-    // because it needs no permission juggling and reproduces for any user) —
-    // is a fact about the host, and guessing "does not exist" for it would
-    // send the author looking for a file that may well be there.
+    // Any other stat answer is a fact about the host, and guessing "does not
+    // exist" would send the author looking for a file that may well be there.
+    // A too-long name needs no permission juggling to reproduce.
     const tooLong = `${"n".repeat(300)}.mjs`;
     // The directory has to exist, or the missing component answers ENOENT
     // first and this never reaches the arm under test.
@@ -285,8 +269,8 @@ describe("a script path is checked at its own step", () => {
   });
 
   it("never checks a path behind a guard that does not fire", async () => {
-    // The check is at the step, not in a preflight pass — a preflight would
-    // fail this flow over a path nothing ever opens.
+    // The check is at the step, not in a preflight pass, which would fail this
+    // flow over a path nothing ever opens.
     await flow(
       "guarded",
       "steps:\n" +
@@ -313,10 +297,9 @@ describe("a script path is checked at its own step", () => {
     // `CreateUser.mjs` for a file really named `createUser.mjs`, and the same
     // tree then fails with ENOENT on Linux CI.
     //
-    // Ungated, because the VERDICT is not the filesystem's. classifyOnDiskSpelling
-    // compares the supplied basename against readdir's own entries, lowercased —
-    // so the refusal reproduces on the case-sensitive platform the refusal
-    // exists to protect, which is also the only platform CI runs on.
+    // Ungated, because the VERDICT is not the filesystem's: classifyOnDiskSpelling
+    // compares the supplied basename against readdir's own entries, lowercased,
+    // so the refusal reproduces on a case-sensitive host too.
     await write("scripts/createUser.mjs", `console.log("ok");`);
     await flow("cased", "steps:\n  - script: { path: ../../scripts/CreateUser.mjs }\n");
 
@@ -330,11 +313,9 @@ describe("a script path is checked at its own step", () => {
   });
 
   it("asks for a rename when the spelling on disk is one no path could name", async () => {
-    // The other half of the mis-cased arm: `ALT.MJS` case-folds onto the
-    // requested `alt.mjs`, so the file IS the one meant — but a path quoting it
-    // back would be refused by parseScriptPath (the extension must be a
-    // lowercase `.mjs`), so pointing there would be a dead end. Ask for the
-    // rename the file really needs instead.
+    // `ALT.MJS` case-folds onto the requested `alt.mjs`, so the file IS the one
+    // meant — but SCRIPT_FILE_NAME_PATTERN rejects the uppercase extension, so
+    // quoting it back would be a dead end. Ask for the rename instead.
     await write("scripts/ALT.MJS", `console.log("ok");`);
     await flow("noncase", "steps:\n  - script: { path: ../../scripts/alt.mjs }\n");
 
@@ -407,11 +388,9 @@ describe("where a script path resolves", () => {
   it("resolves a `..` after a symlinked component with kernel semantics", async () => {
     // .argent/flows/link is a symlink to lex/other, so on disk
     // `link/../seed.mjs` means lex/seed.mjs — `..` names the parent of the
-    // link's TARGET. A lexical collapse of the spelling would instead name the
-    // flows-dir sibling seed.mjs, planted here as a decoy, so only
-    // kernel-faithful resolution runs the file the written path denotes. The
-    // property is `run:`-proven; a script path shares the resolver, and this is
-    // what pins that it keeps sharing it.
+    // link's TARGET. A lexical collapse would instead name the flows-dir
+    // sibling seed.mjs, planted here as a decoy. Proven for `run:` in
+    // flow-composition.test.ts; a script path shares the resolver.
     await fs.mkdir(path.join(root, "lex", "other"), { recursive: true });
     await fs.writeFile(path.join(root, "lex", "seed.mjs"), `console.log("kernel-resolved");`);
     await write(path.join(".argent", "flows", "seed.mjs"), `console.log("lexical decoy");`);
@@ -426,11 +405,9 @@ describe("where a script path resolves", () => {
   });
 
   it("runs a script reached through a symlink under the name the flow spells", async () => {
-    // The reason the casing check lists the SPELLED directory rather than
-    // realpath'ing first: an alias is a legitimate way to name a shared script,
-    // and readdir sees the link itself, so `alias.mjs` is an exact entry and
-    // the step runs. Realpath'ing first would compare against `real.mjs` and
-    // refuse the flow as mis-cased.
+    // An alias is a legitimate way to name a shared script: the casing check
+    // lists the SPELLED directory, where readdir sees the link itself, so
+    // `alias.mjs` is an exact entry rather than a mis-casing.
     await write("scripts/real.mjs", `console.log("through the alias");`);
     await fs.symlink(
       path.join(root, "scripts", "real.mjs"),
@@ -476,9 +453,8 @@ describe("a script step and the run's device", () => {
   });
 
   it("still resolves a device when the same flow uses run:", async () => {
-    // `run:` needs one whatever its fragment contains — the runner resolves the
-    // target at run time, not during classification — so a script-only flow
-    // that composes anything is not device-free.
+    // `run:` needs one whatever its fragment contains, because the runner
+    // resolves the target at run time rather than during classification.
     await write("scripts/seed.mjs", `console.log("seeded");`);
     await write(
       path.join(".argent", "flows", "narrate.yaml"),
