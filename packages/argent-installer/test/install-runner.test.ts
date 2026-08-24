@@ -517,18 +517,15 @@ describe("a global install whose target directory cannot be written", () => {
   });
 
   // A plain PREFIX inherited from the shell also outranks the ~/.npmrc the
-  // move just wrote, so the failure has to name it — the set-prefix remedy it
-  // would otherwise repeat cannot take effect while it stays exported.
-  it("names an inherited PREFIX when the moved prefix is still unwritable", async () => {
+  // move just wrote — leaving it set would send the install straight back.
+  it("drops an inherited plain PREFIX along with npm's own", async () => {
+    process.env.PREFIX = "/nix/store/abc-nodejs-22.16.0";
     vi.mocked(select).mockResolvedValue("prefix" as never);
-    vi.mocked(probeGlobalInstallTarget).mockReturnValue(blocked);
-    process.env.PREFIX = "/root-only/prefix";
+    vi.mocked(probeGlobalInstallTarget).mockReturnValue(writableAfterMove);
     try {
-      await expect(globalInstall(makeTel())).rejects.toThrow(ExitCalled);
+      await globalInstall(makeTel());
 
-      const [message] = vi.mocked(log.error).mock.calls[0] as [string];
-      expect(message).toContain("PREFIX");
-      expect(message).toContain("/root-only/prefix");
+      expect(process.env.PREFIX).toBeUndefined();
     } finally {
       delete process.env.PREFIX;
     }

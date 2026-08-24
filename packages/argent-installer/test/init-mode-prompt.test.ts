@@ -98,6 +98,17 @@ describe("promptInstallMode", () => {
     expect(shownOptions().initialValue).toBe("global");
   });
 
+  // A committed local record must not highlight an option this machine
+  // dropped — the select would render nothing highlighted.
+  it("highlights global when the committed local mode was dropped", async () => {
+    vi.mocked(hasProjectPackageJson).mockReturnValue(false);
+
+    await promptInstallMode("local", { target: nixStoreTarget, pm: "npm" });
+
+    expect(shownOptions().options.map((o) => o.value)).toEqual(["global"]);
+    expect(shownOptions().initialValue).toBe("global");
+  });
+
   it("does not promise to move a prefix for a manager argent cannot relocate", async () => {
     await promptInstallMode("global", { target: nixStoreTarget, pm: "pnpm" });
 

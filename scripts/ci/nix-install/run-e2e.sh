@@ -105,9 +105,10 @@ pass "npm global root is not writable"
 RUNNER="$WORK/runner"
 rm -rf "$RUNNER"
 mkdir -p "$RUNNER"
-tar -xzf "$TGZ" -C "$RUNNER"
+tar -xzf "$TGZ" -C "$RUNNER" || require "could not extract $TGZ"
 CLI="$RUNNER/package/dist/cli.js"
-PACKED_VERSION="$(node -p "require('$RUNNER/package/package.json').version")"
+[[ -f "$CLI" ]] || require "$TGZ has no dist/cli.js — pack the installer package first"
+PACKED_VERSION="$(node -p "require('$RUNNER/package/package.json').version")" || require "could not read the packed version from $TGZ"
 pass "runner copy at v$PACKED_VERSION"
 
 if [[ "$PHASE" == "preinstall" ]]; then

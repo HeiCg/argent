@@ -382,15 +382,7 @@ async function recoverBlockedGlobalInstall(opts: {
   // back through the step that just ran.
   const moved = probeGlobalInstallTarget(pm);
   if (moved?.blocked) {
-    // A plain PREFIX inherited from the shell also outranks the ~/.npmrc just
-    // written, so the set-prefix remedy cannot take effect while it stays set.
-    const inheritedPrefix = process.env.PREFIX;
-    await failWith(
-      `${blockedGlobalTargetCause(moved, pm, "install")}\n\n${localInstallRemedy()}` +
-        (inheritedPrefix === undefined
-          ? ""
-          : `\n\n${pc.cyan("PREFIX")} is set to ${pc.dim(inheritedPrefix)} in this shell and overrides the configured prefix — unset it and retry.`)
-    );
+    await failWith(`${blockedGlobalTargetCause(moved, pm, "install")}\n\n${localInstallRemedy()}`);
   }
 
   const binDir = path.join(prefix, "bin");

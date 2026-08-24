@@ -49,8 +49,9 @@ export async function promptInstallMode(
         label: `Globally${recommended === "global" ? " (recommended)" : ""}`,
         hint: globalHint,
       },
-      // Blocked with no package.json: both options are dead ends here, so local
-      // is dropped rather than offered only to hit installLocally's error.
+      // Blocked with no package.json: local can only end in installLocally's
+      // precondition error, so it is dropped; global stays because the
+      // recovery may still carry it out.
       ...(recommended === null
         ? []
         : [
@@ -61,7 +62,9 @@ export async function promptInstallMode(
             },
           ]),
     ],
-    initialValue: recommended === "local" ? "local" : defaultMode,
+    // recommended === null leaves only global on screen, whatever the record
+    // says — an initialValue naming a dropped option renders nothing.
+    initialValue: recommended === null ? "global" : recommended === "local" ? "local" : defaultMode,
   });
 
   if (p.isCancel(modeChoice)) throw new InitCancelled("install_mode");
