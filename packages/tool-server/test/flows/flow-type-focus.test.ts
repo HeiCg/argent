@@ -236,6 +236,80 @@ describe("type directive focus wait", () => {
     expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
   }, 30_000);
 
+  // An EDITABLE ancestor never vouches, whatever its size: it is itself the
+  // input that would swallow every key injected at HID level while the step
+  // reports a pass on the covered element behind it.
+  it("does not let an editable ancestor of any size vouch for an element behind it", async () => {
+    const calls: Call[] = [];
+    // The composer is only ~3x the label's area — inside the old 4x area
+    // ratio, which is exactly why the size bound alone was not enough.
+    const registry = mockRegistry(calls, () => ({
+      xml: `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.widget.EditText" resource-id="composer" focused="true" package="com.acme.app" bounds="[170,285][470,365]" />
+    <node index="1" class="android.widget.TextView" resource-id="tab-label" focused="false" package="com.acme.app" bounds="[200,300][400,340]" />
+  </node>
+</hierarchy>`,
+    }));
+
+    await writeFlow("behind", {
+      executionPrerequisite: "composer open",
+      steps: [{ kind: "type", into: { identifier: "tab-label" }, text: "WRONG", submit: false }],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        {
+          name: "behind",
+          project_root: tmpDir,
+          device: ANDROID_DEVICE,
+          prerequisiteAcknowledged: true,
+        }
+      )
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.steps.at(-1)!.reason).toContain("did not take keyboard focus");
+    expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
+  }, 30_000);
+
+  // A non-editable container cannot take HID text itself, so its focus flag
+  // can only reflect a descendant — and genuine wrappers come in every size
+  // (a shadow-DOM host, a tappable form row). Refusing them past an arbitrary
+  // area ratio hard-fails fields that would accept the keys.
+  it("accepts a focused non-editable wrapper far larger than the field", async () => {
+    const calls: Call[] = [];
+    // Row area is ~8x the field's — past any reasonable size bound — yet it is
+    // the field's own wrapper, and the field accepts keys.
+    const registry = mockRegistry(calls, () => ({
+      xml: `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.widget.LinearLayout" resource-id="email-row" focused="true" package="com.acme.app" bounds="[0,100][1080,700]">
+      <node index="0" class="android.widget.EditText" resource-id="email" focused="false" package="com.acme.app" bounds="[40,200][1040,280]" />
+    </node>
+  </node>
+</hierarchy>`,
+    }));
+
+    await writeFlow("wrapper", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "email" }, text: "a@b.com", submit: false }],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "wrapper", project_root: tmpDir, device: ANDROID_DEVICE }
+      )
+    );
+
+    expect(result.ok).toBe(true);
+    expect(calls.filter((c) => c.id === "keyboard").map((c) => c.args.text)).toEqual(["a@b.com"]);
+  }, 30_000);
+
   it("still accepts a focused wrapper close to the field's own size (android)", async () => {
     const calls: Call[] = [];
     const registry = mockRegistry(calls, () => ({
@@ -290,4 +364,192 @@ describe("type directive focus wait", () => {
     expect(calls.filter((c) => c.id === "gesture-tap")).toHaveLength(2);
     expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
   }, 30_000);
+
+  // The env-outage tier is the one focus verdict with no sibling: if it ever
+  // collapsed into plain `unconfirmed`, an all-reads-throw devtools outage
+  // would drop from `error` ("the app was never judged") to a hard `fail`,
+  // which CI reads as an app regression. This test pins the distinction.
+  it("reports an environment error, not a fail, when every read during the focus wait throws", async () => {
+    const calls: Call[] = [];
+    // Reads 1-2 are the pre-tap settle (must succeed, or the step ends before
+    // any tap); from read 3 on — the focus wait's first look — every read
+    // throws, as when native devtools disconnects mid-run.
+    let reads = 0;
+    const registry = mockRegistry(calls, () => {
+      reads++;
+      if (reads >= 3) throw new Error("devtools disconnected");
+      return { xml: emailXml(false) };
+    });
+
+    await writeFlow("login", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "email" }, text: "a@b.com", submit: false }],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "login", project_root: tmpDir, device: ANDROID_DEVICE }
+      )
+    );
+
+    expect(result.ok).toBe(false);
+    const step = result.steps.at(-1)!;
+    // `error`, not `fail`: the runner scores indeterminate outcomes as errors,
+    // so an environment outage can never read as an app regression.
+    expect(step.status).toBe("error");
+    expect(step.reason).toContain("could not read the UI tree");
+    expect(step.reason).toContain("environment failure");
+    // One focus tap happened; NOT ONE key was injected on an unknown-focus field.
+    expect(calls.filter((c) => c.id === "gesture-tap")).toHaveLength(1);
+    expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
+  }, 30_000);
+
+  describe("type: abort", () => {
+    it("skips as aborted when the run is cancelled during the first focus wait", async () => {
+      const controller = new AbortController();
+      const calls: Call[] = [];
+      // Reads 1-2 are the pre-tap settle; the focus wait then polls every
+      // interval — cancel partway through that poll loop, before any key can
+      // be dispatched against whatever the app has focused.
+      let reads = 0;
+      const registry = mockRegistry(calls, () => {
+        reads++;
+        if (reads >= 8) controller.abort();
+        return { xml: emailXml(false) };
+      });
+
+      await writeFlow("login", {
+        executionPrerequisite: "",
+        steps: [{ kind: "type", into: { identifier: "email" }, text: "a@b.com", submit: false }],
+      });
+
+      const result = asRun(
+        await createRunFlowTool(registry).execute(
+          {},
+          { name: "login", project_root: tmpDir, device: ANDROID_DEVICE },
+          { signal: controller.signal } as never
+        )
+      );
+
+      expect(result.ok).toBe(false);
+      const step = result.steps.at(-1)!;
+      expect(step.status).toBe("skip");
+      expect(step.reason).toBe("run aborted");
+      expect(calls.filter((c) => c.id === "gesture-tap")).toHaveLength(1);
+      expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
+    }, 30_000);
+
+    it("skips as aborted when cancelled while resolving the field's frame", async () => {
+      const controller = new AbortController();
+      const calls: Call[] = [];
+      // Cancel during the very first settle, before any tap exists to abort
+      // mid-wait: `waitForFrame` must surface the cancel as an aborted skip,
+      // never resolve a frame from a post-cancel read.
+      let reads = 0;
+      const registry = mockRegistry(calls, () => {
+        reads++;
+        if (reads >= 2) controller.abort();
+        return { xml: emailXml(false) };
+      });
+
+      await writeFlow("login", {
+        executionPrerequisite: "",
+        steps: [{ kind: "type", into: { identifier: "email" }, text: "a@b.com", submit: false }],
+      });
+
+      const result = asRun(
+        await createRunFlowTool(registry).execute(
+          {},
+          { name: "login", project_root: tmpDir, device: ANDROID_DEVICE },
+          { signal: controller.signal } as never
+        )
+      );
+
+      expect(result.ok).toBe(false);
+      const step = result.steps.at(-1)!;
+      expect(step.status).toBe("skip");
+      expect(step.reason).toBe("run aborted");
+      // Nothing was tapped or typed after the caller gave up.
+      expect(calls.filter((c) => c.id === "gesture-tap")).toHaveLength(0);
+      expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
+    }, 30_000);
+
+    it("skips as aborted when cancelled after the text lands but before the submit Enter", async () => {
+      const controller = new AbortController();
+      const calls: Call[] = [];
+      // Focus lands on the first tap (no retry); the run is cancelled during
+      // the keyboard-text call itself, so the pre-Enter re-check is the last
+      // line that can stop a cancelled run from submitting.
+      const registry = mockRegistry(calls, () => ({ xml: emailXml(true) }));
+      const baseInvoke = registry.invokeTool as (
+        id: string,
+        args: Record<string, unknown>
+      ) => Promise<unknown>;
+      registry.invokeTool = (async (id: string, args: Record<string, unknown>) => {
+        if (id === "keyboard" && typeof args.text === "string") controller.abort();
+        return baseInvoke(id, args);
+      }) as never;
+
+      await writeFlow("login", {
+        executionPrerequisite: "",
+        steps: [{ kind: "type", into: { identifier: "email" }, text: "a@b.com" }],
+      });
+
+      const result = asRun(
+        await createRunFlowTool(registry).execute(
+          {},
+          { name: "login", project_root: tmpDir, device: ANDROID_DEVICE },
+          { signal: controller.signal } as never
+        )
+      );
+
+      expect(result.ok).toBe(false);
+      const step = result.steps.at(-1)!;
+      expect(step.status).toBe("skip");
+      expect(step.reason).toBe("run aborted");
+      // The text went out; the submitting Enter must NOT have.
+      expect(
+        calls.filter((c) => c.id === "keyboard").map((c) => c.args.text ?? c.args.key)
+      ).toEqual(["a@b.com"]);
+    }, 30_000);
+  });
+
+  // The failure copy used to say "after two taps" even when the retry could
+  // not re-find the field (it scrolled off / vanished during the keyboard
+  // slide) and only one tap was ever made.
+  it("does not claim a second tap it never made", async () => {
+    const calls: Call[] = [];
+    // The field exists until the first tap, then it is gone — nothing to
+    // re-resolve, so the retry re-taps nothing.
+    const registry = mockRegistry(calls, () => ({
+      xml:
+        calls.filter((c) => c.id === "gesture-tap").length === 0
+          ? emailXml(false)
+          : `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.widget.TextView" resource-id="toast" focused="false" package="com.acme.app" bounds="[200,300][400,340]" />
+  </node>
+</hierarchy>`,
+    }));
+
+    await writeFlow("login", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "email" }, text: "a@b.com", submit: false }],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "login", project_root: tmpDir, device: ANDROID_DEVICE }
+      )
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.steps.at(-1)!.reason).toContain("after 1 tap");
+    expect(result.steps.at(-1)!.reason).not.toContain("two taps");
+    expect(calls.filter((c) => c.id === "gesture-tap")).toHaveLength(1);
+    expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
+  }, 60_000);
 });

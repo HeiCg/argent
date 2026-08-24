@@ -640,16 +640,12 @@ function framesOverlap(a: DescribeFrame, b: DescribeFrame): boolean {
 }
 
 /**
- * How much larger than the typed-into element a focused ANCESTOR may be and
- * still count as evidence about it. A wrapper around an input is roughly the
- * input's size; anything far bigger is a different thing that merely encloses
- * it.
+ * Roles the tree sources give elements that can take keyboard text themselves.
+ * The Android adapter derives `TextField` from EditText/TextInput classes, iOS
+ * maps UITextField/UITextView/SearchField to `AXTextField`, and the Chromium
+ * DOM walker reports raw tag names (`input`, `textarea`).
  */
-const FOCUS_ANCESTOR_AREA_RATIO = 4;
-
-function frameArea(f: DescribeFrame): number {
-  return f.width * f.height;
-}
+const EDITABLE_ROLES = /^(textfield|axtextfield|input|textarea)$/i;
 
 /**
  * Is `focused` evidence that `target` has keyboard focus?
@@ -664,16 +660,25 @@ function frameArea(f: DescribeFrame): number {
  *
  * The direction that carries evidence is `focused` inside `target` — the
  * documented case where the selector matches a testID container and the input
- * inside it reports the focus. The reverse, a focused ancestor, is accepted
- * only while it stays close to the target's own size, because a platform may
- * legitimately mark a field's immediate wrapper focused rather than the field.
+ * inside it reports the focus.
+ *
+ * A focused ANCESTOR splits by whether the ancestor can receive text itself.
+ * An EDITABLE one is precisely the wrong-element bug: whatever its size, it is
+ * a different input that would swallow every key while the step reports a pass
+ * on the covered element behind it — so it never vouches. A NON-editable
+ * container cannot take HID text at all; platforms legitimately mark a field's
+ * wrapper focused rather than the field, and those wrappers come in every size
+ * (a shadow-DOM host, a tappable form row), so no size bound separates them
+ * from coverers — any numeric cutoff refuses genuinely-typeable fields. What
+ * bounds the risk instead is that the ancestor cannot itself be the key-focus
+ * holder: for its flag to mean anything, some descendant took focus, and the
+ * tap that started this wait was aimed at the target's centre.
  */
-function framesNest(focused: DescribeFrame, target: DescribeFrame): boolean {
-  if (frameWithin(focused, target)) return true;
-  return (
-    frameWithin(target, focused) &&
-    frameArea(focused) <= frameArea(target) * FOCUS_ANCESTOR_AREA_RATIO
-  );
+function framesNest(focused: DescribeNode, target: DescribeFrame): boolean {
+  const f = focused.frame;
+  if (frameWithin(f, target)) return true;
+  if (!frameWithin(target, f)) return false;
+  return !EDITABLE_ROLES.test(focused.role);
 }
 
 /**
@@ -725,16 +730,22 @@ function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[]
 }
 
 /**
- * Poll until an element reporting `focused` overlaps the typed-into element.
- * Overlap, not identity: the selector often matches a testID container while
- * focus is reported by the input inside it. The target's frame is re-resolved
- * each round — the keyboard sliding up routinely scrolls the field away from
- * where it was tapped (keyboard avoidance), and the focused element must be
- * compared against where the field is NOW; `tappedFrame` covers rounds where
- * the selector momentarily doesn't resolve. Best-effort by design — a source
- * that can't report focus returns immediately, and an unconfirmed poll falls
- * through to typing after the timeout rather than failing the step, since "no
- * focus seen" can also mean the focused view didn't make it into the tree.
+ * Poll until an element reporting `focused` nests with the typed-into element
+ * (see {@link framesNest}). Nesting, not identity: the selector often matches
+ * a testID container while focus is reported by the input inside it. The
+ * target's frame is re-resolved each round — the keyboard sliding up routinely
+ * scrolls the field away from where it was tapped (keyboard avoidance), and
+ * the focused element must be compared against where the field is NOW;
+ * `tappedFrame` covers rounds where the selector momentarily doesn't resolve.
+ *
+ * Returns a verdict rather than best-effort void: `confirmed` when focus was
+ * seen, `unreported` when the source can't surface focus at all (nothing to
+ * conclude — type as before), `unreadable` when every read of the window threw
+ * (environment failure), `aborted` on cancellation, and `unconfirmed` when
+ * reads succeeded but nothing focused nested with the target before the
+ * deadline. The caller decides the response; `runType` retries once and then
+ * FAILS an `unconfirmed` step rather than typing into whatever else holds
+ * focus.
  */
 type FocusVerdict = "confirmed" | "unconfirmed" | "unreported" | "unreadable" | "aborted";
 
@@ -752,7 +763,7 @@ async function waitForFocus(
       if (!FOCUS_REPORTING_SOURCES.has(source)) return "unreported";
       read = true;
       const target = flowSelectorToFrame(tree, into) ?? tappedFrame;
-      if (collectFocused(tree, []).some((n) => framesNest(n.frame, target))) return "confirmed";
+      if (collectFocused(tree, []).some((n) => framesNest(n, target))) return "confirmed";
     } catch {
       // transient describe failure — retry until the deadline
     }
@@ -1357,15 +1368,8 @@ async function runRotate(
 }
 
 /**
- * Resolve `into` → tap to focus → wait for focus to land → type text via the
- * keyboard tool. Unless `submit` is explicitly `false`, a trailing Enter is
- * pressed to commit the value and dismiss the keyboard, so it can't obscure
- * later steps (chained form fields that end in an explicit submit `tap` should
- * pass `submit: false`).
- */
-/**
- * Tap a field's centre and wait for focus to land there, re-resolving the
- * field's frame first (the keyboard sliding up can scroll it).
+ * Tap a field's centre and wait for focus to land there. The caller resolves
+ * the field's frame; this only taps it and polls.
  */
 async function tapForFocus(
   env: ActionEnv,
@@ -1379,6 +1383,19 @@ async function tapForFocus(
   return waitForFocus(env, into, frame);
 }
 
+/**
+ * Resolve `into` → tap to focus → wait for focus to land → type text via the
+ * keyboard tool. Unless `submit` is explicitly `false`, a trailing Enter is
+ * pressed to commit the value and dismiss the keyboard, so it can't obscure
+ * later steps (chained form fields that end in an explicit submit `tap` should
+ * pass `submit: false`).
+ *
+ * Focus is confirmed before any key is injected: an unconfirmed wait retries
+ * the tap once (re-resolving the field's frame first — the keyboard sliding up
+ * can scroll it), and then fails the step rather than typing into whatever
+ * else holds focus. An unreadable tree during the wait reports indeterminate —
+ * an environment failure, not an app verdict.
+ */
 async function runType(
   env: ActionEnv,
   step: { into: FlowSelector; text: string; submit?: boolean }
@@ -1388,11 +1405,18 @@ async function runType(
   if (!frame) {
     return { ok: false, reason: offscreenHint(step.into) };
   }
+  let taps = 1;
   let focus = await tapForFocus(env, step.into, frame);
   if (focus === "unconfirmed") {
     const retryFrame = await waitForFrame(env, step.into);
     if (retryFrame === "aborted") return ABORTED_OUTCOME;
-    if (retryFrame) focus = await tapForFocus(env, step.into, retryFrame);
+    // The retry only re-taps when the field can still be re-found; if it
+    // scrolled off or vanished during the keyboard slide, the failure message
+    // must not claim a second tap happened.
+    if (retryFrame) {
+      taps = 2;
+      focus = await tapForFocus(env, step.into, retryFrame);
+    }
   }
   // waitForFocus reports abort separately from focus/timeout — re-check before
   // every keyboard dispatch (the keyboard tool has no abort handling of its
@@ -1404,9 +1428,10 @@ async function runType(
       ok: false,
       reason:
         `${describeSelector(step.into)} did not take keyboard focus within ` +
-        `${TYPE_FOCUS_TIMEOUT_MS}ms, after two taps — nothing was typed. Keys are injected at ` +
-        `the HID level and would have gone to whatever else holds focus. Something is likely ` +
-        `covering the field (a sheet mid-animation, a toast), or it is not a text input.`,
+        `${TYPE_FOCUS_TIMEOUT_MS}ms, after ${taps} tap${taps === 1 ? "" : "s"} — nothing was ` +
+        `typed. Keys are injected at the HID level and would have gone to whatever else holds ` +
+        `focus. Something is likely covering the field (a sheet mid-animation, a toast), or it ` +
+        `is not a text input.`,
     };
   }
   if (focus === "unreadable") {
