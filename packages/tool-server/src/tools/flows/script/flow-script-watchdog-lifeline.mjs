@@ -44,7 +44,5 @@ try {
   // event.
   lifeline.resume();
 } catch (err) {
-  // No lifeline on this host: say so, and leave the deadline watchdog as the
-  // backstop.
   fs.writeSync(2, `[argent] script lifeline unavailable: ${err && err.message}\n`);
 }

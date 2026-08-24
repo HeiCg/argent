@@ -1,8 +1,3 @@
-// The flow `script` step's runner: a preload the executor puts in front of the
-// script with `node --import <this file> <script>`. The script stays the entry
-// module, so the ordinary main-module guard runs its body, and `--import` is
-// awaited before the entry loads, which is where the handshake below fits.
-//
 // Imports nothing from the tool-server, so it needs no build step: it is copied
 // next to the compiled executor and resolves its watchdogs against its own URL.
 
@@ -20,21 +15,16 @@ const DEADLINE_WATCHDOG = "flow-script-watchdog-deadline.mjs";
  */
 const ACTIVATION_ENV = "ARGENT_FLOW_SCRIPT_RUNNER";
 
-/** One terminal message per process; see `finish`. */
 let finished = false;
 
 let maxOutputBytes = 0;
 
-/** One outcome probe per process; `beforeExit` can fire more than once. */
 let probing = false;
 
-/** The event loop with nothing the script put in it. See `scriptScheduledWork`. */
 let idleResources = [];
 
-/** Set only while the runner itself is on the channel. See `closeChannelToScript`. */
 let runnerIsSending = false;
 
-/** How long the entry module gets to prove it finished. See `reportWhenEntrySettled`. */
 const ENTRY_SETTLE_PROBE_MS = 1_000;
 
 /**
@@ -52,7 +42,6 @@ const MAX_FAILURE_STACK_CHARS = 16 * 1024;
  */
 const realSend = typeof process.send === "function" ? process.send : undefined;
 
-/** The real `process.exit`, so the runner's own exits skip the guard below. */
 const realExit = process.exit.bind(process);
 
 /**
@@ -74,7 +63,6 @@ const channelFd = typeof channelHandle?.fd === "number" ? channelHandle.fd : -1;
 const encodeJson = JSON.stringify;
 const decodeJson = JSON.parse;
 
-/** The runner's own listeners, so `guardRunnerListeners` can put them back. */
 const runnerListeners = [];
 
 if (isMainThread && process.env[ACTIVATION_ENV] === "1") {
@@ -82,11 +70,6 @@ if (isMainThread && process.env[ACTIVATION_ENV] === "1") {
   await prepare();
 }
 
-/**
- * Node awaits this module before it loads the entry, so the `output` global,
- * the watchdogs and the crash handlers are all in place first — and a request
- * that never arrives parks here rather than running an unreportable script.
- */
 async function prepare() {
   const raw = await nextRequest();
   const request = parseRequest(raw);
@@ -129,10 +112,6 @@ async function prepare() {
     });
   });
 
-  // The script is done when the event loop empties — the same point at which
-  // `node script.mjs` would leave. A script that leaves a handle open never
-  // reaches it; the step's time limit bounds that.
-  //
   // Registered before the script loads, so this runs before the script's own
   // `beforeExit` handlers: every firing is spent yielding so their scheduled
   // cleanup gets its round, and if they scheduled anything `beforeExit` comes
@@ -212,8 +191,6 @@ function reportWhenEntrySettled(scriptUrl) {
   }, ENTRY_SETTLE_PROBE_MS);
   const report = () => {
     clearTimeout(bound);
-    // A non-zero `process.exitCode` is the script saying it failed, and setting
-    // it rather than calling `process.exit(1)` is the recommended way to do so.
     const code = process.exitCode;
     if (code !== undefined && code !== null && code !== 0) {
       finish({
@@ -339,7 +316,6 @@ function exitOnParentDisconnect() {
   realExit(0);
 }
 
-/** The one `execute` request. A second message is ignored rather than obeyed. */
 function nextRequest() {
   return new Promise((resolve) => {
     process.once("message", resolve);
@@ -381,8 +357,6 @@ function startWatchdogs(deadlineMs) {
       // `execArgv: []` keeps this preload out of the worker, which would
       // otherwise inherit it and re-run this file for nothing.
       const worker = new Worker(url, { execArgv: [], ...(workerData ? { workerData } : {}) });
-      // A watchdog that cannot start must not take the run with it — the parent
-      // keeps its own time limit — but a missing file is otherwise silent.
       worker.on("error", (err) => reportWatchdogProblem(url, err));
       worker.unref();
     } catch (err) {
@@ -472,7 +446,6 @@ function encodeOutput(value, maxOutputBytes) {
   try {
     checked = validate(value);
   } catch (err) {
-    // A throwing getter, a Proxy trap — anything the walk itself provoked.
     return { error: `output could not be read: ${errorMessage(err)}` };
   }
   if (checked.problem) return { error: checked.problem };
@@ -492,7 +465,6 @@ function encodeOutput(value, maxOutputBytes) {
   return { json };
 }
 
-/** Either `{ problem }` naming what cannot be encoded, or `{ value }` to encode. */
 function validate(root) {
   // The root is what later steps read paths out of: a replaced `output = "done"`
   // has nothing to merge and no path to address.
@@ -502,7 +474,6 @@ function validate(root) {
   return walk(root, "output", new Set());
 }
 
-/** Same shape as {@link validate}: the walked copy is what gets encoded. */
 function walk(value, path, ancestors) {
   if (value === null) return { value: null };
   const type = typeof value;
@@ -552,8 +523,6 @@ function walk(value, path, ancestors) {
     return walked;
   }
   if (!isPlainObject(value)) {
-    // A Map, a Set or a class instance encodes to something a later step cannot
-    // read back — `{}` for a Map.
     return { problem: `${path} is ${describeValue(value)}; output must be JSON-compatible data` };
   }
   ancestors.add(value);
@@ -611,11 +580,6 @@ function describeBytes(bytes) {
 }
 
 /**
- * Carries the causes Node itself would have printed — `fetch failed` with the
- * real `ECONNREFUSED` in `.cause`, or every attempt in `AggregateError.errors`.
- * The runner's `uncaughtException` handler claims the exception, so Node's
- * printout never runs and the log has no second copy.
- *
  * Follows the parent's `formatErrorForAgent`, which this file cannot import.
  * The depth bound also guards a `.cause` that points back up its own chain.
  */
@@ -630,23 +594,17 @@ function describeThrown(value) {
   return typeof value === "string" ? value : safeStringify(value);
 }
 
-/** Skip text an earlier part already carries: a wrapper quoting its own cause. */
 function addPart(parts, joiner, text) {
   if (text && !parts.some((part) => part.text.includes(text))) parts.push({ joiner, text });
 }
 
 const MAX_CAUSE_DEPTH = 8;
 const CAUSED_BY = " — caused by: ";
-/** `AggregateError.errors` are siblings, not a chain: every attempt that failed. */
 const ALSO = "; ";
 
 function visitError(err, depth, joiner, parts, seen) {
   if (depth > MAX_CAUSE_DEPTH) return;
-  // Neither a `.cause` nor an `AggregateError.errors` entry has to be an
-  // `Error` — `{ cause: "HTTP 500 …" }` is ordinary, and Node prints it.
   if (!(err instanceof Error)) {
-    // `undefined` is an absent cause rather than a value; every error is asked
-    // for one and almost none has it.
     if (err !== undefined) addPart(parts, joiner, describeThrown(err));
     return;
   }
@@ -723,9 +681,6 @@ function finishSynchronously(response) {
 }
 
 /**
- * Put a message on the protocol channel before returning, and say whether the
- * channel is now spoken for.
- *
  * `process.send` only queues: a message past the pipe buffer is written by
  * libuv over later turns of the loop, and the `process.exit` this runs inside
  * leaves before any of them — so a script reporting a result larger than about
@@ -751,9 +706,6 @@ function sendSynchronously(message) {
   } catch {
     return false;
   }
-  // One slot for the whole wait: a long stall is thousands of one-millisecond
-  // sleeps, and a buffer per sleep is that much garbage in a process that is
-  // leaving.
   const slot = new Int32Array(new SharedArrayBuffer(4));
   let written = 0;
   while (written < payload.length) {
@@ -761,8 +713,6 @@ function sendSynchronously(message) {
       written += fs.writeSync(channelFd, payload, written);
     } catch (err) {
       if (err && err.code === "EAGAIN") {
-        // A blocked thread rather than a busy one: the parent needs a turn of
-        // its own loop to empty the pipe.
         Atomics.wait(slot, 0, 0, 1);
         continue;
       }
