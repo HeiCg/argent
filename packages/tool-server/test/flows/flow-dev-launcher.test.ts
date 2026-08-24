@@ -777,20 +777,6 @@ describe("getting a launch past the chooser", () => {
     expect(fetchFlowTree).not.toHaveBeenCalled();
   });
 
-  it("reports the port it wanted when no live row offers it, and taps nothing", async () => {
-    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
-    reads(launcherTree());
-    const { calls, actionEnv } = env();
-
-    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8085, new Map());
-    expect(outcome).toMatchObject({ handled: true, ok: false });
-    expect(outcome).toHaveProperty(
-      "reason",
-      expect.stringContaining("lists no live server on port 8085")
-    );
-    expect(calls).toEqual([]);
-  });
-
   it("retries a pick that landed on the face the chooser shows while discovering", async () => {
     // The discovering face has drawn content, so the appear-wait settles on it
     // — but its list is empty because mDNS has not answered YET, not because
@@ -810,21 +796,54 @@ describe("getting a launch past the chooser", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("does not wait once live rows are listed, even for a port none of them carries", async () => {
-    // A populated list is a finished discovery: a miss there is real, and the
-    // "no live server" verdict comes at once instead of after a second window.
-    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
-    reads(launcherTree());
-    const { calls, actionEnv } = env();
+  it("fails on a wrong-port miss only when the row window runs out", async () => {
+    // The list fills incrementally over mDNS — a foreign bundler's row can be
+    // up while this run's Metro is still a poll away — so no listed row ends
+    // the window early: only the deadline turns the miss into a verdict. This
+    // also pins that the window TERMINATES: an empty-forever list must not hold
+    // the launch open past it.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+      reads(launcherTree());
+      const { calls, actionEnv } = env();
 
-    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8085, new Map());
-    expect(outcome).toMatchObject({ handled: true, ok: false });
-    expect(outcome).toHaveProperty(
-      "reason",
-      expect.stringContaining("lists no live server on port 8085")
-    );
-    expect(calls).toEqual([]);
-    expect(fetchFlowTree).toHaveBeenCalledTimes(1);
+      const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8085, new Map());
+      await vi.advanceTimersByTimeAsync(13_000);
+
+      const outcome = await pending;
+      expect(outcome).toMatchObject({ handled: true, ok: false });
+      expect(outcome).toHaveProperty(
+        "reason",
+        expect.stringContaining("lists no live server on port 8085")
+      );
+      expect(calls).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the row window the moment the run is cancelled", async () => {
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    try {
+      vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+      let read = 0;
+      vi.mocked(fetchFlowTree).mockImplementation(async (): Promise<DescribeTreeData> => {
+        read += 1;
+        if (read === 2) controller.abort();
+        return { tree: noServersTree(), source: "android-devtools" };
+      });
+      const { calls, actionEnv } = env(() => ({ ok: true }), controller.signal);
+
+      const pending = dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map());
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(pending).resolves.toEqual({ handled: false });
+      expect(calls).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("leaves the launch alone when the chooser leaves while still discovering", async () => {
@@ -1247,15 +1266,36 @@ describe("what the launch step reports", () => {
   });
 
   it("errors with the port it wanted when the chooser lists no live row for it", async () => {
-    vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
-    vi.mocked(fetchFlowTree).mockResolvedValue({
-      tree: launcherTree(),
-      source: "android-devtools",
-    });
+    // The miss is final only once the discovery window has run out, so the
+    // deadline is advanced rather than waited out.
+    const realTimeout = setTimeout;
+    vi.useFakeTimers();
+    try {
+      vi.mocked(adbShell).mockResolvedValue('Scheme: "expo-dev-launcher"');
+      vi.mocked(fetchFlowTree).mockResolvedValue({
+        tree: launcherTree(),
+        source: "android-devtools",
+      });
 
-    const steps = await runLaunchOnly({ metroPort: 8085 });
-    expect(steps[0]).toMatchObject({ kind: "launch", status: "error" });
-    expect(steps[0].reason).toContain("lists no live server on port 8085");
+      let done = false;
+      const pending = runLaunchOnly({ metroPort: 8085 }).then((s) => {
+        done = true;
+        return s;
+      });
+      // The run suspends on real filesystem reads whose callbacks fire outside
+      // the faked clock, so advance in small steps and yield to the real event
+      // loop between them — a single big jump can land entirely before the run
+      // has scheduled the timers it needs.
+      for (let i = 0; i < 400 && !done; i += 1) {
+        await vi.advanceTimersByTimeAsync(100);
+        await new Promise((r) => realTimeout(r, 0));
+      }
+      const steps = await pending;
+      expect(steps[0]).toMatchObject({ kind: "launch", status: "error" });
+      expect(steps[0].reason).toContain("lists no live server on port 8085");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("takes 8081 when the caller names no port", async () => {
@@ -1441,6 +1481,24 @@ describe("what the launch step reports", () => {
     ]);
 
     const steps = await runFlow("nested", {});
+
+    expect(steps.map((s) => s.status)).toEqual(["pass", "pass", "pass"]);
+    expect(adbShell).toHaveBeenCalledTimes(2);
+  });
+
+  it("probes again after a nested run-sequence too", async () => {
+    // The other composition form: `run-sequence` dispatches its tools through
+    // the registry just like a nested flow, so the same eviction has to cover
+    // it — today as defense (its allowlist excludes reinstall-app), and for
+    // free if the allowlist ever widens.
+    chooserEveryLaunch();
+    await writeFlow("seq", [
+      { kind: "launch", app: "com.example.dev" },
+      { kind: "tool", name: "run-sequence", args: { steps: [{ tool: "gesture-tap" }] } },
+      { kind: "launch", app: "com.example.dev" },
+    ]);
+
+    const steps = await runFlow("seq", {});
 
     expect(steps.map((s) => s.status)).toEqual(["pass", "pass", "pass"]);
     expect(adbShell).toHaveBeenCalledTimes(2);

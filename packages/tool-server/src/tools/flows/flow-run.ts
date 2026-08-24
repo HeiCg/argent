@@ -2321,28 +2321,6 @@ async function execLeafStep(
       }
       try {
         const result = await invokeSubTool(registry, ctx, step.name, args);
-        // `reinstall-app` takes an arbitrary `appPath`, so a run can put a
-        // release build over a dev one between two `launch` steps — the one
-        // thing that moves what `devBuilds` remembers, and in that direction a
-        // remembered `false` would skip the chooser recovery on a build that
-        // shows the chooser. Dropped whole rather than by key: the step names a
-        // PATH, which says nothing about the app id the probe is keyed by.
-        //
-        // The reinstall need not be a DIRECT step of this run. A nested
-        // orchestrator (`flow-execute`, `run-sequence`) keeps its own state and
-        // dispatches its steps through the registry, so a `reinstall-app` in
-        // there moves what is installed without this run's steps ever naming
-        // one — and its own fresh map dies with it, leaving this run's
-        // remembered answer stale. Evicted after every composition step for
-        // that reason; the cost is one extra probe on a later launch, which is
-        // the cheap direction to be wrong in.
-        if (
-          step.name === REINSTALL_APP_TOOL_ID ||
-          step.name === FLOW_EXECUTE_TOOL_ID ||
-          step.name === RUN_SEQUENCE_TOOL_ID
-        ) {
-          state.devBuilds.clear();
-        }
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;
           return {
@@ -2387,6 +2365,35 @@ async function execLeafStep(
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
         return { ...base, status: "error", tool: step.name, reason: errMsg(err) };
+      } finally {
+        // `reinstall-app` takes an arbitrary `appPath`, so a run can put a
+        // release build over a dev one between two `launch` steps — the one
+        // thing that moves what `devBuilds` remembers, and in that direction a
+        // remembered `false` would skip the chooser recovery on a build that
+        // shows the chooser. Dropped whole rather than by key: the step names a
+        // PATH, which says nothing about the app id the probe is keyed by.
+        //
+        // The reinstall need not be a DIRECT step of this run, and it need not
+        // SUCCEED to move what is installed: an adb install that fails midway
+        // has already replaced the package. So the map is dropped after every
+        // direct `reinstall-app` and after every nested orchestrator —
+        // `flow-execute` keeps its own state and dispatches its steps through
+        // the registry (where `reinstall-app` is free to appear), and either
+        // throwing or failing must still leave this run's remembered answer
+        // honest. In the finally rather than the happy path for exactly that:
+        // the eviction answers "the ground may have moved", not "the step
+        // passed". The cost is one extra probe on a later launch, the cheap
+        // direction to be wrong in. (`run-sequence` cannot run `reinstall-app`
+        // today — its allowlist admits only gestures, keyboard and waits — so
+        // its arm is defense against the allowlist widening under a cache that
+        // predates it.)
+        if (
+          step.name === REINSTALL_APP_TOOL_ID ||
+          step.name === FLOW_EXECUTE_TOOL_ID ||
+          step.name === RUN_SEQUENCE_TOOL_ID
+        ) {
+          state.devBuilds.clear();
+        }
       }
     }
 

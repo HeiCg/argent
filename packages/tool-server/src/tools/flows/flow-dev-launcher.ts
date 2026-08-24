@@ -209,19 +209,6 @@ export function pickDevServerRow(
 }
 
 /**
- * Does the chooser list ANY live server yet?
- *
- * The list populates over mDNS seconds after the chooser draws, so an empty
- * list can mean "discovery still running" — the one state a single pick would
- * misread as a verdict. Once any live row is on screen, discovery has finished
- * and a pick that misses is final.
- */
-function hasLiveServerRow(root: DescribeNode, historyY: number): boolean {
-  const origin = originPattern("any");
-  return candidateRows(flatten(root), historyY).some((n) => origin.test(nodeText(n)));
-}
-
-/**
  * The card a row's URL leaf is drawn in — what an author presses to open it.
  *
  * A row renders its URL on one text leaf beside the project name and a chevron,
@@ -399,16 +386,20 @@ const APPEAR_TIMEOUT_MS = 12_000;
 const APPEAR_POLL_MS = 500;
 
 /**
- * How long a chooser that lists no server at all is given to list one.
+ * How long a chooser that lists no row for `port` is given before the miss is
+ * a verdict.
  *
  * The appear-wait above settles on the chooser's DISCOVERING face — it has drawn
  * content — but that face is the state before the list exists: the client finds
  * packagers over mDNS and fills the section in seconds later. A pick made once
- * against the empty face would fail a launch whose Metro is about to be listed,
- * on exactly the cold starts this module exists to recover. So an empty list is
- * retried until a row appears, the deadline passes, or the chooser leaves. Once
- * ANY live row is listed, discovery is over and a miss on `port` fails at once
- * — no second window is spent on a verdict the screen has already made.
+ * against an empty or partial list would fail a launch whose Metro is about to
+ * be listed, on exactly the cold starts this module exists to recover. And the
+ * list does not fill at once: answers arrive as hosts advertise them, so a
+ * foreign bundler's row can be on screen while this run's is still a second or
+ * two away. The pick is therefore retried to the deadline, whatever the list
+ * already shows; only the deadline, the chooser leaving, or a cancellation ends
+ * it early. A launch with no Metro to find fails 12s later than it would have
+ * — the cost of not mistaking a half-filled list for a finished discovery.
  */
 const ROW_TIMEOUT_MS = 12_000;
 const ROW_POLL_MS = APPEAR_POLL_MS;
@@ -460,10 +451,9 @@ export async function dismissDevLauncher(
   let tree = root;
   let face = launcher;
   let target = pickDevServerRow(tree, port, face.historyY);
-  if (!target && !hasLiveServerRow(tree, face.historyY)) {
-    // An empty list is not yet a verdict — see {@link ROW_TIMEOUT_MS}. A
-    // populated list that misses `port` skips this whole window: discovery is
-    // over and the screen has already made its verdict.
+  if (!target) {
+    // A miss is not yet a verdict — see {@link ROW_TIMEOUT_MS}. The list may
+    // still be filling, whatever it already shows.
     const rowBy = Date.now() + ROW_TIMEOUT_MS;
     for (;;) {
       const next = await readTree();
@@ -472,9 +462,7 @@ export async function dismissDevLauncher(
         tree = next;
         face = nextFace;
         target = pickDevServerRow(tree, port, face.historyY);
-        // A listed row ends the window — ours if the pick found it, and any
-        // other row's means discovery finished and the miss is final.
-        if (target || hasLiveServerRow(tree, face.historyY)) break;
+        if (target) break;
       } else if (next && !nextFace) {
         // The chooser left by itself — the client connected on its own, or the
         // app took over. Nothing here is dismissing anything.
