@@ -23,11 +23,23 @@ interface UiCondition {
 
 // ── Recording-summary spellings ──
 
-// Quote selectors in the step summary the way the flow FILE spells them
-// (`id`, bare string for loose, no internal `loose` flag) — the summary is what
-// gets read before hand-editing the YAML, so the spellings must agree.
+// Spell selectors the way the flow FILE does (`id`, bare string for loose): the
+// summary is read before hand-editing the YAML, so the spellings must agree.
+//
+// Key ORDER is normalised on top of that. This render is also the step ANCHOR
+// ({@link stepAnchor}), which compares a selector built in memory — whose key
+// order is the source object's — against one that came back through
+// `parseSelector`, whose key order is the zod schema's. Two spellings of one
+// selector would then render differently and drop every verdict in the
+// recording. `deriveSelector` returns a single-field selector on every branch
+// today, so sorting removes a dependency rather than fixes a live bug.
 function yamlSelectorLabel(sel: FlowSelector): string {
-  return JSON.stringify(selectorToYaml(sel));
+  const yaml = selectorToYaml(sel);
+  if (typeof yaml !== "object" || yaml === null) return JSON.stringify(yaml);
+  const sorted = Object.fromEntries(
+    Object.entries(yaml).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  );
+  return JSON.stringify(sorted);
 }
 
 // Render a text condition for the summary: the comparator is preserved — regex
@@ -338,4 +350,20 @@ export function summarizeStep(step: FlowStep, n: number): string {
 /** One human-readable line per recorded step, in the flow file's own spellings. */
 export function summarizeSteps(flow: FlowFile): string[] {
   return flow.steps.map((step, i) => summarizeStep(step, i + 1));
+}
+
+/**
+ * WHICH step this is, told apart from where it sits.
+ *
+ * The same renderer as the summary, on a fixed number, so the identity does not
+ * move with the position.
+ *
+ * The anchor rests on {@link summarizeStep} being STABLE across a
+ * serialize-then-parse round trip: two of the three comparisons put a raw
+ * in-memory step against a parsed one. Every field it reads has to survive that
+ * trip — including the selector, whose key order {@link yamlSelectorLabel}
+ * sorts because the round trip does not preserve it.
+ */
+export function stepAnchor(step: FlowStep): string {
+  return summarizeStep(step, 0);
 }

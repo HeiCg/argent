@@ -126,13 +126,16 @@ const CASES = {
       target: '"Submit"',
     },
     {
-      // A selector carrying several fields at once — the order the report
-      // target concatenates them in is what tells two similar steps apart.
+      // A selector carrying several fields at once. The summary's key order is
+      // normalised (sorted), because the same render is the step anchor
+      // ({@link stepAnchor}), which compares a raw in-memory step against a
+      // parsed one whose keys arrive in the zod schema's order; the report
+      // target keeps its own fixed concatenation order instead.
       step: {
         kind: "tap",
         selector: { text: "Save", identifier: "save-btn", role: "button" },
       },
-      summary: '1. tap: {"text":"Save","role":"button","id":"save-btn"}',
+      summary: '1. tap: {"id":"save-btn","role":"button","text":"Save"}',
       target: '"Save" id=save-btn role=button',
     },
     {
