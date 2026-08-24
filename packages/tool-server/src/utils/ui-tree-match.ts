@@ -297,14 +297,20 @@ export function compatibilityVariantIn(haystack: string, needle: string): boolea
 
 /**
  * True for a character that draws no glyph alone but builds one in sequence:
- * ZWNJ, ZWJ, both variation-selector blocks and the emoji tag characters. A
+ * ZWNJ, ZWJ, every `Variation_Selector` block and the emoji tag characters. A
  * code-point predicate, because `no-misleading-character-class` bans the class.
+ *
+ * `Variation_Selector` is THREE blocks, not two: the Mongolian free variation
+ * selectors sit beside U+180E, and each picks which glyph form of the preceding
+ * Mongolian letter is drawn, so they belong here with VS1-16.
  */
 function isSequenceBuilding(ch: string): boolean {
   const cp = ch.codePointAt(0) ?? 0;
   return (
     cp === 0x200c ||
     cp === 0x200d ||
+    (cp >= 0x180b && cp <= 0x180d) ||
+    cp === 0x180f ||
     (cp >= 0xfe00 && cp <= 0xfe0f) ||
     (cp >= 0xe0020 && cp <= 0xe007f) ||
     (cp >= 0xe0100 && cp <= 0xe01ef)

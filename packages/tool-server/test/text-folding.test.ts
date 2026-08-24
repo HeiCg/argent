@@ -28,6 +28,8 @@ const BOM = "﻿";
 const SOFT_HYPHEN = "­";
 const VARIATION_SELECTOR_16 = "️";
 const IDEOGRAPHIC_SPACE = "　";
+// U+180B-U+180D and U+180F, the Mongolian block of `\p{Variation_Selector}`.
+const MONGOLIAN_VARIATION_SELECTORS = ["᠋", "᠌", "᠍", "᠏"];
 
 describe("foldText", () => {
   it("reduces every space-like codepoint to a plain space", () => {
@@ -83,6 +85,15 @@ describe("foldText", () => {
     expect(foldText(FLAG)).not.toBe(foldText(SPLIT));
     expect(foldText(`a${ZWJ}b`)).not.toBe("ab");
     expect(foldText(`ok${VARIATION_SELECTOR_16}`)).not.toBe("ok");
+  });
+
+  it("keeps the MONGOLIAN variation selectors, the third block of the property", () => {
+    // U+180B-U+180D and U+180F each pick which glyph form of the preceding
+    // Mongolian letter is drawn, exactly as VS1-16 do elsewhere.
+    for (const fvs of MONGOLIAN_VARIATION_SELECTORS) {
+      expect(foldText(`ᠠ${fvs}`)).not.toBe("ᠠ");
+      expect(equalsCI(`ᠭᠠ${fvs}ᠯ`, "ᠭᠠᠯ")).toBe(false);
+    }
   });
 
   it("applies NFC, collapses whitespace runs, trims and lowercases", () => {
@@ -466,6 +477,15 @@ describe("confusableTextNote", () => {
     expect(note).not.toContain("differ only in invisible characters");
     expect(note).toContain("changes what IS drawn");
     expect(note).toContain("U+180E");
+  });
+
+  it("stays SILENT on a Mongolian variation selector, as it does on VS1-16", () => {
+    // An FVS picks the glyph form of the letter before it, so a difference in
+    // one is a rendering difference. The note must not report it as invisible.
+    for (const fvs of MONGOLIAN_VARIATION_SELECTORS) {
+      expect(confusableTextNote(`ᠭᠠ${fvs}ᠯ`, "ᠭᠠᠯ")).toBeUndefined();
+      expect(confusableTextNoteIn(`ᠭᠠ${fvs}ᠯ`, "ᠭᠠᠯ")).toBeUndefined();
+    }
   });
 
   it("lets the reordering lead win a difference that is both", () => {
