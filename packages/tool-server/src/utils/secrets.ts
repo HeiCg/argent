@@ -112,13 +112,6 @@ export function scrubSecretValues(
   return scrubSecretChunk(text, secrets, true).emit;
 }
 
-export interface ScrubbedChunk {
-  /** The scrubbed text, ready to release. */
-  emit: string;
-  /** Characters at the end of the input kept back, waiting for the next chunk. */
-  held: number;
-}
-
 /**
  * {@link scrubSecretValues} over one chunk of a stream, holding back the tail a
  * later chunk could still complete into a value. `final` releases everything,
@@ -134,7 +127,12 @@ export function scrubSecretChunk(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>,
   final: boolean
-): ScrubbedChunk {
+): {
+  /** The scrubbed text, ready to release. */
+  emit: string;
+  /** Characters at the end of the input kept back, waiting for the next chunk. */
+  held: number;
+} {
   const ordered = orderedSecrets(secrets);
   if (ordered.length === 0) return { emit: text, held: 0 };
   const longestValue = ordered[0].value.length;
