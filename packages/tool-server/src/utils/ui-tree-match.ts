@@ -143,8 +143,9 @@ const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
  * Whitespace that breaks the line. It is the one part of the whitespace family
  * the run collapse must not equate with a space. A run with no break collapses
  * to one space. A run that breaks the line collapses to one newline per break,
- * because one newline for a whole run equates one break with two. Interior runs
- * only: an edge break is the outer whitespace {@link foldText} trims.
+ * because one newline for a whole run equates one break with two. Counted in
+ * an edge run too: {@link foldText} trims those away, but {@link foldLoose}
+ * keeps them, and there they are the break a substring needle asked for.
  *
  * Global, and used only with `String.prototype.match`, which resets `lastIndex`.
  */
@@ -214,9 +215,11 @@ export function foldText(value: string): string {
 }
 
 /**
- * {@link foldText} without the trim. Leading and trailing whitespace each
- * survive as one space, which a substring test needs. A boundary space is the
- * word boundary an author writes, because "Taps: 3" also matches "Taps: 30".
+ * {@link foldText} without the trim, on the LABEL side: leading and trailing
+ * whitespace each survive as one space, which a substring test needs. A
+ * boundary space is the word boundary an author writes, because "Taps: 3" also
+ * matches "Taps: 30". A needle folds through {@link foldPairLoose} instead,
+ * which keeps a break the author typed at its edge.
  */
 function foldLoose(value: string): string {
   return foldWith(value, !isBidiSensitive(value));
@@ -237,14 +240,27 @@ function isBidiSensitive(value: string): boolean {
  * {@link includesCI} is a substring test. A label with one RTL word keeps its
  * U+202A/U+202C wrappers, while a Latin-only fragment of it loses them. Either
  * side that is bidi-sensitive keeps both, the safe direction.
+ *
+ * `bIsNeedle` marks `b` as the needle of a substring test, which folds its edge
+ * whitespace faithfully. See {@link foldWith}.
  */
-function foldPairLoose(a: string, b: string): [string, string] {
+function foldPairLoose(a: string, b: string, bIsNeedle = false): [string, string] {
   const stripLtr = !isBidiSensitive(a) && !isBidiSensitive(b);
-  return [foldWith(a, stripLtr), foldWith(b, stripLtr)];
+  return [foldWith(a, stripLtr), foldWith(b, stripLtr, bIsNeedle)];
 }
 
-function foldWith(value: string, stripLtr: boolean): string {
-  const key = `${stripLtr ? "1" : "0"}${value}`;
+/**
+ * `edgeBreaks` decides what an edge whitespace run means. A LABEL's outer
+ * whitespace is incidental — source indentation, a trailing newline — so it
+ * collapses to one space. A NEEDLE's edge is an interior position of the label
+ * it is tested against, so a break the author typed there stays a break; a
+ * uniform "an edge is a space" rule made {@link includesCI} disagree with
+ * itself, matching a one-line label and missing the two-line label the needle
+ * was copied out of. A run that IS the whole string separates nothing either
+ * way, so it stays a space and a whitespace-only needle keeps its loose meaning.
+ */
+function foldWith(value: string, stripLtr: boolean, edgeBreaks = false): string {
+  const key = `${stripLtr ? "1" : "0"}${edgeBreaks ? "1" : "0"}${value}`;
   const hit = foldCache.get(key);
   if (hit !== undefined) return hit;
   // Remove the invisibles before composition. An invisible between a base letter
@@ -254,10 +270,11 @@ function foldWith(value: string, stripLtr: boolean): string {
   const folded = stripped
     .replace(SPACE_LIKE, " ")
     // One space per whitespace run, or one newline per line break in an
-    // interior run. See {@link LINE_BREAKS_G}. `\s+` is greedy, so an interior
-    // run is one with a non-space neighbour at each end.
-    .replace(/\s+/g, (run, at: number, whole: string) => {
-      if (at === 0 || at + run.length === whole.length) return " ";
+    // interior run. See {@link LINE_BREAKS_G} and `edgeBreaks` above.
+    .replace(/\s+/g, (run: string, at: number, whole: string) => {
+      const isWhole = run.length === whole.length;
+      const isEdge = at === 0 || at + run.length === whole.length;
+      if (isWhole || (isEdge && !edgeBreaks)) return " ";
       const breaks = run.match(LINE_BREAKS_G)?.length ?? 0;
       return breaks > 0 ? "\n".repeat(breaks) : " ";
     })
@@ -291,8 +308,10 @@ export function compatibilityVariantOf(actual: string, expected: string): boolea
 export function compatibilityVariantIn(haystack: string, needle: string): boolean {
   if (includesCI(haystack, needle)) return false;
   if (foldText(needle) === "") return false;
-  const compat = (s: string): string => foldLoose(s.normalize("NFKC"));
-  return compat(haystack).includes(compat(needle));
+  // Folded as a pair, and with the needle marked as one, so this question and
+  // {@link includesCI} agree about the LTR strip and about edge whitespace.
+  const [hay, ndl] = foldPairLoose(haystack.normalize("NFKC"), needle.normalize("NFKC"), true);
+  return hay.includes(ndl);
 }
 
 /**
@@ -592,7 +611,7 @@ export function includesCI(haystack: string | undefined, needle: string): boolea
   // Both sides untrimmed, so a boundary space still constrains the match (see
   // {@link foldLoose}), and folded as a pair so a needle copied from the label
   // stays a substring of it (see {@link foldPairLoose}).
-  const [hay, ndl] = foldPairLoose(haystack, needle);
+  const [hay, ndl] = foldPairLoose(haystack, needle, true);
   // A needle that folds to nothing is no constraint at all: `"".includes()` is
   // true of every string, so the check can never fail. Only an invisible-only
   // needle does that - a `role` of a lone ZWSP folds to "". A whitespace-only

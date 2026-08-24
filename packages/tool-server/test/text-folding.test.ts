@@ -132,12 +132,19 @@ describe("foldText", () => {
     expect(confusableTextNote("Line one\n\nLine two", "Line one\nLine two")).toBeUndefined();
   });
 
-  it("counts only an INTERIOR break, so outer whitespace stays a space", () => {
-    // A break at the edge separates no glyphs, and foldText trims it. The
-    // untrimmed foldLoose leaves it a space, so a boundary needle still matches.
+  it("counts an EDGE break too, so a needle's own edge stays a break", () => {
+    // foldText trims an edge break away, so the two whole-string comparators
+    // are unaffected. The untrimmed foldLoose keeps it, and a needle's edge is
+    // an interior position of the label, so the two sides must agree there.
     expect(foldText("\nSign in\n")).toBe("sign in");
     expect(includesCI("  Save   Changes \n", "Changes ")).toBe(true);
     expect(equalsCI("Sign in\n", "Sign in")).toBe(true);
+    // A needle copied character-for-character out of a two-line label matches it.
+    expect(includesCI("Line one\nLine two", "\nLine two")).toBe(true);
+    expect(includesCI("Line one\nLine two", "Line one\n")).toBe(true);
+    // And a needle asking for a break does not match a label that has none.
+    expect(includesCI("bar foo", "\nfoo")).toBe(false);
+    expect(includesCI("bar foo", "bar\n")).toBe(false);
   });
 
   it("keeps COMPATIBILITY variants distinct — the eye can see those", () => {
