@@ -17,7 +17,10 @@ const COLLECT_RENDERS_SCRIPT = `
     var renderers = hook._renderers || hook.renderers;
     if (!renderers) return JSON.stringify({ error: 'no renderers attached to hook' });
 
-    var results = {};
+    // Null prototype: a fiber named "__proto__" or "constructor" must become
+    // an own data property, not write through an inherited accessor onto
+    // Object.prototype of the debuggee app.
+    var results = Object.create(null);
 
     function walkFiber(fiber, depth) {
       if (!fiber || depth > 30) return;
@@ -111,6 +114,9 @@ const zodSchema = z.object({
     .default(20)
     .describe("Number of top components to return, by self render time (default 20)"),
 });
+
+/** Exposed for tests: the injected script runs on the debuggee, so its object handling is load-bearing. */
+export const __testables = { COLLECT_RENDERS_SCRIPT };
 
 export const reactProfilerRendersTool: ToolDefinition<z.infer<typeof zodSchema>, string> = {
   id: "react-profiler-renders",

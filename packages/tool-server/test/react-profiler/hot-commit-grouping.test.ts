@@ -94,4 +94,21 @@ describe("renderByComponent (profiler-commit-query by_component) ranking", () =>
     expect(markdown).toContain("| #1 |");
     expect(markdown).not.toContain("| #0 |");
   });
+
+  it("treats durations nulled or dropped by JSON round-trip as zero instead of NaN or a crash", () => {
+    const nulled = fiber({ actualDuration: null as unknown as number });
+    const dropped = fiber({});
+    delete (dropped as Partial<DevToolsFiberCommit>).actualDuration;
+
+    // getTopComponents feeds by_time_range, which calls .toFixed on this
+    // figure; a bare null throws there.
+    const [view] = __testables.getTopComponents([nulled], 10);
+    expect(view!.maxSubtree).toBe(0);
+
+    // An absent duration makes Math.max(0, undefined) NaN without the guard.
+    const markdown = __testables.renderByComponent([dropped], "View", 10);
+    expect(markdown).toContain("0.0");
+    expect(markdown).not.toContain("NaN");
+    expect(() => __testables.renderByComponent([nulled], "View", 10)).not.toThrow();
+  });
 });

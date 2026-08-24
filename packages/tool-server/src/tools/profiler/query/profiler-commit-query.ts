@@ -148,7 +148,10 @@ function renderByComponent(
       // ancestor's figure already contains its descendants'. Summing produced a
       // row claiming more time than the commit printed beside it. The largest
       // single instance is a real subtree cost and cannot exceed the commit.
-      maxSubtree: entries.reduce((m, e) => Math.max(m, e.actualDuration), 0),
+      // `?? 0` matches 00-hot-commits: durations read back from a session dump
+      // can be null (non-finite values become null through JSON), and a bare
+      // null here prints NaN or throws at toFixed.
+      maxSubtree: entries.reduce((m, e) => Math.max(m, e.actualDuration ?? 0), 0),
       totalSelf: entries.reduce((s, e) => s + (e.selfDuration ?? 0), 0),
       commitDuration: entries[0]!.commitDuration,
       timestamp: entries[0]!.timestamp,
@@ -385,12 +388,12 @@ function getTopComponents(
     if (existing) {
       existing.count++;
       existing.totalSelf += e.selfDuration ?? 0;
-      existing.maxSubtree = Math.max(existing.maxSubtree, e.actualDuration);
+      existing.maxSubtree = Math.max(existing.maxSubtree, e.actualDuration ?? 0);
     } else {
       byName.set(e.componentName, {
         count: 1,
         totalSelf: e.selfDuration ?? 0,
-        maxSubtree: e.actualDuration,
+        maxSubtree: e.actualDuration ?? 0,
         first: e,
       });
     }
