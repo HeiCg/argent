@@ -25,15 +25,13 @@ const zodSchema = z.object({
 });
 
 /**
- * iOS stop result with files exposed as downloadable artifacts. Mirrors
- * {@link IosStopResult}, but `traceFile`/`exportedFiles` are artifact handles
- * the MCP client materializes locally instead of raw host paths.
+ * Mirrors {@link IosStopResult}, but the file paths are artifact handles the
+ * MCP client materializes locally instead of raw host paths.
  */
 export interface IosStopArtifacts {
   /**
-   * The Instruments `.trace` bundle as an artifact handle. It's a directory, so
-   * it's delivered as a gzipped tar when a remote client downloads it; local
-   * clients use the bundle in place.
+   * The Instruments `.trace` bundle: a directory, so a remote client downloads
+   * it as a gzipped tar while a local one uses it in place.
    */
   traceFile: ArtifactHandle;
   exportedFiles: Record<IosExportKey, ArtifactHandle | null>;
@@ -42,12 +40,11 @@ export interface IosStopArtifacts {
 }
 
 /**
- * Android stop result with files exposed as downloadable artifacts. Mirrors
- * {@link AndroidStopResult}; unlike iOS there's no `exportDiagnostics` (the
- * `.pftrace` is pulled whole, not exported per-schema).
+ * Mirrors {@link AndroidStopResult}, with artifact handles in place of host
+ * paths; unlike iOS there's no `exportDiagnostics` (the `.pftrace` is pulled
+ * whole, not exported per-schema).
  */
 interface AndroidStopArtifacts {
-  /** The pulled `.pftrace` file as a downloadable artifact handle. */
   traceFile: ArtifactHandle;
   exportedFiles: Record<AndroidExportKey, ArtifactHandle | null>;
   warning?: string;
@@ -89,9 +86,8 @@ async function exportedFilesToArtifacts<K extends IosExportKey | AndroidExportKe
 }
 
 /**
- * Register the trace bundle for download. Marked `archive: "tar.gz"` so it
- * works even when the path is a directory (iOS `.trace`), and even if it can't
- * be stat'd at registration (e.g. a recovered session).
+ * `archive: "tar.gz"` so registration works for a directory path (iOS `.trace`)
+ * and for a path that can't be stat'd yet (e.g. a recovered session).
  */
 function registerTrace(store: ArtifactStore, traceFile: string): Promise<ArtifactHandle> {
   return store.register({ hostPath: traceFile, kind: "native-profile-trace", archive: "tar.gz" });
@@ -105,7 +101,7 @@ export const nativeProfilerStopTool: ToolDefinition<z.infer<typeof zodSchema>, S
     failedMsg: ({ failureSignal }) => `Failed to stop native profiler: ${failureSignal.error_code}`,
   },
   capability,
-  // Packaging plus the export passes routinely exceed the 30s fetch timeout.
+  // Packaging plus the export passes routinely exceed the 30s MCP fetch timeout.
   longRunning: true,
   description: `Stop native profiling and export trace data.
 iOS: sends SIGINT to xctrace, waits for packaging, then exports CPU, hangs, and leaks XML.
@@ -123,8 +119,7 @@ Fails if no active native-profiler-start session exists for the given device_id.
     const device = resolveDevice(params.device_id);
     assertSupported("native-profiler-stop", capability, device);
 
-    // Wrap each platform's raw host paths as downloadable artifacts. Kept per
-    // branch (rather than one merged object) so the return type preserves the
+    // Kept per branch rather than merged so the return type preserves the
     // iOS/Android distinction: iOS always carries exportDiagnostics, Android
     // never does. The artifact store is resolved only after a successful stop —
     // the "no active session" error path never needs it.
