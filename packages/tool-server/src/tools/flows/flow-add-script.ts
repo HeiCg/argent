@@ -174,17 +174,34 @@ export const flowAddScriptTool: ToolDefinition<z.infer<typeof zodSchema>, FlowAd
 Use when a flow needs backend state before it touches the device: seed an order, create a test account, read a one-time code. The script drives nothing on the device; the steps around it do. Record it at the point in the walkthrough where it belongs — a setup script goes BEFORE the restart-app it prepares state for, because that is where it runs at replay.
 It runs the file exactly as a replay will: same path resolution (relative to the flow file being recorded), same environment allowlist, same time limit, and the same working directory — this recording's \`project_root\`, which is what a replay launched from that root also uses.
 Returns { message, status, reason?, log?, logTruncated?, durationMs?, outputJson?, outputTruncated?, stepCount, recorded?, savedTo? }.
-UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. A script that ran before it stopped did not roll back what it created; the \`message\` says whether anything ran, so you can fix and re-run or clean up first.
+UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. A script that ran before it stopped did not roll back what it created; the \`message\` says whether anything ran, so you can fix and re-run or clean up first. A call that ends in a TRANSPORT error rather than a result is the one case with no \`message\` to read: the script may have run more than once, so check the state it touches before calling again.
 \`outputJson\` is the document the script returned, as JSON text. It is shown so you can see the shape a later release will read; no flow step can reference it yet. A document over 64 KiB is cut, and \`outputTruncated\` says so.
 Refused for a recording whose project root is not on this tool server's filesystem: the .mjs file stays on the client, so there is nothing here to resolve the path against or to run.`,
   // A script's default limit is 30s and its host cap is five minutes, both of
-  // which outlive the MCP adapter's per-request fetch budget. Without this the
-  // adapter aborts a slow call and RETRIES it — re-running a script whose whole
-  // purpose is a side effect, up to five times, while the agent sees a
-  // transport error instead of the "nothing was recorded" result this tool
-  // takes such care to produce. It also keeps the server's idle timer warm for
-  // the call's duration, so auto-shutdown cannot reap the host mid-script.
-  // `flow-execute`, which runs the same executor, is declared the same way.
+  // which outlive the MCP adapter's 30s per-request fetch budget. Without this
+  // the adapter aborts a slow call at 30s and RETRIES it — re-running a script
+  // whose whole purpose is a side effect, while the agent sees a transport
+  // error instead of the "nothing was recorded" result this tool takes such
+  // care to produce. It also keeps the server's idle timer warm for the call's
+  // duration, so auto-shutdown cannot reap the host mid-script. `flow-execute`,
+  // which runs the same executor, is declared the same way.
+  //
+  // It MOVES that trigger; it does not remove it. The flag only skips the
+  // adapter's own abort timer. Its retry loop is untouched: it catches any
+  // fetch rejection and re-POSTs up to four more times, and a fetch with no
+  // signal still rejects on undici's ~300s headersTimeout, which nothing here
+  // overrides. A call can outlive that — `scripts.maxTimeoutMs` defaults to
+  // 300000, sitting ON the line rather than under it, and the executor's queue
+  // wait (default `maxTimeoutMs * 2`) is not charged against the step's own
+  // limit — so a script that waits for a slot can still be executed five times
+  // for one tool call. Measured: five executions of a side-effecting script
+  // against the shipped `fetchWithReconnect` called exactly as the adapter
+  // calls it for a `longRunning` tool.
+  //
+  // Closing the rest belongs where the retry lives, in the MCP adapter: a
+  // fetch budget above `maxTimeoutMs + queueWaitMs`, or a retry loop that
+  // knows a tool is not idempotent. Every `longRunning` side-effecting tool
+  // shares that hazard, so it is not this tool's to fix alone.
   longRunning: true,
   zodSchema,
   services: () => ({}),
