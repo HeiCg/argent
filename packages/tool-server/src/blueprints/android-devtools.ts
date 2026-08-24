@@ -118,10 +118,15 @@ export interface SetTextResult {
  * starts a fresh `am instrument` and connects to the port THAT process announces
  * on its own stdout, so another install's helper is never on the other end of
  * our socket. Two routes are real. An APK whose `versionCode` satisfies the gate
- * while its code predates the method — the release and the manifest are built in
- * different repos, which `download-native-binaries.sh` now asserts against. And
- * an install-cache entry that outlived the package it recorded, since the cache
- * is keyed by serial and an emulator wipe reuses one.
+ * while its code predates the method — the bytes and the manifest that stamps
+ * them come from different repos. A local `build:android-binaries` can no longer
+ * mint one: `native-devtools-android/scripts/build.sh` compares the submodule
+ * source's own `PROTOCOL_VERSION` against the manifest's `protocolVersion` and
+ * refuses to build when they disagree. A RELEASED APK still can, because
+ * `download-native-binaries.sh` compares versionCode to versionCode and cannot
+ * read a protocol out of the bytes. And an install-cache entry that outlived the
+ * package it recorded, since the cache is keyed by serial and an emulator wipe
+ * reuses one.
  */
 export const SET_TEXT_MIN_PROTOCOL = 2;
 
