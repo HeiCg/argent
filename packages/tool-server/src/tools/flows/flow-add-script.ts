@@ -59,8 +59,7 @@ interface FlowAddScriptResult {
    */
   durationMs?: number;
   /**
-   * The output document the script returned, as JSON text. Present only on a
-   * pass.
+   * The document the script returned, as JSON text. Present only on a pass.
    *
    * Text rather than the parsed object: the client deep-walks every tool result
    * for `__argentClientFile` directives and `__argentArtifact` handles, both

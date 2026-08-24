@@ -31,11 +31,7 @@ interface FlowScriptStepRun {
   outcome: FlowScriptStepOutcome;
   /** Absent exactly when the step was refused before the executor was reached. */
   result?: FlowScriptResult;
-  /**
-   * Whether the author's script left anything behind — what a caller needs to
-   * say whether there may be state to clean up, and NOT the same question as
-   * "is there a result" (see {@link scriptRan}).
-   */
+  /** NOT the same question as "is there a result" — see {@link scriptRan}. */
   ran: ScriptRan;
 }
 

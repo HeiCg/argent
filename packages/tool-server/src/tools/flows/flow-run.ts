@@ -2221,17 +2221,13 @@ async function execRunStep(
 type ScriptStepOutcome = Pick<StepReport, "status" | "reason" | "scriptLog" | "scriptLogTruncated">;
 
 /**
- * Run one `script` step for this run.
- *
  * Everything a script step DOES lives in {@link runFlowScriptStep}, which
  * `flow-add-script` calls too — so a step an agent recorded ran through the
  * very code its replay will run through.
  *
  * The anchor is the directory of the flow file that NAMES this step, not the
  * root flow's — so a fragment carrying a script step resolves the same file
- * whichever flow composed it.
- *
- * The output document the executor returns is discarded here: nothing threads
+ * whichever flow composed it. The output document is discarded: nothing threads
  * flow output between steps.
  */
 async function runScriptStep(

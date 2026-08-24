@@ -18,25 +18,23 @@ import { classifyOnDiskSpelling, type OnDiskSpelling } from "./flow-utils";
  */
 
 /**
- * Canonicalize a flow path — the cycle guard's identity key and the root
- * anchor derivation (flowsDir + runStack seed).
+ * The cycle guard's identity key, and the root anchor derivation (flowsDir +
+ * runStack seed).
  *
  * The input must arrive with any `..` segments intact (no path.resolve/join
  * over the string): a `..` that follows a symlinked directory component names
  * the parent of the link's TARGET, which only the kernel can know, so a lexical
  * collapse first silently picks a different file than the spelling denotes on
  * disk. fs/promises' realpath keeps kernel semantics (realpath(3), unlike
- * callback fs.realpath, which path.resolve()s first), so handing it the
- * un-collapsed string is sufficient. When realpath fails the containing
- * directory is still kernel-resolved before the basename is re-appended, so the
- * subsequent read opens — and its ENOENT names — the file the spelling denotes
- * rather than an existing impostor a collapse could have named; when the
- * directory chain itself is broken the spelling is returned verbatim, for the
- * same reason.
+ * callback fs.realpath, which path.resolve()s first). When realpath fails the
+ * containing directory is still kernel-resolved before the basename is
+ * re-appended, so the subsequent read opens — and its ENOENT names — the file
+ * the spelling denotes rather than an existing impostor a collapse could have
+ * named; when the directory chain itself is broken the spelling is returned
+ * verbatim, for the same reason.
  *
  * Callers must pass an absolute path: every return value, the verbatim fallback
- * included, is consumed as absolute (readFile, dirname-derived anchors) with no
- * resolve step after this point.
+ * included, is consumed as absolute with no resolve step after this point.
  */
 export async function canonicalFlowPath(p: string): Promise<string> {
   try {
@@ -57,8 +55,7 @@ interface ResolvedFlowRelativeFile {
 }
 
 /**
- * One hop from a flow file to a file it NAMES. Three things here are
- * load-bearing:
+ * Three things here are load-bearing:
  *
  * - **The anchor is the CONTAINING file's canonical directory**, never the root
  *   flow's. A root anchor would make a fragment resolve a different file
@@ -74,13 +71,10 @@ interface ResolvedFlowRelativeFile {
  *   drive-prefixed target — so the concatenation is well-formed.
  * - **The casing check lists the directory the target is SPELLED in**, not
  *   `path.dirname(canonical)`. The basename compared is always the SUPPLIED one
- *   (`path.posix.basename(target)`), so a canonical-directory listing would
- *   compare that name against entries it was never written among: for a link
- *   reached across directories, the link's own directory holds no entry that
- *   case-folds to the supplied name, so the verdict would be `absent` — which
- *   refuses nothing — and a MIS-CASED spelling of the link's own name would
- *   skip the check entirely, reopening the ENOENT-on-Linux-CI hazard the check
- *   exists for. The spelled directory is the listing that holds the link.
+ *   (`path.posix.basename(target)`), and only the spelled directory is
+ *   guaranteed to hold an entry under that name: for a symlink whose target
+ *   lives elsewhere, the canonical directory holds the target's name instead,
+ *   so a mis-cased spelling of the link's own name would go unjudged.
  *   `path.dirname` removes a segment without collapsing `..`, so a `..` still
  *   reaches readdir intact.
  *
@@ -91,12 +85,11 @@ interface ResolvedFlowRelativeFile {
  *
  * There is deliberately NO path fence here. A target is reachable exactly when
  * the tool-server user can read it, which is the reach the front door already
- * grants: an operator can point `flow_path` at any YAML on the host (see
- * `resolveFlowSource`). The one route carrying untrusted content, an uploaded
- * flow, never reaches this function at all — `assertUploadSelfContained`
- * rejects every `run:` and `script:` step on that path, and a recording whose
- * files are not on this host is refused by `flow-add-script` before it gets
- * here.
+ * grants: an operator can point `flow_path` at any YAML on the host. The one
+ * route carrying untrusted content, an uploaded flow, never reaches this
+ * function at all — `assertUploadSelfContained` rejects every `run:` and
+ * `script:` step on that path, and a recording whose files are not on this host
+ * is refused by `flow-add-script` before it gets here.
  */
 export async function resolveFlowRelativeFile(
   anchorDir: string,
