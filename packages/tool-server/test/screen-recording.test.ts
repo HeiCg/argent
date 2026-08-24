@@ -56,6 +56,7 @@ import {
   getActiveScreenRecordings,
 } from "../src/utils/screen-recording-reminder";
 import { __resetReapedSessionsForTesting } from "../src/utils/reaped-sessions";
+import { redirectTmpdir } from "./helpers/tmpdir-env";
 
 const mockSpawn = vi.mocked(spawn);
 const mockOpenStream = vi.mocked(openMjpegStream);
@@ -200,7 +201,18 @@ const androidDevice: DeviceInfo = {
   kind: "emulator",
 } as DeviceInfo;
 
-beforeEach(() => {
+// startCapture names its output join(os.tmpdir(),
+// `argent-screen-recording-${deviceId}-${Date.now()}.mp4`). The device ids are
+// fixtures, and vi.useFakeTimers() seeds its clock from the real time rather
+// than a constant, so the millisecond two runs start in is the only thing
+// separating their paths — and each test ends by deleting the path it derived.
+// Scoping the tmpdir per test removes that window instead of leaving it narrow.
+let restoreTmpdir: () => void;
+let scratch: string;
+
+beforeEach(async () => {
+  scratch = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screen-recording-test-"));
+  restoreTmpdir = redirectTmpdir(scratch);
   __resetActiveScreenRecordingsForTesting();
   __resetReapedSessionsForTesting();
   mockSpawn.mockReset();
@@ -210,8 +222,10 @@ beforeEach(() => {
   vi.useFakeTimers();
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
+  restoreTmpdir();
+  await fs.rm(scratch, { recursive: true, force: true });
 });
 
 describe("screen-recording session blueprint", () => {
