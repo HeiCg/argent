@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { FAILURE_CODES, subprocessFailureMetadata, withFailureSignal } from "@argent/registry";
 
 const execFileAsync = promisify(execFile);
 
@@ -143,10 +144,21 @@ async function runDevicectl(
         errorJson = null;
       }
     }
-    throw new IosDeviceControlError(`Failed to ${action}: ${firstLine(e.stderr || e.message)}`, {
-      hint: resolveDevicectlHint(output),
-      cause: Object.assign(error as Error, { devicectlJson: errorJson }),
-    });
+    throw withFailureSignal(
+      new IosDeviceControlError(`Failed to ${action}: ${firstLine(e.stderr || e.message)}`, {
+        hint: resolveDevicectlHint(output),
+        cause: Object.assign(error as Error, { devicectlJson: errorJson }),
+      }),
+      {
+        error_code: FAILURE_CODES.IOS_DEVICECTL_COMMAND_FAILED,
+        failure_stage: "ios_devicectl_command",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+        // devicectl has no FAILURE_COMMANDS entry; keep the exit-code/signal
+        // metadata and let the command category read "unknown".
+        ...subprocessFailureMetadata(error, "unknown"),
+      }
+    );
   } finally {
     if (jsonPath) await fs.rm(jsonPath, { force: true }).catch(() => {});
   }

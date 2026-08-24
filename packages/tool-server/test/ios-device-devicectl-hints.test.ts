@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import { installApp, launchApp } from "../src/utils/ios-device/devicectl";
 
-const fake = vi.hoisted(() => ({ stderr: "" }));
+const fake = vi.hoisted(() => ({ stderr: "", code: undefined as number | undefined }));
 
 // devicectl promisifies execFile at module load, so the mock must replace the
 // callback-style function itself; every call fails with the scripted stderr.
@@ -11,6 +12,7 @@ vi.mock("node:child_process", () => ({
       Object.assign(new Error("Command failed: xcrun devicectl"), {
         stdout: "",
         stderr: fake.stderr,
+        code: fake.code,
       })
     );
   },
@@ -43,5 +45,22 @@ describe("devicectl error hints are folded into the message", () => {
     expect((error as Error).message).toContain(
       "Connect the device by cable, accept the Trust prompt"
     );
+  });
+});
+
+describe("devicectl failures carry a structured failure signal", () => {
+  it("stamps IOS_DEVICECTL_COMMAND_FAILED with subprocess metadata, hint and class intact", async () => {
+    fake.stderr = "ERROR: The application failed to launch.";
+    fake.code = 1;
+
+    const error = await launchApp(UDID, "com.example.app").catch((caught: unknown) => caught);
+
+    const signal = getFailureSignal(error);
+    expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICECTL_COMMAND_FAILED);
+    expect(signal?.error_kind).toBe("subprocess");
+    expect(signal?.failure_exit_code).toBe(1);
+    // Stamping must not disturb the error surface T01 relies on.
+    expect((error as Error).name).toBe("IosDeviceControlError");
+    expect((error as { hint?: string | null }).hint).toContain("Unlock the device");
   });
 });

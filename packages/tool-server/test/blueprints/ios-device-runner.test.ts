@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { DeviceInfo } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 import { iosDeviceRunnerBlueprint } from "../../src/blueprints/ios-device-runner";
 import { IosDeviceTransportError } from "../../src/utils/ios-device/usbmux-protocol";
 import {
@@ -259,5 +259,63 @@ describe("ios-device-runner blueprint — recoverable classification", () => {
     expect(thrown.runnerExited).toBe(true);
     expect(recoverable(thrown)).toBe(true);
     expect(killRunnerProcess).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ios-device-runner blueprint — failure signals", () => {
+  it("stamps the factory missing-device error with IOS_DEVICE_RUNNER_FACTORY_OPTIONS_MISSING", async () => {
+    const thrown = (await rejectionOf(
+      iosDeviceRunnerBlueprint.factory({}, undefined as unknown as DeviceInfo, undefined)
+    )) as Error;
+
+    expect(thrown.message).toBe(
+      "ios-device-runner.factory could not determine the device — pass it via iosDeviceRunnerRef(device)."
+    );
+    expect(getFailureSignal(thrown)?.error_code).toBe(
+      FAILURE_CODES.IOS_DEVICE_RUNNER_FACTORY_OPTIONS_MISSING
+    );
+  });
+
+  it("stamps the runner-not-ready error with IOS_DEVICE_RUNNER_NOT_READY", async () => {
+    stubLaunch();
+    vi.mocked(waitForRunnerReady).mockRejectedValueOnce(
+      new IosDeviceTransportError("timeout", "Runner did not become ready within 120000ms", {
+        retryable: false,
+      })
+    );
+
+    const signal = getFailureSignal(await rejectionOf(callFactory()));
+    expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
+  });
+
+  it("stamps the mid-command post-mortem with IOS_DEVICE_RUNNER_EXITED and the exit code", async () => {
+    const { api, child, clientRun } = await createInstance();
+    clientRun.mockRejectedValue(
+      new IosDeviceTransportError("http", "Runner HTTP request failed: read ECONNRESET", {
+        retryable: false,
+      })
+    );
+    child.emit("exit", 1);
+
+    const signal = getFailureSignal(
+      await rejectionOf(api.run({ command: "snapshot", appBundleId: "com.example.signal" }))
+    );
+    expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_EXITED);
+    expect(signal?.failure_exit_code).toBe(1);
+  });
+
+  it("stamps the terminated event with IOS_DEVICE_RUNNER_TERMINATED, message unchanged", async () => {
+    const { child } = stubLaunch();
+    const instance = await callFactory();
+    const terminated: Array<Error | undefined> = [];
+    instance.events.on("terminated", (error) => terminated.push(error));
+
+    child.emit("exit", 7);
+
+    expect(terminated).toHaveLength(1);
+    expect(terminated[0]?.message).toBe(`iOS device runner exited (code 7). Log: ${LOG_PATH}`);
+    expect(getFailureSignal(terminated[0])?.error_code).toBe(
+      FAILURE_CODES.IOS_DEVICE_RUNNER_TERMINATED
+    );
   });
 });

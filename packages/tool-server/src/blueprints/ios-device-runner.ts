@@ -1,6 +1,9 @@
 import * as net from "node:net";
 import {
+  FAILURE_CODES,
+  FailureError,
   TypedEventEmitter,
+  withFailureSignal,
   type DeviceInfo,
   type ServiceBlueprint,
   type ServiceEvents,
@@ -104,12 +107,21 @@ async function explainRunnerDeath(options: {
   // The marker keeps recoverable() matching, so the registry still tears the
   // instance down and the next call respawns.
   return Object.assign(
-    new Error(
-      `iOS device runner exited (code ${exitCode}) while executing '${String(command.command)}'` +
-        (crash ? ` — recorded crash: ${crash}.` : ".") +
-        recovery +
-        ` Log: ${options.logPath}`,
-      { cause: error }
+    withFailureSignal(
+      new Error(
+        `iOS device runner exited (code ${exitCode}) while executing '${String(command.command)}'` +
+          (crash ? ` — recorded crash: ${crash}.` : ".") +
+          recovery +
+          ` Log: ${options.logPath}`,
+        { cause: error }
+      ),
+      {
+        error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_EXITED,
+        failure_stage: "ios_device_runner_exited",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+        ...(typeof exitCode === "number" ? { failure_exit_code: exitCode } : {}),
+      }
     ),
     { runnerExited: true }
   );
@@ -171,8 +183,14 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       deviceFromOpts?.id ??
       (typeof payload === "string" ? payload : (payload as DeviceInfo | undefined)?.id);
     if (!udid) {
-      throw new Error(
-        `${IOS_DEVICE_RUNNER_NAMESPACE}.factory could not determine the device — pass it via iosDeviceRunnerRef(device).`
+      throw new FailureError(
+        `${IOS_DEVICE_RUNNER_NAMESPACE}.factory could not determine the device — pass it via iosDeviceRunnerRef(device).`,
+        {
+          error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_FACTORY_OPTIONS_MISSING,
+          failure_stage: "ios_device_runner_factory_options",
+          failure_area: "tool_server",
+          error_kind: "validation",
+        }
       );
     }
 
@@ -204,13 +222,21 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         killRunnerProcess(launched.child);
         const logText = await fs.readFile(launched.logPath, "utf8").catch(() => "");
         throw Object.assign(
-          new Error(
-            `The on-device runner did not become ready: ${String((error as Error).message)}. ` +
-              `Check the xcodebuild log at ${launched.logPath} — signing/provisioning issues and ` +
-              `a locked device screen are the two common causes. The device must be unlocked ` +
-              `the first time so you can trust the developer app (Settings > General > VPN & ` +
-              `Device Management) if iOS asks.`,
-            { cause: error }
+          withFailureSignal(
+            new Error(
+              `The on-device runner did not become ready: ${String((error as Error).message)}. ` +
+                `Check the xcodebuild log at ${launched.logPath} — signing/provisioning issues and ` +
+                `a locked device screen are the two common causes. The device must be unlocked ` +
+                `the first time so you can trust the developer app (Settings > General > VPN & ` +
+                `Device Management) if iOS asks.`,
+              { cause: error }
+            ),
+            {
+              error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,
+              failure_stage: "ios_device_runner_ready",
+              failure_area: "tool_server",
+              error_kind: "timeout",
+            }
           ),
           { runnerExited: true, runnerLogText: logText }
         );
@@ -245,7 +271,12 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       if (!disposed) {
         events.emit(
           "terminated",
-          new Error(`iOS device runner exited (code ${code}). Log: ${launched.logPath}`)
+          new FailureError(`iOS device runner exited (code ${code}). Log: ${launched.logPath}`, {
+            error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_TERMINATED,
+            failure_stage: "ios_device_runner_process_exit",
+            failure_area: "tool_server",
+            error_kind: "subprocess",
+          })
         );
       }
     });
