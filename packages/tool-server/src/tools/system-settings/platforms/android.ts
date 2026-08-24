@@ -1,6 +1,11 @@
-import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  FailureError,
+  getFailureSignal,
+  subprocessFailureMetadata,
+} from "@argent/registry";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
-import { adbShell, runAdb } from "../../../utils/adb";
+import { adbShell, isTerminalAdbError, runAdb } from "../../../utils/adb";
 import { TEXT_SIZE_VALUES } from "../types";
 import type {
   SystemSetting,
@@ -127,6 +132,30 @@ function androidChange(setting: SystemSetting, value: string): AndroidChange {
   }
 }
 
+// A dead or wedged adb transport is not a setting refusal: propagate the
+// classified FailureError (timeout kind, terminal-device-state message) so it
+// surfaces with its real cause, mirroring settings-permissions' runPm.
+function isTransportFailure(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    isTerminalAdbError(message) ||
+    getFailureSignal(err)?.error_kind === "timeout" ||
+    /cannot connect to daemon|protocol fault|connection reset by peer/i.test(message)
+  );
+}
+
+// The adb client prints its own notices on stderr — "* daemon not running;
+// starting now at tcp:5037" after a server restart, a version-mismatch warning
+// — on a call that then succeeds. parseAdbDevices skips these `*` banner lines
+// for the same reason; only what survives them can be svc's failure report.
+function stripAdbBanner(stderr: string): string {
+  return stderr
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("*"))
+    .join("\n")
+    .trim();
+}
+
 export const androidImpl: PlatformImpl<
   SystemSettingsServices,
   SystemSettingsParams,
@@ -148,12 +177,13 @@ export const androidImpl: PlatformImpl<
         const { stderr } = await runAdb(["-s", udid, "shell", shellCommand], {
           timeoutMs: 15_000,
         });
-        const detail = stderr.trim();
+        const detail = stripAdbBanner(stderr);
         if (detail) throw new Error(detail);
       } else {
         await adbShell(udid, shellCommand, { timeoutMs: 15_000 });
       }
     } catch (err) {
+      if (isTransportFailure(err)) throw err;
       const detail = err instanceof Error ? err.message : String(err);
       throw new FailureError(
         `Failed to set '${setting}' to '${value}' on ${udid}: ${detail.trim()}`,

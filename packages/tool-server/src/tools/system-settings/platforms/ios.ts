@@ -116,6 +116,7 @@ export const iosImpl: PlatformImpl<
         {
           error_code: FAILURE_CODES.SYSTEM_SETTING_UNSUPPORTED,
           failure_stage: "ios_system_setting_unsupported",
+          error_kind: "unsupported",
         }
       );
     }

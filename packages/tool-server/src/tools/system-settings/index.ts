@@ -25,6 +25,10 @@ const zodSchema = z.object({
   value: z
     .string()
     .min(1)
+    // The longest legal value is 37 chars (`accessibility-extra-extra-extra-large`);
+    // the bound keeps a caller's oversized `value` out of the 400 error message
+    // and event log, which echo it verbatim.
+    .max(64)
     .describe(
       "The value to set — valid values depend on `setting`: " +
         "`appearance` → light | dark; " +
@@ -63,6 +67,7 @@ function assertValidValue(params: SystemSettingsParams): void {
       {
         error_code: FAILURE_CODES.SYSTEM_SETTING_UNSUPPORTED,
         failure_stage: "system_setting_validate_value",
+        error_kind: "unsupported",
       }
     );
   }
@@ -100,7 +105,7 @@ Platforms:
 - iOS simulator supports the first five (display / accessibility): \`appearance\`, \`text-size\`, and \`increase-contrast\` via \`simctl ui\`; \`reduce-motion\` and \`invert-colors\` via the accessibility preferences domain. The simulator must be booted. A setting a given iOS runtime doesn't model returns an unsupported error, and the five Android-only settings are rejected on iOS.
 - Android supports all ten, on emulators and real devices, via \`adb\` (\`cmd uimode night\`, \`font_scale\`, accessibility flags, \`svc wifi/data\`, \`cmd connectivity airplane-mode\`, \`location_mode\`, \`accelerometer_rotation\`). Dark mode needs Android 10 (API 29)+.
 This is a device-wide toggle, not per-app — no bundleId. Some apps only re-read a display/accessibility setting on next launch, so relaunch the app afterwards if the change doesn't appear live.
-Returns { setting, value, applied }, where \`applied\` is the concrete platform-level change (e.g. \`content_size=large\`, \`night_mode=yes\`, \`ReduceMotionEnabled=YES\`, \`wifi=enabled\`). Fails if the value is invalid for the setting, the setting isn't available on the target platform, the device isn't booted, or the platform command errors.`,
+Returns { setting, value, applied }, where \`applied\` is the concrete platform-level change (e.g. \`content_size=large\`, \`night_mode=yes\`, \`ReduceMotionEnabled=YES\`, \`wifi=enabled\`). Fails if the value is invalid for the setting, the setting isn't available on the target platform, the device isn't booted, or the platform command errors. A failed multi-part change (Android reduce-motion writes three animation scales) can leave part of it applied — run the same call again; every write is idempotent.`,
   searchHint:
     "dark light mode appearance theme color scheme text size font dynamic type increase contrast accessibility system settings toggle",
   zodSchema,

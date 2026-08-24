@@ -11,11 +11,27 @@ vi.mock("../src/utils/adb", async (importOriginal) => {
   return {
     adbShell: vi.fn(async () => ""),
     runAdb: vi.fn(async () => ({ stdout: "", stderr: "" })),
+    isTerminalAdbError: actual.isTerminalAdbError,
     shellQuote: actual.shellQuote,
   };
 });
 
-import { FAILURE_CODES, getFailureSignal, zodObjectToJsonSchema } from "@argent/registry";
+// Device-set resolution reads `ios.additionalDeviceSets` off disk; pin it so
+// the argv/call-count assertions hold on machines with extra sets configured
+// (e.g. Radon IDE), where each unprimed UDID would otherwise probe every set.
+// The additional-device-set describe below still exercises the real routing
+// through rememberDeviceSet.
+vi.mock("@argent/configuration-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/configuration-core")>()),
+  getAdditionalIosDeviceSets: () => [],
+}));
+
+import {
+  FAILURE_CODES,
+  FailureError,
+  getFailureSignal,
+  zodObjectToJsonSchema,
+} from "@argent/registry";
 import { systemSettingsTool } from "../src/tools/system-settings";
 import { iosImpl } from "../src/tools/system-settings/platforms/ios";
 import { androidImpl } from "../src/tools/system-settings/platforms/android";
@@ -128,6 +144,25 @@ describe("system-settings schema", () => {
     );
   });
 
+  it("bounds `value` so an oversized caller string can't be echoed into error output", () => {
+    // The 400 message and event log interpolate the raw value; the longest
+    // legal value is 37 chars.
+    expect(
+      schema.safeParse({
+        udid: IOS_UDID,
+        setting: "appearance",
+        value: "d".repeat(65),
+      }).success
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        udid: IOS_UDID,
+        setting: "text-size",
+        value: "accessibility-extra-extra-extra-large",
+      }).success
+    ).toBe(true);
+  });
+
   it("derives a JSON schema with the full setting enum and all three fields required", () => {
     const json = zodObjectToJsonSchema(schema) as {
       required?: string[];
@@ -149,6 +184,7 @@ describe("system-settings value validation (platform-agnostic, runs before dispa
       systemSettingsTool.execute!({}, { udid: IOS_UDID, setting: "appearance", value: "sepia" })
     ).rejects;
     await rejection.toSatisfy(failsWith(FAILURE_CODES.SYSTEM_SETTING_UNSUPPORTED));
+    await rejection.toSatisfy((err) => getFailureSignal(err)?.error_kind === "unsupported");
     await rejection.toThrow(/Valid values: light, dark/);
     // An out-of-set value is a caller input error → InvalidToolInputError, which
     // the HTTP layer maps to 400 (not a generic 500).
@@ -319,6 +355,7 @@ describe("system-settings iOS branch", () => {
       iosImpl.handler({}, params({ setting: "wifi", value: "on" }), IOS_DEVICE)
     ).rejects;
     await rejection.toSatisfy(failsWith(FAILURE_CODES.SYSTEM_SETTING_UNSUPPORTED));
+    await rejection.toSatisfy((err) => getFailureSignal(err)?.error_kind === "unsupported");
     await rejection.toBeInstanceOf(InvalidToolInputError);
     await rejection.toThrow(/Android-only/);
     expect(execFileMock).not.toHaveBeenCalled();
@@ -565,12 +602,32 @@ describe("system-settings Android branch", () => {
       "svc data enable",
     ]);
     expect(result.applied).toBe("mobile_data=enabled");
+    mockRunAdb.mockClear();
+    const off = await androidImpl.handler(
+      {},
+      params({ setting: "cellular", value: "off" }),
+      androidDevice
+    );
+    expect(mockRunAdb.mock.calls[0]![0]).toEqual([
+      "-s",
+      ANDROID_SERIAL,
+      "shell",
+      "svc data disable",
+    ]);
+    expect(off.applied).toBe("mobile_data=disabled");
   });
 
   it("airplane-mode maps to `cmd connectivity airplane-mode enable/disable`", async () => {
     const { result, shellCmd } = await run({ setting: "airplane-mode", value: "on" });
     expect(shellCmd).toBe("cmd connectivity airplane-mode enable");
     expect(result.applied).toBe("airplane_mode=enabled");
+    mockAdbShell.mockClear();
+    const { result: off, shellCmd: offCmd } = await run({
+      setting: "airplane-mode",
+      value: "off",
+    });
+    expect(offCmd).toBe("cmd connectivity airplane-mode disable");
+    expect(off.applied).toBe("airplane_mode=disabled");
   });
 
   it("location on sets location_mode 3 (high accuracy), off sets 0", async () => {
@@ -587,17 +644,52 @@ describe("system-settings Android branch", () => {
     const { result, shellCmd } = await run({ setting: "auto-rotate", value: "on" });
     expect(shellCmd).toBe("settings put system accelerometer_rotation 1");
     expect(result.applied).toBe("accelerometer_rotation=1");
+    mockAdbShell.mockClear();
+    const { result: off, shellCmd: offCmd } = await run({ setting: "auto-rotate", value: "off" });
+    expect(offCmd).toBe("settings put system accelerometer_rotation 0");
+    expect(off.applied).toBe("accelerometer_rotation=0");
   });
 
-  it("an adb failure surfaces as ANDROID_SYSTEM_SETTING_FAILED", async () => {
-    mockAdbShell.mockRejectedValueOnce(new Error("error: device offline"));
+  it("a command-level adb refusal surfaces as ANDROID_SYSTEM_SETTING_FAILED", async () => {
+    mockAdbShell.mockRejectedValueOnce(new Error("Failed to write font_scale: Invalid argument"));
     await expect(androidImpl.handler({}, params({}), androidDevice)).rejects.toSatisfy(
       failsWith(FAILURE_CODES.ANDROID_SYSTEM_SETTING_FAILED)
     );
   });
 
+  it("a terminal adb state propagates adb's own failure instead of being relabelled", async () => {
+    mockAdbShell.mockRejectedValueOnce(new Error("error: device 'emulator-5554' offline"));
+    const rejection = expect(androidImpl.handler({}, params({}), androidDevice)).rejects;
+    await rejection.toThrow(/device 'emulator-5554' offline/);
+    await rejection.not.toSatisfy(failsWith(FAILURE_CODES.ANDROID_SYSTEM_SETTING_FAILED));
+  });
+
+  it("a transport failure keeps adb's own classification instead of being relabelled", async () => {
+    // A wedged/dead device is a transport fault, not a setting refusal — the
+    // timeout kind and ANDROID_ADB_COMMAND_FAILED code must survive to the
+    // caller, matching settings-permissions' isTransportFailure propagation.
+    const transport = new FailureError("adb timed out", {
+      error_code: FAILURE_CODES.ANDROID_ADB_COMMAND_FAILED,
+      failure_stage: "android_adb_command",
+      failure_area: "tool_server",
+      error_kind: "timeout",
+    });
+    mockRunAdb.mockRejectedValueOnce(transport);
+    const rejection = expect(
+      androidImpl.handler({}, params({ setting: "wifi", value: "on" }), androidDevice)
+    ).rejects;
+    await rejection.toSatisfy(failsWith(FAILURE_CODES.ANDROID_ADB_COMMAND_FAILED));
+    await rejection.toSatisfy((err) => getFailureSignal(err)?.error_kind === "timeout");
+    await rejection.not.toSatisfy(failsWith(FAILURE_CODES.ANDROID_SYSTEM_SETTING_FAILED));
+    // Same discipline for the exit-code-backed path.
+    mockAdbShell.mockRejectedValueOnce(transport);
+    await expect(
+      androidImpl.handler({}, params({ setting: "appearance", value: "dark" }), androidDevice)
+    ).rejects.toSatisfy(failsWith(FAILURE_CODES.ANDROID_ADB_COMMAND_FAILED));
+  });
+
   // `svc` is the one Android mechanism here that exits 0 when the operation
-  // failed and puts its reason ("Wi-Fi/Mobile data operation failed: …") on
+  // failed and puts its reason ("Mobile data operation failed: …") on
   // stderr — so wifi/cellular must be read off stderr, not the exit code.
   describe("the svc-backed settings (wifi, cellular)", () => {
     it("run over runAdb so stderr is observable", async () => {
@@ -628,6 +720,32 @@ describe("system-settings Android branch", () => {
         androidDevice
       );
       expect(result.applied).toBe("wifi=disabled");
+    });
+
+    it("ignore adb's own daemon-startup banner on stderr when the command succeeded", async () => {
+      // First adb call after the shared server died: the client prints its
+      // startup banner on stderr and then runs the command normally. The
+      // banner is client chatter, not svc's verdict.
+      mockRunAdb.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "* daemon not running; starting now at tcp:5037\n* daemon started successfully\n",
+      });
+      const result = await androidImpl.handler(
+        {},
+        params({ setting: "wifi", value: "on" }),
+        androidDevice
+      );
+      expect(result.applied).toBe("wifi=enabled");
+    });
+
+    it("still fail when a real refusal follows the banner lines", async () => {
+      mockRunAdb.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "* daemon not running; starting now at tcp:5037\nWi-Fi operation failed\n",
+      });
+      await expect(
+        androidImpl.handler({}, params({ setting: "wifi", value: "on" }), androidDevice)
+      ).rejects.toThrow(/Wi-Fi operation failed/);
     });
   });
 });
