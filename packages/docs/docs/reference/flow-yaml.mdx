@@ -256,6 +256,16 @@ Argent runs the script with the project root as the working directory. Argent gi
 
 The script can set the `output` global. No step reads the value yet. Argent fails the step when it cannot serialize the value.
 
+Do not write `{{output:...}}` in a step. Argent refuses a flow file that holds this reference, and the run stops before step 1. Argent looks for the reference in each field that a later release resolves it in:
+
+- The message of an `echo` step.
+- The text of a `type` step.
+- The expected text of an `await` or an `assert` step.
+- The `text`, the `id` and the `role` of a selector.
+- Each string in the `args` of a `tool` step.
+
+A `matches` pattern is not one of these fields. `matches` takes a regular expression, and Argent reads `{{` in a pattern as text.
+
 Argent prints the standard output and the standard error of the script below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. Argent prints a line of its own when it cuts the output. **Argent does not redact this log.** Do not print a credential from a script.
 
 The verdict of a failed step names the side that caused the failure. Both verdicts stop the flow.
