@@ -13,7 +13,26 @@ import {
 } from "./flow-utils";
 import { canonicalFlowPath } from "./flow-file-refs";
 import { runFlowScriptStep } from "./flow-script-step";
+import { utf8SafeCut } from "./script/flow-script-executor";
 import { summarizeStep } from "./flow-finish-recording";
+
+/**
+ * How much of the returned document is shown, in bytes of JSON.
+ *
+ * The executor's own ceiling, `SCRIPT_MAX_OUTPUT_BYTES`, is a MiB, and it bounds
+ * what a script may RETURN rather than what may be handed on — so a passing
+ * script could put a megabyte of whatever it fetched into one tool result, which
+ * is a quarter of a million tokens an agent mid-recording takes on with no say
+ * in it. The sibling field on this very result is already bounded: `log` stops
+ * at `SCRIPT_STEP_LOG_LIMIT_BYTES` and says so through `logTruncated`. This is
+ * that same bound, at the same size, for the same reason, and it is stated
+ * separately rather than shared because the two limits answer to different
+ * things — the log's to a run's report budget, this one to one tool result.
+ *
+ * The document is shown so an author can see the SHAPE a later release will
+ * read, and a shape is legible from its first 64 KiB.
+ */
+const OUTPUT_RENDER_LIMIT_BYTES = 64 * 1024;
 
 const zodSchema = z.object({
   name: z
@@ -71,6 +90,12 @@ interface FlowAddScriptResult {
    * the walkers' rewrite of it.
    */
   outputJson?: string;
+  /**
+   * `outputJson` was cut at {@link OUTPUT_RENDER_LIMIT_BYTES} — so it shows the
+   * start of the document, and does not parse as JSON. Carried as its own field
+   * for the reason `logTruncated` is: the text holds no marker.
+   */
+  outputTruncated?: true;
   /** Steps in the recording. Unchanged by a call that did not record. */
   stepCount: number;
   /** The appended step's summary line. Absent when nothing was recorded. */
@@ -92,6 +117,25 @@ interface FlowAddScriptResult {
  */
 async function recordedStepCount(session: RecordingSession): Promise<number> {
   return (await countStepsOnDisk(session.filePath)) ?? session.flow.steps.length;
+}
+
+/**
+ * The document as the agent is shown it: JSON text, bounded.
+ *
+ * The cut is taken on the encoded bytes, and backed off the way the log
+ * capture's is, so a truncated document never ends mid-character. It does end
+ * mid-JSON, which is why the flag is not optional dressing — without it a cut
+ * document reads as a script that returned a shorter one.
+ */
+function renderOutput(output: Record<string, unknown>): {
+  outputJson: string;
+  outputTruncated?: true;
+} {
+  const encoded = JSON.stringify(output);
+  const bytes = Buffer.from(encoded, "utf8");
+  if (bytes.length <= OUTPUT_RENDER_LIMIT_BYTES) return { outputJson: encoded };
+  const kept = bytes.subarray(0, utf8SafeCut(bytes, OUTPUT_RENDER_LIMIT_BYTES));
+  return { outputJson: kept.toString("utf8"), outputTruncated: true };
 }
 
 /**
@@ -129,9 +173,9 @@ export const flowAddScriptTool: ToolDefinition<z.infer<typeof zodSchema>, FlowAd
   description: `Run a local .mjs file through the flow script executor and record it as a \`script:\` step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording).
 Use when a flow needs backend state before it touches the device: seed an order, create a test account, read a one-time code. The script drives nothing on the device; the steps around it do. Record it at the point in the walkthrough where it belongs — a setup script goes BEFORE the restart-app it prepares state for, because that is where it runs at replay.
 It runs the file exactly as a replay will: same path resolution (relative to the flow file being recorded), same environment allowlist, same time limit, and the same working directory — this recording's \`project_root\`, which is what a replay launched from that root also uses.
-Returns { message, status, reason?, log?, logTruncated?, durationMs?, outputJson?, stepCount, recorded?, savedTo? }.
+Returns { message, status, reason?, log?, logTruncated?, durationMs?, outputJson?, outputTruncated?, stepCount, recorded?, savedTo? }.
 UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. A script that ran before it stopped did not roll back what it created; the \`message\` says whether anything ran, so you can fix and re-run or clean up first.
-\`outputJson\` is the document the script returned, as JSON text. It is shown so you can see the shape a later release will read; no flow step can reference it yet.
+\`outputJson\` is the document the script returned, as JSON text. It is shown so you can see the shape a later release will read; no flow step can reference it yet. A document over 64 KiB is cut, and \`outputTruncated\` says so.
 Refused for a recording whose project root is not on this tool server's filesystem: the .mjs file stays on the client, so there is nothing here to resolve the path against or to run.`,
   // A script's default limit is 30s and its host cap is five minutes, both of
   // which outlive the MCP adapter's per-request fetch budget. Without this the
@@ -288,7 +332,7 @@ Refused for a recording whose project root is not on this tool server's filesyst
       message:
         `Script step added to "${params.name}" flow — it ran here exactly as it will at replay. ` +
         `\`outputJson\` is what the script returned; no flow step can reference it yet.`,
-      ...(result?.output ? { outputJson: JSON.stringify(result.output) } : {}),
+      ...(result?.output ? renderOutput(result.output) : {}),
       stepCount,
       recorded: summarizeStep(step, stepCount),
       savedTo,

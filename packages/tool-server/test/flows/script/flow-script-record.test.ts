@@ -200,6 +200,51 @@ describe("recording a script step", () => {
     expect(deepFindMarker(result)).toBeNull();
   });
 
+  it("cuts a document too large to hand on, and says it cut it", async () => {
+    // The executor lets a script RETURN a MiB. Handing a MiB on is a quarter of
+    // a million tokens the agent did not ask for, so this result bounds it the
+    // way it already bounds `log`.
+    await write("scripts/big.mjs", `output.blob = "y".repeat(1024 * 1024 - 200);`);
+    await start("big");
+
+    const result = await addScript("big", "../../scripts/big.mjs");
+
+    expect(result.status).toBe("pass");
+    expect(Buffer.byteLength(result.outputJson!, "utf8")).toBe(64 * 1024);
+    expect(result.outputTruncated).toBe(true);
+    // The start of the document is what survives, so the shape is still legible.
+    expect(result.outputJson).toMatch(/^\{"blob":"y+$/);
+    // The step is recorded all the same: the script passed.
+    expect(result.stepCount).toBe(1);
+  });
+
+  it("leaves a document inside the limit whole and unflagged", async () => {
+    await write("scripts/seed.mjs", `output.blob = "y".repeat(1000);`);
+    await start("small");
+
+    const result = await addScript("small", "../../scripts/seed.mjs");
+
+    expect(result.outputJson).toBe(JSON.stringify({ blob: "y".repeat(1000) }));
+    expect(result).not.toHaveProperty("outputTruncated");
+  });
+
+  it("never cuts a multi-byte character in half", async () => {
+    // The cut lands on the encoded bytes, so a 3-byte character straddling the
+    // ceiling has to be dropped whole — otherwise the field carries a lone
+    // replacement character the script never wrote. 30000 of them encode to
+    // 90 KB: over this ceiling, under the executor's own.
+    await write("scripts/wide.mjs", `output.blob = "\u3042".repeat(30000);`);
+    await start("wide");
+
+    const result = await addScript("wide", "../../scripts/wide.mjs");
+
+    expect(result.outputTruncated).toBe(true);
+    expect(result.outputJson).not.toContain("\uFFFD");
+    // One byte short of the ceiling: the character that straddled it went whole.
+    expect(Buffer.byteLength(result.outputJson!, "utf8")).toBe(64 * 1024 - 1);
+    expect(result.outputJson).toMatch(/^\{"blob":"\u3042+$/);
+  });
+
   it("records the timeout when one is given, and nothing when it is not", async () => {
     await write("scripts/seed.mjs", `output.ok = true;`);
 

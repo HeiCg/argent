@@ -1683,8 +1683,14 @@ function partialSecretTail(text: string, secrets: readonly FlowScriptSecret[]): 
   return keep;
 }
 
-/** Back off to the start of a UTF-8 sequence so a cut never splits a character. */
-function utf8SafeCut(buffer: Buffer, max: number): number {
+/**
+ * Back off to the start of a UTF-8 sequence so a cut never splits a character.
+ *
+ * Exported for the recorder, which bounds the returned output document the way
+ * the log capture bounds the log — same reason for the back-off, so the same
+ * three lines rather than a second copy of them.
+ */
+export function utf8SafeCut(buffer: Buffer, max: number): number {
   let cut = Math.min(max, buffer.length);
   while (cut > 0 && (buffer[cut] & 0xc0) === 0x80) cut -= 1;
   return cut;
