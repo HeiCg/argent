@@ -106,7 +106,8 @@ export type WaitCondition = "exists" | "visible" | "hidden" | "text";
 // How a `text` condition compares the located element's text to the expected
 // string. Both literal modes fold first (see foldText). `contains` (default) is
 // a case-insensitive folded substring, and keeps a leading or trailing space in
-// the expected string as a word boundary; `equals` is the folded full-string
+// the expected string, which must then match a real space in the label - it is
+// not an end-of-text anchor; `equals` is the folded full-string
 // match, trimmed at both ends (so "1" no longer satisfies "10"). `matches` is a
 // JS regex tested unanchored and CASE-SENSITIVELY - a regex carries its
 // semantics in the pattern, and forcing `i` would betray `\d{2}`-style
@@ -228,9 +229,11 @@ export function foldText(value: string): string {
 /**
  * {@link foldText} without the trim, on the LABEL side: leading and trailing
  * whitespace each survive as one space, which a substring test needs. A
- * boundary space is the word boundary an author writes, because "Taps: 3" also
- * matches "Taps: 30". A needle folds through {@link foldPairLoose} instead,
- * which keeps a break the author typed at its edge.
+ * boundary space is what an author writes to keep "Taps: 3" off "Taps: 30" -
+ * it must match a real space in the label, so it is not an end-of-text anchor
+ * and `equals` is the spelling that pins the end. A needle folds through
+ * {@link foldPairLoose} instead, which keeps a break the author typed at its
+ * edge.
  */
 function foldLoose(value: string): string {
   return foldWith(value, !isBidiSensitive(value));
