@@ -1298,10 +1298,12 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/but its text was/);
     // The text does not match "Alice Jones" with or without the wrapper, so
-    // there is no note. The `<U+202A>` in the quoted label is quoteScreenText.
+    // there is no note. The wrapper is dropped from the quoted label, not
+    // named: the fold strips it, so the screen draws none of it.
     expect(result.steps[0].reason).not.toMatch(/must account for/);
     expect(result.steps[0].reason).not.toMatch(/the text carries/);
-    expect(result.steps[0].reason).toMatch(/<U\+202A>/);
+    expect(result.steps[0].reason).not.toMatch(/<U\+202A>/);
+    expect(result.steps[0].reason).toMatch(/its text was "Bob Smith"/);
   });
 
   it("stays quiet when the text carries no invisible at all", async () => {

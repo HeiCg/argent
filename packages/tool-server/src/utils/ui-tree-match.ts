@@ -168,6 +168,8 @@ const INVISIBLE = /[\u200b\u2060-\u2064\u206a-\u206f\ufeff]/gu;
  * screen.
  */
 const LTR_BIDI = /[\u200e\u202a\u202c\u202d\u2066\u2068\u2069]/gu;
+/** {@link LTR_BIDI}, non-global - for a single-character test. */
+const LTR_BIDI_ONE = new RegExp(LTR_BIDI.source, "u");
 
 /**
  * True when the string holds content whose bidi order depends on more than
@@ -566,11 +568,21 @@ export function confusableTextNoteIn(haystack: string, needle: string): string |
  * Screen text, made safe for a failure message. A label with an unbalanced
  * U+202E survives the fold, and quoted as it stands it reverses every character
  * after it. Replace the directional controls with names, and keep the rest.
+ *
+ * An {@link LTR_BIDI} control the fold STRIPS is dropped instead of named. It
+ * reorders nothing there, the comparison never saw it, and naming it printed
+ * eight characters of ASCII the screen does not draw — directly above a
+ * sentence telling the reader to copy what it does draw. Copying the named
+ * form then missed a second time, with nothing to explain it.
  */
 export function quoteScreenText(text: string): string {
-  return text.replace(
-    DIRECTIONAL_G,
-    (ch) => `<U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`
+  // Same question the fold asks. A bidi-sensitive string keeps its LTR
+  // controls, so there they are named like the rest.
+  const keepsLtr = isBidiSensitive(text);
+  return text.replace(DIRECTIONAL_G, (ch) =>
+    !keepsLtr && LTR_BIDI_ONE.test(ch)
+      ? ""
+      : `<U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}>`
   );
 }
 

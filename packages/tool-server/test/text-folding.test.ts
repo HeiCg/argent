@@ -854,12 +854,29 @@ describe("the character sets are pinned member by member, not by a representativ
     expect(foldText(ENGLAND)).not.toBe(foldText("\u{1F3F4}"));
   });
 
-  it("spells out EVERY directional control in quoted screen text, not only RLO", () => {
-    for (const ch of ["؜", "‎", "‏", "‪", "‫", "‬", "‭", "‮", "⁦", "⁧", "⁨", "⁩"]) {
+  it("spells out EVERY directional control the fold keeps, not only RLO", () => {
+    // The RTL-imposing controls always survive the fold, so they always reorder
+    // the rest of the message and are always named.
+    for (const ch of ["؜", "‏", "‫", "‮", "⁧"]) {
       const cp = `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
       expect(quoteScreenText(`a${ch}b`), cp).toBe(`a<${cp}>b`);
     }
+    // The LTR wrappers survive it only beside content the bidi algorithm can
+    // reorder. There they are named too.
+    for (const ch of ["‎", "‪", "‬", "‭", "⁦", "⁨", "⁩"]) {
+      const cp = `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+      expect(quoteScreenText(`شارع${ch}b`), cp).toBe(`شارع<${cp}>b`);
+    }
     expect(quoteScreenText("Add more languages…")).toBe("Add more languages…");
+  });
+
+  it("DROPS an LTR wrapper the fold strips, rather than naming it", () => {
+    // Naming it printed eight characters of ASCII the screen does not draw, one
+    // line above "copy the characters the app actually renders" — and copying
+    // the named form missed a second time.
+    expect(quoteScreenText("‪Add more…‬")).toBe("Add more…");
+    expect(includesCI("‪Add more…‬", quoteScreenText("‪Add more…‬"))).toBe(true);
+    expect(quoteScreenText("‪Hubert Gancarczyk‬")).toBe("Hubert Gancarczyk");
   });
 
   it("keeps compatibilityVariantIn silent when the needle genuinely matches", () => {
