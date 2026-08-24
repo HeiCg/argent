@@ -277,8 +277,10 @@ const FULL_HIERARCHY_FIELDS = [
  * (`flow-actions.ts`) quotes the matched node's hoisted `subtreeText` verbatim,
  * and nothing truncates it. On a testID'd collection view of 60 rows, a failing
  * `assert { text }` grew from 87 to 466 characters. `compatibilityMissNote`
- * quotes that same string again, so a near-miss grew from 1520 to 2210. Its
- * `exists`/`visible` arm reads `label` and `value` only, and does not grow.
+ * adds a fixed sentence on top of that and quotes no tree text of its own: on
+ * the arm a `text` condition reaches it leaves the quote to `assertReason`, and
+ * its `exists`/`visible` arm reads `label` and `value` only. So a near-miss
+ * grows at the same rate as the plain failure, not at twice it.
  *
  * The last cost is the getFullHierarchy payload, which is field-limited
  * (`FULL_HIERARCHY_FIELDS`): about 11KB at depth 40 and 15KB at depth 48. Past
