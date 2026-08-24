@@ -539,6 +539,31 @@ describe("system-settings Android branch", () => {
     }
   });
 
+  it("maps every category to the exact font_scale of that Dynamic Type size", async () => {
+    // The scale is each iOS body-text point size divided by `large` (17pt) —
+    // 14/15/16/17 then the AX range 28/33/40/47/53. Pin every value: a swapped
+    // entry silently mis-sizes Android text while still looking well-formed.
+    const expected: Record<string, string> = {
+      "extra-small": "0.82",
+      "small": "0.88",
+      "medium": "0.94",
+      "large": "1.0",
+      "extra-large": "1.12",
+      "extra-extra-large": "1.24",
+      "extra-extra-extra-large": "1.35",
+      "accessibility-medium": "1.65",
+      "accessibility-large": "1.94",
+      "accessibility-extra-large": "2.35",
+      "accessibility-extra-extra-large": "2.76",
+      "accessibility-extra-extra-extra-large": "3.12",
+    };
+    for (const [size, scale] of Object.entries(expected)) {
+      mockAdbShell.mockClear();
+      await androidImpl.handler({}, params({ setting: "text-size", value: size }), androidDevice);
+      expect(mockAdbShell.mock.calls[0]![1], size).toBe(`settings put system font_scale ${scale}`);
+    }
+  });
+
   it("reduce-motion on drives all three animation scales to 0", async () => {
     const { result, shellCmd } = await run({ setting: "reduce-motion", value: "on" });
     expect(shellCmd).toBe(
@@ -738,6 +763,24 @@ describe("system-settings Android branch", () => {
       expect(result.applied).toBe("wifi=enabled");
     });
 
+    it("ignore adb's server-version-mismatch banner when the command succeeded", async () => {
+      // A shared server started by a differently-versioned adb build makes the
+      // client print "adb server version (…) doesn't match this client (…);
+      // killing…" — no `*` prefix — then restart the server and run the
+      // command normally. Still client chatter, not svc's verdict.
+      mockRunAdb.mockResolvedValueOnce({
+        stdout: "",
+        stderr:
+          "adb server version (41) doesn't match this client (39); killing...\n* daemon started successfully\n",
+      });
+      const result = await androidImpl.handler(
+        {},
+        params({ setting: "wifi", value: "on" }),
+        androidDevice
+      );
+      expect(result.applied).toBe("wifi=enabled");
+    });
+
     it("still fail when a real refusal follows the banner lines", async () => {
       mockRunAdb.mockResolvedValueOnce({
         stdout: "",
@@ -751,6 +794,13 @@ describe("system-settings Android branch", () => {
 });
 
 describe("system-settings dispatch wiring (through tool.execute)", () => {
+  it("declares its per-platform binary dependencies", () => {
+    // Losing `requires` would turn a missing adb/xcrun into a raw ENOENT 500
+    // instead of the 424 + install-hint contract.
+    expect(iosImpl.requires).toEqual(["xcrun"]);
+    expect(androidImpl.requires).toEqual(["adb"]);
+  });
+
   // The per-branch tests above call iosImpl/androidImpl directly, so they can't
   // catch a mis-wired dispatch table (`ios: androidImpl, android: iosImpl`
   // typechecks — both impls share generics — and would run simctl against

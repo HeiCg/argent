@@ -227,7 +227,7 @@ Puts the **device** into a state during setup, without walking the system Settin
 { "udid": "<UDID>", "setting": "appearance", "value": "dark" }
 ```
 
-- Both platforms: `appearance` (`light`/`dark`), `text-size` (the 12 Dynamic Type categories, `extra-small` … `accessibility-extra-extra-extra-large`, default `large`), `increase-contrast`, `reduce-motion`, `invert-colors`.
+- Both platforms: `appearance` (`light`/`dark`), `text-size` (the 12 Dynamic Type categories, `extra-small` … `accessibility-extra-extra-extra-large`, default `large`), `increase-contrast`, `reduce-motion`, `invert-colors`. iOS support is simulator-only; Android covers emulators and real devices.
 - Android only: `wifi`, `cellular`, `airplane-mode`, `location`, `auto-rotate`. Asking for one of these on an iOS simulator is rejected with the list of what iOS supports.
 - Every setting except `appearance` and `text-size` takes `on` | `off`, where `on` turns the named setting on (`reduce-motion` on reduces motion).
 - Returns `{ setting, value, applied }` — `applied` names the concrete platform change (`night_mode=yes`, `font_scale=1.94`, `ReduceMotionEnabled=YES`).

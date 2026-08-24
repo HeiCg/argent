@@ -144,14 +144,20 @@ function isTransportFailure(err: unknown): boolean {
   );
 }
 
-// The adb client prints its own notices on stderr — "* daemon not running;
-// starting now at tcp:5037" after a server restart, a version-mismatch warning
-// — on a call that then succeeds. parseAdbDevices skips these `*` banner lines
-// for the same reason; only what survives them can be svc's failure report.
+// The adb client prints its own notices on stderr on a call that then
+// succeeds: the daemon startup banner (`* daemon …`) after a server restart,
+// and a server-version mismatch ("adb server version (…) doesn't match this
+// client (…); killing…", which carries no `*`). parseAdbDevices skips the `*`
+// banner lines for the same reason; only what survives these known chatter
+// forms can be svc's failure report.
 function stripAdbBanner(stderr: string): string {
   return stderr
     .split("\n")
-    .filter((line) => !line.trimStart().startsWith("*"))
+    .filter(
+      (line) =>
+        !line.trimStart().startsWith("*") &&
+        !/adb server version \(\d+\) doesn't match this client \(\d+\)/.test(line)
+    )
     .join("\n")
     .trim();
 }
