@@ -19,6 +19,7 @@ import { debuggerInspectElementTool } from "../src/tools/debugger/debugger-inspe
 import { debuggerReloadMetroTool } from "../src/tools/debugger/debugger-reload-metro";
 import { debuggerComponentTreeTool } from "../src/tools/debugger/debugger-component-tree";
 import { debuggerConnectTool } from "../src/tools/debugger/debugger-connect";
+import { gestureSwipeTool } from "../src/tools/gesture-swipe";
 import { createDebuggerStatusTool } from "../src/tools/debugger/debugger-status";
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
 import { listDevicesTool } from "../src/tools/devices/list-devices";
@@ -406,9 +407,26 @@ describe("the Chromium recovery names a relaunch that exists", () => {
       row(DEVICE_INTERACT_SKILL, "Open an app"),
       "on Chromium it confirms the running renderer and starts nothing"
     );
+    // Section 3 states the same rule in prose before any table, so the carve-out
+    // has to hold there too — an unqualified "instant and reliable" reads as
+    // launch-and-continue on the platform where launch-app starts nothing.
+    pinsUnqualified(
+      deviceInteract,
+      "navigate with `open-url`, since `launch-app` only confirms the running renderer " +
+        "and starts nothing"
+    );
+    // rules/argent.md is alwaysLoad, so its launch-app bullet reaches Chromium
+    // sessions the device-interact skill never opens.
+    pinsOnce(
+      readFileSync(ARGENT_RULE, "utf8"),
+      "on Chromium use `open-url` to navigate, since `launch-app` confirms the running " +
+        "renderer and starts nothing"
+    );
     // The shared-surface summary a Chromium reader meets before any table.
     // gesture-swipe declares no chromium and the gate rejects it there, so the
-    // verb in this list has to be the one that works.
+    // verb in this list has to be the one that works. The literal cannot see
+    // gesture-swipe gaining chromium support, so the capability itself is held:
+    expect(gestureSwipeTool.capability?.chromium, gestureSwipeTool.id).toBeUndefined();
     pinsOnce(deviceInteract, "describe/tap/scroll/keyboard/screenshot surface drives all of them.");
 
     // cdp_unreachable is not only the dead-app code: CHROMIUM_CDP_NO_PAGE_TARGET

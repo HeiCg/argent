@@ -36,7 +36,7 @@ Use `list-devices` to get a target id. Results are tagged with `platform` (`ios`
 
 ## 3. Opening Apps
 
-**Never navigate to an app by tapping home-screen icons.** Use `launch-app` or `open-url` — they are instant and reliable.
+**Never navigate to an app by tapping home-screen icons.** Use `launch-app` or `open-url` — they are instant and reliable. On Chromium there is no home screen and no other app to start: navigate with `open-url`, since `launch-app` only confirms the running renderer and starts nothing.
 
 ### launch-app — by bundle ID
 
