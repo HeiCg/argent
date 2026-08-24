@@ -67,12 +67,23 @@ export function toPoints(
   };
 }
 
+/**
+ * Gesture calls carry a 90s client window: the runner grants gestures a 75s
+ * main-thread budget (XCTest's pre-event idle wait can legitimately stall for
+ * ~60s on a screen that never reports quiescent), and the client must outlast
+ * the runner's verdict rather than abandon a command that will still land.
+ */
+const GESTURE_TIMEOUT_MS = 90_000;
+
 export async function tapAt(
   api: IosDeviceRunnerApi,
   bundleId: string,
   point: { x: number; y: number }
 ): Promise<void> {
-  await api.run({ command: "tap", appBundleId: bundleId, x: point.x, y: point.y });
+  await api.run(
+    { command: "tap", appBundleId: bundleId, x: point.x, y: point.y },
+    { timeoutMs: GESTURE_TIMEOUT_MS }
+  );
 }
 
 /** Press-and-hold at a point for `durationMs` (XCUICoordinate press). */
@@ -82,13 +93,10 @@ export async function longPressAt(
   point: { x: number; y: number },
   durationMs: number
 ): Promise<void> {
-  await api.run({
-    command: "longPress",
-    appBundleId: bundleId,
-    x: point.x,
-    y: point.y,
-    durationMs,
-  });
+  await api.run(
+    { command: "longPress", appBundleId: bundleId, x: point.x, y: point.y, durationMs },
+    { timeoutMs: GESTURE_TIMEOUT_MS }
+  );
 }
 
 /**
@@ -105,16 +113,19 @@ export async function dragBetween(
   durationMs?: number,
   settle?: boolean
 ): Promise<void> {
-  await api.run({
-    command: "drag",
-    appBundleId: bundleId,
-    fromX: from.x,
-    fromY: from.y,
-    toX: to.x,
-    toY: to.y,
-    ...(durationMs != null ? { durationMs } : {}),
-    ...(settle ? { settle: true } : {}),
-  });
+  await api.run(
+    {
+      command: "drag",
+      appBundleId: bundleId,
+      fromX: from.x,
+      fromY: from.y,
+      toX: to.x,
+      toY: to.y,
+      ...(durationMs != null ? { durationMs } : {}),
+      ...(settle ? { settle: true } : {}),
+    },
+    { timeoutMs: GESTURE_TIMEOUT_MS }
+  );
 }
 
 /** Press the hardware Home button (device-scoped; no app target needed). */

@@ -62,9 +62,17 @@ extension CommandKind {
   }
 
   /// Main-thread watchdog budget for one execution. `type` gets more room:
-  /// XCTest types long strings in real time.
+  /// XCTest types long strings in real time. Gestures get past XCTest's own
+  /// ~60s idle-wait cap: a screen that never reports quiescent (an open
+  /// context menu's looping blur, for one) stalls the pre-event idle wait
+  /// until XCTest gives up and synthesizes anyway — a 30s budget turns that
+  /// recoverable slowness into an abandoned command and a busy runner.
   var executionTimeout: TimeInterval {
-    self == .type ? 55 : 30
+    switch self {
+    case .type: return 55
+    case .tap, .longPress, .drag: return 75
+    default: return 30
+    }
   }
 }
 
