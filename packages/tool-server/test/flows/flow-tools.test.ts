@@ -435,6 +435,31 @@ describe("a step the recorder refuses", () => {
     expect(parseFlow(await onDisk("already-ran")).steps).toEqual([]);
   });
 
+  // The other half of that claim: the tool's description tells an agent a
+  // failure ran the call unless it landed in one of the checks that precede the
+  // dispatch, and this is the check an agent meets most often. A dispatch moved
+  // above it would make the description advise cleanup for an action that never
+  // happened.
+  it("rejects a call for a recording that was never started without dispatching it", async () => {
+    const registry = createMockRegistry({ keyboard: { result: { typed: "…", keys: 15 } } });
+    const tool = createFlowAddStepTool(registry);
+
+    const err = await tool
+      .execute(
+        {},
+        {
+          name: "never-started",
+          project_root: tmpDir,
+          command: "keyboard",
+          args: '{"text":"hi"}',
+        }
+      )
+      .catch((e: unknown) => e as Error);
+
+    expect(getFailureSignal(err as Error)?.error_code).toBe(FAILURE_CODES.FLOW_NO_ACTIVE_RECORDING);
+    expect(registry.invokeTool).not.toHaveBeenCalled();
+  });
+
   it("leaves the refusals it did not introduce worded as they were", async () => {
     const registry = createMockRegistry({ "restart-app": { result: { restarted: true } } });
     const tool = createFlowAddStepTool(registry);
