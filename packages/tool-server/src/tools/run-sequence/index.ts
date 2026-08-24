@@ -65,8 +65,11 @@ type StepResult =
    * `dispatched: false` marks a step rejected BEFORE the device. The causes are
    * an unlisted tool name, one the target platform does not support, and args
    * the registry's schema check refuses ahead of `execute`. Without the marker,
-   * such a rejection looks like a step that ran and then failed. `completed` is
-   * 0 either way, and these entries carry no `status`. The flow recorder reads
+   * such a rejection looks like a step that ran and then failed.
+   *
+   * `completed` cannot stand in for it: it counts the EARLIER steps that
+   * SUCCEEDED, so a rejection at any position but the first sits beside a
+   * non-zero count. These entries do carry no `status`. The flow recorder reads
    * the marker to decide whether the device may have moved.
    */
   | { tool: string; error: string; dispatched?: false };
