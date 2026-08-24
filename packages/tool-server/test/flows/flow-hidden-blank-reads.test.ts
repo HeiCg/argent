@@ -681,6 +681,47 @@ describe("text/equals failure notes are wired through the runner and scoped to t
 });
 
 describe("compatibility miss note: what it is scoped to", () => {
+  it("does not re-quote a label the reason already carries", async () => {
+    // On the located branch assertReason has already printed `its text was
+    // "<shown>"`. assertText prefers the hoisted subtreeText, so re-printing it
+    // in the note carried the whole aggregated card twice in one reason.
+    const CARD = `${"Total 42. ".repeat(140)}Add more languages…`;
+    const TYPED = `${"Total 42. ".repeat(140)}Add more languages...`;
+    currentFetch = () => ({
+      tree: screen([
+        n({
+          identifier: "card",
+          subtreeText: CARD,
+          frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.4 },
+        }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("compat-no-requote", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { identifier: "card" },
+          expectedText: TYPED,
+          textMatch: "equals",
+        },
+      ],
+    });
+
+    const result = await run("compat-no-requote");
+    const reason = result.steps[0].reason!;
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(reason).toMatch(/typographic variant/);
+    // The label prints once, and the expectation once. Not the label twice: the
+    // reason fits both plus the prose, where a second copy could not.
+    expect(reason.split("Add more languages…").length - 1).toBe(1);
+    expect(reason.length).toBeLessThan(CARD.length + TYPED.length + 1000);
+  });
+
   it("names only an element the REST of the selector could have accepted", async () => {
     // The walk must re-apply role, id and scopes, not the text test alone.
     currentFetch = () => ({

@@ -1441,7 +1441,11 @@ function compatibilityMissNote(
     // a selector miss gets the same explanation as a `text` expectation.
     return prefixNote(selectorMissNote(eligible, wanted));
   }
-  return prefixNote(hit === undefined ? undefined : typographicVariantNote(hit));
+  // No `hit` argument: this branch runs only for `condition === "text"`, and
+  // `assertReason` has already quoted both `shown` and `own`, so passing one
+  // back would print the same string twice in one reason - the whole hoisted
+  // card, on a container assertion.
+  return prefixNote(hit === undefined ? undefined : typographicVariantNote());
 }
 
 /** A miss note as it appears appended to a failure reason, or "" for none. */

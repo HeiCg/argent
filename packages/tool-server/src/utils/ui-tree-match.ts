@@ -664,14 +664,23 @@ export function selectorMissNote(
  * The sentence that names a compatibility variant in an element's text. Shared
  * by its two callers, so a selector miss and a `text` miss cannot drift apart.
  * Says "the element's text" for the reason {@link selectorMissNote} gives.
+ *
+ * `shown` is omitted by the caller that has ALREADY quoted the string one
+ * clause earlier. Nothing bounds this quote the way {@link CODEPOINT_DUMP_MAX}
+ * bounds the dumps beside it, and `assertText` prefers the hoisted
+ * `subtreeText`, so on a container assertion re-printing it carried three
+ * thousand characters of one card twice in a single failure reason.
  */
-export function typographicVariantNote(shown: string): string {
+export function typographicVariantNote(shown?: string): string {
+  const lead =
+    shown === undefined
+      ? `the two strings above differ only by a typographic`
+      : `the element's text is "${quoteScreenText(shown)}", which differs only by a typographic`;
   return (
-    `the element's text is "${quoteScreenText(shown)}", which differs only by a typographic ` +
-    `variant (a rendered "…" is ONE character, not three dots; likewise ligatures and ` +
+    `${lead} variant (a rendered "…" is ONE character, not three dots; likewise ligatures and ` +
     `fullwidth forms). Those are not folded together, because doing so would also equate a ` +
-    `styled display name with the plain one it imitates. Copy the text exactly as it is ` +
-    `quoted here.`
+    `styled display name with the plain one it imitates. Copy the text exactly as this ` +
+    `message quotes it.`
   );
 }
 
