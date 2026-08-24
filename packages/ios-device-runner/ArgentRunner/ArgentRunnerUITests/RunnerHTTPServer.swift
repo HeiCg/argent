@@ -4,11 +4,16 @@ import Network
 /// Minimal single-purpose HTTP/1.1 endpoint on NWListener: each connection
 /// carries one POSTed JSON command and receives one JSON reply, then closes.
 ///
-/// Listening on all interfaces is deliberate — the host reaches the runner
-/// both through a usbmux-forwarded stream (which terminates on the device's
-/// loopback) and, for Wi-Fi devices, through the CoreDevice tunnel's IPv6
-/// address. Transport-level framing lives here and nothing else does: bodies
-/// are opaque bytes handed to the dispatch closure.
+/// The listener is restricted to loopback. Transport is USB-only: the host
+/// reaches the runner through a usbmux-forwarded stream that terminates on
+/// the device's loopback, so loopback is the whole reachable surface — the
+/// old any-interface bind only exposed this unauthenticated command listener
+/// to every peer on the phone's Wi-Fi network. Contingency: the loopback
+/// termination is asserted, not measured — if hardware shows usbmux
+/// connections arriving on a non-loopback interface, the bind reverts to all
+/// interfaces (that decision rides the next hardware session).
+/// Transport-level framing lives here and nothing else does: bodies are
+/// opaque bytes handed to the dispatch closure.
 final class RunnerHTTPServer {
   struct Reply {
     let status: Int
@@ -42,11 +47,17 @@ final class RunnerHTTPServer {
   }
 
   func start(port: UInt16) throws {
+    // Loopback via requiredInterfaceType rather than a 127.0.0.1
+    // requiredLocalEndpoint: the interface restriction admits loopback
+    // traffic of either address family and leaves the port-0 auto-assign
+    // branch — and the .port readback feeding the listening log — untouched.
+    let parameters = NWParameters.tcp
+    parameters.requiredInterfaceType = .loopback
     let listener: NWListener
     if port > 0, let nwPort = NWEndpoint.Port(rawValue: port) {
-      listener = try NWListener(using: .tcp, on: nwPort)
+      listener = try NWListener(using: parameters, on: nwPort)
     } else {
-      listener = try NWListener(using: .tcp)
+      listener = try NWListener(using: parameters)
     }
     listener.stateUpdateHandler = { [weak self] state in
       switch state {

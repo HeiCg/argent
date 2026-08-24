@@ -2,9 +2,10 @@
 
 One HTTP POST per command. The request body is a JSON object; the reply is a
 JSON **envelope**. Connections close after each exchange (`Connection:
-close`). The server listens on all interfaces on the port given by the
+close`). The server listens on loopback on the port given by the
 `ARGENT_RUNNER_PORT` environment variable (injected into the `.xctestrun`),
-reachable through usbmux (USB cable only).
+reachable through usbmux (USB cable only) — the forwarded stream terminates
+on the device's loopback, so a loopback bind covers the whole transport.
 
 There is no version handshake: the tool-server's artifact cache key includes
 the runner sources, so a protocol change always ships with a rebuilt runner.

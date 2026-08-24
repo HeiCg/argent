@@ -327,8 +327,8 @@ export class XctestrunFormatError extends Error {
  * Clone the .xctestrun with ARGENT_RUNNER_PORT injected into every test
  * target's env dictionaries (all four maps — xctestrun format v2 nests targets
  * under TestConfigurations). The Swift runner reads the port from its
- * environment and binds it on all interfaces, where usbmux's device-side
- * connect reaches it. Throws `XctestrunFormatError` when no target is found.
+ * environment and binds it on the device's loopback, where usbmux's
+ * device-side connect terminates. Throws `XctestrunFormatError` when no target is found.
  */
 export async function prepareXctestrunWithPort(
   xctestrunPath: string,
