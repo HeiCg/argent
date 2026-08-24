@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRunnerRouteResolver } from "../src/utils/ios-device/runner-route";
+import type { Deadline } from "../src/utils/ios-device/usbmux";
 import {
   IosDeviceTransportError,
   type IosDeviceTransportErrorKind,
@@ -135,5 +136,52 @@ describe("createRunnerRouteResolver", () => {
 
     expect((error as IosDeviceTransportError).kind).toBe("protocol");
     expect(sendViaUsbmux).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the send seam one already-ticking deadline instead of a constant budget", async () => {
+    let seen: Deadline | undefined;
+    const sendViaUsbmux = vi.fn(
+      async (_udid: string, _port: number, _body: unknown, deadline: Deadline) => {
+        seen = deadline;
+        return OK;
+      }
+    );
+    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+
+    await resolver.sendCommand(
+      UDID,
+      PORT,
+      { command: "tap", commandId: "argent-abc" },
+      { timeoutMs: 1_000 }
+    );
+
+    // Fake timers freeze Date.now, so the full budget is visible at hand-off…
+    expect(seen?.remainingMs()).toBe(1_000);
+    vi.advanceTimersByTime(400);
+    // …and it decreases as wall time passes: a stage downstream (the HTTP
+    // exchange after the usbmux handshake) sees only what is left, never a
+    // fresh 1000.
+    expect(seen?.remainingMs()).toBe(600);
+  });
+
+  it("gives each read-only retry attempt its own full budget", async () => {
+    const budgets: number[] = [];
+    const sendViaUsbmux = vi.fn(
+      async (_udid: string, _port: number, _body: unknown, deadline: Deadline) => {
+        budgets.push(deadline.remainingMs());
+        throw notListeningError();
+      }
+    );
+    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+
+    const pending = resolver
+      .sendCommand(UDID, PORT, { command: "status" }, { timeoutMs: 3_000, readOnly: true })
+      .catch((caught: unknown) => caught);
+    await vi.runAllTimersAsync();
+    await pending;
+
+    // The backoff sleeps advanced the (faked) clock between attempts; one
+    // deadline shared across attempts would show shrinking budgets here.
+    expect(budgets).toEqual([3_000, 3_000, 3_000]);
   });
 });

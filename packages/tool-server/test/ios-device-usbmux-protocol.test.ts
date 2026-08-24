@@ -1,8 +1,9 @@
+import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import net, { type Server, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildUsbmuxPlistMessage,
   decodeUsbmuxPacket,
@@ -20,7 +21,13 @@ import {
   USBMUX_MESSAGE_TYPE_PLIST,
   USBMUX_PROTOCOL_VERSION,
 } from "../src/utils/ios-device/usbmux-protocol";
-import { buildUsbmuxConnectError, openUsbmuxRunnerSocket } from "../src/utils/ios-device/usbmux";
+import { postRunnerCommand } from "../src/utils/ios-device/runner-http";
+import {
+  buildUsbmuxConnectError,
+  createDeadline,
+  openUsbmuxRunnerSocket,
+  writePacket,
+} from "../src/utils/ios-device/usbmux";
 
 const DEVICE_UDID = "00008110-000978540290401E";
 const RUNNER_PORT = 51_234;
@@ -208,6 +215,76 @@ describe("buildUsbmuxConnectError result-code mapping", () => {
   });
 });
 
+describe("writePacket backpressure", () => {
+  class BackpressureSocket extends EventEmitter {
+    write(_data: Buffer): boolean {
+      return false;
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("bounds a drain wait that never resolves with a typed timeout instead of hanging", async () => {
+    vi.useFakeTimers();
+    const socket = new BackpressureSocket();
+
+    const pending = writePacket(socket, "<plist/>", 1, createDeadline(5_000)).catch(
+      (caught: unknown) => caught
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    const error = await pending;
+
+    expect(error).toBeInstanceOf(IosDeviceTransportError);
+    expect((error as IosDeviceTransportError).kind).toBe("timeout");
+    expect((error as IosDeviceTransportError).retryable).toBe(true);
+    // Nothing may linger on a socket that goes on to become the raw device pipe.
+    expect(socket.listenerCount("drain")).toBe(0);
+    expect(socket.listenerCount("error")).toBe(0);
+    expect(socket.listenerCount("close")).toBe(0);
+  });
+
+  it("detaches every listener and the timer once drain settles the wait", async () => {
+    vi.useFakeTimers();
+    const socket = new BackpressureSocket();
+
+    const pending = writePacket(socket, "<plist/>", 1, createDeadline(5_000));
+    expect(socket.listenerCount("error")).toBe(1);
+    socket.emit("drain");
+    await pending;
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(socket.listenerCount("drain")).toBe(0);
+    expect(socket.listenerCount("error")).toBe(0);
+    expect(socket.listenerCount("close")).toBe(0);
+  });
+
+  it("treats the socket closing mid-drain-wait as a typed protocol failure", async () => {
+    const socket = new BackpressureSocket();
+
+    const pending = writePacket(socket, "<plist/>", 1, createDeadline(5_000)).catch(
+      (caught: unknown) => caught
+    );
+    socket.emit("close");
+    const error = await pending;
+
+    expect(error).toBeInstanceOf(IosDeviceTransportError);
+    expect((error as IosDeviceTransportError).kind).toBe("protocol");
+    expect(socket.listenerCount("error")).toBe(0);
+  });
+
+  it("skips the wait machinery entirely when the kernel buffer accepts the packet", async () => {
+    const socket = new BackpressureSocket();
+    socket.write = () => true;
+
+    await writePacket(socket, "<plist/>", 1, createDeadline(5_000));
+
+    expect(socket.listenerCount("drain")).toBe(0);
+    expect(socket.listenerCount("error")).toBe(0);
+  });
+});
+
 describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
   const openServers: Server[] = [];
   const socketDirs: string[] = [];
@@ -249,7 +326,8 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
   const startFakeUsbmuxd = async (
     socketPath: string,
     devices: Array<{ id: number; serial: string }>,
-    connectResult: number
+    connectResult: number,
+    options: { listDevicesDelayMs?: number } = {}
   ): Promise<{ connectRequests: string[] }> => {
     const connectRequests: string[] = [];
     let connectionIndex = 0;
@@ -265,12 +343,15 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
                 `<key>Properties</key><dict><key>SerialNumber</key><string>${device.serial}</string></dict></dict>`
             )
             .join("");
-          socket.end(
-            encodeUsbmuxPacket(
-              1,
-              `<plist><dict><key>DeviceList</key><array>${entries}</array></dict></plist>`
-            )
-          );
+          const reply = () =>
+            socket.end(
+              encodeUsbmuxPacket(
+                1,
+                `<plist><dict><key>DeviceList</key><array>${entries}</array></dict></plist>`
+              )
+            );
+          if (options.listDevicesDelayMs) setTimeout(reply, options.listDevicesDelayMs);
+          else reply();
           return;
         }
         connectRequests.push(request);
@@ -372,5 +453,39 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
 
     expect((error as IosDeviceTransportError).kind).toBe("runner-not-listening");
     expect((error as IosDeviceTransportError).retryable).toBe(true);
+  });
+
+  it("charges the usbmux handshake and the HTTP exchange to one shared budget", async () => {
+    const socketPath = await createSocketPath();
+    // Connect succeeds after a slow handshake; the "runner" then never answers
+    // the HTTP request, so the request runs its timeout down.
+    await startFakeUsbmuxd(socketPath, [{ id: 42, serial: DEVICE_UDID }], 0, {
+      listDevicesDelayMs: 600,
+    });
+    const deadline = createDeadline(1_200);
+    const startedAt = Date.now();
+
+    const error = await postRunnerCommand({
+      socketFactory: () =>
+        openUsbmuxRunnerSocket({
+          udid: DEVICE_UDID,
+          port: RUNNER_PORT,
+          timeoutMs: deadline.remainingMs(),
+          socketPath,
+        }),
+      body: { command: "status" },
+      deadline,
+    }).catch((caught: unknown) => caught);
+
+    const elapsedMs = Date.now() - startedAt;
+    expect(error).toBeInstanceOf(IosDeviceTransportError);
+    expect((error as IosDeviceTransportError).kind).toBe("timeout");
+    // The HTTP stage got only what the delayed handshake left over (~600ms of
+    // the 1200), never a fresh full budget.
+    const reportedMs = Number(/after (\d+)ms/.exec((error as Error).message)?.[1]);
+    expect(reportedMs).toBeGreaterThan(0);
+    expect(reportedMs).toBeLessThanOrEqual(650);
+    // Double-spending the budget (handshake 1200 + HTTP 1200) would run ~1800ms.
+    expect(elapsedMs).toBeLessThan(1_700);
   });
 });

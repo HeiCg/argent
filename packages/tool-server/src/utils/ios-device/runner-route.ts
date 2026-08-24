@@ -1,5 +1,5 @@
 import { postRunnerCommand } from "./runner-http";
-import { openUsbmuxRunnerSocket } from "./usbmux";
+import { createDeadline, openUsbmuxRunnerSocket, type Deadline } from "./usbmux";
 import { isIosDeviceTransportError } from "./usbmux-protocol";
 
 /**
@@ -36,12 +36,15 @@ export type SendRunnerCommand = (
 
 export function createRunnerRouteResolver(
   options: {
-    /** Test seam: replaces the usbmux socket + HTTP send. */
+    /**
+     * Test seam: replaces the usbmux socket + HTTP send. The deadline is the
+     * whole send's budget — created fresh per attempt, already ticking.
+     */
     sendViaUsbmux?: (
       udid: string,
       port: number,
       body: unknown,
-      timeoutMs: number
+      deadline: Deadline
     ) => Promise<unknown>;
   } = {}
 ): { sendCommand: SendRunnerCommand } {
@@ -51,7 +54,7 @@ export function createRunnerRouteResolver(
     sendCommand: async (udid, port, body, sendOptions) => {
       if (!sendOptions.readOnly) {
         try {
-          return await sendViaUsbmux(udid, port, body, sendOptions.timeoutMs);
+          return await sendViaUsbmux(udid, port, body, createDeadline(sendOptions.timeoutMs));
         } catch (error) {
           // Carry the commandId on the typed error so the client can run
           // status recovery for exactly the command that was in flight.
@@ -65,7 +68,9 @@ export function createRunnerRouteResolver(
       let lastError: unknown;
       for (let attempt = 1; attempt <= READ_ONLY_MAX_ATTEMPTS; attempt += 1) {
         try {
-          return await sendViaUsbmux(udid, port, body, sendOptions.timeoutMs);
+          // A fresh deadline per attempt: timeoutMs is the per-attempt budget
+          // (backoff sleeps between attempts do not spend from it).
+          return await sendViaUsbmux(udid, port, body, createDeadline(sendOptions.timeoutMs));
         } catch (error) {
           lastError = error;
           const retryable = isIosDeviceTransportError(error) && error.retryable;
@@ -79,16 +84,22 @@ export function createRunnerRouteResolver(
   };
 }
 
+/**
+ * The one deadline bounds the whole send: the usbmux handshake spends from the
+ * same budget as the HTTP exchange (remainingMs is read when the factory
+ * runs), so a slow handshake shrinks the HTTP stage's timeout instead of the
+ * two stages each getting the full timeoutMs.
+ */
 function defaultSendViaUsbmux(
   udid: string,
   port: number,
   body: unknown,
-  timeoutMs: number
+  deadline: Deadline
 ): Promise<unknown> {
   return postRunnerCommand({
-    socketFactory: () => openUsbmuxRunnerSocket({ udid, port, timeoutMs }),
+    socketFactory: () => openUsbmuxRunnerSocket({ udid, port, timeoutMs: deadline.remainingMs() }),
     body,
-    timeoutMs,
+    deadline,
   });
 }
 

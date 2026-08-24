@@ -136,7 +136,7 @@ async function resolveUsbmuxDeviceId(
 ): Promise<number> {
   const socket = await connectToUsbmuxd(socketPath, deadline);
   try {
-    await writePacket(socket, buildUsbmuxPlistMessage("ListDevices"), 1);
+    await writePacket(socket, buildUsbmuxPlistMessage("ListDevices"), 1, deadline);
     const payload = await readOnePacket(socket, deadline);
     const deviceId = readUsbmuxDeviceIdForSerial(payload.toString("utf8"), udid);
     if (deviceId !== undefined) return deviceId;
@@ -168,7 +168,7 @@ async function connectToDevicePort(
       DeviceID: deviceId,
       PortNumber: hostToNetworkPort(port),
     });
-    await writePacket(socket, message, 2);
+    await writePacket(socket, message, 2, deadline);
     const payload = await readOnePacket(socket, deadline);
     const result = readUsbmuxResultCode(payload.toString("utf8"));
     if (result !== USBMUX_RESULT_OK) {
@@ -225,12 +225,62 @@ async function connectToUsbmuxd(socketPath: string, deadline: Deadline): Promise
   });
 }
 
-async function writePacket(socket: net.Socket, payloadXml: string, tag: number): Promise<void> {
-  const packet = encodeUsbmuxPacket(tag, payloadXml);
-  if (socket.write(packet)) return;
+/**
+ * The slice of net.Socket the packet writer touches — a structural seam so the
+ * backpressure wait can be unit-tested with a stub whose write() never drains.
+ */
+export interface UsbmuxWritableSocket {
+  write(data: Buffer): boolean;
+  once(event: "drain" | "error" | "close", listener: (error: Error) => void): unknown;
+  off(event: "drain" | "error" | "close", listener: (error: Error) => void): unknown;
+}
+
+/**
+ * Write one framed packet, bounding any backpressure wait by the deadline: a
+ * usbmuxd that accepts the connection but stops reading would otherwise hang
+ * the tool call forever. Every listener is detached once settled — on the
+ * Connect socket a leftover 'error' listener would linger on the socket that
+ * goes on to become the raw device pipe.
+ */
+export async function writePacket(
+  socket: UsbmuxWritableSocket,
+  payloadXml: string,
+  tag: number,
+  deadline: Deadline
+): Promise<void> {
+  const timeoutMs = deadline.remainingMs();
+  requireTimeRemaining(timeoutMs, "write usbmuxd request");
+  if (socket.write(encodeUsbmuxPacket(tag, payloadXml))) return;
   await new Promise<void>((resolve, reject) => {
-    socket.once("drain", resolve);
-    socket.once("error", reject);
+    let settled = false;
+    const timer = setTimeout(() => {
+      finish(
+        new IosDeviceTransportError("timeout", "Timed out writing usbmuxd request", {
+          retryable: true,
+        })
+      );
+    }, timeoutMs);
+    const onDrain = () => finish();
+    const onError = (error: Error) => finish(error);
+    const onClose = () =>
+      finish(
+        new IosDeviceTransportError("protocol", "usbmuxd closed the connection unexpectedly", {
+          retryable: false,
+        })
+      );
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.off("drain", onDrain);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+      if (error) reject(error);
+      else resolve();
+    };
+    socket.once("drain", onDrain);
+    socket.once("error", onError);
+    socket.once("close", onClose);
   });
 }
 
@@ -292,11 +342,16 @@ async function readOnePacket(socket: net.Socket, deadline: Deadline): Promise<Bu
   });
 }
 
-interface Deadline {
+/**
+ * One decreasing budget shared by every stage of a send (usbmux handshake,
+ * packet writes/reads, the HTTP exchange), so a single timeoutMs bounds the
+ * whole exchange instead of each stage restarting the full amount.
+ */
+export interface Deadline {
   remainingMs(): number;
 }
 
-function createDeadline(timeoutMs: number): Deadline {
+export function createDeadline(timeoutMs: number): Deadline {
   const expiresAt = Date.now() + timeoutMs;
   return { remainingMs: () => expiresAt - Date.now() };
 }

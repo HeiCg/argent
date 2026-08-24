@@ -18,9 +18,10 @@ import { IosDeviceTransportError, isIosDeviceTransportError } from "./usbmux-pro
 export const RUNNER_COMMAND_TIMEOUT_MS = 45_000;
 /**
  * Recovery must be fast: it runs while a user-visible command is already
- * failing, and a reachable runner answers `status` in milliseconds. A runner
- * that cannot answer within 3s is effectively gone, and the transport error
- * is the honest answer.
+ * failing, and a reachable runner answers `status` in milliseconds. The 3s is
+ * one whole-transport budget per route attempt — usbmux handshake and HTTP
+ * exchange included — and a runner that cannot answer within it is
+ * effectively gone, so the transport error is the honest answer.
  */
 const RUNNER_STATUS_RECOVERY_TIMEOUT_MS = 3_000;
 const RUNNER_READY_POLL_INTERVAL_MS = 250;

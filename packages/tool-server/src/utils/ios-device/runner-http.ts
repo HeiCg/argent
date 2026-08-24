@@ -1,5 +1,6 @@
 import http from "node:http";
 import net from "node:net";
+import type { Deadline } from "./usbmux";
 import { IosDeviceTransportError } from "./usbmux-protocol";
 
 /**
@@ -31,12 +32,17 @@ interface PostRunnerCommandOptions {
   socketFactory: () => Promise<net.Socket>;
   /** JSON-serialized as the POST body. */
   body: unknown;
-  timeoutMs: number;
+  /**
+   * Whole-send budget, already ticking and shared with the usbmux handshake
+   * inside socketFactory: the HTTP exchange gets only what the handshake has
+   * not already spent.
+   */
+  deadline: Deadline;
 }
 
 /** POST one runner command over a pre-connected socket; resolves with the parsed JSON body. */
 export async function postRunnerCommand(options: PostRunnerCommandOptions): Promise<unknown> {
-  requireTimeRemaining(options.timeoutMs);
+  requireTimeRemaining(options.deadline.remainingMs());
   const socket = await options.socketFactory();
   const agent = new http.Agent({ keepAlive: false });
   // @types/node exposes createConnection on Agent instances; returning the
@@ -50,7 +56,12 @@ export async function postRunnerCommand(options: PostRunnerCommandOptions): Prom
   }) as typeof agent.createConnection;
   try {
     const payload = Buffer.from(JSON.stringify(options.body), "utf8");
-    const response = await requestOverAgent(agent, socket, payload, options.timeoutMs);
+    // Re-read the budget now that the handshake has spent its share; a
+    // handshake that ate everything must fail here, not start a zero-ms HTTP
+    // request.
+    const httpTimeoutMs = options.deadline.remainingMs();
+    requireTimeRemaining(httpTimeoutMs);
+    const response = await requestOverAgent(agent, socket, payload, httpTimeoutMs);
     return parseRunnerResponseBody(response.statusCode, response.body);
   } finally {
     agent.destroy();
@@ -64,7 +75,6 @@ async function requestOverAgent(
   payload: Buffer,
   timeoutMs: number
 ): Promise<{ statusCode: number; body: Buffer }> {
-  requireTimeRemaining(timeoutMs);
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   try {
     return await new Promise((resolve, reject) => {
