@@ -116,6 +116,41 @@ const BLIND =
   "sized one; a longer field keeps its head.";
 
 /**
+ * The two reasons that say the accessibility layer found nothing writable.
+ *
+ * `no_focused_input` is a whole-SCREEN negative: the helper sweeps the active
+ * window and then every other window with `findFocus(FOCUS_INPUT)` before it
+ * answers. `not_editable` is one step weaker — a focused node was found, it
+ * refused `ACTION_SET_TEXT`, and it reports itself as not editable — and it is
+ * what a screen carrying no text field at all answers in practice.
+ *
+ * Neither proves the injected fallback failed: a view the accessibility tree
+ * cannot describe — a WebView, a Flutter surface — can still take the keys that
+ * follow. What they do rule out is the ordinary opening clause. "the field was
+ * cleared with …" states as fact the one thing the helper had just failed to
+ * find, and `cleared: true` beside a non-zero `keys` says it again.
+ */
+const NO_WRITABLE_FIELD: ReadonlySet<AndroidClearSkipReason> = new Set([
+  "no_focused_input",
+  "not_editable",
+]);
+
+/**
+ * What those two say instead of the read-back and blind-run clauses.
+ *
+ * Those clauses describe a field, and the whole point of these reasons is that
+ * none was found: `READ_BACK_UNAVAILABLE` offers a screen that would not capture
+ * and a password box, and omits the explanation the reason itself just gave.
+ *
+ * The remedy is the only one that helps here, and no other arm offers it.
+ * "Read the field back" is useless when there may be no field to read, and
+ * unsafe when the text came from a secret.
+ */
+const NO_WRITABLE_FIELD_TAIL =
+  " The helper found no field to write, so the keys may have gone nowhere: `cleared` and `keys` " +
+  "report what was SENT. Focus a text field and retry.";
+
+/**
  * The `note` an Android `keyboard` result carries when the atomic clear was not
  * the one that ran.
  *
@@ -153,9 +188,14 @@ export function androidClearNote(
   const why = Object.hasOwn(WHY, reason)
     ? WHY[reason]
     : "the helper declined it for a reason this version does not recognise";
+  const lead = `keyboard clear: the atomic accessibility replace was not used (${why}), so `;
+  // A read-back that saw an empty field outranks the reason: the fallback is
+  // then CONFIRMED, whatever the helper could not find beforehand.
+  if (NO_WRITABLE_FIELD.has(reason) && !outcome.readBackEmpty) {
+    return `${lead}the fallback tried ${WHAT[outcome.path]}.${NO_WRITABLE_FIELD_TAIL}`;
+  }
   return (
-    `keyboard clear: the atomic accessibility replace was not used (${why}), so the ` +
-    `field was cleared with ${WHAT[outcome.path]}.` +
+    `${lead}the field was cleared with ${WHAT[outcome.path]}.` +
     (outcome.path === "select-all"
       ? outcome.readBackEmpty
         ? READ_BACK_EMPTY
