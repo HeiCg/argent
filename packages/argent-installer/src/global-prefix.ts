@@ -147,15 +147,17 @@ export function suggestedNpmPrefix(): string {
 }
 
 /**
- * Drop the prefix npm exports into everything it spawns. `npx @swmansion/argent
- * init` inherits the OLD prefix that way, and an environment variable outranks
- * the `~/.npmrc` that `npm config set prefix` writes — so without this, the
- * install that follows a prefix move lands right back in the directory that
- * could not be written.
+ * Drop every prefix npm honors from the environment. `npx @swmansion/argent
+ * init` inherits the old prefix through `npm_config_prefix` (npm exports it
+ * into everything it spawns), and a shell may export plain `PREFIX` or
+ * `NPM_CONFIG_PREFIX` — each outranks the `~/.npmrc` that `npm config set
+ * prefix` writes, so any one left set sends the install that follows a prefix
+ * move right back to the directory that could not be written.
  */
 export function forgetInheritedNpmPrefix(): void {
   delete process.env.npm_config_prefix;
   delete process.env.NPM_CONFIG_PREFIX;
+  delete process.env.PREFIX;
 }
 
 /**
