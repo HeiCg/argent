@@ -6,7 +6,7 @@ import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/io
 import { requireCurrentIosDeviceApp } from "../../utils/ios-device/app-session";
 import { getViewport, tapAt, toPoints } from "../../utils/ios-device/runner-commands";
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";
-import { resolveDevice } from "../../utils/device-info";
+import { isIosPhysicalDevice, resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -106,7 +106,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
     if (device.platform === "chromium") {
       return { chromium: chromiumCdpRef(device) };
     }
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       return { iosDeviceRunner: iosDeviceRunnerRef(device) };
     }
     return { simulatorServer: simulatorServerRef(device) };
@@ -122,7 +122,7 @@ Before tapping, determine the correct coordinates by using discovery tools — p
       await tapChromium(chromium, params.x, params.y, clickCount);
       return { tapped: true, timestampMs };
     }
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       const runner = services.iosDeviceRunner as IosDeviceRunnerApi;
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const viewport = await getViewport(runner, bundleId);

@@ -4,7 +4,7 @@ import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/si
 import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { requireCurrentIosDeviceApp } from "../../utils/ios-device/app-session";
 import { dragBetween, getViewport, toPoints } from "../../utils/ios-device/runner-commands";
-import { resolveDevice } from "../../utils/device-info";
+import { isIosPhysicalDevice, resolveDevice } from "../../utils/device-info";
 import { sendCommand } from "../../utils/simulator-client";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -66,7 +66,7 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
   capability,
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       return { iosDeviceRunner: iosDeviceRunnerRef(device) };
     }
     return { simulatorServer: simulatorServerRef(device) };
@@ -76,7 +76,7 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
     const settle = params.settle ?? false;
     const timestampMs = Date.now();
     const device = resolveDevice(params.udid);
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       // XCUITest executes the drag as one planned gesture, so there is no
       // per-frame easing to shape; `settle` instead rests the touch at the
       // destination before lifting (runner-side hold), which zeroes the

@@ -4,7 +4,7 @@ import type {
   ToolCapability,
   ToolDependency,
 } from "@argent/registry";
-import { resolveDevice } from "./device-info";
+import { isIosPhysicalDevice, resolveDevice } from "./device-info";
 import { assertSupported, NotImplementedOnPlatformError } from "./capability";
 import { ensureDeps } from "./check-deps";
 
@@ -68,7 +68,7 @@ export function dispatchByPlatform<
   return async (services, params, invokeOptions) => {
     const device = resolveDevice(params.udid);
     assertSupported(opts.toolId, opts.capability, device);
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       if (!opts.iosDevice) {
         throw new NotImplementedOnPlatformError({
           toolId: opts.toolId,

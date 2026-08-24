@@ -3,7 +3,7 @@ import type { Platform, ServiceRef, ToolCapability, ToolDefinition } from "@arge
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { pressHome } from "../../utils/ios-device/runner-commands";
-import { resolveDevice } from "../../utils/device-info";
+import { isIosPhysicalDevice, resolveDevice } from "../../utils/device-info";
 import { UnsupportedOperationError } from "../../utils/capability";
 import { sendCommand } from "../../utils/simulator-client";
 import { ANDROID_BUTTON_KEYCODES, injectAndroidKeycode } from "../../utils/android-input";
@@ -75,7 +75,7 @@ Fails if the device backend is not reachable — the simulator-server for iOS, o
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
     if (device.platform === "android") return {};
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       return { iosDeviceRunner: iosDeviceRunnerRef(device) };
     }
     return { simulatorServer: simulatorServerRef(device) };
@@ -89,7 +89,7 @@ Fails if the device backend is not reachable — the simulator-server for iOS, o
         `button '${params.button}' is not available on ${device.platform}`
       );
     }
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       if (!PHYSICAL_IOS_BUTTONS.has(params.button)) {
         throw new UnsupportedOperationError(
           "button",

@@ -81,7 +81,7 @@ import {
 } from "../../blueprints/chromium-cdp";
 import { bootElectronApp, killChromiumByPortAndWait } from "../devices/boot-electron";
 import { untrackChromiumPort } from "../../utils/chromium-discovery";
-import { parseChromiumCdpPort, resolveDevice } from "../../utils/device-info";
+import { isIosPhysicalDevice, parseChromiumCdpPort, resolveDevice } from "../../utils/device-info";
 import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flow-visual";
 import { describeVega } from "../describe/platforms/vega";
 import { pinStatusBar, restoreStatusBar } from "../../utils/status-bar";
@@ -506,7 +506,7 @@ async function treeSourceGate(
   bundleId: string,
   signal?: AbortSignal
 ): Promise<string | null> {
-  if (device.platform === "ios" && device.kind === "device" && !signal?.aborted) {
+  if (isIosPhysicalDevice(device) && !signal?.aborted) {
     // Physical devices: the flow tree comes from the XCUITest runner, not
     // native devtools. Resolving the runner service here (it blocks until the
     // on-device HTTP server answers) absorbs the cold-start ramp so it never

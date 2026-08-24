@@ -8,6 +8,7 @@ import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/si
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { isAndroidTv } from "../../utils/adb";
+import { isIosPhysicalDevice } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { FIRST_FRAME_WAIT_MS, httpScreenshot } from "../../utils/simulator-client";
@@ -190,7 +191,7 @@ export const PIXEL_CAPTURE_TIMEOUT_MS = 2_000;
 const IOS_DEVICE_PIXEL_CAPTURE_TIMEOUT_MS = 4_000;
 
 export function pixelCaptureTimeoutMs(device: ActionEnv["device"], firstCapture: boolean): number {
-  if (device.platform === "ios" && device.kind === "device") {
+  if (isIosPhysicalDevice(device)) {
     return IOS_DEVICE_PIXEL_CAPTURE_TIMEOUT_MS;
   }
   const warmFromTheStart = device.platform === "chromium" || device.platform === "vega";
@@ -291,7 +292,7 @@ async function captureFile(env: ActionEnv, budgetMs: number): Promise<string> {
   if (env.device.platform === "vega") {
     return captureVegaScreenshotPng({ scale: CAPTURE_SCALE });
   }
-  if (env.device.platform === "ios" && env.device.kind === "device") {
+  if (isIosPhysicalDevice(env.device)) {
     return captureIosDeviceFile(env, budgetMs);
   }
   // Shape alone cannot tell tvOS from iOS — both are 8-4-4-4-12 UUIDs tagged

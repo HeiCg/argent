@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { Registry, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import { resolveDevice } from "../../utils/device-info";
+import { isIosPhysicalDevice, resolveDevice } from "../../utils/device-info";
 import { getScreenshotScale } from "../../utils/simulator-client";
 import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
 import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
@@ -218,7 +218,7 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
 
       // Physical iPhones/iPads capture host-side via devicectl — before the
       // tvOS probe (which shells out to simctl and can't know hardware UDIDs).
-      if (device.platform === "ios" && device.kind === "device") {
+      if (isIosPhysicalDevice(device)) {
         const pngPath = await iosPhysicalScreenshot(registry, device, scale);
         const image = await requireArtifacts(ctx).register({
           hostPath: pngPath,

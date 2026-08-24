@@ -97,6 +97,16 @@ export function resolveDevice(udid: string): DeviceInfo {
   return { id: udid, platform, kind };
 }
 
+/**
+ * True for physical iPhone/iPad hardware. Always check platform AND kind: a
+ * bare `kind === "device"` also matches physical ANDROID hardware
+ * (resolveDevice above assigns it to non-emulator Android serials), so the
+ * short spelling silently changes meaning outside an ios-platform guard.
+ */
+export function isIosPhysicalDevice(device: Pick<DeviceInfo, "platform" | "kind">): boolean {
+  return device.platform === "ios" && device.kind === "device";
+}
+
 export function parseChromiumCdpPort(udid: string): number | null {
   if (!udid.startsWith(CHROMIUM_ID_PREFIX)) return null;
   const tail = udid.slice(CHROMIUM_ID_PREFIX.length);

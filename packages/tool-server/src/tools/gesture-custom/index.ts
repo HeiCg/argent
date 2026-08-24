@@ -9,7 +9,7 @@ import {
   longPressAt,
   toPoints,
 } from "../../utils/ios-device/runner-commands";
-import { resolveDevice } from "../../utils/device-info";
+import { isIosPhysicalDevice, resolveDevice } from "../../utils/device-info";
 import { InvalidToolInputError } from "../../utils/capability";
 import { sendCommand } from "../../utils/simulator-client";
 import { interpolateEvents } from "../../utils/gesture-utils";
@@ -150,14 +150,14 @@ Example pinch-to-zoom (with interpolate:10 for smoothness):
   capability,
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       return { iosDeviceRunner: iosDeviceRunnerRef(device) };
     }
     return { simulatorServer: simulatorServerRef(device) };
   },
   async execute(services, params) {
     const device = resolveDevice(params.udid);
-    if (device.platform === "ios" && device.kind === "device") {
+    if (isIosPhysicalDevice(device)) {
       return runOnIosDevice(
         services.iosDeviceRunner as IosDeviceRunnerApi,
         device.id,
