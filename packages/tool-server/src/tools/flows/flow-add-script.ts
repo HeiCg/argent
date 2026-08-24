@@ -121,7 +121,7 @@ export const flowAddScriptTool: ToolDefinition<z.infer<typeof zodSchema>, FlowAd
 Use when a flow needs backend state before it touches the device: seed an order, create a test account, read a one-time code. The script drives nothing on the device; the steps around it do. Record it at the point in the walkthrough where it belongs — a setup script goes BEFORE the restart-app it prepares state for, because that is where it runs at replay.
 It runs the file exactly as a replay will: same path resolution (relative to the flow file being recorded), same environment allowlist, same time limit, and the same working directory — this recording's \`project_root\`, which is what a replay launched from that root also uses.
 Returns { message, status, reason?, log?, logTruncated?, durationMs?, outputJson?, outputTruncated?, stepCount, recorded?, savedTo? }.
-UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. A script that ran before it stopped did not roll back what it created; the \`message\` says whether anything ran, so you can fix and re-run or clean up first. A call that ends in a TRANSPORT error rather than a result is the one case with no \`message\` to read: the script may have run more than once, so check the state it touches before calling again.
+UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. A script that ran before it stopped did not roll back what it created; the \`message\` says whether anything ran, or that the runner failed around the script and cannot tell, so you can fix and re-run or clean up first. A call that ends in a TRANSPORT error rather than a result is the one case with no \`message\` to read: the script may have run more than once, so check the state it touches before calling again.
 \`outputJson\` is the document the script returned, as JSON text. It is shown so you can see the shape a later release will read; no flow step can reference it yet. A document over 64 KiB is cut, and \`outputTruncated\` says so.
 Refused for a recording whose project root is not on this tool server's filesystem: the .mjs file stays on the client, so there is nothing here to resolve the path against or to run.`,
   // A script's default limit is 30s and its host cap five minutes, against the
@@ -206,17 +206,22 @@ Refused for a recording whose project root is not on this tool server's filesyst
       // whenever the tool call returns: a failed script did not establish the
       // state the rest of the recording is about to be walked against.
       //
-      // What to do next turns on whether a child actually ran, which is not the
-      // same as whether there is a result — see `ran` in flow-script-step.
-      const nextMove = ran
-        ? `Whatever the script did before it stopped is still done: nothing was rolled back, so ` +
-          `either make the re-run safe to repeat or clean up first, then call this again.`
-        : `Nothing ran, so there is nothing to clean up — the reason above says what stopped it.`;
+      // What to do next turns on whether the script left anything behind,
+      // which is not the same as whether there is a result — and which one
+      // failure kind cannot answer. See `ran` in flow-script-step.
+      const nextMove =
+        ran === "yes"
+          ? `Whatever the script did before it stopped is still done: nothing was rolled back, so ` +
+            `either make the re-run safe to repeat or clean up first, then call this again.`
+          : ran === "no"
+            ? `Nothing ran, so there is nothing to clean up — the reason above says what stopped it.`
+            : `The runner failed around the script rather than inside it, so the script may never ` +
+              `have started — check the state it touches before you call this again.`;
       return {
         ...common,
         message:
-          `The script "${step.path}" ${ran ? "failed" : "could not be run"} — nothing was ` +
-          `recorded in "${params.name}", so the flow is exactly as it was. ${nextMove}`,
+          `The script "${step.path}" ${ran === "yes" ? "failed" : "could not be run"} — nothing ` +
+          `was recorded in "${params.name}", so the flow is exactly as it was. ${nextMove}`,
         stepCount: await recordedStepCount(session),
       };
     }

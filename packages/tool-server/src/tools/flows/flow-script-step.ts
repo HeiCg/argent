@@ -32,11 +32,11 @@ interface FlowScriptStepRun {
   /** Absent exactly when the step was refused before the executor was reached. */
   result?: FlowScriptResult;
   /**
-   * Whether a child process actually ran — what a caller needs to say whether
-   * there may be state to clean up, and NOT the same question as "is there a
-   * result" (see {@link scriptRan}).
+   * Whether the author's script left anything behind — what a caller needs to
+   * say whether there may be state to clean up, and NOT the same question as
+   * "is there a result" (see {@link scriptRan}).
    */
-  ran: boolean;
+  ran: ScriptRan;
 }
 
 interface FlowScriptStepRequest {
@@ -83,7 +83,7 @@ export async function runFlowScriptStep(
       : `rename "${spelling.actual}" to "${suppliedBase}" to run it — a script filename must ` +
         `match ${SCRIPT_FILE_NAME_PATTERN}`;
     return {
-      ran: false,
+      ran: "no",
       outcome: {
         status: "error",
         reason:
@@ -101,7 +101,7 @@ export async function runFlowScriptStep(
   const missing = await scriptFileProblem(canonical);
   if (missing) {
     return {
-      ran: false,
+      ran: "no",
       outcome: {
         status: "fail",
         reason: `script "${target}" ${missing} (resolved to ${canonical})`,
@@ -139,23 +139,39 @@ export async function runFlowScriptStep(
   };
 }
 
+/** Whether the author's script left state behind. See {@link scriptRan}. */
+export type ScriptRan = "yes" | "no" | "unknown";
+
 /** The failure kinds the executor reports WITHOUT ever forking a child. */
 const NEVER_FORKED: ReadonlySet<FlowScriptFailureKind> = new Set(["invalid", "spawn", "queue"]);
 
 /**
- * Whether a child process actually ran — the question "does this leave state
- * behind" turns on, and one a result's mere presence does not answer: the
- * executor returns a full result for a queue it could not admit the step to and
- * for a spawn that never happened.
+ * Whether the author's script left anything behind — the question "is there
+ * something to clean up" turns on, and one a result's mere presence does not
+ * answer: the executor returns a full result for a queue it could not admit the
+ * step to and for a spawn that never happened.
+ *
+ * `protocol` is the one kind that cannot be answered either way, so it does not
+ * pretend to. It is the runner failing AROUND the script, and every protocol
+ * failure the executor raises itself lands before Node evaluates the entry — a
+ * malformed request the runner parked on, a channel that closed before the
+ * request arrived, a runner that exited without ever saying it started — so
+ * usually nothing ran. But the runner's `process.send` is not the only way onto
+ * that channel: a script that writes a line to the channel descriptor reaches
+ * the same kind having already done its work, and "nothing ran" is the more
+ * dangerous of the two to claim wrongly.
  *
  * Everything else answers yes, `cancelled` included: a cancellation can land
  * before the fork or after the script has already reached the system it talks
- * to, the result does not say which, and "nothing ran" is the more dangerous of
- * the two to claim wrongly.
+ * to, and the result does not say which — but the fork is immediate, so the
+ * half that beats it is the rare one, which is the opposite balance to
+ * `protocol`.
  */
-function scriptRan(result: FlowScriptResult): boolean {
-  if (result.ok || !result.failure) return true;
-  return !NEVER_FORKED.has(result.failure.kind);
+function scriptRan(result: FlowScriptResult): ScriptRan {
+  if (result.ok || !result.failure) return "yes";
+  const { kind } = result.failure;
+  if (NEVER_FORKED.has(kind)) return "no";
+  return kind === "protocol" ? "unknown" : "yes";
 }
 
 /**

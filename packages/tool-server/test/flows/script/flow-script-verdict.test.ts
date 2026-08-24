@@ -6,7 +6,7 @@ import type { Registry, ToolContext } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../../src/tools/flows/flow-run";
 import { flowStartRecordingTool } from "../../../src/tools/flows/flow-start-recording";
 import { flowAddScriptTool } from "../../../src/tools/flows/flow-add-script";
-import { scriptVerdict } from "../../../src/tools/flows/flow-script-step";
+import { scriptVerdict, type ScriptRan } from "../../../src/tools/flows/flow-script-step";
 import { __resetRecordingsForTesting, parseFlow } from "../../../src/tools/flows/flow-utils";
 import type {
   FlowScriptFailureKind,
@@ -224,13 +224,14 @@ describe("the recorder reports the verdict the runner will", () => {
   );
 
   it.each([
-    ["queue", false],
-    ["spawn", false],
-    ["invalid", false],
-    ["runtime", true],
-    ["timeout", true],
-    ["cancelled", true],
-  ] as [FlowScriptFailureKind, boolean][])(
+    ["queue", "no"],
+    ["spawn", "no"],
+    ["invalid", "no"],
+    ["runtime", "yes"],
+    ["timeout", "yes"],
+    ["cancelled", "yes"],
+    ["protocol", "unknown"],
+  ] as [FlowScriptFailureKind, ScriptRan][])(
     "tells the author whether a %s failure left anything behind",
     async (kind, ran) => {
       // The executor answers three of its failures WITHOUT forking anything, so
@@ -238,17 +239,22 @@ describe("the recorder reports the verdict the runner will", () => {
       // author to clean up after a queue that was full sends them hunting for
       // state that was never created. `cancelled` counts as ran on purpose: it
       // can land either side of the fork and the result does not say which.
+      // `protocol` is the runner failing around the script - almost always
+      // before the script began, but reachable from a script that has already
+      // done its work, so it claims neither.
       executeMock.mockResolvedValue(outcome({ failure: { kind, message: `the ${kind} message` } }));
 
       const recorded = await recordScript();
 
       expect(recorded.status).not.toBe("pass");
-      if (ran) {
+      if (ran === "yes") {
         expect(recorded.message).toContain("is still done");
         expect(recorded.message).toContain("failed");
       } else {
-        expect(recorded.message).toContain("Nothing ran, so there is nothing to clean up");
         expect(recorded.message).toContain("could not be run");
+        expect(recorded.message).toContain(
+          ran === "no" ? "Nothing ran, so there is nothing to clean up" : "may never have started"
+        );
       }
       expect(await recordedSteps()).toEqual([]);
     }
