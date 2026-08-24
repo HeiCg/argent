@@ -325,6 +325,52 @@ describe("flow script executor — order", () => {
 
     expect(result.log).toBe("token={{secret:TOKEN}}\n");
   });
+
+  it("keeps that order for a value that overlaps itself", async () => {
+    const ws = workspace();
+    // `abcab` starts with its own tail, so the chunk carrying `b` completes a
+    // prefix while extending another one: the split lands *inside* what was
+    // held rather than past it. Releasing all of the hold-back there would
+    // append the head after text written later, and leave the value whole.
+    const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       for (const piece of ["[", "abca", "b", "]"]) {
+         process.stdout.write(piece);
+         await wait(60);
+       }`;
+    const result = await executor().execute({
+      scriptPath: ws.write("self-overlap.mjs", source),
+      projectRoot: ws.dir,
+      secrets: [{ name: "S", value: "abcab" }],
+    });
+
+    expect(result.log).toBe("[{{secret:S}}]");
+  });
+
+  it("keeps that order for a self-overlapping value with the other stream between", async () => {
+    const ws = workspace();
+    // The value spans the join between two chunks, so its replacement goes with
+    // the chunk that completed it — after what the other stream wrote in
+    // between. What must not happen is the rest of the buffer moving with it.
+    const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+       const writes = [
+         [process.stdout, "["],
+         [process.stdout, "abca"],
+         [process.stderr, "MID"],
+         [process.stdout, "b"],
+         [process.stdout, "]"],
+       ];
+       for (const [stream, piece] of writes) {
+         stream.write(piece);
+         await wait(60);
+       }`;
+    const result = await executor().execute({
+      scriptPath: ws.write("self-overlap-streams.mjs", source),
+      projectRoot: ws.dir,
+      secrets: [{ name: "S", value: "abcab" }],
+    });
+
+    expect(result.log).toBe("[MID{{secret:S}}]");
+  });
 });
 
 describe("flow script executor — redaction", () => {
@@ -391,6 +437,36 @@ describe("flow script executor — redaction", () => {
     });
   });
 
+  it("leaves a marker well formed when a value occurs inside another secret's name", async () => {
+    const ws = workspace();
+    // The streaming pass writes `{{secret:Q0}}`, and the final pass runs over
+    // what it wrote: replacing `Q` inside that name would nest one marker in
+    // another and leave neither the shape a reader parses.
+    const script = ws.write("marker.mjs", `console.log("value=Q");`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [{ name: "Q0", value: "Q" }],
+    });
+
+    expect(result.log).toBe("value={{secret:Q0}}\n");
+  });
+
+  it("leaves a marker well formed when two secrets swap name and value", async () => {
+    const ws = workspace();
+    const script = ws.write("swapped.mjs", `console.log("id=TOKEN_ABC and OKEN");`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [
+        { name: "TOKEN_ABC", value: "OKEN" },
+        { name: "OKEN", value: "TOKEN_ABC" },
+      ],
+    });
+
+    expect(result.log).toBe("id={{secret:OKEN}} and {{secret:TOKEN_ABC}}\n");
+  });
+
   it("replaces a secret split across two pipe chunks", async () => {
     const ws = workspace();
     // Two writes with a gap between them arrive as two chunks, so a per-chunk
@@ -442,6 +518,31 @@ describe("flow script executor — redaction", () => {
     expect(result.ok).toBe(true);
     expect(result.log).toBe("calling {{secret:URL}}\n");
   });
+
+  it("replaces every occurrence of a value that starts with its own tail", async () => {
+    const ws = workspace();
+    // A periodic value occurs at every period, so the boundary between two
+    // chunks lands inside an occurrence *and* on the edge of the next. Holding
+    // back the longest tail that is a prefix of the value would reach back
+    // inside an occurrence already replaced, releasing the rest of one whole
+    // occurrence per chunk with nothing left to match it afterwards.
+    const value = "0123456789".repeat(4);
+    const script = ws.write(
+      "periodic.mjs",
+      `const block = ${JSON.stringify(value)}.repeat(128);
+       for (let i = 0; i < 40; i++) process.stdout.write(block);`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [{ name: "P", value }],
+    });
+
+    // The value is all digits and its marker has none, so a surviving digit is
+    // a surviving fragment of the value.
+    expect(result.log).not.toMatch(/[0-9]/);
+    expect(result.log).toContain("{{secret:P}}");
+  }, 30_000);
 
   it("keeps a secret that straddles the truncation cut out of the report", async () => {
     const ws = workspace();

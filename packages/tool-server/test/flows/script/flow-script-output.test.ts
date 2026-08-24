@@ -104,6 +104,16 @@ describe("flow script executor — output validation", () => {
     );
   });
 
+  it("rejects a cycle reached through toJSON", async () => {
+    // `toJSON` is a route back up the tree that the walk cannot see in the
+    // object it came from: without recording that object, the transform is
+    // followed until V8 gives up and the report names a stack overflow instead
+    // of the path the cycle is on.
+    const result = await run(`const a = { toJSON() { return a; } }; output.a = a;`);
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toBe("output.a is a cyclic reference; output must be a tree");
+  });
+
   it("accepts the same object twice in different branches", async () => {
     const result = await run(`const shared = { id: 1 }; output.a = shared; output.b = shared;`);
     expect(result.failure).toBeUndefined();

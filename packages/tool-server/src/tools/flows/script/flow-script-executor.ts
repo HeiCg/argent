@@ -21,7 +21,7 @@ import {
 } from "@argent/configuration-core";
 import { isElectronHostedEnv } from "../../../utils/electron-env";
 import { formatErrorForAgent } from "../../../utils/format-error";
-import { scrubSecretValues } from "../../../utils/secrets";
+import { scrubSecretChunk, scrubSecretValues } from "../../../utils/secrets";
 import { sleep } from "../../../utils/timing";
 import {
   isTerminalResponse,
@@ -34,6 +34,14 @@ import {
 } from "./flow-script-protocol";
 
 const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
+/**
+ * What one step and one flow run may keep of a script's console output.
+ *
+ * Counted on the bytes the report carries, not on the bytes the script wrote:
+ * redaction and frame collapsing both run first, so a long value shrinks to its
+ * marker and a short one grows into it. What the limits bound is the size of
+ * the report, which is what has to cross back to the caller.
+ */
 export const SCRIPT_STEP_LOG_LIMIT_BYTES = 64 * 1024;
 const SCRIPT_RUN_LOG_LIMIT_BYTES = 256 * 1024;
 /** How long the outcome waits for the log streams once it is otherwise known. */
@@ -159,6 +167,15 @@ const ALLOWED_ENV_NAMES: readonly string[] = [
 const ALLOWED_ENV_PREFIXES: readonly string[] = ["npm_config_"];
 
 /**
+ * npm's own spelling of `NODE_OPTIONS`: it defines `node-options` as a real
+ * config key and translates it back into the variable for what it starts, so
+ * the `npm_config_` prefix would carry through exactly what the exact name is
+ * reserved to keep out. npm reads its config names without regard to case, so
+ * this one is matched that way on every platform.
+ */
+const NPM_NODE_OPTIONS_ENV = "npm_config_node_options";
+
+/**
  * Names refused in a caller-supplied environment map, because each steers the
  * runner's own process rather than the host: `NODE_CHANNEL_FD` and
  * `NODE_UNIQUE_ID` name the IPC channel this protocol runs on,
@@ -169,6 +186,7 @@ const RESERVED_ENV_NAMES: readonly string[] = [
   "NODE_CHANNEL_FD",
   "NODE_UNIQUE_ID",
   "NODE_OPTIONS",
+  NPM_NODE_OPTIONS_ENV,
   "ELECTRON_RUN_AS_NODE",
   RUNNER_ACTIVATION_ENV,
 ];
@@ -641,6 +659,10 @@ export class FlowScriptExecutor {
       terminal = message;
     });
 
+    // Kept beside the timer, because the timer is not proof the limit passed: a
+    // stall in the tool server's own event loop holds its callback behind
+    // whatever the poll phase already has ready. See `classifyOutcome`.
+    const deadlineAt = Date.now() + timeoutMs;
     const timer = setTimeout(() => interrupt("timeout"), timeoutMs);
     const onAbort = () => interrupt("cancelled");
     request.signal?.addEventListener("abort", onAbort, { once: true });
@@ -670,6 +692,7 @@ export class FlowScriptExecutor {
     }
 
     const exit = await exited;
+    const deadlinePassed = Date.now() >= deadlineAt;
     clearTimeout(timer);
     request.signal?.removeEventListener("abort", onAbort);
 
@@ -701,6 +724,7 @@ export class FlowScriptExecutor {
         startedSeen,
         interrupted,
         timeoutMs,
+        deadlinePassed,
         heapFatalSeen: capture.heapFatalSeen,
         heapLimitMb: bounds.heapLimitMb,
       }),
@@ -734,6 +758,8 @@ interface ClassifyInput {
   startedSeen: boolean;
   interrupted: "timeout" | "cancelled" | null;
   timeoutMs: number;
+  /** Whether the time limit had already passed when the exit was observed. */
+  deadlinePassed: boolean;
   heapFatalSeen: boolean;
   heapLimitMb: number;
 }
@@ -770,13 +796,7 @@ function classifyOutcome(
     return failed("cancelled", "The run was cancelled and the script process was stopped.");
   }
 
-  if (input.interrupted === "timeout") {
-    return failed(
-      "timeout",
-      `The script did not finish within its ${describeDuration(input.timeoutMs)} time limit ` +
-        `and its process tree was stopped.`
-    );
-  }
+  if (input.interrupted === "timeout") return timedOut(input.timeoutMs);
 
   // V8 does not throw when it hits the heap limit: it prints a fatal error and
   // aborts. Ahead of the `startedSeen` row because a script can exhaust the
@@ -793,6 +813,12 @@ function classifyOutcome(
   }
 
   if (exit.signal) {
+    // The clock rather than the timer, which a stall in the tool server's own
+    // event loop can hold behind the exit it is racing. Past that stall the
+    // child's deadline watchdog has already killed the group, and reporting its
+    // SIGKILL as unexplained sends the author looking for a killer that is the
+    // step's own time limit.
+    if (input.deadlinePassed) return timedOut(input.timeoutMs);
     return failed(
       "signal",
       `The script process was killed by ${exit.signal} before it returned output. ` +
@@ -938,6 +964,14 @@ function clampText(text: string | undefined, max: number): string | undefined {
   return marked;
 }
 
+function timedOut(timeoutMs: number): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
+  return failed(
+    "timeout",
+    `The script did not finish within its ${describeDuration(timeoutMs)} time limit ` +
+      `and its process tree was stopped.`
+  );
+}
+
 function failed(
   kind: FlowScriptFailureKind,
   message: string,
@@ -1075,9 +1109,17 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   const allowed = new Set(
     ALLOWED_ENV_NAMES.map((name) => (caseInsensitive ? name.toLowerCase() : name))
   );
+  const reservedName = (name: string) =>
+    RESERVED_ENV_NAMES.find((candidate) =>
+      caseInsensitive || candidate === NPM_NODE_OPTIONS_ENV
+        ? candidate.toLowerCase() === name.toLowerCase()
+        : candidate === name
+    );
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
+    // Ahead of the allowlist, because a prefix admits names nobody listed.
+    if (reservedName(name)) continue;
     const key = caseInsensitive ? name.toLowerCase() : name;
     if (allowed.has(key) || ALLOWED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
       env[name] = value;
@@ -1093,10 +1135,7 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   }
 
   for (const [name, value] of Object.entries(overrides ?? {})) {
-    const reserved = RESERVED_ENV_NAMES.find((candidate) =>
-      caseInsensitive ? candidate.toLowerCase() === name.toLowerCase() : candidate === name
-    );
-    if (reserved) {
+    if (reservedName(name)) {
       throw new ScriptSetupError(
         "invalid",
         `${name} cannot be set for a script: it steers the runner's own process ` +
@@ -1384,16 +1423,18 @@ class ScriptLogCapture {
     const pending = held + text;
     // Only a tail that could still grow into a secret is held back: a fixed
     // `longest value - 1` hold-back delays whole lines that could never match,
-    // and adding a secret to a flow must not reorder its log. Measured on the
-    // text as written and scrubbed only after the split, because one secret can
-    // sit inside another — a host inside a URL that is itself a secret — and
-    // scrubbing first would leave the chunk no longer ending in a prefix of it.
-    const split = final
-      ? pending.length
-      : Math.max(0, pending.length - partialSecretTail(pending, secrets));
-    const emit = scrubSecretValues(pending.slice(0, split), secrets);
+    // and adding a secret to a flow must not reorder its log. The scrub decides
+    // where that tail begins, because only it knows which of the values it
+    // replaced are settled — a value that starts with its own tail would
+    // otherwise have the hold-back reach back inside a replacement already made
+    // and release the rest of a whole occurrence.
+    const { emit, held: keep } = scrubSecretChunk(pending, secrets, final);
+    const split = pending.length - keep;
     state.holdback = pending.slice(split);
-    this.release(state, held, emit);
+    // The released text, which is only *part* of what was held when a value
+    // overlaps itself: `abca` held for `abcab` keeps `ab` once `b` arrives, so
+    // the split lands inside the hold-back rather than past it.
+    this.release(state, held.slice(0, split), emit);
     // A collapsed frame dump is output the report does not carry, which is what
     // `logTruncated` means.
     if (state.collapser?.collapsed) this.truncatedFlag = true;
@@ -1410,17 +1451,21 @@ class ScriptLogCapture {
    * The hold-back is per stream and the buffer is shared, so released text held
    * from an earlier chunk belongs *before* whatever the other stream wrote in
    * between — appending it now would move it past that text.
+   *
+   * `released` is the part of the hold-back this chunk let go of, never the
+   * whole of it: a value that overlaps itself can hold text back across the
+   * chunk that arrived after it.
    */
-  private release(state: StreamState, held: string, emit: string): void {
+  private release(state: StreamState, released: string, emit: string): void {
     const at = state.holdbackAt;
     if (at === undefined || !emit) {
       this.append(state.collapser ? state.collapser.write(emit) : emit);
       return;
     }
-    // Scrubbing the held text on its own says how much of `emit` is that text,
-    // whenever no value spans the join. A value that does span it has no side
-    // to belong to, so its replacement goes with the chunk that completed it.
-    const head = scrubSecretValues(held, this.secrets());
+    // Scrubbing the released text on its own says how much of `emit` is that
+    // text, whenever no value spans the join. A value that does span it has no
+    // side to belong to, so its replacement goes with the chunk that completed it.
+    const head = scrubSecretValues(released, this.secrets());
     const headText = emit.startsWith(head) ? head : "";
     // The collapser is a stream transform, so it has to see the two in order.
     this.append(state.collapser ? state.collapser.write(headText) : headText, at);
