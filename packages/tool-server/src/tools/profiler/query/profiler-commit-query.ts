@@ -409,7 +409,7 @@ function getTopComponents(
 }
 
 /** Exposed for tests: the grouping whose inclusive-duration handling is load-bearing. */
-export const __testables = { getTopComponents };
+export const __testables = { getTopComponents, renderByComponent };
 
 export const profilerCommitQueryTool: ToolDefinition<z.infer<typeof zodSchema>, string> = {
   id: "profiler-commit-query",

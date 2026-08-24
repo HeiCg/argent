@@ -401,32 +401,39 @@ function renderComponentCpu(
     // Within a window, `queryCpuWindow` emits one row per call-tree NODE, so
     // one function name can arrive several times. Self time is exclusive —
     // even nested frames own disjoint sample intervals — so it always adds.
-    // Inclusive time adds only when the nodes are disjoint (the same helper
-    // called from two unrelated call sites); when they nest (recursion), the
-    // outer frame's figure already contains the inner one's, so keep the
-    // larger.
+    // Inclusive time belongs to whole subtrees: the row tracks the set of
+    // disjoint subtree roots seen so far, and each newcomer is either already
+    // inside one of them (recursion), contains some of them (an outer frame
+    // arriving after its inner frames), or covers fresh ground (the same
+    // helper called from an unrelated site) and joins the union. Deciding
+    // pairwise against a single representative would not compose over three
+    // or more nodes mixing nesting and disjointness.
     const perWindow = new Map<
       string,
-      { selfMs: number; totalMs: number; nodeId?: number; url?: string; lineNumber?: number }
+      {
+        selfMs: number;
+        totalMs: number;
+        members: { nodeId: number; totalMs: number }[];
+        url?: string;
+        lineNumber?: number;
+      }
     >();
     for (const hs of hotspots) {
       const seen = perWindow.get(hs.name);
       if (seen) {
         seen.selfMs += hs.selfMs;
-        if (
-          seen.nodeId != null &&
-          hs.nodeId != null &&
-          nodesShareCallTree(seen.nodeId, hs.nodeId, childToParent)
-        ) {
-          seen.totalMs = Math.max(seen.totalMs, hs.totalMs);
-        } else {
-          seen.totalMs += hs.totalMs;
+        if (!seen.members.some((m) => isAncestor(m.nodeId, hs.nodeId, childToParent))) {
+          seen.members = seen.members.filter(
+            (m) => !isAncestor(hs.nodeId, m.nodeId, childToParent)
+          );
+          seen.members.push({ nodeId: hs.nodeId, totalMs: hs.totalMs });
+          seen.totalMs = seen.members.reduce((sum, m) => sum + m.totalMs, 0);
         }
       } else {
         perWindow.set(hs.name, {
           selfMs: hs.selfMs,
           totalMs: hs.totalMs,
-          nodeId: hs.nodeId,
+          members: [{ nodeId: hs.nodeId, totalMs: hs.totalMs }],
           url: hs.url,
           lineNumber: hs.lineNumber,
         });
@@ -485,29 +492,26 @@ function shortenUrl(url: string): string {
 }
 
 /**
- * True when one Hermes profile node is an ancestor of the other, so the outer
- * frame's inclusive time already contains the inner one's and the two cannot
- * be added. Either direction counts; a cycle guard bounds the walk.
+ * True when `ancestor` is the given node or one of its call-tree ancestors, so
+ * the ancestor's inclusive time already contains the node's. A cycle guard
+ * bounds the walk.
  */
-function nodesShareCallTree(
-  a: number,
-  b: number,
+function isAncestor(
+  ancestor: number,
+  nodeId: number,
   childToParent: Map<number, number> | undefined
 ): boolean {
   if (!childToParent) return false;
-  if (a === b) return true;
-  const reaches = (from: number, target: number) => {
-    const seen = new Set<number>([from]);
-    let current = from;
-    while (childToParent.has(current)) {
-      current = childToParent.get(current)!;
-      if (current === target) return true;
-      if (seen.has(current)) return false;
-      seen.add(current);
-    }
-    return false;
-  };
-  return reaches(a, b) || reaches(b, a);
+  if (ancestor === nodeId) return true;
+  const seen = new Set<number>([nodeId]);
+  let current = nodeId;
+  while (childToParent.has(current)) {
+    current = childToParent.get(current)!;
+    if (current === ancestor) return true;
+    if (seen.has(current)) return false;
+    seen.add(current);
+  }
+  return false;
 }
 
 /** Exposed for tests: the aggregation whose inclusive-duration handling is load-bearing. */

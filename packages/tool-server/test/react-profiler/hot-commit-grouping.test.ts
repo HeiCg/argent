@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildHotCommitSummaries } from "../../src/utils/react-profiler/pipeline/00-hot-commits";
+import { __testables } from "../../src/tools/profiler/query/profiler-commit-query";
 import type { DevToolsFiberCommit } from "../../src/utils/react-profiler/types/input";
 
 /**
@@ -64,13 +65,33 @@ describe("buildHotCommitSummaries — grouped component durations", () => {
  * function name. `buildHotCommitSummaries` was only the one it was noticed in.
  */
 describe("getTopComponents (profiler-commit-query by_time_range)", () => {
-  it("reports the largest instance's subtree and the summed self time", async () => {
-    const { __testables } = await import("../../src/tools/profiler/query/profiler-commit-query");
+  it("reports the largest instance's subtree and the summed self time", () => {
     const [view] = __testables.getTopComponents(nestedViews, 10);
 
     expect(view!.count).toBe(3);
     // 20 + 15 + 10 = 45 is the double-counted figure, larger than the 20ms commit.
     expect(view!.maxSubtree).toBe(20);
     expect(view!.totalSelf).toBe(3);
+  });
+});
+
+/**
+ * `by_component` ranks and truncates commits by summed SELF time — the
+ * additive column. Ranking by the max-instance order statistic instead would
+ * drop, at the truncation cut, a commit where the component did more total
+ * work than one with a single expensive instance.
+ */
+describe("renderByComponent (profiler-commit-query by_component) ranking", () => {
+  it("keeps the commit with the most self work when truncating to one row", () => {
+    const commitA = fiber({ commitIndex: 0, actualDuration: 50, selfDuration: 0.5 });
+    const commitB = [
+      fiber({ commitIndex: 1, actualDuration: 12, selfDuration: 10 }),
+      fiber({ commitIndex: 1, actualDuration: 12, selfDuration: 6 }),
+      fiber({ commitIndex: 1, actualDuration: 12, selfDuration: 4 }),
+    ];
+    const markdown = __testables.renderByComponent([commitA, ...commitB], "View", 1);
+
+    expect(markdown).toContain("| #1 |");
+    expect(markdown).not.toContain("| #0 |");
   });
 });

@@ -32,8 +32,8 @@ export interface CpuCommitHotspot {
   name: string;
   selfMs: number;
   totalMs: number;
-  /** Hermes profile node this row was computed from; lets callers tell same-name frames apart when merging rows. */
-  nodeId?: number;
+  /** Hermes profile node this row was computed from; lets callers merge same-name rows by call-tree ancestry. */
+  nodeId: number;
   url?: string;
   lineNumber?: number;
 }
@@ -54,7 +54,7 @@ export interface HotCommitSummary {
   components: HotCommitComponentEntry[]; // grouped by name, sorted by selfDurationMs DESC (capped at 15)
   totalComponentCount: number; // total before cap (for "... and N more" display)
   cpuHotspots?: CpuCommitHotspot[]; // top JS functions by self-time during this commit's time window
-  // ms of actualDuration from fibers whose display name could not be resolved at stop time
+  // ms of selfDuration from fibers whose display name could not be resolved at stop time
   // (transient components unmounted before react-profiler-stop ran). When non-zero, the
   // per-component breakdown is incomplete — this is the size of the hole.
   unattributedMs?: number;

@@ -124,6 +124,42 @@ function nestedIndex(): CpuSampleIndex {
   };
 }
 
+/**
+ * Three same-name `walk` nodes in one tree mixing BOTH shapes at once: a
+ * recursive pair (`root → wrapA → walk-outer → walk-inner`) plus a disjoint
+ * second call site (`root → wrapB → walk-disjoint`). Self-time weights are
+ * parameters so tests can force any arrival order — `queryCpuWindow` sorts by
+ * self DESC. The wrapper frames carry no samples, so the `walk` figures come
+ * purely from their own nodes.
+ */
+function mixedIndex(disjointSelf: number, innerSelf: number, outerSelf: number): CpuSampleIndex {
+  const nodeMap = new Map<number, HermesProfileNode>();
+  const mk = (id: number, name: string, children: number[]): HermesProfileNode => ({
+    id,
+    hitCount: 0,
+    callFrame: frame(name),
+    children,
+  });
+  nodeMap.set(1, mk(1, "(root)", [2, 5]));
+  nodeMap.set(2, mk(2, "wrapA", [3]));
+  nodeMap.set(3, mk(3, "walk", [4]));
+  nodeMap.set(4, mk(4, "walk", []));
+  nodeMap.set(5, mk(5, "wrapB", [6]));
+  nodeMap.set(6, mk(6, "walk", []));
+  const n = disjointSelf + innerSelf + outerSelf;
+  const sampleNodeIds: number[] = [];
+  for (let i = 0; i < disjointSelf; i++) sampleNodeIds.push(6);
+  for (let i = 0; i < innerSelf; i++) sampleNodeIds.push(4);
+  for (let i = 0; i < outerSelf; i++) sampleNodeIds.push(3);
+  return {
+    timestampsMs: Float64Array.from({ length: n }, (_, i) => i + 1),
+    intervalStartsMs: Float64Array.from({ length: n }, (_, i) => i),
+    sampleNodeIds,
+    nodeMap,
+    durationMs: n,
+  };
+}
+
 /** One commit covering the whole index, on `Login`. */
 const oneCommit = {
   commits: [{ commitIndex: 0, timestamp: 0, commitDuration: 10, componentName: "Login" }],
@@ -208,5 +244,25 @@ describe("renderComponentCpu — one function arriving as several nodes in ONE w
     expect(self).toBeCloseTo(7, 5);
     expect(total).toBeCloseTo(7, 5);
     expect(self).toBeLessThanOrEqual(total);
+  });
+
+  it("unions nesting AND disjointness in one window (disjoint site arrives first)", () => {
+    // selfs: disjoint 6 > inner 3 > outer 1 — the disjoint node sorts first.
+    // Inclusive truth: outer subtree (1+3=4) + disjoint (6) = 10. Summing all
+    // three rows would read 13; maxing pairwise against the seed row also
+    // misses either the disjoint or the outer figure depending on order.
+    const md = renderComponentCpu(mixedIndex(6, 3, 1), oneCommit, "Login", 10);
+    const { self, total } = readRow(md, "walk");
+    expect(self).toBeCloseTo(10, 5);
+    expect(total).toBeCloseTo(10, 5);
+  });
+
+  it("unions nesting AND disjointness when the recursive ancestor arrives first", () => {
+    // selfs: outer 4 > inner 2 > disjoint 1. Inclusive truth: outer subtree
+    // (4+2=6) + disjoint (1) = 7.
+    const md = renderComponentCpu(mixedIndex(1, 2, 4), oneCommit, "Login", 10);
+    const { self, total } = readRow(md, "walk");
+    expect(self).toBeCloseTo(7, 5);
+    expect(total).toBeCloseTo(7, 5);
   });
 });

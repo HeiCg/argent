@@ -2,9 +2,10 @@
  * Stage 00-cpu-correlate: Map Hermes CPU samples to React commit time windows.
  *
  * For each hot commit, finds CPU samples whose timestamps fall within the
- * commit's [timestamp, timestamp + commitDuration] window, then aggregates
- * by function name to produce a ranked list of JS functions executing during
- * that commit.
+ * commit's [timestamp, timestamp + commitDuration] window, then attributes
+ * them per call-tree node — one row per NODE that captured samples, so a
+ * function reached at several call sites appears once per site and callers
+ * must merge by ancestry before summing inclusive time.
  *
  * Clock alignment: The Hermes CPU profile uses microsecond monotonic timestamps
  * (Profiler.start/stop), while React commits use performance.now() milliseconds.

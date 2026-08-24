@@ -68,8 +68,8 @@ function normalizeChangeDescription(raw: unknown): DevToolsChangeDescription | n
  * downstream pipeline expects. `commitIndex` is assigned flatly across roots
  * so the map-key grouping in `buildHotCommitSummaries` works correctly.
  *
- * `unattributedByCommit` records fibers with a real `actualDuration` whose
- * display name could not be resolved (typically transient components that
+ * `unattributedByCommit` records fibers whose display name could not be
+ * resolved (typically transient components that
  * unmounted before `STOP_AND_READ_SCRIPT` ran). These would otherwise be
  * silently dropped; surfacing the count + summed ms lets the report warn when
  * a commit's breakdown is incomplete. Tuple shape: `[commitIndex, fiberCount, ms]`.
