@@ -10,6 +10,7 @@ vi.mock("../src/utils/adb", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/utils/adb")>();
   return {
     adbShell: vi.fn(async () => ""),
+    runAdb: vi.fn(async () => ({ stdout: "", stderr: "" })),
     shellQuote: actual.shellQuote,
   };
 });
@@ -20,11 +21,13 @@ import { iosImpl } from "../src/tools/system-settings/platforms/ios";
 import { androidImpl } from "../src/tools/system-settings/platforms/android";
 import { SYSTEM_SETTINGS, TEXT_SIZE_VALUES } from "../src/tools/system-settings/types";
 import type { SystemSettingsParams } from "../src/tools/system-settings/types";
-import { adbShell } from "../src/utils/adb";
+import { adbShell, runAdb } from "../src/utils/adb";
 import { InvalidToolInputError } from "../src/utils/capability";
+import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
 import { rememberDeviceSet, __resetDeviceSetCacheForTesting } from "../src/utils/ios-device-sets";
 
 const mockAdbShell = vi.mocked(adbShell);
+const mockRunAdb = vi.mocked(runAdb);
 
 const IOS_UDID = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
 const ANDROID_SERIAL = "emulator-5554";
@@ -73,6 +76,8 @@ beforeEach(() => {
   execFileMock.mockReset();
   mockAdbShell.mockReset();
   mockAdbShell.mockImplementation(async () => "");
+  mockRunAdb.mockReset();
+  mockRunAdb.mockImplementation(async () => ({ stdout: "", stderr: "" }));
 });
 
 describe("system-settings failure codes are defined", () => {
@@ -522,17 +527,43 @@ describe("system-settings Android branch", () => {
     expect(result.applied).toBe("accessibility_display_inversion_enabled=1");
   });
 
+  // wifi/cellular run through runAdb (svc reports failure on stderr), so their
+  // argv is read off mockRunAdb — see the svc-backed describe below.
   it("wifi maps on/off to `svc wifi enable/disable`", async () => {
-    expect((await run({ setting: "wifi", value: "on" })).shellCmd).toBe("svc wifi enable");
-    mockAdbShell.mockClear();
-    const { result, shellCmd } = await run({ setting: "wifi", value: "off" });
-    expect(shellCmd).toBe("svc wifi disable");
+    await androidImpl.handler({}, params({ setting: "wifi", value: "on" }), androidDevice);
+    expect(mockRunAdb.mock.calls[0]![0]).toEqual([
+      "-s",
+      ANDROID_SERIAL,
+      "shell",
+      "svc wifi enable",
+    ]);
+    mockRunAdb.mockClear();
+    const result = await androidImpl.handler(
+      {},
+      params({ setting: "wifi", value: "off" }),
+      androidDevice
+    );
+    expect(mockRunAdb.mock.calls[0]![0]).toEqual([
+      "-s",
+      ANDROID_SERIAL,
+      "shell",
+      "svc wifi disable",
+    ]);
     expect(result.applied).toBe("wifi=disabled");
   });
 
   it("cellular maps to `svc data enable/disable` (mobile_data)", async () => {
-    const { result, shellCmd } = await run({ setting: "cellular", value: "on" });
-    expect(shellCmd).toBe("svc data enable");
+    const result = await androidImpl.handler(
+      {},
+      params({ setting: "cellular", value: "on" }),
+      androidDevice
+    );
+    expect(mockRunAdb.mock.calls[0]![0]).toEqual([
+      "-s",
+      ANDROID_SERIAL,
+      "shell",
+      "svc data enable",
+    ]);
     expect(result.applied).toBe("mobile_data=enabled");
   });
 
@@ -563,5 +594,80 @@ describe("system-settings Android branch", () => {
     await expect(androidImpl.handler({}, params({}), androidDevice)).rejects.toSatisfy(
       failsWith(FAILURE_CODES.ANDROID_SYSTEM_SETTING_FAILED)
     );
+  });
+
+  // `svc` is the one Android mechanism here that exits 0 when the operation
+  // failed and puts its reason ("Wi-Fi/Mobile data operation failed: …") on
+  // stderr — so wifi/cellular must be read off stderr, not the exit code.
+  describe("the svc-backed settings (wifi, cellular)", () => {
+    it("run over runAdb so stderr is observable", async () => {
+      await androidImpl.handler({}, params({ setting: "wifi", value: "on" }), androidDevice);
+      expect(mockRunAdb).toHaveBeenCalledWith(["-s", ANDROID_SERIAL, "shell", "svc wifi enable"], {
+        timeoutMs: 15_000,
+      });
+      expect(mockAdbShell).not.toHaveBeenCalled();
+    });
+
+    it("fail with the stderr detail even though svc exits 0", async () => {
+      mockRunAdb.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "Mobile data operation failed: android.os.RemoteException",
+      });
+      const rejection = expect(
+        androidImpl.handler({}, params({ setting: "cellular", value: "on" }), androidDevice)
+      ).rejects;
+      await rejection.toSatisfy(failsWith(FAILURE_CODES.ANDROID_SYSTEM_SETTING_FAILED));
+      await rejection.toThrow(/Mobile data operation failed/);
+    });
+
+    it("keep applying when stderr is only whitespace", async () => {
+      mockRunAdb.mockResolvedValueOnce({ stdout: "", stderr: "\n" });
+      const result = await androidImpl.handler(
+        {},
+        params({ setting: "wifi", value: "off" }),
+        androidDevice
+      );
+      expect(result.applied).toBe("wifi=disabled");
+    });
+  });
+});
+
+describe("system-settings dispatch wiring (through tool.execute)", () => {
+  // The per-branch tests above call iosImpl/androidImpl directly, so they can't
+  // catch a mis-wired dispatch table (`ios: androidImpl, android: iosImpl`
+  // typechecks — both impls share generics — and would run simctl against
+  // Android serials and adb against iOS UDIDs). These drive the real `execute`
+  // with a valid value on each shaped udid and assert each platform reaches its
+  // OWN binary. Dep cache is primed so `ensureDeps` doesn't shell out to
+  // `command -v` and perturb `execFileMock` call counts.
+  beforeEach(() => {
+    __resetDepCacheForTests();
+    __primeDepCacheForTests(["xcrun", "adb"]);
+  });
+
+  it("an iOS udid runs `xcrun simctl ui`, never adb", async () => {
+    execFileSucceeds();
+    const result = await systemSettingsTool.execute!(
+      {},
+      { udid: IOS_UDID, setting: "appearance", value: "dark" }
+    );
+    expect(result.applied).toBe("appearance=dark");
+    const [cmd, args] = execFileMock.mock.calls[0]!;
+    expect(cmd).toBe("xcrun");
+    expect((args as string[]).slice(0, 3)).toEqual(["simctl", "ui", IOS_UDID]);
+    expect(mockAdbShell).not.toHaveBeenCalled();
+    expect(mockRunAdb).not.toHaveBeenCalled();
+  });
+
+  it("an Android serial runs over adb, never xcrun", async () => {
+    const result = await systemSettingsTool.execute!(
+      {},
+      { udid: ANDROID_SERIAL, setting: "appearance", value: "light" }
+    );
+    expect(result.applied).toBe("night_mode=no");
+    expect(mockAdbShell).toHaveBeenCalledWith(ANDROID_SERIAL, "cmd uimode night no", {
+      timeoutMs: 15_000,
+    });
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 });

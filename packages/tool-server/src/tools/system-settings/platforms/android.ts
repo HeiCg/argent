@@ -1,6 +1,6 @@
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
-import { adbShell } from "../../../utils/adb";
+import { adbShell, runAdb } from "../../../utils/adb";
 import { TEXT_SIZE_VALUES } from "../types";
 import type {
   SystemSetting,
@@ -41,6 +41,11 @@ interface AndroidChange {
   shellCommand: string;
   // Human-readable description of the concrete platform-level change.
   applied: string;
+  // True for the `svc`-backed settings: svc is an app_process main() that
+  // reports every failure ("Wi-Fi/Mobile data operation failed: …", or its
+  // usage) via System.err and returns normally, so the exit code stays 0 and
+  // only stderr distinguishes a refused change from an applied one.
+  reportsFailureOnStderr?: boolean;
 }
 
 // Translate an abstract (setting, value) into the concrete `adb` change. Central
@@ -90,11 +95,13 @@ function androidChange(setting: SystemSetting, value: string): AndroidChange {
       return {
         shellCommand: `svc wifi ${on ? "enable" : "disable"}`,
         applied: `wifi=${on ? "enabled" : "disabled"}`,
+        reportsFailureOnStderr: true,
       };
     case "cellular":
       return {
         shellCommand: `svc data ${on ? "enable" : "disable"}`,
         applied: `mobile_data=${on ? "enabled" : "disabled"}`,
+        reportsFailureOnStderr: true,
       };
     case "airplane-mode":
       return {
@@ -128,13 +135,24 @@ export const androidImpl: PlatformImpl<
   requires: ["adb"],
   handler: async (_services, params) => {
     const { udid, setting, value } = params;
-    const { shellCommand, applied } = androidChange(setting, value);
+    const { shellCommand, applied, reportsFailureOnStderr } = androidChange(setting, value);
 
     try {
-      // `settings put` / `svc` / `cmd` are silent on success and exit non-zero
-      // (→ adbShell throws) on a real failure, so the exit code — not the
-      // output — is the success signal.
-      await adbShell(udid, shellCommand, { timeoutMs: 15_000 });
+      // `settings put` / `cmd` are silent on success and exit non-zero
+      // (→ adbShell throws) on a real failure, so the exit code is the success
+      // signal. The `svc` settings can't use it: svc exits 0 even when the
+      // radio operation failed and prints the reason on stderr instead — read
+      // stderr there, or the tool would report `applied` for a change the
+      // runtime never made.
+      if (reportsFailureOnStderr) {
+        const { stderr } = await runAdb(["-s", udid, "shell", shellCommand], {
+          timeoutMs: 15_000,
+        });
+        const detail = stderr.trim();
+        if (detail) throw new Error(detail);
+      } else {
+        await adbShell(udid, shellCommand, { timeoutMs: 15_000 });
+      }
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       throw new FailureError(
