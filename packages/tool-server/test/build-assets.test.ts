@@ -12,13 +12,9 @@ const COPY_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "copy-build-assets.mjs");
  * The files `tsc` leaves behind, and the one build step that puts them in
  * `dist/`.
  *
- * Nothing asserted this. `flow-script-protocol.test.ts` hand-copies the three
- * `.mjs` files into a temporary directory, so it stays green with the copy
- * script deleted, and the CI `test -f` guards only the published bundle, which
- * copies from `src`. `windows-e2e.yml` and the Vega E2E script both boot
- * `packages/tool-server/dist` as a real tool server: no flow `script` step
- * exists yet, so a short `dist/` boots today, and from the PR that wires the
- * step up it fails every one of them at flow-execute time.
+ * The CI `test -f` guards cover only the published bundle, which copies from
+ * `src`; `windows-e2e.yml` and `scripts/ci/vega-vvd-test.sh` boot
+ * `packages/tool-server/dist` itself as a real tool server.
  */
 const ASSETS = [
   "utils/ios-profiler/Argent.tracetemplate",
@@ -36,10 +32,10 @@ afterEach(() => {
 /**
  * A package root holding only the copy script and the assets named in `include`.
  *
- * The script resolves its own package root from its own location, so running a
- * copy of it out of a temporary tree is what lets a case leave an asset out —
- * and what keeps every case off the real `dist/`, which is the one directory a
- * unit test must not materialise on a tree that has never been built.
+ * The script resolves its package root from its own location, so running a copy
+ * of it out of a temporary tree is what lets a case leave an asset out — and
+ * what keeps every case off the real `dist/`, which a unit test must not
+ * materialise on a tree that has never been built.
  */
 function fixtureRoot(include: readonly string[]): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "argent-build-assets-"));
@@ -62,10 +58,9 @@ function runCopy(root: string): void {
 
 describe("tool-server build assets", () => {
   it("copies every listed asset into dist, byte for byte", () => {
-    // Run rather than assume: a suite that only checked an existing `dist/`
-    // would pass on whatever the last build left there, including a build that
-    // predates a file being added to the list. `cpSync` creates parents, so
-    // this works on a tree that has never been built.
+    // Checking an existing `dist/` would pass on whatever the last build left
+    // there, including one predating a file being added to the list. `cpSync`
+    // creates parents, so this works on a tree that has never been built.
     const root = fixtureRoot(ASSETS);
     runCopy(root);
 
@@ -78,10 +73,6 @@ describe("tool-server build assets", () => {
   });
 
   it("refuses to finish when a listed asset is not there", () => {
-    // The list is hand-maintained against four other places, so the failure
-    // mode that matters is a rename. It has to stop the build rather than
-    // produce a dist that is quietly short a file — and the only proof of that
-    // is running it against a tree with one asset missing.
     const dropped = ASSETS[1]!;
     const root = fixtureRoot(ASSETS.filter((asset) => asset !== dropped));
 
@@ -111,9 +102,9 @@ describe("tool-server build assets", () => {
   });
 
   it("is run by every build that produces this package's dist", () => {
-    // The step above proves the script works; this proves a build runs it.
-    // Without it, deleting `&& node scripts/copy-build-assets.mjs` from either
-    // `package.json` leaves the whole file green while `dist` ships short.
+    // The cases above prove the script works; this proves a build runs it.
+    // Dropping the copy step from either `package.json` would otherwise leave
+    // the whole file green while `dist` ships short.
     const buildScript = (file: string): string =>
       (JSON.parse(fs.readFileSync(file, "utf8")) as { scripts: Record<string, string> }).scripts
         .build ?? "";

@@ -17,18 +17,16 @@ function workspace(): ScriptWorkspace {
   return ws;
 }
 
-/** Pids a test started outside the executor's reach; killed however it ends. */
 const strays: number[] = [];
 
 afterEach(() => {
   // A descendant is only stopped by the behaviour under test, so a failing
-  // assertion would otherwise leave a spinning process behind — observed for
-  // real: a `node -e setInterval(...)` still alive 32s after vitest exited.
+  // assertion would otherwise leave a spinning process behind.
   while (strays.length) {
     try {
       process.kill(strays.pop()!, "SIGKILL");
     } catch {
-      // Already gone, which is the outcome the test wanted.
+      // Already gone.
     }
   }
   while (workspaces.length) workspaces.pop()!.cleanup();
@@ -44,7 +42,6 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Poll until `file` exists and holds a pid, or give up. */
 async function readPidFile(
   file: string,
   timeoutMs = 10_000,
@@ -112,12 +109,10 @@ describe("flow script executor — time limits and cancellation", () => {
 
   it("still reports a timeout when the tool server's own loop stalls across the limit", async () => {
     const ws = workspace();
-    // The child keeps its own copy of the limit as the backstop for a parent
-    // that cannot act. Given the same number as the parent's timer, its only
-    // margin was the child's boot time — so one synchronous child-process call
-    // on the server's loop across the moment the limit expired let the child
-    // SIGKILL its own group first, and the step was reported as an unexplained
-    // signal instead of the timeout it was.
+    // The child's own deadline is the backstop for a parent that cannot act.
+    // Without `CHILD_DEADLINE_MARGIN_MS` behind the parent's timer, a stalled
+    // server loop lets the child SIGKILL its own group first, and the step is
+    // reported as an unexplained signal instead of a timeout.
     const script = ws.write("hang.mjs", `setInterval(() => {}, 1000);`);
     const pending = executor().execute({
       scriptPath: script,
@@ -140,8 +135,6 @@ describe("flow script executor — time limits and cancellation", () => {
 
   it("names a top-level await that never settles instead of waiting out the limit", async () => {
     const ws = workspace();
-    // Nothing is left to run, so the step does not have to occupy its slot
-    // until the time limit to know the script will never produce output.
     const script = ws.write("unsettled.mjs", `await new Promise(() => {});`);
     const started = Date.now();
     const result = await executor().execute({
@@ -219,7 +212,7 @@ describe("flow script executor — time limits and cancellation", () => {
   it("does not relabel a cancellation as a timeout when the deadline passes mid-stop", async () => {
     const ws = workspace();
     // A script that ignores SIGTERM outlives the polite stop, so its deadline
-    // can pass during the stop grace. The first interruption is the true one.
+    // can pass during the stop grace.
     const script = ws.write(
       "stubborn.mjs",
       `process.on("SIGTERM", () => {});
@@ -239,11 +232,10 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.failure?.kind).toBe("cancelled");
   }, 30_000);
 
-  // The ordinary graceful-shutdown shape, and the one that turned a stop into a
-  // pass: the SIGTERM handler releases what was holding the event loop, the
-  // loop empties, and the runner reports the half-written document as a result
-  // — *because* of the stop. `work aborted` in the log is the proof that this
-  // is the shape under test and not a script that simply ignored the signal.
+  // The SIGTERM handler releases what was holding the event loop, so the loop
+  // empties and the runner reports a half-written document — a result produced
+  // *by* the stop. `work aborted` in the log proves the handler ran, rather
+  // than the script having ignored the signal.
   const GRACEFUL_SIGTERM = `import { setTimeout as delay } from "node:timers/promises";
      output.phase = "seeding";
      const ac = new AbortController();
@@ -312,10 +304,9 @@ describe("flow script executor — time limits and cancellation", () => {
     };
   }
 
-  // Both halves of the shape together: a script that answers SIGTERM *and* a
-  // parent whose loop is blocked across the stop. Sealing the interruption one
-  // turn after the kill was sent left exactly a stall's worth of room for the
-  // stop's own verdict to arrive unsealed, and the step was reported as a pass
+  // A script that answers SIGTERM *and* a parent whose loop is blocked across
+  // the stop. Were the seal armed a turn after the kill was sent, the stop's
+  // own verdict would arrive unsealed and the step would be reported as a pass
   // carrying the document the SIGTERM handler wrote.
   const EXITS_ON_SIGTERM = `output.phase = "half-written";
      const held = setInterval(() => {}, 1000);
@@ -369,9 +360,8 @@ describe("flow script executor — time limits and cancellation", () => {
   it("refuses a step whose signal is already aborted, without spawning", async () => {
     const ws = workspace();
     const marker = ws.resolve("ran.txt");
-    // The claim is "without spawning", and the marker is what proves it: a
-    // process that started would have written the file before it could be
-    // stopped. `durationMs` cannot prove it — `emptyResult` hardcodes zero.
+    // The marker is what proves "without spawning": a process that started
+    // would have written it. `durationMs` cannot — `emptyResult` reports zero.
     const script = ws.write(
       "never.mjs",
       `import fs from "node:fs";
@@ -391,8 +381,8 @@ describe("flow script executor — time limits and cancellation", () => {
 
   it("bounds a step that asked for nothing by the host maximum, not by the default", async () => {
     const ws = workspace();
-    // A host that deliberately tightened its ceiling below the 30s default was
-    // getting the default on every step that named no limit of its own.
+    // A step that names no limit takes the 30s default bounded by the host
+    // maximum, so a ceiling tightened below the default has to win.
     const script = ws.write("hang.mjs", `setInterval(() => {}, 1000);`);
     const started = Date.now();
     const result = await executor({ maxTimeoutMs: 700 }).execute({
@@ -424,10 +414,9 @@ describe("flow script executor — time limits and cancellation", () => {
 describe("flow script executor — exit classification", () => {
   it("keeps the output of a script that finished and then exited zero", async () => {
     const ws = workspace();
-    // A very common idiom, and it was a hard failure: `beforeExit` does not
-    // fire after an explicit exit, so the runner never reported and the parent
-    // said "no output was captured" about a script whose log proves the work
-    // was done. Exiting with zero is the script declaring success.
+    // `beforeExit` does not fire after an explicit exit, so the runner's guard
+    // over `process.exit` is the only thing that reports this script's output.
+    // Exiting with zero is the script declaring success.
     const script = ws.write(
       "exits.mjs",
       `async function main() { output.orderId = "ord_1"; console.log("seeded"); }
@@ -442,9 +431,9 @@ describe("flow script executor — exit classification", () => {
 
   it("still fails a script that set process.exitCode and then exited", async () => {
     const ws = workspace();
-    // `process.exit()` with no argument leaves the code the script set. The
-    // guard above must forward that call by arity: `exit(undefined)` is a
-    // different call from `exit()`, and it loses the code.
+    // `process.exit()` with no argument keeps the code the script set, so the
+    // runner's guard has to forward by arity: `realExit(undefined)` is a
+    // different call from `realExit()` and loses the code.
     const script = ws.write("bad.cjs", `output.a = 1; process.exitCode = 3; process.exit();`);
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
@@ -465,9 +454,9 @@ describe("flow script executor — exit classification", () => {
 
   it("fails a step whose script set a non-zero process.exitCode", async () => {
     const ws = workspace();
-    // `try { await main() } catch (e) { console.error(e); process.exitCode = 1 }`
-    // is the recommended way to fail a script, preferred over `process.exit(1)`
-    // because it does not truncate stdout. Both have to reach the same verdict.
+    // Setting `process.exitCode` is the recommended way to fail a script,
+    // preferred over `process.exit(1)` because it does not truncate stdout, so
+    // it has to reach the same verdict.
     const script = ws.write(
       "soft-fail.mjs",
       `console.log("validation failed: 3 of 10 checks");
@@ -519,16 +508,14 @@ describe("flow script executor — exit classification", () => {
     expect(result.failure?.message).toBe("The script exceeded its 64 MiB heap limit.");
     expect(result.log).toContain("allocating");
     expect(result.log).toMatch(/\[\d+ V8 stack frames omitted]/);
-    // The numbered frame list is gone; the summary that names the cause is not.
     expect(result.log).not.toMatch(/^\s*\d+: 0x[0-9a-f]{6}/m);
   }, 60_000);
 
   it("still reports a heap limit when the script logged past its log budget first", async () => {
     const ws = workspace();
-    // V8 prints its banner last, so a script chatty enough to fill the step's
-    // log budget loses the one line that names the cause — and "a progress line
-    // per item, then out of heap" is the ordinary shape of a script that hits
-    // this limit. The verdict cannot be read off the truncated log.
+    // V8 prints its banner last, so a script chatty enough to fill the log
+    // budget loses the one line that names the cause: the verdict cannot be
+    // read off the truncated log.
     const script = ws.write(
       "chatty-hungry.mjs",
       `for (let i = 0; i < 2000; i++) console.log("progress line " + i + " ".repeat(120));
@@ -548,10 +535,8 @@ describe("flow script executor — exit classification", () => {
 
   it("does not call an abort with no heap banner a heap limit", async () => {
     const ws = workspace();
-    // `process.abort()` and a native addon's `abort()` both raise SIGABRT
-    // without allocating anything. The signal alone is not the evidence — the
-    // banner beside it is — and naming a limit this process never approached
-    // sends the author to the wrong place.
+    // `process.abort()` raises SIGABRT without allocating anything, so the
+    // signal alone is not the evidence — the banner beside it is.
     const script = ws.write("aborts.mjs", `console.log("about to abort"); process.abort();`);
     const result = await executor({ heapLimitMb: 64 }).execute({
       scriptPath: script,
@@ -566,10 +551,9 @@ describe("flow script executor — exit classification", () => {
 
   it("does not call a forwarded 134 exit status a heap limit", async () => {
     const ws = workspace();
-    // A wrapper that runs a build through a shell and forwards its status: the
-    // shell reports the aborted build as 128+SIGABRT, and the build's own
-    // banner lands in the stream this script inherited. Neither is this
-    // process running out of heap.
+    // The shell reports the aborted build as 128+SIGABRT, and the build's own
+    // banner lands in the stream this script inherited — neither of which is
+    // this process running out of heap.
     ws.write("build.mjs", `const held = []; for (;;) held.push("x".repeat(1024 * 1024));`);
     const script = ws.write(
       "wrapper.mjs",
@@ -622,15 +606,14 @@ describe("flow script executor — process cleanup", () => {
   it("stops a descendant that ignores SIGTERM when the step is cancelled", async () => {
     const ws = workspace();
     const pidFile = ws.resolve("stubborn.pid");
-    // A descendant with its own SIGTERM handler outlives the polite stop. The
-    // runner does not — it has no handler and dies in milliseconds — so a
-    // forced stop conditioned on the runner alone never happened.
+    // A descendant with its own SIGTERM handler outlives the polite stop; the
+    // runner has none and dies in milliseconds, so a forced stop conditioned on
+    // the runner alone never happens.
     //
     // The descendant writes its own pid, and only after its handler is
-    // installed. Written by the parent at spawn time, the pid appeared within a
-    // few milliseconds — usually before the handler existed — so an abort that
-    // followed it was answered by a plain SIGTERM, and the test passed with the
-    // escalation under it removed about four times in five.
+    // installed: a pid written by the parent at spawn time races ahead of the
+    // handler, so the abort following it is answered by a plain SIGTERM and the
+    // test passes without the escalation it exists to prove.
     const descendantSource =
       'process.on("SIGTERM", () => {});' +
       `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
@@ -662,8 +645,6 @@ describe("flow script executor — process cleanup", () => {
   it("stops a descendant of a step that returned normally", async () => {
     const ws = workspace();
     const pidFile = ws.resolve("left-behind.pid");
-    // Nothing interrupted this step: the script started a subprocess, returned
-    // its output and exited, and the subprocess was reparented to init.
     const script = ws.write(
       "leaver.mjs",
       `import { spawn } from "node:child_process";
@@ -705,9 +686,9 @@ describe("flow script executor — process cleanup", () => {
       ],
       { cwd: path.resolve(__dirname, "../../.."), stdio: ["ignore", "ignore", "pipe"] }
     );
-    // Captured, because everything this test can go wrong about happens inside
-    // that process: without it a driver that failed to start showed up as an
-    // opaque "No pid appeared in …" thirty seconds later.
+    // Everything this test can go wrong about happens inside that process:
+    // without its stderr, a driver that failed to start is only an opaque
+    // "No pid appeared in …".
     let driverStderr = "";
     parent.stderr?.on("data", (chunk: Buffer) => {
       driverStderr += chunk.toString();
@@ -735,12 +716,10 @@ describe("flow script executor — process cleanup", () => {
     }
   }, 60_000);
 
-  // Windows has no process group, so `taskkill /t` is the whole stop path
-  // there, on every timed-out or cancelled step. `spawn` reports a failure to
-  // launch through an `error` event rather than a throw, and an unhandled
-  // `error` event ends the process it fires in — the tool server. Faking the
-  // platform is what makes the branch reachable from here, and `taskkill` is
-  // genuinely absent on a POSIX host, so the launch failure is a real one.
+  // `taskkill /t` is the whole Windows stop path, on every timed-out or
+  // cancelled step, and `spawn` reports a launch failure through an `error`
+  // event that ends the tool server if it goes unhandled. Faking the platform
+  // makes that branch reachable, and `taskkill` really is absent here.
   it("survives a Windows stop whose taskkill cannot be launched", async () => {
     const ws = workspace();
     const realPlatform = process.platform;
@@ -764,8 +743,6 @@ describe("flow script watchdogs", () => {
   it("never hold a finished script open, and cost it very little", async () => {
     const ws = workspace();
     const script = ws.write("empty.mjs", `output.ok = true;`);
-    // Warm the module cache so the number reflects process start, not the
-    // first-import cost of this test file.
     const shared = executor();
     await shared.execute({ scriptPath: script, projectRoot: ws.dir, timeoutMs: 40_000 });
     const result = await shared.execute({
@@ -775,12 +752,10 @@ describe("flow script watchdogs", () => {
     });
 
     expect(result.ok).toBe(true);
-    // The deadline watchdog is parked in `Atomics.wait` for that whole 40s and
-    // the lifeline is waiting on a socket that will not close: an un-unref'd
-    // worker would hold the process to the deadline, and the step would return
-    // a timeout 40 seconds from now instead of an output in tens of
-    // milliseconds. Both threads run for this whole window, and it is still
-    // well under a second on a loaded CI box.
+    // The deadline watchdog is parked in `Atomics.wait` for the whole window
+    // and the lifeline waits on a socket that will not close: an un-unref'd
+    // worker would hold the child open to the deadline, turning this into a 40s
+    // timeout instead of an output in tens of milliseconds.
     expect(result.durationMs).toBeLessThan(3_000);
   }, 60_000);
 });

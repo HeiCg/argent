@@ -40,12 +40,9 @@ function executor() {
 }
 
 /**
- * Run a script against a stand-in runner that misbehaves in a chosen way.
- *
- * The runner is a preload, so a fake one is loaded before the script and parks
- * instead of returning: Node waits for an `--import` module to finish before it
- * loads the entry, and none of these cases wants the script to run. That is the
- * real runner's own shape on a request it cannot honour.
+ * The fake runner parks rather than returns: Node awaits an `--import` module
+ * before it loads the entry, so the script never runs — the real runner's own
+ * shape on a request it cannot honour.
  */
 async function withFakeRunner(source: string, extra: Partial<FlowScriptRequest> = {}) {
   const ws = workspace();
@@ -181,8 +178,6 @@ describe("flow script executor — a runner that misbehaves", () => {
   });
 
   it("re-checks the failure text bounds even though a compliant child already did", async () => {
-    // The same second line the output size gets, for the same reason: a child
-    // that stopped being compliant after arbitrary script code ran in it.
     const result = await withFakeRunner(
       `process.on("message", () => {
          process.send({ type: "started" });
@@ -230,9 +225,8 @@ describe("flow script executor — a runner that misbehaves", () => {
 describe("flow script executor — the protocol channel is the runner's alone", () => {
   it("ignores a readiness ping from the script instead of failing the run", async () => {
     const ws = workspace();
-    // What a file written to double as a forked worker does on startup, itself
-    // or through a dependency. `typeof process.send === "function"` steers it
-    // straight into this, and under plain `node` the same check is a no-op.
+    // The readiness ping a file written to double as a forked worker sends;
+    // under plain `node` the same feature detection is a no-op.
     const script = ws.write(
       "pings.mjs",
       `if (process.send) process.send("ready");
@@ -261,9 +255,8 @@ describe("flow script executor — the protocol channel is the runner's alone", 
 
   it("ignores a script disconnecting the channel", async () => {
     const ws = workspace();
-    // Closing the channel would leave the run with no way to report at all,
-    // and the runner's own disconnect handler made it look like the script had
-    // stopped its own process.
+    // Closing the channel would leave the run with no way to report at all, and
+    // the runner's own `disconnect` handler exits the process.
     const script = ws.write("disconnects.mjs", `process.disconnect(); output.ok = true;`);
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
@@ -273,9 +266,9 @@ describe("flow script executor — the protocol channel is the runner's alone", 
 
   it("answers a send the script awaits instead of leaving it parked", async () => {
     const ws = workspace();
-    // The guard swallowed the callback Node always calls, so the promise never
-    // settled, the event loop emptied, and the step passed with the document
-    // the script had reached before its second line.
+    // The guard's `send` has to call the callback Node always calls: swallowing
+    // it parks the script, the loop empties, and the step passes with whatever
+    // document the script had reached.
     const script = ws.write(
       "awaits-send.mjs",
       `async function main() {
@@ -295,8 +288,8 @@ describe("flow script executor — the protocol channel is the runner's alone", 
 
   it("delivers the disconnect event to the script that asked for it", async () => {
     const ws = workspace();
-    // Node emits `disconnect` after closing the channel; a stub that closed
-    // nothing and emitted nothing left the same script parked forever.
+    // The guard's `disconnect` closes nothing, so it has to emit the event
+    // itself or a script waiting for it parks forever.
     const script = ws.write(
       "awaits-disconnect.mjs",
       `async function main() {
@@ -319,10 +312,8 @@ describe("flow script executor — the protocol channel is the runner's alone", 
 });
 
 describe("flow script executor — the runner's reporting path survives the script", () => {
-  // Each of these is a script that otherwise finishes normally and that plain
-  // `node` exits 0 with the right output. Each one took the runner's verdict
-  // with it, and the step was reported as `exit` — "the script stopped its own
-  // process ... no output was captured" — for a script that had done its work.
+  // Each shape is a legal script that plain `node` exits 0 with the right
+  // output, and each one removes something the runner reports through.
   const shapes: Array<[string, string]> = [
     ["replaced process.send", `process.send = () => true;`],
     ["deleted process.send", `delete process.send;`],
@@ -347,12 +338,11 @@ describe("flow script executor — the runner's reporting path survives the scri
 
   it("puts its listeners back in front of the ones a script registers after", async () => {
     const ws = workspace();
-    // Order, not just presence. The runner re-registers inside
-    // `removeAllListeners`, so its `uncaughtException` handler is first again —
-    // and that handler decides whether the script has one of its own by asking
-    // whether there is more than one. Put back *after* the script's, it would
-    // see itself alone, claim the exception, and fail a step the script
-    // recovered from; plain `node` runs the script's handler and exits 0.
+    // Order, not just presence: the runner re-registers inside
+    // `removeAllListeners`, and its `uncaughtException` handler decides whether
+    // the script has one of its own by asking whether there is more than one.
+    // Put back after the script's, it would see itself alone and claim an
+    // exception the script recovered from.
     const script = ws.write(
       "reclaims.mjs",
       `process.removeAllListeners();
@@ -372,13 +362,9 @@ describe("flow script executor — the runner's reporting path survives the scri
 
 describe("flow script executor — redacting a document from a runner", () => {
   it("scrubs a document too deep for a recursive walk", async () => {
-    // The output document came from a child that ran arbitrary code, so its
-    // shape is not the parent's to assume: a nest of twenty thousand objects is
-    // a legal document that `JSON.parse` reads without complaint and a
-    // recursive scrub cannot walk — measured, a recursive walk gives up around
-    // five thousand. `execute` owes its caller a verdict, not a stack overflow,
-    // and the scrub is what stands between the secret and a document later
-    // steps read.
+    // A nest twenty thousand deep is a legal document that `JSON.parse` reads
+    // and a recursive scrub cannot walk, and `execute` owes its caller a
+    // verdict rather than a stack overflow.
     const depth = 20_000;
     let json = JSON.stringify("token sk-live-9d3f0a1b2c3d4e5f");
     for (let i = 0; i < depth; i++) json = `{"nested":${json}}`;
@@ -400,9 +386,8 @@ describe("flow script executor — redacting a document from a runner", () => {
 describe("flow script executor — the published layout", () => {
   it("runs from a directory holding only the three .mjs files", async () => {
     // In the published bundle the runner sits flat in dist/ beside
-    // tool-server.cjs, with no package.json and no node_modules of its own. It
-    // resolves both watchdogs against its own module URL, so nothing else has
-    // to be there.
+    // tool-server.cjs. It resolves both watchdogs against its own module URL,
+    // so nothing else has to be there.
     const dist = fs.mkdtempSync(path.join(os.tmpdir(), "argent-script-dist-"));
     cleanups.push(() => fs.rmSync(dist, { recursive: true, force: true }));
     for (const name of fs.readdirSync(SOURCE_RUNNER_DIR).filter((f) => f.endsWith(".mjs"))) {
@@ -429,21 +414,15 @@ describe("flow script executor — the published layout", () => {
 
     expect(result.ok).toBe(true);
     expect(result.log).toContain("bundled");
-    // Process start cost, measured from the published layout: this is what
-    // decides whether a process pool is ever worth adding. Measured at 31-45ms
-    // over ten runs on an M-series laptop, both watchdog threads included, so
-    // the bound below is two orders of magnitude of headroom for a loaded CI
-    // box rather than a real expectation.
+    // Measured at 31-45ms over ten runs on an M-series laptop, both watchdog
+    // threads included; the bound below is headroom for a loaded CI box rather
+    // than a real expectation.
     expect(roundTripMs, `process start cost: ${roundTripMs}ms`).toBeLessThan(3_000);
   }, 30_000);
 });
 
 describe("flow script runner — the watchdogs, driven directly", () => {
-  /**
-   * Fork the real runner the way the executor does, without its time limit.
-   * `request` overrides the well-formed message, for the child-side validation
-   * cases.
-   */
+  /** Fork the real runner the way the executor does, without the parent's time limit. */
   function forkRunner(scriptPath: string, deadlineMs: number, request?: unknown) {
     const child = fork(scriptPath, [], {
       cwd: path.dirname(scriptPath),
@@ -503,7 +482,6 @@ describe("flow script runner — the watchdogs, driven directly", () => {
   ])(
     "refuses %s, from the child's side of the protocol",
     async (_label, message) => {
-      // Both sides validate every message; only the parent's half was covered.
       const ws = workspace();
       const script = ws.write("never.mjs", `output.ran = true;`);
       const child = forkRunner(script, 20_000, message);
@@ -543,7 +521,6 @@ describe("flow script runner — the watchdogs, driven directly", () => {
       child.once("exit", () => resolve());
     });
 
-    // One run, from the first request: the second document never reached it.
     expect(results).toEqual([JSON.stringify({ runs: 1 })]);
   }, 30_000);
 
@@ -551,8 +528,7 @@ describe("flow script runner — the watchdogs, driven directly", () => {
     const ws = workspace();
     const marker = ws.resolve("ran.txt");
     // `finish` exits from inside a stream callback, so a runner that simply
-    // returned here would let Node load the entry module in the meantime — and
-    // the executor has already been told the run failed.
+    // returned here would let Node load the entry module in the meantime.
     const script = ws.write(
       "never.mjs",
       `import fs from "node:fs";
@@ -566,8 +542,8 @@ describe("flow script runner — the watchdogs, driven directly", () => {
 
   it("leaves when the parent closes the protocol channel", async () => {
     const ws = workspace();
-    // The convenience path for a runner whose loop is still turning: the tool
-    // server is gone, so nothing is waiting for a verdict.
+    // The convenience path for a runner whose event loop is still turning: the
+    // tool server is gone, so nothing is waiting for a verdict.
     const script = ws.write("waits.mjs", `await new Promise(() => {});`);
     const child = forkRunner(script, 120_000);
     await new Promise((resolve) => setTimeout(resolve, 300));
