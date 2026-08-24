@@ -552,4 +552,54 @@ describe("type directive focus wait", () => {
     expect(calls.filter((c) => c.id === "gesture-tap")).toHaveLength(1);
     expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
   }, 60_000);
+
+  // The Chromium walker reports the ARIA `role` attribute before the tag name,
+  // so `<div role="textbox">` reaches the flow tree as "textbox" — not
+  // "input"/"textarea". Missing it from the editable set let a rich-text
+  // composer covering a label behind it vouch for that label and swallow the
+  // keys, the same silent misdirection the size bound used to miss.
+  it("treats an ARIA textbox ancestor as the input it is (chromium)", async () => {
+    currentFetch = () => ({
+      source: "cdp-dom",
+      tree: {
+        role: "Screen",
+        frame: { x: 0, y: 0, width: 1, height: 1 },
+        children: [
+          {
+            role: "textbox",
+            identifier: "rich-editor",
+            focused: true,
+            frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.6 },
+            children: [],
+          },
+          {
+            role: "generic",
+            identifier: "label-behind",
+            focused: false,
+            frame: { x: 0.4, y: 0.3, width: 0.2, height: 0.05 },
+            children: [],
+          },
+        ],
+      },
+    });
+    const calls: Call[] = [];
+    // Device id is irrelevant — fetchFlowTree is stubbed wholesale.
+    const registry = mockRegistry(calls, () => ({ xml: "" }));
+
+    await writeFlow("aria", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "label-behind" }, text: "WRONG", submit: false }],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "aria", project_root: tmpDir, device: IOS_DEVICE }
+      )
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.steps.at(-1)!.reason).toContain("did not take keyboard focus");
+    expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
+  }, 30_000);
 });

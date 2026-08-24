@@ -643,9 +643,14 @@ function framesOverlap(a: DescribeFrame, b: DescribeFrame): boolean {
  * Roles the tree sources give elements that can take keyboard text themselves.
  * The Android adapter derives `TextField` from EditText/TextInput classes, iOS
  * maps UITextField/UITextView/SearchField to `AXTextField`, and the Chromium
- * DOM walker reports raw tag names (`input`, `textarea`).
+ * DOM walker reports the ARIA `role` attribute when one is set (so the
+ * canonical editable roles `textbox`/`searchbox`) or the raw tag name
+ * (`input`, `textarea`) otherwise. A bare `contenteditable` div carries no
+ * distinguishing role today — the walker does not surface that flag — so such
+ * an element falls in as a non-editable container; noted here because it is
+ * the one editable shape this rule cannot see.
  */
-const EDITABLE_ROLES = /^(textfield|axtextfield|input|textarea)$/i;
+const EDITABLE_ROLES = /^(textfield|axtextfield|input|textarea|textbox|searchbox)$/i;
 
 /**
  * Is `focused` evidence that `target` has keyboard focus?
@@ -754,6 +759,9 @@ async function waitForFocus(
   into: FlowSelector,
   tappedFrame: DescribeFrame
 ): Promise<FocusVerdict> {
+  // The deadline bounds the POLLING, never a single read: each read runs at
+  // the tree source's own RPC tier (up to the 15s hierarchy ceiling), so one
+  // slow read can overshoot the window by its whole duration.
   const deadline = Date.now() + TYPE_FOCUS_TIMEOUT_MS;
   let read = false;
   for (;;) {
