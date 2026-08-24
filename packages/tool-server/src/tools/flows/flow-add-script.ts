@@ -235,7 +235,10 @@ Refused for a recording whose project root is not on this tool server's filesyst
           error_code: FAILURE_CODES.FLOW_FILE_WRITE_FAILED,
           failure_stage: "flow_add_script_append",
           failure_area: "tool_server",
-          error_kind: "validation",
+          // `unknown`, as every other throw of this code is: the fallback
+          // catches a raw filesystem error that reached here carrying no
+          // diagnosis of its own, and nothing about the CALL was invalid.
+          error_kind: "unknown",
         },
         `The script "${step.path}" ran and passed in ${result!.durationMs}ms and nothing it did ` +
           `was rolled back, but recording it failed — so the step is not in the flow, and its ` +

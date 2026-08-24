@@ -260,13 +260,40 @@ describe("recording a script step", () => {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toMatch(/ran and passed in \d+ms/);
       expect((err as Error).message).toContain("nothing it did was rolled back");
-      // The ORIGINAL diagnosis's signal survives the wrap;
-      // `flow_add_script_append` is only the fallback for a throw carrying no
-      // signal at all, which no real append produces today.
+      // The ORIGINAL diagnosis's signal survives the wrap; the
+      // `flow_add_script_append` fallback is for a throw carrying no signal at
+      // all, which the test below reaches.
       expect(getFailureSignal(err as Error)?.failure_stage).toBe("flow_file_write");
     } finally {
       await fs.chmod(flowsDir, 0o700);
     }
+  });
+
+  it("classifies a bare append failure the way every other write failure is classified", async () => {
+    // `appendStep` re-reads the flow file with a plain `fs.readFile`, so a file
+    // the script removed while it ran arrives here as a raw ENOENT carrying no
+    // diagnosis - the one throw the fallback signal describes. Every other
+    // throw of FLOW_FILE_WRITE_FAILED calls itself `unknown`, and a filesystem
+    // error is not the caller's arguments being invalid.
+    await start("vanished");
+    await write(
+      "scripts/vanish.mjs",
+      `import * as fs from "node:fs";\n` +
+        `fs.unlinkSync(${JSON.stringify(flowPath("vanished"))});\n` +
+        `output.ok = true;`
+    );
+
+    const err = await addScript("vanished", "../../scripts/vanish.mjs").catch(
+      (e: unknown) => e as Error
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    const signal = getFailureSignal(err as Error);
+    expect(signal?.failure_stage).toBe("flow_add_script_append");
+    expect(signal?.error_code).toBe(FAILURE_CODES.FLOW_FILE_WRITE_FAILED);
+    expect(signal?.error_kind).toBe("unknown");
+    // The wrap still has to say the script's own work stands.
+    expect((err as Error).message).toContain("nothing it did was rolled back");
   });
 
   it("leaves a document inside the limit whole and unflagged", async () => {
