@@ -12,6 +12,7 @@ import {
   quoteScreenText,
   includesCI,
   selectorToFrame,
+  ignorableTextNote,
   textMatches,
   typographicVariantNote,
   uiTreeMatchInternals,
@@ -892,6 +893,27 @@ describe("the character sets are pinned member by member, not by a representativ
     expect(quoteScreenText("‪Add more…‬")).toBe("Add more…");
     expect(includesCI("‪Add more…‬", quoteScreenText("‪Add more…‬"))).toBe(true);
     expect(quoteScreenText("‪Hubert Gancarczyk‬")).toBe("Hubert Gancarczyk");
+  });
+
+  it("never re-runs the author's pattern, which is what makes the note explosive", () => {
+    // When an ignorable blocks an ANCHORED pattern the real comparison dies in
+    // O(1) — the engine never enters the quantifier — while the same pattern on
+    // the stripped label backtracks. Node's engine is not interruptible and the
+    // server is single-threaded, so nothing could stop it. Measured before this
+    // guard: 0.015 ms for the comparison, 1,005 ms for the note.
+    const BOMB = "^(A+)+b$";
+    const label = `${ZWSP}${"A".repeat(30)}`;
+    expect(textMatches(label, BOMB, "matches")).toBe(false);
+    const started = performance.now();
+    const note = ignorableTextNote(label, BOMB);
+    expect(performance.now() - started).toBeLessThan(50);
+    expect(note).toContain("U+200B");
+  });
+
+  it("stays silent when the pattern already spells every ignorable out", () => {
+    expect(ignorableTextNote(`a${ZWSP}b`, `a${ZWSP}c`)).toBeUndefined();
+    expect(ignorableTextNote(`a${ZWSP}b`, "a.c")).toContain("U+200B");
+    expect(ignorableTextNote("plain text", "^plain$")).toBeUndefined();
   });
 
   it("keeps compatibilityVariantIn silent when the needle genuinely matches", () => {

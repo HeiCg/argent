@@ -1307,9 +1307,12 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
     expect(result.steps[0].reason).not.toMatch(/invisible characters/);
   });
 
-  it("stays quiet when the ignorable is not why the pattern missed", async () => {
-    // Without a relevance gate the note fires on every `matches` failure whose
-    // text carries an ignorable, even when the ignorable is not the cause.
+  it("names the invisible without claiming it is why the pattern missed", async () => {
+    // The note states a fact about the text rather than diagnosing the miss.
+    // Re-running the author's pattern on the stripped text to prove causality
+    // is what an ignorable-blocked anchored pattern makes catastrophic, and it
+    // is the more useful sentence anyway: a pattern corrected for some other
+    // reason still has to account for these characters on the next run.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1338,13 +1341,46 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
 
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/but its text was/);
-    // The text does not match "Alice Jones" with or without the wrapper, so
-    // there is no note. The wrapper is dropped from the quoted label, not
-    // named: the fold strips it, so the screen draws none of it.
+    expect(result.steps[0].reason).toMatch(/the text carries/);
+    // It reports what the text holds. It does not say this is the reason.
     expect(result.steps[0].reason).not.toMatch(/must account for/);
-    expect(result.steps[0].reason).not.toMatch(/the text carries/);
+    expect(result.steps[0].reason).toMatch(/has to match them literally/);
+    // The wrapper is dropped from the quoted label, not named: the fold strips
+    // it, so the screen draws none of it.
     expect(result.steps[0].reason).not.toMatch(/<U\+202A>/);
     expect(result.steps[0].reason).toMatch(/its text was "Bob Smith"/);
+  });
+
+  it("stays quiet when the pattern already spells the invisible out", async () => {
+    // Nothing to point out: the author accounted for every one of them.
+    currentFetch = () => ({
+      tree: screen([
+        n({
+          identifier: "who",
+          label: "\u202ABob Smith\u202C",
+          frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 },
+        }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("matches-spelled", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { identifier: "who" },
+          expectedText: "^\u202AAlice Jones\u202C$",
+          textMatch: "matches",
+        },
+      ],
+    });
+
+    const result = await run("matches-spelled");
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).not.toMatch(/the text carries/);
   });
 
   it("stays quiet when the text carries no invisible at all", async () => {

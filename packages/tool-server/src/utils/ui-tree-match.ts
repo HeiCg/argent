@@ -590,23 +590,28 @@ export function quoteScreenText(text: string): string {
 /**
  * A note that names the invisible characters in one string, with no comparison.
  * {@link confusableTextNote} cannot serve a `matches` step, because its
- * "expected" is a regex, and `matches` is exempt from the fold. `pattern` keeps
- * the note relevant: it re-tests the pattern with the ignorables removed.
+ * "expected" is a regex, and `matches` is exempt from the fold. `pattern` says
+ * only whether the author already spelled those characters out.
+ *
+ * It deliberately does NOT re-run the pattern on the stripped text. An author's
+ * regular expression is untrusted, and stripping is exactly what unblocks it:
+ * when an ignorable stops an anchored pattern the real comparison dies in O(1),
+ * because the engine never enters the quantifier, while the same pattern on the
+ * stripped label backtracks. Measured with `^(A+)+b$` against a leading U+200B
+ * and 28 "A"s: the comparison took 0.015 ms and the re-test 1,005 ms, growing
+ * fourfold per two characters, and it returned no note either way. Node's
+ * engine is not interruptible and this server is single-threaded, so neither
+ * the step timeout nor the abort signal can stop it.
+ *
+ * So the note states a fact about the text instead of diagnosing the miss. That
+ * is the more useful sentence anyway: a pattern corrected for some OTHER reason
+ * still has to account for these characters on the next run.
  */
 export function ignorableTextNote(text: string, pattern?: string): string | undefined {
   const found = inertIgnorables(text);
   if (found.length === 0) return undefined;
-  // Speak only when these characters are the reason the pattern missed. A
-  // re-test with them removed answers that directly.
-  if (pattern !== undefined) {
-    let stripped: RegExp;
-    try {
-      stripped = uiTreeMatchInternals.createRegExp(pattern);
-    } catch {
-      return undefined;
-    }
-    if (!stripped.test(withoutInertIgnorables(text))) return undefined;
-  }
+  // Nothing to point out when the pattern already carries every one of them.
+  if (pattern !== undefined && found.every((ch) => pattern.includes(ch))) return undefined;
   const names = [...new Set(found)]
     .map((ch) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
     .join(" ");
@@ -621,8 +626,8 @@ export function ignorableTextNote(text: string, pattern?: string): string | unde
         `cursive joining as ZWNJ does`
       : `the text carries invisible characters [${names}]`;
   return (
-    `${lead} — the pattern must account for them (a regular expression is deliberately never ` +
-    `folded, so they are matched literally)`
+    `${lead} — a regular expression is deliberately never folded, so a pattern has to match ` +
+    `them literally`
   );
 }
 
