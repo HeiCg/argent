@@ -72,6 +72,7 @@ export function toPoints(
  * main-thread budget (XCTest's pre-event idle wait can legitimately stall for
  * ~60s on a screen that never reports quiescent), and the client must outlast
  * the runner's verdict rather than abandon a command that will still land.
+ * PROTOCOL.md's "Timeout budgets" table is the authoritative budget contract.
  */
 const GESTURE_TIMEOUT_MS = 90_000;
 

@@ -15,6 +15,7 @@ import { IosDeviceTransportError, isIosDeviceTransportError } from "./usbmux-pro
  * rethrows the transport error for the caller to handle conservatively.
  */
 
+/** Default client window per send; PROTOCOL.md's "Timeout budgets" table is the contract. */
 export const RUNNER_COMMAND_TIMEOUT_MS = 45_000;
 /**
  * Recovery must be fast: it runs while a user-visible command is already

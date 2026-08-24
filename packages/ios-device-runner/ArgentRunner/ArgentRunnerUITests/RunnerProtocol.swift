@@ -66,6 +66,7 @@ extension CommandKind {
   /// context menu's looping blur, for one) stalls the pre-event idle wait
   /// until XCTest gives up and synthesizes anyway — a 30s budget turns that
   /// recoverable slowness into an abandoned command and a busy runner.
+  /// PROTOCOL.md's "Timeout budgets" table is the authoritative pairing with the client windows.
   var executionTimeout: TimeInterval {
     switch self {
     case .type: return 55

@@ -68,8 +68,14 @@ evaluating UI query`. If an Xcode release rewords those strings,
   drift. With `statusCommandId`: the journaled fate of that command:
   `{commandId, state: notAccepted|accepted|started|completed|failed,
 command?, responseOk?, responseJson?, errorCode?, errorMessage?,
-errorHint?}`. `responseJson` is the completed command's full envelope
-  (never retained for `snapshot`/`screenshot`).
+errorHint?}`. `responseJson` is the completed command's full envelope,
+  retained only when the command retains responses (`snapshot`/`screenshot`
+  replies never are — large, read-only, cheaper to replay) AND the encoded
+  envelope is at most 16 KB (`maxRetainedResponseBytes`,
+  CommandJournal.swift). Past either gate the journal still records the fate
+  and error fields, so recovery can find a command `completed` with no
+  `responseJson`: the effect happened, but the response was too large to
+  retain.
 - `home` → presses the home button.
 - `screenshot` → `{imageBase64}` — full-screen PNG, always inline.
 - `shutdown` → acknowledges, then ends the session cleanly after the reply
@@ -110,6 +116,34 @@ reasonCode?}`.
 retryable code), `RUNNER_WEDGED` (recycle the session),
 `XCTEST_RECORDED_FAILURE` (a mutation ran but XCTest recorded a real failure
 during it), `SNAPSHOT_FAILED`, `COMMAND_TIMED_OUT`, `COMMAND_FAILED`.
+
+## Timeout budgets
+
+Every command runs under a runner-side main-thread watchdog budget
+(`CommandKind.executionTimeout`, RunnerProtocol.swift); the client sends it
+under a larger transport window (default `RUNNER_COMMAND_TIMEOUT_MS`,
+runner-client.ts; overrides in runner-commands.ts — `GESTURE_TIMEOUT_MS` and
+the `type`/`snapshot` call sites). This table is the authoritative pairing —
+the mirrored code comments point here instead of restating the other side's
+numbers.
+
+| Command class              | Runner budget | Client window |
+| -------------------------- | ------------- | ------------- |
+| `type`                     | 55s           | 60s           |
+| `tap`, `longPress`, `drag` | 75s           | 90s           |
+| `snapshot`                 | 30s           | 45s           |
+| everything else (default)  | 30s           | 45s           |
+
+The invariant: every client window MUST strictly exceed the matching runner
+budget, so the client outlasts the runner's verdict. A command that blows
+its budget is abandoned on-device and answered with `COMMAND_TIMED_OUT`
+(then `RUNNER_BUSY`/`RUNNER_WEDGED` on the commands that follow); a client
+window at or below the budget would swallow that verdict as a raw transport
+timeout and force journal recovery for an answer the runner was already
+delivering. The client window is one whole-transport deadline per send
+attempt — the usbmux handshake and the HTTP exchange spend from the same
+budget, so a slow handshake shrinks the HTTP stage's share rather than
+granting each stage the full window.
 
 ## Send-once contract
 
