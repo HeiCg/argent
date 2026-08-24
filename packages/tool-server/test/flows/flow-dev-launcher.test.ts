@@ -796,6 +796,44 @@ describe("getting a launch past the chooser", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("re-picks against each read's own history boundary", async () => {
+    // The window refreshes both the tree AND the boundary before re-picking.
+    // Here the run's row is only eligible under the SECOND read's boundary —
+    // under the first read's it sits in the history — so an implementation
+    // that kept the initial one would never find the row at all.
+    const earlyHistory = discoveredTree();
+    const walk = (n: DescribeNode): void => {
+      if (n.label === "RECENTLY OPENED")
+        n.frame = { x: n.frame.x, y: 0.2, width: n.frame.width, height: n.frame.height };
+      for (const child of n.children) walk(child);
+    };
+    for (const child of earlyHistory.children) walk(child);
+
+    vi.useFakeTimers();
+    try {
+      vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+      reads(earlyHistory, discoveredTree(), app);
+      const { calls, actionEnv } = env();
+
+      const pending = dismissDevLauncher(
+        actionEnv,
+        "com.anonymous.devclientprobe",
+        8091,
+        new Map()
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(pending).resolves.toEqual({
+        handled: true,
+        ok: true,
+        url: "http://192.168.0.94:8091",
+      });
+      expect(calls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fails on a wrong-port miss only when the row window runs out", async () => {
     // The list fills incrementally over mDNS — a foreign bundler's row can be
     // up while this run's Metro is still a poll away — so no listed row ends
@@ -818,6 +856,11 @@ describe("getting a launch past the chooser", () => {
         expect.stringContaining("lists no live server on port 8085")
       );
       expect(calls).toEqual([]);
+      // The window was actually WAITED OUT, not skipped: a foreign row was on
+      // screen the whole time, and an implementation that ends the window on
+      // the first listed row would reach the identical verdict after a single
+      // read. Many reads is what pins the difference.
+      expect(vi.mocked(fetchFlowTree).mock.calls.length).toBeGreaterThan(5);
     } finally {
       vi.useRealTimers();
     }

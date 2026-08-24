@@ -2384,9 +2384,9 @@ async function execLeafStep(
         // the eviction answers "the ground may have moved", not "the step
         // passed". The cost is one extra probe on a later launch, the cheap
         // direction to be wrong in. (`run-sequence` cannot run `reinstall-app`
-        // today — its allowlist admits only gestures, keyboard and waits — so
-        // its arm is defense against the allowlist widening under a cache that
-        // predates it.)
+        // today — its allowlist admits only gestures, buttons, keyboard,
+        // rotate, tv-remote and waits — so its arm is defense against the
+        // allowlist widening under a cache that predates it.)
         if (
           step.name === REINSTALL_APP_TOOL_ID ||
           step.name === FLOW_EXECUTE_TOOL_ID ||
