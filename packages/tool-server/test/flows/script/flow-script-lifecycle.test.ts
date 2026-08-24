@@ -133,6 +133,31 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.failure?.message).toContain("time limit");
   }, 30_000);
 
+  it("still reports a timeout when the stall outlasts the child's own deadline", async () => {
+    const ws = workspace();
+    // Past the margin the child's watchdog SIGKILLs its group, and the exit it
+    // leaves is already readable when the loop unblocks — so the poll phase
+    // serves it before the overdue timer callback that would have named the
+    // limit. The clock is what settles it.
+    const script = ws.write("spin.mjs", `while (true) {}`);
+    const pending = executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 400,
+    });
+    const until = Date.now() + 3_000;
+    const stall = setTimeout(() => {
+      while (Date.now() < until) {
+        /* block */
+      }
+    }, 150);
+    const result = await pending;
+    clearTimeout(stall);
+
+    expect(result.failure?.kind).toBe(TIMEOUT);
+    expect(result.failure?.message).toContain("time limit");
+  }, 30_000);
+
   it("names a top-level await that never settles instead of waiting out the limit", async () => {
     const ws = workspace();
     const script = ws.write("unsettled.mjs", `await new Promise(() => {});`);
@@ -428,6 +453,22 @@ describe("flow script executor — exit classification", () => {
     expect(result.output).toEqual({ orderId: "ord_1" });
     expect(result.log).toContain("seeded");
   });
+
+  it("keeps an output too large for the pipe buffer when the script exits zero", async () => {
+    const ws = workspace();
+    // `process.send` only queues, and the exit that follows leaves before
+    // libuv writes the rest: past about 64 KiB the verdict never arrived, and
+    // the step was reported as self-termination with nothing captured.
+    const script = ws.write(
+      "big-exit.mjs",
+      `output.blob = "x".repeat(900 * 1024);
+       process.exit(0);`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect((result.output?.blob as string).length).toBe(900 * 1024);
+  }, 30_000);
 
   it("still fails a script that set process.exitCode and then exited", async () => {
     const ws = workspace();

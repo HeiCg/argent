@@ -87,9 +87,9 @@ export async function runFlowScriptStep(
       outcome: {
         status: "error",
         reason:
-          `mis-cased script path "${target}": no directory entry is named "${suppliedBase}" ` +
-          `(this filesystem matched it case-insensitively to "${spelling.actual}"), so this flow ` +
-          `runs here and fails with ENOENT on a case-sensitive checkout — ${recovery}`,
+          `mis-cased script path "${target}": the directory holds "${spelling.actual}", not ` +
+          `"${suppliedBase}" — a case-sensitive checkout (Linux CI) fails this step with ` +
+          `ENOENT — ${recovery}`,
       },
     };
   }

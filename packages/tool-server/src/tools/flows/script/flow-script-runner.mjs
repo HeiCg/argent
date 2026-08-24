@@ -6,6 +6,7 @@
 // Imports nothing from the tool-server, so it needs no build step: it is copied
 // next to the compiled executor and resolves its watchdogs against its own URL.
 
+import fs from "node:fs";
 import { isMainThread, Worker } from "node:worker_threads";
 
 const LIFELINE_WATCHDOG = "flow-script-watchdog-lifeline.mjs";
@@ -53,6 +54,19 @@ const realSend = typeof process.send === "function" ? process.send : undefined;
 
 /** The real `process.exit`, so the runner's own exits skip the guard below. */
 const realExit = process.exit.bind(process);
+
+/**
+ * The protocol channel's own descriptor, read before any script code runs:
+ * `process.channel` is a property a script may replace, and a wrong descriptor
+ * would put the verdict into some other file. See `sendSynchronously`.
+ */
+const channelHandle = /** @type {{ fd?: number } | undefined} */ (
+  /** @type {unknown} */ (process.channel)
+);
+const channelFd = typeof channelHandle?.fd === "number" ? channelHandle.fd : -1;
+
+/** How long a verdict sent from inside `process.exit` waits for pipe room. */
+const EXIT_FLUSH_MS = 2_000;
 
 /**
  * `JSON.stringify` and `JSON.parse` as they were before any script code ran: a
@@ -535,7 +549,14 @@ function walk(value, path, ancestors) {
   }
   if (typeof value.toJSON === "function") {
     // Walk what `JSON.stringify` would actually have encoded, and keep that.
-    return walk(value.toJSON(), path, ancestors);
+    // Recorded first, because the transform is a route back up the tree the
+    // author cannot see: `{ toJSON() { return this; } }` would otherwise
+    // recurse until V8 gave up, and report a stack overflow in place of the
+    // path the cycle is on.
+    ancestors.add(value);
+    const walked = walk(value.toJSON(), path, ancestors);
+    ancestors.delete(value);
+    return walked;
   }
   if (!isPlainObject(value)) {
     // A Map, a Set or a class instance encodes to something a later step cannot
@@ -696,17 +717,63 @@ function finish(response) {
 /**
  * The same verdict, from inside the script's own `process.exit`, where there is
  * no turn of the event loop left to flush a stream in and there must not be
- * one. `process.send` puts the message on the channel before it returns, and
- * the buffered stdout lost here is lost under plain `node` too.
+ * one. The buffered stdout lost here is lost under plain `node` too.
  */
 function finishSynchronously(response) {
   if (finished) return;
   finished = true;
+  const bounded = boundFailureText(response);
+  if (sendSynchronously(bounded)) return;
   try {
-    sendToParent(boundFailureText(response));
+    sendToParent(bounded);
   } catch {
     // The channel is gone; the parent's exit verdict is what is left.
   }
+}
+
+/**
+ * Put a message on the protocol channel before returning, and say whether the
+ * channel is now spoken for.
+ *
+ * `process.send` only queues: a message past the pipe buffer is written by
+ * libuv over later turns of the loop, and the `process.exit` this runs inside
+ * leaves before any of them — so a script reporting a result larger than about
+ * 64 KiB through `main().then(() => process.exit(0))` delivered nothing, which
+ * is the idiom this whole path exists for.
+ *
+ * The channel carries newline-delimited JSON, which is what `fork` uses unless
+ * the parent asks for `serialization: "advanced"` — the executor does not — so
+ * the frame is the encoded message and a newline. The descriptor is
+ * non-blocking, so a full pipe answers `EAGAIN`, and the parent is reading, so
+ * waiting for room is a sleep rather than a spin.
+ */
+function sendSynchronously(message) {
+  if (channelFd < 0) return false;
+  let payload;
+  try {
+    payload = Buffer.from(`${encodeJson(message)}\n`, "utf8");
+  } catch {
+    return false;
+  }
+  const waitUntil = Date.now() + EXIT_FLUSH_MS;
+  let written = 0;
+  while (written < payload.length) {
+    try {
+      written += fs.writeSync(channelFd, payload, written);
+    } catch (err) {
+      if (err && err.code === "EAGAIN" && Date.now() < waitUntil) {
+        // A blocked thread rather than a busy one: the parent needs a turn of
+        // its own loop to empty the pipe.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+        continue;
+      }
+      // Half a frame is already out, and a second copy behind it would be a
+      // line the parent cannot parse — which it parses inside its own stream
+      // callback. Sending again is worse than sending nothing.
+      return written > 0;
+    }
+  }
+  return true;
 }
 
 function boundFailureText(response) {

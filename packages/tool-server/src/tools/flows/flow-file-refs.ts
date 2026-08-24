@@ -73,11 +73,16 @@ interface ResolvedFlowRelativeFile {
  *   absolute and the target relative — parse rejects an absolute or
  *   drive-prefixed target — so the concatenation is well-formed.
  * - **The casing check lists the directory the target is SPELLED in**, not
- *   `path.dirname(canonical)`: realpath rewrites a symlinked target to its own
- *   target's name, so `run: alias.yaml` (alias.yaml → a.yaml) — a legitimate
- *   layout the cycle guard already relies on — would be refused for not being
- *   named "a.yaml". `path.dirname` removes a segment without collapsing `..`,
- *   so a `..` still reaches readdir intact.
+ *   `path.dirname(canonical)`. The basename compared is always the SUPPLIED one
+ *   (`path.posix.basename(target)`), so a canonical-directory listing would
+ *   compare that name against entries it was never written among: for a link
+ *   reached across directories, the link's own directory holds no entry that
+ *   case-folds to the supplied name, so the verdict would be `absent` — which
+ *   refuses nothing — and a MIS-CASED spelling of the link's own name would
+ *   skip the check entirely, reopening the ENOENT-on-Linux-CI hazard the check
+ *   exists for. The spelled directory is the listing that holds the link.
+ *   `path.dirname` removes a segment without collapsing `..`, so a `..` still
+ *   reaches readdir intact.
  *
  * `addressable` only decides whether a `case_folded` verdict can point the
  * author at the on-disk spelling or has to ask for a rename; the callers word

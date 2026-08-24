@@ -222,7 +222,7 @@ Keep scripts in one `scripts/` directory at the project root. The runner does no
 
 The filename must end with a lowercase `.mjs`, and use only letters, digits, `_` and `-` before it. The extension pins the module type against the project `package.json`. Always write the extension: there is no bare-name completion.
 
-**Write the path with the letter case of the file on disk.** macOS and Windows open a file whose case does not agree, but Linux CI fails with `ENOENT`. The runner therefore refuses the step, and quotes the spelling on disk.
+**Write the path with the letter case of the file on disk.** macOS and Windows open a file whose case does not agree, but Linux CI fails with `ENOENT`. The runner therefore refuses the step, and quotes the spelling on disk. That guard compares only the FILENAME against its directory's listing — a mis-cased directory component (`Scripts/seed.mjs` when the directory is `scripts/`) is not checked, so it runs green locally and fails with `ENOENT` on a case-sensitive checkout exactly as an unchecked filename would.
 
 ### What the script gets
 
@@ -240,10 +240,10 @@ A `flow-add-script` recording is one step at a time, so only the 64 KiB step lim
 
 The step verdict tells you where the cause is, so CI can separate a regression from the machine that ran it. Both verdicts stop the flow.
 
-| Verdict     | Cause      | Examples                                                                                                                                                             |
-| ----------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **failed**  | the script | threw an error, did not load, exited non-zero, or wrote an `output` value that the runner cannot serialize                                                           |
-| **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, no free queue slot, a cancelled run, or a `path` that only a case-insensitive filesystem matched |
+| Verdict     | Cause      | Examples                                                                                                                                                           |
+| ----------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **failed**  | the script | threw an error, did not load, exited non-zero, or wrote an `output` value that the runner cannot serialize                                                         |
+| **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, no free queue slot, a cancelled run, or a filename that does not match the letter case on disk |
 
 ### Boundaries
 

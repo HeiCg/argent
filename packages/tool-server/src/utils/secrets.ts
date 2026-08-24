@@ -109,16 +109,108 @@ export function scrubSecretValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>
 ): string {
-  // Longest value first: one value can contain another — a host inside a URL
-  // that is itself a secret — and replacing the shorter one first rewrites the
-  // middle of the longer one, leaving its tail in the text.
-  return [...secrets]
-    .sort((a, b) => b.value.length - a.value.length)
-    .reduce(
-      (acc, { name, value }) =>
-        value ? acc.split(value).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`) : acc,
-      text
-    );
+  return scrubSecretChunk(text, secrets, true).emit;
+}
+
+/**
+ * {@link scrubSecretValues} over one chunk of a stream, holding back the tail a
+ * later chunk could still complete into a value. `final` releases everything,
+ * for the last chunk there is.
+ *
+ * The chunk ends at the first position where a value could still begin, which
+ * is what a caller with a truncation limit needs: releasing further would
+ * commit either half of a value split across the cut, or a shorter value where
+ * the longer one containing it had not arrived yet. It is also all that can be
+ * released — past that position no replacement is settled.
+ */
+export function scrubSecretChunk(
+  text: string,
+  secrets: ReadonlyArray<{ name: string; value: string }>,
+  final: boolean
+): {
+  /** The scrubbed text, ready to release. */
+  emit: string;
+  /** Characters at the end of the input kept back, waiting for the next chunk. */
+  held: number;
+} {
+  const ordered = orderedSecrets(secrets);
+  if (ordered.length === 0) return { emit: text, held: 0 };
+  const longestValue = ordered[0].value.length;
+  const names = new Set(ordered.map((secret) => secret.name));
+  const longestName = Math.max(...ordered.map((secret) => secret.name.length));
+  let out = "";
+  let copied = 0;
+  let at = 0;
+  while (at < text.length) {
+    // A marker one pass wrote is not text the next may look inside: a value
+    // that occurs in some *name* would otherwise be replaced there, nesting one
+    // marker inside another and leaving neither the shape a reader parses.
+    const marker = markerLengthAt(text, at, names, longestName);
+    if (marker > 0) {
+      at += marker;
+      continue;
+    }
+    // Longest value first: one value can contain another — a host inside a URL
+    // that is itself a secret — and taking the shorter one would leave the rest
+    // of the longer one in the text.
+    const hit = ordered.find((secret) => text.startsWith(secret.value, at));
+    if (hit) {
+      out += `${text.slice(copied, at)}${SECRET_PLACEHOLDER_MARKER}${hit.name}}}`;
+      at += hit.value.length;
+      copied = at;
+      continue;
+    }
+    // Only a value longer than what is left can still begin here, which bounds
+    // both this test and the hold-back it produces.
+    if (!final && text.length - at < longestValue && beginsAValue(text, at, ordered)) break;
+    at += 1;
+  }
+  return {
+    emit: copied === 0 ? text.slice(0, at) : out + text.slice(copied, at),
+    held: text.length - at,
+  };
+}
+
+/** Whether the rest of `text` is a proper prefix of some value — a match still to come. */
+function beginsAValue(
+  text: string,
+  at: number,
+  ordered: ReadonlyArray<{ value: string }>
+): boolean {
+  const rest = text.slice(at);
+  return ordered.some(({ value }) => value.length > rest.length && value.startsWith(rest));
+}
+
+/** Values worth replacing, longest first, ties in the order they were given. */
+function orderedSecrets(
+  secrets: ReadonlyArray<{ name: string; value: string }>
+): Array<{ name: string; value: string }> {
+  return secrets
+    .filter(({ value }) => value.length > 0)
+    .sort((a, b) => b.value.length - a.value.length);
+}
+
+/** The length of the `{{secret:NAME}}` starting at `at`, or 0 for anything else. */
+function markerLengthAt(
+  text: string,
+  at: number,
+  names: ReadonlySet<string>,
+  longestName: number
+): number {
+  if (!text.startsWith(SECRET_PLACEHOLDER_MARKER, at)) return 0;
+  const from = at + SECRET_PLACEHOLDER_MARKER.length;
+  // Searched inside a window no longer than the longest name there is, because
+  // no wider match could be one: text that opens a marker and never closes it —
+  // which a script can write on every line — would otherwise be read to the end
+  // of the chunk once per occurrence.
+  const window = text.slice(from, from + longestName + 2);
+  const end = window.indexOf("}}");
+  // Only a name this call would itself write: a `{{secret:X}}` the script
+  // printed for an X that is no secret here stays ordinary text, so a value
+  // inside it is still replaced.
+  return end >= 0 && names.has(window.slice(0, end))
+    ? SECRET_PLACEHOLDER_MARKER.length + end + 2
+    : 0;
 }
 
 /**

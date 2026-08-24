@@ -233,17 +233,24 @@ export interface StepReport {
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
   /**
-   * A `script` step's captured stdout and stderr, in written order, possibly
-   * truncated. NOT redacted: the executor scrubs only the secrets it is handed,
-   * and `runFlowScriptStep` (flow-script-step.ts) hands it none. Set whatever
-   * the step's status — a passing script's log is the only record of what it did.
+   * A `script` step's captured stdout and stderr, in arrival order, possibly
+   * truncated. Arrival order is not written order: a burst to both streams
+   * inside one event-loop turn can land in either stream's order, so only each
+   * stream's own sequence carries causality. NOT redacted: the executor scrubs
+   * only the secrets it is handed, and `runFlowScriptStep`
+   * (flow-script-step.ts) hands it none. Set whatever the step's status while
+   * the run's shared log budget lasts — a run an earlier script exhausted drops
+   * a later one's output entirely — since a passing script's log is the only
+   * record of what it did.
    */
   scriptLog?: string;
   /**
-   * A log limit dropped some of that script's output. The log text carries no
-   * marker of its own, and a run-wide budget an earlier step exhausted drops a
-   * later script's output entirely — so this flag can be set with no
-   * {@link scriptLog} at all.
+   * Some of that script's output is missing from the log. A log limit is one
+   * cause; the executor also sets it when it collapses a fatal error's frame
+   * dump, which no limit caused — so neither renderer names a cause. The log
+   * text carries no marker of its own, and a run-wide budget an earlier step
+   * exhausted drops a later script's output entirely — so this flag can be set
+   * with no {@link scriptLog} at all.
    */
   scriptLogTruncated?: boolean;
   /**
@@ -2549,9 +2556,11 @@ export async function resolveFlowSource(
   // Before either branch, so both are covered. `getFlowPath` validates the root
   // on the `name` branch only, and deleting `setActiveProjectRoot` — which ran
   // here, unconditionally, and whose body is today's assertValidProjectRoot —
-  // removed the check on the `flow_path` branch entirely. Nothing reads
-  // project_root on that branch today, so this restores a guardrail rather than
-  // fixing a live exploit.
+  // removed the check on the `flow_path` branch entirely, letting relative and
+  // ".."-bearing roots through. That branch is no longer free of reads either:
+  // ExecState.projectRoot carries it to a script: step as the child's
+  // working directory, so this guard is what keeps a relative or
+  // ".."-bearing root from becoming a script's cwd.
   assertValidProjectRoot(params.project_root);
 
   if (params.flow_path !== undefined) {
@@ -2562,8 +2571,8 @@ export async function resolveFlowSource(
           `an upload — sibling run: files, baselines, and baseline write-back all resolve beside ` +
           `the copy this server materialized, alone in a temp directory. Pass name + ` +
           `project_root to run a self-contained flow from a remote client; name uploads the same ` +
-          `way, so a flow with run: or snapshot: steps needs the client and tool server on one ` +
-          `filesystem.`,
+          `way, so a flow with run:, script: or snapshot: steps needs the client and tool server ` +
+          `on one filesystem.`,
         {
           error_code: FAILURE_CODES.FLOW_FILE_INVALID,
           failure_stage: "flow_path_shared_filesystem",

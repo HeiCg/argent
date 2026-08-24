@@ -721,7 +721,7 @@ export type FlowFile = {
  * line per authored step no matter where the run ended: `execSteps`' hard-stop,
  * device-free and cancellation gates, plus `reportBlockSkipped` recursing into a
  * nested block. The fifth is the upload preflight's walk, where a block it
- * cannot see hides a nested `run:`/`snapshot` from validation. The last two,
+ * cannot see hides a nested `run:`, `script:` or `snapshot` from validation. The last two,
  * `flowRequiresDevice` and `flowScopesDevice` (flow-device.ts), read children to
  * resolve the flow's device decisions from a block's body — dead while `when`
  * is the only block kind, and the guard against a later one.
