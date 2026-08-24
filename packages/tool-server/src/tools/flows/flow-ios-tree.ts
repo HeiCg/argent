@@ -19,17 +19,25 @@ import {
 } from "../describe/contract";
 
 /**
- * Flow-owned iOS tree source (per-platform dispatch: `flow-tree.ts`).
+ * Flow-owned iOS tree sources (per-platform dispatch: `flow-tree.ts`).
  *
- * Flows resolve selectors against the raw UIView hierarchy
- * (`ViewHierarchy.getFullHierarchy`), not the accessibility tree `describe` and
- * `describeScreen` walk: those collapse an `accessible` container into a single
- * leaf (VoiceOver semantics), while every view here carries its
- * `accessibilityIdentifier` (React Native `testID`), so a flow can address a
- * container and its children independently. When native-devtools is unavailable
- * — or the target returns no windows — this throws rather than degrade to the
- * AX tree; see `fetchFlowTree` for why a silent fallback would flip flow
- * outcomes.
+ * Simulators (`queryFullHierarchyTree`): flows resolve selectors against the
+ * raw UIView hierarchy (`ViewHierarchy.getFullHierarchy`), not the
+ * accessibility tree `describe` and `describeScreen` walk: those collapse an
+ * `accessible` container into a single leaf (VoiceOver semantics), while every
+ * view here carries its `accessibilityIdentifier` (React Native `testID`), so
+ * a flow can address a container and its children independently.
+ *
+ * Physical devices (`queryIosDeviceFlowTree`): DYLD injection does not exist
+ * on hardware, so flows read the XCUITest runner's accessibility snapshot —
+ * the same tree `describe` serves.
+ *
+ * Both sources honor the contract `fetchFlowTree` states: a read that isn't
+ * the screen THROWS — the simulator's no-windows guard, the device source's
+ * empty-runner-tree guard — rather than hand back a degraded tree. An empty
+ * tree is the one thing a `hidden`/absent check accepts, and `settleTree`
+ * fingerprints two identical blind reads as a settled screen, so returning one
+ * would flip flow outcomes; see `fetchFlowTree`.
  */
 
 interface RawRect {
@@ -542,10 +550,28 @@ function errMsg(err: unknown): string {
  * one leaf, so a testID container's children are not independently
  * addressable the way the raw UIView hierarchy allows. Flows that need that
  * granularity should target labels/text or run on a simulator.
+ *
+ * Throws on a blind read, mirroring `queryFullHierarchyTree`'s no-windows
+ * guard: `describeIosDevice` maps a zero-node runner snapshot to a childless
+ * Application root plus a hint — the right shape for the describe/await tools,
+ * which surface the hint to the agent, but poison for a flow. `settleTree`
+ * reads only `.tree`, so two consecutive blind reads fingerprint identical and
+ * "settle", dispatching gestures against a screen nobody saw and reporting a
+ * misleading offscreen hint while the runner's own hint is dropped.
  */
 export async function queryIosDeviceFlowTree(
   registry: Registry,
   device: DeviceInfo
 ): Promise<DescribeTreeData> {
-  return describeIosDevice(registry, device);
+  const data = await describeIosDevice(registry, device);
+  // Empty children alone is not the signal — a degraded-QUALITY hint rides on
+  // a NON-empty tree (that read has matchable nodes and must resolve). Only
+  // the empty-tree-plus-hint pair is describeIosDevice's blind-read shape.
+  if (data.tree.children.length === 0 && data.hint) {
+    throw new Error(
+      `${data.hint} Flows resolve selectors against this runner tree, so the step fails ` +
+        `rather than treating the unreadable screen as empty.`
+    );
+  }
+  return data;
 }
