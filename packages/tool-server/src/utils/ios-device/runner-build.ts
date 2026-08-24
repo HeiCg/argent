@@ -21,7 +21,9 @@ const execFileAsync = promisify(execFile);
  * signing settings). The cache key doubles as
  * protocol versioning: an Argent update that changes runner sources lands in
  * a new cache directory and rebuilds, so the wire protocol needs no version
- * handshake.
+ * handshake. Superseded cache directories (and per-session xctestrun clones
+ * and launch logs) are swept best-effort after each successful artifact
+ * resolution — see `sweepRunnerStorage`.
  */
 
 /** Env-configurable signing. Automatic signing + team id covers most setups. */
@@ -116,6 +118,10 @@ export interface RunnerArtifact {
 
 function cacheRoot(): string {
   return path.join(os.homedir(), ".argent", "ios-device-runner", "derived");
+}
+
+function logsRoot(): string {
+  return path.join(os.homedir(), ".argent", "ios-device-runner", "logs");
 }
 
 /**
@@ -269,8 +275,28 @@ export async function ensureRunnerArtifact(
   const derivedDataPath = path.join(cacheRoot(), `cache-${cacheKey}`);
 
   const cached = findBaseXctestrun(derivedDataPath);
-  if (cached && !opts.force) return { xctestrunPath: cached, derivedDataPath };
+  const artifact =
+    cached && !opts.force
+      ? { xctestrunPath: cached, derivedDataPath }
+      : await buildRunnerArtifact(derivedDataPath, staticArgs, opts.destinationUdid);
 
+  // Success-only, fire-and-forget storage sweep. Only after the current
+  // artifact is known good may its superseded siblings go: on a FAILED build
+  // the previous key's directory is the only working artifact a rollback
+  // would reuse, so the failure path (the throw above) must never reach this.
+  // The session's own env clone is safe by ordering — sweepRunnerStorage
+  // snapshots its listings synchronously, before this function resolves,
+  // and the clone is only minted later by `prepareXctestrunWithPort`.
+  void sweepRunnerStorage({ derivedDataPath });
+  return artifact;
+}
+
+/** The build arm of `ensureRunnerArtifact`: cache miss (or forced rebuild). */
+async function buildRunnerArtifact(
+  derivedDataPath: string,
+  staticArgs: readonly string[],
+  destinationUdid: string | undefined
+): Promise<RunnerArtifact> {
   await fsp.mkdir(derivedDataPath, { recursive: true });
   const args = [
     ...staticArgs,
@@ -278,7 +304,7 @@ export async function ensureRunnerArtifact(
     // A concrete device destination (with -allowProvisioningDeviceRegistration)
     // makes automatic signing regenerate the profile to INCLUDE that device —
     // the recovery for plugging in a new phone after the artifact was minted.
-    opts.destinationUdid ? `platform=iOS,id=${opts.destinationUdid}` : "generic/platform=iOS",
+    destinationUdid ? `platform=iOS,id=${destinationUdid}` : "generic/platform=iOS",
     "-derivedDataPath",
     derivedDataPath,
   ];
@@ -307,6 +333,115 @@ export async function ensureRunnerArtifact(
     );
   }
   return { xctestrunPath: built, derivedDataPath };
+}
+
+/** How many runner-*.log launch logs a sweep keeps (newest first). */
+export const MAX_RUNNER_LOG_FILES = 20;
+
+/** A cache-<key> entry under cacheRoot() — hex-keyed, ours to manage. */
+const CACHE_DIR_NAME_RE = /^cache-[0-9a-f]+$/;
+/** A per-session port-injected clone minted by `prepareXctestrunWithPort`. */
+const ENV_CLONE_NAME_RE = /\.env\.port-\d+\.xctestrun$/;
+/** A launch log minted by `launchRunner`; the trailing number is Date.now(). */
+const RUNNER_LOG_NAME_RE = /^runner-.+-(\d+)\.log$/;
+
+/** What `planRunnerStorageSweep` decided to delete, as per-directory names. */
+export interface RunnerStorageSweepPlan {
+  cacheDirNames: string[];
+  cloneNames: string[];
+  logNames: string[];
+}
+
+/**
+ * Decision core of the storage sweep — pure over injected directory listings
+ * (the test seam, like `waitForPidsToExit`'s process-table seams). Three
+ * artifact families accumulate forever under ~/.argent/ios-device-runner
+ * without this: cache-<key> derived-data dirs (hundreds of MB, a new key per
+ * source/Xcode/signing change), per-session .env.port-N.xctestrun clones, and
+ * per-launch runner-*.log files. The plan deletes cache dirs other than the
+ * current key's, env clones other than `keepCloneName`, and all but the
+ * newest `maxLogFiles` logs (by the Date.now() embedded in their names).
+ * Names that match none of the families are never touched.
+ */
+export function planRunnerStorageSweep(listing: {
+  /** Basename of the current derived-data dir (`cache-<key>`) — kept. */
+  currentCacheDirName: string;
+  /** Entries under cacheRoot(). */
+  cacheDirNames: readonly string[];
+  /** Entries under the current derived dir's Build/Products. */
+  productNames: readonly string[];
+  /** Basename of an env clone to keep (none at ensure-time). */
+  keepCloneName?: string | null;
+  /** Entries under the launch-log dir. */
+  logNames: readonly string[];
+  maxLogFiles?: number;
+}): RunnerStorageSweepPlan {
+  const maxLogFiles = listing.maxLogFiles ?? MAX_RUNNER_LOG_FILES;
+  const cacheDirNames = listing.cacheDirNames.filter(
+    (name) => CACHE_DIR_NAME_RE.test(name) && name !== listing.currentCacheDirName
+  );
+  const cloneNames = listing.productNames.filter(
+    (name) => ENV_CLONE_NAME_RE.test(name) && name !== listing.keepCloneName
+  );
+  const logNames = listing.logNames
+    .filter((name) => RUNNER_LOG_NAME_RE.test(name))
+    .sort((a, b) => logTimestamp(b) - logTimestamp(a) || a.localeCompare(b))
+    .slice(maxLogFiles);
+  return { cacheDirNames, cloneNames, logNames };
+}
+
+function logTimestamp(name: string): number {
+  return Number(RUNNER_LOG_NAME_RE.exec(name)?.[1] ?? 0);
+}
+
+/**
+ * Sweep stale runner storage around a freshly resolved artifact. Listings are
+ * snapshotted SYNCHRONOUSLY — before the `void`-ing caller's next await can
+ * run — so files created after the call (the session's own env clone) can
+ * never enter the plan; only the deletes are async. Best-effort throughout:
+ * a concurrent tool-server may race the same directories, so unreadable
+ * listings plan nothing, per-path rm failures are swallowed, and the returned
+ * promise never rejects (safe to fire-and-forget). Deliberately silent — this
+ * module logs nothing, and a lost sweep just retries on the next start.
+ */
+export function sweepRunnerStorage(opts: {
+  derivedDataPath: string;
+  keepClonePath?: string | null;
+  /** Test seam; defaults to the real launch-log dir. */
+  logDir?: string;
+  maxLogFiles?: number;
+}): Promise<void> {
+  const cacheRootDir = path.dirname(opts.derivedDataPath);
+  const productsDir = path.join(opts.derivedDataPath, "Build", "Products");
+  const logDir = opts.logDir ?? logsRoot();
+  const plan = planRunnerStorageSweep({
+    currentCacheDirName: path.basename(opts.derivedDataPath),
+    cacheDirNames: listNamesSync(cacheRootDir),
+    productNames: listNamesSync(productsDir),
+    keepCloneName: opts.keepClonePath ? path.basename(opts.keepClonePath) : null,
+    logNames: listNamesSync(logDir),
+    maxLogFiles: opts.maxLogFiles,
+  });
+  const rmQuiet = async (target: string): Promise<void> => {
+    try {
+      await fsp.rm(target, { recursive: true, force: true });
+    } catch {
+      /* raced a concurrent tool-server; the next sweep retries */
+    }
+  };
+  return Promise.all([
+    ...plan.cacheDirNames.map((name) => rmQuiet(path.join(cacheRootDir, name))),
+    ...plan.cloneNames.map((name) => rmQuiet(path.join(productsDir, name))),
+    ...plan.logNames.map((name) => rmQuiet(path.join(logDir, name))),
+  ]).then(() => undefined);
+}
+
+function listNamesSync(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -406,7 +541,7 @@ export async function launchRunner(opts: {
   xctestrunPath: string;
   derivedDataPath: string;
 }): Promise<LaunchedRunner> {
-  const logDir = path.join(os.homedir(), ".argent", "ios-device-runner", "logs");
+  const logDir = logsRoot();
   await fsp.mkdir(logDir, { recursive: true });
   const logPath = path.join(logDir, `runner-${opts.udid.slice(0, 8)}-${Date.now()}.log`);
   const logFd = fs.openSync(logPath, "a");

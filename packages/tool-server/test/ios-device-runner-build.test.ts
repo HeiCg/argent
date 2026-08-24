@@ -6,9 +6,12 @@ import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   computeRunnerCacheKey,
+  MAX_RUNNER_LOG_FILES,
+  planRunnerStorageSweep,
   prepareXctestrunWithPort,
   resolveSigningHint,
   runnerBuildStaticArgs,
+  sweepRunnerStorage,
   waitForPidsToExit,
   XctestrunFormatError,
   type RunnerSigningConfig,
@@ -219,6 +222,161 @@ describe("resolveSigningHint", () => {
 
   it("returns null for output with no signing signature", () => {
     expect(resolveSigningHint("ld: symbol(s) not found for architecture arm64")).toBeNull();
+  });
+});
+
+/** Empty baseline for planRunnerStorageSweep listings; spread and override. */
+const EMPTY_LISTING = {
+  currentCacheDirName: "cache-aaaa111122223333",
+  cacheDirNames: [] as string[],
+  productNames: [] as string[],
+  logNames: [] as string[],
+};
+
+describe("planRunnerStorageSweep", () => {
+  it("deletes every cache-* sibling except the current key's dir", () => {
+    const plan = planRunnerStorageSweep({
+      ...EMPTY_LISTING,
+      cacheDirNames: [
+        "cache-aaaa111122223333", // current — the in-flight artifact
+        "cache-0123456789abcdef", // pre-update key
+        "cache-ffff000011112222", // pre-T20 key shape, also stale
+      ],
+    });
+
+    expect(plan.cacheDirNames.sort()).toEqual(["cache-0123456789abcdef", "cache-ffff000011112222"]);
+    expect(plan.cloneNames).toEqual([]);
+    expect(plan.logNames).toEqual([]);
+  });
+
+  it("ignores foreign names under the cache root", () => {
+    const plan = planRunnerStorageSweep({
+      ...EMPTY_LISTING,
+      cacheDirNames: [
+        ".DS_Store",
+        "cache-README.txt", // cache- prefix but not a hex key
+        "cache-", // no key at all
+        "Cache-0123456789abcdef", // wrong case — not ours
+        "scratch",
+      ],
+    });
+
+    expect(plan.cacheDirNames).toEqual([]);
+  });
+
+  it("deletes stale env clones but keeps the excluded one and the base xctestrun", () => {
+    const plan = planRunnerStorageSweep({
+      ...EMPTY_LISTING,
+      productNames: [
+        "ArgentRunner_iphoneos18.0-arm64.xctestrun", // base — never a clone
+        "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun",
+        "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
+        "Debug-iphoneos", // build products dir
+      ],
+      keepCloneName: "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
+    });
+
+    expect(plan.cloneNames).toEqual(["ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun"]);
+  });
+
+  it("deletes ALL env clones when no exclusion is given (ensure-time: the session's clone is minted later)", () => {
+    const plan = planRunnerStorageSweep({
+      ...EMPTY_LISTING,
+      productNames: [
+        "ArgentRunner_iphoneos18.0-arm64.xctestrun",
+        "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun",
+        "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
+      ],
+    });
+
+    expect(plan.cloneNames.sort()).toEqual([
+      "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun",
+      "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
+    ]);
+  });
+
+  it("caps runner logs to the newest N by embedded timestamp, ignoring foreign files", () => {
+    const plan = planRunnerStorageSweep({
+      ...EMPTY_LISTING,
+      logNames: [
+        "runner-00008120-100.log", // oldest
+        "runner-00008120-300.log", // newest
+        "runner-0000aaaa-200.log",
+        "usbmux.log", // foreign — no runner- prefix
+        "runner-note.txt", // foreign — not a .log with a timestamp
+      ],
+      maxLogFiles: 2,
+    });
+
+    expect(plan.logNames).toEqual(["runner-00008120-100.log"]);
+  });
+
+  it("defaults the log cap to the newest 20", () => {
+    const logNames = Array.from(
+      { length: MAX_RUNNER_LOG_FILES + 3 },
+      (_, i) => `runner-00008120-${1000 + i}.log`
+    );
+
+    const plan = planRunnerStorageSweep({ ...EMPTY_LISTING, logNames });
+
+    // The three oldest fall off the cap; the 20 newest survive.
+    expect(plan.logNames.sort()).toEqual([
+      "runner-00008120-1000.log",
+      "runner-00008120-1001.log",
+      "runner-00008120-1002.log",
+    ]);
+  });
+});
+
+describe("sweepRunnerStorage", () => {
+  it("prunes a fake storage tree down to exactly the expected survivors", async () => {
+    const root = path.join(tmpRoot, "sweep");
+    const derived = path.join(root, "derived");
+    const current = path.join(derived, "cache-aaaa111122223333");
+    const products = path.join(current, "Build", "Products");
+    const logDir = path.join(root, "logs");
+    await fsp.mkdir(products, { recursive: true });
+    await fsp.mkdir(path.join(derived, "cache-0123456789abcdef", "Build"), { recursive: true });
+    await fsp.mkdir(path.join(derived, "foreign-dir"), { recursive: true });
+    await fsp.mkdir(logDir, { recursive: true });
+    const base = path.join(products, "ArgentRunner_iphoneos18.0-arm64.xctestrun");
+    const keptClone = path.join(products, "ArgentRunner_iphoneos18.0-arm64.env.port-2.xctestrun");
+    const staleClone = path.join(products, "ArgentRunner_iphoneos18.0-arm64.env.port-1.xctestrun");
+    await Promise.all([base, keptClone, staleClone].map((p) => fsp.writeFile(p, "plist")));
+    await Promise.all(
+      [100, 200, 300].map((ts) => fsp.writeFile(path.join(logDir, `runner-00008120-${ts}.log`), ""))
+    );
+    await fsp.writeFile(path.join(logDir, "keep-me.txt"), "");
+
+    await sweepRunnerStorage({
+      derivedDataPath: current,
+      keepClonePath: keptClone,
+      logDir,
+      maxLogFiles: 2,
+    });
+
+    // The stale cache sibling is gone; the current dir and foreign dir stay.
+    expect((await fsp.readdir(derived)).sort()).toEqual(["cache-aaaa111122223333", "foreign-dir"]);
+    // The base xctestrun and the excluded clone survive; the stale clone dies.
+    expect((await fsp.readdir(products)).sort()).toEqual([
+      "ArgentRunner_iphoneos18.0-arm64.env.port-2.xctestrun",
+      "ArgentRunner_iphoneos18.0-arm64.xctestrun",
+    ]);
+    // Newest two logs and the foreign file survive the cap.
+    expect((await fsp.readdir(logDir)).sort()).toEqual([
+      "keep-me.txt",
+      "runner-00008120-200.log",
+      "runner-00008120-300.log",
+    ]);
+  });
+
+  it("resolves without throwing when none of the directories exist", async () => {
+    await expect(
+      sweepRunnerStorage({
+        derivedDataPath: path.join(tmpRoot, "sweep-missing", "derived", "cache-aaaa111122223333"),
+        logDir: path.join(tmpRoot, "sweep-missing", "logs"),
+      })
+    ).resolves.toBeUndefined();
   });
 });
 
