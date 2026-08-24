@@ -146,7 +146,7 @@ Only `unmet` disproves the condition. Never delete a step during the recording.
 
 A stale `hidden` whose selector matches nothing replays as a silent pass — the unfalsifiable gate that [Record absence in three steps](#record-absence-in-three-steps) exists to prevent. Never proceed as though the gate passed. See the `await-ui-element` section of `argent-device-interact` for the full live condition and selector reference.
 
-A wait inside `run-sequence` gets no recorder warning. Inspect the nested result. Any `success: false` fails the sequence during replay.
+A wait inside `run-sequence` stops the batch and discards it. The sequence turns a nested `success: false` into an error entry and stops there, so the recorder refuses the whole call: `message` names the unmet wait, nothing is written, and `stepCount` does not move. A recorded `run-sequence` therefore cannot hold a wait that did not pass. Record each wait as its own `flow-add-step` call, which is also what gives it the runner-tree check below.
 
 The live tool and flow runner use [different trees](flow-yaml.md#the-runner-tree-is-not-the-discovery-tree). After a successful wait, the recorder checks the same condition on the runner tree:
 
