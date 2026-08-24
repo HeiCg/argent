@@ -19,7 +19,6 @@ afterEach(() => {
   while (workspaces.length) workspaces.pop()!.cleanup();
 });
 
-/** Run `source` as a script and return the executor's result. */
 async function run(source: string): Promise<FlowScriptResult> {
   const ws = workspace();
   const script = ws.write("script.mjs", source);
@@ -41,9 +40,8 @@ describe("flow script executor — output validation", () => {
   });
 
   it("takes a replaced binding, not only a mutated one", async () => {
-    // Both spellings are legal, and `output = …` resolves to the global
-    // property. Reading a reference captured before the import would silently
-    // keep the pre-replacement value.
+    // `output = …` resolves to the global property, so a reference captured
+    // before the script ran would keep the pre-replacement value.
     const result = await run(`output.seeded = 1; output = { replaced: true };`);
     expect(result.output).toEqual({ replaced: true });
   });
@@ -138,8 +136,8 @@ describe("flow script executor — output validation", () => {
   });
 
   it("encodes a sparse array the way JSON.stringify does", async () => {
-    // `JSON.stringify` writes a hole as null; rejecting it named an index the
-    // author never wrote.
+    // A hole is not an `undefined` the author wrote, so rejecting it would name
+    // an index nobody wrote.
     const result = await run(`const a = []; a[2] = "third"; output.a = a;`);
     expect(result.failure).toBeUndefined();
     expect(result.output).toEqual({ a: [null, null, "third"] });
@@ -150,17 +148,14 @@ describe("flow script executor — output validation", () => {
     expect(withToJson.failure).toBeUndefined();
     expect(withToJson.output).toEqual({ point: { x: 1, y: 2 } });
 
-    // And the other direction: a toJSON that hands back something unencodable
-    // used to slip past a walk of the object itself.
     const smuggled = await run(`output.toJSON = () => ({ fn: () => {} });`);
     expect(smuggled.failure?.kind).toBe("output");
   });
 
   it("commits the value it validated, not the one a second read returns", async () => {
     // Every accessor on the document is free to answer differently the second
-    // time. Validating the live object and then encoding it again read each of
-    // these twice, so the value that shipped was never the value that passed —
-    // the silent-`null` corruption the validator exists to prevent.
+    // time, so what is encoded has to be the copy the walk built rather than a
+    // second read of the live object.
     const getter = await run(
       `let n = 0;
        output.data = { get id() { n++; return n === 1 ? 1 : NaN; } };`
@@ -184,8 +179,8 @@ describe("flow script executor — output validation", () => {
 
   it("rejects an own __proto__ key rather than passing it into flow state", async () => {
     // `JSON.parse` creates this as an own key, so `output.settings =
-    // JSON.parse(untrustedBody)` carries it through — inert under a spread, a
-    // prototype write under Object.assign.
+    // JSON.parse(untrustedBody)` carries it into flow state, where an
+    // `Object.assign` writes a prototype rather than a property.
     const result = await run(`output.settings = JSON.parse('{"__proto__": {"admin": true}}');`);
     expect(result.failure?.kind).toBe("output");
     expect(result.failure?.message).toContain("__proto__");
@@ -194,8 +189,8 @@ describe("flow script executor — output validation", () => {
   it("encodes with the JSON.stringify that existed before the script ran", async () => {
     // The realistic trigger is accidental: any instrumentation, polyfill or
     // serialization shim in the dependency tree that wraps `JSON.stringify`.
-    // Reading it off the global at encode time committed a document the script
-    // never wrote, and carried an own `__proto__` key past both validators.
+    // Reading it off the global at encode time would commit a document the
+    // script never wrote, own `__proto__` key included.
     const swapped = await run(
       `JSON.stringify = () => '{"fake":true}';
        output.real = "what the script actually wrote";`
@@ -223,10 +218,8 @@ describe("flow script executor — output validation", () => {
   });
 
   it("bounds a failure message and stack, the last unbounded fields on the channel", async () => {
-    // `throw new Error(\`Unexpected response: \${await res.text()}\`)` is how a
-    // whole response body ends up in an error. An IPC message is deserialized
-    // whole into the tool server's heap before anything can inspect it, so the
-    // ceiling has to hold in the child.
+    // An IPC message is deserialized whole into the tool server's heap before
+    // anything can inspect it, so the ceiling has to hold in the child.
     const result = await run(
       `throw new Error("Unexpected response: " + "y".repeat(8 * 1024 * 1024));`
     );
@@ -240,10 +233,9 @@ describe("flow script executor — output validation", () => {
   it("refuses a caller output document that cannot be encoded, without spawning", async () => {
     const ws = workspace();
     // The document the flow hands *in*, not the one the script hands back. It
-    // is encoded before the fork and inside the setup guard, because doing it
-    // after made `execute` reject with a raw TypeError — no result for the
-    // caller at all — and left a child running until the time limit reaped it.
-    // The marker is what proves nothing was started.
+    // is encoded before the fork and inside the setup guard, so an unencodable
+    // one is a verdict rather than a raw `TypeError` out of `execute` with a
+    // child left running until the time limit. The marker proves nothing ran.
     const marker = ws.resolve("ran.txt");
     const script = ws.write(
       "noop.mjs",
@@ -270,11 +262,10 @@ describe("flow script executor — output validation", () => {
   });
 
   it("says how much of a clamped message was really dropped", async () => {
-    // The number, not just the marker. The child clamps and marks honestly, and
-    // the parent re-clamps the same field at the same ceiling as its second line
-    // — so while the marker sat *outside* the ceiling, that second cut landed on
-    // the same boundary, discarded the child's marker and reported the length of
-    // the marker it had just dropped. A megabyte read as thirty-four characters.
+    // The child clamps and the parent re-clamps the same field at the same
+    // ceiling, so the marker has to count against that ceiling: one left
+    // outside it is what the parent's cut lands on and discards, reporting the
+    // length of the marker it just dropped instead of the text.
     const body = "y".repeat(1_000_000);
     const thrown = `Unexpected response: ${body}`;
     const result = await run(`throw new Error("Unexpected response: " + "y".repeat(1000000));`);

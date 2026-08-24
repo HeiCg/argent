@@ -53,17 +53,10 @@ export function asNumber(raw: unknown): number | undefined {
   return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
 
-/** Accept a whole number above zero — a count, a byte size, a millisecond bound. */
 export function asPositiveInteger(raw: unknown): number | undefined {
   return typeof raw === "number" && Number.isSafeInteger(raw) && raw > 0 ? raw : undefined;
 }
 
-/**
- * The smallest heap a flow `script` process can be given and still start. V8
- * needs a few MiB to deserialize its own snapshot; below that the process dies
- * before the runner can say anything, so the value is refused where it is
- * written instead.
- */
 export const MIN_SCRIPT_HEAP_LIMIT_MB = 32;
 
 /** Accept an array of non-blank strings (blank entries dropped). */
@@ -148,12 +141,9 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     merge: "prioritize-local",
     example: "~/Movies/argent",
   },
-  // ── Flow `script` step host bounds ────────────────────────────────────
-  // Both are global-scope only, and that is the load-bearing part. Each bounds
-  // how much of the developer's machine a script step may occupy, and a project
-  // scope would let a checked-in `.argent/config.json` — a file an agent writes
-  // — raise the ceiling on every flow in that repository. `merge` is nominal
-  // for a global-only key: the project scope is never read.
+  // Global-scope only: a checked-in `.argent/config.json` must not raise the
+  // ceiling on how much of the machine a script step may occupy. `merge` is
+  // nominal here — the project scope of a global-only key is never read.
   {
     key: "scripts.maxTimeoutMs",
     description:
@@ -173,11 +163,6 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
       "importing a real npm dependency needs, and under about 5 MiB the process dies inside " +
       "V8's own startup before any script runs.",
     scopes: ["global"],
-    // Not just "a positive whole number": under about 5 MiB the process dies
-    // inside V8's own startup, before any script runs, and the step failed with
-    // a message that named neither this key nor the value. The likely way in is
-    // a unit slip — `heapLimitMb: 2` meaning 2 GB — so the floor is what turns
-    // that into a message about the value the user wrote.
     parse: (raw) => {
       const value = asPositiveInteger(raw);
       return value !== undefined && value >= MIN_SCRIPT_HEAP_LIMIT_MB ? value : undefined;

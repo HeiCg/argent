@@ -1,12 +1,9 @@
 // A standalone parent for the orphan-reaping test.
 //
-// The lifeline watchdog's whole job is to stop a runner whose parent died, so
-// proving it needs a parent that can be `SIGKILL`ed — which the test process
-// itself cannot be. This driver runs one script through the real executor and
-// then waits; the test kills it and checks that the runner did not survive.
+// The lifeline watchdog stops a runner whose parent died, so proving it needs a
+// parent that can be `SIGKILL`ed — which the test process itself cannot be.
 //
-// Run through ts-node's own binary, with the workspace tsconfig, which is what
-// `flow-script-lifecycle.test.ts` spawns:
+// `flow-script-lifecycle.test.ts` spawns this as:
 // `node <ts-node/dist/bin.js> -T -P packages/tool-server/tsconfig.json <this file> <script> <cwd>`.
 import { FlowScriptExecutor } from "../../src/tools/flows/script/flow-script-executor";
 

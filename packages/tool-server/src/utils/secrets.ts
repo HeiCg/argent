@@ -97,29 +97,21 @@ export function resolveSecretPlaceholders(
 }
 
 /**
- * Replace every resolved secret value in `text` with its `{{secret:NAME}}`
- * placeholder — the one implementation of the substitution, shared by the
- * error-shaped wrapper below and by the flow script executor's log capture.
  * Zero-length values are skipped: replacing an empty string would corrupt the
  * text rather than redact anything.
  *
  * Callers that scrub a *stream* must scrub before any truncation and must hold
  * back a chunk tail across chunk boundaries, since a whole-value match sees
- * neither half of a value split across two writes. See
- * `flow-script-executor.ts`, which does both.
+ * neither half of a value split across two writes — see
+ * `flow-script-executor.ts`.
  */
 export function scrubSecretValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>
 ): string {
-  // Longest value first. One value can contain another — a host inside a URL
+  // Longest value first: one value can contain another — a host inside a URL
   // that is itself a secret — and replacing the shorter one first rewrites the
-  // middle of the longer one, leaving its tail in the text:
-  // `using {{secret:HOST}}9d3f0a1b2c`. Length is what decides, so two values of
-  // the *same* length that overlap still resolve in collection order:
-  // `[A="abcd", B="cdef"]` over `"abcdef"` gives `"{{secret:A}}ef"` and the
-  // reverse order gives `"ab{{secret:B}}"`. Neither leaks a value; which one is
-  // named differs.
+  // middle of the longer one, leaving its tail in the text.
   return [...secrets]
     .sort((a, b) => b.value.length - a.value.length)
     .reduce(

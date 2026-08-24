@@ -152,13 +152,9 @@ const TRACECFG_SRC = path.resolve(
   "packages/native-devtools-android/assets/argent.tracecfg.pbtxt"
 );
 const TRACECFG_DEST = path.resolve(__dirname, "../assets/argent.tracecfg.pbtxt");
-// Flow `script` child process + its two watchdog threads. They import nothing
-// from the workspace, so esbuild never sees them and they must be shipped as
-// files. flow-script-executor.ts resolves the runner with
-// `path.join(__dirname, "flow-script-runner.mjs")` — in the bundled
-// tool-server.cjs that is `<pkg>/dist/`, i.e. flat beside the bundle — and the
-// runner then resolves both watchdogs against its own module URL, so all three
-// must land in the same directory.
+// Nothing imports these, so esbuild cannot bundle them. The executor resolves
+// the runner from its own `__dirname` and the runner resolves both watchdogs
+// from its module URL, so all three must land flat beside tool-server.cjs.
 const FLOW_SCRIPT_SRC_DIR = path.resolve(
   WORKSPACE_ROOT,
   "packages/tool-server/src/tools/flows/script"
@@ -359,8 +355,6 @@ const ASSETS = [
         .readdirSync(src, { withFileTypes: true })
         .filter((e) => e.isFile() && e.name.endsWith(".md")).length,
   },
-  // The flow `script` runner and watchdogs. Required: a `script` step cannot run
-  // without them, and a missing runner only shows up at flow-execute time.
   ...FLOW_SCRIPT_FILES.map(
     (name) =>
       /** @type {Asset} */ ({

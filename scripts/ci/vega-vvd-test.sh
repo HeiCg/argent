@@ -17,7 +17,7 @@
 # Prereq: the workspace is already built (`npm ci` + `npm run build` on the
 # runner, bind-mounted in at /workspace), so `packages/tool-server/dist/index.js`
 # exists. `npm run build`, not a bare `tsc --build`: only the build script copies
-# the files tsc never sees, among them the flow `script` runner's two watchdogs.
+# the assets tsc never sees.
 #
 # NOT `set -e`: gated checks are captured for a per-tool summary, then we exit
 # non-zero if any failed.

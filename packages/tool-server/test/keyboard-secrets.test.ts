@@ -272,9 +272,6 @@ describe("redactSecretsFromError", () => {
   });
 
   it("redacts the same way whatever order the secrets arrive in", () => {
-    // One value can contain another — a host inside a URL that is itself a
-    // secret. Replacing the shorter one first rewrote the middle of the longer
-    // one and left its tail in the text.
     const host = { name: "HOST", value: "api.example.com" };
     const url = { name: "URL", value: "https://api.example.com/v1/tok-9d3f0a1b2c" };
     const text = `calling ${url.value} now`;

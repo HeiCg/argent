@@ -21,12 +21,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** The request shape every step in this file shares. */
 function stepFor(ws: ScriptWorkspace, scriptPath: string): FlowScriptRequest {
   return { scriptPath, projectRoot: ws.dir };
 }
 
-/** A script that records when it ran, so overlap can be measured afterwards. */
+/** Records the interval it ran in, so overlap between runs can be measured. */
 function timedScript(ws: ScriptWorkspace, sleepMs: number): string {
   return ws.write(
     "timed.mjs",
@@ -39,8 +38,7 @@ function timedScript(ws: ScriptWorkspace, sleepMs: number): string {
 describe("flow script executor — concurrency", () => {
   it("runs no more scripts at once than the limit allows", async () => {
     // The limit protects the host, not the throughput of one script: a script
-    // can spin a core, and enough spinning runners stop every other agent on
-    // the machine.
+    // can spin a core, and enough spinning runners saturate the machine.
     const ws = workspace();
     const script = timedScript(ws, 400);
     const executor = new FlowScriptExecutor({ concurrency: 2, maxTimeoutMs: 60_000 });
@@ -83,7 +81,6 @@ describe("flow script executor — concurrency", () => {
     const executor = new FlowScriptExecutor({ concurrency: 1, maxTimeoutMs: 60_000 });
     const occupier = executor.execute({ scriptPath: script, projectRoot: ws.dir });
     // One running plus the full queue depth of 32 waiting; the next is refused.
-    // A signal each, the way a flow run gives every step its own.
     const controllers = Array.from({ length: 32 }, () => new AbortController());
     const queued = controllers.map((controller) =>
       executor.execute({ scriptPath: script, projectRoot: ws.dir, signal: controller.signal })
@@ -134,10 +131,9 @@ describe("flow script executor — concurrency", () => {
     const cancelled = await queued;
     const answeredAfterMs = Date.now() - abortedAt;
     expect(cancelled.failure?.kind).toBe("cancelled");
-    // "The moment" is the claim, and this is what holds it: the occupier keeps
-    // the only slot for another ~700ms. Without the queue's own abort listener
-    // the waiter simply took a slot later and `runOne`'s guard answered — the
-    // same verdict, that much later — so the kind alone proved nothing.
+    // The occupier keeps the only slot for another ~700ms. Without the queue's
+    // own abort listener the waiter would take a slot later and `runOne`'s
+    // guard would answer with the same kind, so the kind alone proves nothing.
     expect(answeredAfterMs).toBeLessThan(300);
     expect((await occupier).ok).toBe(true);
     expect((await behind).ok).toBe(true);
@@ -165,11 +161,10 @@ describe("flow script executor — the default concurrency", () => {
       // max(2, min(8, cpus - 2)): the floor is what keeps a two-core CI box
       // from serializing every script step.
       //
-      // Each script records the interval it ran in, and two intervals that
-      // overlap ran at the same time. Elapsed wall clock cannot say that: the
-      // bound has to sit between the concurrent time and the serialized one,
-      // which left 200ms of slack and made this the likeliest flake in the
-      // suite — a loaded runner crosses it while running both scripts at once.
+      // Two intervals that overlap ran at the same time. Elapsed wall clock
+      // cannot say that: its bound would have to sit between the concurrent
+      // time and the serialized one, which a loaded runner crosses while
+      // running both scripts at once.
       const script = ws.write(
         "slow.mjs",
         `output.startedAt = Date.now();
@@ -202,8 +197,8 @@ describe("flow script executor — bounds that would break every step", () => {
     const ws = createScriptWorkspace("queue");
     try {
       const script = ws.write("quick.mjs", `output.ok = true;`);
-      // Zero is not nullish, so it went through `??` intact and every step
-      // queued until the wait bound refused it.
+      // Zero is not nullish, so a `??` default would let it through and every
+      // step would queue until the wait bound refused it.
       const result = await new FlowScriptExecutor({ concurrency: 0, maxTimeoutMs: 60_000 }).execute(
         { scriptPath: script, projectRoot: ws.dir }
       );
@@ -239,8 +234,8 @@ describe("flow script executor — bounds that would break every step", () => {
     const ws = createScriptWorkspace("queue");
     try {
       const script = ws.write("quick.mjs", `output.ok = true;`);
-      // A host that deliberately tightened its ceiling below the 30s default
-      // was told, on every step, that it had asked for too much.
+      // The 30s default is above this host's maximum — the case where clamping
+      // it would read as a step that asked for more than the host allows.
       const result = await new FlowScriptExecutor({ concurrency: 2, maxTimeoutMs: 5_000 }).execute({
         scriptPath: script,
         projectRoot: ws.dir,
