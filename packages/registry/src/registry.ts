@@ -24,7 +24,9 @@ import { FAILURE_CODES } from "./failure-codes";
 import { parseURN } from "./urn";
 import { zodObjectToJsonSchema } from "./zod-to-json-schema";
 import { randomUUID } from "node:crypto";
-import type { $ZodIssue as ZodIssue } from "zod/v4/core";
+import type { z } from "zod";
+
+type ZodIssue = z.core.$ZodIssue;
 
 export class Registry {
   /** Single map: URN -> ServiceNode (all instances). */
