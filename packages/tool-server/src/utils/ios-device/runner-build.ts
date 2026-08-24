@@ -405,7 +405,6 @@ export async function launchRunner(opts: {
   udid: string;
   xctestrunPath: string;
   derivedDataPath: string;
-  port: number;
 }): Promise<LaunchedRunner> {
   const logDir = path.join(os.homedir(), ".argent", "ios-device-runner", "logs");
   await fsp.mkdir(logDir, { recursive: true });
@@ -438,7 +437,6 @@ export async function launchRunner(opts: {
     {
       detached: true,
       stdio: ["ignore", logFd, logFd],
-      env: { ...process.env, ARGENT_RUNNER_PORT: String(opts.port) },
     }
   );
   child.unref();

@@ -189,10 +189,9 @@ const inFlightSnapshots = new Map<
 
 export async function captureSnapshot(
   api: IosDeviceRunnerApi,
-  bundleId: string,
-  opts: { interactiveOnly?: boolean; depth?: number } = {}
+  bundleId: string
 ): Promise<{ nodes: RunnerSnapshotNode[]; quality: RunnerSnapshotQuality | null }> {
-  const key = `${api.udid}|${bundleId}|${opts.interactiveOnly ?? false}|${opts.depth ?? ""}`;
+  const key = `${api.udid}|${bundleId}`;
   const pending = inFlightSnapshots.get(key);
   if (pending) return pending;
   const request = (async () => {

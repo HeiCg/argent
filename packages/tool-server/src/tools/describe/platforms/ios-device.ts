@@ -19,13 +19,13 @@ export async function describeIosDevice(
   const bundleId = requireCurrentIosDeviceApp(device.id);
   const ref = iosDeviceRunnerRef(device);
   const api = await registry.resolveService<IosDeviceRunnerApi>(ref.urn, ref.options);
-  let { nodes, quality } = await captureSnapshot(api, bundleId, { interactiveOnly: false });
+  let { nodes, quality } = await captureSnapshot(api, bundleId);
   // Right after launch-app, XCTest can attach before the UI is fully built
   // and report a root-only tree. One short settle-and-retry recovers the
   // common case without pushing retry logic onto the agent.
   if (nodes.length <= 1) {
     await new Promise((resolve) => setTimeout(resolve, 1_500));
-    ({ nodes, quality } = await captureSnapshot(api, bundleId, { interactiveOnly: false }));
+    ({ nodes, quality } = await captureSnapshot(api, bundleId));
   }
   if (nodes.length === 0) {
     return {

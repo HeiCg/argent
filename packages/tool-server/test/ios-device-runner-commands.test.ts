@@ -58,13 +58,13 @@ describe("captureSnapshot single-flight", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps differing options and sequential calls separate", async () => {
+  it("keeps different bundle ids and sequential calls separate", async () => {
     const run = vi.fn().mockResolvedValue({ nodes: [], quality: null });
     const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
 
     await Promise.all([
       captureSnapshot(api, "com.example.app"),
-      captureSnapshot(api, "com.example.app", { interactiveOnly: true }),
+      captureSnapshot(api, "com.example.other"),
     ]);
     await captureSnapshot(api, "com.example.app");
 

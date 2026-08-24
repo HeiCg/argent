@@ -179,9 +179,9 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
   },
   async factory(_deps, payload, options): Promise<ServiceInstance<IosDeviceRunnerApi>> {
     const deviceFromOpts = (options as { device?: DeviceInfo } | undefined)?.device;
-    const udid =
-      deviceFromOpts?.id ??
-      (typeof payload === "string" ? payload : (payload as DeviceInfo | undefined)?.id);
+    // The registry hands the factory the parsed URN payload — always a string
+    // (the udid); options.device is the richer channel iosDeviceRunnerRef fills.
+    const udid = deviceFromOpts?.id ?? (typeof payload === "string" ? payload : undefined);
     if (!udid) {
       throw new FailureError(
         `${IOS_DEVICE_RUNNER_NAMESPACE}.factory could not determine the device — pass it via iosDeviceRunnerRef(device).`,
@@ -208,7 +208,6 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         udid,
         xctestrunPath,
         derivedDataPath: artifact.derivedDataPath,
-        port,
       });
       const sender = createUsbmuxCommandSender();
       const client = createRunnerClient({

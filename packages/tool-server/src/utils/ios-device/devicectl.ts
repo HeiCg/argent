@@ -259,8 +259,6 @@ export async function uninstallApp(udid: string, bundleId: string): Promise<void
 }
 
 interface LaunchAppOptions {
-  /** Deep link handed to the app at launch. devicectl has no appless open-url. */
-  payloadUrl?: string;
   terminateExisting?: boolean;
 }
 
@@ -272,7 +270,6 @@ export async function launchApp(
 ): Promise<void> {
   const args = ["device", "process", "launch", "--device", udid];
   if (opts.terminateExisting) args.push("--terminate-existing");
-  if (opts.payloadUrl) args.push("--payload-url", opts.payloadUrl);
   args.push(bundleId);
   await runDevicectl(args, `launch ${bundleId}`);
 }
@@ -342,5 +339,3 @@ export async function ensureDeviceReady(udid: string): Promise<void> {
   }
   readyMemo.set(udid, Date.now());
 }
-
-/** Test-only: clear the readiness memo so cases don't leak verdicts. */
