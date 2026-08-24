@@ -144,16 +144,16 @@ function renderByComponent(
       instances: entries.length,
       // `actualDuration` is inclusive (self + subtree), and same-named instances
       // in one commit are routinely nested — a `View` inside a `View` — so the
-      // ancestor's figure already contains its descendants'. Summing produced a
-      // row claiming more time than the commit printed beside it. The largest
+      // ancestor's figure already contains its descendants'. Summing produces
+      // a row claiming more time than the commit printed beside it. The largest
       // single instance is a real subtree cost and cannot exceed the commit.
       // `?? 0` matches 00-hot-commits: durations read back from a session dump
-      // can be null (non-finite values become null through JSON), and a bare
-      // null here prints NaN or throws at toFixed.
+      // can be null or absent (non-finite values become null through JSON),
+      // and an absent one makes these reduces NaN, printing "NaN".
       maxSubtree: entries.reduce((m, e) => Math.max(m, e.actualDuration ?? 0), 0),
       totalSelf: entries.reduce((s, e) => s + (e.selfDuration ?? 0), 0),
-      commitDuration: entries[0]!.commitDuration,
-      timestamp: entries[0]!.timestamp,
+      commitDuration: entries[0]!.commitDuration ?? 0,
+      timestamp: entries[0]!.timestamp ?? 0,
       reason: formatReason(entries[0]!),
       parentName: entries[0]!.parentName ?? "—",
     }))
@@ -209,8 +209,8 @@ function renderByTimeRange(
     .map(([idx, entries]) => ({
       commitIndex: idx,
       componentCount: new Set(entries.map((e) => e.componentName)).size,
-      commitDuration: entries[0]!.commitDuration,
-      timestamp: entries[0]!.timestamp,
+      commitDuration: entries[0]!.commitDuration ?? 0,
+      timestamp: entries[0]!.timestamp ?? 0,
       topComponents: getTopComponents(entries, 5),
     }))
     .sort((a, b) => b.commitDuration - a.commitDuration)
@@ -249,10 +249,10 @@ export function renderByIndex(
     return `_Commit #${commitIndex} not found in stored data._`;
   }
 
-  const commitDuration = matching[0]!.commitDuration;
-  const timestamp = matching[0]!.timestamp;
+  const commitDuration = matching[0]!.commitDuration ?? 0;
+  const timestamp = matching[0]!.timestamp ?? 0;
 
-  const sorted = [...matching].sort((a, b) => b.actualDuration - a.actualDuration);
+  const sorted = [...matching].sort((a, b) => (b.actualDuration ?? 0) - (a.actualDuration ?? 0));
   // Uncapped by default: rows are fibers, so a small cap would show less than
   // the analyze report that points here.
   const shown = topN !== undefined ? sorted.slice(0, topN) : sorted;
@@ -273,7 +273,7 @@ export function renderByIndex(
     const parent = c.parentName ?? "—";
     const compiler = c.isCompilerOptimized ? "✓" : "";
     lines.push(
-      `| \`${c.componentName}\` | ${c.actualDuration.toFixed(1)} | ${c.selfDuration.toFixed(1)} | ${reason} | \`${parent}\` | ${compiler} |`
+      `| \`${c.componentName}\` | ${(c.actualDuration ?? 0).toFixed(1)} | ${(c.selfDuration ?? 0).toFixed(1)} | ${reason} | \`${parent}\` | ${compiler} |`
     );
   }
 
@@ -335,7 +335,7 @@ function renderCascadeTree(commits: DevToolsFiberCommit[], commitIndex: number):
     rendered.add(`${name}:${depth}`);
 
     const instances = matching.filter((c) => c.componentName === name);
-    const totalSelf = instances.reduce((s, c) => s + c.selfDuration, 0);
+    const totalSelf = instances.reduce((s, c) => s + (c.selfDuration ?? 0), 0);
     const count = instances.length;
     const reason = instances[0] ? formatReason(instances[0]) : "";
     const indent = "  ".repeat(depth);
@@ -404,7 +404,12 @@ function getTopComponents(
 }
 
 /** Exposed for tests: the grouping whose inclusive-duration handling is load-bearing. */
-export const __testables = { getTopComponents, renderByComponent };
+export const __testables = {
+  getTopComponents,
+  renderByComponent,
+  renderByIndex,
+  renderCascadeTree,
+};
 
 export const profilerCommitQueryTool: ToolDefinition<z.infer<typeof zodSchema>, string> = {
   id: "profiler-commit-query",

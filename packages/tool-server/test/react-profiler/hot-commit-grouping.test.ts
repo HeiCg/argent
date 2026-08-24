@@ -7,8 +7,8 @@ import type { DevToolsFiberCommit } from "../../src/utils/react-profiler/types/i
  * Same-named fibers in one commit are routinely NESTED — a `View` rendered
  * inside another `View`. React's `actualDuration` is inclusive (self + subtree),
  * so an ancestor's figure already contains its descendants'. Adding those up
- * across the group double-counts the same work and produced grouped rows whose
- * "w/children" exceeded the duration of the commit containing them.
+ * across the group double-counts the same work and produces grouped rows whose
+ * "w/children" exceed the duration of the commit containing them.
  */
 function fiber(overrides: Partial<DevToolsFiberCommit>): DevToolsFiberCommit {
   return {
@@ -61,8 +61,8 @@ describe("buildHotCommitSummaries — grouped component durations", () => {
 });
 
 /**
- * The same double-count lived in three other places that group by component or
- * function name. `buildHotCommitSummaries` was only the one it was noticed in.
+ * The same double-count applies wherever durations are grouped by component or
+ * function name; `buildHotCommitSummaries` is one of the grouping sites.
  */
 describe("getTopComponents (profiler-commit-query by_time_range)", () => {
   it("reports the largest instance's subtree and the summed self time", () => {

@@ -394,7 +394,9 @@ function renderComponentCpu(
     // arriving after its inner frames), or covers fresh ground (the same
     // helper called from an unrelated site) and joins the union. Deciding
     // pairwise against a single representative would not compose over three
-    // or more nodes mixing nesting and disjointness.
+    // or more nodes mixing nesting and disjointness. The window itself is
+    // capped at its 50 costliest nodes by self time; nodes past the cap
+    // contribute to neither column.
     const perWindow = new Map<
       string,
       {
