@@ -1267,9 +1267,17 @@ function exactFieldCount(
  * action targets. An accessible container (e.g. a Touchable on iOS) aggregates
  * its descendants' labels, so a substring text selector matches the container
  * as well as the leaf carrying the text, and the container's centre can sit
- * over a different child entirely. Matches are therefore ranked: exact field
- * matches beat substring hits, then the smallest frame (mirroring
- * {@link nodeAtPoint}), with reading order as the final tiebreak.
+ * over a different child entirely. Matches are therefore ranked by the graded
+ * score {@link exactFieldCount} sums: a field matching the WHOLE text beats one
+ * that merely contains the needle, and among whole-text matches the LITERAL
+ * spelling beats one only the fold equates. A tie in that score falls to the
+ * smallest frame (mirroring {@link nodeAtPoint}), with reading order as the
+ * final tiebreak.
+ *
+ * The grade is what the smallest-frame rule must not decide, so read the two in
+ * that order: an icon-only 28x28 button labelled `Sign<LRM> in` and the real
+ * 420x70 one are both exact under the fold, and "smallest wins" would take the
+ * icon.
  *
  * The universal selector (flow YAML's `any: true`) is the case ranking cannot
  * serve: with no field to be exact about, "smallest" degenerates to whatever

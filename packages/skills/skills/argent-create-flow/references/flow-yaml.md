@@ -74,7 +74,7 @@ The recorder rechecks each successful `await-ui-element` against the runner tree
 
 When several nodes match, the directive decides:
 
-- **Actions** (`tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`) take the most specific visible match: exact text/id beats substring, then the smallest frame, then reading order.
+- **Actions** (`tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`) take the most specific visible match: a whole-text or exact-id match beats a substring, a literal spelling beats one only [folding](#invisible-characters) makes equal, then the smallest frame, then reading order. The fold tier comes before the frame, so a decorative icon whose label differs from the real control only by an invisible character does not win on size.
 - **Conditions** (`await`, `assert`) do not rank. `exists`/`visible` hold if any match qualifies and `hidden` only if none does; `text` reads the first visible match in reading order.
 
 A container that aggregates a child's text therefore splits them: `tap` hits the leaf while `text.in` reads the container, so `equals` fails against correct UI. Use an `id` or a [relational scope](#relational-scopes) when an action and a check must agree, and a stricter selector when ranking can still choose the wrong element.
