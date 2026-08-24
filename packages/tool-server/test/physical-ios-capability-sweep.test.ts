@@ -16,7 +16,7 @@ import * as path from "node:path";
 import type { ToolCapability } from "@argent/registry";
 import { FLAG_REGISTRY } from "@argent/configuration-core";
 import { createRegistry } from "../src/utils/setup-registry";
-import { pasteTool } from "../src/tools/paste";
+import { createPasteTool } from "../src/tools/paste";
 import { listDevicesTool } from "../src/tools/devices/list-devices";
 import { resolveDevice } from "../src/utils/device-info";
 import { assertSupported, UnsupportedOperationError } from "../src/utils/capability";
@@ -35,7 +35,7 @@ function allCapabilities(): Map<string, ToolCapability | undefined> {
   for (const id of registry.getSnapshot().tools) {
     caps.set(id, registry.getTool(id)!.capability);
   }
-  caps.set("paste", pasteTool.capability);
+  caps.set("paste", createPasteTool({} as never).capability);
   return caps;
 }
 

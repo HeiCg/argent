@@ -41,7 +41,7 @@ import { createKeyboardTool } from "../src/tools/keyboard";
 import { gesturePinchTool } from "../src/tools/gesture-pinch";
 import { gestureRotateTool } from "../src/tools/gesture-rotate";
 import { gestureCustomTool } from "../src/tools/gesture-custom";
-import { pasteTool } from "../src/tools/paste";
+import { createPasteTool } from "../src/tools/paste";
 import { rotateTool } from "../src/tools/rotate";
 import { createTvRemoteTool } from "../src/tools/tv-remote";
 import { createAwaitScreenIdleTool } from "../src/tools/await-screen-idle";
@@ -789,7 +789,7 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
   // path and fails deep with a 500 instead of at the gate with a 400.
   it("every simulator-only tool rejects a physical iPhone, and none of them lost simulator support", () => {
     const simulatorOnly: ReadonlyArray<readonly [string, ToolCapability | undefined]> = [
-      ["paste", pasteTool.capability],
+      ["paste", createPasteTool({} as never).capability],
       ["gesture-pinch", gesturePinchTool.capability],
       ["gesture-rotate", gestureRotateTool.capability],
       ["tv-remote", createTvRemoteTool({} as never).capability],

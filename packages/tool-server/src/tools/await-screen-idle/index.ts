@@ -67,11 +67,9 @@ const zodSchema = z.object({
 type Params = z.infer<typeof zodSchema>;
 
 interface IdleResult {
-  /** True if the screen rendered content and went still before the timeout. */
+  /** Screen rendered content and went still before the timeout. */
   settled: boolean;
-  /** Wall-clock time waited (ms). */
   waitedMs: number;
-  /** Number of tree reads taken. */
   polls: number;
   /** Why the answer is what it is, when `settled: false` has a knowable cause. */
   note?: string;
@@ -132,10 +130,8 @@ function treeSignature(root: DescribeNode, orderAndFrameFree = false): string {
   return parts.join("\n");
 }
 
-// `await-screen-idle` waits for the screen to *settle* — render content and stop
-// changing — rather than for a named element like `await-ui-element`. The MCP
-// layer uses it to time its auto-screenshot: capture once the screen is stable
-// instead of after a fixed delay.
+// The MCP layer times its auto-screenshot with this: capture once the screen is
+// stable instead of after a fixed delay.
 export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Params, IdleResult> {
   function fetchTree(
     device: DeviceInfo,
