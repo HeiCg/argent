@@ -51,7 +51,7 @@ export interface KeyboardResult {
    *   subcommand takes the measured delete path instead of silently degrading
    *   to a one-character backspace. On a level that HAS the subcommand it also
    *   reads the field back afterwards and deletes whatever the select-all left
-   *   behind — a widget that swallows the chord no longer leaves the field one
+   *   behind — a widget that swallows the chord does not leave the field one
    *   character shorter under a `cleared: true`. The read-back rides the
    *   screen's view hierarchy: where that cannot be captured (a refused screen,
    *   an unmeasurable password field) the clear stays best-effort like iOS.
