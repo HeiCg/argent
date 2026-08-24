@@ -34,6 +34,14 @@ import {
 } from "./flow-script-protocol";
 
 const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
+/**
+ * What one step and one flow run may keep of a script's console output.
+ *
+ * Counted on the bytes the report carries, not on the bytes the script wrote:
+ * redaction and frame collapsing both run first, so a long value shrinks to its
+ * marker and a short one grows into it. What the limits bound is the size of
+ * the report, which is what has to cross back to the caller.
+ */
 export const SCRIPT_STEP_LOG_LIMIT_BYTES = 64 * 1024;
 const SCRIPT_RUN_LOG_LIMIT_BYTES = 256 * 1024;
 /** How long the outcome waits for the log streams once it is otherwise known. */
