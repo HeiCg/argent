@@ -13,6 +13,7 @@ import {
   includesCI,
   selectorToFrame,
   textMatches,
+  typographicVariantNote,
   uiTreeMatchInternals,
 } from "../src/utils/ui-tree-match";
 import type { DescribeNode } from "../src/tools/describe/contract";
@@ -497,6 +498,20 @@ describe("confusableTextNote", () => {
     expect(note).toContain("U+00AD");
   });
 
+  it("never claims the quoted string is DRAWN, because a label may be an a11y name", () => {
+    // `label` is the accessibility name on every adapter that feeds the notes,
+    // so on an icon-only control it is the node's only text and the screen
+    // draws none of it. A soft hyphen in a name that is never laid out paints
+    // no hyphen either, so "the screen and the text really do differ" was the
+    // opposite of the truth for the very string being quoted.
+    const note = confusableTextNote(`Con${SOFT_HYPHEN}firm`, "Confirm")!;
+    expect(note).toContain("changes what IS drawn");
+    expect(note).toContain("a real difference");
+    expect(note).not.toContain("the screen and the text");
+    expect(typographicVariantNote("Loading…")).toContain(`the element's text is "Loading…"`);
+    expect(typographicVariantNote("Loading…")).not.toContain("the screen does show");
+  });
+
   it("says the same of U+180E, which does ZWNJ's job", () => {
     // U+180E breaks the same Arabic cursive run that ZWNJ breaks.
     expect(equalsCI("ب᠎ب", "بب")).toBe(false);
@@ -872,7 +887,7 @@ describe("the character sets are pinned member by member, not by a representativ
 
   it("DROPS an LTR wrapper the fold strips, rather than naming it", () => {
     // Naming it printed eight characters of ASCII the screen does not draw, one
-    // line above "copy the characters the app actually renders" — and copying
+    // line above "copy the text exactly as it is quoted here" — and copying
     // the named form missed a second time.
     expect(quoteScreenText("‪Add more…‬")).toBe("Add more…");
     expect(includesCI("‪Add more…‬", quoteScreenText("‪Add more…‬"))).toBe(true);

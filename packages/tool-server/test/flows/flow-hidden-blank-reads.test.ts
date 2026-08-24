@@ -999,7 +999,7 @@ describe("compatibility miss note: what it is scoped to", () => {
 
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/typographic variant/);
-    expect(result.steps[0].reason).toMatch(/does show "Add more languages…"/);
+    expect(result.steps[0].reason).toMatch(/text is "Add more languages…"/);
   });
 
   it("fires on a PARTIAL miss, the default comparator's own shape", async () => {
@@ -1157,7 +1157,7 @@ describe("compatibility miss note: what it is scoped to", () => {
 
     const result = await run("plain-quote");
 
-    expect(result.steps[0].reason).toMatch(/does show "Add more languages…"/);
+    expect(result.steps[0].reason).toMatch(/text is "Add more languages…"/);
     expect(result.steps[0].reason).not.toMatch(/<U\+/);
   });
 
@@ -1431,6 +1431,6 @@ describe("evidence and tree-source gaps the widened match set now reaches", () =
 
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/typographic variant/);
-    expect(result.steps[0].reason).toMatch(/does show "Add more languages…"/);
+    expect(result.steps[0].reason).toMatch(/text is "Add more languages…"/);
   });
 });

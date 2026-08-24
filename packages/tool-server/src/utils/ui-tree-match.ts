@@ -545,7 +545,8 @@ function ignorableDifferenceNote(
     : differing.some((ch) => RENDERING_AFFECTING.test(ch))
       ? "the two strings differ in a character that draws nothing itself but changes what IS " +
         "drawn — a soft hyphen paints a real hyphen where the line breaks, U+180E breaks " +
-        "Arabic cursive joining as ZWNJ does — so the screen and the text really do differ"
+        "Arabic cursive joining as ZWNJ does — so this is a real difference, not one the " +
+        "comparison can ignore"
       : "the two strings differ only in invisible characters";
   const [dumpActual, dumpExpected] = codepointPair(actual, expected, differing);
   return `${lead} — actual [${dumpActual}] vs expected [${dumpExpected}]`;
@@ -633,6 +634,12 @@ export function ignorableTextNote(text: string, pattern?: string): string | unde
  * {@link compatibilityVariantIn} - use the label and the value only, and a
  * substring test. The invisible question comes first, because it names exact
  * code points.
+ *
+ * "the ELEMENT's text", never "the screen shows": `label` is the accessibility
+ * name on every adapter that feeds this - `aria-label` on chromium, the
+ * content-desc on Android, `accessibilityLabel` on iOS - so on an icon-only
+ * control it is the node's only text and the screen draws none of it. The
+ * quoted string is still exactly what to copy.
  */
 export function selectorMissNote(
   candidates: readonly DescribeNode[],
@@ -645,7 +652,7 @@ export function selectorMissNote(
   }
   for (const text of texts) {
     const note = confusableTextNoteIn(text, wanted);
-    if (note !== undefined) return `the screen does show "${quoteScreenText(text)}" — ${note}`;
+    if (note !== undefined) return `the element's text is "${quoteScreenText(text)}" — ${note}`;
   }
   for (const text of texts) {
     if (compatibilityVariantIn(text, wanted)) return typographicVariantNote(text);
@@ -654,16 +661,17 @@ export function selectorMissNote(
 }
 
 /**
- * The sentence that names a compatibility variant the screen renders. Shared by
- * its two callers, so a selector miss and a `text` miss cannot drift apart.
+ * The sentence that names a compatibility variant in an element's text. Shared
+ * by its two callers, so a selector miss and a `text` miss cannot drift apart.
+ * Says "the element's text" for the reason {@link selectorMissNote} gives.
  */
 export function typographicVariantNote(shown: string): string {
   return (
-    `the screen does show "${quoteScreenText(shown)}", which differs only by a typographic ` +
+    `the element's text is "${quoteScreenText(shown)}", which differs only by a typographic ` +
     `variant (a rendered "…" is ONE character, not three dots; likewise ligatures and ` +
     `fullwidth forms). Those are not folded together, because doing so would also equate a ` +
-    `styled display name with the plain one it imitates. Copy the characters the app ` +
-    `actually renders.`
+    `styled display name with the plain one it imitates. Copy the text exactly as it is ` +
+    `quoted here.`
   );
 }
 
