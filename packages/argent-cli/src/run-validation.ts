@@ -54,13 +54,13 @@ export function findMissingRequired(
 /**
  * The server's schema-validation issue list, or null when this failure did not carry one.
  *
- * Two channels, because the wire changed: a tool-server now answers a rejected call with prose in
- * `error` and the issue list beside it in `issues`; before that, the issue list WAS the message.
- * Reading the structured field first and falling back to parsing the message covers a new client
- * against an old server.
+ * Two channels, because the wire grew one: a tool-server now sends the issue list in `issues`,
+ * where before the list WAS the message. Reading the structured field first and falling back to
+ * parsing the message covers a new client against an old server.
  *
- * The reverse direction is a real break and is reachable, since `argent link` can point a local
- * CLI at a remote tool-server with no version handshake. Nothing here can fix that.
+ * The other direction is covered on the server, which keeps the raw list in `error` for a CLI
+ * released before `issues` — `argent link` can point one at a newer tool-server, and neither side
+ * announces a version.
  */
 function serverIssueList(err: unknown): ValidationIssue[] | null {
   const carried = (err as { issues?: unknown } | null)?.issues;

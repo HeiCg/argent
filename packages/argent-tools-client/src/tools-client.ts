@@ -206,8 +206,14 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
       issues?: unknown;
     };
     if (!res.ok) {
+      // A schema rejection sends both: `error` holds the raw issue JSON that a
+      // CLI released before `issues` existed parses, `message` the prose. Take
+      // the prose when the pair identifies that shape, so an agent reading this
+      // message is told which key it sent.
+      const validationProse =
+        Array.isArray(json.issues) && typeof json.message === "string" ? json.message : undefined;
       throw new ToolInvocationError(
-        json.error ?? json.message ?? `${res.status} ${res.statusText}`,
+        validationProse ?? json.error ?? json.message ?? `${res.status} ${res.statusText}`,
         {
           errorCode: json.error_code,
           errorKind: json.error_kind,

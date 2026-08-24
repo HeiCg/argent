@@ -153,6 +153,42 @@ describe("callTool progress streaming", () => {
     expect((err as ToolInvocationError).issues).toEqual(issues);
   });
 
+  it("reads the prose from `message`, leaving `error` to an older CLI", async () => {
+    // The 400 sends both: `error` holds the raw issue JSON a CLI released
+    // before `issues` parses, `message` the prose an agent is shown.
+    const issues = [{ code: "too_big", path: ["x"], message: "Too big: expected <=1" }];
+    await startServer((_req, res) => {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          error: JSON.stringify(issues),
+          message: "`x`: Too big: expected <=1. You sent: `x`.",
+          issues,
+        })
+      );
+    });
+
+    const { callTool } = createToolsClient();
+    const err = await callTool("streamy", {}).catch((e: unknown) => e);
+    expect((err as ToolInvocationError).message).toBe("`x`: Too big: expected <=1. You sent: `x`.");
+    expect((err as ToolInvocationError).issues).toEqual(issues);
+  });
+
+  it("keeps `error` as the message when the body carries no `issues`", async () => {
+    // Only the validation pair redirects to `message`; every other error body
+    // still reads `error`, which is the only field they send.
+    await startServer((_req, res) => {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: "boom", message: "something else entirely" }));
+    });
+
+    const { callTool } = createToolsClient();
+    const err = await callTool("streamy", {}).catch((e: unknown) => e);
+    expect((err as ToolInvocationError).message).toBe("boom");
+  });
+
   it("leaves `issues` undefined when the body carries none, or a non-list", async () => {
     await startServer((_req, res) => {
       res.statusCode = 400;

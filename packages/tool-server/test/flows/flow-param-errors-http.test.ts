@@ -77,9 +77,30 @@ describe("flow param errors over HTTP", () => {
     const res = await request(app).post("/tools/validated-thing").send({ countt: 5 });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain("`count` is required");
-    expect(res.body.error).toContain("You sent: `countt`");
-    expect(res.body.error).not.toContain('"code"');
+    expect(res.body.message).toContain("`count` is required");
+    expect(res.body.message).toContain("You sent: `countt`");
+    expect(res.body.message).not.toContain('"code"');
+  });
+
+  it("keeps `error` parseable for a CLI released before `issues`", async () => {
+    // Those CLIs read `error` and `JSON.parse` it. Prose there makes the parse
+    // throw, and the run then loses its flag attribution, help block and exit 2.
+    const registry = new Registry();
+    registry.registerTool({
+      id: "validated-thing",
+      zodSchema: z.object({ count: z.number() }),
+      services: () => ({}),
+      async execute() {
+        throw new Error("execute should have been skipped");
+      },
+    } as never);
+    const { app } = createHttpApp(registry);
+
+    const res = await request(app).post("/tools/validated-thing").send({ countt: 5 });
+
+    expect(res.status).toBe(400);
+    expect(() => JSON.parse(res.body.error)).not.toThrow();
+    expect(JSON.parse(res.body.error)).toMatchObject([{ code: "invalid_type", path: ["count"] }]);
   });
 
   it("carries the machine-readable issue list beside the prose", async () => {
@@ -123,9 +144,9 @@ describe("flow param errors over HTTP", () => {
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain("`platform`");
-    expect(res.body.error).toContain("You sent: `name`, `project_root`, `platform`.");
-    expect(res.body.error).not.toContain("`flow_file`");
+    expect(res.body.message).toContain("`platform`");
+    expect(res.body.message).toContain("You sent: `name`, `project_root`, `platform`.");
+    expect(res.body.message).not.toContain("`flow_file`");
   });
 
   it("still names a file-input the CALLER authored", async () => {
@@ -144,8 +165,8 @@ describe("flow param errors over HTTP", () => {
       });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain("`device`");
-    expect(res.body.error).toContain("`flow_path`");
+    expect(res.body.message).toContain("`device`");
+    expect(res.body.message).toContain("`flow_path`");
   });
 
   it("answers a NESTED tool's schema miss with 400, matching the direct call", async () => {

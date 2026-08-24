@@ -707,14 +707,24 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
             req.body,
             { invalid_params: deriveInvalidParams(parseResult.error, declared) }
           );
-          // `describeParamIssues`, not `parseResult.error.message`: the raw
-          // issue JSON never names the key the caller sent. Keys come from
+          // Three fields, because three kinds of caller read this.
+          //
+          // `message` is the prose: the raw issue JSON never names the key the
+          // caller SENT, so a misspelling is invisible in it. Keys come from
           // `omitKeys` because `resolveFileInputs` has run by here, and a
-          // derived `flow_file` would sit beside the misspelling the message
-          // exists to expose. `issues` carries the machine-readable form, which
-          // `argent run` needs to name the flag the user typed.
+          // derived `flow_file` would sit beside the misspelling the prose
+          // exists to expose.
+          //
+          // `issues` is the machine-readable form `argent run` reads to name
+          // the flag its user typed.
+          //
+          // `error` keeps the raw issue JSON. Every CLI released before
+          // `issues` existed reads this field and `JSON.parse`s it; prose here
+          // makes that parse throw, and the CLI then loses the flag
+          // attribution, the help block, exit 2, and `--json`'s object.
           res.status(400).json({
-            error: describeParamIssues(parseResult.error, omitKeys(bodyArgs, derivedTargets)),
+            error: parseResult.error.message,
+            message: describeParamIssues(parseResult.error, omitKeys(bodyArgs, derivedTargets)),
             issues: parseResult.error.issues,
           });
           return;
