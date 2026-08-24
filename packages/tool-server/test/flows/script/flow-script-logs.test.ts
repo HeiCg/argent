@@ -348,6 +348,9 @@ describe("flow script executor — order", () => {
 
   it("keeps that order for a self-overlapping value with the other stream between", async () => {
     const ws = workspace();
+    // The value spans the join between two chunks, so its replacement goes with
+    // the chunk that completed it — after what the other stream wrote in
+    // between. What must not happen is the rest of the buffer moving with it.
     const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
        const writes = [
          [process.stdout, "["],
@@ -366,7 +369,7 @@ describe("flow script executor — order", () => {
       secrets: [{ name: "S", value: "abcab" }],
     });
 
-    expect(result.log).toBe("[{{secret:S}}MID]");
+    expect(result.log).toBe("[MID{{secret:S}}]");
   });
 });
 
@@ -515,6 +518,31 @@ describe("flow script executor — redaction", () => {
     expect(result.ok).toBe(true);
     expect(result.log).toBe("calling {{secret:URL}}\n");
   });
+
+  it("replaces every occurrence of a value that starts with its own tail", async () => {
+    const ws = workspace();
+    // A periodic value occurs at every period, so the boundary between two
+    // chunks lands inside an occurrence *and* on the edge of the next. Holding
+    // back the longest tail that is a prefix of the value would reach back
+    // inside an occurrence already replaced, releasing the rest of one whole
+    // occurrence per chunk with nothing left to match it afterwards.
+    const value = "0123456789".repeat(4);
+    const script = ws.write(
+      "periodic.mjs",
+      `const block = ${JSON.stringify(value)}.repeat(128);
+       for (let i = 0; i < 40; i++) process.stdout.write(block);`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [{ name: "P", value }],
+    });
+
+    // The value is all digits and its marker has none, so a surviving digit is
+    // a surviving fragment of the value.
+    expect(result.log).not.toMatch(/[0-9]/);
+    expect(result.log).toContain("{{secret:P}}");
+  }, 30_000);
 
   it("keeps a secret that straddles the truncation cut out of the report", async () => {
     const ws = workspace();

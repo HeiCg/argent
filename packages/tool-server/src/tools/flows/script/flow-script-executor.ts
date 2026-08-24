@@ -21,7 +21,7 @@ import {
 } from "@argent/configuration-core";
 import { isElectronHostedEnv } from "../../../utils/electron-env";
 import { formatErrorForAgent } from "../../../utils/format-error";
-import { scrubSecretValues } from "../../../utils/secrets";
+import { scrubSecretChunk, scrubSecretValues } from "../../../utils/secrets";
 import { sleep } from "../../../utils/timing";
 import {
   isTerminalResponse,
@@ -1384,14 +1384,13 @@ class ScriptLogCapture {
     const pending = held + text;
     // Only a tail that could still grow into a secret is held back: a fixed
     // `longest value - 1` hold-back delays whole lines that could never match,
-    // and adding a secret to a flow must not reorder its log. Measured on the
-    // text as written and scrubbed only after the split, because one secret can
-    // sit inside another — a host inside a URL that is itself a secret — and
-    // scrubbing first would leave the chunk no longer ending in a prefix of it.
-    const split = final
-      ? pending.length
-      : Math.max(0, pending.length - partialSecretTail(pending, secrets));
-    const emit = scrubSecretValues(pending.slice(0, split), secrets);
+    // and adding a secret to a flow must not reorder its log. The scrub decides
+    // where that tail begins, because only it knows which of the values it
+    // replaced are settled — a value that starts with its own tail would
+    // otherwise have the hold-back reach back inside a replacement already made
+    // and release the rest of a whole occurrence.
+    const { emit, held: keep } = scrubSecretChunk(pending, secrets, final);
+    const split = pending.length - keep;
     state.holdback = pending.slice(split);
     // The released text, which is only *part* of what was held when a value
     // overlaps itself: `abca` held for `abcab` keeps `ab` once `b` arrives, so

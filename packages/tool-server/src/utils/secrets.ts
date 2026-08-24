@@ -109,12 +109,39 @@ export function scrubSecretValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>
 ): string {
+  return scrubSecretChunk(text, secrets, true).emit;
+}
+
+export interface ScrubbedChunk {
+  /** The scrubbed text, ready to release. */
+  emit: string;
+  /** Characters at the end of the input kept back, waiting for the next chunk. */
+  held: number;
+}
+
+/**
+ * {@link scrubSecretValues} over one chunk of a stream, holding back the tail a
+ * later chunk could still complete into a value. `final` releases everything,
+ * for the last chunk there is.
+ *
+ * The chunk ends at the first position where a value could still begin, which
+ * is what a caller with a truncation limit needs: releasing further would
+ * commit either half of a value split across the cut, or a shorter value where
+ * the longer one containing it had not arrived yet. It is also all that can be
+ * released — past that position no replacement is settled.
+ */
+export function scrubSecretChunk(
+  text: string,
+  secrets: ReadonlyArray<{ name: string; value: string }>,
+  final: boolean
+): ScrubbedChunk {
   const ordered = orderedSecrets(secrets);
-  if (ordered.length === 0) return text;
+  if (ordered.length === 0) return { emit: text, held: 0 };
+  const longestValue = ordered[0].value.length;
+  const names = new Set(ordered.map((secret) => secret.name));
   let out = "";
   let copied = 0;
   let at = 0;
-  const names = new Set(ordered.map((secret) => secret.name));
   while (at < text.length) {
     // A marker one pass wrote is not text the next may look inside: a value
     // that occurs in some *name* would otherwise be replaced there, nesting one
@@ -128,15 +155,31 @@ export function scrubSecretValues(
     // that is itself a secret — and taking the shorter one would leave the rest
     // of the longer one in the text.
     const hit = ordered.find((secret) => text.startsWith(secret.value, at));
-    if (!hit) {
-      at += 1;
+    if (hit) {
+      out += `${text.slice(copied, at)}${SECRET_PLACEHOLDER_MARKER}${hit.name}}}`;
+      at += hit.value.length;
+      copied = at;
       continue;
     }
-    out += `${text.slice(copied, at)}${SECRET_PLACEHOLDER_MARKER}${hit.name}}}`;
-    at += hit.value.length;
-    copied = at;
+    // Only a value longer than what is left can still begin here, which bounds
+    // both this test and the hold-back it produces.
+    if (!final && text.length - at < longestValue && beginsAValue(text, at, ordered)) break;
+    at += 1;
   }
-  return copied === 0 ? text : out + text.slice(copied);
+  return {
+    emit: copied === 0 ? text.slice(0, at) : out + text.slice(copied, at),
+    held: text.length - at,
+  };
+}
+
+/** Whether the rest of `text` is a proper prefix of some value — a match still to come. */
+function beginsAValue(
+  text: string,
+  at: number,
+  ordered: ReadonlyArray<{ value: string }>
+): boolean {
+  const rest = text.slice(at);
+  return ordered.some(({ value }) => value.length > rest.length && value.startsWith(rest));
 }
 
 /** Values worth replacing, longest first, ties in the order they were given. */
