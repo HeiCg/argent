@@ -54,7 +54,7 @@ Use when you need to verify connectivity before using other debugger tools. Neve
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,
     // Resolved manually in execute so a not-connected precondition becomes a
-    // structured result instead of a service-resolution tool failure.
+    // structured result instead of a tool failure.
     services: () => ({}),
     async execute(_services, params, ctx) {
       try {
@@ -62,13 +62,13 @@ Use when you need to verify connectivity before using other debugger tools. Neve
         await api.sourceMaps.waitForPending();
         if (!api.cdp.isConnected()) {
           // Socket-state gate: never report status:"connected" over a socket
-          // that is no longer OPEN. (An OPEN socket with a hung runtime still
-          // reports connected — see the skill's REQUEST_TIMEOUT guidance.)
+          // that is not OPEN. An OPEN socket with a hung runtime still reports
+          // connected — that case surfaces as DEBUGGER_CDP_REQUEST_TIMEOUT.
           const isChromium = params.device_id?.startsWith(CHROMIUM_ID_PREFIX) ?? false;
           if (isChromium) {
-            // The cdp belongs to the ChromiumCdp dependency (a wrapper dispose
-            // cannot heal it), and the only window where it is not OPEN while
-            // this service is RUNNING is a tab-switch reconnect — transient.
+            // The cdp belongs to the ChromiumCdp dependency, so a wrapper
+            // dispose cannot heal it; the only non-OPEN window while this
+            // service is RUNNING is a transient tab-switch reconnect.
             const result = buildNotConnected(
               "reconnecting",
               new Error("CDP socket is reconnecting (tab switch in progress)"),
@@ -90,7 +90,7 @@ Use when you need to verify connectivity before using other debugger tools. Neve
           //
           // Track BEFORE disposing: dispose forgets the device alias, and the
           // outcome's platform classifies through it — tracking after would
-          // misreport a forwarded logicalDeviceId's platform (shape fallback).
+          // misreport a forwarded logicalDeviceId's platform.
           trackDebuggerOutcome("debugger-status", "stale_connection", params, ctx);
           const ref = debuggerServiceRef(params);
           await registry.disposeService(typeof ref === "string" ? ref : ref.urn).catch(() => {});
