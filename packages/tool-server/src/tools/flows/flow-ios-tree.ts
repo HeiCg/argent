@@ -22,25 +22,18 @@ import {
 } from "../describe/contract";
 
 /**
- * Flow-owned iOS tree source (see `flow-tree.ts` for the per-platform dispatch).
+ * Flow-owned iOS tree source (per-platform dispatch: `flow-tree.ts`).
  *
- * On iOS, flows resolve selectors against the native UIView hierarchy
- * (`ViewHierarchy.getFullHierarchy`) rather than the AX tree the agent-facing
- * `describe` uses. Unlike the AX tree and `describeScreen` — both of which walk
- * the *accessibility* tree and collapse an `accessible` container into a single
- * leaf (VoiceOver semantics) — the full hierarchy walks the raw UIView tree and
- * carries every view's `accessibilityIdentifier` (React Native `testID`). That
- * lets a flow address a container by its testID *and* its children
- * independently, with no `accessible` prop required.
- *
- * This lives under flows/ (not the describe layer) on purpose: it's a flow-only
- * concern, and the describe path is untouched. When native-devtools is
- * unavailable — or the target returns no windows — it throws rather than
- * degrade to the AX tree; see `fetchFlowTree` for why a silent fallback would
- * flip flow outcomes.
+ * Flows resolve selectors against the raw UIView hierarchy
+ * (`ViewHierarchy.getFullHierarchy`), not the accessibility tree `describe` and
+ * `describeScreen` walk: those collapse an `accessible` container into a single
+ * leaf (VoiceOver semantics), while every view here carries its
+ * `accessibilityIdentifier` (React Native `testID`), so a flow can address a
+ * container and its children independently. When native-devtools is unavailable
+ * — or the target returns no windows — this throws rather than degrade to the
+ * AX tree; see `fetchFlowTree` for why a silent fallback would flip flow
+ * outcomes.
  */
-
-// ── getFullHierarchy → DescribeNode adapter ──────────────────────────────────
 
 interface RawRect {
   x: number;
@@ -109,9 +102,9 @@ function asViewNode(v: unknown): RawViewNode | null {
   };
 }
 
-// Best-effort role from the UIView class name (the full hierarchy carries no
-// accessibility traits). Selectors lean on text/identifier, so a coarse mapping
-// is enough; unknowns fall back to a generic group.
+// Role guessed from the UIView class name — the full hierarchy carries no
+// accessibility traits. Selectors lean on text/identifier, so a coarse mapping
+// is enough.
 function roleFromClassName(cn: string | undefined): string {
   if (!cn) return "AXGroup";
   if (/Button/i.test(cn)) return "AXButton";
@@ -142,30 +135,23 @@ function normalizeFrame(rect: RawRect, screenW: number, screenH: number): Descri
 
 /**
  * Project a UIView node for the shared flatten (see `flow-tree-flatten`). A view
- * is emitted as a leaf when it carries an `identifier` (React Native `testID`),
- * a `label`, or a specific semantic role — or is the first responder, which the
- * type directive's focus wait reads — and has an on-screen frame;
- * hidden/transparent subtrees are skipped; an identified node shields its text
- * so hoisting scopes to the nearest identified ancestor. Its own text is just
- * its label.
+ * becomes a leaf when it carries an `identifier` (React Native `testID`), a
+ * `label`, or a specific semantic role — or is the first responder, which the
+ * type directive's focus wait reads — and has an on-screen frame. An identified
+ * node shields its text, scoping hoisting to the nearest identified ancestor.
  */
 function projectIosNode(
   node: RawViewNode,
   screenW: number,
   screenH: number
 ): FlatNode<RawViewNode> {
-  // Skip an invisible subtree entirely — its descendants are off-screen too.
   const skip = node.hidden === true || (node.alpha !== undefined && node.alpha < 0.01);
   const role = roleFromClassName(node.className);
 
-  // Scroll-clip inputs (see `flattenHoisting`): a UIScrollView's window frame
-  // clips its subtree, so a row it has scrolled out of its viewport — still
-  // inside the device screen — is dropped, matching the AX describe path,
-  // which never reports scroll-clipped elements. Window-space only: `frame`
-  // is parent-local, so falling back to it (as the leaf frame may) would
-  // compare rects across coordinate spaces and mis-prune; without a
-  // `windowFrame` the node is simply never scroll-pruned and, if a scroller,
-  // imposes no clip.
+  // Scroll-clip inputs (see `flattenHoisting`). Window space only: `frame` is
+  // parent-local, so falling back to it (as the leaf frame does) would compare
+  // rects across coordinate spaces and mis-prune; without a `windowFrame` the
+  // node is never scroll-pruned and, if a scroller, imposes no clip.
   const win = node.windowFrame;
   const rect = win ? { x: win.x, y: win.y, w: win.width, h: win.height } : null;
 
@@ -191,7 +177,7 @@ function projectIosNode(
     children: node.children ?? [],
     // Text hoists only from on-screen nodes (frame is null when the view is
     // scrolled off or zero-area) — otherwise a text assert against an ancestor
-    // would pass on content the screen doesn't show. Every labelled node is
+    // would pass on content the screen doesn't show. A label makes a node
     // leaf-eligible, so `frame` was computed for any node with text.
     ownText: frame ? (node.label ?? "") : "",
     leaf,
@@ -204,10 +190,9 @@ function projectIosNode(
 /**
  * Flatten a `getFullHierarchy` payload into the flat-leaves-under-one-root shape
  * the other describe adapters emit, keeping only views with an `identifier`,
- * `label`, or specific semantic role and an on-screen frame. Pure layout
- * containers are dropped, which keeps the tree comparable in size to the
- * accessibility tree while preserving the children an `accessible` ancestor
- * would otherwise have hidden.
+ * `label`, or specific semantic role and an on-screen frame. Dropping the pure
+ * layout containers keeps the tree comparable in size to the accessibility tree
+ * while preserving children an `accessible` ancestor would have hidden.
  */
 export function adaptFullHierarchyToDescribeResult(raw: unknown): DescribeNode {
   return adaptFullHierarchy(raw).tree;
@@ -215,8 +200,8 @@ export function adaptFullHierarchyToDescribeResult(raw: unknown): DescribeNode {
 
 /**
  * Like {@link adaptFullHierarchyToDescribeResult}, but also reports the screen
- * size (points) the frames were normalized against — the rotate directive's
- * physical-circle geometry needs the aspect ratio.
+ * size (points) the frames were normalized against — the rotate directive needs
+ * the aspect ratio for its physical-circle geometry.
  */
 export function adaptFullHierarchy(raw: unknown): {
   tree: DescribeNode;
@@ -229,8 +214,8 @@ export function adaptFullHierarchy(raw: unknown): {
           .filter((n): n is RawViewNode => n !== null)
       : [];
 
-  // The screen size is the largest window frame — the key window spans the
-  // screen, so its width/height are the normalization denominators.
+  // Screen size is the largest window frame: the key window spans the screen,
+  // so its width/height are the normalization denominators.
   let screenW = 0;
   let screenH = 0;
   for (const win of windows) {
@@ -258,8 +243,6 @@ export function adaptFullHierarchy(raw: unknown): {
     : { tree };
 }
 
-// ── Fetch ────────────────────────────────────────────────────────────────────
-
 /** Fields requested from getFullHierarchy — the minimum to flatten + match. */
 const FULL_HIERARCHY_FIELDS = [
   "className",
@@ -269,8 +252,8 @@ const FULL_HIERARCHY_FIELDS = [
   "windowFrame",
   "hidden",
   "alpha",
-  // The type directive's focus wait; an older injected framework ignores the
-  // request, which just leaves the wait's poll unconfirmed.
+  // Read by the type directive's focus wait; an injected framework that omits
+  // it just leaves that wait's poll unconfirmed.
   "firstResponder",
 ];
 
@@ -308,16 +291,13 @@ const FLOW_TREE_MAX_DEPTH = 100;
  * nothing at all is connected.
  *
  * An app the dylib cannot be relied on to load into is terminal for a selector,
- * yet every measured state offers a relaunch or a tool-server restart: the
- * launchd env carrying the bootstrap dylib is simulator-wide, so such a process
- * inherits the injection tokens the measurement reads and can score as merely
- * `unregistered`. Selector resolution is where that impossibility bites — the
- * launch gate lets these apps through so a coordinate-driven flow still runs —
- * so it is said here, with the remedy that exists at flow level.
- *
- * Everything else is measured off the running process; a rejection degrades as
- * it does for the other consumers, since the call re-applies the launchd env
- * before measuring and so rejects on a sim that went away mid-run.
+ * yet the state measurement cannot see that: the launchd env carrying the
+ * bootstrap dylib is simulator-wide, so such a process inherits the injection
+ * tokens the measurement reads and can score as merely `unregistered`. The
+ * launch gate lets these apps through so a coordinate-driven flow still runs, so
+ * selector resolution is where the impossibility bites and where the flow-level
+ * remedy is named. Everything else is measured off the running process, whose
+ * rejection degrades to `indeterminate`.
  */
 async function unreadableHierarchyReason(
   nativeApi: NativeDevtoolsApi,
@@ -334,19 +314,17 @@ async function unreadableHierarchyReason(
   }
   const state = await nativeApi.appConnectionState(bundleId).catch(() => "indeterminate" as const);
   if (state === "connected") {
-    // Reachable: `appConnectionState` re-reads the live connections map after
-    // its env re-apply and process probe, several simctl round-trips after the
-    // empty list that sent us here. So the connection arrived mid-read, and the
-    // only thing wrong with this attempt is that it was taken too early.
+    // `appConnectionState` re-reads the live connections map after its env
+    // re-apply and process probe, several simctl round-trips after the empty
+    // list that sent us here: the connection arrived mid-read.
     return (
       `native devtools reported no connected app while this tree was being read, but ${bundleId} is ` +
       `connected now — the connection arrived mid-read. Retry: flows resolve selectors against the ` +
       `full view hierarchy native devtools serve.`
     );
   }
-  // The diagnosis already names the corrective action — for `unregistered` a
-  // tool-server restart, where telling a flow author to relaunch would loop.
-  // The trailing sentence says why a tree read needed one at all.
+  // `buildAppStateMessage` already names the corrective action; the trailing
+  // sentence says why a tree read needed one at all.
   return `${buildAppStateMessage(bundleId, state)} Flows resolve selectors against the full view hierarchy native devtools serve.`;
 }
 
@@ -361,8 +339,8 @@ async function unreadableHierarchyReason(
  * `launchedNativeApp` is the app this run's `launch:` step started, when it had
  * one. It serves the two reads auto-targeting cannot, both following from it
  * resolving only out of the connected list: with that list empty it names the
- * app whose disconnection needs explaining, and when auto-resolution's own probe
- * times out mid-stall it arbitrates the target.
+ * app whose disconnection needs explaining, and it arbitrates the target when
+ * auto-resolution's own probe times out.
  */
 export async function queryFullHierarchyTree(
   registry: Registry,
@@ -386,7 +364,7 @@ export async function queryFullHierarchyTree(
   // exists to break. The flow's launched id does not come from that map, so it
   // survives the disconnection auto-targeting could not describe.
   //
-  // Tested directly rather than by catching the throw: its failure code travels
+  // Tested directly rather than by catching the throw: the failure code travels
   // on a module-local symbol, so a duplicate `@argent/registry` instance would
   // read it as absent and silently fall back to the stock message.
   if (launchedNativeApp !== undefined && nativeApi.listConnectedBundleIds().length === 0) {

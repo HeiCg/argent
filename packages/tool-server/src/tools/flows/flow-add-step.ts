@@ -12,6 +12,7 @@ import {
   requireRecordingSession,
   appendStepToFlow,
   assertSessionStillLive,
+  dropMovedWarnings,
   withRecordingLock,
   appIdForPlatform,
   parseFlow,
@@ -84,21 +85,20 @@ const zodSchema = z.object({
     .describe("Milliseconds to sleep before executing this step during replay."),
 });
 
-// The full-hierarchy source replay gates on per platform (`treeSourceGate` in
-// flow-run.ts). A capture from the fallback source was derived against a tree
-// the replay will refuse to degrade to, so the selector deserves a caveat even
-// when it derives cleanly. Chromium/Vega have a single source — no caveat.
+// Replay gates on the platform's full-hierarchy source (`treeSourceGate` in
+// flow-run.ts) and refuses to degrade to the fallback tree, so a selector
+// derived from the fallback deserves a caveat even when it derives cleanly.
+// Chromium/Vega have a single source — no caveat.
 const REPLAY_TREE_SOURCES: Record<string, DescribeSource> = {
   ios: "native-devtools",
   android: "android-devtools",
 };
 
 /**
- * The app this recording last started, from the `launch` step the recorder
- * captured for it — the session's stand-in for the runner's
- * {@link ActionEnv.launchedNativeApp}. Last rather than first: a recording that
- * relaunches mid-way is about the newer app from that point on, exactly as a
- * nested `launch:` retargets a run.
+ * The app this recording last started, from the recorder's `launch` steps — the
+ * session's stand-in for the runner's {@link ActionEnv.launchedNativeApp}. Last
+ * rather than first: a mid-recording relaunch retargets what follows, exactly as
+ * a nested `launch:` retargets a run.
  */
 function recordedLaunchedApp(session: RecordingSession, platform: string): string | undefined {
   for (let i = session.flow.steps.length - 1; i >= 0; i--) {
@@ -114,16 +114,15 @@ function fallbackSourceWarning(source: DescribeSource, platform: string): string
   return `selector captured from the fallback ${source} tree (${expected} unavailable) — replay resolves against the full hierarchy, which may not match it`;
 }
 
-// `resolveDevice` classifies by shape and cannot throw, so no guard is needed.
+// `resolveDevice` classifies the id by shape and never throws, so no guard.
 function platformOf(udid: unknown): string | undefined {
   return typeof udid === "string" ? resolveDevice(udid).platform : undefined;
 }
 
 /**
- * Floor under both clause tables below. Nothing reaches it: they are consulted
- * only for a DETERMINATE verdict, which needs `fetchFlowTree` to have answered
- * — and it answers on exactly ios / android / chromium / vega, each of which
- * has its own arm.
+ * Fallback for a platform the clauses below do not name. Unreachable today: a
+ * determinate verdict needs `fetchFlowTree`, which answers only on ios,
+ * android, chromium and vega.
  */
 const UNSUPPORTED_PLATFORM = {
   divergence: "The recorder and the runner read different projections of the screen.",
@@ -131,15 +130,9 @@ const UNSUPPORTED_PLATFORM = {
 } as const;
 
 /**
- * The remedy half of the iOS/Android clause, which is not the same advice for
- * every condition.
- *
- * On `visible`/`exists`/`text` a determinate verdict means the runner's tree
- * does NOT have what the check wanted, so "retarget at an id the full hierarchy
- * carries" is right. On `hidden` it means the opposite: the verdict fires
- * because that tree still HAS the element, so the same advice makes the
- * directive match MORE surely. {@link awaitStillNeeds} draws the same
- * distinction one clause earlier.
+ * The remedy half of the iOS/Android clause. The advice inverts on `hidden`:
+ * there the verdict means the runner's tree still HAS the element, so a more
+ * reliable selector only makes the directive match more surely.
  */
 function retargetRemedy(idKind: string, condition: WaitCondition): string {
   if (condition === "hidden") {
@@ -157,15 +150,10 @@ function retargetRemedy(idKind: string, condition: WaitCondition): string {
 }
 
 /**
- * How to read the tree the RUNNER resolves against — or, on iOS, Android and
- * Chromium, that no read-only tool does. Each arm says why its near miss is not
- * that tree, since naming one under the banner of the runner's is the exact
- * steer this warning exists to prevent.
- *
- * On iOS and Android the remedy is to fix the CONVERSION, never to re-record:
- * the create-flow workflow this divergence comes out of gates on visible text
- * precisely because the trimmed tree hides the id, so sending the author back
- * to the recorder asks for a step the skill just said cannot be recorded.
+ * How to read the tree the runner resolves against — or, on iOS, Android and
+ * Chromium, that no read-only tool reports it. `describe` and the native
+ * readers each show a different projection, so naming one of them would point
+ * the author at the wrong tree.
  *
  * On iOS the near miss is also SHALLOWER: `native-full-hierarchy` defaults to
  * `maxDepth: 8` where the runner's read asks for 100, so absent from it does
@@ -192,17 +180,11 @@ function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
     );
   }
   if (platform === "chromium") {
-    // No remedy here may assume the runner dropped the element: `describe` can
-    // show a node the runner keeps under another name (a password field) and
-    // omit one it has (past its 5000-node walk). Running the conversion settles it.
     const settle =
       "No read-only tool exposes the runner's trimmed tree on Chromium — `describe` re-reads the " +
       "same DOM on a shorter walk, so it both lists nodes the runner drops and omits nodes the " +
       "runner keeps — so settle it by running the conversion: put the directive in a flow and " +
       "`flow-execute` it. ";
-    // Both chromium tips make the directive match MORE surely, which is right
-    // only while the check wants the element THERE — the distinction the
-    // iOS/Android arms draw in {@link retargetRemedy}.
     if (condition === "hidden") {
       return (
         settle +
@@ -216,7 +198,7 @@ function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
     }
     return (
       settle +
-      // Not "a zero-height frame": `normRect` clamps each edge on its own, so a
+      // Name both axes: `normRect` clamps each edge on its own, so a
       // horizontally scrolled node comes back zero-WIDTH at a normal height.
       "A zero-area frame in `describe` means off-viewport — zero height for a node above or " +
       "below the viewport, zero width for one left or right of it, since the walker clamps " +
@@ -235,22 +217,17 @@ function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
 }
 
 /**
- * The cause no tree story can rule out: the probe reads the device a moment
- * after the live wait returned, so a screen that moved on in between gives this
- * same verdict with both trees in perfect agreement. Vega has no other cause;
- * the rest must still admit it, or an author whose toast merely expired
- * rewrites a selector that was never wrong.
+ * The cause no tree story can rule out. The probe reads the device just after
+ * the live wait, so a screen that moved on gives this same verdict with both
+ * trees in agreement. On Vega it is the only cause.
  */
 const SCREEN_MAY_HAVE_MOVED =
   " A screen that changed between the live wait and this re-probe reads the same way, so rule " +
   "that out first.";
 
 /**
- * WHY the recorder's tree and the runner's tree can disagree — a different
- * story per platform. Each names what the two projections do differently
- * WITHOUT asserting which side lost the element: on Chromium both directions
- * are reachable, and a message that always blames the runner sends the author
- * to fix the wrong end.
+ * WHY the two trees can disagree. The story differs per platform, and it must
+ * not name the side that lost the element: on Chromium either side can.
  */
 function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
   const platform = platformOf(udid);
@@ -262,18 +239,9 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
     );
   }
   if (platform === "chromium") {
-    // Both halves of `projectChromiumNode`'s test: it keeps a node only when it
-    // is `onScreen && addressable`. Naming addressability alone reads as a
-    // verdict on the SELECTOR, so an author whose element is merely below the
-    // fold goes hunting for an id it already has.
-    //
-    // The runner is also not always the side that lost the element. A password
-    // field reaches it redacted to `[password]` — an `id` selector resolves it,
-    // no text selector can — and past 5000 nodes it is the RECORDER's walk that
-    // is short, where the flow tree's goes to 12000. Both are reachable, never
-    // at once, and the CONDITION decides which: this probe runs only after the
-    // live wait PASSED, so `visible`/`exists`/`text` rules out the recorder's
-    // walk limit and `hidden` rules out the flow tree's drops.
+    // `projectChromiumNode` keeps a node only when it is `onScreen &&
+    // addressable`. The condition says which side lost the element, because the
+    // probe runs only after the live wait passed.
     if (condition === "hidden") {
       return (
         "Both read the same DOM but project it differently, and here it is the RECORDER that " +
@@ -294,10 +262,8 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
     );
   }
   if (platform === "android") {
-    // Not "the runner reads a different dump": both sides call the same
-    // `devtools.getHierarchy()` RPC. Only the host-side parser and node cap
-    // differ, and an author told the two READ different things looks for a
-    // second source that does not exist.
+    // Both sides call the same `getHierarchy` RPC. An author told the two READ
+    // different things looks for a second source that does not exist.
     return (
       "Both read the same `getHierarchy` dump from the android-devtools helper; this host then " +
       "parses it two ways. `describe`'s interactables trim collapses a `testID`-only container " +
@@ -309,12 +275,9 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
     );
   }
   if (platform === "vega") {
-    // Vega is the one platform whose two trees cannot disagree on an unchanged
-    // screen: `projectVegaNode` drops nothing, so membership, frames and
-    // visibility are identical, and its hoisted `subtreeText` can only make a
-    // `text` check MORE likely to hold. On `text` the two sides can still elect
-    // different elements from identical nodes ({@link textTieClause}), so that
-    // condition names both causes rather than the screen alone.
+    // `projectVegaNode` skips nothing, so the two trees cannot disagree on an
+    // unchanged screen. On `text` they can still elect different elements,
+    // because they walk the nodes in opposite order — see {@link textTieClause}.
     const cause =
       condition === "text"
         ? "disagreement means either the SCREEN changed between the live wait and this re-probe " +
@@ -331,36 +294,25 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
 }
 
 /**
- * What an `await:` would still be waiting FOR — a different event per
- * condition. "the element reaches that tree" is right for `visible`/`exists`
- * and backwards for `hidden`, where the wait passes when the element LEAVES.
+ * What an `await:` would still wait FOR. The wording inverts on `hidden`: there
+ * the wait passes when the element LEAVES.
  */
 function awaitStillNeeds(condition: WaitCondition): string {
   if (condition === "hidden") return "the element LEAVES that tree";
-  // Not "that element's": on `text` the two sides can judge different elements
-  // ({@link textTieClause}), the one cause a longer timeout cannot fix.
+  // Not "that element": on `text` the two sides can elect different elements.
   if (condition === "text") return "the element THAT tree elects comes to match on it";
   return "the element reaches that tree";
 }
 
 /**
- * The cause neither tree story explains, on the one condition that can have it:
- * the selector matched several elements and the two sides elected different
- * ones. `exists`/`visible`/`hidden` quantify over every match, so match order
- * cannot change their answer; `text` reads exactly one — `firstInReadingOrder`
- * over the visible matches — and that helper breaks an EXACT (y, x) tie by
- * encounter order.
+ * The cause no tree story explains, and the one only `text` can have: the
+ * selector matched several elements and the two sides elected different ones.
  *
- * Why the orders differ is per platform. On Android, Chromium and Vega the
- * recorder collects a nested tree pre-order and the runner emits it post-order,
- * so a container and a text child sharing a frame — routine in React Native —
- * elect differently. iOS has no container to list (both sides are flat), but
- * the two lists come from different sources, so the tie is still reachable.
+ * `exists`/`visible`/`hidden` quantify over every match, so the order the
+ * matches arrive in cannot change their answer. `text` reads one — the first
+ * visible match in reading order — and an exact frame tie goes to whichever
+ * node its own tree listed first.
  *
- * The verdict is right and every other explanation is wrong for it: both trees
- * hold both nodes, nothing moved, and the text the runner read is already
- * final. The one remedy that works — narrow the selector until it resolves a
- * single node — is the one the rest of the message never suggests.
  */
 function textTieClause(udid: unknown): string {
   const order =
@@ -381,15 +333,8 @@ function textTieClause(udid: unknown): string {
   );
 }
 
-/**
- * Which SPELLING of the conversion the verdict is about. The probe re-evaluates
- * `args.selector` exactly as the step carries it — a strict selector. The bare
- * string spelling (`await: { visible: Continue }`) parses as a LOOSE selector,
- * which the runner resolves identifier-first and only falls back to text, so on
- * a screen where some node's id equals the recorded text the two spellings
- * resolve DIFFERENT elements. Say which one was judged rather than predict
- * both. This is the doctrine the recorder already applies to a captured `tap:`.
- */
+// The probe judges `args.selector` as a STRICT selector, so the warning has to
+// name that spelling: a bare string parses as a loose selector instead.
 const SPELLING_CLAUSE =
   "Both of those are about the selector exactly as recorded, so convert it in the strict map " +
   "spelling (`{ text: … }` / `{ id: … }`, a straight copy of the step's `selector:`): a " +
@@ -397,23 +342,15 @@ const SPELLING_CLAUSE =
   "identifier first, text only as a fallback — which is a different check this probe never made.";
 
 /**
- * `await-ui-element` reports an unmet condition with `{ success: false }`
- * rather than a throw, so the recorder's success path records the step anyway.
- * The recorder cannot stop anything (the tool already ran), but it must not
- * narrate the step as fine: at replay this is a step FAILURE that ends the run.
- *
- * The cross-tree probe is skipped here, and says so. That probe asks whether a
- * check that PASSED survives conversion to `await:`/`assert:`; this one did not
- * pass, so its divergence remedy would blame a tree mismatch for an element
- * that is on neither tree.
+ * `await-ui-element` reports an unmet condition by returning
+ * `{ success: false }` rather than throwing, so the recorder writes the step
+ * anyway. At replay the same step FAILS and stops the run, so the message must
+ * not read as fine.
  */
 const UNMET_WAIT_WARNING =
   "recorded, but the wait itself never held — `await-ui-element` reports an unmet condition by " +
   "returning success:false instead of failing, so the step was written to the flow anyway. At " +
   "replay an unmet wait FAILS the step and stops the run there, so re-record it once the " +
-  // Delete AFTER the finish: against a remote client the in-memory copy is
-  // authoritative and the next append writes the step straight back, and a
-  // host-mode edit renumbers the steps the finish's verdicts are anchored to.
   "condition can actually hold, and delete the failed step after `flow-finish-recording` rather " +
   "than mid-recording: against a remote client the in-memory copy is authoritative and the next " +
   "append writes the step straight back, and in host mode the recorder re-reads the file before " +
@@ -423,14 +360,10 @@ const UNMET_WAIT_WARNING =
   "and this one did not pass";
 
 /**
- * The same `success: false` as {@link UNMET_WAIT_WARNING}, reached without a
- * trustworthy read to judge the condition on; {@link unmetUiWaitCause} tells
- * those causes apart from a genuine miss.
- *
- * Neither may reuse the unmet text, which asserts the wait never held and
- * prescribes re-recording. Nor may this one overclaim the other way: "nothing
- * was ever compared" is false of a window that only went dark at the end, and
- * the note carries a tree-source error only where a fetch actually threw.
+ * The same `success: false`, reached without a trustworthy read of the tree —
+ * see {@link unmetUiWaitCause}. It must not reuse the unmet text, which asserts
+ * that the wait never held: nothing judged the condition here, so the step may
+ * be perfectly good.
  */
 const UNREADABLE_WAIT_WARNING =
   "recorded, but this wait reached its deadline without a trustworthy read of the UI tree, so " +
@@ -455,14 +388,9 @@ function unmetWaitWarningFor(cause: UnmetUiWaitCause): string {
   return UNMET_WAIT_WARNING;
 }
 
-/**
- * The indeterminate reason is quoted VERBATIM, and on iOS what it quotes was
- * written for a different caller: `queryFullHierarchyTree` auto-targets, so
- * with no injected app it throws the shared native-target error, whose recovery
- * ends "provide bundleId explicitly". `await-ui-element` does take one, which
- * makes that look actionable — so correct the quoted advice rather than honour
- * it, in the text below.
- */
+// The indeterminate reason is quoted verbatim, and on iOS it can end "provide
+// bundleId explicitly" — advice written for the native tools. Correct it rather
+// than honour it.
 function indeterminateReasonCaveat(udid: unknown): string {
   if (platformOf(udid) !== "ios") return "";
   return (
@@ -477,15 +405,9 @@ function indeterminateReasonCaveat(udid: unknown): string {
 }
 
 /**
- * A cancelled re-probe is reported, never thrown. The probe runs AFTER the wait
- * ran on the device, so a throw would discard the record of a step that already
- * happened — the doctrine {@link captureRunTarget} states for the same
- * position. It was also out of band: `AbortError` is special-cased nowhere, so
- * the caller saw REGISTRY_TOOL_EXECUTION_FAILED with `error_kind: "unknown"`,
- * where every other cancellation in the server reports in band.
- *
- * A cancelled probe compared nothing, so like an unreadable runner tree it is
- * UNKNOWN, never known-bad.
+ * A cancelled re-probe is reported, never thrown. A throw would discard the
+ * record of a step that already ran on the device, and it would arrive out of
+ * band: every other cancellation in the server is reported in the result.
  */
 const CANCELLED_PROBE_WARNING =
   "recorded, but the re-probe against the tree the RUNNER reads was cancelled before it " +
@@ -495,62 +417,65 @@ const CANCELLED_PROBE_WARNING =
 
 /**
  * Hard ceiling on the whole re-probe. `probeWhenCondition` polls on the assert
- * grace window, but that bounds only the LOOP: each `fetchFlowTree` inside it
- * is awaited with no time bound, and one more read fires back-to-back after the
- * deadline. A single read can take 10s on Chromium CDP and up to
- * `LONG_RPC_TIMEOUT_MS` on Android, so the nominal 1s window really ceilings at
- * whatever the slowest source takes.
+ * grace window, but that bounds the LOOP only: each tree read inside it is
+ * awaited with no time bound, and one read can take seconds. The recorder is
+ * interactive, so bound it here rather than in the shared loop.
  *
- * The live `await-ui-element` races every fetch through `settleWithin`; the
- * flow runner's copy of the loop does not, and its callers run unattended where
- * an overrun costs only time. The recorder is interactive and this probe is a
- * courtesy check on a step that ALREADY ran, so bound it here rather than
- * change the shared loop. An overrun reports as indeterminate — unknown, never
- * known-bad.
- *
- * Budget the grace plus BOTH reads. A determinate "does NOT hold" costs two
- * full reads (the loop checks its deadline only after a completed read, then
- * fires `finalPoll`) where the clean case returns from the first, so anything
- * less gives the branch that carries the warning half the tolerance of the one
- * that does not. Android flow-tree reads measure 3.4-7.4s on a loaded host, so
- * no ceiling short of the RPC timeout makes a slow read impossible; the point
- * is to stop an ORDINARY slow read from costing the verdict.
+ * Sized for the expensive branch. A determinate "does NOT hold" costs two full
+ * reads, because the loop fires one more after its deadline; the clean case
+ * returns from the first read that satisfies the condition. An overrun is
+ * reported as indeterminate — unknown, never known-bad.
  */
 const PROBE_MAX_TREE_READ_MS = 2500;
 const PROBE_ASSERT_GRACE_MS = 1000; // DEFAULT_ASSERT_TIMEOUT_MS, the loop's own window
 const PROBE_BUDGET_MS = PROBE_ASSERT_GRACE_MS + 2 * PROBE_MAX_TREE_READ_MS;
 
 /**
- * Length cap on the probe's own reason, applied ONLY to a determinate verdict.
- * `assertReason`'s `text` arm quotes the matched element's rendered content,
- * and on the flow tree that content is HOISTED — a container's text is every
- * descendant's — so one failed `text` check can carry a whole card, list
- * section or log pane. The reason must name enough to be actionable, not
- * reproduce the screen.
+ * Length cap on a DETERMINATE reason before it is quoted back. That reason
+ * quotes the matched element's text, and the flow tree hoists text from every
+ * descendant, so one failed `text` check can carry a whole card. The card is
+ * what this bounds; everything the author needs to judge the step is kept.
  *
- * An INDETERMINATE reason is quoted whole: it is an environment error, carries
- * no screen content, and its TAIL is routinely the recovery instruction.
+ * An indeterminate reason is quoted whole: it is an environment error, it
+ * carries no screen content, and its tail is the recovery instruction.
  */
-const MAX_PROBE_REASON_CHARS = 200;
+const MAX_PROBE_REASON_CHARS = 1250;
 
 /**
- * How much of the kept budget goes to the END of an over-long reason.
- * `waitForCondition` closes a determinate reason with the note that its final
- * poll went dark, which qualifies the verdict the whole warning is built on —
- * so elide the MIDDLE rather than drop the tail.
+ * How much of the cap goes to the END, where every part that DIAGNOSES the miss
+ * sits: `waitForCondition` closes a determinate reason with the note that its
+ * final poll went dark, `assertReason` closes with the codepoint note, and the
+ * compatibility note is appended after both. So elide the middle rather than
+ * the tail.
+ *
+ * Sized to hold the largest of those whole. The codepoint note is the widest at
+ * 1,065 characters — two 48-code-point dumps of astral characters plus the
+ * rendering-affecting lead — and at the old 60 the cut landed ON it: the lead
+ * stopped at "differ only in i", and the tail was a headless fragment of one
+ * dump, sliced through a `U+0` prefix so `U+0076` printed as `076`. On the one
+ * surface that asks the author whether a recorded wait converts, the only
+ * sentence that answers the question was the part that was dropped.
  */
-const PROBE_REASON_TAIL_CHARS = 60;
+const PROBE_REASON_TAIL_CHARS = 1100;
+
+/**
+ * @internal Seam so the cap tests read the real bounds instead of copies. A
+ * hardcoded copy silently stops reaching the cap when the cap moves.
+ */
+export const flowAddStepInternals = {
+  MAX_PROBE_REASON_CHARS,
+  PROBE_REASON_TAIL_CHARS,
+};
 
 function elisionMarker(dropped: number): string {
   return `… (${dropped} more chars) …`;
 }
 
 /**
- * {@link MAX_PROBE_REASON_CHARS} bounds what is EMITTED, not what is kept:
- * budgeting the kept content let the marker push a 201-char reason out at 218.
- * The marker's width depends on the count it reports, so size the head against
- * the WIDEST it can be — `dropped` never exceeds the reason's own length — and
- * the result fits in one pass, with no loop and no overshoot.
+ * {@link MAX_PROBE_REASON_CHARS} bounds what is EMITTED, not what is kept.
+ * Sizing the head against the widest the marker can be fits the result in one
+ * pass. Budgeting the kept text instead let a 201-character reason come out at
+ * 218, announcing "(1 more chars)".
  */
 function cappedReason(reason: string): string {
   if (reason.length <= MAX_PROBE_REASON_CHARS) return reason;
@@ -565,17 +490,15 @@ function cappedReason(reason: string): string {
 }
 
 /**
- * The recorder and the runner read DIFFERENT trees. `await-ui-element`
- * evaluates against the agent-facing describe tree; the `await:`/`assert:`
- * DIRECTIVE that polish converts this step into is evaluated against
- * `fetchFlowTree`'s. How they diverge is per platform (see
- * {@link treeDivergenceFor}), but on none of them does one contain the other,
- * so a check can pass live and fail once converted.
+ * The recorder and the runner read DIFFERENT trees. `await-ui-element` reads the
+ * agent-facing describe tree; the `await:`/`assert:` directive that polish
+ * converts this step into reads `fetchFlowTree`'s. Neither tree contains the
+ * other, so a check can pass live and fail once converted.
  *
- * Re-probe the same condition against the runner's tree and report the answer.
- * It is a WARNING, never a refusal: the step is recorded as a raw
- * `tool: await-ui-element`, which at replay reads the SAME tree it just passed
- * against. What the probe tells the author is whether the CONVERSION is safe.
+ * So re-probe the same condition against the runner's tree and report the
+ * answer. It warns; it never refuses. The step is recorded as a raw
+ * `tool: await-ui-element`, and at replay that tool reads the same tree it just
+ * passed against — so the verdict is about the CONVERSION, not this step.
  */
 async function probeAgainstRunnerTree(
   registry: Registry,
@@ -588,20 +511,18 @@ async function probeAgainstRunnerTree(
     return {};
   }
   if (typeof args.udid !== "string") return {}; // nothing to probe against
-  // No try/catch: `resolveDevice` is a pure shape classifier, and a platform
-  // with no flow tree throws inside `fetchFlowTree`, reported as indeterminate.
+  // No try/catch: an id with no flow tree throws inside `fetchFlowTree`, which
+  // the probe already reports as indeterminate.
   const device = resolveDevice(args.udid);
-  // Giving up must STOP the probe, not just stop waiting for it: `settleWithin`
-  // only abandons the promise, and the abandoned loop still fires one more full
-  // read (`finalPoll`) against a device the recorder has already returned from.
-  // Abort it the moment the ceiling decides, so its per-iteration signal check
-  // ends it before that read.
+  // Giving up must STOP the loop, not just stop waiting for it. `settleWithin`
+  // abandons the promise, but the loop keeps its tree read and then fires one
+  // more — against a device the recorder has already returned from.
   const giveUp = new AbortController();
   const probeSignal = ctx?.signal ? AbortSignal.any([ctx.signal, giveUp.signal]) : giveUp.signal;
   // Bounded by PROBE_BUDGET_MS: the loop's deadline does not bound its reads.
   const settled = await settleWithin(
     probeWhenCondition(
-      // The signal rides on ActionEnv separately from `ctx`, so pass both.
+      // The loop reads the signal off ActionEnv, so pass it there as well.
       { registry, ctx, device, signal: probeSignal },
       {
         condition: condition as WaitCondition,
@@ -613,16 +534,16 @@ async function probeAgainstRunnerTree(
     PROBE_BUDGET_MS,
     ctx?.signal
   );
-  // Done with the loop either way; on the timeout path it still holds the device.
+  // Done with the loop either way; on the timeout path it still holds the
+  // device.
   giveUp.abort();
-  // Every cancellation arrives HERE and {@link ABORTED_OUTCOME} never does:
-  // `settleWithin` latches on `ctx.signal`, the only signal that can reach the
-  // loop before `giveUp.abort()` above. So the value arm needs no aborted case.
+  // Every cancellation arrives here rather than as an aborted outcome:
+  // `settleWithin` latches on `ctx.signal`, and `giveUp` aborts only after the
+  // await above.
   if (settled.type === "aborted") return { warning: CANCELLED_PROBE_WARNING };
   // A read that outran the budget and a probe that threw are both "the runner's
-  // tree did not answer" — indeterminate, never a verdict. Not the same
-  // diagnosis though: on a timeout the source ANSWERED, just too slowly, so the
-  // reason must not describe it as absent (the recovery below turns on this).
+  // tree did not answer". They need different words, though: on a timeout the
+  // source answered, only too slowly, so the reason must not call it absent.
   const timedOut = settled.type === "timeout";
   const outcome: DirectiveOutcome =
     settled.type === "value"
@@ -638,14 +559,12 @@ async function probeAgainstRunnerTree(
   if (outcome.ok) return {};
   if (outcome.indeterminate) {
     return {
-      // Deliberately NOT joined with treeDivergenceFor/runnerSideReadClause:
-      // nothing was compared, so claiming the two trees differ would send the
+      // Deliberately NOT joined with treeDivergenceFor/runnerSideReadClause.
+      // Nothing was compared, so claiming the two trees differ would send the
       // author to rewrite a selector that may be perfectly good.
       //
-      // "the tree `await-ui-element` reads", not "the accessibility tree" —
-      // that is the AX hierarchy only on iOS/Android.
-      //
-      // Quoted WHOLE, not through `cappedReason` — see MAX_PROBE_REASON_CHARS.
+      // The reason is quoted whole rather than through `cappedReason`; see
+      // {@link MAX_PROBE_REASON_CHARS}.
       warning:
         `this check could not be re-verified against the tree the RUNNER reads ` +
         `(${outcome.reason ?? "no reason given"}), so it passed against the tree ` +
@@ -662,14 +581,11 @@ async function probeAgainstRunnerTree(
             indeterminateReasonCaveat(args.udid)),
     };
   }
-  // Determinate: the runner's tree was read and the condition did not hold on
-  // it. That is NOT "the two trees disagree" — the same verdict comes back when
-  // the screen simply moved on (see SCREEN_MAY_HAVE_MOVED; on Vega that is the
-  // ONLY cause), and at replay the directive occupies the live wait's position,
-  // not the moment after it where this probe looked. So the CONSEQUENCE stays
-  // conditional on the cause the platform clause goes on to give: an absolute
-  // "WILL fail" would decide the question that clause asks the author to rule
-  // out. This is still the one warning that may explain a divergence.
+  // Determinate: the runner's tree was read, and the condition did not hold on
+  // it. That is not the same as "the two trees disagree" — the same verdict
+  // comes back when the screen simply moved on (see SCREEN_MAY_HAVE_MOVED), and
+  // at replay the directive runs where the live wait ran, not a moment later.
+  // So keep the CONSEQUENCE conditional on the cause the platform clause gives.
   return {
     warning:
       `recorded, but this condition does NOT hold against the tree the runner resolves ` +
@@ -678,15 +594,12 @@ async function probeAgainstRunnerTree(
       `just passed against. What conversion costs you depends on WHY the two disagree: if the ` +
       `trees really do differ over this element, an \`assert:\` conversion fails the same way ` +
       `(it reads that tree on the same short grace this probe just used), and an \`await:\` ` +
-      // The remedy belongs to the platform clause: "re-record with a selector
-      // present in both trees" is wrong on Vega, where the trees hold the same
-      // elements and a disagreement means the screen moved.
       `does too unless ${awaitStillNeeds(condition as WaitCondition)} within its longer ` +
       `timeout; if the SCREEN simply moved on since the live wait, this verdict is no evidence ` +
       `against either — at replay the directive runs where that wait ran, not a moment after ` +
       `it.` +
       // Ahead of the tree stories: when it applies it makes all of them
-      // inapplicable, so an author who reads it last has already gone hunting.
+      // inapplicable.
       (condition === "text" ? textTieClause(args.udid) : "") +
       " " +
       SPELLING_CLAUSE +
@@ -723,22 +636,18 @@ function roleOnlySelectorWarning(selector: Selector): string | undefined {
  * Returns the selector (possibly with a caveat warning), or a warning
  * describing why coordinates were kept.
  *
- * The lookup reads `fetchFlowTree` — the same tree source the runner resolves
- * selectors against at replay — NOT the agent-facing describe tree. The two
- * differ exactly where recording matters: on iOS the AX tree collapses an
- * `accessible` container into one leaf whose merged label exists on no single
- * view in the replay hierarchy, and on Android the interactables trim drops
- * the testID-only containers the replay tree keeps. A selector derived from
- * the describe tree could fail — or hit a different element — at replay while
- * recording reported success.
+ * Reads `fetchFlowTree`, the tree the runner resolves selectors against at
+ * replay — NOT the agent-facing describe tree, which collapses an iOS
+ * `accessible` container into one merged-label leaf that exists on no single
+ * view in the replay hierarchy, and trims Android's testID-only containers the
+ * replay tree keeps. A describe-derived selector could fail — or hit a
+ * different element — at replay while recording reported success.
  *
- * The launched app the read is given plays the part it plays at replay (see
- * `ActionEnv`): with nothing connected it is the only id the iOS tree source
- * can measure, and the recorder is where that matters most — a recording
- * relaunches the app AFTER this tool-server bound its listener, so the first
- * tap reads during the connect window, whose measured messages say NOT to
- * restart the app. Without it the kept-coordinates warning quotes
- * auto-targeting's "Launch or restart the app first" instead.
+ * The launched app is passed because a recording relaunches the app AFTER this
+ * tool-server bound its listener: the first tap reads during the connect
+ * window, where that id is the only one the iOS tree source can measure, and it
+ * yields a measured reason instead of auto-targeting's "Launch or restart the
+ * app first".
  */
 async function captureTapSelector(
   registry: Registry,
@@ -756,16 +665,15 @@ async function captureTapSelector(
     if (!selector)
       return { warning: "tapped element has no stable text/id; kept coordinates (brittle)" };
     // Replay resolves through selectorToFrame, whose ranking (exact match →
-    // smallest frame → reading order) is free to elect a DIFFERENT element
-    // than the tapped one — e.g. the same label on an earlier row. Re-resolve
-    // now and require the winning frame to cover the tapped point; otherwise
-    // the recorded step would silently retarget, and coordinates are safer.
+    // smallest frame → reading order) is free to elect a DIFFERENT element than
+    // the tapped one — e.g. the same label on an earlier row. Require the
+    // winning frame to cover the tapped point, or the recorded step would
+    // silently retarget and coordinates are safer.
     const resolved = selectorToFrame(tree, selector);
     if (!resolved) {
       // Defensive: a selector derived from a visible node matches that node
-      // under matchNode's semantics, so re-resolving the same tree should
-      // always find something. Keep the guard (and an accurate message) in
-      // case derivation and matching ever drift apart again.
+      // under matchNode's semantics, so this should be unreachable. Kept in
+      // case derivation and matching drift apart again.
       return {
         warning: `selector ${describeSelector(selector)} matches no element on this screen; kept coordinates (brittle)`,
       };
@@ -788,23 +696,19 @@ async function captureTapSelector(
 }
 
 /**
- * How far the recording has got — for responses that record no step but must
- * still say where the flow stands. Host mode re-reads the file so mid-recording
- * edits are honored; client mode's in-memory copy is authoritative.
+ * Step count for a response that records nothing. Host mode re-reads the file,
+ * so a mid-recording hand edit is counted.
  *
- * Deliberately NOT the flow's YAML: returning the whole growing file per call
- * made the recorder the largest consumer of a session's context. The full file
- * comes back once, from `flow-finish-recording`.
- *
- * The liveness check comes first, as on the append path. The caller resolved
- * its session BEFORE a tool that can run for minutes, so the recording can be
- * finished, restarted or evicted by now. Without the check, the read below
- * reports another take's step count as this one's.
- *
- * The check and the read hold the flow lock, as {@link appendStepToFlow} does.
- * The check is synchronous and the read is not, and `flow-start-recording`
- * truncates the file under that same lock. A restart between the two would make
- * this report the SUPERSEDED take's count as a success.
+ * The liveness check comes first, as on the append path: the caller resolved its
+ * session BEFORE a tool that can run for minutes, so the recording can be
+ * finished, restarted or evicted by now, and the read below would report another
+ * take's step count as this one's. Check and read hold the flow lock, as
+ * {@link appendStepToFlow} does — the check is synchronous, the read is not, and
+ * `flow-start-recording` TRUNCATES before it re-registers, both under that same
+ * lock. A restart landing between the two would therefore pass the check and
+ * then have the file replaced underneath, so the read would report the FRESH
+ * take's count — 0 — as this take's. Holding the lock is what preserves this
+ * take's own count.
  *
  * `ranOnDevice` says whether the refused call already ran, which decides what
  * the liveness error tells the author to undo.
@@ -816,6 +720,7 @@ async function activeFlowState(
   return withRecordingLock(session, async () => {
     assertSessionStillLive(session, ranOnDevice);
     if (session.persist === "host") {
+      const before = session.flow.steps;
       try {
         session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"));
       } catch (err) {
@@ -826,16 +731,22 @@ async function activeFlowState(
             `the step count is from the last valid in-memory snapshot.`,
         };
       }
+      // The re-read ABSORBS a hand edit exactly as an append's does, and after
+      // it the finish can no longer tell one happened. So ask the same question
+      // here, or a verdict slides onto whichever step inherited its number —
+      // see {@link dropMovedWarnings}. Nothing is appended, so the two views
+      // differ only by the edit.
+      session.discardedWarnings =
+        (session.discardedWarnings ?? 0) +
+        dropMovedWarnings(session.stepWarnings, session.flow.steps, before);
     }
     return { stepCount: session.flow.steps.length };
   });
 }
 
 /**
- * The shared return for every path that answers with GUIDANCE and runs nothing:
- * the guidance, the invariant those paths promise, and the unchanged step count
- * so the caller can see its take was left alone. A success rather than a throw,
- * but one that records no line — so `recorded` is absent.
+ * The reply for a path that answers with guidance and runs nothing. It succeeds
+ * rather than throws, and omits `recorded` because no line was appended.
  */
 async function recordNothing(
   session: RecordingSession,
@@ -856,28 +767,17 @@ async function recordNothing(
 }
 
 /**
- * `command` names an MCP tool, but the names an author has in mind while
- * recording are the flow file's own directives — so `command: "echo"` reaches
- * here and the registry answers "Tool not found", which says nothing about
- * what to do instead. Name the tool that records that directive.
+ * The tool that records a flow directive. An author reaching for the directive
+ * name gets the registry's bare "Tool not found" without this.
  */
 interface DirectiveHint {
-  /** The tool to call instead. */
   tool: string;
   /**
-   * Whether the recorder REWRITES that tool call into this directive. Only the
-   * commands the step-shaping switch handles are; the rest are stored as raw
-   * `tool:` steps for the polish pass to convert. Claiming a rewrite that does
-   * not happen sends the author looking for a directive that is not there.
+   * Whether the recorder converts that call into a directive step. The rest are
+   * kept as raw `tool:` steps for the polish pass.
    */
   rewritten: boolean;
-  /**
-   * The ARG-SHAPE condition on a conditionally rewritten directive, so the hint
-   * does not promise a `${command}:` step the recorder then declines to write.
-   * Omitted when no arg-shape condition applies (e.g. `tap`). The separate
-   * `delayMs` opt-out is appended to every rewrite hint by
-   * `directiveCommandHint`, so it is not expressed here.
-   */
+  /** Arg-shape condition on a conditional rewrite. Omitted when there is none. */
   rewriteCondition?: string;
 }
 
@@ -893,9 +793,6 @@ const DIRECTIVE_COMMAND_HINTS: Record<string, DirectiveHint> = {
   run: {
     tool: "flow-execute",
     rewritten: true,
-    // Three outcomes, not two: a non-sibling `flow_path` is REFUSED before
-    // anything runs, and a remote recording keeps the raw step whatever the
-    // target is, because `run:` composition is host-resolved.
     rewriteCondition:
       "when the target resolves as a sibling flow in this recording's folder — a `name` that " +
       "does not is kept as a raw `tool: flow-execute` step, and so is every target in a REMOTE " +
@@ -906,18 +803,14 @@ const DIRECTIVE_COMMAND_HINTS: Record<string, DirectiveHint> = {
   await: { tool: AWAIT_UI_ELEMENT_TOOL_ID, rewritten: false },
   assert: { tool: AWAIT_UI_ELEMENT_TOOL_ID, rewritten: false },
   pinch: { tool: "gesture-pinch", rewritten: false },
-  // Every parser directive is either here, answered directly by
-  // `directiveCommandHint` below, or listed in {@link UNHINTED_DIRECTIVE_KEYS}.
-  // `echo`, `wait`, `long-press`, `scroll-to`, `snapshot` and `when` need an
-  // answer this table cannot express: `echo` is recorded by a tool called on
-  // its OWN, and the other five have no recording tool at all.
+  // The rest need an answer this table cannot express: `directiveCommandHint`
+  // below answers them, or {@link UNHINTED_DIRECTIVE_KEYS} lists them.
 };
 
 /**
- * Recorder tools, which must never be `flow-add-step`'s `command`. Each mutates
- * the recording rather than the device, and this call would also append a raw
- * `tool: <recorder>` step that re-runs that mutation at replay, when no
- * recording is open. The damage differs per entry, so each carries its own text.
+ * Recorder tools refused as `command`. Each mutates the recording, and the call
+ * would also append a `tool: <recorder>` step that re-runs it at replay, with no
+ * recording open. The damage differs per entry, so each carries its own text.
  */
 const NESTED_RECORDER_TOOLS: Record<string, string> = {
   "flow-add-echo":
@@ -935,31 +828,23 @@ const NESTED_RECORDER_TOOLS: Record<string, string> = {
 };
 
 /**
- * Whether the invocation failed because the registry has no tool named
- * `command`, as opposed to the tool running and failing.
- *
- * Keyed on the error's IDENTITY, not its message text: the registry throws a
- * raw `ToolNotFoundError` before the invoke wrapper, while a tool that runs and
- * fails — or whose OWN nested lookup misses — surfaces as a
- * `ToolExecutionError`. Matching `toolId === command` keeps a genuine "not
- * found" message from a tool that ran (e.g. "element not found") from reading
- * as the command itself being absent.
+ * Did the registry have no tool named `command`? Keyed on the error's identity
+ * and its `toolId`, so a tool that ran and reported its own "not found" is not
+ * read as the command being absent.
  */
 function isToolNotFound(err: unknown, command: string): boolean {
   return err instanceof ToolNotFoundError && err.toolId === command;
 }
 
 /**
- * Directive keys this feature deliberately does NOT answer, with the reason.
- * `flow-record-cross-tree.test.ts` holds it against the parser's vocabulary, so
- * a directive added later is either answered or listed here on purpose.
+ * Directive keys with no hint, and why. `flow-record-cross-tree.test.ts` holds
+ * this against the parser's vocabulary, so a directive added later is either
+ * answered or listed here.
  */
 export const UNHINTED_DIRECTIVE_KEYS: readonly string[] = [
-  // A real `rotate` tool is registered (device orientation, not the `rotate:`
-  // gesture), so the ToolNotFoundError this hangs off never fires.
+  // A real `rotate` tool is registered, so the not-found path never fires.
   "rotate",
-  // The raw escape hatch: `command` already IS the tool name a `tool:` step
-  // wants.
+  // `command` already is the tool name a `tool:` step wants.
   "tool",
 ];
 
@@ -1009,8 +894,8 @@ export function directiveCommandHint(command: string): string | undefined {
       `them in the \`when:\` block by hand during polish and prove both branches with the replay.`
     );
   }
-  // `Object.hasOwn`, not a bare index: a caller-controlled `"constructor"` or
-  // `"toString"` would otherwise render a nonsense hint (`tool: undefined`).
+  // `Object.hasOwn`, not a bare index: `"constructor"` would hit the prototype
+  // and render a hint with `tool: undefined`.
   const hint = Object.hasOwn(DIRECTIVE_COMMAND_HINTS, command)
     ? DIRECTIVE_COMMAND_HINTS[command]
     : undefined;
@@ -1019,10 +904,8 @@ export function directiveCommandHint(command: string): string | undefined {
     `"${command}" is a flow directive, not a tool. Record it by calling \`${hint.tool}\` ` +
     `through flow-add-step` +
     (hint.rewritten
-      ? // The `delayMs` clause is appended to EVERY rewrite hint, so scope it
-        // to calls that are recorded at all: `run` refuses a non-sibling
-        // `flow_path` outright, whatever `delayMs` says, because
-        // `rewriteSiblingFlowPath` runs before the invoke and throws.
+      ? // "Where the call is recorded at all" scopes the `delayMs` clause: `run`
+        // refuses a non-sibling `flow_path` before the invoke, whatever it says.
         ` — the recorder rewrites it into the \`${command}:\` step ${hint.rewriteCondition ?? "for you"}. ` +
         `Where the call is recorded at all, a \`delayMs\` on it opts out of the rewrite: the step is then ` +
         `kept in its raw \`tool: ${hint.tool}\` form (a replay delay has no directive form), so leave ` +
@@ -1059,23 +942,22 @@ function nestedRecordRefusal(
   // verdict-first read would file the author's own cancel as a failed nested
   // step. `skip` is the reader's own abort branch, so it speaks for itself.
   //
-  // `attempted` is the third condition, because a cancel can only affect an
+  // `reached` is the third condition, because a cancel can only affect an
   // outcome the run got far enough to have. A `flow-execute` prerequisite
   // notice reached no step, so the wrapper would report a cancel of something
   // that never started.
-  const attempted = nestedStepAttempted(result);
   const reason =
-    aborted && attempted && outcome.status !== "skip"
+    aborted && outcome.reached && outcome.status !== "skip"
       ? `${command} was cancelled (${outcome.reason})`
       : outcome.reason;
-  return { reason, mayHaveMutated: attempted };
+  return { reason, mayHaveMutated: outcome.reached };
 }
 
 /**
  * The advice asks for a CHECK, not a restore.
  *
- * The result cannot show whether an attempted step moved the device (see
- * {@link nestedStepAttempted}), so this fires on read-only nested runs too. A
+ * The result cannot show whether a reached step moved the device (see
+ * `NestedOutcome.reached`), so this fires on read-only nested runs too. A
  * composed flow of only `assert`s reaches a step and trips it. "Restore the
  * device" would invite a relaunch, and a relaunch shows the start screen, not
  * the state the recorded prefix leaves.
@@ -1090,49 +972,10 @@ function partialMutationWarning(command: "flow-execute" | "run-sequence"): strin
   );
 }
 
-/**
- * Whether the nested run ATTEMPTED a step. This is the trigger for the warning
- * that the device may no longer be where the recorded prefix leaves it.
- *
- * Not "did a step succeed". A step often acts and THEN fails. A `scroll-to`
- * scrolls to the end of the list before it reports a miss. A `keyboard` types
- * part of its text before it throws. Both leave `passed` and `completed` at 0
- * while the screen moved. The result settles only whether a step was reached.
- *
- * A false warning is safe, because the message says "may" and asks for a check.
- * Silence leaves the author recording against a screen the prefix cannot reach.
- */
-function nestedStepAttempted(result: unknown): boolean {
-  if (typeof result !== "object" || result === null) return true;
-  const steps = (result as { steps?: unknown }).steps;
-  if (!Array.isArray(steps)) {
-    // Only `flow-execute`'s prerequisite notice has no step list, because it
-    // ran nothing. Any other unknown shape must assume that a step ran.
-    return !Object.prototype.hasOwnProperty.call(result, "notice");
-  }
-  // The flow runner reports one entry per DECLARED step and marks the ones it
-  // never reached `skip`. A step CUT SHORT by a cancel is a skip too, and that
-  // one can have acted. A `launch` becomes cancellable only after `restart-app`
-  // relaunched the app. The runner marks those `reached`.
-  //
-  // `run-sequence` appends one entry per step it got to, so its entries are
-  // attempts. The exceptions carry `dispatched: false`: an unlisted tool, one
-  // the platform does not support, or args the registry refuses. A sequence
-  // rejected on its FIRST step touched nothing, and a warning there would
-  // contradict "after 0 of N steps" in the same message.
-  return steps.some((s) => {
-    if (typeof s !== "object" || s === null) return true;
-    const entry = s as { status?: unknown; reached?: unknown; dispatched?: unknown };
-    if (entry.status === "skip") return entry.reached === true;
-    return entry.dispatched !== false;
-  });
-}
-
-// Replaying a fragment to set up state during recording is done by running it
-// through `flow-execute`. Recorded verbatim that becomes a brittle
-// `tool: flow-execute` step (baked-in project_root + device, no portability).
-// Instead, capture it as a `run: <name>.yaml` composition directive —
-// mirroring the gesture-tap → tap rewrite.
+// A fragment replayed mid-recording through `flow-execute` would record
+// verbatim as a brittle `tool: flow-execute` step (baked-in project_root, no
+// portability). Capture it as a `run: <name>.yaml` composition directive
+// instead — mirroring the gesture-tap → tap rewrite.
 const RUN_TARGET_COMMAND = "flow-execute";
 
 /**
@@ -1142,11 +985,10 @@ const RUN_TARGET_COMMAND = "flow-execute";
  * `flow-add-step` forwards the nested call's arguments as opaque JSON, so a
  * `flow_path` inside them never crosses flow-execute's file-input boundary and
  * `resolveFlowSource` would reject it outright. A sibling of the recording is
- * the one target with a boundary-verified equivalent: the same file the
- * `name` + `project_root` pair already resolves to, in a directory
- * flow-start-recording established through its own boundary. Every other
- * flow_path is refused here — it could not replay as a recorded step either,
- * since a raw `tool:` step has no boundary to resolve a path through.
+ * the one target with a boundary-verified equivalent: the same file the `name` +
+ * `project_root` pair already resolves to, in a directory flow-start-recording
+ * established through its own boundary. Every other flow_path is refused here —
+ * a raw `tool:` step has no boundary to resolve a path through at replay either.
  */
 async function rewriteSiblingFlowPath(
   session: RecordingSession | null,
@@ -1154,10 +996,9 @@ async function rewriteSiblingFlowPath(
 ): Promise<void> {
   const flowPath = args.flow_path;
   // A call naming both sources — or neither — is flow-execute's schema to judge.
-  // Both spellings count as a name: `flow_name` is flow-execute's alias, so
-  // pairing it with a flow_path is the same dual-source misuse. Reading `name`
-  // alone would let the rewrite delete flow_path and RECORD a different flow
-  // than the caller named. Same fold and precedence as `resolveFlowName`.
+  // `flow_name` is flow-execute's alias, so it counts as a name here too:
+  // reading `name` alone would let the rewrite delete flow_path and record a
+  // different flow than the caller named.
   if (typeof flowPath !== "string" || args.name !== undefined || args.flow_name !== undefined)
     return;
 
@@ -1181,11 +1022,10 @@ async function rewriteSiblingFlowPath(
     );
   }
   // Reject ".." segments: the sibling checks below compare path.resolve
-  // results, which collapse ".." lexically, but the kernel resolves a
-  // symlinked directory component first — "<flowsDir>/link/../<stem>.yaml"
-  // can open a file outside flowsDir yet pass every check, so the rewrite
-  // would silently run the flows-dir <stem> instead of the file the path
-  // opens. Same constraint as flow_path_dotdot in flow-run.ts.
+  // results, which collapse ".." lexically, but the kernel resolves a symlinked
+  // directory component first — "<flowsDir>/link/../<stem>.yaml" can open a file
+  // outside flowsDir yet pass every check, so the rewrite would run the flows-dir
+  // <stem> instead. Same constraint as flow_path_dotdot in flow-run.ts.
   if (flowPath.split(/[\\/]+/).includes("..")) {
     throw invalid(
       'flow paths must not contain ".." segments — sibling identity is decided lexically ' +
@@ -1197,7 +1037,7 @@ async function rewriteSiblingFlowPath(
   // path.extname reads a basename that is only the extension as an
   // extensionless dotfile, so ext is "" for ".yaml" (and ".YAML") and the arms
   // below would blame the extension of a path that visibly ends in .yaml. What
-  // is actually missing is the filename stem, named by assertSafeFlowName below.
+  // is missing is the stem, which assertSafeFlowName reports below.
   const bareExtension = path.basename(flowPath).toLowerCase() === ".yaml";
   if (!bareExtension && ext !== ".yaml") {
     // On case-insensitive filesystems the path looks valid to the user, so name the real problem.
@@ -1216,19 +1056,18 @@ async function rewriteSiblingFlowPath(
         `no boundary to resolve a path through at replay`
     );
   }
-  // basename leaves a suffix in place when stripping it would leave nothing,
-  // and strips only an exact-case one — so both ".yaml" and ".YAML" would
-  // otherwise be reported as a flow *named* that, not as a missing stem.
+  // basename leaves a suffix in place when stripping it would leave nothing, and
+  // strips only an exact-case one — so ".yaml" and ".YAML" would otherwise be
+  // reported as a flow *named* that, not as a missing stem.
   const stem = bareExtension ? "" : path.basename(flowPath, ".yaml");
   assertSafeFlowName(stem);
   // Only sound while `name` under the caller's project_root names this very
   // file — otherwise the rewrite would silently run a different flow. The root
-  // must be absolute before that comparison means anything: path.resolve
-  // anchors a relative root at the tool SERVER's cwd, which bears no relation
-  // to the calling agent's, so a relative root would pass or fail by accident
-  // of where the server was started. flow-execute itself demands an absolute
-  // root (`assertValidProjectRoot`, called by `resolveFlowSource` before either
-  // of its branches), so this refuses nothing that could have run.
+  // must be absolute for that comparison to mean anything: path.resolve anchors
+  // a relative root at the tool SERVER's cwd, which bears no relation to the
+  // calling agent's. flow-execute itself demands an absolute root
+  // (`assertValidProjectRoot`, called by `resolveFlowSource` before either of
+  // its branches), so this refuses nothing that could have run.
   const projectRoot = args.project_root;
   if (typeof projectRoot !== "string" || !path.isAbsolute(projectRoot)) {
     throw invalid(
@@ -1239,29 +1078,22 @@ async function rewriteSiblingFlowPath(
     throw invalid(`project_root "${projectRoot}" does not resolve "${stem}" to it`);
   }
 
-  // Every check above compared the SUPPLIED spelling lexically; nothing has
-  // consulted the directory. On a case-insensitive filesystem (APFS, NTFS)
-  // the nested flow-execute would happily open a sibling really named
-  // "sibling.yaml" for "Sibling.yaml", and the rewrite below would bake the
-  // phantom spelling into the recorded YAML as `run: Sibling` — the recording
-  // is the one output that is committed and replayed elsewhere, so the step
-  // replays green here and fails on every case-sensitive checkout (Linux CI).
-  // Require the supplied basename to appear in the flows dir byte-for-byte.
-  // This dir is the recording's own host-persisted one — the recording file
-  // itself lives in it — so an unreadable listing is far less plausible than
-  // in the flow-run/CLI twins, but classifyOnDiskSpelling's readdir failure
-  // skips the check all the same rather than refusing a file the exact-named
-  // contract may well be honoring. Both verdicts refuse here: unlike a bare
-  // `name`, this path names a file the caller says exists, so a listing
-  // lacking it entirely is the same phantom spelling, just with no neighbour
-  // to name.
+  // Every check above compared the SUPPLIED spelling lexically. On a
+  // case-insensitive filesystem (APFS, NTFS) the nested flow-execute would open
+  // a sibling really named "sibling.yaml" for "Sibling.yaml", and the rewrite
+  // would bake `run: Sibling` into the recorded YAML — the one output that is
+  // committed and replayed elsewhere, so it replays green here and fails on
+  // every case-sensitive checkout (Linux CI). Require the supplied basename to
+  // appear in the flows dir byte-for-byte; an unreadable listing still skips the
+  // check (classifyOnDiskSpelling). Both other verdicts refuse: unlike a bare
+  // `name`, this path names a file the caller says exists, so a listing lacking
+  // it entirely is the same phantom spelling with no neighbour to name.
   const suppliedBase = path.basename(flowPath);
   const spelling = await classifyOnDiskSpelling(flowsDir, suppliedBase);
   if (spelling.state !== "listed") {
     // Hint the real spelling only when this same ladder would accept it (a
     // stem-case slip like Sibling.yaml); an invalid real name (sibling.YAML)
-    // needs a rename, and pointing at a flow_path the extension arm will
-    // refuse helps no one.
+    // needs a rename, not a flow_path the extension arm will refuse.
     const recovery =
       spelling.state === "absent"
         ? `pass the basename exactly as it appears on disk`
@@ -1285,29 +1117,23 @@ async function rewriteSiblingFlowPath(
 
 /**
  * For a recorded `flow-execute` call, decide whether to record it as a
- * `run: <name>.yaml` directive — a sibling-relative path the runner resolves
- * against the canonical containing flow file's directory. Returns the path
- * to compose, or a warning explaining why the raw `flow-execute` step was
- * kept.
+ * `run: <name>.yaml` directive. Returns the path to compose, or a warning
+ * explaining why the raw `flow-execute` step was kept.
  *
- * The `run:` directive itself is not sibling-scoped: it composes any
- * relative YAML path — fragment or e2e, cross-directory included, e.g.
- * `run: ../shared/login.yaml` — resolved by the runner against the containing
- * file's canonical directory, with no path fence (host-resolved composition,
- * design §12; see `execRunStep` in flow-run.ts). The RECORDER deliberately emits
- * only the sibling subset: `<name>.yaml` beside the recording's REAL file is
- * the one target shape it can validate here and identity-check against the
- * file the live sub-invoke executed; a cross-directory composition is
- * authored by editing the flow YAML directly, not recorded. The anchor is
- * the realpath'd containing-file dir because the runner's is (scopeFlowDir
- * in flow-run.ts), so a recording made through a symlink validates its
- * sibling in the canonical directory, not beside the symlink's spelling. An
- * e2e target's `launch` simply runs inline. So we keep the raw step only
- * when the target can't be resolved as a sibling, the sibling is not the
- * same file the live sub-invoke executed (the recorded step must name the
- * flow that actually ran), or the recording is remote (the host can't read
- * the client's sibling files to validate). A `flow_path` target reaches here
- * as its sibling `name` or not at all — see {@link rewriteSiblingFlowPath}.
+ * The `run:` directive itself is not sibling-scoped: it composes any relative
+ * YAML path, cross-directory included (`run: ../shared/login.yaml`), against
+ * the containing file's canonical directory with no path fence (`execRunStep`
+ * in flow-run.ts). The RECORDER deliberately emits only the sibling subset:
+ * `<name>.yaml` beside the recording's REAL file is the one target shape it can
+ * validate here and identity-check against the file the live sub-invoke
+ * executed; a cross-directory composition is authored by editing the YAML. The
+ * anchor is the realpath'd containing-file dir because the runner's is
+ * (scopeFlowDir in flow-run.ts), so a recording made through a symlink
+ * validates its sibling in the canonical directory. So the raw step is kept
+ * only when the target can't be resolved as a sibling, the sibling is not the
+ * file the live sub-invoke executed, or the recording is remote (the host can't
+ * read the client's sibling files). A `flow_path` target reaches here as its
+ * sibling `name` or not at all — see {@link rewriteSiblingFlowPath}.
  *
  * "Resolved as a sibling" is the same two-part identity {@link
  * rewriteSiblingFlowPath} demands of a flow_path, asked of the name route: the
@@ -1315,19 +1141,18 @@ async function rewriteSiblingFlowPath(
  * resolve beside the recording's real file — compared canonically, since those
  * two anchors reach it by different spellings — and that directory must list
  * `<name>.yaml` byte-for-byte. Every refusal keeps the raw step rather than
- * throwing — unlike the rewrite, this runs AFTER the nested flow ran on the
+ * throwing: unlike the rewrite, this runs AFTER the nested flow ran on the
  * device, so a throw would discard the record of a step that already happened.
- * The raw `tool: flow-execute` step it keeps still replays the flow that
- * actually ran, carrying the caller's own project_root.
+ * The raw step still replays the flow that actually ran, carrying the caller's
+ * own project_root.
  */
 async function captureRunTarget(
   session: RecordingSession,
   args: Record<string, unknown>
 ): Promise<{ flow?: string; warning?: string }> {
-  // Honor `flow-execute`'s `flow_name` alias, with `resolveFlowName`'s
-  // `name || flow_name` precedence. A call that used the alias runs fine, so it
-  // must also capture as the portable `run: <name>` directive — reading
-  // `args.name` alone would keep a raw step AND print a false "no flow name".
+  // `flow-execute`'s `flow_name` alias, on `resolveFlowName`'s precedence. An
+  // alias-only call runs fine, so reading `args.name` alone would keep a raw
+  // step and print a false "no flow name".
   const named = args.name || args.flow_name;
   const name = typeof named === "string" ? named : undefined;
   if (name === undefined || name === "") {
@@ -1345,12 +1170,10 @@ async function captureRunTarget(
     // recorded, which is not necessarily the project that nested call ran in —
     // and against the recording's REAL file, because the runner resolves the
     // recorded `run:` against the canonical containing-file directory
-    // (scopeFlowDir in flow-run.ts). When the recording is itself a symlink,
-    // a sibling beside the symlink's spelling would validate here yet fail at
-    // replay, so the anchor must match the runner's. A realpath failure lands
-    // in the catch below — raw step plus warning, which is the right recorder
-    // semantics: an anchor we cannot canonicalize is one we cannot promise
-    // will replay.
+    // (scopeFlowDir in flow-run.ts). When the recording is itself a symlink, a
+    // sibling beside the symlink's spelling would validate here yet fail at
+    // replay. A realpath failure lands in the catch below — an anchor we cannot
+    // canonicalize is one we cannot promise will replay.
     const realFlowPath = await fs.realpath(session.filePath);
     const flowsDir = path.dirname(realFlowPath);
     const fragPath = path.join(flowsDir, `${name}.yaml`);
@@ -1360,13 +1183,12 @@ async function captureRunTarget(
     // while that root's flows dir is this one — a nested call naming another
     // project's `<name>.yaml` runs that copy live and would record a step
     // running this one: same name, different flow, both green, nothing said.
-    // The comparison itself is below, once the sibling has been read; what
-    // this guard settles is that the root can be compared at all — it must be
-    // absolute, since path.resolve anchors a relative root at the tool
-    // SERVER's cwd, which bears no relation to the calling agent's.
-    // flow-execute's schema requires project_root and its resolver demands an
-    // absolute one, so any call that got past the live invoke above has one;
-    // the guard covers direct execute() callers, which bypass that schema.
+    // The comparison is below, once the sibling has been read; this guard only
+    // settles that the root can be compared at all — path.resolve anchors a
+    // relative root at the tool SERVER's cwd, which bears no relation to the
+    // calling agent's. flow-execute's resolver demands an absolute root, so any
+    // call that got past the live invoke has one; this covers direct execute()
+    // callers, which bypass that schema.
     const projectRoot = args.project_root;
     if (typeof projectRoot !== "string" || !path.isAbsolute(projectRoot)) {
       return {
@@ -1377,27 +1199,23 @@ async function captureRunTarget(
       };
     }
 
-    // Nothing above consulted the directory, and a composed `run:` name is not
-    // just a lookup — it is written into the recorded YAML, the one output that
-    // gets committed and replayed elsewhere. On a case-insensitive filesystem
-    // (APFS, NTFS) `name: "Frag"` opens a sibling really named "frag.yaml", and
-    // the read below would too, baking `run: Frag` into a flow no
-    // case-sensitive checkout (Linux CI) can resolve. flow-execute's own name
+    // A composed `run:` name is written into the recorded YAML, the one output
+    // that gets committed and replayed elsewhere. On a case-insensitive
+    // filesystem (APFS, NTFS) `name: "Frag"` opens a sibling really named
+    // "frag.yaml", and the read below would too, baking `run: Frag` into a flow
+    // no case-sensitive checkout (Linux CI) can resolve. flow-execute's own name
     // gate refuses that spelling one layer down — against this very directory,
-    // since the identity check below forces the two to coincide — but it skips on a
-    // listing that momentarily refused to be read (EMFILE under load), and the
-    // recorder forwards these args opaquely: it does not take the spelling of a
-    // reference it commits on the word of the tool it dispatched. Same gate the
-    // flow_path arm applies to its basename, on the route that reaches the same
-    // file by name. Only a case-folded verdict keeps the raw step: a name
-    // matching nothing at all is an ordinary missing sibling, which the read
-    // below reports far better than a casing complaint could.
+    // since the identity check below forces the two to coincide — but it skips
+    // on a listing that momentarily refused to be read (EMFILE under load), and
+    // the recorder does not take the spelling of a reference it commits on the
+    // word of the tool it dispatched. Only a case-folded verdict keeps the raw
+    // step: a name matching nothing at all is an ordinary missing sibling, which
+    // the read below reports far better than a casing complaint could.
     const spelling = await classifyOnDiskSpelling(flowsDir, `${name}.yaml`);
     if (spelling.state === "case_folded") {
       // Hint a name only when one can reach the file: an on-disk .YAML is
       // addressable by no name at all (this route always builds "<name>.yaml"),
-      // and the flow_path arm refuses it too — so that fork asks for the rename
-      // it really needs.
+      // so that fork asks for the rename it really needs.
       const recovery = spelling.addressable
         ? `re-run it as name "${path.basename(spelling.actual, ".yaml")}" to record it`
         : `rename "${spelling.actual}" to "${name}.yaml" to record it — flow files must be ` +
@@ -1418,11 +1236,10 @@ async function captureRunTarget(
     // as-written flows dir under the caller's project_root. When the recording
     // is a symlink out of the flows dir the two anchors can name different
     // files, so require them to canonicalize to the same one, matching the
-    // runner's own canonicalization on both sides (canonicalFlowPath in
-    // flow-run.ts realpaths before reading). An executed path that cannot be
-    // canonicalized (e.g. ENOENT) means nothing verifiable ran from the flows
-    // dir, and the raw step is then the honest record: it replays via name +
-    // project_root, i.e. the file that actually ran.
+    // runner's own canonicalization (canonicalFlowPath in flow-run.ts realpaths
+    // before reading). An executed path that cannot be canonicalized (e.g.
+    // ENOENT) means nothing verifiable ran from the flows dir, and the raw step
+    // is then the honest record: it replays via name + project_root.
     let executedPath: string | undefined;
     try {
       executedPath = await fs.realpath(path.join(flowsDirFor(projectRoot), `${name}.yaml`));
@@ -1459,9 +1276,13 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     stepCount: number;
     /**
      * The flow line just appended, and the discriminator for "was anything
-     * recorded at all". Every path that records NOTHING still returns normally
-     * with the unchanged `stepCount`, so the caller can see its take was left
-     * alone. Those paths are:
+     * recorded at all". A path that records NOTHING returns normally with the
+     * unchanged `stepCount`, so the caller can see its take was left alone —
+     * unless the recording was finished, restarted or evicted while the call
+     * was in flight, which every one of them reports by THROWING
+     * `FLOW_NO_ACTIVE_RECORDING` from {@link activeFlowState}. There is no
+     * `stepCount` to compare then, and no absent `recorded` to read. Those
+     * paths are:
      *
      * - a `command` that names a recorder tool, or a flow-file directive
      *   instead of a tool. Both answer with the call to make.
@@ -1487,14 +1308,13 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     id: "flow-add-step",
     interaction: {
       // Name the flow: recordings are concurrent, so several of these lines can
-      // interleave in one log and "the recorded flow" would not identify which.
+      // interleave in one log and "the recorded flow" would not say which.
       startedMsg: ({ params }) => `Adding ${params.command} step to flow ${params.name}`,
-      // Several returns are success-SHAPED and record nothing: a refused
-      // directive command, or a nested orchestrator that failed or was
-      // cancelled. An "Added …" line for those makes the event log contradict
-      // the message in the same result. An agent reads that log to reconstruct
-      // what a take contains. `recorded` is absent exactly when no line was
-      // appended.
+      // Several returns succeed and record nothing: a refused directive command,
+      // or a nested orchestrator that failed or was cancelled. An unconditional
+      // "Added …" line would contradict its own result body, and an agent reads
+      // this log to reconstruct what a take contains. `recorded` is absent
+      // exactly when no line was appended.
       completedMsg: ({ params, result }) =>
         result.recorded === undefined
           ? `Did NOT add ${params.command} step to flow ${params.name} (see the returned message)`
@@ -1507,24 +1327,20 @@ A recorded \`await-ui-element\` that PASSED is re-probed against the tree the RU
 Returns { message, toolResult, stepCount, recorded, savedTo } on success — \`message\` is \`Step added to "<name>" flow\` plus any warning about what was recorded (read it; a warning never means the step was skipped). If it fails an error is returned and nothing is recorded. Two calls record NOTHING and answer with guidance instead: a \`command\` naming a recording tool, and one naming a flow-file directive rather than a tool. Both answer with what to do instead — usually the call to make (the tool that records that directive, or the recording tool called directly), but \`wait\`, \`long-press\`, \`scroll-to\`, \`snapshot\` and \`when\` have no recording tool, so those name no call and say what to record or add by hand in its place. Either way nothing runs at the device, both omit \`recorded\`, and the take is left untouched — read \`recorded\`, not the status, to know whether a step was appended.
 A NORMAL return can also mean "not recorded": \`recorded\` is the discriminator - it is absent, and \`message\` says "step NOT recorded", whenever the call ran but its outcome must not become a step. That covers a nested \`flow-execute\` that failed, was cancelled, or returned a prerequisite notice instead of running, and a nested \`run-sequence\` that stopped on a failed nested step or was cancelled part-way. Read \`message\` before assuming the step landed. Whether anything ran is what \`message\` says, not something to infer from which case it was: it warns that the device may have moved whenever a nested step was reached, and stays silent when the refusal provably reached none (a prerequisite notice, a sequence rejected before its first step could be dispatched, a cancel that landed before it). On the warning, CHECK the device against the state your recorded prefix leaves it in before adding the next step - do not relaunch the app to "reset", which lands on the start screen instead and makes the rest of the recording unreproducible.
 If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-recording\` rather than during the recording: against a remote client the in-memory copy is authoritative and every write serializes it over your edit, and in host mode a mid-recording edit renumbers the steps, which costs the finish the cross-tree verdicts anchored to them.`,
-    // The recorded tool RUNS here, so this call is as long as whatever it
-    // wraps — and the three it most often wraps all declare this. Without it
-    // the MCP adapter capped the POST at 30s and retried the identical body
-    // four more times, each retry re-running the action and appending another
-    // step. The server also keeps its idle timer warm on this flag (see http.ts).
+    // The recorded tool RUNS here, so this call lasts as long as whatever it
+    // wraps, and the three it most often wraps declare this too. Without it the
+    // MCP adapter capped the POST at 30s and retried the identical body four
+    // more times — and every retry re-runs the action and appends another step,
+    // because an aborted request still appends its first.
     longRunning: true,
     zodSchema,
     services: () => ({}),
     async execute(_services, params, ctx) {
       const session = await requireRecordingSession(params.project_root, params.name);
 
-      // A recorder tool is not a step: running one mutates the recording, and
-      // this call would also record a raw `tool: <recorder>` step that re-runs
-      // that mutation at replay, when no recording is open. Refuse before
-      // anything is written — and before parsing `args`, so a malformed payload
-      // cannot pre-empt this guidance with a bare JSON error.
-      // `Object.hasOwn`, not a bare index: an inherited member (`"__proto__"`,
-      // `"constructor"`, …) would otherwise read truthy off the prototype chain.
+      // Before parsing `args`, so a malformed payload cannot pre-empt this
+      // guidance with a bare JSON error. `Object.hasOwn`, not a bare index: an
+      // inherited member would read truthy off the prototype chain.
       const nested = Object.hasOwn(NESTED_RECORDER_TOOLS, params.command)
         ? NESTED_RECORDER_TOOLS[params.command]
         : undefined;
@@ -1534,13 +1350,9 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       try {
         args = params.args ? JSON.parse(params.args) : {};
       } catch (err) {
-        // The hint normally fires from the sub-invoke catch below, so a
-        // malformed `args` payload would pre-empt it with a bare JSON syntax
-        // error. An author who wrote `command: "echo"` needs to hear that echo
-        // is a directive; the payload was never going to run either way.
-        //
-        // Gated on the REGISTRY, not the hint table alone, so the property
-        // `isToolNotFound` protects holds here too.
+        // The hint normally fires from the sub-invoke catch below, which a
+        // malformed payload never reaches. Gated on the registry, not the hint
+        // table alone, so a real tool of that name still reports its own error.
         if (registry.getTool(params.command) === undefined) {
           const hint = directiveCommandHint(params.command);
           if (hint) return recordNothing(session, hint);
@@ -1549,7 +1361,7 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       }
 
       // Snapshot before the rewrite below mutates `args` in place, so a schema
-      // miss can be re-rendered against the keys the AUTHOR wrote. Shallow is
+      // miss can be re-rendered against the keys the author wrote. Shallow is
       // enough: `rewriteSiblingFlowPath` only deletes and adds top-level keys.
       const authoredArgs = { ...args };
 
@@ -1559,8 +1371,7 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
 
       // Selector capture must read the tree BEFORE the tap runs: a navigating
       // tap (e.g. a list row that opens a detail screen) replaces the screen, so
-      // the tapped element is gone by the time the tap returns. Resolve the
-      // element under the point against the pre-tap tree, then execute.
+      // the tapped element is gone by the time the tap returns.
       const isTap =
         params.command === "gesture-tap" &&
         params.delayMs === undefined &&
@@ -1580,20 +1391,15 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       try {
         toolResult = await invokeSubTool(registry, ctx, params.command, args);
       } catch (err) {
-        // An author's recording vocabulary is the flow file's directives, so
-        // `command: "echo"` lands here as a bare "Tool not found". Only rewrite
-        // a genuine not-found: a tool that ran and failed reports its own error.
+        // Only a genuine not-found; a tool that ran and failed reports its own error.
         const hint = isToolNotFound(err, params.command)
           ? directiveCommandHint(params.command)
           : undefined;
         if (hint) return recordNothing(session, hint);
 
-        // This dispatcher rewrites the args it forwards, so it must not read
-        // the rewrite back to the caller: `rewriteSiblingFlowPath` swaps a
-        // sibling `flow_path` for the equivalent `name`, and the registry can
-        // only describe what it was handed. Re-render against the snapshot;
-        // every other command passes its args through, where this is the same
-        // sentence.
+        // `rewriteSiblingFlowPath` swaps a sibling `flow_path` for the
+        // equivalent `name`, and the registry can only describe what it was
+        // handed, so re-render against the keys the author sent.
         const reframed = describeNestedParamError(
           registry,
           err,
@@ -1610,16 +1416,15 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         });
       }
 
-      // A wait that HELD is asked the runner's tree too, so the author learns
-      // now — not after polish — whether the conversion is safe. One that came
-      // back success:false is reported by CAUSE instead: a genuine miss fails
-      // the step at replay ({@link UNMET_WAIT_WARNING}), while an unreadable
-      // tree source or a cancellation observed nothing
-      // ({@link UNREADABLE_WAIT_WARNING}).
+      // A wait that HELD is asked the runner's tree as well, so the author
+      // learns now — rather than after polish — whether the conversion is safe.
+      // One that came back success:false is reported by CAUSE instead: only a
+      // genuine miss fails the step at replay (see {@link UNMET_WAIT_WARNING});
+      // an unreadable tree or a cancellation observed nothing (see
+      // {@link UNREADABLE_WAIT_WARNING}).
       //
       // The two are filed under different kinds because only the probe's answer
-      // is about converting the step, and `flow-finish-recording` headlines
-      // them separately.
+      // is about converting the step, and the finish counts them separately.
       let waitWarning: { warning: string; kind: "conversion" | "wait" } | undefined;
       if (params.command === AWAIT_UI_ELEMENT_TOOL_ID) {
         if (isUnmetUiWaitResult(params.command, toolResult)) {
@@ -1668,7 +1473,7 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       // settle and readiness gate at replay). Recorded first, it makes the flow
       // an e2e flow. Only the plain bundleId form maps; extra args (e.g. an
       // Android `activity`) keep the raw tool step. `launch-app` is NOT
-      // rewritten — it foregrounds without terminating, a different semantic.
+      // rewritten — it foregrounds without terminating.
       const strippedArgs = stripDeviceKeys(args);
       const isLaunch =
         params.command === "restart-app" &&
@@ -1677,8 +1482,8 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         Object.keys(strippedArgs).length === 1;
 
       // A multi-tap (`clickCount: 2` = double-tap) must survive the rewrite as
-      // `times`, or replay would silently fire a single tap for a recorded
-      // double. Bounds match the tool's clickCount; 1 is the default (absent).
+      // `times`, or replay would fire a single tap for a recorded double.
+      // Bounds match the tool's clickCount; 1 is the default (absent).
       const cc = args.clickCount;
       const tapTimes =
         isTap && typeof cc === "number" && Number.isInteger(cc) && cc >= 2 && cc <= 10
@@ -1702,8 +1507,8 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       } else {
         warning = waitWarning?.warning ?? runTarget?.warning;
         // The step ran live with the full args (incl. the device id), but the
-        // recorded form drops the device id so the flow stays portable — the
-        // runner injects whatever device it resolves at replay.
+        // recorded form drops it so the flow stays portable — the runner injects
+        // whatever device it resolves at replay.
         step = {
           kind: "tool",
           name: params.command,
@@ -1721,13 +1526,10 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       // the verdict to whatever inherits that number (see
       // {@link RecordedStepWarning}).
       //
-      // ONLY this warning is carried, deliberately. The finish summary already
-      // answers the other two by RENDERING what was written — a
-      // `captureTapSelector` refusal reads as `N. tap: (x, y)`, a
-      // `captureRunTarget` refusal as `N. tool: flow-execute {…}` — whereas a
-      // step that will break on conversion renders exactly like one that will
-      // not. {@link fallbackSourceWarning} is neither carried nor legible; that
-      // is a known gap, not this branch's subject.
+      // Only this warning is carried. The finish summary already shows the
+      // other two by rendering what was written: kept coordinates read as
+      // `N. tap: (x, y)`, and a kept raw step reads as `N. tool: flow-execute`.
+      // A step that breaks on conversion renders like one that does not.
       if (waitWarning) {
         (session.stepWarnings ??= new Map()).set(stepCount, {
           ...waitWarning,
@@ -1740,9 +1542,6 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         toolResult,
         stepCount,
         recorded: summarizeStep(step, stepCount),
-        // Host mode: a path. Client mode: the directive that carries the YAML
-        // to the client, which IS the persistence mechanism there — the one
-        // place the full file still has to travel per step.
         savedTo,
       };
     },

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createToolsClient, ToolInvocationError } from "../src/tools-client.js";
+import { createToolsClient, errorBodyMessage, ToolInvocationError } from "../src/tools-client.js";
 
 let server: Server | undefined;
 
@@ -141,8 +141,6 @@ describe("callTool progress streaming", () => {
   });
 
   it("carries a 400's schema issue list beside its prose message", async () => {
-    // The message is a sentence, so it is the `issues` field that lets a caller
-    // map a rejected field back to the flag its own user typed.
     const issues = [{ code: "too_big", path: ["x"], message: "Too big: expected <=1" }];
     await startServer((_req, res) => {
       res.statusCode = 400;
@@ -153,6 +151,42 @@ describe("callTool progress streaming", () => {
     const { callTool } = createToolsClient();
     const err = await callTool("streamy", {}).catch((e: unknown) => e);
     expect((err as ToolInvocationError).issues).toEqual(issues);
+  });
+
+  it("reads the prose from `message`, leaving `error` to an older CLI", async () => {
+    // The 400 sends both: `error` holds the raw issue JSON a CLI released
+    // before `issues` parses, `message` the prose an agent is shown.
+    const issues = [{ code: "too_big", path: ["x"], message: "Too big: expected <=1" }];
+    await startServer((_req, res) => {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          error: JSON.stringify(issues),
+          message: "`x`: Too big: expected <=1. You sent: `x`.",
+          issues,
+        })
+      );
+    });
+
+    const { callTool } = createToolsClient();
+    const err = await callTool("streamy", {}).catch((e: unknown) => e);
+    expect((err as ToolInvocationError).message).toBe("`x`: Too big: expected <=1. You sent: `x`.");
+    expect((err as ToolInvocationError).issues).toEqual(issues);
+  });
+
+  it("keeps `error` as the message when the body carries no `issues`", async () => {
+    // Only the validation pair redirects to `message`; every other error body
+    // still reads `error`, which is the only field they send.
+    await startServer((_req, res) => {
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: "boom", message: "something else entirely" }));
+    });
+
+    const { callTool } = createToolsClient();
+    const err = await callTool("streamy", {}).catch((e: unknown) => e);
+    expect((err as ToolInvocationError).message).toBe("boom");
   });
 
   it("leaves `issues` undefined when the body carries none, or a non-list", async () => {
@@ -178,5 +212,17 @@ describe("callTool progress streaming", () => {
     await expect(callTool("streamy", {}, { onProgress: () => {} })).rejects.toThrow(
       /without a result/
     );
+  });
+});
+
+describe("errorBodyMessage", () => {
+  it("takes the prose only when the body is the validation pair", () => {
+    const issues = [{ code: "too_big", path: ["x"], message: "Too big" }];
+    expect(errorBodyMessage({ error: "[...]", message: "prose", issues })).toBe("prose");
+    // `message` without `issues` is some other body's field, so `error` wins.
+    expect(errorBodyMessage({ error: "boom", message: "prose" })).toBe("boom");
+    expect(errorBodyMessage({ error: "boom" })).toBe("boom");
+    expect(errorBodyMessage({ message: "prose" })).toBe("prose");
+    expect(errorBodyMessage({})).toBeUndefined();
   });
 });

@@ -358,10 +358,9 @@ describe("flow-execute flow_path over HTTP", () => {
   });
 
   it("diagnoses flow_name + an unresolvable flow_path the same way as name", async () => {
-    // The alias names a flow every bit as much as `name` does, so the unwrap
-    // gate has to see it. Keyed on `name` alone this call falls through to the
-    // resolve path and answers with a 422 about re-creating a file the call
-    // never needed, instead of the 400 that names the real mistake.
+    // `unwrapWhenSet` has to list the alias. Keyed on `name` alone this call
+    // falls through to the resolve path and answers 422 about a file it never
+    // needed, instead of the 400 for the real mistake.
     const res = await supertest(handle.app)
       .post("/tools/flow-execute")
       .send({
