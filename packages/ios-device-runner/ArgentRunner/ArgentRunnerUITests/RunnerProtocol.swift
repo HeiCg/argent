@@ -85,6 +85,10 @@ struct CommandRequest: Codable {
   let toY: Double?
   /// `longPress`: press duration. `drag`: duration of the movement.
   let durationMs: Double?
+  /// `drag`: rest the touch at the destination before lifting so the scroll
+  /// view reads ~0 release velocity (no fling) — mirrors the simulator's
+  /// ease-out `settle` swipe.
+  let settle: Bool?
   /// `type`: the text delivered to the focused input.
   let text: String?
   /// `snapshot`: keep only interactive elements.

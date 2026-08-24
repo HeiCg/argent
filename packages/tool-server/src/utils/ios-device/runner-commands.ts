@@ -6,9 +6,10 @@ import type { IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
  * carries `appBundleId` — the runner refuses app commands without an explicit
  * target (see app-session.ts for how the current app is tracked).
  *
- * Coordinates on the wire are absolute POINTS in the app's interaction
- * viewport; Argent tools speak normalized 0-1, so callers convert through
- * `getViewport`.
+ * Coordinates on the wire are absolute POINTS in `XCUIApplication.frame`
+ * (the same rect describe normalizes against). Argent tools speak normalized
+ * 0-1 of that full frame — including the keyboard band, matching the
+ * simulator HID contract — and convert through `getViewport` + `toPoints`.
  */
 
 export interface RunnerViewport {
@@ -25,19 +26,16 @@ interface ViewportData {
   height?: number;
 }
 
-const viewportCache = new Map<string, RunnerViewport>();
-
-/** Interaction viewport for the app, cached per udid+bundle. */
+/**
+ * Application-frame viewport used to invert describe's 0-1 frames.
+ *
+ * Not cached: a stale size (keyboard shown/hidden, rotation) would map the
+ * same 0-1 point onto different pixels than the last `describe`.
+ */
 export async function getViewport(
   api: IosDeviceRunnerApi,
-  bundleId: string,
-  opts: { fresh?: boolean } = {}
+  bundleId: string
 ): Promise<RunnerViewport> {
-  const cacheKey = `${api.udid}|${bundleId}`;
-  if (!opts.fresh) {
-    const cached = viewportCache.get(cacheKey);
-    if (cached) return cached;
-  }
   const data = (await api.run(
     { command: "viewport", appBundleId: bundleId },
     { readOnly: true }
@@ -51,12 +49,18 @@ export async function getViewport(
   if (!(viewport.width > 0) || !(viewport.height > 0)) {
     throw new Error("The app's interaction viewport is unavailable; is the app foregrounded?");
   }
-  viewportCache.set(cacheKey, viewport);
   return viewport;
 }
 
-/** Convert a normalized 0-1 position into absolute viewport points. */
-export function toPoints(viewport: RunnerViewport, nx: number, ny: number): { x: number; y: number } {
+/**
+ * Invert describe's normalization: `nx/ny` are fractions of `viewport`
+ * (Application frame), result is an absolute point in that same space.
+ */
+export function toPoints(
+  viewport: RunnerViewport,
+  nx: number,
+  ny: number
+): { x: number; y: number } {
   return {
     x: viewport.x + Math.max(0, Math.min(1, nx)) * viewport.width,
     y: viewport.y + Math.max(0, Math.min(1, ny)) * viewport.height,
@@ -71,13 +75,35 @@ export async function tapAt(
   await api.run({ command: "tap", appBundleId: bundleId, x: point.x, y: point.y });
 }
 
-/** Coordinate-to-coordinate drag; duration is honored through drag velocity. */
+/** Press-and-hold at a point for `durationMs` (XCUICoordinate press). */
+export async function longPressAt(
+  api: IosDeviceRunnerApi,
+  bundleId: string,
+  point: { x: number; y: number },
+  durationMs: number
+): Promise<void> {
+  await api.run({
+    command: "longPress",
+    appBundleId: bundleId,
+    x: point.x,
+    y: point.y,
+    durationMs,
+  });
+}
+
+/**
+ * Coordinate-to-coordinate drag; duration is honored through drag velocity.
+ * `settle` rests the touch at the destination before lifting, so the scroll
+ * view reads ~0 release velocity and skips its fling — the hardware analogue
+ * of the simulator's ease-out swipe.
+ */
 export async function dragBetween(
   api: IosDeviceRunnerApi,
   bundleId: string,
   from: { x: number; y: number },
   to: { x: number; y: number },
-  durationMs?: number
+  durationMs?: number,
+  settle?: boolean
 ): Promise<void> {
   await api.run({
     command: "drag",
@@ -87,7 +113,13 @@ export async function dragBetween(
     toX: to.x,
     toY: to.y,
     ...(durationMs != null ? { durationMs } : {}),
+    ...(settle ? { settle: true } : {}),
   });
+}
+
+/** Press the hardware Home button (device-scoped; no app target needed). */
+export async function pressHome(api: IosDeviceRunnerApi): Promise<void> {
+  await api.run({ command: "home" });
 }
 
 export async function typeText(
@@ -98,7 +130,10 @@ export async function typeText(
   await api.run({ command: "type", appBundleId: bundleId, text }, { timeoutMs: 60_000 });
 }
 
-export async function pressKeyboardReturn(api: IosDeviceRunnerApi, bundleId: string): Promise<void> {
+export async function pressKeyboardReturn(
+  api: IosDeviceRunnerApi,
+  bundleId: string
+): Promise<void> {
   await api.run({ command: "keyboardReturn", appBundleId: bundleId });
 }
 

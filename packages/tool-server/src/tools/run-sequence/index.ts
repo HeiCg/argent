@@ -70,7 +70,11 @@ type RunSequenceResult = {
 // Gates only the *outer* invocation: every step resolves its own platform from
 // `params.udid` and is gated separately in `execute`.
 const capability: ToolCapability = {
-  apple: { simulator: true },
+  // Physical iOS is a valid outer target: the ported steps (gesture-tap,
+  // gesture-swipe, gesture-custom, button, keyboard, await-ui-element) run
+  // there, and each step's own capability gate below rejects the rest with a
+  // per-step error instead of a blanket 400 on the whole sequence.
+  apple: { simulator: true, device: true },
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
@@ -91,7 +95,8 @@ export function createRunSequenceTool(
       failedMsg: ({ failureSignal }) =>
         `Failed to run interaction sequence: ${failureSignal.error_code}`,
     },
-    description: `Execute multiple device interaction steps in a single call (iOS simulator, Android emulator, Apple TV / Android TV, or Chromium app).
+    description: `Execute multiple device interaction steps in a single call (iOS simulator or physical device, Android emulator, Apple TV / Android TV, or Chromium app).
+On a physical iOS device the supported steps are gesture-tap, gesture-swipe, gesture-custom (press-hold / straight drags), button (home only), keyboard, and await-ui-element; other steps fail at their own capability gate.
 Use when you need sequential actions and do NOT need to observe the screen between them
 (e.g. scrolling multiple times, typing then pressing enter, rotating back and forth).
 Returns { completed, total, steps } with per-step results. Fails if an unrecognised tool name is used in a step (error returned at that step, execution stops).

@@ -16,6 +16,7 @@ import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
+import { describeIosDevice } from "../describe/platforms/ios-device";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
 import { describeVega, vegaRequires } from "../describe/platforms/vega";
@@ -123,7 +124,8 @@ const zodSchema = z
       .string()
       .optional()
       .describe(
-        "Optional iOS app bundle id, passed to the describe fallback (see `describe`). Ignored on Android / Chromium."
+        "Optional iOS app bundle id, passed to the describe fallback (see `describe`). Ignored on Android / Chromium, " +
+          "and on physical iOS devices (there the tree always comes from the app `launch-app` targeted)."
       ),
     timeoutMs: z
       .number()
@@ -244,7 +246,7 @@ function timeoutCause(
 }
 
 const capability: ToolCapability = {
-  apple: { simulator: true },
+  apple: { simulator: true, device: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },
@@ -331,6 +333,11 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
     androidIsTv: boolean
   ): Promise<DescribeTreeData> {
     if (device.platform === "ios") {
+      // Physical devices poll the XCUITest runner snapshot — the same tree
+      // `describe` returns there, so waits and taps see identical frames.
+      if (device.kind === "device") {
+        return describeIosDevice(registry, device);
+      }
       return describeIos(registry, device, { bundleId: params.bundleId }, { isTvOs });
     }
     if (device.platform === "android") {
@@ -367,7 +374,8 @@ The selector is { text?, identifier?, role? }; every provided field must match. 
 case-insensitive substrings of the element's label/value and role; identifier matches exactly (case-insensitive),
 also accepting the unqualified Android resource-id name ('submit' matches 'com.example.app:id/submit').
 It polls the same accessibility / DOM tree as \`describe\`
-(iOS AXRuntime, Android uiautomator, Chromium CDP, Vega automation toolkit) every pollIntervalMs
+(iOS simulator AXRuntime, physical-iOS XCUITest runner snapshot, Android uiautomator, Chromium CDP,
+Vega automation toolkit) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
 
 Returns { success: boolean, elapsed: number, note?, cause? } — success=false means the wait ended without the
@@ -399,8 +407,10 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
 
       // Resolve once, outside the poll loop: an id that isn't listed is never
       // cached, so probing per fetch would re-run `simctl list` / `adb devices`
-      // on every poll.
-      const isTvOs = device.platform === "ios" && (await isTvOsSimulator(device.id));
+      // on every poll. Physical devices skip the tvOS probe: they are never
+      // tvOS simulators, and `simctl` would not list them anyway.
+      const isTvOs =
+        device.platform === "ios" && device.kind !== "device" && (await isTvOsSimulator(device.id));
       const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));
 
       // Clock starts after setup so its fixed cost isn't charged to timeoutMs.

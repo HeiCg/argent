@@ -1,9 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  classifyDevice,
-  isIosPhysicalUdid,
-  resolveDevice,
-} from "../src/utils/device-info";
+import { classifyDevice, isIosPhysicalUdid, resolveDevice } from "../src/utils/device-info";
 import { createRegistry } from "../src/utils/setup-registry";
 
 // Real-world shapes: simulator UUIDs are RFC-4122 (8-4-4-4-12); modern physical
@@ -62,6 +58,17 @@ const PHYSICAL_IOS_PORTED_TOOLS: readonly string[] = [
   "keyboard",
   "gesture-tap",
   "gesture-swipe",
+  // Press-hold / straight drags via the runner's longPress + drag; two-finger
+  // trains and Move waypoints are rejected with authoring guidance.
+  "gesture-custom",
+  // 'home' only — the single hardware button XCUITest exposes.
+  "button",
+  // The wait tools poll describeIosDevice — the same runner snapshot describe
+  // returns, so waits and taps see identical frames.
+  "await-ui-element",
+  "await-screen-idle",
+  // Outer gate only: each step still pre-flights its own capability.
+  "run-sequence",
 ];
 
 describe("apple.device capability ratchet", () => {

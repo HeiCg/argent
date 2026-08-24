@@ -965,7 +965,9 @@ const DEFAULT_LONG_PRESS_MS = 800;
 /**
  * Press-and-hold on a target (same resolution as tap) for `duration` ms. Touch
  * platforms dispatch ONE `gesture-custom` train (Down, then Up delayed by the
- * duration) so the hold length is exact; Chromium has no touch, so the closest
+ * duration) so the hold length is exact; on a physical iOS device that train
+ * maps onto the runner's native `longPress` (XCUICoordinate press), so the
+ * directive replays on hardware unchanged. Chromium has no touch, so the closest
  * honest mapping is a mouse press-hold-release (`gesture-drag` with from == to)
  * — apps implementing pointer-based long-press respond, anything else sees a
  * slow click. A desktop context menu is a *right*-click, deliberately not

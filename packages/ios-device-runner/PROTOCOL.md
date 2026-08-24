@@ -29,6 +29,7 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 | `x`, `y`        | `tap`, `longPress`     | Absolute points in the app's space.        |
 | `fromX/fromY/toX/toY` | `drag`           | Absolute start/end points.                 |
 | `durationMs`    | `longPress`, `drag`    | Press duration / movement duration.        |
+| `settle`        | `drag`                 | Rest at the destination before lifting (~0 release velocity, no fling). |
 | `text`          | `type`                 | Text for the focused input.                |
 | `interactiveOnly`, `depth` | `snapshot`  | Tree filtering.                            |
 
@@ -36,8 +37,9 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 
 App-scoped (require `appBundleId`; the runner foregrounds the target first):
 
-- `viewport` → `{x, y, width, height}` — main-window frame, keyboard band
-  trimmed off when the keyboard dominates the bottom.
+- `viewport` → `{x, y, width, height}` — `XCUIApplication.frame` (full app,
+  keyboard included). Same rect describe normalizes against, so 0–1 tap
+  coordinates invert that mapping.
 - `tap`, `longPress`, `drag` → `{message}` — coordinate gestures via
   XCUICoordinate (public API; orientation-safe).
 - `type` → `{message}` — types into the current first responder.

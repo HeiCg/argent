@@ -1,10 +1,7 @@
 import { z } from "zod";
 import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
-import {
-  iosDeviceRunnerRef,
-  type IosDeviceRunnerApi,
-} from "../../blueprints/ios-device-runner";
+import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { requireCurrentIosDeviceApp } from "../../utils/ios-device/app-session";
 import { dragBetween, getViewport, toPoints } from "../../utils/ios-device/runner-commands";
 import { resolveDevice } from "../../utils/device-info";
@@ -80,8 +77,10 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
     const timestampMs = Date.now();
     const device = resolveDevice(params.udid);
     if (device.platform === "ios" && device.kind === "device") {
-      // XCUITest executes the drag as one planned gesture; its easing profile
-      // is runner-owned, so `settle` has no separate effect on hardware.
+      // XCUITest executes the drag as one planned gesture, so there is no
+      // per-frame easing to shape; `settle` instead rests the touch at the
+      // destination before lifting (runner-side hold), which zeroes the
+      // release velocity the same way the simulator's ease-out does.
       const runner = services.iosDeviceRunner as IosDeviceRunnerApi;
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const viewport = await getViewport(runner, bundleId);
@@ -90,7 +89,8 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
         bundleId,
         toPoints(viewport, params.fromX, params.fromY),
         toPoints(viewport, params.toX, params.toY),
-        duration
+        duration,
+        settle
       );
       return { swiped: true, timestampMs };
     }

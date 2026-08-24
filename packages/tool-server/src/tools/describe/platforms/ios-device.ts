@@ -72,9 +72,11 @@ const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
 };
 
 function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
-  // Reference frame: the shallowest node's rect (the Application root). All
-  // frames normalize against it; XCTest occasionally reports children a point
-  // outside the root, so clamp into [0, 1] to satisfy the contract schema.
+  // Reference frame: the shallowest node's rect (the Application root, i.e.
+  // `XCUIApplication.frame`). Gesture 0-1 is inverted through the runner's
+  // `viewport` command, which returns that same rect — they must stay in lockstep.
+  // XCTest occasionally reports children a point outside the root, so clamp
+  // into [0, 1] to satisfy the contract schema.
   const root = nodes.reduce((a, b) => (b.depth < a.depth ? b : a));
   const refW = root.rect.width > 0 ? root.rect.width : 1;
   const refH = root.rect.height > 0 ? root.rect.height : 1;
