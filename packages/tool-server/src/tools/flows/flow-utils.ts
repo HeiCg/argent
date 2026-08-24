@@ -370,9 +370,11 @@ export async function withFlowFileLock<T>(
  * record NOTHING read the file back to report the step count, and that read
  * must not straddle a restart.
  *
- * Keyed off `session.key`, not re-resolved from (projectRoot, name): {@link
- * resolveFlowKey} touches the filesystem, which would add another await inside
- * the window this lock closes.
+ * Keyed off `session.key`, not re-resolved from (projectRoot, name), for the
+ * reason {@link appendStepToFlow} takes its own lock the same way: the key this
+ * holds and the identity {@link assertSessionStillLive} checks must be one key.
+ * A key that moved under the session — a symlink repointed mid-recording —
+ * would otherwise let a caller hold one lock while asserting about another.
  */
 export async function withRecordingLock<T>(
   session: RecordingSession,
