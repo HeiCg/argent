@@ -454,6 +454,22 @@ describe("flow script executor — exit classification", () => {
     expect(result.log).toContain("seeded");
   });
 
+  it("keeps an output too large for the pipe buffer when the script exits zero", async () => {
+    const ws = workspace();
+    // `process.send` only queues, and the exit that follows leaves before
+    // libuv writes the rest: past about 64 KiB the verdict never arrived, and
+    // the step was reported as self-termination with nothing captured.
+    const script = ws.write(
+      "big-exit.mjs",
+      `output.blob = "x".repeat(900 * 1024);
+       process.exit(0);`
+    );
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(result.failure).toBeUndefined();
+    expect((result.output?.blob as string).length).toBe(900 * 1024);
+  }, 30_000);
+
   it("still fails a script that set process.exitCode and then exited", async () => {
     const ws = workspace();
     // `process.exit()` with no argument keeps the code the script set, so the
