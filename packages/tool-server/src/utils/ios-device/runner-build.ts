@@ -17,7 +17,8 @@ const execFileAsync = promisify(execFile);
  * Device runners must be signed with the USER's Apple team, so artifacts are
  * built lazily on first use (never shipped prebuilt) and cached under
  * ~/.argent/ios-device-runner keyed by a fingerprint of the runner sources,
- * the Xcode/SDK version, and the signing settings. The cache key doubles as
+ * the Xcode/SDK version, and the static xcodebuild arguments (which carry the
+ * signing settings). The cache key doubles as
  * protocol versioning: an Argent update that changes runner sources lands in
  * a new cache directory and rebuilds, so the wire protocol needs no version
  * handshake.
@@ -135,14 +136,18 @@ function findBaseXctestrun(derivedDataPath: string): string | null {
 }
 
 /** Map an xcodebuild signing failure to the config key that fixes it. */
-function resolveSigningHint(output: string): string | null {
+export function resolveSigningHint(output: string): string | null {
   const lower = output.toLowerCase();
   if (lower.includes("requires a development team")) {
     return "Set ARGENT_IOS_TEAM_ID to your Apple Developer Team ID (Xcode > Settings > Accounts).";
   }
   if (
     lower.includes("failed registering bundle identifier") ||
-    lower.includes("is not available")
+    // Bare "is not available" also appears in unrelated failures (destination,
+    // device, OS availability), so it only counts as a bundle-id collision
+    // alongside its real registration context.
+    (lower.includes("is not available") &&
+      (lower.includes("identifier") || lower.includes("registered")))
   ) {
     return (
       "The runner bundle id collided (common on free Personal Team accounts). " +
@@ -159,6 +164,64 @@ function resolveSigningHint(output: string): string | null {
 }
 
 const BUILD_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
+ * The static xcodebuild arguments of a runner build — everything except the
+ * per-run `-destination`/`-derivedDataPath` pair. This exact array is both
+ * what `ensureRunnerArtifact` spawns and the hashed material of the artifact
+ * cache key (`computeRunnerCacheKey`), so any edit here — a flag, signing
+ * plumbing, a bundle-id value — changes the key and forces a rebuild instead
+ * of silently reusing a stale cached artifact.
+ */
+export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigningConfig): string[] {
+  const args = [
+    "build-for-testing",
+    "-project",
+    projectPath,
+    "-scheme",
+    "ArgentRunner",
+    "-parallel-testing-enabled",
+    "NO",
+    "-maximum-concurrent-test-device-destinations",
+    "1",
+    "-allowProvisioningUpdates",
+    "-allowProvisioningDeviceRegistration",
+    // Keep the build lean: no index store, coverage, previews, or sandboxed
+    // script phases — none of them matter for a headless runner artifact.
+    "COMPILER_INDEX_STORE_ENABLE=NO",
+    "ENABLE_CODE_COVERAGE=NO",
+    "ONLY_ACTIVE_ARCH=YES",
+    "ENABLE_PREVIEWS=NO",
+    "ENABLE_DEBUG_DYLIB=NO",
+    // The project reads PRODUCT_BUNDLE_IDENTIFIER from these two settings, so
+    // the per-user rebrand happens here without touching the project file.
+    `ARGENT_RUNNER_APP_BUNDLE_ID=${config.appBundleId}`,
+    `ARGENT_RUNNER_TEST_BUNDLE_ID=${config.testBundleId}`,
+    "CODE_SIGN_STYLE=Automatic",
+  ];
+  if (config.teamId) args.push(`DEVELOPMENT_TEAM=${config.teamId}`);
+  if (config.signingIdentity) args.push(`CODE_SIGN_IDENTITY=${config.signingIdentity}`);
+  if (config.provisioningProfile) {
+    args.push(`PROVISIONING_PROFILE_SPECIFIER=${config.provisioningProfile}`);
+  }
+  return args;
+}
+
+/**
+ * Artifact cache key: sources + toolchain + the static build args. The args
+ * carry the signing config, so hashing them (instead of a hand-bumped version
+ * literal) keys the cache on the full build invocation by construction.
+ */
+export function computeRunnerCacheKey(
+  sourcesHash: string,
+  xcodeVersion: string,
+  staticArgs: readonly string[]
+): string {
+  return createHash("sha256")
+    .update([sourcesHash, xcodeVersion, ...staticArgs].join("\n"))
+    .digest("hex")
+    .slice(0, 16);
+}
 
 /**
  * True when a runner install/launch failure means the (locally provisioned)
@@ -201,21 +264,8 @@ export async function ensureRunnerArtifact(
     fingerprintRunnerSources(projectPath),
     xcodeVersionFingerprint(),
   ]);
-  const cacheKey = createHash("sha256")
-    .update(
-      [
-        "v1",
-        sourcesHash,
-        xcodeVersion,
-        config.teamId ?? "",
-        config.signingIdentity ?? "",
-        config.provisioningProfile ?? "",
-        config.appBundleId,
-        config.testBundleId,
-      ].join("|")
-    )
-    .digest("hex")
-    .slice(0, 16);
+  const staticArgs = runnerBuildStaticArgs(projectPath, config);
+  const cacheKey = computeRunnerCacheKey(sourcesHash, xcodeVersion, staticArgs);
   const derivedDataPath = path.join(cacheRoot(), `cache-${cacheKey}`);
 
   const cached = findBaseXctestrun(derivedDataPath);
@@ -223,15 +273,7 @@ export async function ensureRunnerArtifact(
 
   await fsp.mkdir(derivedDataPath, { recursive: true });
   const args = [
-    "build-for-testing",
-    "-project",
-    projectPath,
-    "-scheme",
-    "ArgentRunner",
-    "-parallel-testing-enabled",
-    "NO",
-    "-maximum-concurrent-test-device-destinations",
-    "1",
+    ...staticArgs,
     "-destination",
     // A concrete device destination (with -allowProvisioningDeviceRegistration)
     // makes automatic signing regenerate the profile to INCLUDE that device —
@@ -239,26 +281,7 @@ export async function ensureRunnerArtifact(
     opts.destinationUdid ? `platform=iOS,id=${opts.destinationUdid}` : "generic/platform=iOS",
     "-derivedDataPath",
     derivedDataPath,
-    "-allowProvisioningUpdates",
-    "-allowProvisioningDeviceRegistration",
-    // Keep the build lean: no index store, coverage, previews, or sandboxed
-    // script phases — none of them matter for a headless runner artifact.
-    "COMPILER_INDEX_STORE_ENABLE=NO",
-    "ENABLE_CODE_COVERAGE=NO",
-    "ONLY_ACTIVE_ARCH=YES",
-    "ENABLE_PREVIEWS=NO",
-    "ENABLE_DEBUG_DYLIB=NO",
-    // The project reads PRODUCT_BUNDLE_IDENTIFIER from these two settings, so
-    // the per-user rebrand happens here without touching the project file.
-    `ARGENT_RUNNER_APP_BUNDLE_ID=${config.appBundleId}`,
-    `ARGENT_RUNNER_TEST_BUNDLE_ID=${config.testBundleId}`,
-    "CODE_SIGN_STYLE=Automatic",
   ];
-  if (config.teamId) args.push(`DEVELOPMENT_TEAM=${config.teamId}`);
-  if (config.signingIdentity) args.push(`CODE_SIGN_IDENTITY=${config.signingIdentity}`);
-  if (config.provisioningProfile) {
-    args.push(`PROVISIONING_PROFILE_SPECIFIER=${config.provisioningProfile}`);
-  }
 
   try {
     await execFileAsync("xcodebuild", args, {
@@ -287,11 +310,25 @@ export async function ensureRunnerArtifact(
 }
 
 /**
+ * Thrown when an .xctestrun contains no test target this module recognizes —
+ * Apple format drift. Typed so the failure surfaces at prepare time with the
+ * true cause; a portless clone would instead launch a runner that never binds
+ * its port, burn the whole ready timeout, and blame signing or a locked
+ * screen.
+ */
+export class XctestrunFormatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "XctestrunFormatError";
+  }
+}
+
+/**
  * Clone the .xctestrun with ARGENT_RUNNER_PORT injected into every test
  * target's env dictionaries (all four maps — xctestrun format v2 nests targets
  * under TestConfigurations). The Swift runner reads the port from its
  * environment and binds it on all interfaces, where usbmux's device-side
- * connect reaches it.
+ * connect reaches it. Throws `XctestrunFormatError` when no target is found.
  */
 export async function prepareXctestrunWithPort(
   xctestrunPath: string,
@@ -308,7 +345,9 @@ export async function prepareXctestrunWithPort(
     "UITestEnvironmentVariables",
     "UITargetAppEnvironmentVariables",
   ];
+  let injectedTargets = 0;
   const injectIntoTarget = (target: Record<string, unknown>): void => {
+    injectedTargets += 1;
     for (const key of envKeys) {
       const env = (target[key] ?? {}) as Record<string, unknown>;
       env["ARGENT_RUNNER_PORT"] = String(port);
@@ -330,6 +369,15 @@ export async function prepareXctestrunWithPort(
   }
   // Format v1: test targets are top-level keys.
   for (const value of Object.values(plist)) if (looksLikeTarget(value)) injectIntoTarget(value);
+
+  if (injectedTargets === 0) {
+    throw new XctestrunFormatError(
+      `xctestrun format not recognized — cannot inject the runner port into ${xctestrunPath}: ` +
+        `no test target with TestBundlePath/TestHostPath found under TestConfigurations or at ` +
+        `the top level. Xcode's .xctestrun format has likely drifted past what this version of ` +
+        `Argent understands.`
+    );
+  }
 
   const jsonPath = xctestrunPath.replace(/\.xctestrun$/, `.env.port-${port}.json`);
   const clonePath = xctestrunPath.replace(/\.xctestrun$/, `.env.port-${port}.xctestrun`);
