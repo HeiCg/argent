@@ -114,21 +114,18 @@ export function scrubSecretValues(
 
 /**
  * {@link scrubSecretValues} over one chunk of a stream, holding back the tail a
- * later chunk could still complete into a value. `final` releases everything,
- * for the last chunk there is.
+ * later chunk could still complete into a value. `final` releases everything.
  *
- * The chunk ends at the first position where a value could still begin, which
- * is what a caller with a truncation limit needs: releasing further would
- * commit either half of a value split across the cut, or a shorter value where
- * the longer one containing it had not arrived yet. It is also all that can be
- * released — past that position no replacement is settled.
+ * The chunk ends at the first position where a value could still begin: past
+ * that position no replacement is settled, and releasing further would commit
+ * either half of a value split across the cut, or a shorter value where the
+ * longer one containing it had not arrived yet.
  */
 export function scrubSecretChunk(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>,
   final: boolean
 ): {
-  /** The scrubbed text, ready to release. */
   emit: string;
   /** Characters at the end of the input kept back, waiting for the next chunk. */
   held: number;

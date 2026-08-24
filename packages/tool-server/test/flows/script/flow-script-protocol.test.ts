@@ -414,9 +414,7 @@ describe("flow script executor — the published layout", () => {
 
     expect(result.ok).toBe(true);
     expect(result.log).toContain("bundled");
-    // Measured at 31-45ms over ten runs on an M-series laptop, both watchdog
-    // threads included; the bound below is headroom for a loaded CI box rather
-    // than a real expectation.
+    // Headroom for a loaded CI box rather than a real expectation.
     expect(roundTripMs, `process start cost: ${roundTripMs}ms`).toBeLessThan(3_000);
   }, 30_000);
 });

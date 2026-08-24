@@ -9,9 +9,6 @@ const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const COPY_SCRIPT = path.join(PACKAGE_ROOT, "scripts", "copy-build-assets.mjs");
 
 /**
- * The files `tsc` leaves behind, and the one build step that puts them in
- * `dist/`.
- *
  * The CI `test -f` guards cover only the published bundle, which copies from
  * `src`; `windows-e2e.yml` and `scripts/ci/vega-vvd-test.sh` boot
  * `packages/tool-server/dist` itself as a real tool server.
@@ -30,11 +27,9 @@ afterEach(() => {
 });
 
 /**
- * A package root holding only the copy script and the assets named in `include`.
- *
- * The script resolves its package root from its own location, so running a copy
- * of it out of a temporary tree is what lets a case leave an asset out — and
- * what keeps every case off the real `dist/`, which a unit test must not
+ * The copy script resolves its package root from its own location, so running a
+ * copy of it out of a temporary tree is what lets a case leave an asset out —
+ * and what keeps every case off the real `dist/`, which a unit test must not
  * materialise on a tree that has never been built.
  */
 function fixtureRoot(include: readonly string[]): string {
