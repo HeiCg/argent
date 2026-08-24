@@ -920,6 +920,71 @@ describe("keyboard clear — Android (adb input)", () => {
       }
     );
 
+    it.each([["no_focused_input"], ["not_editable"]])(
+      "does not claim a clear on %s, where the helper found nothing writable",
+      async (reason) => {
+        // Both reasons say the accessibility layer found no field to write, and
+        // `no_focused_input` says it of the WHOLE screen: the helper sweeps the
+        // active window and then every other one before it answers. The note
+        // opened "so the field was cleared with …" anyway, beside `cleared: true`
+        // and a non-zero `keys` — three statements of the one thing the helper
+        // had just failed to find.
+        const { registry } = registryWithSetText({ matched: false, reason });
+
+        const result = await makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true, text: "abc" },
+          ANDROID
+        );
+
+        expect(result.note).not.toMatch(/the field was cleared with/);
+        expect(result.note).toMatch(/the fallback tried/);
+        // What the numbers beside it mean, and the one remedy that helps here.
+        expect(result.note).toMatch(/`cleared` and `keys` report what was SENT/);
+        expect(result.note).toMatch(/Focus a text field and retry\./);
+        // The ordinary remedy sends the caller to read a field that may not exist,
+        // and is the one thing a secret-filled request must never be told to do.
+        expect(result.note).not.toMatch(/Read the field back/);
+      }
+    );
+
+    it.each([["no_focused_input"], ["not_editable"]])(
+      "drops the read-back guesswork on a clear-only %s, which already knows why",
+      async (reason) => {
+        // The clear-only arm appended "either the screen would not capture, or
+        // the focused field cannot be measured, which is what a password box
+        // always is" — two benign explanations, and not the one the reason had
+        // just given.
+        const { registry } = registryWithSetText({ matched: false, reason });
+
+        const result = await makeAndroidImpl(registry).handler(
+          {},
+          { udid: ANDROID.id, clear: true },
+          ANDROID
+        );
+
+        expect(result.note).not.toMatch(/what a password box always is/);
+        expect(result.note).toMatch(/Focus a text field and retry\./);
+      }
+    );
+
+    it("keeps the plain wording for a refusal, which found a field and was turned down", async () => {
+      // The contrast case. `action_refused` means a focused, editable field said
+      // no, so the chord that follows had something to act on and the ordinary
+      // sentence — and the ordinary remedy — are both right.
+      const { registry } = registryWithSetText({ matched: false, reason: "action_refused" });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/the field was cleared with/);
+      expect(result.note).toMatch(/Read the field back/);
+      expect(result.note).not.toMatch(/Focus a text field and retry/);
+    });
+
     it("rejects un-typeable text before reaching the helper, as the injected path does", async () => {
       // The atomic path COULD carry non-ASCII, but accepting it here would make
       // the same request succeed or fail depending on whether the helper happened
@@ -1256,6 +1321,45 @@ describe("keyboard clear — Android (adb input)", () => {
         .resolveService.mock.calls.length;
       expect(calls).toBe(2);
     });
+
+    it.each([
+      ["one millisecond under WEDGED_RPC_MS", 1_999, 2],
+      ["exactly WEDGED_RPC_MS", 2_000, 1],
+    ])(
+      "decides the cooldown at the boundary, not by how the RPC failed: %s",
+      async (_label, rejectAfterMs, expectedResolves) => {
+        // The threshold is the whole rule: a fast rejection costs nothing to
+        // retry, and only a leg that burns real time is worth a minute of the
+        // weaker clear. Both ARMS are covered above; without the boundary,
+        // widening the constant to 14s — which would re-ask a wedged helper at
+        // every clear — stays green.
+        vi.useFakeTimers();
+        try {
+          const { registry } = registryWithSetText({
+            setText: () =>
+              new Promise((_resolve, reject) =>
+                setTimeout(() => reject(new Error("no answer")), rejectAfterMs)
+              ),
+          });
+          const impl = makeAndroidImpl(registry);
+
+          const first = impl.handler({}, { udid: ANDROID.id, clear: true, text: "a" }, ANDROID);
+          await vi.advanceTimersByTimeAsync(rejectAfterMs);
+          await vi.runAllTimersAsync();
+          await first;
+
+          const second = impl.handler({}, { udid: ANDROID.id, clear: true, text: "b" }, ANDROID);
+          await vi.runAllTimersAsync();
+          await second;
+
+          const calls = (registry as unknown as { resolveService: { mock: { calls: unknown[] } } })
+            .resolveService.mock.calls.length;
+          expect(calls).toBe(expectedResolves);
+        } finally {
+          vi.useRealTimers();
+        }
+      }
+    );
 
     it("keeps trying a start that merely ran out of budget, which is still running", async () => {
       // A slow start is not a refusal: the registry hands the next caller the

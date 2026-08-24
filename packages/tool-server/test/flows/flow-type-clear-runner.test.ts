@@ -477,13 +477,20 @@ function mockRegistry(
    * varying: it is the one that can succeed in a weaker way than asked and say
    * so in a `note`.
    */
-  keyboardResult?: (args: Record<string, unknown>) => unknown
+  keyboardResult?: (args: Record<string, unknown>) => unknown,
+  /**
+   * What any OTHER tool answers, keyed by tool id. Needed because several tools
+   * return a `note` on a perfectly healthy result, and a step report must not
+   * read those as a weakened pass.
+   */
+  otherResults?: Record<string, unknown>
 ): Registry {
   return {
     invokeTool: vi.fn(async (id: string, args: Record<string, unknown>) => {
       calls.push({ id, args });
       if (id === "list-devices") return { devices: [] };
       if (id === "keyboard" && keyboardResult) return keyboardResult(args);
+      if (otherResults && Object.hasOwn(otherResults, id)) return otherResults[id];
       return { ok: true };
     }),
     getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
@@ -646,6 +653,159 @@ describe("type directive — clear dispatch", () => {
     await writeFlow("f", {
       executionPrerequisite: "",
       steps: [{ kind: "tool", name: "keyboard", args: { clear: true, text: "new@example.com" } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.status).toBe("pass");
+    expect(result.steps[0]!.warning).toBeUndefined();
+  });
+
+  it("reads a clear that returned nothing as a pass, not as a cancelled run", async () => {
+    // `dispatchForResult` signals an ABORT by resolving `undefined`, so a tool
+    // that simply returns nothing must be coerced to `null` on the way out.
+    // Without that coercion the step becomes the skip a hang-up produces — with
+    // "run aborted" as its reason and the rest of the flow skipped behind it —
+    // on a clear the device actually carried out.
+    const calls: Call[] = [];
+    const registry = mockRegistry(
+      calls,
+      () => ({ xml: fieldXml("old.remembered.login") }),
+      () => undefined
+    );
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "type", into: { identifier: "email" }, text: "new@example.com", clear: true },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps.map((s) => s.status)).toEqual(["pass"]);
+    // A skip would carry "run aborted" here; a pass carries no reason at all.
+    expect(result.steps[0]!.reason).toBeUndefined();
+  });
+
+  it("leaves a tool step warning-free when its `note` describes a HEALTHY call", async () => {
+    // `note` is not a shared "this went badly" channel. `open-url` attaches a
+    // constant caveat to every http(s) URL, `react-profiler-status` declares the
+    // field REQUIRED and fills it on the running-session path, and
+    // `await-ui-element` explains a `hidden` wait met at once. Reading the key
+    // structurally marked each of those steps ⚠ on every run, for good: the
+    // glyph, the run summary's warning count, and the "only what needs
+    // attention" list all followed — which left the QA-flow rule "resolve every
+    // passing-step warning before completion" impossible to satisfy.
+    const calls: Call[] = [];
+    const WEB_URL_NOTE = "This is a web URL — it opens the native app only if …";
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "open-url": { opened: true, url: "https://example.com", note: WEB_URL_NOTE },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "open-url", args: { url: "https://example.com" } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.status).toBe("pass");
+    expect(result.steps[0]!.warning).toBeUndefined();
+    // Nothing is dropped — the note still rides along where the caller can read it.
+    expect((result.steps[0]!.result as { note?: string }).note).toBe(WEB_URL_NOTE);
+  });
+
+  it("carries a clear's note out of a `run-sequence` step, where it sits one level down", async () => {
+    // `argent-device-interact` prescribes this spelling for a clear that types:
+    // `{ clear: true, text }`, then `{ key: "enter" }`. The note then lands at
+    // `result.steps[i].result.note`, which a top-level read cannot see — so the
+    // step reported a clean green over a clear nothing verified, and the CLI
+    // printed only `✓ 01 tool run-sequence`.
+    const calls: Call[] = [];
+    const NOTE = "keyboard clear: the atomic accessibility replace was not used (…).";
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "run-sequence": {
+        completed: 1,
+        total: 1,
+        steps: [{ tool: "keyboard", result: { typed: "x", keys: 1, cleared: true, note: NOTE } }],
+      },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "tool",
+          name: "run-sequence",
+          args: { steps: [{ tool: "keyboard", args: { clear: true, text: "new@example.com" } }] },
+        },
+      ],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.status).toBe("pass");
+    expect(result.steps[0]!.warning).toBe(NOTE);
+  });
+
+  it("keeps every clear's note when a `run-sequence` holds more than one", async () => {
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "run-sequence": {
+        completed: 2,
+        total: 2,
+        steps: [
+          { tool: "keyboard", result: { cleared: true, note: "first clear was weak." } },
+          { tool: "keyboard", result: { cleared: true, note: "second clear was weak." } },
+        ],
+      },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "run-sequence", args: { steps: [] } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.warning).toBe("first clear was weak. second clear was weak.");
+  });
+
+  it("leaves a `run-sequence` step warning-free when only its other tools carry notes", async () => {
+    // The same scope rule one level down: `await-ui-element` is in
+    // run-sequence's allowed tools and notes a `hidden` condition met at once.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "run-sequence": {
+        completed: 2,
+        total: 2,
+        steps: [
+          {
+            tool: "await-ui-element",
+            result: { success: true, elapsed: 1, note: "condition met immediately — …" },
+          },
+          { tool: "keyboard", result: { typed: "x", keys: 1, cleared: true } },
+        ],
+      },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "run-sequence", args: { steps: [] } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.status).toBe("pass");
+    expect(result.steps[0]!.warning).toBeUndefined();
+  });
+
+  it("leaves a `run-sequence` step warning-free when its result has no steps to read", async () => {
+    // The report crossed the registry boundary as `unknown`. A shape this does
+    // not recognise must leave the step exactly as the runner would report it.
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "run-sequence": { completed: 0, total: 0 },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "run-sequence", args: { steps: [] } }],
     });
 
     const result = asRun(await run(registry));

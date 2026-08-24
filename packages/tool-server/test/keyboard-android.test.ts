@@ -58,7 +58,10 @@ import {
 } from "../src/utils/android-input";
 import { NAMED_KEYS } from "../src/tools/keyboard/key-codes";
 import { InvalidToolInputError } from "../src/utils/capability";
-import { makeAndroidImpl } from "../src/tools/keyboard/platforms/android";
+import {
+  makeAndroidImpl,
+  __resetAtomicClearCooldown,
+} from "../src/tools/keyboard/platforms/android";
 import { createKeyboardTool } from "../src/tools/keyboard";
 import { DependencyMissingError } from "../src/utils/check-deps";
 import type { KeyboardParams } from "../src/tools/keyboard/types";
@@ -361,6 +364,11 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
     // real failure. `mockReset` also restores the `async () => ""` given to
     // `vi.fn`, so the default transport still resolves. Matches `isAndroidTv`
     // on the next line.
+    // The atomic path marks a device whose helper refused to start, and the mark
+    // is module state keyed by serial — which every test here shares. Without
+    // this reset the first clear to fail leaves every LATER test on the injected
+    // path by a different route, and the file stops comparing like with like.
+    __resetAtomicClearCooldown();
     adbShell.mockReset();
     // An empty dump: `readHierarchy` finds no `<hierarchy>` tag, so the clear's
     // read-back measures nothing and never redirects to the delete run. That is
@@ -516,7 +524,9 @@ describe("android keyboard impl — routing, keys count, result shape", () => {
 describe("keyboard tool — android adb preflight (via dispatchByPlatform)", () => {
   beforeEach(() => {
     // Same reason as the describe above — this one also has to survive a
-    // one-shot value left behind by the last test to run there.
+    // one-shot value left behind by the last test to run there, and the atomic
+    // path's per-serial mark left behind with it.
+    __resetAtomicClearCooldown();
     adbShell.mockReset();
     ensureDeps.mockClear();
     ensureDeps.mockResolvedValue(undefined);
