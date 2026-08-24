@@ -971,13 +971,6 @@ const BLOCK_DIRECTIVE_SIBLING_REJECTIONS: Record<
   },
 };
 
-/**
- * This release has no flow output, so a `{{output:...}}` reaching a step would
- * be used LITERALLY — typed into a field, printed by an echo, matched against a
- * screen — and the step would pass having done the wrong thing. The parser
- * refuses one, in exactly the fields that will one day resolve it and nowhere
- * else.
- */
 describe("output references", () => {
   const REFUSALS: [label: string, yaml: string][] = [
     ["an echo message", 'steps:\n  - echo: "created {{output:user.id}}"\n'],
@@ -1035,8 +1028,6 @@ describe("output references", () => {
       "a step inside a when block",
       'steps:\n  - when: { visible: { id: row } }\n    steps:\n      - echo: "{{output:user.id}}"\n',
     ],
-    // The condition and relation keys the rows above never reach: each is its
-    // own arm of the path the message reports.
     ["an exists condition's selector", 'steps:\n  - await: { exists: { id: "{{output:row}}" } }\n'],
     ["a hidden condition's selector", 'steps:\n  - await: { hidden: { id: "{{output:row}}" } }\n'],
     ["an after relation", 'steps:\n  - tap: { id: row, after: { id: "{{output:card}}" } }\n'],
@@ -1064,8 +1055,6 @@ describe("output references", () => {
   });
 
   it("addresses a condition's selector and its expectation apart", () => {
-    // One path for both would name a single field for two places, and this
-    // message is the only thing the author has to act on.
     const fieldNamed = (yaml: string): string => {
       try {
         parseFlow(yaml);
@@ -1097,9 +1086,6 @@ describe("output references", () => {
   });
 
   it("addresses a relation scope apart from the target it narrows", () => {
-    // The path has to descend, or a reference in a `within`/`after`/`next`
-    // scope is reported at the key one level up — which holds a different,
-    // innocent value.
     const fieldNamed = (yaml: string): string => {
       try {
         parseFlow(yaml);
@@ -1120,10 +1106,6 @@ describe("output references", () => {
   });
 
   it("addresses a gesture target under `on:` exactly when the step spells it there", () => {
-    // The four gesture kinds hang their target under `on:` the moment they
-    // carry an option beside it — always, for pinch and rotate, whose scale and
-    // angle are required — so a fixed prefix would name a key half of them do
-    // not have.
     const fieldNamed = (yaml: string): string => {
       try {
         parseFlow(yaml);
@@ -1151,9 +1133,6 @@ describe("output references", () => {
   });
 
   it("names the constraint where two spellings parse the same", () => {
-    // The step does not remember which spelling it was written as, so these
-    // paths name the constraint rather than a key the file carries; the message
-    // quotes the offending value beside the path, which is what locates it.
     const fieldNamed = (yaml: string): string => {
       try {
         parseFlow(yaml);
@@ -1165,14 +1144,10 @@ describe("output references", () => {
       throw new Error(`expected parseFlow to reject: ${yaml}`);
     };
 
-    // A bare-string target carries no key at all.
     expect(fieldNamed('steps:\n  - tap: "{{output:row}}"\n')).toBe("tap.text");
     expect(
       fieldNamed('steps:\n  - scroll-to: { target: "{{output:row}}", direction: down }\n')
     ).toBe("scroll-to.target.text");
-    // An `on:` with no option beside it round-trips without the wrapper, so the
-    // path follows the spelling the file would be rewritten to, not the one it
-    // was read from.
     expect(fieldNamed('steps:\n  - tap: { on: { id: "{{output:row}}" } }\n')).toBe("tap.id");
   });
 
@@ -1211,9 +1186,6 @@ describe("output references", () => {
   });
 
   it("survives a cyclic tool-args anchor rather than blowing the stack", () => {
-    // `args:` is unconstrained, so a YAML anchor can make it cyclic. The scan
-    // has to walk one without recursing forever — and still find a reference
-    // beside it.
     expect(() =>
       parseFlow("steps:\n  - tool: keyboard\n    args: &a\n      self: *a\n")
     ).not.toThrow();
@@ -1225,9 +1197,6 @@ describe("output references", () => {
   });
 
   it("reaches a leaf inside the two containers own properties do not show", () => {
-    // A `%YAML 1.1` document materializes `!!set` and `!!omap` as a real Set
-    // and Map, whose contents Object.entries reports as none — so a walk of own
-    // properties alone would call an args block clean it could not see into.
     expect(() =>
       parseFlow(
         '%YAML 1.1\n---\nsteps:\n  - tool: t\n    args:\n      inner: !!set\n        ? "{{output:x}}"\n'
@@ -1241,16 +1210,10 @@ describe("output references", () => {
   });
 
   it("leaves fields off the supported list alone", () => {
-    // A launch app id is resolved before any step runs, so a reference there is
-    // an ordinary (wrong) app id — refusing it would refuse a flow the release
-    // that resolves references still would not resolve.
     expect(parseFlow('steps:\n  - launch: "com.acme.{{output:app}}"\n').steps[0]).toEqual({
       kind: "launch",
       app: "com.acme.{{output:app}}",
     });
-    // A Chromium launch's `args` is arbitrary CLI text rather than an id or a
-    // path, and unscanned for the same reason: the definition is resolved
-    // before step 1.
     expect(
       parseFlow(
         'steps:\n  - launch: { chromium: { path: ./app, args: ["--seed={{output:order.id}}"] } }\n'
@@ -1259,9 +1222,6 @@ describe("output references", () => {
       kind: "launch",
       app: { chromium: { path: "./app", args: ["--seed={{output:order.id}}"] } },
     });
-    // A nested flow path is static too, and unlike the two below a reference
-    // does survive in one: only the final segment is charset-checked, so a
-    // directory segment carries it through.
     expect(parseFlow('steps:\n  - run: "{{output:x}}/login.yaml"\n').steps[0]).toEqual({
       kind: "run",
       flow: "{{output:x}}/login.yaml",
@@ -1269,10 +1229,6 @@ describe("output references", () => {
   });
 
   it("refuses the three unscanned names whose own charset already forbids one", () => {
-    // A `run:` target, a `script:` filename and a `snapshot` name are off the
-    // supported list, but each fails its own name rule before the scan would
-    // matter — so the exclusion above costs nothing here, and a rule that later
-    // loosened would show up as one of these passing.
     expect(() => parseFlow('steps:\n  - run: "{{output:x}}"\n')).toThrow(/must end in .yaml/);
     expect(() => parseFlow('steps:\n  - script: { path: "{{output:x}}.mjs" }\n')).toThrow(
       /filename must match/
@@ -1283,9 +1239,6 @@ describe("output references", () => {
   });
 
   it("cuts a long offending value in the message rather than quoting all of it", () => {
-    // The same ceiling every rendered flow entry takes, and for the same
-    // reason: this message travels verbatim into a step report, so without the
-    // cut one pathological value sets the size of the report.
     const filler = "x".repeat(400);
     let message = "";
     try {
@@ -1317,7 +1270,6 @@ describe("output references", () => {
   });
 
   it("does not confuse a secret placeholder for one", () => {
-    // `{{secret:NAME}}` is a released syntax with its own resolution layer.
     expect(
       parseFlow('steps:\n  - type: { into: { id: pw }, text: "{{secret:APP_PASSWORD}}" }\n')
         .steps[0]

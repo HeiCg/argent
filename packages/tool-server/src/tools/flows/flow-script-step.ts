@@ -19,7 +19,6 @@ import {
  * anchor and its own run-scoped extras.
  */
 
-/** The half of a `script` step's report the step itself decides. */
 interface FlowScriptStepOutcome {
   status: "pass" | "fail" | "error";
   reason?: string;
@@ -29,9 +28,7 @@ interface FlowScriptStepOutcome {
 
 interface FlowScriptStepRun {
   outcome: FlowScriptStepOutcome;
-  /** Absent exactly when the step was refused before the executor was reached. */
   result?: FlowScriptResult;
-  /** NOT the same question as "is there a result" — see {@link scriptRan}. */
   ran: ScriptRan;
 }
 
@@ -47,11 +44,6 @@ interface FlowScriptStepRequest {
   signal?: AbortSignal;
 }
 
-/**
- * The path is checked HERE, at the step, and nowhere earlier — nothing
- * preflights the reachable flow graph, so a wrong script path fails at its own
- * step exactly as a wrong `run:` target does (`execRunStep` in flow-run.ts).
- */
 export async function runFlowScriptStep(
   request: FlowScriptStepRequest
 ): Promise<FlowScriptStepRun> {
@@ -71,9 +63,6 @@ export async function runFlowScriptStep(
   // refuses — a basename matching nothing at all is an ordinary missing file,
   // reported below, and an unreadable listing vouches for nothing.
   if (spelling.state === "case_folded") {
-    // Quote a replacement path only when parseScriptPath would accept one
-    // (`addressable` tests the same SCRIPT_FILE_NAME_PATTERN), keeping the
-    // target's directory prefix so the hint is a line the author can paste.
     const recovery = spelling.addressable
       ? `write it as "${target.slice(0, target.length - suppliedBase.length)}${spelling.actual}"`
       : `rename "${spelling.actual}" to "${suppliedBase}" to run it — a script filename must ` +
@@ -90,10 +79,6 @@ export async function runFlowScriptStep(
     };
   }
 
-  // Checked before the fork so the report names the file the step looked for.
-  // The executor reports a missing module too — as a `load` failure, hence the
-  // matching `fail` status — but its message carries only the specifier Node
-  // was given, which says nothing about which flow file it was resolved against.
   const missing = await scriptFileProblem(canonical);
   if (missing) {
     return {
@@ -107,10 +92,6 @@ export async function runFlowScriptStep(
 
   const result = await flowScriptExecutor().execute({
     scriptPath: canonical,
-    // An empty input document: nothing threads flow output between steps yet,
-    // so a script's only inputs are the environment allowlist and its own
-    // files. What comes BACK is returned to the caller — the runner discards
-    // it, the recorder shows it to the agent.
     output: {},
     ...(step.timeout !== undefined ? { timeoutMs: step.timeout } : {}),
     projectRoot: request.projectRoot,
@@ -125,9 +106,6 @@ export async function runFlowScriptStep(
     outcome: {
       ...scriptVerdict(result),
       ...(result.log ? { scriptLog: result.log } : {}),
-      // Carried independently of the log: a run-wide budget an earlier step
-      // exhausted drops a later script's output entirely, and a report with
-      // neither text nor flag would say the script printed nothing.
       ...(result.logTruncated ? { scriptLogTruncated: true } : {}),
     },
     result,
@@ -135,10 +113,8 @@ export async function runFlowScriptStep(
   };
 }
 
-/** Whether the author's script left state behind. See {@link scriptRan}. */
 export type ScriptRan = "yes" | "no" | "unknown";
 
-/** The failure kinds the executor reports WITHOUT ever forking a child. */
 const NEVER_FORKED: ReadonlySet<FlowScriptFailureKind> = new Set(["invalid", "spawn", "queue"]);
 
 /**
@@ -170,11 +146,6 @@ function scriptRan(result: FlowScriptResult): ScriptRan {
   return kind === "protocol" ? "unknown" : "yes";
 }
 
-/**
- * Why the resolved script file cannot be run, or null when it can be.
- *
- * `stat`, not `access`: a directory named `seed.mjs` is readable.
- */
 async function scriptFileProblem(canonical: string): Promise<string | null> {
   try {
     const stat = await fs.stat(canonical);
@@ -240,8 +211,6 @@ function scriptFailureStatus(kind: FlowScriptFailureKind): "fail" | "error" {
     case "invalid":
       return "error";
     default: {
-      // A kind added to the executor without a verdict here defaults to
-      // `error`, never `fail`: `fail` would blame the flow for the host's doing.
       const unclassified: never = kind;
       void unclassified;
       return "error";

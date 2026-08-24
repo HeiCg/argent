@@ -16,11 +16,6 @@ import { runFlowScriptStep } from "./flow-script-step";
 import { utf8SafeCut } from "./script/flow-script-executor";
 import { summarizeStep } from "./flow-finish-recording";
 
-/**
- * Bound on the JSON document shown in one tool result. The executor's own
- * `SCRIPT_MAX_OUTPUT_BYTES` is a MiB, and it bounds what a script may RETURN
- * rather than what may be handed on.
- */
 const OUTPUT_RENDER_LIMIT_BYTES = 64 * 1024;
 
 const zodSchema = z.object({
@@ -48,15 +43,9 @@ const zodSchema = z.object({
 interface FlowAddScriptResult {
   message: string;
   status: "pass" | "fail" | "error";
-  /** Why it did not pass, or an executor note on a pass (a clamped time limit). */
   reason?: string;
   log?: string;
-  /** A log limit dropped some of that output — the text carries no marker. */
   logTruncated?: true;
-  /**
-   * Absent exactly when the step was refused before the executor was called at
-   * all — a path that resolved to no file, or to one mis-cased on disk.
-   */
   durationMs?: number;
   /**
    * The document the script returned, as JSON text. Present only on a pass.
@@ -67,12 +56,7 @@ interface FlowAddScriptResult {
    * this server does not author.
    */
   outputJson?: string;
-  /**
-   * `outputJson` was cut at {@link OUTPUT_RENDER_LIMIT_BYTES}, so it does not
-   * parse as JSON. Its own field because the text holds no marker.
-   */
   outputTruncated?: true;
-  /** Steps in the recording. Unchanged by a call that did not record. */
   stepCount: number;
   recorded?: string;
   savedTo?: FlowSavedTo;
@@ -99,15 +83,9 @@ function renderOutput(output: Record<string, unknown>): {
   return { outputJson: kept.toString("utf8"), outputTruncated: true };
 }
 
-/**
- * `script:` is a directive the runner owns, so there is nothing for
- * `flow-add-step` to dispatch: this tool executes the file itself and records
- * the step only if it passes.
- */
 export const flowAddScriptTool: ToolDefinition<z.infer<typeof zodSchema>, FlowAddScriptResult> = {
   id: "flow-add-script",
   interaction: {
-    // Name the flow: concurrent recordings interleave their lines in one log.
     startedMsg: ({ params }) => `Running script for flow ${params.name}`,
     completedMsg: ({ params, result }) =>
       result.status === "pass"
@@ -137,9 +115,6 @@ Refused for a recording whose project root is not on this tool server's filesyst
   async execute(_services, params, ctx) {
     const session = await requireRecordingSession(params.project_root, params.name);
 
-    // The same boundary `assertUploadSelfContained` draws for an uploaded flow:
-    // in a "client" recording `filePath` names a file on the AGENT's machine,
-    // so there is nothing here to resolve `path` against and nothing to execute.
     if (session.persist !== "host") {
       throw new FailureError(
         `Cannot record a script step for "${params.name}": this recording's project root is not ` +
@@ -174,9 +149,6 @@ Refused for a recording whose project root is not on this tool server's filesyst
         : {}),
     };
 
-    // The anchor the RUNNER will use for this step. Canonical, because a
-    // recording made through a symlinked flow file replays against the link's
-    // target directory, where the same relative path can resolve elsewhere.
     const flowDir = nodePath.dirname(await canonicalFlowPath(session.filePath));
 
     // Run BEFORE taking the flow-file lock: a script may run for minutes, and
@@ -201,13 +173,6 @@ Refused for a recording whose project root is not on this tool server's filesyst
     };
 
     if (outcome.status !== "pass") {
-      // Nothing is appended, unlike flow-add-step, which records a step
-      // whenever the tool call returns: a failed script did not establish the
-      // state the rest of the recording is about to be walked against.
-      //
-      // What to do next turns on whether the script left anything behind,
-      // which is not the same as whether there is a result — and which one
-      // failure kind cannot answer. See `ran` in flow-script-step.
       const nextMove =
         ran === "yes"
           ? `Whatever the script did before it stopped is still done: nothing was rolled back, so ` +
@@ -225,9 +190,6 @@ Refused for a recording whose project root is not on this tool server's filesyst
       };
     }
 
-    // The script has already run and passed, so an append failure is re-thrown
-    // carrying the one thing the raw error would not say: whatever the script
-    // created is still there.
     let savedTo: FlowSavedTo;
     let stepCount: number;
     try {
@@ -239,9 +201,6 @@ Refused for a recording whose project root is not on this tool server's filesyst
           error_code: FAILURE_CODES.FLOW_FILE_WRITE_FAILED,
           failure_stage: "flow_add_script_append",
           failure_area: "tool_server",
-          // `unknown`, as every other throw of this code is: the fallback
-          // catches a raw filesystem error that reached here carrying no
-          // diagnosis of its own, and nothing about the CALL was invalid.
           error_kind: "unknown",
         },
         `The script "${step.path}" ran and passed in ${result!.durationMs}ms and nothing it did ` +

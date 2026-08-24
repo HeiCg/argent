@@ -3,24 +3,6 @@ import * as path from "node:path";
 import { classifyOnDiskSpelling, type OnDiskSpelling } from "./flow-utils";
 
 /**
- * One hop from a flow file to a file it NAMES, and the canonicalization that
- * hop is built on.
- *
- * Both names a flow file can carry — a `run:` target's YAML, a `script:` step's
- * `.mjs` — resolve through here, which is the point: "a script path resolves
- * exactly like a `run:` target" is then a fact about the code rather than two
- * implementations that happen to agree.
- *
- * Not to be confused with `flow-utils.ts`' own private `canonicalFlowPath`,
- * which answers a different question — the identity a RECORDING is keyed by,
- * following a dangling symlink by hand so a not-yet-created file still resolves
- * to one key.
- */
-
-/**
- * The cycle guard's identity key, and the root anchor derivation (flowsDir +
- * runStack seed).
- *
  * The input must arrive with any `..` segments intact (no path.resolve/join
  * over the string): a `..` that follows a symlinked directory component names
  * the parent of the link's TARGET, which only the kernel can know, so a lexical
@@ -49,7 +31,6 @@ export async function canonicalFlowPath(p: string): Promise<string> {
 }
 
 interface ResolvedFlowRelativeFile {
-  /** What the kernel resolves the as-written join to. */
   canonical: string;
   spelling: OnDiskSpelling;
 }
@@ -77,11 +58,6 @@ interface ResolvedFlowRelativeFile {
  *   so a mis-cased spelling of the link's own name would go unjudged.
  *   `path.dirname` removes a segment without collapsing `..`, so a `..` still
  *   reaches readdir intact.
- *
- * `addressable` only decides whether a `case_folded` verdict can point the
- * author at the on-disk spelling or has to ask for a rename; the callers word
- * their own refusals, because "mis-cased fragment reference" and "mis-cased
- * script path" send an author to different places.
  *
  * There is deliberately NO path fence here. A target is reachable exactly when
  * the tool-server user can read it, which is the reach the front door already

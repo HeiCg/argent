@@ -204,8 +204,6 @@ describe("tool interaction messages", () => {
         savedTo: "project",
       },
       "flow-add-echo": { message: "", stepCount: 1, savedTo: "project" },
-      // `status` is what this tool's completedMsg branches on: a failed script
-      // records nothing, and the line has to say so.
       "flow-add-script": {
         message: "",
         status: "pass",

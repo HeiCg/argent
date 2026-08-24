@@ -26,12 +26,7 @@ const LIVE_AUTHORING = path.resolve(
   __dirname,
   "../../../skills/skills/argent-create-flow/references/live-authoring.md"
 );
-/** How every count below is spelled in prose, indexed by the count itself. */
 const SPELLED = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight"];
-/**
- * The surfaces that quote the NUMBER of permitted unrecorded insertions rather
- * than listing them — same failure mode as the warning count below.
- */
 const INSERTION_COUNT_CITATIONS = [
   path.resolve(__dirname, "../../../skills/skills/argent-qa-flows/SKILL.md"),
 ];
@@ -137,8 +132,6 @@ describe("create-flow idle docs", () => {
       "\nKeep raw forms only"
     );
     const listed = [...list.matchAll(/^- /gm)].length;
-    // Guard the reader itself: a list that stopped matching would count 0 and
-    // then agree with nothing, which is not the failure worth reporting.
     expect(listed).toBeGreaterThan(1);
     const spelled = SPELLED[listed];
     expect(spelled, `no spelling for ${listed} insertions`).toBeDefined();
@@ -149,9 +142,6 @@ describe("create-flow idle docs", () => {
       expect(quotes.length, `${file} no longer cites the insertion count`).toBeGreaterThan(0);
       for (const quote of quotes) expect(quote[1], file).toBe(spelled);
     }
-    // The core skill spells the list out instead of counting it, so it drifts
-    // the other way: by keeping an item the reference has dropped, or losing
-    // one it still has.
     const skill = readFileSync(SKILL, "utf8");
     for (const token of ["`snapshot:`", "`await: { idle: true }`", "Chromium"]) {
       expect(skill, `the core skill no longer names ${token} as an insertion`).toContain(token);
@@ -196,29 +186,16 @@ describe("create-flow idle docs", () => {
   });
 });
 
-/**
- * The `flow-add-script` account in the live-authoring reference. It opens with
- * the NUMBER of return fields it then explains, which is the same drift the two
- * counts above are guarded against - and the paragraph it counts is the only
- * place an agent is told which fields carry something the field name does not.
- */
 describe("create-flow script-recording docs", () => {
   it("counts the return fields the paragraph goes on to explain", () => {
     const paragraph = readFileSync(LIVE_AUTHORING, "utf8")
       .split("\n")
       .find((line) => line.includes("return fields are not self-evident"));
     expect(paragraph, `${LIVE_AUTHORING} no longer counts the return fields`).toBeDefined();
-    // Each field is introduced at the start of its own sentence, which is what
-    // separates the ones being explained from the ones the prose only mentions
-    // in passing - `log`, and `outputJson` a second time in the last sentence.
     const explained = [...paragraph!.matchAll(/\.\s+`(\w+)`/g)].map((m) => m[1]!);
-    // Guard the reader itself: a rewritten paragraph would count 0 and then
-    // agree with nothing, which is not the failure worth reporting.
     expect(explained.length).toBeGreaterThan(1);
     const spelled = SPELLED[explained.length];
     expect(spelled, `no spelling for ${explained.length} fields`).toBeDefined();
-    // The count opens the sentence, so it is the one citation of a number in
-    // these docs that is capitalised.
     const counted = paragraph!.match(/^(\w+) return fields are not self-evident\./);
     expect(counted, `${LIVE_AUTHORING} no longer opens that paragraph with a count`).not.toBeNull();
     expect(counted![1]!.toLowerCase(), explained.join(", ")).toBe(spelled);

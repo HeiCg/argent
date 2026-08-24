@@ -1386,9 +1386,6 @@ describe("a restart that lands while a step is still running", () => {
   });
 
   it("tells a superseded SCRIPT that the script ran, not that a device did", async () => {
-    // A script step touched no device, so its author must not be sent looking
-    // for one to undo — but it is not free like an echo either: the process ran,
-    // and whatever it created is still there.
     const root = await makeRoot("supersede-script");
     await start(root, "alpha");
 
@@ -1405,16 +1402,11 @@ describe("a restart that lands while a step is still running", () => {
     expect((await restarting).restarted).toBe(true);
 
     const err = await captureFailure(recording);
-    // The append's own diagnosis survives, signal included — the recorder wraps
-    // it rather than replacing it.
     expect(getFailureSignal(err)?.failure_stage).toBe("flow_session_superseded");
     expect((err as Error).message).toContain("Nothing was added to the flow file");
     expect((err as Error).message).toContain("the script already ran");
     expect((err as Error).message).not.toContain("already ran on the device");
     expect((err as Error).message).toContain("fresh name");
-    // The result object never reaches the caller on this path, so the error is
-    // the only place the run — and the log and output document lost with it —
-    // can be reported.
     expect((err as Error).message).toMatch(
       /ran and passed in \d+ms and nothing it did was rolled back/
     );

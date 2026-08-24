@@ -197,13 +197,6 @@ describe("an executor note on the step report", () => {
   });
 });
 
-/**
- * The recorder's verdict and the runner's must never disagree: a step recorded
- * green that replays red is the failure the whole tool exists to prevent, and
- * it would be invisible — the recording reported a pass. There is one
- * {@link scriptVerdict} and one path to it, so this asks the property of the
- * pair rather than restating the table a second time.
- */
 describe("the recorder reports the verdict the runner will", () => {
   it.each(Object.keys(VERDICTS) as FlowScriptFailureKind[])(
     "agrees with the runner about a %s failure",
@@ -217,8 +210,6 @@ describe("the recorder reports the verdict the runner will", () => {
       expect(recorded.status).toBe(scriptVerdict(result).status);
       expect(recorded.status).toBe(replayed.status);
       expect(recorded.reason).toBe(replayed.reason);
-      // No failing verdict, on either side of the fail/error line, puts a step
-      // into the flow file.
       expect(await recordedSteps()).toEqual([]);
     }
   );
@@ -275,9 +266,6 @@ describe("the recorder reports the verdict the runner will", () => {
   });
 
   it("hands the executor the caller's cancellation signal", async () => {
-    // `longRunning` stops the adapter aborting the call, so this forwarding is
-    // the only cancellation left — and a caller that gave up must not leave a
-    // script holding an executor slot until the step's own time limit.
     executeMock.mockResolvedValue(outcome({ ok: true, output: {} }));
     const controller = new AbortController();
 

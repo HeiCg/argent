@@ -364,13 +364,6 @@ describe("flow-add-echo", () => {
   });
 });
 
-/**
- * A step the recorder BUILDS was never YAML, so a rule enforced only where an
- * entry is parsed would see it for the first time on the way back in — after
- * the file has been written. `validateFlow` runs before the serialize, on both
- * persistence modes: refused there it costs one call, refused on the way back
- * in it costs the take.
- */
 describe("a step the recorder refuses", () => {
   it("leaves the flow file exactly as it was, and the recording usable", async () => {
     await flowStartRecordingTool.execute({}, { name: "poison", project_root: tmpDir });
@@ -382,9 +375,6 @@ describe("a step the recorder refuses", () => {
 
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toContain("output reference");
-    // Nothing reached disk, so the NEXT call still reads a file it can parse,
-    // instead of the recording being stuck re-throwing on a step nobody can
-    // remove without a mid-recording hand edit.
     expect(parseFlow(await onDisk("poison")).steps).toEqual([{ kind: "echo", message: "one" }]);
 
     await flowInsertEchoTool.execute({}, { name: "poison", project_root: tmpDir, message: "two" });
@@ -396,9 +386,6 @@ describe("a step the recorder refuses", () => {
   });
 
   it("keeps a client-mode recording just as clean", async () => {
-    // The client-mode branch never parses at all — the in-memory copy IS the
-    // take there — so the append's rollback is what keeps the rejected step out
-    // of it.
     const clientRoot = path.join(os.tmpdir(), "not-on-this-host", "agent-project");
     const ctx = {
       artifacts: new ArtifactStore(),
@@ -422,11 +409,6 @@ describe("a step the recorder refuses", () => {
   });
 
   it("says the tool call already ran when the refusal lands after it", async () => {
-    // `flow-add-step` dispatches the tool and THEN appends, so this refusal
-    // lands after the action has happened on the device. The refusal alone
-    // reads as "nothing happened", and the natural next move — drop the
-    // reference, write the real value, call again — fires the action a second
-    // time.
     const registry = createMockRegistry({ keyboard: { result: { typed: "…", keys: 15 } } });
     const tool = createFlowAddStepTool(registry);
     await flowStartRecordingTool.execute(
@@ -449,17 +431,11 @@ describe("a step the recorder refuses", () => {
     expect(registry.invokeTool).toHaveBeenCalledWith("keyboard", { text: "{{output:code}}" });
     expect((err as Error).message).toContain("`keyboard` call already ran");
     expect((err as Error).message).toContain("output reference");
-    // The wrap keeps the original diagnosis's signal rather than substituting
-    // its own fallback.
     expect(getFailureSignal(err as Error)?.error_code).toBe(FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED);
     expect(parseFlow(await onDisk("already-ran")).steps).toEqual([]);
   });
 
   it("leaves the refusals it did not introduce worded as they were", async () => {
-    // The wrap is scoped to the one refusal carrying `flow_output_reference`. A
-    // leading launch under an executionPrerequisite refuses on the same
-    // post-execution path and reads the same way, and is deliberately left as
-    // it was.
     const registry = createMockRegistry({ "restart-app": { result: { restarted: true } } });
     const tool = createFlowAddStepTool(registry);
     await flowStartRecordingTool.execute(

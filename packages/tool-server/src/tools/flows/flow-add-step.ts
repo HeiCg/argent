@@ -1058,12 +1058,6 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         };
       }
 
-      // The tool call has already run by the time the append can refuse the
-      // step, and the `{{output:` refusal says only "remove it and write the
-      // value the flow needs" — so the natural next move, do that and call
-      // again, fires the device action a second time. It is re-thrown carrying
-      // what already happened, keeping its own diagnosis and failure signal,
-      // the way `flow-add-script` wraps its append failure.
       let savedTo: FlowSavedTo;
       let stepCount: number;
       try {
