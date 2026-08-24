@@ -243,10 +243,7 @@ describe("tool interaction messages", () => {
   });
 
   it("does not announce a recorded step on the paths that record nothing", () => {
-    // The guidance paths (a nested recorder tool as `command`, a flow-directive
-    // name) return SUCCESSFULLY and append nothing, so the completion line
-    // fires — and must not read "Added echo step" in the same log where the
-    // result body says nothing was recorded.
+    // The guidance paths (a nested recorder tool, a flow directive) succeed and record nothing.
     const completedMsg =
       definitionsById(createRegistry()).get("flow-add-step")!.interaction!.completedMsg!;
     const params = { name: "checkout", project_root: "/tmp/proj", command: "echo" };
@@ -263,11 +260,8 @@ describe("tool interaction messages", () => {
   });
 
   it("joins the record-nothing RESULT to the line the registry actually logs", async () => {
-    // The case above pins `completedMsg` against a hand-built result, and the
-    // recorder's own tests call `execute()` directly, so nothing else joins the
-    // two halves: adding `recorded: ""` to `recordNothing` restores the
-    // contradiction with the whole suite green. So drive a real recording
-    // through a real Registry and read the completion event.
+    // The case above builds the result by hand, so `recorded: ""` in `recordNothing` would
+    // flip this line with the suite green. Drive a real recording instead.
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "interaction-msg-"));
     try {
       await flowStartRecordingTool.execute(
@@ -280,8 +274,7 @@ describe("tool interaction messages", () => {
       const completions: string[] = [];
       registry.events.on("toolCompleted", (_id, _callId, _ms, msg) => completions.push(msg));
 
-      // `command: "echo"` is a flow directive, not a tool: flow-add-step answers
-      // with guidance and records nothing.
+      // `echo` is a flow directive, not a tool, so flow-add-step records nothing.
       const result = await registry.invokeTool<{ recorded?: string }>("flow-add-step", {
         name: "checkout",
         project_root: tmpDir,

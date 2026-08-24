@@ -141,8 +141,6 @@ describe("callTool progress streaming", () => {
   });
 
   it("carries a 400's schema issue list beside its prose message", async () => {
-    // The message is a sentence, so it is the `issues` field that lets a caller
-    // map a rejected field back to the flag its own user typed.
     const issues = [{ code: "too_big", path: ["x"], message: "Too big: expected <=1" }];
     await startServer((_req, res) => {
       res.statusCode = 400;

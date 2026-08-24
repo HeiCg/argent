@@ -163,17 +163,13 @@ describe("create-flow idle docs", () => {
 });
 
 /**
- * The two agent-facing surfaces that ENUMERATE the directive answers rather
- * than citing them: the recorder-contract paragraph and flow-add-step's own
- * `description`. Each must list every directive `directiveCommandHint` answers,
- * or an author reads that the recorder names a recording tool and is then told
- * no tool does.
+ * The two surfaces that enumerate the directive answers instead of citing them:
+ * the recorder-contract paragraph and flow-add-step's own `description`.
  */
 describe("create-flow directive-answer docs", () => {
   const answered = STEP_DIRECTIVE_KEYS.filter((key) => directiveCommandHint(key) !== undefined);
-  // Each of these hints says in those words that no tool records the
-  // directive; flow-record-cross-tree.test.ts pins the phrase alongside the
-  // per-directive reason that follows it.
+  // flow-record-cross-tree.test.ts pins this phrase with the per-directive
+  // reason that follows it.
   const withoutRecordingTool = answered.filter((key) =>
     directiveCommandHint(key)!.includes("records one")
   );
@@ -196,7 +192,7 @@ describe("create-flow directive-answer docs", () => {
   }
 
   it("names each directive answered with the tool that records it, and only those", () => {
-    // Guard the readers: an empty bucket agrees with every list.
+    // An empty bucket would agree with every list.
     expect(withRecordingTool.length).toBeGreaterThan(0);
     const clause = sentenceWith(recorderContract(), "names the tool that records the directive");
     for (const key of withRecordingTool) expect(clause, key).toContain(`\`${key}\``);
@@ -205,8 +201,7 @@ describe("create-flow directive-answer docs", () => {
 
   it("names each directive that has no recording tool, on both surfaces", () => {
     expect(withoutRecordingTool.length).toBeGreaterThan(0);
-    // `ToolDefinition.description` is optional on the type, and an absent one
-    // would otherwise read as a surface that lists nothing and agrees.
+    // An absent `description` would read as a surface that lists nothing.
     const { description } = createFlowAddStepTool({} as Registry);
     expect(description, "flow-add-step no longer declares a description").toBeDefined();
     const clauses = [
