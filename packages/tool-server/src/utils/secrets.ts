@@ -139,6 +139,7 @@ export function scrubSecretChunk(
   if (ordered.length === 0) return { emit: text, held: 0 };
   const longestValue = ordered[0].value.length;
   const names = new Set(ordered.map((secret) => secret.name));
+  const longestName = Math.max(...ordered.map((secret) => secret.name.length));
   let out = "";
   let copied = 0;
   let at = 0;
@@ -146,7 +147,7 @@ export function scrubSecretChunk(
     // A marker one pass wrote is not text the next may look inside: a value
     // that occurs in some *name* would otherwise be replaced there, nesting one
     // marker inside another and leaving neither the shape a reader parses.
-    const marker = markerLengthAt(text, at, names);
+    const marker = markerLengthAt(text, at, names, longestName);
     if (marker > 0) {
       at += marker;
       continue;
@@ -192,14 +193,26 @@ function orderedSecrets(
 }
 
 /** The length of the `{{secret:NAME}}` starting at `at`, or 0 for anything else. */
-function markerLengthAt(text: string, at: number, names: ReadonlySet<string>): number {
+function markerLengthAt(
+  text: string,
+  at: number,
+  names: ReadonlySet<string>,
+  longestName: number
+): number {
   if (!text.startsWith(SECRET_PLACEHOLDER_MARKER, at)) return 0;
   const from = at + SECRET_PLACEHOLDER_MARKER.length;
-  const end = text.indexOf("}}", from);
+  // Searched inside a window no longer than the longest name there is, because
+  // no wider match could be one: text that opens a marker and never closes it —
+  // which a script can write on every line — would otherwise be read to the end
+  // of the chunk once per occurrence.
+  const window = text.slice(from, from + longestName + 2);
+  const end = window.indexOf("}}");
   // Only a name this call would itself write: a `{{secret:X}}` the script
   // printed for an X that is no secret here stays ordinary text, so a value
   // inside it is still replaced.
-  return end >= 0 && names.has(text.slice(from, end)) ? end + 2 - at : 0;
+  return end >= 0 && names.has(window.slice(0, end))
+    ? SECRET_PLACEHOLDER_MARKER.length + end + 2
+    : 0;
 }
 
 /**
