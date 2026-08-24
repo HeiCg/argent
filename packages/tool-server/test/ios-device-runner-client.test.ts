@@ -96,9 +96,31 @@ describe("createRunnerClient", () => {
 
     expect(error).toBeInstanceOf(RunnerCommandError);
     expect((error as RunnerCommandError).code).toBe("ELEMENT_NOT_FOUND");
-    expect((error as RunnerCommandError).message).toBe("no such element");
+    // The hint is folded into the message: agent-facing rendering surfaces
+    // only .message, so the guidance must live there.
+    expect((error as RunnerCommandError).message).toBe("no such element. Hint: run snapshot");
     expect((error as RunnerCommandError).hint).toBe("run snapshot");
     expect((error as RunnerCommandError).retryable).toBe(false);
+  });
+
+  it("does not fold the hint twice when the message already carries it", async () => {
+    const { send } = createFakeSend([
+      {
+        ok: false,
+        error: {
+          code: "ELEMENT_NOT_FOUND",
+          message: "no such element. Hint: run snapshot",
+          hint: "run snapshot",
+        },
+      },
+    ]);
+    const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+    const error = await client
+      .run({ command: "tap" })
+      .catch((caught: unknown) => caught as RunnerCommandError);
+
+    expect((error as RunnerCommandError).message).toBe("no such element. Hint: run snapshot");
   });
 
   it("classifies RUNNER_BUSY as retryable — the runner's explicit try-again verdict", async () => {
@@ -112,6 +134,8 @@ describe("createRunnerClient", () => {
       .catch((caught: unknown) => caught as RunnerCommandError);
 
     expect((error as RunnerCommandError).retryable).toBe(true);
+    // Hint-less envelopes keep their message untouched.
+    expect((error as RunnerCommandError).message).toBe("busy");
   });
 
   describe("status recovery after a lost mutating-command response", () => {
@@ -162,7 +186,7 @@ describe("createRunnerClient", () => {
 
       expect(error).toBeInstanceOf(RunnerCommandError);
       expect((error as RunnerCommandError).code).toBe("ELEMENT_NOT_FOUND");
-      expect((error as RunnerCommandError).message).toBe("target vanished");
+      expect((error as RunnerCommandError).message).toBe("target vanished. Hint: run snapshot");
       expect((error as RunnerCommandError).hint).toBe("run snapshot");
     });
 

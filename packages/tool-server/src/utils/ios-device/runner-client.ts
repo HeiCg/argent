@@ -50,17 +50,29 @@ export interface RunnerResponseEnvelope {
 }
 
 /**
+ * Fold the runner's recovery hint into the message at construction time:
+ * agent-facing error rendering surfaces only `.message` (walked down the
+ * .cause chain), so guidance left on the `.hint` property alone would be
+ * write-only. Skips the append when the message already carries the hint text.
+ */
+function appendHintToMessage(message: string, hint: string | undefined): string {
+  if (!hint || message.includes(hint)) return message;
+  return `${message}${/[.!?]$/.test(message) ? "" : "."} Hint: ${hint}`;
+}
+
+/**
  * A failure the RUNNER reported (as opposed to a transport failure): the
  * envelope parsed and carried ok:false. `retryable` is true only for
  * RUNNER_BUSY, the runner's explicit "try again" verdict.
  */
 export class RunnerCommandError extends Error {
   readonly code?: string;
+  /** Kept for callers that branch on it; the message carries the same text. */
   readonly hint?: string;
   readonly retryable: boolean;
 
   constructor(message: string, options: { code?: string; hint?: string } = {}) {
-    super(message);
+    super(appendHintToMessage(message, options.hint));
     this.name = "RunnerCommandError";
     if (options.code !== undefined) this.code = options.code;
     if (options.hint !== undefined) this.hint = options.hint;

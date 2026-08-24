@@ -184,6 +184,9 @@ describe("buildUsbmuxConnectError result-code mapping", () => {
     expect(error.kind).toBe("device-unattached");
     expect(error.retryable).toBe(false);
     expect(error.hint).toMatch(/cable/);
+    // The hint is folded into the message: agent-facing rendering surfaces
+    // only .message, so the guidance must live there.
+    expect(error.message).toContain(error.hint as string);
   });
 
   it("maps result 3 (port closed on a live device) to a retryable runner-not-listening", () => {
@@ -192,6 +195,7 @@ describe("buildUsbmuxConnectError result-code mapping", () => {
     expect(error.kind).toBe("runner-not-listening");
     expect(error.retryable).toBe(true);
     expect(error.hint).not.toMatch(/cable/);
+    expect(error.message).toContain(error.hint as string);
   });
 
   it("maps unknown results to a generic failure with the cable/trust/unlock hint", () => {
@@ -200,6 +204,7 @@ describe("buildUsbmuxConnectError result-code mapping", () => {
     expect(error.kind).toBe("protocol");
     expect(error.retryable).toBe(false);
     expect(error.hint).toMatch(/cable/);
+    expect(error.message).toContain(error.hint as string);
   });
 });
 
@@ -317,6 +322,27 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
 
     expect(error).toBeInstanceOf(IosDeviceTransportError);
     expect((error as IosDeviceTransportError).kind).toBe("device-unattached");
+    // The connect-the-cable guidance travels in the message itself.
+    expect((error as IosDeviceTransportError).message).toMatch(/cable/);
+  });
+
+  it("folds the usbmuxd-unreachable hint into the message when the socket is missing", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-usbmux-"));
+    socketDirs.push(dir);
+    const socketPath = path.join(dir, "missing.sock");
+
+    const error = await openUsbmuxRunnerSocket({
+      udid: DEVICE_UDID,
+      port: RUNNER_PORT,
+      timeoutMs: 2_000,
+      socketPath,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(IosDeviceTransportError);
+    expect((error as IosDeviceTransportError).kind).toBe("protocol");
+    expect((error as IosDeviceTransportError).message).toMatch(
+      /usbmuxd runs on every macOS install/
+    );
   });
 
   it("reports Connect result 2 as unattached (device unplugged mid-connect)", async () => {

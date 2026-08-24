@@ -44,10 +44,22 @@ export interface IosPhysicalDevice {
   tunnelState: string | null;
 }
 
+/**
+ * Fold the recovery hint into the message at construction time: agent-facing
+ * error rendering surfaces only `.message` (walked down the .cause chain), so
+ * guidance left on the `.hint` property alone would be write-only. Skips the
+ * append when the message already carries the hint text.
+ */
+function appendHintToMessage(message: string, hint: string | undefined): string {
+  if (!hint || message.includes(hint)) return message;
+  return `${message}${/[.!?]$/.test(message) ? "" : "."} Hint: ${hint}`;
+}
+
 class IosDeviceControlError extends Error {
+  /** Kept for callers that branch on it; the message carries the same text. */
   readonly hint: string | null;
   constructor(message: string, opts?: { hint?: string; cause?: unknown }) {
-    super(message);
+    super(appendHintToMessage(message, opts?.hint));
     this.name = "IosDeviceControlError";
     this.hint = opts?.hint ?? null;
     if (opts?.cause !== undefined) (this as { cause?: unknown }).cause = opts.cause;
