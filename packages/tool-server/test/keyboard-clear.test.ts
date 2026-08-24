@@ -452,6 +452,9 @@ describe("keyboard clear — iOS (simulator-server)", () => {
     const { note, ...androidCounts } = android;
     expect(note).toBeTypeOf("string");
     expect(androidCounts).toEqual(ios);
+    // The SHAPE is still pinned, so a backend growing a field of its own does
+    // not slip through the destructure: Android's result is iOS's plus `note`.
+    expect(Object.keys(android).sort()).toEqual([...Object.keys(ios), "note"].sort());
     expect(chromium).toEqual(ios);
   });
 
@@ -744,6 +747,7 @@ describe("keyboard clear — Android (adb input)", () => {
       applied,
       matched = true,
       reason,
+      ping,
       setText,
       resolve,
     }: {
@@ -751,6 +755,7 @@ describe("keyboard clear — Android (adb input)", () => {
       applied?: boolean;
       matched?: boolean;
       reason?: string;
+      ping?: () => Promise<unknown>;
       setText?: (text: string) => Promise<unknown>;
       resolve?: () => Promise<unknown>;
     } = {}) => {
@@ -766,7 +771,7 @@ describe("keyboard clear — Android (adb input)", () => {
         resolveService: vi.fn(async () => {
           if (resolve) return resolve();
           return {
-            ping: async () => ({ ok: true, idleMs: 0, protocol }),
+            ping: async () => (ping ? ping() : { ok: true, idleMs: 0, protocol }),
             setText: async (text: string) => {
               calls.push(text);
               if (setText) return setText(text);
@@ -1364,6 +1369,84 @@ describe("keyboard clear — Android (adb input)", () => {
         }
       }
     );
+
+    it("asks again once the cooldown has run out, rather than skipping for good", async () => {
+      // The mark is a COOLDOWN, not a permanent skip: the causes are often
+      // temporary — a device still booting, adb reattaching, a helper another
+      // process had wedged — and a `keyboard` that silently stopped preferring
+      // the verified clear for the rest of the tool-server's life would be worse
+      // than a slow one. Both the arming and the not-arming were covered;
+      // nothing advanced the clock past the constant, so widening it to a
+      // permanent skip stayed green.
+      vi.useFakeTimers();
+      try {
+        const { registry } = registryWithSetText({
+          resolve: () => Promise.reject(new Error("am instrument refused")),
+        });
+        const impl = makeAndroidImpl(registry);
+        const resolves = () =>
+          (registry as unknown as { resolveService: { mock: { calls: unknown[] } } }).resolveService
+            .mock.calls.length;
+
+        await impl.handler({}, { udid: ANDROID.id, clear: true, text: "a" }, ANDROID);
+        await impl.handler({}, { udid: ANDROID.id, clear: true, text: "b" }, ANDROID);
+        // Inside the minute: the second clear never went back to the registry.
+        expect(resolves()).toBe(1);
+
+        // The boundary itself, since the guard is `elapsed < COOLDOWN`.
+        await vi.advanceTimersByTimeAsync(60_000);
+        await impl.handler({}, { udid: ANDROID.id, clear: true, text: "c" }, ANDROID);
+        expect(resolves()).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops re-asking a helper whose `ping` burns the RPC timeout", async () => {
+      // WEDGED_RPC_MS is written against both legs — `ping` at 5s and `setText`
+      // at 15s — and only the write drove it. A helper that accepts the socket
+      // and goes silent never reaches `setText` at all: `ping` is awaited first,
+      // so this is the leg that state actually spends its time in.
+      vi.useFakeTimers();
+      try {
+        const { registry } = registryWithSetText({
+          ping: () => new Promise((_resolve, reject) => setTimeout(reject, 5_000)),
+        });
+        const impl = makeAndroidImpl(registry);
+
+        const first = impl.handler({}, { udid: ANDROID.id, clear: true, text: "a" }, ANDROID);
+        await vi.advanceTimersByTimeAsync(5_100);
+        await vi.runAllTimersAsync();
+        await first;
+
+        const second = impl.handler({}, { udid: ANDROID.id, clear: true, text: "b" }, ANDROID);
+        await vi.runAllTimersAsync();
+        await second;
+
+        const calls = (registry as unknown as { resolveService: { mock: { calls: unknown[] } } })
+          .resolveService.mock.calls.length;
+        expect(calls).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("uses the atomic path when the helper reports a protocol NEWER than the gate", async () => {
+      // The gate asks that the helper is not too OLD. A protocol-3 helper knows
+      // `setText`, and `!(x >= n)` must not read "not exactly n" — a helper
+      // ahead of this build would otherwise fall to the injected clear forever.
+      const { registry, calls } = registryWithSetText({ protocol: "3" });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(calls).toEqual(["abc"]);
+      expect(inputCmds()).toEqual([]);
+      expect(result.note).toBeUndefined();
+    });
 
     it("keeps trying a start that merely ran out of budget, which is still running", async () => {
       // A slow start is not a refusal: the registry hands the next caller the
@@ -2830,6 +2913,96 @@ describe("keyboard clear — Android (adb input)", () => {
       expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
       expect(result.note).toMatch(/could not be told apart from the field's own placeholder/);
       expect(result.note).not.toMatch(/nothing was left to remove/);
+    });
+
+    it("says the run was BLIND when an unmeasurable field ties the longest reading", async () => {
+      // A focused password box is FLOORED to the blind count rather than dropped,
+      // so it arrives at the same number a genuine 150-character field measures.
+      // The tie has to keep "nothing was actually read" — the note's whole job
+      // here is to say a longer field may have kept its head. Ordered so the
+      // measurable node is walked FIRST (the walk pops the last child first),
+      // which is the arrangement the tie-break arm alone decides.
+      seedLegacyLevel();
+      seedDump(
+        `<?xml version='1.0' encoding='UTF-8'?><hierarchy rotation="0">` +
+          `<node index="0" text="••••" resource-id="pw" class="android.widget.EditText" ` +
+          `password="true" focused="true" bounds="[0,60][100,110]" />` +
+          `<node index="1" text="${"x".repeat(MAX_DELETE_COUNT)}" resource-id="email" ` +
+          `class="android.widget.EditText" password="false" focused="true" ` +
+          `bounds="[0,0][100,50]" />` +
+          `</hierarchy>`
+      );
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/The field's length could not be read/);
+    });
+
+    it("reports a read-back that saw an empty field even when the helper found none", async () => {
+      // `no_focused_input` is what the ACCESSIBILITY layer could not find, and it
+      // does not describe the injected path that ran next: a view the tree cannot
+      // describe (a WebView, a Flutter surface) still takes the keys. A read-back
+      // that then saw an empty field is the stronger evidence, and the note has
+      // to prefer it over "the keys may have gone nowhere".
+      seedDump(dumpWith(""));
+      const registry = registryWith({
+        ping: async () => ({ ok: true, idleMs: 0, protocol: "2" }),
+        setText: async () => ({ applied: false, matched: false, reason: "no_focused_input" }),
+      });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/nothing was left to remove/);
+      expect(result.note).not.toMatch(/Focus a text field and retry/);
+    });
+
+    it("keeps the read-back clause off the paths that never took one", async () => {
+      // Only `select-all` reads the field back. A `{ clear, text }` stops at the
+      // chord — the field is SUPPOSED to still hold its value there — so
+      // "the focused field cannot be measured, which is what a password box
+      // always is" would explain a read-back that was never attempted, and
+      // widening the arm past `select-all` appends exactly that.
+      const registry = registryWith({
+        ping: async () => ({ ok: true, idleMs: 0, protocol: "1" }),
+      });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "abc" },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/with the `text` replacing the selection/);
+      expect(result.note).not.toMatch(/password box always is/);
+      expect(result.note).not.toMatch(/nothing was left to remove/);
+    });
+
+    it("does not send a secret's caller to read the field back when none was found", async () => {
+      // The arm that answers "no field to write" replaces both remedies, and it
+      // must stay that way for a `{{secret:…}}` request: the ordinary "Read the
+      // field back" is the one thing an agent must not do with a credential box,
+      // and the tool skips its own screenshot for the same reason.
+      const registry = registryWith({
+        ping: async () => ({ ok: true, idleMs: 0, protocol: "2" }),
+        setText: async () => ({ applied: false, matched: false, reason: "not_editable" }),
+      });
+
+      const result = await makeAndroidImpl(registry).handler(
+        {},
+        { udid: ANDROID.id, clear: true, text: "hunter2", secretText: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/Focus a text field and retry/);
+      expect(result.note).not.toMatch(/Read the field back/);
     });
 
     it("never quotes the field's contents or its length", async () => {

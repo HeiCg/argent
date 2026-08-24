@@ -795,6 +795,128 @@ describe("type directive — clear dispatch", () => {
     expect(result.steps[0]!.warning).toBeUndefined();
   });
 
+  it("carries a clear's warning out of a composed `flow-execute` step", async () => {
+    // The third registered nested orchestrator, and the one whose weak pass had
+    // nowhere to surface: `flow-execute` keeps its sub-run's reports inside
+    // `result`, a green sub-run has no outcome of its own, and the CLI's
+    // `StepReport` has no `result` field — so the outer step reported a clean
+    // green over a clear nothing verified. `flow-add-step` records a raw
+    // `tool: flow-execute` step on four branches, so flows really carry this.
+    const calls: Call[] = [];
+    const NOTE = "keyboard clear: the atomic accessibility replace was not used (…).";
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "flow-execute": {
+        flow: "inner",
+        ok: true,
+        passed: 1,
+        failed: 0,
+        errored: 0,
+        steps: [{ index: 0, kind: "tool", tool: "keyboard", status: "pass", warning: NOTE }],
+      },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "flow-execute", args: { name: "inner" } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.status).toBe("pass");
+    expect(result.steps[0]!.warning).toBe(NOTE);
+  });
+
+  it("says a composed flow's repeated warning once, not once per step", async () => {
+    // A flow that clears five fields the same weak way has one thing to say
+    // about it, and the report is read by a human.
+    const calls: Call[] = [];
+    const NOTE = "keyboard clear: the atomic accessibility replace was not used (…).";
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "flow-execute": {
+        flow: "inner",
+        ok: true,
+        steps: [
+          { index: 0, kind: "type", status: "pass", warning: NOTE },
+          { index: 1, kind: "type", status: "pass", warning: NOTE },
+        ],
+      },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "flow-execute", args: { name: "inner" } }],
+    });
+
+    expect(asRun(await run(registry)).steps[0]!.warning).toBe(NOTE);
+  });
+
+  it("carries a warning up from a flow composed inside the composed flow", async () => {
+    // Depth needs no rule of its own: the sub-run applied this same promotion at
+    // its own level, so its step report already carries the warning by the time
+    // the outer run reads it.
+    const calls: Call[] = [];
+    const NOTE = "keyboard clear: the atomic accessibility replace was not used (…).";
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "flow-execute": {
+        flow: "middle",
+        ok: true,
+        steps: [{ index: 0, kind: "tool", tool: "flow-execute", status: "pass", warning: NOTE }],
+      },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "flow-execute", args: { name: "middle" } }],
+    });
+
+    expect(asRun(await run(registry)).steps[0]!.warning).toBe(NOTE);
+  });
+
+  it("leaves a composed `flow-execute` step warning-free when its sub-run had none", async () => {
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: fieldXml("x") }), undefined, {
+      "flow-execute": {
+        flow: "inner",
+        ok: true,
+        steps: [{ index: 0, kind: "tap", status: "pass" }],
+      },
+    });
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "flow-execute", args: { name: "inner" } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.status).toBe("pass");
+    expect(result.steps[0]!.warning).toBeUndefined();
+  });
+
+  it("does not raise a warning out of a tool that answered with an EMPTY note", async () => {
+    // `resultNote` guards on length, not on the key being there: an empty string
+    // is a tool saying nothing, and `warning: ""` would mark the step ⚠ while
+    // printing no reason for it.
+    const calls: Call[] = [];
+    const registry = mockRegistry(
+      calls,
+      () => ({ xml: fieldXml("x") }),
+      () => ({
+        typed: "x",
+        keys: 1,
+        cleared: true,
+        note: "",
+      })
+    );
+
+    await writeFlow("f", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tool", name: "keyboard", args: { clear: true, text: "new@example.com" } }],
+    });
+
+    const result = asRun(await run(registry));
+    expect(result.steps[0]!.status).toBe("pass");
+    expect(result.steps[0]!.warning).toBeUndefined();
+  });
+
   it("leaves a `run-sequence` step warning-free when its result has no steps to read", async () => {
     // The report crossed the registry boundary as `unknown`. A shape this does
     // not recognise must leave the step exactly as the runner would report it.
