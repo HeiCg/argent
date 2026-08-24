@@ -739,7 +739,14 @@ function processCommandMatches(pid: number, marker: string | undefined): boolean
     // so a bundle path containing spaces still matches its own ps output.
     const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`(?:^|\\s)${escaped} start(?:\\s|$)`).test(cmd);
-  } catch {
+  } catch (err) {
+    // Fail safe — don't kill what we can't identify — but say why: a fallback
+    // `"ps"` under a sanitized PATH ENOENTs here forever, and an undiagnosed
+    // miss orphans every live server silently. Same visibility tool-server's
+    // vega-process probes give their callers.
+    process.stderr.write(
+      `[launcher] ps identity check failed for pid ${pid}; leaving it alone: ${String(err)}\n`
+    );
     return false;
   }
 }

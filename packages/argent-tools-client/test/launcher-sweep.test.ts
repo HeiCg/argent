@@ -242,6 +242,23 @@ describe("sweepDeadStateFiles", () => {
     }
   }, 20_000);
 
+  it("terminates a live server whose bundle path is full of regex metacharacters", async () => {
+    // The marker is spliced into a RegExp, so an install dir like `c++` or
+    // `foo(v1)` must reach the match as literals — quantifiers or classes loose
+    // in the pattern would make a server never match its own record.
+    const bundle = join(TEST_HOME, "c++(v1)+tool-server[1].cjs");
+    const child = await spawnFakeServer(bundle);
+    const file = writeRecord(bundle, child.pid!);
+    rmSync(bundle);
+    try {
+      await launcher.sweepDeadStateFiles();
+      expect(await waitForExit(child)).toBe(true);
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  }, 20_000);
+
   it("returns without waiting out the kill grace window on a SIGTERM-ignoring orphan", async () => {
     const bundle = join(TEST_HOME, "wedged-bundle.cjs");
     const child = await spawnFakeServer(bundle, { trapSigterm: true });
