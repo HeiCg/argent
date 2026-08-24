@@ -237,13 +237,14 @@ export interface RecordedStepWarning {
   /** The warning text `flow-add-step` raised on that step's `message`. */
   warning: string;
   /**
-   * WHICH question the warning answers.
+   * WHICH question the warning answers, because the two are not the same news.
    *
-   * - `conversion` — the cross-tree re-probe's verdict on converting the step
-   *   to `await:`/`assert:`. Polish-time; the raw step replays fine either way.
+   * - `conversion` — the cross-tree re-probe ran (or tried to) and this is its
+   *   verdict on converting the step to `await:`/`assert:`. A polish-time
+   *   question; the raw step replays fine either way.
    * - `wait` — the live wait itself came back `success: false`, so the probe
-   *   was skipped. A genuine miss is a step FAILURE at replay; the other causes
-   *   leave the step unjudged.
+   *   was skipped. Nothing here is about conversion: a genuine miss is a step
+   *   FAILURE at replay, and the other causes leave the step unjudged.
    */
   kind: "conversion" | "wait";
   /**
@@ -3382,8 +3383,9 @@ export async function appendStepToFlow(
       const before = session.flow.steps;
       const flowFile = await appendStep(session.filePath, step);
       session.flow = parseFlow(flowFile);
-      // `appendStep` adds exactly one step, so everything before the last is
-      // what the file already held — the recorder's previous view.
+      // `appendStep` adds exactly one step, so everything before the last one
+      // is what the file already held — the recorder's previous view, unless a
+      // hand edit landed in between.
       session.discardedWarnings =
         (session.discardedWarnings ?? 0) +
         dropMovedWarnings(session.stepWarnings, session.flow.steps.slice(0, -1), before);

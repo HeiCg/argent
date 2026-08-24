@@ -2913,11 +2913,12 @@ describe("summarizeStep rendering", () => {
   });
 
   it("renders a multi-field selector independently of its key order", () => {
-    // This render is also the step anchor, which compares an in-memory selector
-    // (key order from the source object) with one from `parseSelector` (key
-    // order from the zod schema). Two spellings that render differently drop
-    // every verdict in the recording. `deriveSelector` returns one field on
-    // every branch today, so nothing else pins this.
+    // This render is also the step anchor. The anchor compares an in-memory
+    // selector, whose key order comes from the source object, with one from
+    // `parseSelector`, whose key order comes from the zod schema. If the two
+    // spellings render differently, the recording loses every verdict, and
+    // nothing in the payload shows it. Today `deriveSelector` returns one field
+    // on every branch, so nothing else pins this.
     const a = summarizeStep({ kind: "tap", selector: { identifier: "b", text: "Go" } }, 1);
     const b = summarizeStep({ kind: "tap", selector: { text: "Go", identifier: "b" } }, 1);
     expect(a).toBe(b);
