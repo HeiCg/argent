@@ -367,14 +367,16 @@ interface AndroidClearOptions {
  * anything the caller asked for. `keepSelection` in particular is a request the
  * legacy path cannot honour.
  *
- * - `select-all` — the chord, then DEL. Either the field read back empty, or it
- *   could not be read at all; those are not distinguished, because an unreadable
- *   field is evidence of nothing (see the read-back leg).
+ * - `select-all` — the chord, then DEL. The field read back empty, or the
+ *   read-back proved nothing — {@link AndroidClearOutcome.readBackEmpty} is what
+ *   tells those apart, because only the first of them confirms the clear.
  * - `select-all-kept` — the chord alone, with the caller's own text left to
  *   replace the selection. Nothing verified it, and nothing can: the field is
  *   SUPPOSED to still hold its value at that point.
- * - `select-all-rescued` — the chord did not take, and the delete run finished
- *   what it left behind.
+ * - `select-all-rescued` — the field still reported a value the read-back could
+ *   tell apart from its placeholder, and a delete run removed it. Evidence the
+ *   chord left something behind, not proof that it failed: the reading covers
+ *   every window, so it can belong to another focused field.
  * - `delete-run` — this level has no `input keycombination` at all.
  */
 type AndroidClearPath = "select-all" | "select-all-kept" | "select-all-rescued" | "delete-run";
@@ -403,12 +405,13 @@ export interface AndroidClearOutcome {
   /**
    * The field was read back after the delete and reported NO text.
    *
-   * Only `select-all` carries it, and only for one of the three read-backs that
-   * reach that path. The other two are a screen the reader could not capture at
-   * all, and a focused field it could not measure — a password box is floored to
-   * the blind count rather than dropped (see `measureFocusedTextLength`). Both
-   * end the same way as an empty field and neither confirms anything, so the
-   * caller's note has to tell them apart.
+   * Only `select-all` carries it, and only for one of the four read-backs that
+   * reach that path. The other three are a screen the reader could not capture
+   * at all, a focused field it could not measure (a password box is floored to
+   * the blind count rather than dropped — see `measureFocusedTextLength`), and a
+   * positive reading from a source that cannot separate a value from a
+   * placeholder. All three end the same way as an empty field and not one of
+   * them confirms anything, so the caller's note has to tell them apart.
    *
    * Typed `true` rather than `boolean` for the reason `blindDeleteRun` is: the
    * paths that read nothing back must carry nothing, not a `false` that reads as
@@ -547,8 +550,7 @@ export async function injectAndroidClear(
   //
   // Only a POSITIVE, SIZED reading redirects. Unreadable is evidence of nothing,
   // and treating it as failure would spend a blind BLIND_DELETE_COUNT run on
-  // every clear taken where `measureFocusedTextLength` cannot see. A measurement
-  // that is really a placeholder costs a run that deletes nothing.
+  // every clear taken where `measureFocusedTextLength` cannot see.
   //
   // `sized` is load-bearing, not belt-and-braces. An unmeasurable focused
   // editable — a password field is the reachable shape — is not absent from the
@@ -557,28 +559,37 @@ export async function injectAndroidClear(
   // rescues every single clear on such a field, whether or not the chord took.
   // That is the opposite of "only a positive reading redirects".
   //
-  // What a SIZED reading still cannot say is WHICH of the two it is. An empty
-  // field reports its placeholder in the same `text` attribute as a real value,
-  // and neither reader carries a hint attribute to tell them apart on the levels
-  // this path serves (checked on API 34: `uiautomator` emits no `hint`, and the
-  // helper's `captureXml` does not either). So a focused, emptied `EditText` with
-  // a placeholder — a search box, a login field — measures its placeholder's
-  // length and takes the rescue. Sending the run anyway is the right side to err
-  // on: backspace on an empty field is a no-op, while skipping it on a real
-  // residue leaves the value the clear was asked to remove. The note is worded to
-  // match — it reports the reading, and does not claim the chord failed.
+  // A reading that could be the field's own PLACEHOLDER does not redirect
+  // either, which is what `hintKnown` gates. An emptied field reports its
+  // placeholder in the same `text` attribute as a real value, so a search box or
+  // a login field measures a residue it does not hold; only a source that names
+  // the placeholder as well can tell those apart, and not every one does (see
+  // FocusedTextMeasurement.hintKnown).
+  //
+  // Erring the other way — sending the run on a reading that might be a
+  // placeholder — is not free, which is why an unprovable reading is treated as
+  // no reading. The backspaces are not absorbed by the empty field:
+  // `BaseKeyListener` leaves `KEYCODE_DEL` unconsumed when there is nothing to
+  // delete, so each one reaches the APP, and a widget that reads
+  // backspace-on-empty as "remove the item before the caret" — a chip or
+  // recipient field, a segmented OTP box, a React Native `TextInput` with an
+  // `onKeyPress` handler — is emptied by a clear that then reports
+  // `cleared: true`. Measured on API 36 against a chip field a `{ clear: true }`
+  // sent 13 of them and took every chip with it. A clear that cannot be
+  // confirmed is reported as unconfirmed instead; see `androidClearNote`.
   const residue = await measureFocusedTextLength(serial, deadline, options.readHierarchy, 1);
-  if (residue?.sized === true && residue.chars > 0) {
+  if (residue?.sized === true && residue.hintKnown && residue.chars > 0) {
     const blind = await clearByDeleting(serial, deadline, options, residue.chars);
     return { path: "select-all-rescued", keptSelection: false, ...blind };
   }
-  // A SIZED zero is the only reading that says the field is empty. An unreadable
-  // screen and an unmeasurable field both arrive here too, and neither confirms
-  // anything — see AndroidClearOutcome.readBackEmpty.
+  // A SIZED zero is the only reading that says the field is empty. Three others
+  // arrive here and not one of them confirms anything: a screen that would not
+  // capture, a field that cannot be measured, and a positive reading that could
+  // be the placeholder — see AndroidClearOutcome.readBackEmpty.
   return {
     path: "select-all",
     keptSelection: false,
-    ...(residue?.sized === true ? { readBackEmpty: true as const } : {}),
+    ...(residue?.sized === true && residue.chars === 0 ? { readBackEmpty: true as const } : {}),
   };
 }
 
@@ -664,16 +675,14 @@ const BLIND_DELETE_COUNT = MAX_DELETE_COUNT;
  * IS such a fixed run: see {@link measureFocusedTextLength} for exactly when,
  * and BLIND_DELETE_COUNT for what it covers.
  *
- * Note the dump reports an EMPTY field's hint in the same `text` attribute, so a
- * measurement can be the placeholder rather than real content. API 30 carries no
- * `hint` attribute at all, so there is nothing to tell the two apart; API 36 does
- * emit one — a focused empty Settings search box dumps as `text="Search
- * settings" … hint="Search settings"` — and since the rescue path reaches here
- * on exactly the levels that HAVE `keycombination`, that signal is now within
- * reach. It is unread: `measureFocusedTextLength` is the shared measurement and
- * would have to gain a level-conditional rule to use it. For the delete run the
- * over-measurement is harmless — it only makes the run
- * slightly longer than needed, and backspace on an empty field does nothing. It
+ * Note an EMPTY field publishes its hint in the same `text` attribute as a real
+ * value, so a measurement can be the placeholder rather than content.
+ * {@link measureFocusedTextLength} reads the `hint` out and answers 0 wherever
+ * the source names it — API 36's dump does, API 30's carries no `hint` at all,
+ * and neither does the helper's `captureXml`. Where it is not named the
+ * over-measurement stands, and for the delete run it is close to harmless: the
+ * run is a little longer than it needs to be, and this path is the only clear
+ * the level has, so its backspaces are what the caller asked for either way. It
  * is NOT harmless for the MAX_DELETE_COUNT gate below, which turns any
  * over-measurement into a refusal: an empty field whose placeholder is longer
  * than the limit is refused with a length it does not hold. Accepted rather than
@@ -708,7 +717,7 @@ async function clearByDeleting(
   const measured: FocusedTextMeasurement | undefined =
     rescueFrom === undefined
       ? await measureFocusedTextLength(serial, deadline, options.readHierarchy)
-      : { chars: rescueFrom, sized: true };
+      : { chars: rescueFrom, sized: true, hintKnown: true };
   const count = measured?.chars ?? BLIND_DELETE_COUNT;
   const keys = count + DELETE_MARGIN;
   // Refuse BEFORE touching the field, and on length alone. Time is deliberately
@@ -992,6 +1001,23 @@ interface FocusedTextMeasurement {
   chars: number;
   /** The count came from a field's readable `text`, not from the blind floor. */
   sized: boolean;
+  /**
+   * The source spelled the field's `hint` out as well, so a positive `chars` is
+   * its VALUE rather than its placeholder.
+   *
+   * An empty field publishes its placeholder in the same `text` attribute as a
+   * real value. A source that carries `hint` too tells the two apart — the field
+   * is showing its placeholder exactly when the two read the same, and its value
+   * is then empty. A source that does not carry it cannot: a positive count is
+   * either.
+   *
+   * So this is a property of the READER as much as of the field. `uiautomator`
+   * emits the attribute on API 36 (measured: an emptied box dumps `text="plain"
+   * … hint="plain"`, and the same box holding a value dumps
+   * `text="OriginalValue" … hint="plain"`), emits none of it on API 34, and the
+   * devtools helper's `captureXml` does not emit it on any level.
+   */
+  hintKnown: boolean;
 }
 
 /**
@@ -1053,6 +1079,9 @@ async function measureFocusedTextLength(
   // read. A floored one is BLIND_DELETE_COUNT, and so is a genuine 150-character
   // field, so the count alone cannot answer it — see FocusedTextMeasurement.
   let sized = false;
+  // Whether the winning node's source could tell a value from a placeholder.
+  // Only the winner's own answer counts: it is the count the caller acts on.
+  let hintKnown = false;
   const stack = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
@@ -1073,7 +1102,13 @@ async function measureFocusedTextLength(
     // backspaces where the field alone would have got the blind count. Flooring
     // keeps `longest` monotonic, which is what makes the "over-deleting is a
     // no-op, under-deleting truncates" rule above actually hold.
-    const text = attrIsTrue(attrs, "password") ? undefined : attrs.text;
+    const shown = attrIsTrue(attrs, "password") ? undefined : attrs.text;
+    // What the field DISPLAYS is not what it holds: an empty one displays its
+    // placeholder here. Where the source names the placeholder too, the two
+    // reading the same IS that state, and the value behind it is empty — see
+    // FocusedTextMeasurement.hintKnown.
+    const hint = attrs.hint;
+    const text = shown !== undefined && shown === hint ? "" : shown;
     const chars = text === undefined ? BLIND_DELETE_COUNT : [...text].length;
     // `>` and not `>=`, so a tie keeps the EARLIER verdict rather than letting
     // whichever node the walk reached last decide it — except that an
@@ -1083,6 +1118,7 @@ async function measureFocusedTextLength(
     if (longest === undefined || chars > longest) {
       longest = chars;
       sized = text !== undefined;
+      hintKnown = hint !== undefined;
     } else if (chars === longest && text === undefined) {
       // A tie against an unmeasurable field still means the run is not sized to
       // anything that was read: the same number arrived from a field nobody
@@ -1090,7 +1126,7 @@ async function measureFocusedTextLength(
       sized = false;
     }
   }
-  return longest === undefined ? undefined : { chars: longest, sized };
+  return longest === undefined ? undefined : { chars: longest, sized, hintKnown };
 }
 
 /**

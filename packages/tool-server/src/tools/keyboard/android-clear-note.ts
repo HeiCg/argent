@@ -72,9 +72,8 @@ const WHAT: Record<AndroidClearOutcome["path"], string> = {
     "its whole value with the new text spliced in at the caret",
   "select-all-rescued":
     "the select-all chord, a delete, and then a backspace run over what the field still reported " +
-    "afterwards. That reading is not proof the chord failed: the view hierarchy reports an empty " +
-    "field's placeholder in the same attribute as its value, so a field the chord DID empty reads " +
-    "the same as one it did not",
+    "afterwards. That reading is not proof the chord failed: it covers every window on the " +
+    "screen, so it can belong to a different focused field than the one you meant",
   "delete-run":
     "a backspace run, because this Android level has no `input keycombination`. That deletes " +
     "backwards from end-of-LINE, so a multi-line field keeps whatever sits below the caret",
@@ -84,17 +83,19 @@ const WHAT: Record<AndroidClearOutcome["path"], string> = {
  * What the read-back after the delete actually saw, which only `select-all` has
  * to answer.
  *
- * Three read-backs reach that path and just one of them saw an empty field. A
- * screen the reader could not capture, and a focused field it could not measure
- * — a password box — both leave the fast path alone in exactly the same way. A
- * note that reports all three as "read back, and empty" tells the caller the
+ * Four read-backs reach that path and just one of them saw an empty field. A
+ * screen the reader could not capture, a focused field it could not measure — a
+ * password box — and a positive reading no source could separate from the
+ * field's placeholder all leave the fast path alone in exactly the same way. A
+ * note that reports all four as "read back, and empty" tells the caller the
  * credential box is clear while the credential is still in it.
  */
 const READ_BACK_EMPTY = " The field was read back afterwards and nothing was left to remove.";
 
 const READ_BACK_UNAVAILABLE =
-  " Nothing confirmed the chord took: the field could not be read back — either the screen would " +
-  "not capture, or the focused field cannot be measured, which is what a password box always is.";
+  " Nothing confirmed the chord took: the field could not be read back as empty — the screen " +
+  "would not capture, or the focused field cannot be measured (which is what a password box " +
+  "always is), or what it reported could not be told apart from the field's own placeholder.";
 
 const REMEDY = " Read the field back if the exact value matters.";
 

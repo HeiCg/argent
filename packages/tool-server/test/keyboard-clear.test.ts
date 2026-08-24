@@ -694,10 +694,14 @@ describe("keyboard clear — Android (adb input)", () => {
 
   // uiautomator dump for a focused EditText holding `text`. `password="true"`
   // makes its contents unreadable, which is what forces the blind count.
-  const dumpWith = (text: string, password = false) =>
+  // `hint` is omitted by default, which is API 34's dump and the devtools
+  // helper's `captureXml` — the sources that cannot separate a field's value
+  // from its placeholder. Pass one for API 36's shape, where they can.
+  const dumpWith = (text: string, password = false, hint?: string) =>
     `<?xml version='1.0' encoding='UTF-8'?><hierarchy rotation="0">` +
     `<node index="0" text="${text}" resource-id="email" class="android.widget.EditText" ` +
-    `password="${password}" focused="true" bounds="[0,0][100,50]" />` +
+    `password="${password}" focused="true" bounds="[0,0][100,50]"` +
+    `${hint === undefined ? "" : ` hint="${hint}"`} />` +
     `</hierarchy>`;
 
   it("does not press the key for a caller that hung up during the injected clear", async () => {
@@ -1517,7 +1521,10 @@ describe("keyboard clear — Android (adb input)", () => {
     // the one character the DEL removed, every one of them reporting
     // `cleared: true` over a value the next `text` then appended to. Nothing in
     // the command's own output separates that from a clear that worked.
-    seedDump(dumpWith("Monda")); // "Monday", less the character the DEL took
+    //
+    // The reading has to be one that CANNOT be the placeholder, so the dump
+    // spells the hint out and the residue differs from it.
+    seedDump(dumpWith("Monda", false, "Search")); // "Monday", less the DEL'd character
 
     await makeAndroidImpl(registryWith({})).handler({}, { udid: ANDROID.id, clear: true }, ANDROID);
 
@@ -1583,7 +1590,7 @@ describe("keyboard clear — Android (adb input)", () => {
     // already gone out, and the level demonstrably HAS `keycombination`. A
     // caller told the field is untouched retries against a value that may be one
     // character down.
-    seedDump(dumpWith("x".repeat(MAX_DELETE_COUNT + 1)));
+    seedDump(dumpWith("x".repeat(MAX_DELETE_COUNT + 1), false, "Search"));
 
     const err: unknown = await makeAndroidImpl(registryWith({}))
       .handler({}, { udid: ANDROID.id, clear: true }, ANDROID)
@@ -1635,10 +1642,10 @@ describe("keyboard clear — Android (adb input)", () => {
     seedDump(
       `<?xml version='1.0' encoding='UTF-8'?><hierarchy rotation="0">` +
         `<node index="0" text="" resource-id="email" class="android.widget.EditText" ` +
-        `password="false" focused="true" bounds="[0,0][100,50]" />` +
+        `password="false" focused="true" bounds="[0,0][100,50]" hint="Email" />` +
         `<node index="1" text="${"x".repeat(MAX_DELETE_COUNT + 1)}" resource-id="other" ` +
         `class="android.widget.EditText" password="false" focused="true" ` +
-        `bounds="[0,60][100,110]" />` +
+        `bounds="[0,60][100,110]" hint="Other" />` +
         `</hierarchy>`
     );
 
@@ -2772,12 +2779,11 @@ describe("keyboard clear — Android (adb input)", () => {
     });
 
     it("names the extra backspace run without asserting the chord failed", async () => {
-      // The reading that triggered the run cannot say WHICH it is: an empty
-      // field reports its placeholder in the same attribute as a real value, and
-      // no reader on these levels carries a hint to tell them apart. So the arm
-      // reports what was read and what the run did, and leaves the device's
-      // behaviour unasserted.
-      seedDump(dumpWith("Monda")); // "Monday", less the character the DEL took
+      // The reading that triggered the run is not the field's placeholder — the
+      // gate rules that out — but it still covers every window, so it can belong
+      // to another focused field. The arm reports what was read and what the run
+      // did, and leaves the device's behaviour unasserted.
+      seedDump(dumpWith("Monda", false, "Search")); // "Monday", less the DEL'd character
 
       const result = await makeAndroidImpl(registryWith({})).handler(
         {},
@@ -2789,11 +2795,30 @@ describe("keyboard clear — Android (adb input)", () => {
       expect(result.note).not.toMatch(/chord did NOT take/);
     });
 
-    it("does not call a placeholder a residue the chord left behind", async () => {
+    it("reads a placeholder as an empty field where the source names the hint", async () => {
       // Measured on a Pixel 7 / API 34 against a hinted native `EditText`: the
       // chord took, the field ended EMPTY with one text change, and the read-back
-      // returned the placeholder — so the rescue fired and the note asserted a
-      // failure the device never reported.
+      // returned the placeholder. Where the source spells the hint out — API 36's
+      // dump does — the two read the same and the field is empty, which is a
+      // CONFIRMED clear rather than a residue.
+      seedDump(dumpWith("type here", false, "type here"));
+
+      const result = await makeAndroidImpl(registryWith({})).handler(
+        {},
+        { udid: ANDROID.id, clear: true },
+        ANDROID
+      );
+
+      expect(result.note).toMatch(/nothing was left to remove/);
+      expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
+    });
+
+    it("does not backspace over a reading that could be the placeholder", async () => {
+      // The same screen read through a source that carries no hint — API 34's
+      // dump, and the devtools helper's `captureXml` on every level. The reading
+      // is the placeholder, and nothing here can prove it, so the run must not
+      // go out: `BaseKeyListener` leaves backspace-on-empty unconsumed, so every
+      // one of those keys reaches the app and a chip field loses a chip per key.
       seedDump(dumpWith("type here"));
 
       const result = await makeAndroidImpl(registryWith({})).handler(
@@ -2802,8 +2827,9 @@ describe("keyboard clear — Android (adb input)", () => {
         ANDROID
       );
 
-      expect(result.note).not.toMatch(/chord did NOT take/);
-      expect(result.note).toMatch(/placeholder in the same attribute as its value/);
+      expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
+      expect(result.note).toMatch(/could not be told apart from the field's own placeholder/);
+      expect(result.note).not.toMatch(/nothing was left to remove/);
     });
 
     it("never quotes the field's contents or its length", async () => {
