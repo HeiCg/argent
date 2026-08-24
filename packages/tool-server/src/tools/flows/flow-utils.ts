@@ -2728,6 +2728,21 @@ function* outputReferenceFields(step: FlowStep): Generator<StepField> {
   }
 }
 
+/**
+ * Whether this step, or one nested in it, spells an output reference.
+ *
+ * {@link assertNoOutputReferences} judges a WHOLE flow, and a host-mode append
+ * re-parses the file before it pushes — so its refusal can name a step that was
+ * already there (a mid-recording hand edit) rather than the one being appended.
+ * A caller that reports the refusal asks this which of the two it is holding.
+ */
+export function holdsOutputReference(step: FlowStep): boolean {
+  for (const field of outputReferenceFields(step)) {
+    if (field.value.includes(OUTPUT_REFERENCE_MARKER)) return true;
+  }
+  return blockSteps(step)?.some(holdsOutputReference) ?? false;
+}
+
 function assertNoOutputReferences(steps: FlowStep[], trail: number[] = []): void {
   steps.forEach((step, i) => {
     const at = [...trail, i + 1];

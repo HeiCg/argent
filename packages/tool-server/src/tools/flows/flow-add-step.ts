@@ -12,6 +12,7 @@ import {
 import {
   requireRecordingSession,
   appendStepToFlow,
+  holdsOutputReference,
   appIdForPlatform,
   parseFlow,
   assertSafeFlowName,
@@ -1064,6 +1065,12 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         ({ savedTo, stepCount } = await appendStepToFlow(session, step));
       } catch (err) {
         if (getFailureSignal(err)?.failure_stage !== "flow_output_reference") throw err;
+        const refused = err instanceof Error ? err.message : String(err);
+        // A host-mode append re-parses the file, so the scan that refuses an
+        // output reference sees the steps ALREADY there as well — and a
+        // mid-recording hand edit is a supported way for one of those to carry
+        // one. Blaming the just-run call for that step's field would send the
+        // author back over a call whose args were clean.
         throw wrapFailure(
           err,
           {
@@ -1072,10 +1079,15 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
             failure_area: "tool_server",
             error_kind: "validation",
           },
-          `The \`${params.command}\` call already ran and nothing it did was undone, but ` +
-            `recording it failed — so the step is not in the flow, and its result is lost with ` +
-            `this error. Check what the call changed before you repeat it. ` +
-            `${err instanceof Error ? err.message : String(err)}`
+          holdsOutputReference(step)
+            ? `The \`${params.command}\` call already ran and nothing it did was undone, but ` +
+                `recording it failed — so the step is not in the flow, and its result is lost ` +
+                `with this error. Check what the call changed before you repeat it. ${refused}`
+            : `The \`${params.command}\` call already ran and nothing it did was undone, but a ` +
+                `step ALREADY in the flow file spells an output reference, so the append re-read ` +
+                `it and refused. The step named below is that one, not this call — remove the ` +
+                `reference from the .yaml and the recording continues. This call's result is ` +
+                `lost with this error, so check what it changed before you repeat it. ${refused}`
         );
       }
 

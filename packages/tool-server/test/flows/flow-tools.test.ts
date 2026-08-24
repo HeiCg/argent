@@ -435,6 +435,43 @@ describe("a step the recorder refuses", () => {
     expect(parseFlow(await onDisk("already-ran")).steps).toEqual([]);
   });
 
+  // A host-mode append re-parses the file, so the same guard also judges the
+  // steps already in it — and a mid-recording hand edit is how one of those
+  // comes to hold a reference the recorder never accepted.
+  it("does not blame the just-run call for a reference an earlier step already held", async () => {
+    const registry = createMockRegistry({ keyboard: { result: { typed: "…", keys: 15 } } });
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "hand-edited", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    await fs.writeFile(
+      path.join(flowsDirFor(tmpDir), "hand-edited.yaml"),
+      `executionPrerequisite: ${PREREQ}\nsteps:\n  - echo: "created {{output:user.id}}"\n`
+    );
+
+    const err = await tool
+      .execute(
+        {},
+        {
+          name: "hand-edited",
+          project_root: tmpDir,
+          command: "keyboard",
+          args: '{"text":"hi"}',
+        }
+      )
+      .catch((e: unknown) => e as Error);
+
+    const message = (err as Error).message;
+    expect(registry.invokeTool).toHaveBeenCalledWith("keyboard", { text: "hi" });
+    // The call ran, so that half stands — but the field the scan refused is the
+    // hand-edited step's, and the wrap has to say so.
+    expect(message).toContain("`keyboard` call already ran");
+    expect(message).toContain("ALREADY in the flow file");
+    expect(message).toContain("Step 1 (`echo`)");
+    expect(message).not.toContain("recording it failed");
+  });
+
   // The other half of that claim: the tool's description tells an agent a
   // failure ran the call unless it landed in one of the checks that precede the
   // dispatch, and this is the check an agent meets most often. A dispatch moved
