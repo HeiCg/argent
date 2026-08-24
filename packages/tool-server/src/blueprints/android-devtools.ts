@@ -150,8 +150,7 @@ async function spawnHelper(serial: string): Promise<SpawnedHelper> {
       if (!portMatch || devicePort !== null) return;
       devicePort = parseInt(portMatch[1]!, 10);
 
-      // `adb forward tcp:0 tcp:DEVICE_PORT` makes adb pick a free local port
-      // and print it; saves the host-side `net.createServer(0)` dance.
+      // `tcp:0` makes adb pick a free local port and print it on stdout.
       try {
         const { stdout } = await runAdb(["-s", serial, "forward", "tcp:0", `tcp:${devicePort}`], {
           timeoutMs: 5_000,
@@ -248,8 +247,7 @@ async function removeAdbForward(serial: string, localPort: number): Promise<void
   try {
     await runAdb(["-s", serial, "forward", "--remove", `tcp:${localPort}`], { timeoutMs: 5_000 });
   } catch {
-    // Best-effort: adb forward --remove can race with adb daemon restarts.
-    // Leftover forwards are harmless; they'll be re-shadowed on next spawn.
+    /* best-effort */
   }
 }
 
@@ -325,7 +323,7 @@ export const androidDevtoolsBlueprint: ServiceBlueprint<AndroidDevtoolsApi, Devi
       throw err;
     }
 
-    // Handshake — confirms the socket is talking to our helper, not stale state.
+    // A connected socket doesn't prove the helper answers; ping is the gate.
     try {
       await client.request("ping");
       ready = true;
@@ -385,9 +383,7 @@ export const androidDevtoolsBlueprint: ServiceBlueprint<AndroidDevtoolsApi, Devi
       dispose: async () => {
         disposed = true;
         ready = false;
-        // Best-effort graceful shutdown — gives the helper a chance to call
-        // `finish(0, ...)` so `am instrument` exits with code 0 and adb
-        // doesn't log a noisy stack trace. Bounded by a tight timeout.
+        // Ask the helper to exit on its own so `am instrument` ends cleanly.
         try {
           await Promise.race([
             client.request("shutdown"),

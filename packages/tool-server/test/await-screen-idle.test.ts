@@ -135,10 +135,7 @@ describe("await-screen-idle tool", () => {
   //
   // Every read here takes real time — a tenth of the budget, so the reads are
   // plainly fast enough — because a describe that resolves within a microtask
-  // is not a transport any device has. It also happens to be the only shape
-  // that can catch the failure: the wait ends by sleeping onto the deadline and
-  // asking for one more tree with nothing left to read it in, and a fetch that
-  // settles before the zero-length timer can fire hides that.
+  // is not a transport any device has.
   it("omits the note when the screen genuinely keeps changing", async () => {
     let n = 0;
     const churning: AXServiceApi = {
