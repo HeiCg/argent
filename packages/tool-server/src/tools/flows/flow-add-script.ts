@@ -53,8 +53,24 @@ interface FlowAddScriptResult {
    * file, or to one spelled a different way on disk.
    */
   durationMs?: number;
-  /** The validated output document the script returned. Present only on a pass. */
-  output?: Record<string, unknown>;
+  /**
+   * The output document the script returned, as JSON text. Present only on a
+   * pass.
+   *
+   * Text rather than the parsed object, and the reason is a trust boundary
+   * this tool is the first to cross. Every tool result is deep-walked twice by
+   * the client — once for `__argentClientFile` directives, which write a file
+   * on the agent's machine, and once for `__argentArtifact` handles, which
+   * fetch a file and can push an image block into the agent's context — and
+   * both walks match on shape alone. A script's document is the only part of
+   * any result this server does not author: the documented uses are relaying
+   * what a backend answered, so the bytes are routinely NOT the script's own.
+   * Handed on as an object it would inherit every structural meaning the wire
+   * format has today and every one it gains later; as a string it has none of
+   * them, and the agent is shown exactly what the script returned rather than
+   * the walkers' rewrite of it.
+   */
+  outputJson?: string;
   /** Steps in the recording. Unchanged by a call that did not record. */
   stepCount: number;
   /** The appended step's summary line. Absent when nothing was recorded. */
@@ -113,9 +129,9 @@ export const flowAddScriptTool: ToolDefinition<z.infer<typeof zodSchema>, FlowAd
   description: `Run a local .mjs file through the flow script executor and record it as a \`script:\` step in the flow named by \`name\` + \`project_root\` (the recording must already be open — see flow-start-recording).
 Use when a flow needs backend state before it touches the device: seed an order, create a test account, read a one-time code. The script drives nothing on the device; the steps around it do. Record it at the point in the walkthrough where it belongs — a setup script goes BEFORE the restart-app it prepares state for, because that is where it runs at replay.
 It runs the file exactly as a replay will: same path resolution (relative to the flow file being recorded), same environment allowlist, same time limit, and the same working directory — this recording's \`project_root\`, which is what a replay launched from that root also uses.
-Returns { message, status, reason?, log?, logTruncated?, durationMs?, output?, stepCount, recorded?, savedTo? }.
+Returns { message, status, reason?, log?, logTruncated?, durationMs?, outputJson?, stepCount, recorded?, savedTo? }.
 UNLIKE flow-add-step, a failure records NOTHING: the step is appended only when the script passes, because a failed script did not establish the state the rest of the recording would then be walked against. A script that ran before it stopped did not roll back what it created; the \`message\` says whether anything ran, so you can fix and re-run or clean up first.
-\`output\` is the document the script returned. It is shown so you can see the shape a later release will read; no flow step can reference it yet.
+\`outputJson\` is the document the script returned, as JSON text. It is shown so you can see the shape a later release will read; no flow step can reference it yet.
 Refused for a recording whose project root is not on this tool server's filesystem: the .mjs file stays on the client, so there is nothing here to resolve the path against or to run.`,
   // A script's default limit is 30s and its host cap is five minutes, both of
   // which outlive the MCP adapter's per-request fetch budget. Without this the
@@ -271,8 +287,8 @@ Refused for a recording whose project root is not on this tool server's filesyst
       ...common,
       message:
         `Script step added to "${params.name}" flow — it ran here exactly as it will at replay. ` +
-        `\`output\` is what the script returned; no flow step can reference it yet.`,
-      ...(result?.output ? { output: result.output } : {}),
+        `\`outputJson\` is what the script returned; no flow step can reference it yet.`,
+      ...(result?.output ? { outputJson: JSON.stringify(result.output) } : {}),
       stepCount,
       recorded: summarizeStep(step, stepCount),
       savedTo,

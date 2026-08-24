@@ -270,7 +270,7 @@ describe("the recorder reports the verdict the runner will", () => {
     expect(recorded.status).toBe("pass");
     expect(recorded.status).toBe(replayed.status);
     expect(recorded.reason).toBe(replayed.reason);
-    expect(recorded.output).toEqual({ order: { id: 7 } });
+    expect(recorded.outputJson).toBe('{"order":{"id":7}}');
     expect(await recordedSteps()).toEqual([{ kind: "script", path: "../../scripts/seed.mjs" }]);
   });
 });
