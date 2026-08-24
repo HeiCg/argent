@@ -236,10 +236,10 @@ The step report carries the stdout and stderr of the script and prints them belo
 
 The step verdict tells you where the cause is, so CI can separate a regression from the machine that ran it. Both verdicts stop the flow.
 
-| Verdict     | Cause      | Examples                                                                                                                                                             |
-| ----------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **failed**  | the script | threw an error, did not load, exited non-zero, or wrote an `output` value that the runner cannot serialize                                                           |
-| **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, no free queue slot, a cancelled run, or a `path` that only a case-insensitive filesystem matched |
+| Verdict     | Cause      | Examples                                                                                                                                                           |
+| ----------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **failed**  | the script | threw an error, did not load, exited non-zero, or wrote an `output` value that the runner cannot serialize                                                         |
+| **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, no free queue slot, a cancelled run, or a filename that does not match the letter case on disk |
 
 ### Boundaries
 
