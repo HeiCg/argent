@@ -4,21 +4,17 @@ import * as path from "node:path";
 const WORKSPACE_ROOT = path.resolve(__dirname, "../../../..");
 
 /**
- * Fixture scripts live under the workspace's own `node_modules`.
- *
- * A script under `os.tmpdir()` cannot resolve a bare specifier — Node walks up
- * from the script file looking for `node_modules`, and a temp directory has no
- * ancestor that holds one. Every ancestor of this directory ends at
- * `<workspace>/node_modules`, so `import YAML from "yaml"` resolves exactly the
- * way it would from a real project script. `node_modules` is git-ignored, so a
- * fixture left behind by a crashed run never dirties the tree.
+ * Fixture scripts live under the workspace's own `node_modules` so a bare
+ * specifier resolves: Node walks up from the script file looking for
+ * `node_modules`, and a directory under `os.tmpdir()` has no ancestor that holds
+ * one. `node_modules` is git-ignored, so a fixture left behind by a crashed run
+ * never dirties the tree.
  */
 const FIXTURE_ROOT = path.join(WORKSPACE_ROOT, "node_modules", ".cache", "argent-flow-scripts");
 
 export interface ScriptWorkspace {
   /** An empty directory that can act as a `project_root`. */
   readonly dir: string;
-  /** Write a fixture script and return its absolute path. */
   write(name: string, source: string): string;
   /** Absolute path inside the workspace, whether or not it exists. */
   resolve(name: string): string;
@@ -52,13 +48,10 @@ export function createScriptWorkspace(label = "ws"): ScriptWorkspace {
 }
 
 /**
- * Drop what a crashed run left behind.
- *
- * Every workspace cleans up after itself, but a killed suite does not — and the
- * root is under `node_modules`, so nothing else ever sweeps it. The age bound is
- * what makes this safe beside a concurrent run: an hour is far longer than the
- * whole suite takes, so a fixture another vitest worker is using now is never
- * old enough to be taken.
+ * Drop what a crashed run left behind — the root is under `node_modules`, so
+ * nothing else ever sweeps it. The age bound is what makes this safe beside a
+ * concurrent run: an hour is far longer than the whole suite takes, so a fixture
+ * another vitest worker is using now is never old enough to be taken.
  */
 function pruneStaleFixtures(): void {
   const cutoff = Date.now() - STALE_FIXTURE_MS;
@@ -74,7 +67,7 @@ function pruneStaleFixtures(): void {
       if (fs.statSync(candidate).mtimeMs > cutoff) continue;
       fs.rmSync(candidate, { recursive: true, force: true });
     } catch {
-      // Raced with another worker's own cleanup, which is the outcome wanted.
+      // Raced with another worker's own cleanup — the outcome wanted.
     }
   }
 }

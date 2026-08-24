@@ -92,10 +92,9 @@ describe("flow script executor — work the module evaluation outlives", () => {
 
   it("lets the script's own beforeExit handler finish the work it schedules", async () => {
     const ws = workspace();
-    // The runner's probe was registered before the script loaded, so it ran
-    // first and exited the process before anything a script's handler scheduled
-    // could run. `setTimeout(() => fs.writeFileSync(…))` in a `beforeExit`
-    // handler is the ordinary cleanup shape, and plain `node` writes the file.
+    // The runner's own `beforeExit` probe is registered before the script
+    // loads, so it runs first and has to yield the round for the write a
+    // script's handler schedules to land at all.
     const marker = ws.resolve("cleanup.txt");
     const script = ws.write(
       "cleanup.mjs",
@@ -117,12 +116,6 @@ describe("flow script executor — work the module evaluation outlives", () => {
 
   it("gives a beforeExit handler every round it asks for, not one", async () => {
     const ws = workspace();
-    // A retry loop driven from `beforeExit` is the shape: the handler is
-    // entered on each round and stops scheduling when it succeeds. Spending a
-    // fixed number of rounds gave it one — the handler's own log line showed
-    // the last attempt starting, and the work it scheduled was thrown away
-    // while the step reported a green pass with an empty document. Plain `node`
-    // runs all three.
     const script = ws.write(
       "retry.mjs",
       `let attempts = 0;
@@ -148,8 +141,6 @@ describe("flow script executor — work the module evaluation outlives", () => {
 
   it("drains a queue a beforeExit handler works through over several rounds", async () => {
     const ws = workspace();
-    // The partial-loss half of the same defect: the round that was taken away
-    // committed one entry of two, so the document was wrong rather than empty.
     const script = ws.write(
       "drain.mjs",
       `const queue = ["a", "b", "c"];
@@ -169,8 +160,6 @@ describe("flow script executor — work the module evaluation outlives", () => {
 
   it("fails the step when the script's beforeExit handler throws", async () => {
     const ws = workspace();
-    // Swallowed entirely, with an empty log and a passing step, where plain
-    // `node` exits 1.
     const script = ws.write(
       "bad-cleanup.mjs",
       `process.on("beforeExit", async () => {
@@ -190,15 +179,8 @@ describe("flow script executor — work the module evaluation outlives", () => {
 describe("flow script executor — the script is the main module", () => {
   it("runs a body behind an ESM main-module guard", async () => {
     const ws = workspace();
-    // The standard shape for a script that is also importable by a test. Under
-    // a runner that imported the script, every one of these answered "no" and
-    // the step passed having run nothing.
-    //
-    // `import.meta.main` is compared against what plain `node script.mjs`
-    // reports on this Node rather than against `true`: the property landed in
-    // Node 24 and is `undefined` on 20 and 22, both inside the supported range.
-    // The claim under test is the equivalence, and pinning the value instead
-    // made the suite red on the version CI runs.
+    // Compared against what plain `node script.mjs` reports on this Node, not
+    // against `true`: whether the property exists is version-dependent.
     const probe = ws.write("probe.mjs", `process.stdout.write(String(import.meta.main));`);
     const plainNode = execFileSync(process.execPath, [probe], { encoding: "utf8" }).trim();
     const script = ws.write(
@@ -219,8 +201,8 @@ describe("flow script executor — the script is the main module", () => {
     const evaluations = ws.resolve("evaluations.txt");
     // The runner re-imports the entry module to tell a finished script from one
     // parked in a top-level `await`. Node caches a module by the real path it
-    // resolved the entry from, so a request that named a different spelling of
-    // the same file was a second module — and the script's body ran twice.
+    // resolved the entry from, so a request naming a different spelling of the
+    // same file would be a second module and the body would run twice.
     const real = ws.write(
       "real.mjs",
       `import fs from "node:fs";
@@ -247,8 +229,8 @@ describe("flow script executor — the script is the main module", () => {
   it("leaves a script's own child process and worker thread alone", async () => {
     const ws = workspace();
     // The runner rides in on `execArgv`, which a `fork` and a `new Worker` both
-    // inherit. An inherited copy that thought it was the runner would wait for
-    // a request nobody is sending, and the script would hang on its own child.
+    // inherit. An inherited copy that thought it was the runner would park
+    // waiting for a request nobody sends, hanging the script on its own child.
     ws.write("grandchild.mjs", `console.log("grandchild ran");`);
     ws.write(
       "worker.mjs",
@@ -348,7 +330,7 @@ describe("flow script executor — module loading", () => {
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
     // Not "the script stopped its own process with exit code 1": it did not,
-    // and that message points the author at a `process.exit` that is not there.
+    // and that verdict points the author at a `process.exit` that is not there.
     expect(result.failure?.kind).toBe("runtime");
     expect(result.failure?.message).toBe("upstream 503 from the metrics API");
     expect(result.failure?.stack).toContain("async-crash.mjs:1");
@@ -370,10 +352,8 @@ describe("flow script executor — module loading", () => {
   it("lets a script recover through an uncaughtException handler of its own", async () => {
     const ws = workspace();
     // Node does not end a process that has an `uncaughtException` listener, so
-    // this script carries on and finishes under plain `node`. The runner's own
-    // handler is registered before the script loads, so it pre-empted the
-    // script's and failed the step with an error the script had already dealt
-    // with — its own log line saying so, right beside the verdict.
+    // this script carries on and finishes under plain `node` — and the runner's
+    // own handler, registered before the script loads, must not pre-empt it.
     const script = ws.write(
       "recovers.mjs",
       `process.on("uncaughtException", (err) => {
@@ -392,9 +372,8 @@ describe("flow script executor — module loading", () => {
 
   it("calls a SyntaxError from running code a runtime failure, not a load one", async () => {
     const ws = workspace();
-    // The canonical script failure: the endpoint returned an HTML error page.
-    // Telling this author their file never evaluated sends them somewhere else
-    // entirely.
+    // The endpoint returned an HTML error page: telling this author their file
+    // never evaluated sends them somewhere else entirely.
     const script = ws.write("html.mjs", `JSON.parse("<html>not json</html>");`);
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
@@ -403,11 +382,9 @@ describe("flow script executor — module loading", () => {
 
   it("carries the causes Node would have printed into the failure message", async () => {
     const ws = workspace();
-    // The dominant failure shape of a seeding script: `fetch` throws
-    // `fetch failed` and puts the real reason in `.cause`. The runner's own
-    // handler claims the exception, so Node's printout — which does show
-    // `[cause]` — never happens, and the report had strictly less in it than
-    // running the script by hand.
+    // `fetch` throws `fetch failed` and puts the real reason in `.cause`. The
+    // runner's `uncaughtException` handler claims the exception, so Node's own
+    // printout — which does show `[cause]` — never happens.
     const chained = ws.write(
       "chained.mjs",
       `throw new Error("could not seed the order", {
@@ -420,8 +397,7 @@ describe("flow script executor — module loading", () => {
       "could not seed the order — caused by: connect ECONNREFUSED 127.0.0.1:5432"
     );
 
-    // `Promise.any` puts every attempt in `errors`; they are siblings, not a
-    // chain, and neither reached the report at all.
+    // `Promise.any` puts every attempt in `errors`: siblings, not a chain.
     const aggregate = ws.write(
       "aggregate.mjs",
       `throw new AggregateError(
@@ -437,12 +413,9 @@ describe("flow script executor — module loading", () => {
 
   it("carries a cause that is not an Error", async () => {
     const ws = workspace();
-    // Neither field has to hold an `Error`. `cause: "HTTP 500 …"` is what a
-    // handwritten wrapper puts there, and `Promise.any` over promises rejected
-    // with strings puts strings in `errors`. Node prints both; the runner
-    // dropped both, and it claims the exception, so the log had no second copy
-    // to fall back on — the report was the wrapper's own message and nothing
-    // else.
+    // Neither `.cause` nor an `errors` entry has to hold an `Error`, and Node
+    // prints both. The runner claims the exception, so the log carries no
+    // second copy to fall back on.
     const stringCause = ws.write(
       "string-cause.mjs",
       `throw new Error("upload failed", {
@@ -464,7 +437,6 @@ describe("flow script executor — module loading", () => {
       "All promises were rejected — caused by: primary down; replica down"
     );
 
-    // An object cause renders as the data it is, nested keys included.
     const objectCause = ws.write(
       "object-cause.mjs",
       `throw new Error("request rejected", { cause: { status: 422, field: "email" } });`
@@ -474,8 +446,6 @@ describe("flow script executor — module loading", () => {
       'request rejected — caused by: {"status":422,"field":"email"}'
     );
 
-    // And an error with no cause still says only what it says: `.cause` is read
-    // on every error and is absent from nearly all of them.
     const plain = ws.write("plain.mjs", `throw new Error("plain failure");`);
     const fromPlain = await executor().execute({ scriptPath: plain, projectRoot: ws.dir });
     expect(fromPlain.failure?.message).toBe("plain failure");
@@ -483,10 +453,8 @@ describe("flow script executor — module loading", () => {
 
   it("bounds a chain of causes, and survives one that points back at itself", async () => {
     const ws = workspace();
-    // Both guards on the walk, neither of which the happy paths reach. A
-    // re-wrapped error whose `.cause` climbs back up its own chain is the shape
-    // the cycle guard exists for; without it the walk never returns and the
-    // step runs to its time limit with no verdict at all.
+    // Without the cycle guard the walk never returns, and the step runs to its
+    // time limit with no verdict at all.
     const cyclic = ws.write(
       "cyclic.mjs",
       `const outer = new Error("outer failed");
@@ -497,7 +465,7 @@ describe("flow script executor — module loading", () => {
     const fromCyclic = await executor().execute({ scriptPath: cyclic, projectRoot: ws.dir });
     expect(fromCyclic.failure?.message).toBe("outer failed — caused by: inner failed");
 
-    // And the depth bound: a long chain is cut rather than rendered whole.
+    // The depth bound is 8 causes, so d8 is the last one rendered.
     const deep = ws.write(
       "deep-chain.mjs",
       `let err = new Error("d11");
@@ -513,8 +481,7 @@ describe("flow script executor — module loading", () => {
     const ws = workspace();
     // An error raised asynchronously carries the frames of wherever it was
     // constructed — nothing at all for an `fs` callback, undici for a response
-    // body — so reading the *absence* of a file frame as proof of a load
-    // failure made the same call flip verdict on whether it was awaited.
+    // body — so the absence of a file frame is not evidence of a load failure.
     const callback = ws.write(
       "callback.mjs",
       `import fs from "node:fs";
@@ -523,7 +490,6 @@ describe("flow script executor — module loading", () => {
     const fromCallback = await executor().execute({ scriptPath: callback, projectRoot: ws.dir });
     expect(fromCallback.failure?.kind).toBe("runtime");
 
-    // The plan's own canonical example for why the distinction exists.
     const body = ws.write(
       "body.mjs",
       `async function main() { await new Response("<html>").json(); }
@@ -536,8 +502,7 @@ describe("flow script executor — module loading", () => {
   it("keeps that verdict when a dependency has set Error.stackTraceLimit to 0", async () => {
     const ws = workspace();
     // A global any dependency may set. With no frames at all there is no
-    // evidence either way, and absence-of-a-file-frame read it as a load
-    // failure — for a plain synchronous throw.
+    // evidence either way, so absence of a file frame must not decide it.
     const script = ws.write(
       "no-frames.mjs",
       `Error.stackTraceLimit = 0;
@@ -564,9 +529,8 @@ describe("flow script executor — module loading", () => {
 
   it("does not put a stream crash into the log of a passing step", async () => {
     const ws = workspace();
-    // A script that ended its own stdout: writing to an ended stream raises an
-    // unhandled error event, and the trace landed in the report of a step that
-    // otherwise passed.
+    // Writing to a stream the script ended raises an unhandled `error` event,
+    // whose trace would land in the log of a step that otherwise passed.
     const script = ws.write("ends-stdout.mjs", `console.log("done"); process.stdout.end();`);
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
@@ -591,9 +555,6 @@ describe("flow script executor — the tool server's one executor", () => {
 
   it("runs a script through the shared instance", async () => {
     const ws = workspace();
-    // Through `flowScriptExecutor()` itself, not a local executor: the point of
-    // the test is that the shared instance works, and a local one would pass
-    // even if the singleton were replaced by a fresh instance per call.
     const result = await flowScriptExecutor().execute({
       scriptPath: ws.write("shared.mjs", `output.viaShared = true;`),
       projectRoot: ws.dir,

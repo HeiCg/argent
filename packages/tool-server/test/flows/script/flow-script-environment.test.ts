@@ -18,7 +18,6 @@ function workspace(): ScriptWorkspace {
   return ws;
 }
 
-/** Set a tool-server environment variable for one test only. */
 function withEnv(name: string, value: string): void {
   const before = process.env[name];
   restoreEnv.push(() => {
@@ -28,7 +27,6 @@ function withEnv(name: string, value: string): void {
   process.env[name] = value;
 }
 
-/** Remove a tool-server environment variable for one test only. */
 function withoutEnv(name: string): void {
   const before = process.env[name];
   restoreEnv.push(() => {
@@ -46,7 +44,6 @@ function executor(options: FlowScriptExecutorOptions = {}) {
   return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000, ...options });
 }
 
-/** A script that copies the values it is asked about into `output`. */
 function reporter(names: string[]): string {
   return `output.env = {}; for (const name of ${JSON.stringify(names)}) {
     output.env[name] = process.env[name] ?? null;
@@ -96,11 +93,8 @@ describe("flow script executor — the environment allowlist", () => {
     expect(result.output?.env).toEqual({ API_URL: "https://api.example.com", API_KEY: "abc" });
   });
 
-  // Spelled out rather than imported: the constant is private, and a literal is
-  // what catches a rename of the name the runner preload actually reads. The
-  // activation variable belongs here with the rest — a caller that sets it
-  // steers which process the preload activates in, and it was the one reserved
-  // name no case enumerated.
+  // Spelled out rather than imported: the constant is private, and a literal
+  // catches a rename of the name the runner preload actually reads.
   it.each([
     "NODE_OPTIONS",
     "NODE_CHANNEL_FD",
@@ -125,8 +119,8 @@ describe("flow script executor — the environment allowlist", () => {
     async (name) => {
       // An Electron-hosted tool server makes `process.execPath` the Electron
       // binary, and only this flag keeps a forked child in Node mode. The read
-      // has to be case-insensitive: a Windows host may surface non-canonical
-      // casing, and missing it would boot a GUI Electron process per script step.
+      // is case-insensitive because a Windows host may surface non-canonical
+      // casing.
       withEnv(name, "1");
       const ws = workspace();
       const script = ws.write("env.mjs", reporter(["ELECTRON_RUN_AS_NODE"]));
@@ -137,9 +131,8 @@ describe("flow script executor — the environment allowlist", () => {
   );
 
   it("does not set the Electron flag when the server's environment lacks it", async () => {
-    // Explicitly, not by assumption: a developer running the suite from an
-    // Electron-hosted shell has the flag exported already, and the test failed
-    // for a reason that has nothing to do with the executor.
+    // A developer running the suite from an Electron-hosted shell has the flag
+    // exported already.
     withoutEnv("ELECTRON_RUN_AS_NODE");
     const ws = workspace();
     const script = ws.write("env.mjs", reporter(["ELECTRON_RUN_AS_NODE"]));
@@ -156,18 +149,15 @@ describe("flow script executor — execArgv", () => {
     try {
       const ws = workspace();
       const script = ws.write("argv.mjs", `output.execArgv = process.execArgv;`);
-      // Explicit, because `resolveBounds` falls back to the real
-      // `~/.argent/config.json`: `test/setup/clear-argent-env.ts` strips
-      // ARGENT_* environment variables but cannot strip a config file, so a
-      // developer who has set `scripts.heapLimitMb` — the key this ships —
-      // would read this assertion as a source regression.
+      // Explicit because `resolveBounds` falls back to the real
+      // `~/.argent/config.json`, which `test/setup/clear-argent-env.ts` cannot
+      // strip: on a machine with `scripts.heapLimitMb` set, the inherited value
+      // would read as a source regression.
       const result = await executor({ heapLimitMb: 512 }).execute({
         scriptPath: script,
         projectRoot: ws.dir,
       });
 
-      // The heap limit and the runner preload, and nothing the parent was
-      // started with.
       const execArgv = result.output?.execArgv as string[];
       expect(execArgv[0]).toBe("--max-old-space-size=512");
       expect(execArgv[1]).toBe("--import");
@@ -184,8 +174,8 @@ describe("flow script executor — the heap limit", () => {
     const ws = workspace();
     const script = ws.write("argv.mjs", `output.execArgv = process.execArgv;`);
     // Below about 5 MiB the child dies inside V8's own startup, before the
-    // runner can send anything, and every step failed with a protocol error
-    // that named neither the bound nor the value behind it.
+    // runner can send anything, with a failure naming neither the bound nor the
+    // value behind it.
     const result = await executor({ heapLimitMb: 2 }).execute({
       scriptPath: script,
       projectRoot: ws.dir,
@@ -212,15 +202,10 @@ describe("flow script executor — the host's configured bounds", () => {
     withEnv("USERPROFILE", home);
   }
 
-  // Neither key was wired end to end: the schema has its own tests, and every
-  // executor test injects the bound as an option, so the one path that reads
-  // the host's configuration was never taken. Misspelling either key string
-  // left both suites green while a host's configured ceiling was ignored.
   it("bounds a step by the configured scripts.maxTimeoutMs", async () => {
     const ws = workspace();
     configuredHome(ws, { scripts: { maxTimeoutMs: 700 } });
     const script = ws.write("hang.mjs", `setInterval(() => {}, 1000);`);
-    // No `maxTimeoutMs` option, so the configured value is the ceiling.
     const result = await new FlowScriptExecutor({ concurrency: 4 }).execute({
       scriptPath: script,
       projectRoot: ws.dir,
@@ -255,9 +240,8 @@ describe("flow script executor — the working directory", () => {
   });
 
   it("falls back to the flow file's directory when project_root does not exist, and says so", async () => {
-    // `project_root` names the calling agent's working directory, which can be
-    // mistyped or since moved. Without the existence check the child spawns into
-    // a directory that is not there and fails with a bare ENOENT.
+    // Without the existence check the child spawns into a directory that is not
+    // there and fails with a bare ENOENT.
     const ws = workspace();
     const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
     const missing = path.join(os.tmpdir(), "argent-not-a-real-project-root");
@@ -276,8 +260,7 @@ describe("flow script executor — the working directory", () => {
     const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
     // A relative path is resolved by the OS against the *tool server's* working
     // directory — the one value this must never inherit, since an editor sets it
-    // and it can be `/` or `$HOME`. A relative root that happens to exist also
-    // beat a perfectly good absolute fallback.
+    // and it can be `/` or `$HOME`.
     const result = await executor().execute({
       scriptPath: script,
       projectRoot: ".",
@@ -292,12 +275,10 @@ describe("flow script executor — the working directory", () => {
   it('refuses an absolute project_root carrying a ".." segment', async () => {
     const ws = workspace();
     const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
-    // Absolute and it exists, so the two rules beside it both pass it. The same
-    // rule `assertValidProjectRoot` applies to every other flow path.
+    // Absolute and it exists, so the two rules beside it both pass it.
     const result = await executor().execute({
       scriptPath: script,
-      // Joined by hand: `path.join` would normalise the segment away, and an
-      // unnormalised path is exactly what a caller sends.
+      // Joined by hand: `path.join` would normalise the segment away.
       projectRoot: [ws.dir, "..", path.basename(ws.dir)].join(path.sep),
       flowDir: ws.dir,
     });
@@ -341,11 +322,10 @@ describe("flow script executor — the working directory", () => {
     "reports a working directory the child cannot enter as a verdict, not a hang",
     async () => {
       const ws = workspace();
-      // The directory passes every check the executor can make — absolute, no
-      // `..`, and `stat` says it is a directory — so the failure lands in the
-      // fork itself, which reports it asynchronously through an `error` event
-      // rather than a throw. Nothing else covers that listener, and a step that
-      // lost it would wait out its whole time limit instead of answering.
+      // The directory passes every check the executor can make, so the failure
+      // lands in the fork itself, which reports it asynchronously through an
+      // `error` event rather than a throw — a step missing that listener would
+      // wait out its whole time limit instead of answering.
       const locked = ws.resolve("locked");
       fs.mkdirSync(locked, { recursive: true });
       const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);

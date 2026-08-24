@@ -10,9 +10,8 @@ import { flowFinishRecordingTool } from "../../../src/tools/flows/flow-finish-re
 import { summarizeStep } from "../../../src/tools/flows/flow-finish-recording";
 
 /**
- * The `script:` step's SYNTAX: what parses, what serializes back, and what is
- * refused. Nothing here starts a process — the step's behaviour lives in
- * flow-script-step-run.test.ts.
+ * The `script:` step's SYNTAX. Nothing here starts a process — the step's
+ * behaviour lives in flow-script-step-run.test.ts.
  */
 
 const parse = (yaml: string): FlowStep[] => parseFlow(yaml).steps;
@@ -36,8 +35,8 @@ describe("script step syntax", () => {
       executionPrerequisite: "",
       steps: [{ kind: "script", path: "scripts/seed.mjs" }],
     });
-    // No `timeout: null` filler — the minimal spelling has to come back
-    // unchanged, or every re-serialization of a hand-written flow rewrites it.
+    // No `timeout: null` filler, or every re-serialization of a hand-written
+    // flow rewrites it.
     expect(yaml).toContain("path: scripts/seed.mjs");
     expect(yaml).not.toContain("timeout");
     expect(parseFlow(yaml).steps).toEqual([{ kind: "script", path: "scripts/seed.mjs" }]);
@@ -60,10 +59,9 @@ describe("script step syntax", () => {
 
 describe("script step rejections", () => {
   it("refuses a bare path — the value is always a map", () => {
-    // Deliberately unlike tap/long-press/scroll-to/snapshot: a script step's
-    // value is a configuration block, not a subject with options hanging off
-    // it, and the bare form is the shape an author would have to rewrite the
-    // moment the script needs a time limit.
+    // Unlike tap/long-press/scroll-to/snapshot, a script step's value is a
+    // configuration block, not a subject with options hanging off it — the bare
+    // form would be rewritten the moment the script needs a time limit.
     expect(() => step("scripts/seed.mjs")).toThrow(/takes a map, not a bare path/);
   });
 
@@ -80,8 +78,8 @@ describe("script step rejections", () => {
   });
 
   it("refuses `env`, whose release has not landed", () => {
-    // A key that parsed and was ignored would let a flow written for a later
-    // release run with an empty environment and report green.
+    // A key that parsed and was ignored would run the script with an empty
+    // environment and report green.
     expect(() => step("{ path: seed.mjs, env: { TOKEN: abc } }")).toThrow(
       /script has unknown key `env`/
     );
@@ -89,8 +87,7 @@ describe("script step rejections", () => {
 
   it("refuses a missing, empty or non-string path", () => {
     // `path: ` is YAML null and `path: ""` is the empty string: two different
-    // values reaching the same arm, and the second is the one a reader who
-    // quoted the key writes.
+    // values reaching the same arm.
     for (const body of [
       "{ timeout: 1000 }",
       "{ path: }",
@@ -104,8 +101,8 @@ describe("script step rejections", () => {
 
   it("refuses a non-positive or non-finite timeout", () => {
     // `.inf` and `.nan` are both typeof number, and `.nan` fails every
-    // comparison rather than being > 0 — so it is the one that would slip
-    // through a bare `value <= 0` check and leave the step with no deadline.
+    // comparison rather than being > 0 — the one that would slip through a bare
+    // `value <= 0` check and leave the step with no deadline.
     for (const body of [
       "{ path: seed.mjs, timeout: 0 }",
       "{ path: seed.mjs, timeout: -1 }",
@@ -119,8 +116,7 @@ describe("script step rejections", () => {
 
   it("admits a fractional time limit, as every other millisecond option does", () => {
     // Milliseconds are not required to be whole here any more than in
-    // `await: { timeout: }` — both take any positive finite number, and the
-    // executor's clamp and the timer below it both take a float. Pinned so a
+    // `await: { timeout: }` — both take any positive finite number. Pinned so a
     // future integer check is a deliberate change rather than a silent one.
     expect(step("{ path: seed.mjs, timeout: 1500.5 }")).toEqual([
       { kind: "script", path: "seed.mjs", timeout: 1500.5 },
@@ -134,10 +130,7 @@ describe("script step rejections", () => {
   });
 });
 
-/**
- * Each rule below is one a `run:` target already obeys — the whole point being
- * that a script path is the same kind of name and takes the same treatment.
- */
+/** Each rule below is one a `run:` target already obeys: it is the same kind of name. */
 describe("script path rules, shared with a run: target", () => {
   it("refuses a backslash", () => {
     expect(() => step("{ path: scripts\\\\seed.mjs }")).toThrow(/uses forward slashes/);
@@ -148,8 +141,7 @@ describe("script path rules, shared with a run: target", () => {
   });
 
   it("refuses a Windows drive-relative prefix", () => {
-    // `C:foo` resolves against that drive's own current directory, and even
-    // win32.isAbsolute passes it.
+    // `C:foo` resolves against that drive's own current directory.
     expect(() => step("{ path: C:seed.mjs }")).toThrow(/must be relative to the flow file/);
     expect(() => step("{ path: 'C:/seed.mjs' }")).toThrow(/must be relative to the flow file/);
   });
@@ -160,7 +152,7 @@ describe("script path rules, shared with a run: target", () => {
 
   it("refuses any other extension, and never completes a bare name", () => {
     // `run: login` completes to `login.yaml` for back-compat; scripts have no
-    // such history and the explicit extension is load-bearing.
+    // such history.
     for (const body of ["{ path: seed }", "{ path: seed.js }", "{ path: seed.cjs }"]) {
       expect(() => step(body), body).toThrow(/must end in .mjs/);
     }
@@ -183,8 +175,6 @@ describe("script path rules, shared with a run: target", () => {
   });
 });
 
-// ── Recorder round trip ──────────────────────────────────────────────
-
 let root: string;
 
 const registry = {
@@ -202,9 +192,8 @@ afterEach(async () => {
 describe("a hand-written script step under the recorder", () => {
   it("survives a flow-add-step append and the finish that re-reads the file", async () => {
     // The recorder appends by parse → push → serialize, so a step kind the
-    // serializer cannot spell would be silently rewritten (or would take the
-    // whole recording down) the first time an agent adds a step to a flow that
-    // already holds one.
+    // serializer cannot spell would be silently rewritten the first time an
+    // agent adds a step to a flow that already holds one.
     const flowFile = path.join(root, ".argent", "flows", "seeded.yaml");
     await flowStartRecordingTool.execute({}, { name: "seeded", project_root: root });
     await fs.writeFile(
