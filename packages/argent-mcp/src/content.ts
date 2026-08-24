@@ -216,11 +216,13 @@ export type FlowStepResult = {
    */
   artifacts?: Record<string, unknown>;
   /**
-   * A `script` step's captured stdout and stderr, in written order, bounded by
-   * the tool server. Not redacted — it arrives as the script wrote it,
-   * credentials included. Rendered for a passing script too, since it is the
-   * only record of what the script did. Untrusted wire data: a non-string is
-   * ignored rather than interpolated.
+   * A `script` step's captured stdout and stderr, in arrival order, bounded by
+   * the tool server. Arrival order is not written order: a burst to both streams
+   * inside one event-loop turn can land in either stream's order, so only each
+   * stream's own sequence carries causality. Not redacted — it arrives as the
+   * script wrote it, credentials included. Rendered for a passing script too,
+   * since it is the only record of what the script did. Untrusted wire data: a
+   * non-string is ignored rather than interpolated.
    */
   scriptLog?: string;
   /** A log limit dropped some of that output; the text carries no marker. */

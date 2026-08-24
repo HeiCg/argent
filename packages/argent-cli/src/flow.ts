@@ -46,10 +46,13 @@ export interface StepReport {
    */
   artifacts?: Record<string, unknown>;
   /**
-   * A `script` step's captured stdout and stderr, in written order, possibly
-   * truncated by the tool server. Not redacted — it arrives as the script wrote
-   * it, credentials included. Printed for a passing script as much as a failing
-   * one, since it is the only record of what the script did.
+   * A `script` step's captured stdout and stderr, in arrival order, possibly
+   * truncated by the tool server. Arrival order is not written order: a burst to
+   * both streams inside one event-loop turn can land in either stream's order,
+   * so only each stream's own sequence carries causality. Not redacted — it
+   * arrives as the script wrote it, credentials included. Printed for a passing
+   * script as much as a failing one, since it is the only record of what the
+   * script did.
    */
   scriptLog?: string;
   /**
