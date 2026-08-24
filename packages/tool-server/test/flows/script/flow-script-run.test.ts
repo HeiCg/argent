@@ -92,9 +92,6 @@ describe("flow script executor — work the module evaluation outlives", () => {
 
   it("lets the script's own beforeExit handler finish the work it schedules", async () => {
     const ws = workspace();
-    // The runner's own `beforeExit` probe is registered before the script
-    // loads, so it runs first and has to yield the round for the write a
-    // script's handler schedules to land at all.
     const marker = ws.resolve("cleanup.txt");
     const script = ws.write(
       "cleanup.mjs",
@@ -315,7 +312,6 @@ describe("flow script executor — module loading", () => {
 
     expect(result.failure?.kind).toBe("runtime");
     expect(result.failure?.message).toBe("backend refused the seed");
-    // Node opened the file itself, so the trace keeps a real line number.
     expect(result.failure?.stack).toContain("throws.mjs:1");
   });
 
@@ -329,8 +325,6 @@ describe("flow script executor — module loading", () => {
     );
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
-    // Not "the script stopped its own process with exit code 1": it did not,
-    // and that verdict points the author at a `process.exit` that is not there.
     expect(result.failure?.kind).toBe("runtime");
     expect(result.failure?.message).toBe("upstream 503 from the metrics API");
     expect(result.failure?.stack).toContain("async-crash.mjs:1");
@@ -351,9 +345,6 @@ describe("flow script executor — module loading", () => {
 
   it("lets a script recover through an uncaughtException handler of its own", async () => {
     const ws = workspace();
-    // Node does not end a process that has an `uncaughtException` listener, so
-    // this script carries on and finishes under plain `node` — and the runner's
-    // own handler, registered before the script loads, must not pre-empt it.
     const script = ws.write(
       "recovers.mjs",
       `process.on("uncaughtException", (err) => {
@@ -372,8 +363,6 @@ describe("flow script executor — module loading", () => {
 
   it("calls a SyntaxError from running code a runtime failure, not a load one", async () => {
     const ws = workspace();
-    // The endpoint returned an HTML error page: telling this author their file
-    // never evaluated sends them somewhere else entirely.
     const script = ws.write("html.mjs", `JSON.parse("<html>not json</html>");`);
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
@@ -382,9 +371,6 @@ describe("flow script executor — module loading", () => {
 
   it("carries the causes Node would have printed into the failure message", async () => {
     const ws = workspace();
-    // `fetch` throws `fetch failed` and puts the real reason in `.cause`. The
-    // runner's `uncaughtException` handler claims the exception, so Node's own
-    // printout — which does show `[cause]` — never happens.
     const chained = ws.write(
       "chained.mjs",
       `throw new Error("could not seed the order", {
@@ -397,7 +383,6 @@ describe("flow script executor — module loading", () => {
       "could not seed the order — caused by: connect ECONNREFUSED 127.0.0.1:5432"
     );
 
-    // `Promise.any` puts every attempt in `errors`: siblings, not a chain.
     const aggregate = ws.write(
       "aggregate.mjs",
       `throw new AggregateError(
@@ -413,9 +398,6 @@ describe("flow script executor — module loading", () => {
 
   it("carries a cause that is not an Error", async () => {
     const ws = workspace();
-    // Neither `.cause` nor an `errors` entry has to hold an `Error`, and Node
-    // prints both. The runner claims the exception, so the log carries no
-    // second copy to fall back on.
     const stringCause = ws.write(
       "string-cause.mjs",
       `throw new Error("upload failed", {
@@ -453,8 +435,6 @@ describe("flow script executor — module loading", () => {
 
   it("bounds a chain of causes, and survives one that points back at itself", async () => {
     const ws = workspace();
-    // Without the cycle guard the walk never returns, and the step runs to its
-    // time limit with no verdict at all.
     const cyclic = ws.write(
       "cyclic.mjs",
       `const outer = new Error("outer failed");
@@ -465,7 +445,6 @@ describe("flow script executor — module loading", () => {
     const fromCyclic = await executor().execute({ scriptPath: cyclic, projectRoot: ws.dir });
     expect(fromCyclic.failure?.message).toBe("outer failed — caused by: inner failed");
 
-    // The depth bound is 8 causes, so d8 is the last one rendered.
     const deep = ws.write(
       "deep-chain.mjs",
       `let err = new Error("d11");
@@ -501,8 +480,6 @@ describe("flow script executor — module loading", () => {
 
   it("keeps that verdict when a dependency has set Error.stackTraceLimit to 0", async () => {
     const ws = workspace();
-    // A global any dependency may set. With no frames at all there is no
-    // evidence either way, so absence of a file frame must not decide it.
     const script = ws.write(
       "no-frames.mjs",
       `Error.stackTraceLimit = 0;
@@ -529,8 +506,6 @@ describe("flow script executor — module loading", () => {
 
   it("does not put a stream crash into the log of a passing step", async () => {
     const ws = workspace();
-    // Writing to a stream the script ended raises an unhandled `error` event,
-    // whose trace would land in the log of a step that otherwise passed.
     const script = ws.write("ends-stdout.mjs", `console.log("done"); process.stdout.end();`);
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 

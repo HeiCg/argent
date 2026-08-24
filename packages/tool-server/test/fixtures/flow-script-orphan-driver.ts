@@ -1,10 +1,5 @@
-// A standalone parent for the orphan-reaping test.
-//
 // The lifeline watchdog stops a runner whose parent died, so proving it needs a
 // parent that can be `SIGKILL`ed — which the test process itself cannot be.
-//
-// `flow-script-lifecycle.test.ts` spawns this as:
-// `node <ts-node/dist/bin.js> -T -P packages/tool-server/tsconfig.json <this file> <script> <cwd>`.
 import { FlowScriptExecutor } from "../../src/tools/flows/script/flow-script-executor";
 
 const [scriptPath, projectRoot] = process.argv.slice(2);

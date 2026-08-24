@@ -1,8 +1,3 @@
-/**
- * Case-insensitive for the same reason the strip below is. Answers the caller
- * that needs the flag *set* rather than removed: a `fork` that must boot as
- * Node, not as a GUI Electron process.
- */
 export function isElectronHostedEnv(): boolean {
   return Object.keys(process.env).some((name) => name.toLowerCase() === "electron_run_as_node");
 }

@@ -13,17 +13,14 @@ const WORKSPACE_ROOT = path.resolve(__dirname, "../../../..");
 const FIXTURE_ROOT = path.join(WORKSPACE_ROOT, "node_modules", ".cache", "argent-flow-scripts");
 
 export interface ScriptWorkspace {
-  /** An empty directory that can act as a `project_root`. */
   readonly dir: string;
   write(name: string, source: string): string;
-  /** Absolute path inside the workspace, whether or not it exists. */
   resolve(name: string): string;
   cleanup(): void;
 }
 
 let counter = 0;
 
-/** Fixtures older than this belong to a run that crashed before its cleanup. */
 const STALE_FIXTURE_MS = 60 * 60 * 1000;
 
 export function createScriptWorkspace(label = "ws"): ScriptWorkspace {
@@ -72,11 +69,9 @@ function pruneStaleFixtures(): void {
   }
 }
 
-/** A name no two concurrent fixtures share. */
 export function uniqueName(prefix: string): string {
   counter += 1;
   return `${prefix}-${process.pid}-${counter}`;
 }
 
-/** The workspace-source layout: the `.mjs` files sit beside the executor source. */
 export const SOURCE_RUNNER_DIR = path.resolve(__dirname, "../../src/tools/flows/script");

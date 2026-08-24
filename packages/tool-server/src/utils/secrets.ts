@@ -127,7 +127,6 @@ export function scrubSecretChunk(
   final: boolean
 ): {
   emit: string;
-  /** Characters at the end of the input kept back, waiting for the next chunk. */
   held: number;
 } {
   const ordered = orderedSecrets(secrets);
@@ -157,8 +156,6 @@ export function scrubSecretChunk(
       copied = at;
       continue;
     }
-    // Only a value longer than what is left can still begin here, which bounds
-    // both this test and the hold-back it produces.
     if (!final && text.length - at < longestValue && beginsAValue(text, at, ordered)) break;
     at += 1;
   }
@@ -168,7 +165,6 @@ export function scrubSecretChunk(
   };
 }
 
-/** Whether the rest of `text` is a proper prefix of some value — a match still to come. */
 function beginsAValue(
   text: string,
   at: number,
@@ -178,7 +174,6 @@ function beginsAValue(
   return ordered.some(({ value }) => value.length > rest.length && value.startsWith(rest));
 }
 
-/** Values worth replacing, longest first, ties in the order they were given. */
 function orderedSecrets(
   secrets: ReadonlyArray<{ name: string; value: string }>
 ): Array<{ name: string; value: string }> {
@@ -187,7 +182,6 @@ function orderedSecrets(
     .sort((a, b) => b.value.length - a.value.length);
 }
 
-/** The length of the `{{secret:NAME}}` starting at `at`, or 0 for anything else. */
 function markerLengthAt(
   text: string,
   at: number,
