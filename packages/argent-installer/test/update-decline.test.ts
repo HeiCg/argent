@@ -223,6 +223,37 @@ describe("update — interactive decline", () => {
     );
   });
 
+  // The coexisting-install choice is the other question update asks before any
+  // target runs; it refuses with both events the invalid-version refusal at
+  // the same position emits.
+  it("refuses the coexisting-install choice when there is no terminal", async () => {
+    setIsTty(undefined);
+    fs.mkdirSync(path.join(projDir, "node_modules", "@swmansion", "argent"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projDir, "node_modules", "@swmansion", "argent", "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", version: "1.0.0" })
+    );
+    fs.mkdirSync(path.join(projDir, ".argent"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projDir, ".argent", "install.json"),
+      JSON.stringify({ mode: "local", package: "@swmansion/argent", writtenBy: "1.0.0" })
+    );
+
+    await expect(update([])).rejects.toThrow(ExitSentinel);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(promptsMock.confirm).not.toHaveBeenCalled();
+    expect(npmInstallCalls()).toHaveLength(0);
+    expect(telemetryMock.track).toHaveBeenCalledWith(
+      "installation:package_action",
+      expect.objectContaining({ action: "update_failed", error_code: "UPDATE_NEEDS_TERMINAL" })
+    );
+    expect(telemetryMock.track).toHaveBeenCalledWith(
+      "installation:cli_update_fail",
+      expect.objectContaining({ error_code: "UPDATE_NEEDS_TERMINAL" })
+    );
+  });
+
   // An update with nothing to install asks nothing, so it reaches the config
   // refresh with no terminal — where the sweep's cross-project removals would
   // otherwise open a confirmation nobody can answer.

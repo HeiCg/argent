@@ -639,6 +639,7 @@ export async function update(args: string[]): Promise<void> {
     if (decision.kind === "prompt") {
       if (!canPromptUser()) {
         p.log.error(noTerminalMessage("argent update"));
+        await trackPackageAction("update_failed", updateStartTime, false, UPDATE_NEEDS_TERMINAL);
         await failUpdateTelemetry(UPDATE_NEEDS_TERMINAL);
         p.outro(pc.red("Update failed."));
         process.exit(1);
