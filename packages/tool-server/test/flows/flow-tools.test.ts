@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Registry, ToolContext } from "@argent/registry";
-import { ArtifactStore, zodObjectToJsonSchema } from "@argent/registry";
+import {
+  ArtifactStore,
+  FAILURE_CODES,
+  getFailureSignal,
+  zodObjectToJsonSchema,
+} from "@argent/registry";
 
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
 import { flowInsertEchoTool } from "../../src/tools/flows/flow-insert-echo";
@@ -417,6 +422,77 @@ describe("a step the recorder refuses", () => {
     expect((err as Error).message).toContain("output reference");
     const session = await getRecordingSession(clientRoot, "poison");
     expect(session?.flow.steps).toEqual([{ kind: "echo", message: "one" }]);
+  });
+
+  it("says the tool call already ran when the refusal lands after it", async () => {
+    // `flow-add-step` dispatches the tool and THEN appends, so this refusal
+    // lands after the action has happened on the device. The refusal alone
+    // reads as "nothing happened", and the natural next move — drop the
+    // reference, write the real value, call again — fires the action a second
+    // time. Verified live on an iOS simulator: the search field held
+    // `{{output:code}}{{output:code}}` after two calls.
+    const registry = createMockRegistry({ keyboard: { result: { typed: "…", keys: 15 } } });
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "already-ran", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const err = await tool
+      .execute(
+        {},
+        {
+          name: "already-ran",
+          project_root: tmpDir,
+          command: "keyboard",
+          args: '{"text":"{{output:code}}"}',
+        }
+      )
+      .catch((e: unknown) => e as Error);
+
+    expect(registry.invokeTool).toHaveBeenCalledWith("keyboard", { text: "{{output:code}}" });
+    // Both halves reach the caller: what already happened, and why nothing was
+    // recorded.
+    expect((err as Error).message).toContain("`keyboard` call already ran");
+    expect((err as Error).message).toContain("output reference");
+    // The wrap keeps the original diagnosis's signal rather than substituting
+    // its own fallback.
+    expect(getFailureSignal(err as Error)?.error_code).toBe(FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED);
+    expect(parseFlow(await onDisk("already-ran")).steps).toEqual([]);
+  });
+
+  it("leaves the refusals it did not introduce worded as they were", async () => {
+    // The wrap is scoped to the one refusal this release added. A leading
+    // launch under an executionPrerequisite refuses on the same post-execution
+    // path and reads the same way, but it predates this release — widening the
+    // wrap to it is a separate change.
+    const registry = createMockRegistry({ "restart-app": { result: { restarted: true } } });
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "prereq", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const err = await tool
+      .execute(
+        {},
+        {
+          name: "prereq",
+          project_root: tmpDir,
+          command: "restart-app",
+          args: '{"bundleId":"com.acme.notes"}',
+        }
+      )
+      .catch((e: unknown) => e as Error);
+
+    expect(registry.invokeTool).toHaveBeenCalledWith("restart-app", {
+      bundleId: "com.acme.notes",
+    });
+    expect((err as Error).message).toContain("must not declare executionPrerequisite");
+    expect((err as Error).message).not.toContain("already ran");
+    expect(getFailureSignal(err as Error)?.error_code).toBe(
+      FAILURE_CODES.FLOW_E2E_HAS_PREREQUISITE
+    );
   });
 });
 

@@ -1,7 +1,14 @@
 import { z } from "zod";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { FAILURE_CODES, FailureError, type Registry, type ToolDefinition } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  FailureError,
+  getFailureSignal,
+  wrapFailure,
+  type Registry,
+  type ToolDefinition,
+} from "@argent/registry";
 import {
   requireRecordingSession,
   appendStepToFlow,
@@ -572,7 +579,42 @@ If a step was recorded by mistake, edit the .yaml to remove it — against a rem
         };
       }
 
-      const { savedTo, stepCount } = await appendStepToFlow(session, step);
+      // The tool call has already run by the time the append can refuse the
+      // step, and the `{{output:` refusal is the one refusal on that path this
+      // release ADDED — a stand-in for the resolution a later release does over
+      // the same field list, `tool.args` string leaves included, which is what
+      // an agent handed a script's output document writes into. Its message
+      // says only "remove it and write the value the flow needs", so the
+      // natural next move — do that, call again — fires the device action a
+      // second time. Verified: a `keyboard` step recorded twice left
+      // `{{output:code}}{{output:code}}` in the field. So that one refusal is
+      // re-thrown carrying what already happened, keeping its own diagnosis and
+      // failure signal, the way `flow-add-script` wraps its append failure.
+      //
+      // Only that one. Every other refusal here — a leading launch under an
+      // executionPrerequisite, a step that will not serialize, a write that
+      // failed — reads the same way and predates this release; widening the
+      // wrap to them is a separate change, not this one's to make.
+      let savedTo: FlowSavedTo;
+      let stepCount: number;
+      try {
+        ({ savedTo, stepCount } = await appendStepToFlow(session, step));
+      } catch (err) {
+        if (getFailureSignal(err)?.failure_stage !== "flow_output_reference") throw err;
+        throw wrapFailure(
+          err,
+          {
+            error_code: FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED,
+            failure_stage: "flow_output_reference",
+            failure_area: "tool_server",
+            error_kind: "validation",
+          },
+          `The \`${params.command}\` call already ran and nothing it did was undone, but ` +
+            `recording it failed — so the step is not in the flow, and its result is lost with ` +
+            `this error. Check what the call changed before you repeat it. ` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+      }
 
       return {
         message: `Step added to "${params.name}" flow${warning ? ` — ${warning}` : ""}`,
