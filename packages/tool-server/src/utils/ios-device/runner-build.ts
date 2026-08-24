@@ -128,8 +128,7 @@ function findBaseXctestrun(derivedDataPath: string): string | null {
   const candidates = fs
     .readdirSync(productsDir)
     .filter(
-      (name) =>
-        name.endsWith(".xctestrun") && !name.includes(".env.") && name.includes("iphoneos")
+      (name) => name.endsWith(".xctestrun") && !name.includes(".env.") && name.includes("iphoneos")
     );
   if (candidates.length === 0) return null;
   return path.join(productsDir, candidates.sort()[0]!);
@@ -141,7 +140,10 @@ function resolveSigningHint(output: string): string | null {
   if (lower.includes("requires a development team")) {
     return "Set ARGENT_IOS_TEAM_ID to your Apple Developer Team ID (Xcode > Settings > Accounts).";
   }
-  if (lower.includes("failed registering bundle identifier") || lower.includes("is not available")) {
+  if (
+    lower.includes("failed registering bundle identifier") ||
+    lower.includes("is not available")
+  ) {
     return (
       "The runner bundle id collided (common on free Personal Team accounts). " +
       "Set ARGENT_IOS_RUNNER_BUNDLE_ID to a unique reverse-DNS value, e.g. com.yourname.argent.runner."
@@ -295,11 +297,9 @@ export async function prepareXctestrunWithPort(
   xctestrunPath: string,
   port: number
 ): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "plutil",
-    ["-convert", "json", "-o", "-", xctestrunPath],
-    { maxBuffer: 32 * 1024 * 1024 }
-  );
+  const { stdout } = await execFileAsync("plutil", ["-convert", "json", "-o", "-", xctestrunPath], {
+    maxBuffer: 32 * 1024 * 1024,
+  });
   const plist = JSON.parse(stdout) as Record<string, unknown>;
 
   const envKeys = [
@@ -324,7 +324,8 @@ export async function prepareXctestrunWithPort(
   if (Array.isArray(configurations)) {
     for (const config of configurations) {
       const targets = (config as Record<string, unknown>)["TestTargets"];
-      if (Array.isArray(targets)) for (const t of targets) if (looksLikeTarget(t)) injectIntoTarget(t);
+      if (Array.isArray(targets))
+        for (const t of targets) if (looksLikeTarget(t)) injectIntoTarget(t);
     }
   }
   // Format v1: test targets are top-level keys.

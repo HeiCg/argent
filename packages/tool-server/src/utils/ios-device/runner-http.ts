@@ -41,7 +41,10 @@ export async function postRunnerCommand(options: PostRunnerCommandOptions): Prom
   const agent = new http.Agent({ keepAlive: false });
   // @types/node exposes createConnection on Agent instances; returning the
   // pre-connected socket short-circuits the dial step entirely.
-  agent.createConnection = ((_options: unknown, callback?: (err: Error | null, stream: net.Socket) => void) => {
+  agent.createConnection = ((
+    _options: unknown,
+    callback?: (err: Error | null, stream: net.Socket) => void
+  ) => {
     callback?.(null, socket);
     return socket;
   }) as typeof agent.createConnection;
@@ -99,9 +102,13 @@ async function connectTcp(host: string, port: number, timeoutMs: number): Promis
     let settled = false;
     const timer = setTimeout(() => {
       finish(
-        new IosDeviceTransportError("timeout", `Timed out connecting to runner at ${host}:${port}`, {
-          retryable: true,
-        })
+        new IosDeviceTransportError(
+          "timeout",
+          `Timed out connecting to runner at ${host}:${port}`,
+          {
+            retryable: true,
+          }
+        )
       );
     }, timeoutMs);
     const onConnect = () => finish();
@@ -163,7 +170,7 @@ async function requestOverAgent(
           headers: {
             "Content-Type": "application/json",
             "Content-Length": payload.length,
-            Connection: "close",
+            "Connection": "close",
           },
           agent,
           signal: timeoutSignal,

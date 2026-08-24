@@ -59,12 +59,7 @@ type AndroidDevice = {
 
 type ListDevicesResult = {
   devices: Array<
-    | IosDevice
-    | IosPhysicalDevice
-    | IosRemoteDevice
-    | AndroidDevice
-    | ChromiumDevice
-    | VegaDevice
+    IosDevice | IosPhysicalDevice | IosRemoteDevice | AndroidDevice | ChromiumDevice | VegaDevice
   >;
   avds: Array<{ name: string }>;
 };

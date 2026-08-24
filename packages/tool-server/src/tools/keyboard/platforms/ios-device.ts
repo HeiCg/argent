@@ -1,15 +1,9 @@
 import type { Registry } from "@argent/registry";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { InvalidToolInputError } from "../../../utils/capability";
-import {
-  iosDeviceRunnerRef,
-  type IosDeviceRunnerApi,
-} from "../../../blueprints/ios-device-runner";
+import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../../blueprints/ios-device-runner";
 import { requireCurrentIosDeviceApp } from "../../../utils/ios-device/app-session";
-import {
-  pressKeyboardReturn,
-  typeText,
-} from "../../../utils/ios-device/runner-commands";
+import { pressKeyboardReturn, typeText } from "../../../utils/ios-device/runner-commands";
 import type { KeyboardParams, KeyboardResult } from "../types";
 
 /**

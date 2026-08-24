@@ -41,7 +41,9 @@ async function main() {
   console.log(`listed: ${phone.name} (${phone.runtime})`);
 
   console.log("== launch-app ==");
-  console.log(JSON.stringify(await registry.invokeTool("launch-app", { udid, bundleId: BUNDLE_ID })));
+  console.log(
+    JSON.stringify(await registry.invokeTool("launch-app", { udid, bundleId: BUNDLE_ID }))
+  );
 
   console.log("== describe (first call builds/starts the on-device runner) ==");
   const described = await registry.invokeTool("describe", { udid });

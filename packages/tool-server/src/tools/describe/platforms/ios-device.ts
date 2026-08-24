@@ -1,8 +1,5 @@
 import type { DeviceInfo, Registry } from "@argent/registry";
-import {
-  iosDeviceRunnerRef,
-  type IosDeviceRunnerApi,
-} from "../../../blueprints/ios-device-runner";
+import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../../blueprints/ios-device-runner";
 import { requireCurrentIosDeviceApp } from "../../../utils/ios-device/app-session";
 import {
   captureSnapshot,

@@ -20,18 +20,18 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 
 ## Request fields
 
-| Field           | Used by                | Meaning                                    |
-| --------------- | ---------------------- | ------------------------------------------ |
-| `command`       | all                    | Command name (below).                      |
-| `commandId`     | all but `status`       | Client-stamped id for send-once tracking.  |
-| `statusCommandId` | `status`             | Journal lookup key.                        |
-| `appBundleId`   | app-scoped commands    | Target app. Required — never inferred.     |
-| `x`, `y`        | `tap`, `longPress`     | Absolute points in the app's space.        |
-| `fromX/fromY/toX/toY` | `drag`           | Absolute start/end points.                 |
-| `durationMs`    | `longPress`, `drag`    | Press duration / movement duration.        |
-| `settle`        | `drag`                 | Rest at the destination before lifting (~0 release velocity, no fling). |
-| `text`          | `type`                 | Text for the focused input.                |
-| `interactiveOnly`, `depth` | `snapshot`  | Tree filtering.                            |
+| Field                      | Used by             | Meaning                                                                 |
+| -------------------------- | ------------------- | ----------------------------------------------------------------------- |
+| `command`                  | all                 | Command name (below).                                                   |
+| `commandId`                | all but `status`    | Client-stamped id for send-once tracking.                               |
+| `statusCommandId`          | `status`            | Journal lookup key.                                                     |
+| `appBundleId`              | app-scoped commands | Target app. Required — never inferred.                                  |
+| `x`, `y`                   | `tap`, `longPress`  | Absolute points in the app's space.                                     |
+| `fromX/fromY/toX/toY`      | `drag`              | Absolute start/end points.                                              |
+| `durationMs`               | `longPress`, `drag` | Press duration / movement duration.                                     |
+| `settle`                   | `drag`              | Rest at the destination before lifting (~0 release velocity, no fling). |
+| `text`                     | `type`              | Text for the focused input.                                             |
+| `interactiveOnly`, `depth` | `snapshot`          | Tree filtering.                                                         |
 
 ## Commands
 
@@ -52,8 +52,8 @@ Device-scoped:
 - `status` — without `statusCommandId`: `{uptimeMs, state}` where state is
   `idle | busy | wedged`. With it: the journaled fate of that command:
   `{commandId, state: notAccepted|accepted|started|completed|failed,
-  command?, responseOk?, responseJson?, errorCode?, errorMessage?,
-  errorHint?}`. `responseJson` is the completed command's full envelope
+command?, responseOk?, responseJson?, errorCode?, errorMessage?,
+errorHint?}`. `responseJson` is the completed command's full envelope
   (never retained for `snapshot`/`screenshot`).
 - `home` → presses the home button.
 - `screenshot` → `{imageBase64}` — full-screen PNG, always inline.
@@ -66,12 +66,20 @@ Flat list in emission order; `parentIndex` links reconstruct the tree.
 
 ```json
 {
-  "index": 0, "type": "Button", "label": "General",
-  "identifier": "com.apple.settings.general", "value": null,
+  "index": 0,
+  "type": "Button",
+  "label": "General",
+  "identifier": "com.apple.settings.general",
+  "value": null,
   "rect": { "x": 16, "y": 768.7, "width": 361, "height": 52 },
-  "enabled": true, "focused": null, "selected": null, "hittable": true,
-  "depth": 3, "parentIndex": 44,
-  "hiddenContentAbove": null, "hiddenContentBelow": null
+  "enabled": true,
+  "focused": null,
+  "selected": null,
+  "hittable": true,
+  "depth": 3,
+  "parentIndex": 44,
+  "hiddenContentAbove": null,
+  "hiddenContentBelow": null
 }
 ```
 
@@ -83,7 +91,7 @@ Flat list in emission order; `parentIndex` links reconstruct the tree.
 - `hiddenContentAbove/Below` on a scroll container: content exists beyond the
   visible viewport in that direction.
 - `quality`: `{state: healthy|degraded, backend: "xctest", reason?,
-  reasonCode?}`.
+reasonCode?}`.
 
 ## Error codes
 

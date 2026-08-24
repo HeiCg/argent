@@ -1,10 +1,6 @@
 import { resolve as resolvePath } from "node:path";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
-import {
-  ensureDeviceReady,
-  installApp,
-  uninstallApp,
-} from "../../../utils/ios-device/devicectl";
+import { ensureDeviceReady, installApp, uninstallApp } from "../../../utils/ios-device/devicectl";
 import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } from "../types";
 
 /**

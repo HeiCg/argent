@@ -1,7 +1,4 @@
-import {
-  postRunnerCommand,
-  postRunnerCommandTcp,
-} from "./runner-http";
+import { postRunnerCommand, postRunnerCommandTcp } from "./runner-http";
 import { openUsbmuxRunnerSocket } from "./usbmux";
 import { isIosDeviceTransportError } from "./usbmux-protocol";
 
@@ -56,9 +53,19 @@ export function createRunnerRouteResolver(options: {
    */
   resolveTunnelIpAddress: (udid: string) => Promise<string | null>;
   /** Test seam: replaces the usbmux socket + HTTP send. */
-  sendViaUsbmux?: (udid: string, port: number, body: unknown, timeoutMs: number) => Promise<unknown>;
+  sendViaUsbmux?: (
+    udid: string,
+    port: number,
+    body: unknown,
+    timeoutMs: number
+  ) => Promise<unknown>;
   /** Test seam: replaces the tunnel TCP send. */
-  sendViaTunnel?: (host: string, port: number, body: unknown, timeoutMs: number) => Promise<unknown>;
+  sendViaTunnel?: (
+    host: string,
+    port: number,
+    body: unknown,
+    timeoutMs: number
+  ) => Promise<unknown>;
 }): { sendCommand: SendRunnerCommand } {
   const sendViaUsbmux = options.sendViaUsbmux ?? defaultSendViaUsbmux;
   const sendViaTunnel = options.sendViaTunnel ?? defaultSendViaTunnel;

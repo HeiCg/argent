@@ -12,10 +12,7 @@ import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
 import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { captureScreenshot as captureIosDeviceScreenshot } from "../../utils/ios-device/devicectl";
-import {
-  iosDeviceRunnerRef,
-  type IosDeviceRunnerApi,
-} from "../../blueprints/ios-device-runner";
+import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";

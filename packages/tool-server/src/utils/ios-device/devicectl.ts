@@ -214,18 +214,19 @@ export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
 
 /** Install a .app / .ipa onto the device. */
 export async function installApp(udid: string, installablePath: string): Promise<void> {
-  await runDevicectl(["device", "install", "app", "--device", udid, installablePath], "install app", {
-    timeoutMs: DEVICECTL_INSTALL_TIMEOUT_MS,
-  });
+  await runDevicectl(
+    ["device", "install", "app", "--device", udid, installablePath],
+    "install app",
+    {
+      timeoutMs: DEVICECTL_INSTALL_TIMEOUT_MS,
+    }
+  );
 }
 
 /** Uninstall by bundle id; "not installed" counts as success (idempotent). */
 export async function uninstallApp(udid: string, bundleId: string): Promise<void> {
   try {
-    await runDevicectl(
-      ["device", "uninstall", "app", "--device", udid, bundleId],
-      "uninstall app"
-    );
+    await runDevicectl(["device", "uninstall", "app", "--device", udid, bundleId], "uninstall app");
   } catch (error) {
     const text = String((error as Error & { cause?: { stderr?: string } }).cause?.stderr ?? error);
     if (/not installed|not found|no such file/i.test(text)) return;

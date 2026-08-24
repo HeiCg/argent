@@ -2,10 +2,7 @@ import { z } from "zod";
 import type { ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import {
-  iosDeviceRunnerRef,
-  type IosDeviceRunnerApi,
-} from "../../blueprints/ios-device-runner";
+import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { requireCurrentIosDeviceApp } from "../../utils/ios-device/app-session";
 import { getViewport, tapAt, toPoints } from "../../utils/ios-device/runner-commands";
 import { assertChromiumWindowVisible } from "../../utils/chromium-visibility";

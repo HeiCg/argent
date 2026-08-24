@@ -209,9 +209,9 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
 
   afterEach(async () => {
     await Promise.all(
-      openServers.splice(0).map(
-        (server) => new Promise<void>((resolve) => server.close(() => resolve()))
-      )
+      openServers
+        .splice(0)
+        .map((server) => new Promise<void>((resolve) => server.close(() => resolve())))
     );
     await Promise.all(
       socketDirs.splice(0).map((dir) => fs.rm(dir, { force: true, recursive: true }))

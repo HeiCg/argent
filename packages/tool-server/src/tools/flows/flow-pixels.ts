@@ -6,10 +6,7 @@ import { promisify } from "node:util";
 import { PNG } from "pngjs";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import {
-  iosDeviceRunnerRef,
-  type IosDeviceRunnerApi,
-} from "../../blueprints/ios-device-runner";
+import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { isAndroidTv } from "../../utils/adb";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";

@@ -36,10 +36,15 @@ describe("createRunnerRouteResolver", () => {
       sendViaTunnel: vi.fn(),
     });
 
-    const result = await resolver.sendCommand(UDID, PORT, { command: "status" }, {
-      timeoutMs: 1_000,
-      readOnly: true,
-    });
+    const result = await resolver.sendCommand(
+      UDID,
+      PORT,
+      { command: "status" },
+      {
+        timeoutMs: 1_000,
+        readOnly: true,
+      }
+    );
 
     expect(result).toBe(OK);
     expect(sendViaUsbmux).toHaveBeenCalledTimes(1);
@@ -59,10 +64,15 @@ describe("createRunnerRouteResolver", () => {
       sendViaTunnel,
     });
 
-    const result = await resolver.sendCommand(UDID, PORT, { command: "status" }, {
-      timeoutMs: 1_000,
-      readOnly: true,
-    });
+    const result = await resolver.sendCommand(
+      UDID,
+      PORT,
+      { command: "status" },
+      {
+        timeoutMs: 1_000,
+        readOnly: true,
+      }
+    );
 
     expect(result).toBe(OK);
     // One usbmux probe, then the tunnel — no retry round-trip in between.
@@ -86,7 +96,9 @@ describe("createRunnerRouteResolver", () => {
       .catch((caught: unknown) => caught);
 
     // The cable hint is the actionable message; a lookup failure would bury it.
-    expect((error as IosDeviceTransportError).kind).toBe("device-unattached" satisfies IosDeviceTransportErrorKind);
+    expect((error as IosDeviceTransportError).kind).toBe(
+      "device-unattached" satisfies IosDeviceTransportErrorKind
+    );
     expect((error as IosDeviceTransportError).hint).toMatch(/cable/);
   });
 
@@ -142,10 +154,15 @@ describe("createRunnerRouteResolver", () => {
 
     // The failed attempt invalidated the cache, so this send performs a fresh
     // lookup, gets the new IP, and succeeds first try.
-    const result = await resolver.sendCommand(UDID, PORT, { command: "status" }, {
-      timeoutMs: 1_000,
-      readOnly: true,
-    });
+    const result = await resolver.sendCommand(
+      UDID,
+      PORT,
+      { command: "status" },
+      {
+        timeoutMs: 1_000,
+        readOnly: true,
+      }
+    );
 
     expect(result).toBe(OK);
     expect(resolveTunnelIpAddress).toHaveBeenCalledTimes(1);
@@ -231,10 +248,15 @@ describe("createRunnerRouteResolver", () => {
       sendViaTunnel,
     });
 
-    await resolver.sendCommand(UDID, PORT, { command: "status" }, {
-      timeoutMs: 1_000,
-      readOnly: true,
-    });
+    await resolver.sendCommand(
+      UDID,
+      PORT,
+      { command: "status" },
+      {
+        timeoutMs: 1_000,
+        readOnly: true,
+      }
+    );
     const error = await resolver
       .sendCommand(UDID, PORT, { command: "tap", commandId: "argent-x" }, { timeoutMs: 1_000 })
       .catch((caught: unknown) => caught);
@@ -259,10 +281,15 @@ describe("createRunnerRouteResolver", () => {
       sendViaTunnel: vi.fn(),
     });
 
-    const pending = resolver.sendCommand(UDID, PORT, { command: "status" }, {
-      timeoutMs: 1_000,
-      readOnly: true,
-    });
+    const pending = resolver.sendCommand(
+      UDID,
+      PORT,
+      { command: "status" },
+      {
+        timeoutMs: 1_000,
+        readOnly: true,
+      }
+    );
     await vi.runAllTimersAsync();
 
     await expect(pending).resolves.toBe(OK);

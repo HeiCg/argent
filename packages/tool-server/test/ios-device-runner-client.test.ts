@@ -39,7 +39,9 @@ afterEach(() => {
 
 describe("createRunnerClient", () => {
   it("stamps a fresh argent-prefixed commandId on non-status commands", async () => {
-    const { send, sent } = createFakeSend([{ ok: true, data: { done: true } } satisfies RunnerResponseEnvelope]);
+    const { send, sent } = createFakeSend([
+      { ok: true, data: { done: true } } satisfies RunnerResponseEnvelope,
+    ]);
     const client = createRunnerClient({ udid: UDID, port: PORT, send });
 
     const result = await client.run({ command: "tap", x: 10, y: 20 });
@@ -166,10 +168,7 @@ describe("createRunnerClient", () => {
 
     it("rethrows the transport error when the journal state is unknown", async () => {
       const original = transportError();
-      const { send } = createFakeSend([
-        original,
-        { ok: true, data: { state: "started" } },
-      ]);
+      const { send } = createFakeSend([original, { ok: true, data: { state: "started" } }]);
       const client = createRunnerClient({ udid: UDID, port: PORT, send });
 
       const error = await client.run({ command: "tap" }).catch((caught: unknown) => caught);
@@ -190,10 +189,7 @@ describe("createRunnerClient", () => {
 
     it("rethrows the transport error when completed but no response was retained", async () => {
       const original = transportError();
-      const { send } = createFakeSend([
-        original,
-        { ok: true, data: { state: "completed" } },
-      ]);
+      const { send } = createFakeSend([original, { ok: true, data: { state: "completed" } }]);
       const client = createRunnerClient({ udid: UDID, port: PORT, send });
 
       const error = await client.run({ command: "tap" }).catch((caught: unknown) => caught);
@@ -275,9 +271,7 @@ describe("waitForRunnerReady", () => {
 
   it("times out with a typed error when the runner never answers", async () => {
     vi.useFakeTimers();
-    const { send } = createFakeSend(
-      Array.from({ length: 50 }, () => transportError())
-    );
+    const { send } = createFakeSend(Array.from({ length: 50 }, () => transportError()));
     const client = createRunnerClient({ udid: UDID, port: PORT, send });
 
     const pending = waitForRunnerReady(client, { timeoutMs: 1_000 }).catch(

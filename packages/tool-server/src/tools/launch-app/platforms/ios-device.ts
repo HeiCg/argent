@@ -21,15 +21,18 @@ const SESSION_ONLY_BUNDLE_IDS = new Set(["com.apple.springboard", "com.apple.Spo
  * native-devtools env warm-up here — DYLD injection does not exist on
  * hardware, so the launch is a plain CoreDevice process start.
  */
-export const iosDeviceImpl: PlatformImpl<Record<string, unknown>, LaunchAppParams, LaunchAppResult> =
-  {
-    requires: ["xcrun"],
-    handler: async (_services, params) => {
-      await ensureDeviceReady(params.udid);
-      if (!SESSION_ONLY_BUNDLE_IDS.has(params.bundleId)) {
-        await launchApp(params.udid, params.bundleId);
-      }
-      setCurrentIosDeviceApp(params.udid, params.bundleId);
-      return { launched: true, bundleId: params.bundleId };
-    },
-  };
+export const iosDeviceImpl: PlatformImpl<
+  Record<string, unknown>,
+  LaunchAppParams,
+  LaunchAppResult
+> = {
+  requires: ["xcrun"],
+  handler: async (_services, params) => {
+    await ensureDeviceReady(params.udid);
+    if (!SESSION_ONLY_BUNDLE_IDS.has(params.bundleId)) {
+      await launchApp(params.udid, params.bundleId);
+    }
+    setCurrentIosDeviceApp(params.udid, params.bundleId);
+    return { launched: true, bundleId: params.bundleId };
+  },
+};
