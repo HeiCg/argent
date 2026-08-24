@@ -10,6 +10,14 @@ import {
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
+// The rotation-less android-shaped captures here run the real adb rotation
+// probe against the host's adb server; a wedged one stalls the tests for its
+// full timeout. Rotation is orthogonal to what these tests pin.
+vi.mock("../src/utils/device-orientation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/device-orientation")>()),
+  readAndroidSurfaceRotation: vi.fn(async () => null),
+}));
+
 describe("screenshot tool", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
