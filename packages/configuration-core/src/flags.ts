@@ -47,6 +47,13 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
     description: "Write structured tool-server lifecycle events to a JSONL file.",
   },
   {
+    name: "boot-sound",
+    description:
+      "Default boot-device's `sound` argument to true so Android emulators boot with audio " +
+      "output instead of muted. Only the argument's default changes — an explicit " +
+      "`sound: false` on a call still boots muted.",
+  },
+  {
     name: "microinteractions",
     description:
       "Amplify device actions with matching animations of the host window, so what happens on the guest is also visible on the desktop. Purely cosmetic, macOS only, and never affects whether the underlying action succeeds. Off by default.",
