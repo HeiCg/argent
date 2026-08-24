@@ -1059,21 +1059,11 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       }
 
       // The tool call has already run by the time the append can refuse the
-      // step, and the `{{output:` refusal is the one refusal on that path this
-      // release ADDED — a stand-in for the resolution a later release does over
-      // the same field list, `tool.args` string leaves included, which is what
-      // an agent handed a script's output document writes into. Its message
-      // says only "remove it and write the value the flow needs", so the
-      // natural next move — do that, call again — fires the device action a
-      // second time. Verified: a `keyboard` step recorded twice left
-      // `{{output:code}}{{output:code}}` in the field. So that one refusal is
-      // re-thrown carrying what already happened, keeping its own diagnosis and
-      // failure signal, the way `flow-add-script` wraps its append failure.
-      //
-      // Only that one. Every other refusal here — a leading launch under an
-      // executionPrerequisite, a step that will not serialize, a write that
-      // failed — reads the same way and predates this release; widening the
-      // wrap to them is a separate change, not this one's to make.
+      // step, and the `{{output:` refusal says only "remove it and write the
+      // value the flow needs" — so the natural next move, do that and call
+      // again, fires the device action a second time. It is re-thrown carrying
+      // what already happened, keeping its own diagnosis and failure signal,
+      // the way `flow-add-script` wraps its append failure.
       let savedTo: FlowSavedTo;
       let stepCount: number;
       try {

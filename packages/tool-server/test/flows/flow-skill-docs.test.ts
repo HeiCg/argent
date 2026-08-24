@@ -23,21 +23,19 @@ const FLOW_YAML = path.resolve(
   "../../../skills/skills/argent-create-flow/references/flow-yaml.md"
 );
 /**
- * The three surfaces that quote the number of `idle` warnings instead of
- * listing them. They cite the reference rather than restating it, so a warning
- * added to the list leaves all three saying the wrong count — which is exactly
- * how "five different warnings" survived a sixth being added.
- */
-/**
  * The surfaces that quote the NUMBER of permitted unrecorded insertions rather
- * than listing them. Same failure mode as the warning count below, and this PR
- * had to edit three of the four citations at once — which is the moment a guard
- * earns its place, not the moment after one of them is missed.
+ * than listing them — same failure mode as the warning count below.
  */
 const INSERTION_COUNT_CITATIONS = [
   path.resolve(__dirname, "../../../skills/skills/argent-qa-flows/SKILL.md"),
 ];
 
+/**
+ * The three surfaces that quote the number of `idle` warnings instead of
+ * listing them. They cite the reference rather than restating it, so a warning
+ * added to the list leaves all three saying the wrong count — which is exactly
+ * how "five different warnings" survived a sixth being added.
+ */
 const WARNING_COUNT_CITATIONS = [
   path.resolve(__dirname, "../../../skills/skills/argent-create-flow/references/live-authoring.md"),
   path.resolve(
@@ -137,8 +135,8 @@ describe("create-flow idle docs", () => {
       "\nKeep raw forms only"
     );
     const listed = [...list.matchAll(/^- /gm)].length;
-    // Guard the reader itself: a renamed heading would count 0 and then agree
-    // with nothing, which is not the failure worth reporting.
+    // Guard the reader itself: a list that stopped matching would count 0 and
+    // then agree with nothing, which is not the failure worth reporting.
     expect(listed).toBeGreaterThan(1);
     const spelled = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight"][
       listed
@@ -153,7 +151,7 @@ describe("create-flow idle docs", () => {
     }
     // The core skill spells the list out instead of counting it, so it drifts
     // the other way: by keeping an item the reference has dropped, or losing
-    // one it still has. Check it names each.
+    // one it still has.
     const skill = readFileSync(SKILL, "utf8");
     for (const token of ["`snapshot:`", "`await: { idle: true }`", "Chromium"]) {
       expect(skill, `the core skill no longer names ${token} as an insertion`).toContain(token);

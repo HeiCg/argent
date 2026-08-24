@@ -9,10 +9,7 @@ import { classifyOnDiskSpelling, type OnDiskSpelling } from "./flow-utils";
  * Both names a flow file can carry — a `run:` target's YAML, a `script:` step's
  * `.mjs` — resolve through here, which is the point: "a script path resolves
  * exactly like a `run:` target" is then a fact about the code rather than two
- * implementations that happen to agree. That is also why this is its own
- * module and not part of either caller's: `flow-run.ts` owns the `run:` half
- * and `flow-script-step.ts` the script half, and neither should have to import
- * the other to resolve a name.
+ * implementations that happen to agree.
  *
  * Not to be confused with `flow-utils.ts`' own private `canonicalFlowPath`,
  * which answers a different question — the identity a RECORDING is keyed by,
@@ -22,31 +19,24 @@ import { classifyOnDiskSpelling, type OnDiskSpelling } from "./flow-utils";
 
 /**
  * Canonicalize a flow path — the cycle guard's identity key and the root
- * anchor derivation (flowsDir + runStack seed). The input must arrive with
- * any `..` segments intact (no path.resolve/path.join over the string): a
- * `..` that follows a symlinked directory component names the parent of the
- * link's TARGET, which only the kernel can know — a lexical collapse first
- * silently picks a different file than the spelling denotes on disk.
- * fs/promises' realpath keeps kernel semantics (realpath(3), like callback
- * fs.realpath.native — unlike callback fs.realpath, which path.resolve()s
- * first), so handing it the un-collapsed string is sufficient. When realpath
- * fails (the file is gone), the containing directory is still kernel-resolved
- * before the basename is re-appended, so the subsequent read opens — and its
- * ENOENT names — the file the spelling denotes rather than a lexical collapse
- * that could name an existing impostor; when the directory chain itself is
- * broken (an intermediate component missing, or a dangling link followed by
- * `..`), the spelling is returned verbatim, so the read fails with the
- * kernel's ENOENT for the spelling itself instead of succeeding on a collapse
- * that happens to name an existing file. That failed read hard-stops the flow
- * before any runStack entry is pushed, so the verbatim key never reaches the
- * cycle guard (a genuine cycle needs a readable target, for which realpath
- * succeeds). Callers must pass an absolute path — every return value,
- * including the verbatim fallback, is consumed as absolute (readFile,
- * dirname-derived anchors) with no resolve step after this point; all three
- * call sites satisfy this (the root flow path is validated absolute, `run:`
- * targets are concatenated onto an absolute anchor, and a recording's own file
- * path is built from a project root `assertValidProjectRoot` already held to
- * being absolute).
+ * anchor derivation (flowsDir + runStack seed).
+ *
+ * The input must arrive with any `..` segments intact (no path.resolve/join
+ * over the string): a `..` that follows a symlinked directory component names
+ * the parent of the link's TARGET, which only the kernel can know, so a lexical
+ * collapse first silently picks a different file than the spelling denotes on
+ * disk. fs/promises' realpath keeps kernel semantics (realpath(3), unlike
+ * callback fs.realpath, which path.resolve()s first), so handing it the
+ * un-collapsed string is sufficient. When realpath fails the containing
+ * directory is still kernel-resolved before the basename is re-appended, so the
+ * subsequent read opens — and its ENOENT names — the file the spelling denotes
+ * rather than an existing impostor a collapse could have named; when the
+ * directory chain itself is broken the spelling is returned verbatim, for the
+ * same reason.
+ *
+ * Callers must pass an absolute path: every return value, the verbatim fallback
+ * included, is consumed as absolute (readFile, dirname-derived anchors) with no
+ * resolve step after this point.
  */
 export async function canonicalFlowPath(p: string): Promise<string> {
   try {
@@ -60,19 +50,15 @@ export async function canonicalFlowPath(p: string): Promise<string> {
   }
 }
 
-/** The two answers {@link resolveFlowRelativeFile} gives about one hop. */
 interface ResolvedFlowRelativeFile {
   /** What the kernel resolves the as-written join to. */
   canonical: string;
-  /** How the target's basename compares with its directory's listing. */
   spelling: OnDiskSpelling;
 }
 
 /**
- * One hop from a flow file to a file it NAMES — a `run:` target's YAML, a
- * `script:` step's `.mjs` — resolved the one way every such name is resolved.
- *
- * Three things happen here, and each is load-bearing:
+ * One hop from a flow file to a file it NAMES. Three things here are
+ * load-bearing:
  *
  * - **The anchor is the CONTAINING file's canonical directory**, never the root
  *   flow's. A root anchor would make a fragment resolve a different file
@@ -106,11 +92,6 @@ interface ResolvedFlowRelativeFile {
  * rejects every `run:` and `script:` step on that path, and a recording whose
  * files are not on this host is refused by `flow-add-script` before it gets
  * here.
- *
- * The listing is taken eagerly, before the callers apply their own cycle and
- * depth guards, so a chain that is about to be refused pays one readdir it does
- * not need. That is the same shape as the extra realpath the cycle guard
- * already accepts, on the same already-failing path.
  */
 export async function resolveFlowRelativeFile(
   anchorDir: string,

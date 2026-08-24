@@ -364,15 +364,12 @@ describe("flow-add-echo", () => {
   });
 });
 
-// ── the checks that run before a step is written ─────────────────────
-
 /**
  * A step the recorder BUILDS was never YAML, so a rule enforced only where an
- * entry is parsed sees it for the first time on the way back in — after the
- * file has been written. `validateFlow` is the seam that runs before the
- * serialize, on both persistence modes, and the `{{output:` refusal is there
- * for exactly that reason: refused this way it costs one call, refused the
- * other way it costs the take.
+ * entry is parsed would see it for the first time on the way back in — after
+ * the file has been written. `validateFlow` runs before the serialize, on both
+ * persistence modes: refused there it costs one call, refused on the way back
+ * in it costs the take.
  */
 describe("a step the recorder refuses", () => {
   it("leaves the flow file exactly as it was, and the recording usable", async () => {
@@ -385,9 +382,9 @@ describe("a step the recorder refuses", () => {
 
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toContain("output reference");
-    // Nothing reached disk — so the NEXT call still reads a file it can parse,
-    // and the recording finishes normally instead of being stuck re-throwing
-    // on a step nobody can remove without a mid-recording hand edit.
+    // Nothing reached disk, so the NEXT call still reads a file it can parse,
+    // instead of the recording being stuck re-throwing on a step nobody can
+    // remove without a mid-recording hand edit.
     expect(parseFlow(await onDisk("poison")).steps).toEqual([{ kind: "echo", message: "one" }]);
 
     await flowInsertEchoTool.execute({}, { name: "poison", project_root: tmpDir, message: "two" });
@@ -400,8 +397,8 @@ describe("a step the recorder refuses", () => {
 
   it("keeps a client-mode recording just as clean", async () => {
     // The client-mode branch never parses at all — the in-memory copy IS the
-    // take there — so this rule reaches it only through `validateFlow`, and its
-    // rollback is what keeps the rejected step out of that copy.
+    // take there — so the append's rollback is what keeps the rejected step out
+    // of it.
     const clientRoot = path.join(os.tmpdir(), "not-on-this-host", "agent-project");
     const ctx = {
       artifacts: new ArtifactStore(),
@@ -429,8 +426,7 @@ describe("a step the recorder refuses", () => {
     // lands after the action has happened on the device. The refusal alone
     // reads as "nothing happened", and the natural next move — drop the
     // reference, write the real value, call again — fires the action a second
-    // time. Verified live on an iOS simulator: the search field held
-    // `{{output:code}}{{output:code}}` after two calls.
+    // time.
     const registry = createMockRegistry({ keyboard: { result: { typed: "…", keys: 15 } } });
     const tool = createFlowAddStepTool(registry);
     await flowStartRecordingTool.execute(
@@ -451,8 +447,6 @@ describe("a step the recorder refuses", () => {
       .catch((e: unknown) => e as Error);
 
     expect(registry.invokeTool).toHaveBeenCalledWith("keyboard", { text: "{{output:code}}" });
-    // Both halves reach the caller: what already happened, and why nothing was
-    // recorded.
     expect((err as Error).message).toContain("`keyboard` call already ran");
     expect((err as Error).message).toContain("output reference");
     // The wrap keeps the original diagnosis's signal rather than substituting
@@ -462,10 +456,10 @@ describe("a step the recorder refuses", () => {
   });
 
   it("leaves the refusals it did not introduce worded as they were", async () => {
-    // The wrap is scoped to the one refusal this release added. A leading
-    // launch under an executionPrerequisite refuses on the same post-execution
-    // path and reads the same way, but it predates this release — widening the
-    // wrap to it is a separate change.
+    // The wrap is scoped to the one refusal carrying `flow_output_reference`. A
+    // leading launch under an executionPrerequisite refuses on the same
+    // post-execution path and reads the same way, and is deliberately left as
+    // it was.
     const registry = createMockRegistry({ "restart-app": { result: { restarted: true } } });
     const tool = createFlowAddStepTool(registry);
     await flowStartRecordingTool.execute(

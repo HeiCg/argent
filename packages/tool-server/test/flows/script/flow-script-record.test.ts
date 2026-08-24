@@ -22,21 +22,11 @@ import {
 } from "../../../src/tools/flows/flow-utils";
 import { SCRIPT_STEP_LOG_LIMIT_BYTES } from "../../../src/tools/flows/script/flow-script-executor";
 
-/**
- * `flow-add-script`: running a script live and recording the step that ran it.
- *
- * The point of the tool is that the two are one act. So most of what is asserted
- * here is a pair — what the run reported, and what the file now holds — plus the
- * one case where the pair comes apart on purpose: a failure records nothing.
- *
- * Real child processes, so the budgets are generous.
- */
-
+/** Real child processes, so the budgets are generous. */
 vi.setConfig({ testTimeout: 30_000 });
 
 let root: string;
 
-/** Write a file under the project root, creating its directories. */
 async function write(relative: string, contents: string): Promise<string> {
   const file = path.join(root, relative);
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -45,9 +35,8 @@ async function write(relative: string, contents: string): Promise<string> {
 }
 
 /**
- * The first `__argent`-prefixed marker key reachable by an object walk of a tool
- * result, or null. The client's two walks match on shape, so this is the shape
- * that must not be reachable.
+ * The client's marker walks match on shape, so this is the shape a result must
+ * not carry.
  */
 function deepFindMarker(value: unknown): string | null {
   if (Array.isArray(value)) {
@@ -98,7 +87,6 @@ async function addScript(
   );
 }
 
-/** Enough registry for `flow-add-step` to dispatch one no-op tool call. */
 function mockRegistry(): Registry {
   return {
     invokeTool: vi.fn(async () => ({ ok: true })),
@@ -106,7 +94,6 @@ function mockRegistry(): Registry {
   } as unknown as Registry;
 }
 
-/** The message a direct `flow-add-script` call failed with. */
 async function addScriptError(name: string, scriptPath: string): Promise<string> {
   try {
     await addScript(name, scriptPath);
@@ -116,7 +103,6 @@ async function addScriptError(name: string, scriptPath: string): Promise<string>
   throw new Error(`expected flow-add-script to reject "${scriptPath}"`);
 }
 
-/** The message parseFlow gives for the same path written into YAML by hand. */
 function parseError(scriptYaml: string): string {
   try {
     parseFlow(`steps:\n  - script: { ${scriptYaml} }\n`);
@@ -153,14 +139,10 @@ describe("recording a script step", () => {
     expect(result.stepCount).toBe(1);
     expect(result.recorded).toBe("1. script: ../../scripts/seed.mjs");
     expect(result.savedTo).toBe(flowPath("checkout"));
-    // The tool result and the file agree, which is the whole contract.
     expect(await steps("checkout")).toEqual([{ kind: "script", path: "../../scripts/seed.mjs" }]);
   });
 
   it("says the output document is not readable from a flow step yet", async () => {
-    // The document is surfaced so an author can SEE the shape a later release
-    // will read. Handing it over without that sentence is how `{{output:...}}`
-    // ends up in an echo, printed literally, in a step that passes.
     await write("scripts/seed.mjs", `output.user = { id: "u_1" };`);
     await start("checkout");
 
@@ -171,13 +153,11 @@ describe("recording a script step", () => {
   });
 
   it("hands the document over as text, so nothing in it is read as a directive", async () => {
-    // The one part of any tool result this server does not author. The client
-    // deep-walks every result for `__argentClientFile` (writes a file on the
-    // agent's machine) and `__argentArtifact` (fetches one, and can push an
-    // image block into the agent's context), matching on shape alone — so a
-    // script relaying what a backend answered would hand those walks their
-    // marker. As JSON text there is no object for either walk to match, and the
-    // agent is shown the bytes the script actually returned.
+    // The client deep-walks every result for `__argentClientFile` (writes a
+    // file on the agent's machine) and `__argentArtifact` (fetches one),
+    // matching on shape alone — and a script relaying what a backend answered
+    // is the one part of a result this server does not author. As JSON text
+    // there is no object for either walk to match.
     await write(
       "scripts/relay.mjs",
       `output.body = JSON.parse('{"orderId":"ord_1","meta":{"__argentClientFile":true,` +
@@ -189,8 +169,6 @@ describe("recording a script step", () => {
 
     expect(result.status).toBe("pass");
     expect(typeof result.outputJson).toBe("string");
-    // Verbatim: the marker survives as text, which is what makes it visible to
-    // the agent and invisible to the walkers.
     expect(JSON.parse(result.outputJson!)).toEqual({
       body: {
         orderId: "ord_1",
@@ -201,14 +179,13 @@ describe("recording a script step", () => {
         },
       },
     });
-    // Nothing anywhere in the result is an object a marker walk could match.
     expect(deepFindMarker(result)).toBeNull();
   });
 
   it("cuts a document too large to hand on, and says it cut it", async () => {
-    // The executor lets a script RETURN a MiB. Handing a MiB on is a quarter of
-    // a million tokens the agent did not ask for, so this result bounds it the
-    // way it already bounds `log`.
+    // The executor lets a script RETURN a MiB, which is a quarter of a million
+    // tokens the agent did not ask for — so what is handed on is bounded the
+    // way `log` already is.
     await write("scripts/big.mjs", `output.blob = "y".repeat(1024 * 1024 - 200);`);
     await start("big");
 
@@ -224,9 +201,8 @@ describe("recording a script step", () => {
   });
 
   it("stops the script when the caller cancels the call", async () => {
-    // The tool forwards `ctx.signal` to the executor, and since the tool became
-    // `longRunning` the adapter no longer aborts it — so this is the only
-    // cancellation the call has left. A caller that gave up must not leave a
+    // `longRunning` stops the adapter aborting the call, so `ctx.signal` is the
+    // only cancellation left — and a caller that gave up must not leave a
     // script holding an executor slot until the step's own time limit.
     const started = path.join(root, "started.txt");
     await write(
@@ -259,7 +235,7 @@ describe("recording a script step", () => {
 
     // An error, not a skip: a script that reached the system it talks to and
     // was then killed is the one case where "did not run" is the dangerous
-    // reading. Well inside the 20s the script asked for.
+    // reading.
     expect(result.status).toBe("error");
     expect(result.reason).toMatch(/cancelled/i);
     expect(result.durationMs).toBeLessThan(15_000);
@@ -268,11 +244,10 @@ describe("recording a script step", () => {
   });
 
   it("says the script ran when a write failure stops it being recorded", async () => {
-    // The wrap's other arm. The superseded-recording case covers a session that
-    // went away mid-script; this is the file itself refusing the write, which
-    // is the arm that carries `flow_add_script_append`. Either way the caller
-    // has to be told the script already ran — the error is otherwise about a
-    // directory, and reads as though nothing happened.
+    // The wrap's other arm — the superseded-recording case covers a session
+    // that went away mid-script; this is the file itself refusing the write.
+    // Either way the caller has to be told the script already ran: the error is
+    // otherwise about a directory, and reads as though nothing happened.
     await write("scripts/seed.mjs", `output.ok = true;`);
     await start("readonly");
     const flowsDir = path.dirname(flowPath("readonly"));
@@ -285,10 +260,9 @@ describe("recording a script step", () => {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toMatch(/ran and passed in \d+ms/);
       expect((err as Error).message).toContain("nothing it did was rolled back");
-      // The ORIGINAL diagnosis's signal survives the wrap — that is the point
-      // of wrapping rather than replacing. `flow_add_script_append` is the
-      // fallback for a throw that carries no signal at all, which no real
-      // append produces today; nothing reaches it, and nothing should have to.
+      // The ORIGINAL diagnosis's signal survives the wrap;
+      // `flow_add_script_append` is only the fallback for a throw carrying no
+      // signal at all, which no real append produces today.
       expect(getFailureSignal(err as Error)?.failure_stage).toBe("flow_file_write");
     } finally {
       await fs.chmod(flowsDir, 0o700);
@@ -337,11 +311,9 @@ describe("recording a script step", () => {
   });
 
   it("appends after the steps already recorded, and survives the ones after it", async () => {
-    // The round trip that matters: the script step is written, then re-read and
-    // re-serialized by every later append — a `flow-add-step` included, since
-    // that is the call an author actually makes next — and once more by the
-    // finish. A step that did not survive one of those would replay as
-    // something else, or not parse at all.
+    // The script step is re-read and re-serialized by every later append and
+    // once more by the finish. One that did not survive a round trip would
+    // replay as something else, or not parse at all.
     await write("scripts/seed.mjs", `output.ok = true;`);
     await start("mixed");
     await flowInsertEchoTool.execute({}, { name: "mixed", project_root: root, message: "seeding" });
@@ -376,9 +348,7 @@ describe("recording a script step", () => {
   });
 
   it("needs no device of any kind", async () => {
-    // The first recording tool with no device parameter, and deliberately so: a
-    // flow may open with a seeding script before it boots anything. Nothing in
-    // the schema names one, and the call below has no registry to list any.
+    // A flow may open with a seeding script before it boots anything.
     expect(Object.keys(flowAddScriptTool.zodSchema!.shape).sort()).toEqual([
       "name",
       "path",
@@ -392,11 +362,10 @@ describe("recording a script step", () => {
   });
 
   it("is declared longRunning, because a script may outlive the MCP fetch budget", async () => {
-    // A script's default limit is 30s and its host cap is five minutes. Without
+    // A script's default limit is 30s and its host cap five minutes. Without
     // this the adapter aborts the call and RETRIES it, re-running a script
-    // whose whole purpose is a side effect — and the agent never sees the
-    // "nothing was recorded" result, only a transport error. `flow-execute`,
-    // which runs the same executor, carries the same declaration.
+    // whose whole purpose is a side effect — and the agent sees a transport
+    // error rather than the "nothing was recorded" result.
     expect(flowAddScriptTool.longRunning).toBe(true);
   });
 
@@ -472,7 +441,6 @@ describe("a script that did not pass records nothing", () => {
     expect(result.reason).toContain("the backend refused the third");
     expect(result.log).toContain("created 2 of 3 records");
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
-    // The count did not move, and neither did the file.
     expect(result.stepCount).toBe(1);
     expect(result).not.toHaveProperty("recorded");
     expect(result).not.toHaveProperty("savedTo");
@@ -482,8 +450,8 @@ describe("a script that did not pass records nothing", () => {
 
   it("names the flow and the outcome in its completed line", async () => {
     // Recordings are concurrent, so the line has to say which flow — and this
-    // is the one recording tool whose completed line also has to say that the
-    // call recorded nothing, since it returns normally either way.
+    // tool returns normally whether or not it recorded, so the line has to say
+    // that too.
     const completedMsg = flowAddScriptTool.interaction!.completedMsg!;
     const params = { name: "checkout", project_root: root, path: "../../scripts/seed.mjs" };
     const base = { message: "", stepCount: 1 } as const;
@@ -511,8 +479,8 @@ describe("a script that did not pass records nothing", () => {
   it("counts the steps the flow FILE holds, as the success path does", async () => {
     // A hand edit mid-recording is a documented workflow, and the session's
     // in-memory copy only catches up on an append — so reading the count off it
-    // would make a failed call report one number and the next successful call
-    // jump by two, which reads as "my failed script was recorded after all".
+    // would make the next successful call jump by two, which reads as "my
+    // failed script was recorded after all".
     await start("counted");
     await flowInsertEchoTool.execute(
       {},
@@ -530,9 +498,9 @@ describe("a script that did not pass records nothing", () => {
   });
 
   it("does not send an author cleaning up after a script that never ran", async () => {
-    // The other half of that advice. A path that resolved to no file forked
-    // nothing, so there is no half-done work — and telling its author there is
-    // sends them hunting for state that was never created.
+    // A path that resolved to no file forked nothing, so there is no half-done
+    // work — and telling its author there is sends them hunting for state that
+    // was never created.
     await start("gone");
 
     const result = await addScript("gone", "../../scripts/gone.mjs");
@@ -548,9 +516,9 @@ describe("a script that did not pass records nothing", () => {
 
     expect(result.status).toBe("fail");
     expect(result.reason).toContain('script "../../scripts/gone.mjs" does not exist');
-    // The path it looked for, anchored at the flow file that named the step —
-    // and with its `..` segments intact, because only the kernel may collapse
-    // one (a lexical collapse past a symlinked component names another file).
+    // Anchored at the flow file that named the step, with its `..` segments
+    // intact: only the kernel may collapse one, since a lexical collapse past a
+    // symlinked component names another file.
     const flowsDir = path.dirname(await fs.realpath(flowPath("gone")));
     expect(result.reason).toContain(`resolved to ${flowsDir}${path.sep}../../scripts/gone.mjs`);
     // Nothing was forked, so there is no duration and no log to report.
@@ -572,9 +540,9 @@ describe("a script that did not pass records nothing", () => {
   });
 
   it("refuses a mis-cased path, quoting the spelling on disk", async () => {
-    // The one authoring error a local run cannot find, and the one the RECORDER
-    // must catch: a mis-cased path recorded here is committed and replayed on a
-    // case-sensitive checkout, where it fails with ENOENT.
+    // The one authoring error a local run cannot find: a mis-cased path
+    // recorded here is committed and replayed on a case-sensitive checkout,
+    // where it fails with ENOENT.
     //
     // Ungated, because the verdict is not the filesystem's: classifyOnDiskSpelling
     // compares the supplied basename against readdir's own entries, lowercased.
@@ -591,11 +559,10 @@ describe("a script that did not pass records nothing", () => {
 });
 
 describe("the paths flow-add-script accepts", () => {
-  // Every rejection is the flow parser's own, reached through the same helper —
-  // so a path this tool takes is a path a hand-written flow takes, and the
-  // message an agent reads here is the message the same mistake produces there.
-  // Asserted as message EQUALITY rather than a second list of rules, because a
-  // second list is free to drift.
+  // Every rejection is the flow parser's own, reached through the same helper,
+  // so a path this tool takes is a path a hand-written flow takes. Asserted as
+  // message EQUALITY rather than a second list of rules, because a second list
+  // is free to drift.
   const REJECTED: [label: string, supplied: string, yaml: string][] = [
     ["a backslash", "scripts\\seed.mjs", 'path: "scripts\\\\seed.mjs"'],
     ["an absolute path", "/tmp/seed.mjs", 'path: "/tmp/seed.mjs"'],
@@ -641,7 +608,6 @@ describe("the paths flow-add-script accepts", () => {
 });
 
 describe("a recording this server cannot reach", () => {
-  // A path that exists on the (simulated) client but not on this "server".
   const CLIENT_ROOT = path.join(os.tmpdir(), "definitely-not-on-this-host", "agent-project");
 
   function remoteCtx(): ToolContext {
@@ -654,10 +620,8 @@ describe("a recording this server cannot reach", () => {
   }
 
   it("refuses a client-mode recording without running anything", async () => {
-    // Same boundary, and the same reason, as the upload refusal: the .mjs file
-    // stays on the client, so there is nothing here to resolve the path against
-    // and nothing to run. A tool that appeared to work would produce a flow
-    // this same server cannot replay.
+    // The .mjs file stays on the client, so there is nothing here to resolve
+    // the path against and nothing to run.
     //
     // The script it names DOES exist on this host, under a path that would
     // resolve if the recording were local — so the refusal is the recording's
@@ -683,7 +647,6 @@ describe("a recording this server cannot reach", () => {
     expect(signal?.failure_stage).toBe("flow_add_script_client_mode");
     expect(message).toContain("not on the tool server's filesystem");
     expect(message).toContain("add the `script:` step to the YAML by hand");
-    // Nothing executed, and nothing landed on this host.
     await expect(fs.stat(marker)).rejects.toThrow();
     await expect(fs.stat(CLIENT_ROOT)).rejects.toThrow();
     // Nothing appended either — checked in the in-memory copy, which in client

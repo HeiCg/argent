@@ -63,7 +63,6 @@ async function runScript(): Promise<FlowRunResult["steps"][number]> {
   return result.steps[0]!;
 }
 
-/** Record the same one script step, and hand back the recorder's answer. */
 async function recordScript(ctx?: ToolContext) {
   await flowStartRecordingTool.execute({}, { name: "recorded", project_root: root });
   return flowAddScriptTool.execute(
@@ -77,12 +76,10 @@ async function recordScript(ctx?: ToolContext) {
   );
 }
 
-/** The request the recorder handed the executor on its only call. */
 function executedRequest(): Record<string, unknown> {
   return executeMock.mock.calls[0]![0] as Record<string, unknown>;
 }
 
-/** The steps the recording actually holds on disk. */
 async function recordedSteps() {
   return parseFlow(await fs.readFile(path.join(root, ".argent", "flows", "recorded.yaml"), "utf8"))
     .steps;
@@ -201,13 +198,11 @@ describe("an executor note on the step report", () => {
 });
 
 /**
- * The recorder's verdict and the runner's, for one executor result.
- *
- * They must never disagree: a step recorded green that replays red is the
- * failure the whole tool exists to prevent, and it would be invisible — the
- * recording reported a pass. Since PR 2.5 there is one {@link scriptVerdict}
- * and one path to it, so this asks the property of the pair rather than
- * restating the table a second time.
+ * The recorder's verdict and the runner's must never disagree: a step recorded
+ * green that replays red is the failure the whole tool exists to prevent, and
+ * it would be invisible — the recording reported a pass. There is one
+ * {@link scriptVerdict} and one path to it, so this asks the property of the
+ * pair rather than restating the table a second time.
  */
 describe("the recorder reports the verdict the runner will", () => {
   it.each(Object.keys(VERDICTS) as FlowScriptFailureKind[])(
@@ -222,8 +217,8 @@ describe("the recorder reports the verdict the runner will", () => {
       expect(recorded.status).toBe(scriptVerdict(result).status);
       expect(recorded.status).toBe(replayed.status);
       expect(recorded.reason).toBe(replayed.reason);
-      // And no failing verdict, on either side of the fail/error line, puts a
-      // step into the flow file.
+      // No failing verdict, on either side of the fail/error line, puts a step
+      // into the flow file.
       expect(await recordedSteps()).toEqual([]);
     }
   );
@@ -239,7 +234,7 @@ describe("the recorder reports the verdict the runner will", () => {
     "tells the author whether a %s failure left anything behind",
     async (kind, ran) => {
       // The executor answers three of its failures WITHOUT forking anything, so
-      // "there is a result" does not mean "something ran" — and telling an
+      // "there is a result" does not mean "something ran", and telling an
       // author to clean up after a queue that was full sends them hunting for
       // state that was never created. `cancelled` counts as ran on purpose: it
       // can land either side of the fork and the result does not say which.
@@ -274,11 +269,9 @@ describe("the recorder reports the verdict the runner will", () => {
   });
 
   it("hands the executor the caller's cancellation signal", async () => {
-    // A caller that gave up must not leave a script holding an executor slot
-    // until the step's own time limit. Now that the tool is `longRunning` the
-    // adapter no longer aborts it, so this forwarding is the only cancellation
-    // left — and no other case in this suite passes the tool a ToolContext, so
-    // dropping the line would go unnoticed.
+    // `longRunning` stops the adapter aborting the call, so this forwarding is
+    // the only cancellation left — and a caller that gave up must not leave a
+    // script holding an executor slot until the step's own time limit.
     executeMock.mockResolvedValue(outcome({ ok: true, output: {} }));
     const controller = new AbortController();
 
@@ -288,7 +281,6 @@ describe("the recorder reports the verdict the runner will", () => {
   });
 
   it("passes no signal when the caller has none", async () => {
-    // Absent, not `undefined`: the executor's own guard reads the key.
     executeMock.mockResolvedValue(outcome({ ok: true, output: {} }));
 
     await recordScript();

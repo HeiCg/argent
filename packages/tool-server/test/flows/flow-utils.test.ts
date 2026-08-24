@@ -971,19 +971,12 @@ const BLOCK_DIRECTIVE_SIBLING_REJECTIONS: Record<
   },
 };
 
-// ── Output references ────────────────────────────────────────────────
-
 /**
- * `{{output:...}}` is the syntax a later release resolves against the document
- * a `script:` step returned. This release has no flow output at all, so a
- * reference reaching a step would be used LITERALLY — typed into a field,
- * printed by an echo, matched against a screen — and the step would pass having
- * done the wrong thing. Green and wrong, with nothing in the report to show it.
- *
- * So the parser refuses one, in exactly the fields that later release declares
- * it will resolve, and nowhere else. The two lists are the same list on
- * purpose: a field an author may not write a reference into today is a field
- * that will one day read it.
+ * This release has no flow output, so a `{{output:...}}` reaching a step would
+ * be used LITERALLY — typed into a field, printed by an echo, matched against a
+ * screen — and the step would pass having done the wrong thing. The parser
+ * refuses one, in exactly the fields that will one day resolve it and nowhere
+ * else.
  */
 describe("output references", () => {
   const REFUSALS: [label: string, yaml: string][] = [
@@ -1042,9 +1035,8 @@ describe("output references", () => {
       "a step inside a when block",
       'steps:\n  - when: { visible: { id: row } }\n    steps:\n      - echo: "{{output:user.id}}"\n',
     ],
-    // The condition and relation keys the rows above never reach. Each is its
-    // own arm of the path the message reports, so a row that only exercised
-    // `visible`/`text` and `within` left the rest of both enumerations unpinned.
+    // The condition and relation keys the rows above never reach: each is its
+    // own arm of the path the message reports.
     ["an exists condition's selector", 'steps:\n  - await: { exists: { id: "{{output:row}}" } }\n'],
     ["a hidden condition's selector", 'steps:\n  - await: { hidden: { id: "{{output:row}}" } }\n'],
     ["an after relation", 'steps:\n  - tap: { id: row, after: { id: "{{output:card}}" } }\n'],
@@ -1060,8 +1052,6 @@ describe("output references", () => {
   });
 
   it("names the field and says the syntax arrives later", () => {
-    // The message is the author's whole diagnosis: which field carries it, and
-    // that waiting for a release is the answer rather than a different spelling.
     let message = "";
     try {
       parseFlow('steps:\n  - type: { into: { id: name }, text: "{{output:user.name}}" }\n');
@@ -1074,8 +1064,8 @@ describe("output references", () => {
   });
 
   it("addresses a condition's selector and its expectation apart", () => {
-    // Both used to render as `await.text`, which named one field for two
-    // places — the one message an author has to act on, pointing at either.
+    // One path for both would name a single field for two places, and this
+    // message is the only thing the author has to act on.
     const fieldNamed = (yaml: string): string => {
       try {
         parseFlow(yaml);
@@ -1109,7 +1099,7 @@ describe("output references", () => {
   it("addresses a relation scope apart from the target it narrows", () => {
     // The path has to descend, or a reference in a `within`/`after`/`next`
     // scope is reported at the key one level up — which holds a different,
-    // innocent value, and sends the author to the wrong line.
+    // innocent value.
     const fieldNamed = (yaml: string): string => {
       try {
         parseFlow(yaml);
@@ -1162,10 +1152,8 @@ describe("output references", () => {
 
   it("names the constraint where two spellings parse the same", () => {
     // The step does not remember which spelling it was written as, so these
-    // paths name the constraint rather than a key the file carries. Pinned so
-    // the residue is a documented limit rather than something a later reader
-    // rediscovers — the message quotes the offending value beside the path,
-    // which is what locates it in these cases.
+    // paths name the constraint rather than a key the file carries; the message
+    // quotes the offending value beside the path, which is what locates it.
     const fieldNamed = (yaml: string): string => {
       try {
         parseFlow(yaml);
@@ -1223,9 +1211,9 @@ describe("output references", () => {
   });
 
   it("survives a cyclic tool-args anchor rather than blowing the stack", () => {
-    // `args:` is unconstrained, so a YAML anchor can make it cyclic, and a
-    // hand-edit mid-recording is a documented workflow. The scan has to walk
-    // one without recursing forever — and still find a reference beside it.
+    // `args:` is unconstrained, so a YAML anchor can make it cyclic. The scan
+    // has to walk one without recursing forever — and still find a reference
+    // beside it.
     expect(() =>
       parseFlow("steps:\n  - tool: keyboard\n    args: &a\n      self: *a\n")
     ).not.toThrow();
@@ -1238,9 +1226,8 @@ describe("output references", () => {
 
   it("reaches a leaf inside the two containers own properties do not show", () => {
     // A `%YAML 1.1` document materializes `!!set` and `!!omap` as a real Set
-    // and Map, whose contents Object.entries reports as none — so a walk that
-    // only asked for own properties would call an args block clean because it
-    // could not see into it.
+    // and Map, whose contents Object.entries reports as none — so a walk of own
+    // properties alone would call an args block clean it could not see into.
     expect(() =>
       parseFlow(
         '%YAML 1.1\n---\nsteps:\n  - tool: t\n    args:\n      inner: !!set\n        ? "{{output:x}}"\n'
@@ -1254,17 +1241,16 @@ describe("output references", () => {
   });
 
   it("leaves fields off the supported list alone", () => {
-    // The scan is the later release's list, not "every string in the file". A
-    // launch app id is static by design — it is resolved before any step runs —
-    // so a reference there is an ordinary (wrong) app id, not a parse error.
-    // Refusing it here would refuse a flow that release still would not resolve.
+    // A launch app id is resolved before any step runs, so a reference there is
+    // an ordinary (wrong) app id — refusing it would refuse a flow the release
+    // that resolves references still would not resolve.
     expect(parseFlow('steps:\n  - launch: "com.acme.{{output:app}}"\n').steps[0]).toEqual({
       kind: "launch",
       app: "com.acme.{{output:app}}",
     });
     // A Chromium launch's `args` is arbitrary CLI text rather than an id or a
-    // path, and it is unscanned for the same reason: a launch definition is
-    // resolved before step 1.
+    // path, and unscanned for the same reason: the definition is resolved
+    // before step 1.
     expect(
       parseFlow(
         'steps:\n  - launch: { chromium: { path: ./app, args: ["--seed={{output:order.id}}"] } }\n'
@@ -1274,9 +1260,8 @@ describe("output references", () => {
       app: { chromium: { path: "./app", args: ["--seed={{output:order.id}}"] } },
     });
     // A nested flow path is static too, and unlike the two below a reference
-    // does survive in one — the charset only constrains the `.yaml` suffix, so
-    // a directory segment carries it through. This is the unscanned arm with
-    // reachable exposure, and the one worth pinning as deliberate.
+    // does survive in one: only the final segment is charset-checked, so a
+    // directory segment carries it through.
     expect(parseFlow('steps:\n  - run: "{{output:x}}/login.yaml"\n').steps[0]).toEqual({
       kind: "run",
       flow: "{{output:x}}/login.yaml",
@@ -1285,10 +1270,9 @@ describe("output references", () => {
 
   it("refuses the three unscanned names whose own charset already forbids one", () => {
     // A `run:` target, a `script:` filename and a `snapshot` name are off the
-    // supported list, but they are not reachable either: each has a charset
-    // that has no `{` in it. They fail as the malformed names they are, not as
-    // output references — so the exclusion above costs nothing here, and a
-    // charset that later loosened would show up as one of these passing.
+    // supported list, but each fails its own name rule before the scan would
+    // matter — so the exclusion above costs nothing here, and a rule that later
+    // loosened would show up as one of these passing.
     expect(() => parseFlow('steps:\n  - run: "{{output:x}}"\n')).toThrow(/must end in .yaml/);
     expect(() => parseFlow('steps:\n  - script: { path: "{{output:x}}.mjs" }\n')).toThrow(
       /filename must match/
@@ -1300,8 +1284,8 @@ describe("output references", () => {
 
   it("cuts a long offending value in the message rather than quoting all of it", () => {
     // The same ceiling every rendered flow entry takes, and for the same
-    // reason: this message travels verbatim into a step report. Without the
-    // cut, one pathological value sets the size of the report.
+    // reason: this message travels verbatim into a step report, so without the
+    // cut one pathological value sets the size of the report.
     const filler = "x".repeat(400);
     let message = "";
     try {
@@ -1318,11 +1302,11 @@ describe("output references", () => {
   });
 
   it("leaves a pattern alone, at both levels that spell one", () => {
-    // A regular expression is not a literal, and no regex is on the supported
-    // list — refusing a `{{` inside one would refuse a flow the later release
-    // still would not resolve. The marker is UNESCAPED in both patterns here:
-    // an escaped `\\{\\{output:` does not contain the marker at all, so it would
-    // pass whether or not the field were scanned, and pin nothing.
+    // A regular expression is not a literal — a `{{` in one is a
+    // quantifier-shaped sequence the author meant — so no regex is on the
+    // supported list. The marker is UNESCAPED in both patterns here: an escaped
+    // `\\{\\{output:` does not contain the marker at all, so it would pass
+    // whether or not the field were scanned, and pin nothing.
     expect(parseFlow('steps:\n  - tap: { text: { matches: "{{output:.*" } }\n').steps[0]).toEqual({
       kind: "tap",
       selector: { textMatches: "{{output:.*" },

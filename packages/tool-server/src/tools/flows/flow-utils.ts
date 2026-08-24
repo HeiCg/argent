@@ -2641,14 +2641,8 @@ export function parseScriptTimeout(raw: unknown, value: unknown): number {
   return value as number;
 }
 
-/**
- * The `{{output:` opener of an output reference. A later release resolves one
- * of these against the document a `script:` step returned; this release has no
- * flow output at all, so a reference reaching a step is literal text.
- */
 const OUTPUT_REFERENCE_MARKER = "{{output:";
 
-/** One string a step carries, with the field name to report it under. */
 interface StepField {
   where: string;
   value: string;
@@ -2658,10 +2652,8 @@ interface StepField {
  * A selector's reference-bearing fields, through its whole relation tree.
  *
  * The recursion carries the path rather than flattening with
- * {@link selectorTree}: a constraint buried in a `within`/`after`/`next` scope
- * is a different field from the target's own, and reporting one at the other's
- * path would send an author to a key holding an innocent value —
- * `within: { text: "{{output:x}}" }` blamed on a `text: "Ok"` one level up.
+ * {@link selectorTree}: a constraint inside a `within`/`after`/`next` scope must
+ * be reported at its own path, not the target's.
  */
 function* selectorFields(sel: FlowSelector, where: string): Generator<StepField> {
   if (sel.text !== undefined) yield { where: `${where}.text`, value: sel.text };
@@ -2676,15 +2668,12 @@ function* selectorFields(sel: FlowSelector, where: string): Generator<StepField>
 /**
  * Every string leaf of a `tool` step's args, addressed by its own path.
  *
- * `args:` is the one step body the parser does not constrain, and a YAML anchor
- * may legitimately make it CYCLIC (`args: &a { self: *a }`) — the yaml library
- * materializes that as a cyclic object, and a hand-edit mid-recording is a
- * documented workflow, so the walk has to survive one rather than blow the
- * stack. `seen` holds the containers on the current path only: a node visited
- * twice down two different branches is two real leaves and must be yielded
- * twice, while a node that contains itself is dropped at the point it closes
- * the loop. `summarizeStep` (flow-finish-recording.ts) tolerates the same
- * shape, by the same reasoning.
+ * `args:` is the one step body the parser does not constrain, so a YAML anchor
+ * can make it cyclic (`args: &a { self: *a }`) and the walk has to survive one
+ * rather than blow the stack. `seen` holds the containers on the current path
+ * only: a node reached twice down two different branches is two real leaves and
+ * must be yielded twice, while a node that contains itself is dropped at the
+ * point it closes the loop.
  */
 function* argFields(
   value: unknown,
@@ -2702,12 +2691,11 @@ function* argFields(
     for (const [i, item] of value.entries()) yield* argFields(item, `${where}[${i}]`, seen);
   } else if (value instanceof Map) {
     // `%YAML 1.1` + `!!omap` materializes a real Map, whose entries
-    // Object.entries reports as none — so a leaf inside one would be invisible
-    // to a walk that only asked for own properties.
+    // Object.entries reports as none.
     for (const [key, item] of value) yield* argFields(item, `${where}.${String(key)}`, seen);
   } else if (value instanceof Set) {
-    // `!!set`, likewise: its members ARE the values, so they carry no key of
-    // their own and the container is the field an author would go and edit.
+    // `!!set` members ARE the values, so they carry no key of their own and the
+    // path stays the container's.
     for (const item of value) yield* argFields(item, where, seen);
   } else {
     for (const [key, item] of Object.entries(value))
@@ -2733,11 +2721,11 @@ function gestureTargetPath(
 
 /**
  * The reference-bearing fields of one UI condition — an `await`, an `assert`, or
- * a `when` guard, which carry the same three fields under the same keys.
+ * a `when` guard.
  *
  * The expectation is skipped under `matches`: that comparator's value is a
  * regular expression, and no regular expression is on the supported list (see
- * {@link outputReferenceFields}). `contains` and `equals` are literals, and are.
+ * {@link outputReferenceFields}).
  */
 function* conditionFields(
   kind: string,
@@ -2755,11 +2743,10 @@ function* conditionFields(
     cond.condition === "text" ? `${kind}.text.in` : `${kind}.${cond.condition}`
   );
   if (cond.expectedText !== undefined && cond.textMatch !== "matches") {
-    // Name the comparator the file actually carries. `parseWaitFields` is the
-    // only construction site and always sets one, so the bare fallback is
-    // unreachable — but the field is optional on the type, and a guessed
-    // comparator would name a key the flow does not have, where `${kind}.text`
-    // is a real ancestor of whichever one it carries.
+    // `parseWaitFields` always sets a comparator, so the bare fallback is
+    // unreachable — but the field is optional on the type, and `${kind}.text` is
+    // a real ancestor of whichever key the flow carries, where a guessed
+    // comparator would name one it does not.
     yield {
       where: cond.textMatch ? `${kind}.text.${cond.textMatch}` : `${kind}.text`,
       value: cond.expectedText,
@@ -2768,24 +2755,13 @@ function* conditionFields(
 }
 
 /**
- * Every field an output reference will be RESOLVED in once flow output lands —
- * the list that release declares supported, and nothing else.
+ * The fields a step is refused for spelling an output reference in: the ones
+ * carrying author-written literal text, and nothing else.
  *
- * That list is the whole point. This function feeds a REJECTION today and a
- * resolution later, over the same fields, so the set an author may not write a
- * reference into is exactly the set that will one day read it. A field left off
- * both is static by design: script and `run:` paths, launch definitions,
- * snapshot names, time limits, gesture numbers, tool names — a reference there
- * would have to be resolved before the file is even anchored.
- *
- * **No regular expression is on it.** A pattern is not a literal: a `{{` in one
- * is a quantifier-shaped character sequence the author meant, and the supported
- * list carries neither the selector's `text: { matches }` nor an `await`/
- * `assert`/`when` `matches` comparator. Those two spell the same thing at two
- * levels, so they take the same answer — and the `matches` half matters twice
- * over, because a value resolved INTO a live pattern would splice unescaped
- * metacharacters into it, which is a question the release that resolves
- * references has to answer before it opens that field.
+ * **No regular expression is on the list.** A pattern is not a literal: a `{{`
+ * in one is a quantifier-shaped character sequence the author meant. That
+ * covers both spellings of it — the selector's `text: { matches }` and an
+ * `await`/`assert`/`when` `matches` comparator.
  *
  * Own fields only. A block directive's children are walked by
  * {@link assertNoOutputReferences} itself — reporting one against its parent
@@ -2794,18 +2770,14 @@ function* conditionFields(
  * `where` is the field's YAML path, because that is what an author has to go
  * and edit, and three of them are worth the extra care: a selector under a
  * condition hangs off the CONDITION key (`await: { visible: … }` vs `await: {
- * text: { in: … } }`), an expectation hangs off its comparator — spell those
- * two the same and the message names one field for two places — and a gesture's
+ * text: { in: … } }`), an expectation hangs off its comparator, and a gesture's
  * target moves under `on:` the moment the step carries an option.
  *
  * Where two spellings PARSE THE SAME the path cannot be exact, because the step
- * no longer remembers which was written, and both residues name the constraint
- * rather than a key: a bare-string target (`tap: "Save"` reads as `tap.text`,
- * `scroll-to: "Save"` as `scroll-to.target.text`, neither of which the sugar
- * spells), and an `on:` written with no option beside it (`tap: { on: {...} }`
- * reads as `tap.text`, since {@link gestureTargetPath} follows the spelling the
- * file would round-trip to). The message quotes the offending value beside the
- * path, which is what actually locates it in all four cases.
+ * no longer remembers which was written: a bare-string target (`tap: "Save"`
+ * reads as `tap.text`, `scroll-to: "Save"` as `scroll-to.target.text`) and an
+ * `on:` written with no option beside it (`tap: { on: {...} }` reads as
+ * `tap.text`). The message quotes the offending value beside the path.
  */
 function* outputReferenceFields(step: FlowStep): Generator<StepField> {
   switch (step.kind) {
@@ -2830,10 +2802,6 @@ function* outputReferenceFields(step: FlowStep): Generator<StepField> {
     case "long-press":
     case "pinch":
     case "rotate":
-      // The four gesture kinds take a bare target OR an options map that hangs
-      // it under `on:`, and {@link toYamlStep} writes the map exactly when an
-      // option is present — always, for `pinch`/`rotate`, whose scale and angle
-      // are required.
       if (step.selector) yield* selectorFields(step.selector, gestureTargetPath(step));
       return;
     case "scroll-to":
@@ -2843,28 +2811,20 @@ function* outputReferenceFields(step: FlowStep): Generator<StepField> {
     case "snapshot":
       if (step.cropOn) yield* selectorFields(step.cropOn, "snapshot.cropOn");
       return;
-    // A script step's own two keys are a file path and a number. Its `env:`
-    // values ARE on the supported list, and they arrive with the release that
-    // adds the key — which is why this arm is spelled out rather than grouped
-    // with the ones below: that release yields them here.
+    // A script step's own two keys are a file path and a number.
     case "script":
       return;
-    // Off the supported list, so a reference in one is never resolved and must
-    // not be refused either — refusing it would refuse a flow the release that
-    // resolves references still would not resolve. A launch definition and a
-    // `run:` path are anchored before any step runs; `idle`/`wait` are numbers.
-    // A Chromium launch's `args` is the one arm that is neither an id nor a
-    // path — it is arbitrary CLI text — and it is excluded for the same reason
-    // the rest of the definition is, not for want of somewhere to put a value.
+    // Off the list: `idle`/`wait` carry numbers, and a launch definition or a
+    // `run:` path names an app or a file rather than author-written text. A
+    // Chromium launch's `args` is the one text field among them, excluded with
+    // the rest of the definition.
     case "launch":
     case "run":
     case "idle":
     case "wait":
       return;
     default: {
-      // A new step kind must decide whether its text is reference-bearing. The
-      // wrong default is silence: it would let an author write a reference the
-      // later release then resolves, in a field this release printed literally.
+      // A new step kind must decide whether its text is reference-bearing.
       const unclassified: never = step;
       void unclassified;
       return;
@@ -2875,13 +2835,10 @@ function* outputReferenceFields(step: FlowStep): Generator<StepField> {
 /**
  * Refuse a flow whose steps spell an output reference, naming the one that does.
  *
- * The reference syntax has no meaning in this release: there is no flow output
- * to read, so `{{output:user.id}}` in a `type:` would be TYPED, character for
- * character, and the step would pass having entered the wrong thing. Silence is
- * the one outcome that cannot be tolerated here — the same reasoning that makes
- * a `script` step's unreleased `env:` key a parse error rather than an ignored
- * one. Refusing means the flow never runs at all, which is the only report an
- * author can act on.
+ * There is no flow output to read, so `{{output:user.id}}` in a `type:` would be
+ * TYPED, character for character, and the step would pass having entered the
+ * wrong thing. Refusing means the flow never runs at all, which is the only
+ * report an author can act on.
  *
  * The trail is the step's position, one component per nesting level, so a
  * reference buried in a `when:` block reads as `Step 3.2` rather than as a
@@ -3160,17 +3117,13 @@ export function serializeFlow(flow: FlowFile): string {
  * invariants, and the per-step content rules that read a finished step rather
  * than its raw spelling.
  *
- * Called from {@link parseFlow}, from `flow-start-recording` on the empty flow
- * it registers, and — the reason the output-reference scan lives here rather
- * than beside the parse of each entry — from {@link appendStep} and the
- * client-mode branch of {@link appendStepToFlow}, in both of those BEFORE the
- * flow is serialized and written. A recorder appends a step
- * that was never YAML, so a parse-time check would only see it after
- * {@link appendStepToFlow} had already written the file and re-read it: the
- * rejected step would be on disk, and every later call on that recording —
- * including its finish — would fail re-parsing it, leaving the take
- * unrecoverable without the mid-recording hand edit the authoring skill tells
- * agents not to make.
+ * The output-reference scan lives here rather than beside the parse of each
+ * entry because {@link appendStep} and the client-mode branch of
+ * {@link appendStepToFlow} run this BEFORE serializing a recorder-built step
+ * that was never YAML. A parse-time check would only see that step once the
+ * file had been written and re-read: the rejected step would be on disk, and
+ * every later call on that recording — its finish included — would fail
+ * re-parsing it.
  */
 export function validateFlow(flow: FlowFile): void {
   assertNoOutputReferences(flow.steps);
@@ -3675,12 +3628,10 @@ function assertSessionStillLive(session: RecordingSession, step: FlowStep): void
       `under a fresh name rather than restarting this one.`
     : `The key is now free, but the finished take is on disk and flow-start-recording truncates ` +
       `it unconditionally, so re-record under a fresh name rather than restarting this one.`;
-  // What the caller has already spent, which decides whether retrying is free.
-  // An `echo` cost nothing. A `script` ran a process that may have created
-  // backend state, and it never touched a device — telling its caller the step
-  // "ran on the device" would send them looking for something to undo there.
-  // Everything else is a device action. What the script did with that state is
-  // `flow-add-script`'s to report, and it does; this says only what was spent.
+  // What the caller has already spent. An `echo` cost nothing; a `script` ran a
+  // process but never touched a device — telling its caller the step "ran on the
+  // device" would send them looking for something to undo there. Everything else
+  // is a device action.
   const alreadySpent =
     step.kind === "echo"
       ? ". "

@@ -146,7 +146,6 @@ function addEcho(root: string, name: string, message: string) {
   return flowInsertEchoTool.execute({}, { name, project_root: root, message });
 }
 
-/** Record a `script` step, writing the `.mjs` it names first. */
 async function addScript(root: string, name: string, source = "output.ok = true;") {
   await fs.mkdir(path.join(root, "scripts"), { recursive: true });
   await fs.writeFile(path.join(root, "scripts", "seed.mjs"), source, "utf8");
@@ -1387,16 +1386,15 @@ describe("a restart that lands while a step is still running", () => {
   });
 
   it("tells a superseded SCRIPT that the script ran, not that a device did", async () => {
-    // The third branch of that caveat. A script step touched no device and its
-    // author must not be sent looking for one to undo — but it is also not free
-    // like an echo: the process ran, and whatever it created is still there. So
-    // it gets its own wording, and both halves are pinned here.
+    // A script step touched no device, so its author must not be sent looking
+    // for one to undo — but it is not free like an echo either: the process ran,
+    // and whatever it created is still there.
     const root = await makeRoot("supersede-script");
     await start(root, "alpha");
 
-    // flow-add-script runs the script BEFORE it takes the flow-file lock — so a
+    // flow-add-script runs the script BEFORE it takes the flow-file lock, so a
     // restart queued ahead of it lands first, exactly as it would for a script
-    // that took minutes. Hold the lock, queue the restart, then call it.
+    // that took minutes.
     const gate = openGate();
     const held = withFlowFileLock(root, "alpha", () => gate.promise);
     const restarting = start(root, "alpha");
@@ -1414,15 +1412,14 @@ describe("a restart that lands while a step is still running", () => {
     expect((err as Error).message).toContain("the script already ran");
     expect((err as Error).message).not.toContain("already ran on the device");
     expect((err as Error).message).toContain("fresh name");
-    // …and the recorder's own half says the run happened and what it cost. The
-    // result object never reaches the caller on this path, so the error is the
-    // only place the log and the output document can be reported as lost.
+    // The result object never reaches the caller on this path, so the error is
+    // the only place the run — and the log and output document lost with it —
+    // can be reported.
     expect((err as Error).message).toMatch(
       /ran and passed in \d+ms and nothing it did was rolled back/
     );
     expect((err as Error).message).toContain("logs and output document are lost");
 
-    // The new take is empty — the superseded script left nothing behind in it.
     expect(await readMarkers(root, "alpha")).toEqual([]);
   });
 

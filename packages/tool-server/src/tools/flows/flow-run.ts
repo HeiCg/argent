@@ -2228,17 +2228,14 @@ type ScriptStepOutcome = Pick<StepReport, "status" | "reason" | "scriptLog" | "s
  *
  * Everything a script step DOES lives in {@link runFlowScriptStep}, which
  * `flow-add-script` calls too — so a step an agent recorded ran through the
- * very code its replay will run through, rather than through a second path
- * that happens to agree today. What is left here is the run's own plumbing:
- * the anchor the step resolves against, the caller's project root, the run's
- * shared log allowance and its cancellation signal.
+ * very code its replay will run through.
  *
  * The anchor is the directory of the flow file that NAMES this step, not the
  * root flow's — so a fragment carrying a script step resolves the same file
  * whichever flow composed it.
  *
  * The output document the executor returns is discarded here: nothing threads
- * flow output between steps yet.
+ * flow output between steps.
  */
 async function runScriptStep(
   state: ExecState,
