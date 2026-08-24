@@ -62,6 +62,21 @@ describe("NotImplementedOnPlatformError", () => {
     expect(err.message).toContain("Use `adb shell");
   });
 
+  it("appends the hint after the shared template, so a hint can override its guidance", () => {
+    // The iosDevice miss in cross-platform-tool.ts relies on this ordering: its
+    // hint says "ignore the ios.ts guidance above" to correct the template's
+    // derived file path and capability advice for physical devices.
+    const err = new NotImplementedOnPlatformError({
+      toolId: "demo-tool",
+      platform: "android",
+      hint: "Actually do X instead.",
+    });
+    expect(err.message.endsWith(" Actually do X instead.")).toBe(true);
+    expect(err.message.indexOf("capability declaration")).toBeLessThan(
+      err.message.indexOf("Actually do X instead.")
+    );
+  });
+
   it("works without a hint", () => {
     const err = new NotImplementedOnPlatformError({
       toolId: "demo-tool",

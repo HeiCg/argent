@@ -73,7 +73,14 @@ export function dispatchByPlatform<
         throw new NotImplementedOnPlatformError({
           toolId: opts.toolId,
           platform: "ios",
-          hint: "Physical iOS devices need a dedicated branch: add an iosDevice PlatformImpl to dispatchByPlatform().",
+          // The shared template above derives ios.ts and tells the reader to add
+          // a capability block — both wrong for hardware, so override explicitly.
+          hint:
+            `This is a physical iOS device — ignore the ios.ts guidance above: ` +
+            `the file convention for hardware is tools/${opts.toolId}/platforms/ios-device.ts, ` +
+            `wired in as the iosDevice branch of dispatchByPlatform(), and the ` +
+            `capability is already declared (reaching this error required ` +
+            `apple: { device: true } to pass assertSupported).`,
         });
       }
       if (opts.iosDevice.requires?.length) {
