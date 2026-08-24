@@ -6,12 +6,10 @@ import type { KeyboardParams, KeyboardResult, KeyboardVerification } from "../ty
 import { typeAndroidTextVerified } from "./android-verify";
 import { typeTv } from "./tv";
 
-// Phones / tablets inject over `adb shell input` (text / keyevent), NOT the
-// simulator-server's HID transport: the guest silently drops HID key events on
-// AVDs created with `hw.keyboard = no` (routine for CI / headless), so the tool
-// used to report success while typing nothing — issue #449. `adb input` lands
-// regardless of `hw.keyboard`, on emulators (any config) and physical devices,
-// and surfaces a non-zero exit as a throw. `device.id` is the adb serial.
+// Phones / tablets inject over `adb shell input`, not the simulator-server's HID
+// transport: the guest silently drops HID key events on `hw.keyboard = no` AVDs
+// (routine for CI / headless), so the tool reported success while typing nothing
+// (#449). `device.id` is the adb serial.
 //
 // A clean adb exit is not proof the characters arrived, though: `input text`
 // injects them as one uninterrupted KeyEvent burst that a field re-rendering per
@@ -25,9 +23,8 @@ async function typeAndroidPhone(
 ): Promise<KeyboardResult> {
   let keysPressed = 0;
   let verification: KeyboardVerification = {};
-  // The tool rejects a request carrying both `text` and `key` (see ../index.ts),
-  // so at most one of these two branches runs — there is no ordering to get right
-  // here, and no combined request whose halves could disagree.
+  // `text` and `key` are at-most-one (rejected in ../index.ts), so at most one
+  // branch runs and there is no ordering to get right.
   if (params.text) {
     // `typeAndroidTextVerified` resolves the android-devtools helper — up to an
     // `adb install -t` of its APK — before it injects, so text this backend
@@ -49,20 +46,16 @@ async function typeAndroidPhone(
   return { typed: params.text ?? params.key ?? "", keys: keysPressed, ...verification };
 }
 
-// An Android TV emulator classifies as platform "android" by serial shape, so
-// this branch handles both phones/tablets (`adb input`) and Android TV
-// (focus-driven typing → `adb input text`). TV is a `runtimeKind`, not a
-// `platform`, so the kind is an async runtime probe.
+// An Android TV emulator classifies as platform "android" by serial shape, and TV
+// is a `runtimeKind` rather than a `platform`, so this branch probes the kind at
+// runtime and routes a TV target to the focus-driven backend.
 export function makeAndroidImpl(
   registry: Registry
 ): PlatformImpl<Record<string, unknown>, KeyboardParams, KeyboardResult> {
   return {
-    // Both sub-paths shell out to `adb`: the `isAndroidTv` probe up front, then
-    // `adb input` either way (TV via the focus daemon, phone via `input text` /
-    // `input keyevent`). Declare it so `dispatchByPlatform` preflights adb and a
-    // missing binary fails with the clean 424 install hint rather than surfacing
-    // from deeper in the probe. Matches the android branch of `describe` and
-    // `tv-remote`.
+    // Both sub-paths shell out to `adb` (the `isAndroidTv` probe, then `input`
+    // either way), so declaring it makes a missing binary fail with
+    // `dispatchByPlatform`'s 424 install hint instead of from inside the probe.
     requires: ["adb"],
     handler: async (_services, params, device) =>
       (await isAndroidTv(device.id))
