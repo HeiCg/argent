@@ -114,12 +114,12 @@ describe("getScreenshotScale", () => {
   // env var in the repo is "", "0.6" or "1.0", so widening the guard puts a
   // scale of 5 on the wire with the rest of the suite still green.
   it.each([
-    { env: "", resolved: 0.3 },
-    { env: "abc", resolved: 0.3 },
-    { env: "0", resolved: 0.3 },
-    { env: "-0.5", resolved: 0.3 },
-    { env: "2", resolved: 0.3 },
-    { env: "Infinity", resolved: 0.3 },
+    { env: "", resolved: 0.25 },
+    { env: "abc", resolved: 0.25 },
+    { env: "0", resolved: 0.25 },
+    { env: "-0.5", resolved: 0.25 },
+    { env: "2", resolved: 0.25 },
+    { env: "Infinity", resolved: 0.25 },
     { env: "1", resolved: 1 },
     { env: "0.6", resolved: 0.6 },
   ])("resolves $env to $resolved", ({ env, resolved }) => {

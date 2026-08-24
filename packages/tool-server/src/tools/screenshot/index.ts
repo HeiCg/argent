@@ -7,7 +7,9 @@ import type { Registry, ToolCapability, ToolDefinition } from "@argent/registry"
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
 import { resolveDevice } from "../../utils/device-info";
-import { getScreenshotScale, httpScreenshot } from "../../utils/simulator-client";
+import { getScreenshotScale } from "../../utils/simulator-client";
+import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
+import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
@@ -25,7 +27,7 @@ const zodSchema = z.object({
     .enum(["Portrait", "LandscapeLeft", "LandscapeRight", "PortraitUpsideDown"])
     .optional()
     .describe(
-      "Orientation override for the screenshot. Applied on Android, on local iOS simulators and on tethered iPhones, and on Chromium after Page.captureScreenshot — where, like downscaling, it needs the optional `sharp` dependency. Apple TV, Vega and remote iOS simulators accept it and capture unrotated."
+      "Orientation override for the screenshot. Applied on Android, on local iOS simulators and on tethered iPhones, and on Chromium after Page.captureScreenshot — where, like downscaling, it needs the optional `sharp` dependency. Apple TV, Vega and remote iOS simulators accept it and capture unrotated. With no rotation passed, Android captures upright already — it follows the device's own rotation."
     ),
   scale: z
     .number()
@@ -33,7 +35,7 @@ const zodSchema = z.object({
     .max(1.0)
     .optional()
     .describe(
-      "Scale factor (0.01-1.0). On iOS, Android, Apple TV and Vega, defaults to ARGENT_SCREENSHOT_SCALE env var, or 0.3 whenever that is unset or outside (0,1]. " +
+      "Scale factor (0.01-1.0). On iOS, Android, Apple TV and Vega, defaults to ARGENT_SCREENSHOT_SCALE env var, or 0.25 whenever that is unset or outside (0,1]. " +
         "On Chromium the default is 1.0 (no downscale); pass <1 to opt in. Downscaling on Chromium requires the optional `sharp` dependency. " +
         "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; omit `scale` there, which is where screenshot-diff's own live capture lands once its 1.0 attempt fails, so a baseline saved that way matches it — unless ARGENT_SCREENSHOT_SCALE is itself 1.0, where omitting it repeats the rejected request and both sides have to be saved at the same explicit scale instead."
     ),
@@ -56,10 +58,9 @@ type Params = z.infer<typeof zodSchema>;
 
 interface Result {
   /**
-   * The captured PNG as an artifact handle. The MCP client materializes it to
-   * a local file and renders it inline — no second fetch of the simulator
-   * server's `127.0.0.1` media URL, which is unreachable when the tool-server
-   * is remote.
+   * Captured PNG as an artifact handle: the MCP client materializes it locally
+   * rather than fetching the simulator server's `127.0.0.1` media URL, which is
+   * unreachable when the tool-server is remote.
    */
   image: ArtifactHandle;
 }
@@ -73,12 +74,12 @@ const capability: ToolCapability = {
 };
 
 /**
- * tvOS screenshot path. The simulator-server backend does not support tvOS, so
- * capture via `xcrun simctl io <udid> screenshot` instead and (optionally)
- * downscale with `sips` to match the iOS/Android scale behaviour.
+ * tvOS screenshot path: simulator-server has no tvOS backend, so capture with
+ * `xcrun simctl io <udid> screenshot` and downscale via `sips` to match the
+ * iOS/Android scale behaviour.
  *
  * Exported for the flow settle, which captures for motion detection rather than
- * for an artifact and so cannot go through the tool wrapper above.
+ * for an artifact and so cannot go through the tool.
  */
 export async function tvScreenshot(
   udid: string,
@@ -92,23 +93,21 @@ export async function tvScreenshot(
   await execFileAsync("xcrun", await simctlArgsForUdid(udid, ["io", udid, "screenshot", file]), {
     signal,
   });
-  // Downscale in place unless full-res was requested, mirroring the iOS/Android
-  // default. `sips -Z` caps the longest *actual* side, and capture size isn't
-  // fixed (4K sim is 3840 wide, non-4K is 1920), so scale against the real
-  // dimensions — a hardcoded 3840 would double the scale on a 1920 capture.
+  // `sips -Z` caps the longest *actual* side, and capture size isn't fixed (4K
+  // sim is 3840 wide, non-4K is 1920), so scale against the real dimensions — a
+  // hardcoded 3840 would double the scale on a 1920 capture.
   if (scale < 1.0) {
     await execFileAsync("sips", ["-Z", String(await tvTargetLongSide(file, scale)), file], {
       signal,
     }).catch(() => {
-      // Best-effort downscale: if sips is unavailable or fails, fall back to
-      // the full-resolution capture rather than failing the screenshot.
+      // Best-effort: keep the full-resolution capture if sips fails.
     });
   }
   return file;
 }
 
-// The `sips -Z` target: capture's longest actual side × scale, falling back to
-// the 4K long side if the dimension probe fails.
+// Longest actual side × scale, falling back to the 4K long side if the
+// dimension probe fails.
 export async function tvTargetLongSide(file: string, scale: number): Promise<number> {
   let longSide = 3840;
   try {
@@ -140,16 +139,16 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
     zodSchema,
     outputHint: "image",
     capability,
-    // No eager service: a tvOS udid classifies as iOS by shape, and declaring
-    // simulator-server here would spawn it for the tvOS device (which it cannot
-    // drive) and hang on the ready timeout. Resolve the backend lazily instead.
+    // No eager service: a tvOS udid classifies as iOS by shape, so declaring
+    // simulator-server here would spawn it for a device it cannot drive and hang
+    // on the ready timeout. Resolve the backend lazily instead.
     services: () => ({}),
     async execute(_services, params, ctx) {
       const signal = ctx?.signal ?? AbortSignal.timeout(16_000);
       const scale = params.scale ?? getScreenshotScale();
       const device = resolveDevice(params.udid);
 
-      // Chromium captures via CDP (Page.captureScreenshot) — no simulator-server.
+      // Chromium captures via CDP — no simulator-server.
       if (device.platform === "chromium") {
         const ref = chromiumCdpRef(device);
         const chromium = (await registry.resolveService(ref.urn, ref.options)) as ChromiumCdpApi;
@@ -158,36 +157,54 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
           scale: params.scale,
           downscaler: params.downscaler,
         });
-        const image = await requireArtifacts(ctx).register(capturedPath, { mimeType: "image/png" });
+        const image = await requireArtifacts(ctx).register({
+          hostPath: capturedPath,
+          kind: "screenshot",
+          mimeType: "image/png",
+        });
         return { image };
       }
 
-      // Distinguish tvOS from iOS by simulator runtime — shape alone can't.
-      // tvOS has no simulator-server backend, so capture via xcrun instead.
+      // Shape alone can't tell tvOS from iOS, and tvOS has no simulator-server
+      // backend.
       if (device.platform === "ios" && (await isTvOsSimulator(params.udid))) {
         const pngPath = await tvScreenshot(params.udid, scale, signal);
-        const image = await requireArtifacts(ctx).register(pngPath, { mimeType: "image/png" });
+        const image = await requireArtifacts(ctx).register({
+          hostPath: pngPath,
+          kind: "screenshot",
+          mimeType: "image/png",
+        });
         return { image };
       }
 
-      // Vega captures host-side via the Android emulator console (`adb emu`) and
-      // needs no simulator-server (resolving the iOS/Android-only blueprint for a
-      // Vega device would throw), so capture directly here.
+      // Vega captures host-side via the Android emulator console (`adb emu`);
+      // resolving the iOS/Android-only simulator-server blueprint would throw.
       if (device.platform === "vega") {
         const pngPath = await captureVegaScreenshotPng({ scale: params.scale });
-        const image = await requireArtifacts(ctx).register(pngPath, { mimeType: "image/png" });
+        const image = await requireArtifacts(ctx).register({
+          hostPath: pngPath,
+          kind: "screenshot",
+          mimeType: "image/png",
+        });
         return { image };
       }
 
       const ref = simulatorServerRef(device);
       const api = (await registry.resolveService(ref.urn, ref.options)) as SimulatorServerApi;
-      const { path: capturedPath } = await httpScreenshot(
+      const { path: capturedPath } = await captureScreenshotUpright(
         api,
+        device,
         params.rotation,
         signal,
-        params.scale
+        params.scale,
+        undefined,
+        androidDevtoolsRotationPeek(registry, device)
       );
-      const image = await requireArtifacts(ctx).register(capturedPath, { mimeType: "image/png" });
+      const image = await requireArtifacts(ctx).register({
+        hostPath: capturedPath,
+        kind: "screenshot",
+        mimeType: "image/png",
+      });
       return { image };
     },
   };

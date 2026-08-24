@@ -185,11 +185,13 @@ describe("screenshotDiffTool", () => {
     expect(result.summary).toContain("Screenshot diff summary");
     expect(result.diffPath).toMatchObject({
       __argentArtifact: true,
+      kind: "screenshot-diff",
       hostPath: path.join(dir, "current-diff.png"),
       mimeType: "image/png",
     });
     expect(result.contextDiffPath).toMatchObject({
       __argentArtifact: true,
+      kind: "screenshot-diff-context",
       hostPath: path.join(dir, "current-context-diff.png"),
       mimeType: "image/png",
     });
@@ -334,7 +336,7 @@ describe("screenshotDiffTool", () => {
   });
 
   it.each([
-    { env: "", expected: 0.3 },
+    { env: "", expected: 0.25 },
     { env: "0.6", expected: 0.6 },
   ])(
     "sends the scale the tool-server resolves on the retry (env $env)",
@@ -356,7 +358,7 @@ describe("screenshotDiffTool", () => {
       // Asserted on the wire rather than on an injected capture stub, because
       // the scale the descriptions name is the one httpScreenshot resolves: a
       // 1.0 request carries no `scale` at all, and only the retry reveals it.
-      // Both rows matter — with only the unset one, a retry that hardcoded 0.3
+      // Both rows matter — with only the unset one, a retry that hardcoded 0.25
       // would pass while ignoring the configured scale the prose promises.
       expect(bodies).toEqual([{}, { scale: expected }]);
       expect(result.summary).toContain("Screenshot diff summary");
@@ -367,8 +369,8 @@ describe("screenshotDiffTool", () => {
     vi.stubEnv("ARGENT_SCREENSHOT_SCALE", "");
     // The prose quotes this number as a literal, so it drifts the moment
     // DEFAULT_SCREENSHOT_SCALE moves; nothing else reads the two together.
-    // Whole phrases, not the bare number: `toContain("0.3")` is also satisfied
-    // by "0.35", and by prose that drops the env var and keeps the digits.
+    // Whole phrases, not the bare number: `toContain("0.25")` is also satisfied
+    // by "0.256", and by prose that drops the env var and keeps the digits.
     const fallback = getScreenshotScale();
     const shape = screenshotDiffTool.zodSchema!.shape;
     const registry = {
@@ -427,10 +429,10 @@ describe("screenshotDiffTool", () => {
         "Accepts saved baseline/current PNG paths, or one saved PNG plus one live capture from a device — full resolution when that capture succeeds, otherwise the tool-server's screenshot scale.",
       ],
       "screenshot-diff.captureBaseline": [
-        "Capture the baseline screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback — capture both sides with `screenshot` at an explicit scale and pass saved paths instead).",
+        "Capture the baseline screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.25 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback — capture both sides with `screenshot` at an explicit scale and pass saved paths instead).",
       ],
       "screenshot-diff.captureCurrent": [
-        "Capture the current screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.3 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback — capture both sides with `screenshot` at an explicit scale and pass saved paths instead).",
+        "Capture the current screenshot live before diffing — at full resolution when that capture succeeds, otherwise at the tool-server's screenshot scale (ARGENT_SCREENSHOT_SCALE, 0.25 by default; at 1.0 the retry repeats the request that just failed, leaving a device that cannot stream a full frame with no fallback — capture both sides with `screenshot` at an explicit scale and pass saved paths instead).",
       ],
       "screenshot.scale": [
         "Some Android emulators cannot stream a full-resolution frame and reject scale: 1.0 with a `wrong data size` error; omit `scale` there, which is where screenshot-diff's own live capture lands once its 1.0 attempt fails, so a baseline saved that way matches it — unless ARGENT_SCREENSHOT_SCALE is itself 1.0, where omitting it repeats the rejected request and both sides have to be saved at the same explicit scale instead.",
@@ -485,7 +487,7 @@ describe("screenshotDiffTool", () => {
 
     // httpScreenshot omits an in-band 1.0, so the retry serializes to the same
     // bytes as the attempt that just failed — the behaviour both flags'
-    // descriptions warn about. The same stub succeeds at 0.3 in the test above.
+    // descriptions warn about. The same stub succeeds at 0.25 in the test above.
     expect(bodies).toEqual([{}, {}]);
   });
 
@@ -589,6 +591,96 @@ describe("screenshotDiffTool", () => {
         }
       )
     ).rejects.toThrow("Provide either currentPath or captureCurrent, not both.");
+  });
+
+  // The boundary probe reports `presentOnHost: false` for ANY path that does not
+  // already exist here, so a local agent naming a fresh output directory looked
+  // exactly like a remote client's own directory and was silently redirected to
+  // a temp dir. A directory we can create next to an existing parent is ours.
+  it("creates and honors an outputDir that does not exist yet on this host", async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-fresh-"));
+    const baselinePath = path.join(parent, "baseline.png");
+    const currentPath = path.join(parent, "current.png");
+    await writePng(baselinePath, 2, 2, { r: 10, g: 20, b: 30 });
+    await writePng(currentPath, 2, 2, { r: 200, g: 20, b: 30 });
+
+    const outputDir = path.join(parent, "diff-out");
+
+    const result = await executeScreenshotDiffTool(
+      {},
+      { baselinePath, currentPath, udid: "ABC", outputDir },
+      {
+        artifacts: new ArtifactStore(),
+        fileInputs: {
+          outputDir: { clientPath: outputDir, presentOnHost: false, viaUpload: false },
+        },
+      }
+    );
+
+    expect(result.diffPath).toMatchObject({
+      hostPath: path.join(outputDir, "current-diff.png"),
+    });
+    await expect(fs.stat(path.join(outputDir, "current-diff.png"))).resolves.toBeTruthy();
+  });
+
+  // The probe runs before the create, so a directory that appears in between —
+  // a concurrent diff on the same outputDir, or the agent creating it itself —
+  // reaches mkdir as EEXIST. That is the directory the caller asked for, not a
+  // reason to redirect them to a temp dir.
+  it("honors an outputDir that raced into existence after the probe", async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-race-"));
+    const baselinePath = path.join(parent, "baseline.png");
+    const currentPath = path.join(parent, "current.png");
+    await writePng(baselinePath, 2, 2, { r: 10, g: 20, b: 30 });
+    await writePng(currentPath, 2, 2, { r: 200, g: 20, b: 30 });
+
+    // Exists on disk, but the probe captured the earlier state.
+    const outputDir = path.join(parent, "diff-out");
+    await fs.mkdir(outputDir);
+
+    const result = await executeScreenshotDiffTool(
+      {},
+      { baselinePath, currentPath, udid: "ABC", outputDir },
+      {
+        artifacts: new ArtifactStore(),
+        fileInputs: {
+          outputDir: { clientPath: outputDir, presentOnHost: false, viaUpload: false },
+        },
+      }
+    );
+
+    expect(result.diffPath).toMatchObject({
+      hostPath: path.join(outputDir, "current-diff.png"),
+    });
+    await expect(fs.stat(path.join(outputDir, "current-diff.png"))).resolves.toBeTruthy();
+  });
+
+  // The remote case must still fall back: a client-side path whose parent does
+  // not exist here cannot be created, so diffs go to a temp dir as before.
+  it("falls back to a temp dir when outputDir is not creatable on this host", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "argent-screenshot-diff-remote-"));
+    const baselinePath = path.join(dir, "baseline.png");
+    const currentPath = path.join(dir, "current.png");
+    await writePng(baselinePath, 2, 2, { r: 10, g: 20, b: 30 });
+    await writePng(currentPath, 2, 2, { r: 200, g: 20, b: 30 });
+
+    // Parent does not exist on this host — a remote client's own directory.
+    const outputDir = path.join(dir, "no-such-parent", "nested", "diff-out");
+
+    const result = await executeScreenshotDiffTool(
+      {},
+      { baselinePath, currentPath, udid: "ABC", outputDir },
+      {
+        artifacts: new ArtifactStore(),
+        fileInputs: {
+          outputDir: { clientPath: outputDir, presentOnHost: false, viaUpload: false },
+        },
+      }
+    );
+
+    const diffHostPath = (result.diffPath as { hostPath: string }).hostPath;
+    expect(diffHostPath.startsWith(outputDir)).toBe(false);
+    expect(diffHostPath).toContain("argent-screenshot-diff");
   });
 });
 

@@ -129,8 +129,8 @@ describe("agent docs reaching for a full-resolution screenshot", () => {
 });
 
 describe("agent docs quoting the tool-server's screenshot scale", () => {
-  // Spelled as a percentage in prose ("30% of original resolution") rather than
-  // as the 0.3 the tool descriptions quote, so it drifts out of reach of the
+  // Spelled as a percentage in prose ("25% of original resolution") rather than
+  // as the 0.25 the tool descriptions quote, so it drifts out of reach of the
   // cross-surface check in screenshot-diff-tool.test.ts. Read by sentence over
   // flattened blocks, like the claims above and for the same reason: `agents/`
   // pages hard-wrap, and a figure wrapped between "50% of original" and
