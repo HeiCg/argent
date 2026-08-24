@@ -35,7 +35,6 @@ describe("script log rendering", () => {
     expect(out).toContain("✓  1 script scripts/seed.mjs");
     expect(out).toContain("       │ creating order");
     expect(out).toContain("       │ order 4711 created");
-    // The trailing newline scripts end their output with is not a blank line.
     expect(out).not.toMatch(/│ \n/);
   });
 
@@ -46,8 +45,6 @@ describe("script log rendering", () => {
   });
 
   it("prints the truncation notice alone when the whole log was dropped", () => {
-    // A run-wide budget an earlier script exhausted leaves a later step with no
-    // text at all.
     const lines = renderScriptLogLines(
       { ...PASSING, scriptLog: undefined, scriptLogTruncated: true },
       1
@@ -62,7 +59,6 @@ describe("script log rendering", () => {
     expect(
       renderScriptLogLines({ ...PASSING, scriptLog: { evil: true } as unknown as string }, 1)
     ).toEqual([]);
-    // A truthy non-boolean off the wire is not a truncation claim.
     expect(
       renderScriptLogLines(
         { ...PASSING, scriptLog: undefined, scriptLogTruncated: "yes" as unknown as boolean },

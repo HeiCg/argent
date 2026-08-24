@@ -238,20 +238,7 @@ export interface StepReport {
   snapshotKey?: string;
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
-  /**
-   * A `script` step's stdout and stderr in arrival order — which is not written
-   * order, so only each stream's own sequence carries causality. NOT redacted:
-   * the executor scrubs only the secrets it is handed, and {@link runScriptStep}
-   * hands it none. Set whatever the step's status, while the run's shared log
-   * budget lasts.
-   */
   scriptLog?: string;
-  /**
-   * A log limit is one cause; the executor also sets it when it collapses a
-   * fatal error's frame dump, which no limit caused — so neither renderer names
-   * a cause. A run-wide budget an earlier step exhausted drops a later script's
-   * output entirely, so this can be set with no {@link scriptLog} at all.
-   */
   scriptLogTruncated?: boolean;
   /**
    * Nesting depth for display: omitted at top level, +1 inside each nesting
@@ -952,13 +939,7 @@ interface ExecState extends Omit<ActionEnv, "device"> {
    * `attached:` identity, having never been told what the instance runs.
    */
   attachedAppPath?: string;
-  /**
-   * A `script:` step's first choice of working directory, so a script resolves
-   * its relative `fs` paths against the project the agent is working in rather
-   * than wherever the flow file happens to sit.
-   */
   projectRoot: string;
-  /** The log allowance every `script` step in this run draws from: one per run. */
   scriptLogBudget: FlowScriptLogBudget;
   /** Live progress hook: receives every report the moment it is appended. */
   onStepReport?: (report: StepReport) => void;
@@ -2307,15 +2288,8 @@ async function execRunStep(
   );
 }
 
-/** The half of a `script` step's report that the step itself decides. */
 type ScriptStepOutcome = Pick<StepReport, "status" | "reason" | "scriptLog" | "scriptLogTruncated">;
 
-/**
- * The path is checked here at the step, not in a preflight — the same way
- * {@link execRunStep} resolves one `run:` hop at a time as it executes. So a
- * wrong path fails at its own step, and a script behind a `when:` guard that
- * never runs never fails the flow.
- */
 async function runScriptStep(
   state: ExecState,
   step: Extract<FlowStep, { kind: "script" }>,
@@ -2329,17 +2303,7 @@ async function runScriptStep(
   );
   const suppliedBase = path.posix.basename(target);
 
-  // A case-insensitive filesystem (APFS, NTFS) opens a file really named
-  // `createUser.mjs` for `path: scripts/CreateUser.mjs`, so the flow passes
-  // here and fails with ENOENT on a case-sensitive checkout. Same verdict shape
-  // as every other route through classifyOnDiskSpelling: only `case_folded`
-  // refuses — a basename matching nothing at all is an ordinary missing file,
-  // reported below with the path it looked for, and an unreadable listing
-  // vouches for nothing so it refuses nothing.
   if (spelling.state === "case_folded") {
-    // Quote a replacement path only when parseScriptPath would accept one;
-    // otherwise ask for the rename the file really needs. The target's own
-    // directory prefix is kept so the hint is a line the author can paste.
     const recovery = spelling.addressable
       ? `write it as "${target.slice(0, target.length - suppliedBase.length)}${spelling.actual}"`
       : `rename "${spelling.actual}" to "${suppliedBase}" to run it — a script filename must ` +
@@ -2352,10 +2316,6 @@ async function runScriptStep(
     };
   }
 
-  // Checked before the fork so the report quotes the path as the flow file
-  // wrote it. The executor would report the missing module too — as a `load`
-  // failure, hence the matching `fail` status — but with only the absolute
-  // specifier Node was handed.
   const missing = await scriptFileProblem(canonical);
   if (missing) {
     return {
@@ -2366,8 +2326,6 @@ async function runScriptStep(
 
   const result = await flowScriptExecutor().execute({
     scriptPath: canonical,
-    // An empty input document, and the returned one is discarded: no flow step
-    // reads script output, so a script's only report is its logs and verdict.
     output: {},
     ...(step.timeout !== undefined ? { timeoutMs: step.timeout } : {}),
     projectRoot: state.projectRoot,
@@ -2383,11 +2341,6 @@ async function runScriptStep(
   };
 }
 
-/**
- * `stat`, not `access`: a directory named `seed.mjs` is readable, so an access
- * check would pass it to the fork and the failure would surface from inside
- * Node's module loader, naming neither the flow nor the step.
- */
 async function scriptFileProblem(canonical: string): Promise<string | null> {
   try {
     const stat = await fs.stat(canonical);
@@ -2400,25 +2353,6 @@ async function scriptFileProblem(canonical: string): Promise<string | null> {
   }
 }
 
-/**
- * The line between `fail` and `error` is who is at fault. A `fail` is the
- * SCRIPT's answer: it threw, it never loaded, it returned something that cannot
- * cross into flow state, or it stopped its own process. An `error` is
- * everything the runner did to it — a process it could not start, a limit it
- * hit, a signal it did not choose, a queue it never left. That split is what
- * lets CI read a red script step: a `fail` is a regression in the flow or the
- * system it talks to, an `error` is the machine it ran on.
- *
- * A cancellation is an `error`, not a `skip`: `skip` means the step did not run
- * ({@link FlowRunResult.skipped} counts it), and a script that ran and was then
- * killed left whatever state it created behind. The genuine "did not run" case
- * never reaches the executor — {@link execSteps}' pre-step cancellation gate
- * skips it.
- *
- * Notes ride into the reason on every outcome, pass included: they are how the
- * executor says a time limit was clamped to the host's maximum, or that the
- * working directory it was given did not exist.
- */
 function scriptVerdict(result: FlowScriptResult): Pick<StepReport, "status" | "reason"> {
   const notes = result.notes.join(" ");
   if (result.ok) return { status: "pass", ...(notes ? { reason: notes } : {}) };
@@ -2430,7 +2364,6 @@ function scriptVerdict(result: FlowScriptResult): Pick<StepReport, "status" | "r
   };
 }
 
-/** Which side of the fail/error line one executor failure kind falls on. */
 function scriptFailureStatus(kind: FlowScriptFailureKind): "fail" | "error" {
   switch (kind) {
     case "load":
@@ -2448,9 +2381,6 @@ function scriptFailureStatus(kind: FlowScriptFailureKind): "fail" | "error" {
     case "invalid":
       return "error";
     default: {
-      // A failure kind added to the executor without a verdict here falls to
-      // `error`: the wrong default is `fail`, which blames the flow for
-      // something the host did.
       const unclassified: never = kind;
       void unclassified;
       return "error";
@@ -2458,13 +2388,6 @@ function scriptFailureStatus(kind: FlowScriptFailureKind): "fail" | "error" {
   }
 }
 
-/**
- * The step kinds {@link execLeafStep} handles: everything except the two
- * {@link execSteps} dispatches before it, `run:` and the block directives.
- * Narrowing the parameter rather than carrying those kinds as dead arms is what
- * lets the leaf switch's `default:` bind `never` and mean it — a new leaf kind
- * is a build error here, while a new BLOCK kind leaves this switch alone.
- */
 type LeafStep = Exclude<FlowStep, BlockStep | { kind: "run" }>;
 
 async function execLeafStep(
@@ -2683,9 +2606,6 @@ async function execLeafStep(
     }
 
     default: {
-      // Without the binding a leaf kind with no case of its own would compile
-      // and simply report "unsupported step kind" at run time — a flow that
-      // looks executed and is not.
       const unexecuted: never = step;
       void unexecuted;
       return { ...base, status: "error", reason: `unsupported step kind` };

@@ -260,8 +260,6 @@ describe("stepRequiresDevice", () => {
       "pinch": true,
       "rotate": true,
       "snapshot": true,
-      // A script talks to a backend, never to the device — the classification
-      // that lets a script-only flow run with nothing booted.
       "script": false,
     };
     const samples: Record<FlowStep["kind"], FlowStep> = {

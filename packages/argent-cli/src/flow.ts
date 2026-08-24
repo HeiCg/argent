@@ -45,17 +45,7 @@ export interface StepReport {
    * server-side hostPath/filename — or null when a download failed.
    */
   artifacts?: Record<string, unknown>;
-  /**
-   * A `script` step's stdout and stderr, bounded by the tool server. Not
-   * redacted — it arrives as the script wrote it, credentials included. Printed
-   * for a passing script as much as a failing one.
-   */
   scriptLog?: string;
-  /**
-   * A log limit is one cause; the executor also sets it when it collapses a
-   * fatal error's frame dump. The text carries no marker of its own, so without
-   * this the log reads as complete.
-   */
   scriptLogTruncated?: boolean;
 }
 
@@ -297,14 +287,6 @@ export function renderUnderStepLine(s: StepReport, n: number, text: string): str
   return `${" ".repeat(5 + Math.max(2, String(n).length))}${stepIndent(s.depth)}${text}`;
 }
 
-/**
- * One indented line per line the script wrote, so it reads as the step's own
- * output rather than as the CLI's.
- *
- * Untrusted wire data, so a non-string is dropped rather than interpolated. A
- * trailing newline is not a blank line — scripts end their output with one —
- * so the split drops exactly one.
- */
 export function renderScriptLogLines(s: StepReport, n: number): string[] {
   const log = typeof s.scriptLog === "string" ? s.scriptLog : "";
   const lines: string[] = [];
@@ -312,9 +294,6 @@ export function renderScriptLogLines(s: StepReport, n: number): string[] {
     const body = log.endsWith("\n") ? log.slice(0, -1) : log;
     for (const line of body.split("\n")) lines.push(renderUnderStepLine(s, n, `│ ${line}`));
   }
-  // Printed even with no text above it: a run-wide budget an earlier step
-  // exhausted can drop a script's output entirely, and silence would read as a
-  // script that printed nothing. `=== true` because the value is wire data.
   if (s.scriptLogTruncated === true) {
     lines.push(renderUnderStepLine(s, n, "│ … output truncated"));
   }

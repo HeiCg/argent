@@ -371,9 +371,6 @@ describe("argent flow run", () => {
   });
 
   it("prints a script step's log live, under the step line the event produced", async () => {
-    // The live renderer is a second, independent path over the same report: it
-    // prints each step as its event arrives instead of rendering the finished
-    // report, so nothing renderReport covers is covered here by implication.
     const steps: StepFixture[] = [
       { index: 0, kind: "echo", status: "pass", message: "seeding" },
       {
@@ -399,11 +396,7 @@ describe("argent flow run", () => {
     expect(out).toContain("       │ creating order");
     expect(out).toContain("       │ order 4711 created");
     expect(out).toContain("       │ … output truncated");
-    // Live mode owns the step lines, so the buffered renderer must not print
-    // the same run a second time underneath them.
     expect(out.match(/script scripts\/seed\.mjs/g)).toHaveLength(1);
-    // Live mode's summary carries the device, since its header printed before
-    // the runner had resolved one.
     expect(out).toContain("PASS (started on SIM-1) — 1 passed");
   });
 

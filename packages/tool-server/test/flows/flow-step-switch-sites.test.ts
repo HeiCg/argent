@@ -3,20 +3,9 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { BLOCK_DIRECTIVE_KEYS, type FlowStep } from "../../src/tools/flows/flow-utils";
 
-/**
- * The six switches over a step's kind, and the `never` bindings that make
- * forgetting a kind a build error rather than a silent wrong answer at run
- * time.
- */
-
 const SRC = path.resolve(__dirname, "../../src/tools/flows");
 const read = (file: string): string => readFileSync(path.join(SRC, file), "utf8");
 
-/**
- * `Record` over the union rejects a missing key and an extra one alike, so a
- * kind added to `FlowStep` without a row here fails `typecheck:tests` — which
- * is what keeps the coverage assertions below from going stale.
- */
 const ALL_STEP_KINDS: Record<FlowStep["kind"], true> = {
   "echo": true,
   "launch": true,
@@ -49,11 +38,6 @@ function handledKinds(body: string): Set<string> {
   return new Set([...body.matchAll(/case "([^"]+)":/g)].map((m) => m[1]!));
 }
 
-/**
- * The kinds {@link execLeafStep} is NOT responsible for: `run:` and the block
- * directives, dispatched before it. Read from the block registry rather than
- * restated, so a new block kind does not have to be remembered here too.
- */
 const DISPATCHED_BEFORE_THE_LEAF_SWITCH = new Set<string>(["run", ...BLOCK_DIRECTIVE_KEYS]);
 
 describe("execLeafStep's exhaustiveness guard", () => {
@@ -71,8 +55,6 @@ describe("execLeafStep's exhaustiveness guard", () => {
   });
 
   it("leaves the two dispatched-elsewhere kinds out, rather than as dead arms", () => {
-    // Excluded from the parameter type instead, which is what lets the default
-    // arm bind `never` honestly.
     const body = functionBody(read("flow-run.ts"), "async function execLeafStep(");
     for (const kind of DISPATCHED_BEFORE_THE_LEAF_SWITCH) {
       expect(handledKinds(body), kind).not.toContain(kind);
