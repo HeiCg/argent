@@ -1042,6 +1042,17 @@ describe("output references", () => {
       "a step inside a when block",
       'steps:\n  - when: { visible: { id: row } }\n    steps:\n      - echo: "{{output:user.id}}"\n',
     ],
+    // The condition and relation keys the rows above never reach. Each is its
+    // own arm of the path the message reports, so a row that only exercised
+    // `visible`/`text` and `within` left the rest of both enumerations unpinned.
+    ["an exists condition's selector", 'steps:\n  - await: { exists: { id: "{{output:row}}" } }\n'],
+    ["a hidden condition's selector", 'steps:\n  - await: { hidden: { id: "{{output:row}}" } }\n'],
+    ["an after relation", 'steps:\n  - tap: { id: row, after: { id: "{{output:card}}" } }\n'],
+    ["a next relation", 'steps:\n  - tap: { id: row, next: { id: "{{output:card}}" } }\n'],
+    [
+      "a step inside a platform-guarded when block",
+      'steps:\n  - when: { platform: ios }\n    steps:\n      - echo: "{{output:user.id}}"\n',
+    ],
   ];
 
   it.each(REFUSALS)("refuses one in %s", (_label, yaml) => {
@@ -1251,6 +1262,59 @@ describe("output references", () => {
       kind: "launch",
       app: "com.acme.{{output:app}}",
     });
+    // A Chromium launch's `args` is arbitrary CLI text rather than an id or a
+    // path, and it is unscanned for the same reason: a launch definition is
+    // resolved before step 1.
+    expect(
+      parseFlow(
+        'steps:\n  - launch: { chromium: { path: ./app, args: ["--seed={{output:order.id}}"] } }\n'
+      ).steps[0]
+    ).toEqual({
+      kind: "launch",
+      app: { chromium: { path: "./app", args: ["--seed={{output:order.id}}"] } },
+    });
+    // A nested flow path is static too, and unlike the two below a reference
+    // does survive in one — the charset only constrains the `.yaml` suffix, so
+    // a directory segment carries it through. This is the unscanned arm with
+    // reachable exposure, and the one worth pinning as deliberate.
+    expect(parseFlow('steps:\n  - run: "{{output:x}}/login.yaml"\n').steps[0]).toEqual({
+      kind: "run",
+      flow: "{{output:x}}/login.yaml",
+    });
+  });
+
+  it("refuses the three unscanned names whose own charset already forbids one", () => {
+    // A `run:` target, a `script:` filename and a `snapshot` name are off the
+    // supported list, but they are not reachable either: each has a charset
+    // that has no `{` in it. They fail as the malformed names they are, not as
+    // output references — so the exclusion above costs nothing here, and a
+    // charset that later loosened would show up as one of these passing.
+    expect(() => parseFlow('steps:\n  - run: "{{output:x}}"\n')).toThrow(/must end in .yaml/);
+    expect(() => parseFlow('steps:\n  - script: { path: "{{output:x}}.mjs" }\n')).toThrow(
+      /filename must match/
+    );
+    expect(() => parseFlow('steps:\n  - snapshot: "{{output:x}}"\n')).toThrow(
+      /snapshot name .* must match/
+    );
+  });
+
+  it("cuts a long offending value in the message rather than quoting all of it", () => {
+    // The same ceiling every rendered flow entry takes, and for the same
+    // reason: this message travels verbatim into a step report. Without the
+    // cut, one pathological value sets the size of the report.
+    const filler = "x".repeat(400);
+    let message = "";
+    try {
+      parseFlow(`steps:\n  - echo: "{{output:user.id}}${filler}"\n`);
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    const quoted = /Remove it and write the value the flow needs: "(.*)"$/s.exec(message)?.[1];
+    expect(quoted).toBeDefined();
+    expect(quoted!.endsWith("…")).toBe(true);
+    // `MAX_ENTRY_RENDER_CHARS` (200) plus the ellipsis that replaces the rest.
+    expect(quoted!.length).toBe(201);
+    expect(message.length).toBeLessThan(1000);
   });
 
   it("leaves a pattern alone, at both levels that spell one", () => {

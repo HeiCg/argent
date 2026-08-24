@@ -82,15 +82,20 @@ async function start(name: string, projectRoot = root, ctx?: ToolContext) {
 async function addScript(
   name: string,
   scriptPath: string,
-  extra: { timeout?: number; project_root?: string } = {}
+  extra: { timeout?: number; project_root?: string } = {},
+  ctx?: ToolContext
 ) {
   const { project_root: projectRoot = root, ...rest } = extra;
-  return flowAddScriptTool.execute({}, {
-    name,
-    project_root: projectRoot,
-    path: scriptPath,
-    ...rest,
-  } as never);
+  return flowAddScriptTool.execute(
+    {},
+    {
+      name,
+      project_root: projectRoot,
+      path: scriptPath,
+      ...rest,
+    } as never,
+    ctx
+  );
 }
 
 /** Enough registry for `flow-add-step` to dispatch one no-op tool call. */
@@ -216,6 +221,78 @@ describe("recording a script step", () => {
     expect(result.outputJson).toMatch(/^\{"blob":"y+$/);
     // The step is recorded all the same: the script passed.
     expect(result.stepCount).toBe(1);
+  });
+
+  it("stops the script when the caller cancels the call", async () => {
+    // The tool forwards `ctx.signal` to the executor, and since the tool became
+    // `longRunning` the adapter no longer aborts it — so this is the only
+    // cancellation the call has left. A caller that gave up must not leave a
+    // script holding an executor slot until the step's own time limit.
+    const started = path.join(root, "started.txt");
+    await write(
+      "scripts/slow.mjs",
+      `import { writeFileSync } from "node:fs";\n` +
+        `writeFileSync(${JSON.stringify(started)}, "x");\n` +
+        `await new Promise((r) => setTimeout(r, 20000));\n`
+    );
+    await start("cancelled");
+    const controller = new AbortController();
+
+    const call = addScript("cancelled", "../../scripts/slow.mjs", {}, {
+      signal: controller.signal,
+    } as unknown as ToolContext);
+    // Cancel only once the child is provably running, so the case is a stopped
+    // script rather than one that never left the queue.
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      if (
+        await fs.access(started).then(
+          () => true,
+          () => false
+        )
+      )
+        break;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    controller.abort();
+    const result = await call;
+
+    // An error, not a skip: a script that reached the system it talks to and
+    // was then killed is the one case where "did not run" is the dangerous
+    // reading. Well inside the 20s the script asked for.
+    expect(result.status).toBe("error");
+    expect(result.reason).toMatch(/cancelled/i);
+    expect(result.durationMs).toBeLessThan(15_000);
+    expect(result.message).toContain("nothing was rolled back");
+    expect(await steps("cancelled")).toEqual([]);
+  });
+
+  it("says the script ran when a write failure stops it being recorded", async () => {
+    // The wrap's other arm. The superseded-recording case covers a session that
+    // went away mid-script; this is the file itself refusing the write, which
+    // is the arm that carries `flow_add_script_append`. Either way the caller
+    // has to be told the script already ran — the error is otherwise about a
+    // directory, and reads as though nothing happened.
+    await write("scripts/seed.mjs", `output.ok = true;`);
+    await start("readonly");
+    const flowsDir = path.dirname(flowPath("readonly"));
+    await fs.chmod(flowsDir, 0o500);
+    try {
+      const err = await addScript("readonly", "../../scripts/seed.mjs").catch(
+        (e: unknown) => e as Error
+      );
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/ran and passed in \d+ms/);
+      expect((err as Error).message).toContain("nothing it did was rolled back");
+      // The ORIGINAL diagnosis's signal survives the wrap — that is the point
+      // of wrapping rather than replacing. `flow_add_script_append` is the
+      // fallback for a throw that carries no signal at all, which no real
+      // append produces today; nothing reaches it, and nothing should have to.
+      expect(getFailureSignal(err as Error)?.failure_stage).toBe("flow_file_write");
+    } finally {
+      await fs.chmod(flowsDir, 0o700);
+    }
   });
 
   it("leaves a document inside the limit whole and unflagged", async () => {

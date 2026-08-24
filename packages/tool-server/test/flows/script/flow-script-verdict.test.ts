@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Registry } from "@argent/registry";
+import type { Registry, ToolContext } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../../src/tools/flows/flow-run";
 import { flowStartRecordingTool } from "../../../src/tools/flows/flow-start-recording";
 import { flowAddScriptTool } from "../../../src/tools/flows/flow-add-script";
@@ -71,13 +71,22 @@ async function runScript(): Promise<FlowRunResult["steps"][number]> {
 }
 
 /** Record the same one script step, and hand back the recorder's answer. */
-async function recordScript() {
+async function recordScript(ctx?: ToolContext) {
   await flowStartRecordingTool.execute({}, { name: "recorded", project_root: root });
-  return flowAddScriptTool.execute({}, {
-    name: "recorded",
-    project_root: root,
-    path: "../../scripts/seed.mjs",
-  } as never);
+  return flowAddScriptTool.execute(
+    {},
+    {
+      name: "recorded",
+      project_root: root,
+      path: "../../scripts/seed.mjs",
+    } as never,
+    ctx
+  );
+}
+
+/** The request the recorder handed the executor on its only call. */
+function executedRequest(): Record<string, unknown> {
+  return executeMock.mock.calls[0]![0] as Record<string, unknown>;
 }
 
 /** The steps the recording actually holds on disk. */
@@ -272,5 +281,28 @@ describe("the recorder reports the verdict the runner will", () => {
     expect(recorded.reason).toBe(replayed.reason);
     expect(recorded.outputJson).toBe('{"order":{"id":7}}');
     expect(await recordedSteps()).toEqual([{ kind: "script", path: "../../scripts/seed.mjs" }]);
+  });
+
+  it("hands the executor the caller's cancellation signal", async () => {
+    // A caller that gave up must not leave a script holding an executor slot
+    // until the step's own time limit. Now that the tool is `longRunning` the
+    // adapter no longer aborts it, so this forwarding is the only cancellation
+    // left — and no other case in this suite passes the tool a ToolContext, so
+    // dropping the line would go unnoticed.
+    executeMock.mockResolvedValue(outcome({ ok: true, output: {} }));
+    const controller = new AbortController();
+
+    await recordScript({ signal: controller.signal } as unknown as ToolContext);
+
+    expect(executedRequest().signal).toBe(controller.signal);
+  });
+
+  it("passes no signal when the caller has none", async () => {
+    // Absent, not `undefined`: the executor's own guard reads the key.
+    executeMock.mockResolvedValue(outcome({ ok: true, output: {} }));
+
+    await recordScript();
+
+    expect("signal" in executedRequest()).toBe(false);
   });
 });

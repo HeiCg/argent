@@ -28,6 +28,16 @@ const FLOW_YAML = path.resolve(
  * added to the list leaves all three saying the wrong count — which is exactly
  * how "five different warnings" survived a sixth being added.
  */
+/**
+ * The surfaces that quote the NUMBER of permitted unrecorded insertions rather
+ * than listing them. Same failure mode as the warning count below, and this PR
+ * had to edit three of the four citations at once — which is the moment a guard
+ * earns its place, not the moment after one of them is missed.
+ */
+const INSERTION_COUNT_CITATIONS = [
+  path.resolve(__dirname, "../../../skills/skills/argent-qa-flows/SKILL.md"),
+];
+
 const WARNING_COUNT_CITATIONS = [
   path.resolve(__dirname, "../../../skills/skills/argent-create-flow/references/live-authoring.md"),
   path.resolve(
@@ -114,6 +124,40 @@ describe("create-flow idle docs", () => {
         `${idleMinimumTimeoutMs(IDLE_DEFAULT_STABLE_FOR_MS)}ms and an 800ms hold needs ` +
         `${idleMinimumTimeoutMs(800)}ms`
     );
+  });
+
+  it("every doc that quotes the number of permitted insertions quotes the number listed", () => {
+    const LIVE_AUTHORING = path.resolve(
+      __dirname,
+      "../../../skills/skills/argent-create-flow/references/live-authoring.md"
+    );
+    const list = between(
+      LIVE_AUTHORING,
+      "Only these unrecorded insertions are allowed, at states observed live:",
+      "\nKeep raw forms only"
+    );
+    const listed = [...list.matchAll(/^- /gm)].length;
+    // Guard the reader itself: a renamed heading would count 0 and then agree
+    // with nothing, which is not the failure worth reporting.
+    expect(listed).toBeGreaterThan(1);
+    const spelled = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight"][
+      listed
+    ];
+    expect(spelled, `no spelling for ${listed} insertions`).toBeDefined();
+    for (const file of INSERTION_COUNT_CITATIONS) {
+      const quotes = [
+        ...readFileSync(file, "utf8").matchAll(/(\w+) (?:documented|permitted) polish insertions/g),
+      ];
+      expect(quotes.length, `${file} no longer cites the insertion count`).toBeGreaterThan(0);
+      for (const quote of quotes) expect(quote[1], file).toBe(spelled);
+    }
+    // The core skill spells the list out instead of counting it, so it drifts
+    // the other way: by keeping an item the reference has dropped, or losing
+    // one it still has. Check it names each.
+    const skill = readFileSync(SKILL, "utf8");
+    for (const token of ["`snapshot:`", "`await: { idle: true }`", "Chromium"]) {
+      expect(skill, `the core skill no longer names ${token} as an insertion`).toContain(token);
+    }
   });
 
   it("every doc that quotes the number of idle warnings quotes the number the reference lists", () => {
