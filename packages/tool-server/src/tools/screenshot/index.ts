@@ -11,7 +11,10 @@ import { getScreenshotScale } from "../../utils/simulator-client";
 import { captureScreenshotUpright } from "../../utils/rotation-aware-capture";
 import { androidDevtoolsRotationPeek } from "../../utils/android-devtools-rotation-peek";
 import { isTvOsSimulator } from "../../utils/ios-devices";
-import { captureScreenshot as captureIosDeviceScreenshot } from "../../utils/ios-device/devicectl";
+import {
+  captureScreenshot as captureIosDeviceScreenshot,
+  supportsHostScreenshot,
+} from "../../utils/ios-device/devicectl";
 import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
@@ -79,10 +82,13 @@ const capability: ToolCapability = {
 /**
  * Physical-iOS screenshot. Primary: host-side `xcrun devicectl device
  * screenshot` (no runner needed). Not every Xcode ships that subcommand —
- * devicectl 518.x (iOS 26 SDK) does not — so on the unknown-option/subcommand
- * error the capture falls back to the on-device XCUITest runner's
- * `screenshot` command with an inline base64 payload. Both paths finish with
- * the same best-effort `sips` downscale as the tvOS path.
+ * devicectl 518.x (iOS 26 SDK) does not — so the memoized
+ * `supportsHostScreenshot` probe picks the route structurally up front:
+ * unsupported goes straight to the runner with no doomed devicectl attempt per
+ * capture, and no dependency on Apple's error wording. On the host-side route
+ * the old unknown-option/subcommand match survives only as a last-resort net
+ * for a probe that answered wrong. Both routes finish with the same
+ * best-effort `sips` downscale as the tvOS path.
  */
 async function iosPhysicalScreenshot(
   registry: Registry,
@@ -93,35 +99,49 @@ async function iosPhysicalScreenshot(
     os.tmpdir(),
     `argent-ios-device-screenshot-${device.id.slice(0, 8)}-${process.hrtime.bigint()}.png`
   );
-  try {
-    await captureIosDeviceScreenshot(device.id, file);
-  } catch (error) {
-    const text = `${(error as Error).message}\n${String((error as Error & { cause?: Error }).cause?.message ?? "")}`;
-    const missingSubcommand = /unknown option|unknown subcommand|unrecognized subcommand/i.test(
-      text
-    );
-    if (!missingSubcommand) throw error;
-    const ref = iosDeviceRunnerRef(device);
-    const runner = (await registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
-    // Device-wide capture (XCUIScreen): the runner's screenshot command is
-    // app-agnostic and always answers with an inline base64 PNG.
-    const data = (await runner.run(
-      { command: "screenshot" },
-      { readOnly: true, timeoutMs: 30_000 }
-    )) as { imageBase64?: string };
-    if (!data.imageBase64) {
-      throw new Error("Runner screenshot returned no inline image data.", { cause: error });
+  if (!(await supportsHostScreenshot())) {
+    await runnerScreenshotToFile(registry, device, file);
+  } else {
+    try {
+      await captureIosDeviceScreenshot(device.id, file);
+    } catch (error) {
+      const text = `${(error as Error).message}\n${String((error as Error & { cause?: Error }).cause?.message ?? "")}`;
+      const missingSubcommand = /unknown option|unknown subcommand|unrecognized subcommand/i.test(
+        text
+      );
+      if (!missingSubcommand) throw error;
+      await runnerScreenshotToFile(registry, device, file, error);
     }
-    await fs.writeFile(file, Buffer.from(data.imageBase64, "base64"));
   }
-  if (scale < 1.0) {
-    await execFileAsync("sips", ["-Z", String(await tvTargetLongSide(file, scale)), file]).catch(
-      () => {
-        // Best-effort downscale, mirroring the tvOS path.
-      }
+  await downscalePngInPlace(file, scale);
+  return file;
+}
+
+/**
+ * Device-wide capture (XCUIScreen) through the on-device XCUITest runner: its
+ * `screenshot` command is app-agnostic and always answers with an inline
+ * base64 PNG, which lands in `file`. `cause` chains the devicectl failure that
+ * sent the capture here, when there was one.
+ */
+async function runnerScreenshotToFile(
+  registry: Registry,
+  device: DeviceInfo,
+  file: string,
+  cause?: unknown
+): Promise<void> {
+  const ref = iosDeviceRunnerRef(device);
+  const runner = (await registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
+  const data = (await runner.run(
+    { command: "screenshot" },
+    { readOnly: true, timeoutMs: 30_000 }
+  )) as { imageBase64?: string };
+  if (!data.imageBase64) {
+    throw new Error(
+      "Runner screenshot returned no inline image data.",
+      cause === undefined ? undefined : { cause }
     );
   }
-  return file;
+  await fs.writeFile(file, Buffer.from(data.imageBase64, "base64"));
 }
 
 /**
@@ -172,6 +192,26 @@ export async function tvTargetLongSide(file: string, scale: number): Promise<num
     /* probe failed — keep the 4K fallback */
   }
   return Math.round(longSide * scale);
+}
+
+/**
+ * Best-effort in-place downscale shared by the two physical-iOS routes (this
+ * tool's device capture and the flow settle's — flow-pixels.ts): cap the PNG's
+ * longest actual side at `scale` of itself via `sips -Z`, skipping the spawn
+ * entirely at scale 1 and keeping the full-resolution file when `sips` fails,
+ * mirroring the tvOS path.
+ */
+export async function downscalePngInPlace(
+  file: string,
+  scale: number,
+  signal?: AbortSignal
+): Promise<void> {
+  if (scale >= 1.0) return;
+  await execFileAsync("sips", ["-Z", String(await tvTargetLongSide(file, scale)), file], {
+    signal,
+  }).catch(() => {
+    // Best-effort: keep the full-resolution capture if sips fails.
+  });
 }
 
 export function createScreenshotTool(registry: Registry): ToolDefinition<Params, Result> {

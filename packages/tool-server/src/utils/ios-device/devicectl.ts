@@ -21,8 +21,9 @@ const execFileAsync = promisify(execFile);
  * - JSON output goes to a FILE (`--json-output <tmp>`), never stdout. stdout/
  *   stderr are only good for error-hint matching.
  * - Capabilities are feature-PROBED, never version-gated: older Xcodes lack
- *   subcommands/flags, and the reliable detection is the error text, not a
- *   version comparison.
+ *   subcommands/flags, and the reliable detection is asking the binary — the
+ *   subcommand list `--help` advertises, or the error text — not a version
+ *   comparison.
  */
 
 /** Default timeout for one-shot devicectl calls. Installs get a longer one. */
@@ -276,13 +277,50 @@ export async function launchApp(
 
 /**
  * Capture a PNG screenshot host-side. Requires a devicectl new enough to have
- * the screenshot subcommand (Xcode 16-class); older toolchains surface the
- * unknown-subcommand error, which callers can treat as "use the runner path".
+ * the screenshot subcommand (Xcode 16-class) — consult
+ * {@link supportsHostScreenshot} first, and treat an unknown-subcommand error
+ * that still slips through as "use the runner path".
  */
 export async function captureScreenshot(udid: string, outPath: string): Promise<void> {
   await runDevicectl(["device", "screenshot", "--device", udid, outPath], "capture screenshot", {
     timeoutMs: 30_000,
   });
+}
+
+// Memoized as a promise so concurrent first callers share one probe.
+let hostScreenshotProbe: Promise<boolean> | null = null;
+
+/**
+ * A row in the SUBCOMMANDS table of `devicectl device --help` whose name is
+ * `screenshot`: modest indent, the bare token, then its description. The
+ * bounded indent keeps a deeply-indented description continuation line that
+ * happens to start with the word from counting as a subcommand.
+ */
+const SCREENSHOT_SUBCOMMAND_ROW = /^[ \t]{1,10}screenshot\b/m;
+
+/**
+ * Whether this Xcode's devicectl has the `device screenshot` subcommand at
+ * all — Xcode 16-class toolchains do, devicectl 518.x (iOS 26 SDK) does not.
+ * Probed structurally, per the header's convention: list the subcommands
+ * `devicectl device --help` advertises and look for a `screenshot` row — the
+ * binary's own declaration of its command tree, independent of Apple's error
+ * wording. NOT probed via `device screenshot --help` exiting cleanly: verified
+ * live on 518.33, ArgumentParser answers an unknown subcommand's `--help` with
+ * the parent's help and exit 0, so that exit status reads "supported" on
+ * exactly the toolchains that are not. Memoized for the process — one extra
+ * subprocess ever, not one doomed capture attempt each call — and any way of
+ * failing to probe (missing devicectl, timeout) reads as "unsupported", which
+ * routes callers to the runner path that works everywhere.
+ */
+export function supportsHostScreenshot(): Promise<boolean> {
+  hostScreenshotProbe ??= execFileAsync("xcrun", ["devicectl", "device", "--help"], {
+    timeout: DEVICECTL_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  }).then(
+    ({ stdout }) => SCREENSHOT_SUBCOMMAND_ROW.test(stdout),
+    () => false
+  );
+  return hostScreenshotProbe;
 }
 
 interface DeviceTunnelInfo {

@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { promisify } from "node:util";
 import { PNG } from "pngjs";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
@@ -13,10 +11,8 @@ import { isTvOsSimulator } from "../../utils/ios-devices";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { FIRST_FRAME_WAIT_MS, httpScreenshot } from "../../utils/simulator-client";
 import { settleWithin } from "../../utils/timing";
-import { tvScreenshot, tvTargetLongSide } from "../screenshot";
+import { downscalePngInPlace, tvScreenshot } from "../screenshot";
 import type { ActionEnv } from "./flow-actions";
-
-const execFileAsync = promisify(execFile);
 
 /**
  * A decoded capture, used only to detect motion between two reads. Never an
@@ -174,6 +170,13 @@ export const FIRST_PIXEL_CAPTURE_TIMEOUT_MS =
 export const PIXEL_CAPTURE_TIMEOUT_MS = 2_000;
 
 /**
+ * A physical iPhone's capture is an on-device PNG encode of the full screen
+ * plus a usbmux round trip of those bytes — around a second warm, with real
+ * variance. A ceiling, like the others: unspent budget costs nothing.
+ */
+const IOS_DEVICE_PIXEL_CAPTURE_TIMEOUT_MS = 4_000;
+
+/**
  * Per-capture bound — a ceiling, not a wait, so granting more than a route needs
  * costs nothing until it is actually spent.
  *
@@ -183,13 +186,6 @@ export const PIXEL_CAPTURE_TIMEOUT_MS = 2_000;
  * simulator shells out too, but is not distinguishable from an iOS one without
  * an async runtime probe, so it keeps the wider ceiling it will not use.
  */
-/**
- * A physical iPhone's capture is an on-device PNG encode of the full screen
- * plus a usbmux round trip of those bytes — around a second warm, with real
- * variance. A ceiling, like the others: unspent budget costs nothing.
- */
-const IOS_DEVICE_PIXEL_CAPTURE_TIMEOUT_MS = 4_000;
-
 export function pixelCaptureTimeoutMs(device: ActionEnv["device"], firstCapture: boolean): number {
   if (isIosPhysicalDevice(device)) {
     return IOS_DEVICE_PIXEL_CAPTURE_TIMEOUT_MS;
@@ -321,13 +317,13 @@ async function captureFile(env: ActionEnv, budgetMs: number): Promise<string> {
 
 /**
  * Physical-iOS capture for the settle: straight to the on-device XCUITest
- * runner's inline screenshot. The `screenshot` tool's devicectl-first probe is
- * deliberately skipped here — a settle captures at poll cadence, and on Xcodes
- * without `devicectl device screenshot` that probe is a failing subprocess per
- * poll. Mid-flow the runner is already resident (the launch gate resolved it),
- * so the runner hop is both the warm path and the cheap one. The full-
- * resolution PNG is downscaled with `sips` like the tvOS route, so only the
- * quarter-scale frame is ever decoded on this process's event loop.
+ * runner's inline screenshot, with no devicectl attempt — probed or otherwise.
+ * Mid-flow the runner is already resident (the launch gate resolved it), so at
+ * poll cadence the runner hop is both the warm path and the cheap one. The
+ * full-resolution PNG then takes the same best-effort in-place downscale as
+ * the `screenshot` tool's device route — a failed `sips` still answers, it
+ * just costs a bigger decode this round — so normally only the quarter-scale
+ * frame is decoded on this process's event loop.
  */
 async function captureIosDeviceFile(env: ActionEnv, budgetMs: number): Promise<string> {
   const ref = iosDeviceRunnerRef(env.device);
@@ -342,12 +338,7 @@ async function captureIosDeviceFile(env: ActionEnv, budgetMs: number): Promise<s
     `argent-ios-device-settle-${env.device.id.slice(0, 8)}-${process.hrtime.bigint()}.png`
   );
   await fs.writeFile(file, Buffer.from(data.imageBase64, "base64"));
-  await execFileAsync("sips", ["-Z", String(await tvTargetLongSide(file, CAPTURE_SCALE)), file], {
-    signal: captureAbortSignal(env, budgetMs),
-  }).catch(() => {
-    // Best-effort downscale — a full-resolution compare still answers,
-    // it just costs a bigger decode this round.
-  });
+  await downscalePngInPlace(file, CAPTURE_SCALE, captureAbortSignal(env, budgetMs));
   return file;
 }
 
