@@ -745,7 +745,7 @@ function processCommandMatches(pid: number, marker: string | undefined): boolean
     // miss orphans every live server silently. Same visibility tool-server's
     // vega-process probes give their callers.
     process.stderr.write(
-      `[launcher] ps identity check failed for pid ${pid}; leaving it alone: ${String(err)}\n`
+      `[launcher] ps could not read pid ${pid}'s command line (possibly just exited); leaving it alone: ${String(err)}\n`
     );
     return false;
   }
