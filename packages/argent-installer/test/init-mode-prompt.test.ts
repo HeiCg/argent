@@ -86,14 +86,15 @@ describe("promptInstallMode", () => {
   });
 
   // Without a package.json there is no devDependency to fall back to, so local
-  // is not the way out to point at.
-  it("recommends neither option when local has nowhere to install either", async () => {
+  // is not the way out to point at — and not an option to offer either: it can
+  // only route to installLocally's precondition error.
+  it("offers only global when local has nowhere to install either", async () => {
     vi.mocked(hasProjectPackageJson).mockReturnValue(false);
 
     await promptInstallMode("global", { target: nixStoreTarget, pm: "npm" });
 
     expect(option("global").label).not.toContain("(recommended)");
-    expect(option("local").label).not.toContain("(recommended)");
+    expect(shownOptions().options.map((o) => o.value)).toEqual(["global"]);
     expect(shownOptions().initialValue).toBe("global");
   });
 
@@ -101,6 +102,6 @@ describe("promptInstallMode", () => {
     await promptInstallMode("global", { target: nixStoreTarget, pm: "pnpm" });
 
     expect(option("global").hint).not.toContain(".npm-global");
-    expect(option("global").hint).toContain("pnpm");
+    expect(option("global").hint).toContain("relocate pnpm's global directory");
   });
 });

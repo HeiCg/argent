@@ -315,8 +315,12 @@ async function recoverBlockedGlobalInstall(opts: {
 
   if (acknowledged) {
     // Chosen knowing the block, but for a manager whose directory argent
-    // cannot relocate — there is nothing left to carry out.
-    if (!canMovePrefix) return failWithAdvice(target);
+    // cannot relocate — there is nothing left to carry out. The choice still
+    // happened, so the funnel hears where it ended.
+    if (!canMovePrefix) {
+      track("installation:global_install_decision", { decision: "unrecoverable" });
+      return failWithAdvice(target);
+    }
   } else {
     p.log.warn(blockedGlobalTargetCause(target, pm, "install"));
 
@@ -364,6 +368,12 @@ async function recoverBlockedGlobalInstall(opts: {
     await failWith(`${err}\n\n${localInstallRemedy()}`);
   }
   spinner.stop(`npm prefix set to ${prefix}.`);
+  // The write outlives this run whether or not the install ahead succeeds.
+  p.log.info(
+    pc.dim(
+      `Recorded in ~/.npmrc — future global installs land there too. Undo later with ${pc.cyan("npm config delete prefix")}.`
+    )
+  );
   forgetInheritedNpmPrefix();
 
   // Confirm rather than assume: a prefix npm accepted but still cannot write to
@@ -372,7 +382,15 @@ async function recoverBlockedGlobalInstall(opts: {
   // back through the step that just ran.
   const moved = probeGlobalInstallTarget(pm);
   if (moved?.blocked) {
-    await failWith(`${blockedGlobalTargetCause(moved, pm, "install")}\n\n${localInstallRemedy()}`);
+    // A plain PREFIX inherited from the shell also outranks the ~/.npmrc just
+    // written, so the set-prefix remedy cannot take effect while it stays set.
+    const inheritedPrefix = process.env.PREFIX;
+    await failWith(
+      `${blockedGlobalTargetCause(moved, pm, "install")}\n\n${localInstallRemedy()}` +
+        (inheritedPrefix === undefined
+          ? ""
+          : `\n\n${pc.cyan("PREFIX")} is set to ${pc.dim(inheritedPrefix)} in this shell and overrides the configured prefix — unset it and retry.`)
+    );
   }
 
   const binDir = path.join(prefix, "bin");
@@ -407,8 +425,8 @@ async function runGlobal(opts: {
 
   if (!globallyInstalled) {
     // Nowhere to install to: the manager's global directory cannot be written
-    // (a Nix-managed toolchain puts it in the immutable store). Both ways out
-    // are things init can carry out, so ask rather than stop here.
+    // (a Nix-managed toolchain puts it in the immutable store). Where a way
+    // out can be carried out, ask rather than stop here.
     const pm = detectPackageManager();
     const preflightStartedAt = performance.now();
     if (globalTarget?.blocked) {

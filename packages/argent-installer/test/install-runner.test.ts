@@ -496,8 +496,41 @@ describe("a global install whose target directory cannot be written", () => {
 
       expect(exitSpy).toHaveBeenCalledWith(1);
       expect(runShellCommand).not.toHaveBeenCalled();
+      // The user answered the warned mode step, so the funnel must hear which
+      // way their choice went — like every other branch of this step.
+      expect(decisions()).toEqual(["unrecoverable"]);
     } finally {
       vi.mocked(detectPackageManager).mockReturnValue("npm");
+    }
+  });
+
+  // The prefix write outlives the run whether or not the install it enables
+  // succeeds, so say so — and how to undo it — while it is being made.
+  it("says the prefix move persists, and how to undo it", async () => {
+    vi.mocked(select).mockResolvedValue("prefix" as never);
+    vi.mocked(probeGlobalInstallTarget).mockReturnValue(writableAfterMove);
+
+    await globalInstall(makeTel());
+
+    const infos = vi.mocked(log.info).mock.calls.map(([m]) => m as string);
+    expect(infos.some((m) => m.includes("npm config delete prefix"))).toBe(true);
+  });
+
+  // A plain PREFIX inherited from the shell also outranks the ~/.npmrc the
+  // move just wrote, so the failure has to name it — the set-prefix remedy it
+  // would otherwise repeat cannot take effect while it stays exported.
+  it("names an inherited PREFIX when the moved prefix is still unwritable", async () => {
+    vi.mocked(select).mockResolvedValue("prefix" as never);
+    vi.mocked(probeGlobalInstallTarget).mockReturnValue(blocked);
+    process.env.PREFIX = "/root-only/prefix";
+    try {
+      await expect(globalInstall(makeTel())).rejects.toThrow(ExitCalled);
+
+      const [message] = vi.mocked(log.error).mock.calls[0] as [string];
+      expect(message).toContain("PREFIX");
+      expect(message).toContain("/root-only/prefix");
+    } finally {
+      delete process.env.PREFIX;
     }
   });
 
@@ -535,6 +568,32 @@ describe("a global install whose target directory cannot be written", () => {
     } finally {
       vi.mocked(isGloballyInstalled).mockReturnValue(false);
       vi.mocked(getLatestVersion).mockImplementation((() => null) as never);
+    }
+  });
+
+  // Replacing an existing install writes into the same unwritable directory a
+  // fresh one would — the --from path preflights too.
+  it("refuses a --from reinstall whose target cannot be written", async () => {
+    vi.mocked(isGloballyInstalled).mockReturnValue(true);
+    const tel = makeTel();
+    try {
+      await expect(
+        runInstall({
+          installMode: "global",
+          fromTar: "/tmp/argent.tgz",
+          nonInteractive: false,
+          version: "0.0.0",
+          globalTarget: null,
+          globalBlockAcknowledged: false,
+          tel,
+        })
+      ).rejects.toThrow(ExitCalled);
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(runShellCommand).not.toHaveBeenCalled();
+      expect(tel.finalize).toHaveBeenCalledWith(INSTALL_GLOBAL_PREFIX_UNWRITABLE);
+    } finally {
+      vi.mocked(isGloballyInstalled).mockReturnValue(false);
     }
   });
 

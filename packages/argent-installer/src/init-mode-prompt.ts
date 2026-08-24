@@ -38,7 +38,7 @@ export async function promptInstallMode(
   const globalHint = blockedGlobal
     ? blockedGlobal.pm === "npm"
       ? `Needs a writable global directory — argent will point npm at ${suggestedNpmPrefix()}`
-      : `Needs a writable global directory, and argent cannot relocate ${blockedGlobal.pm}'s`
+      : `Needs a writable global directory, and argent cannot relocate ${blockedGlobal.pm}'s global directory`
     : "Installs the argent command on your PATH; shared across every project";
 
   const modeChoice = await p.select({
@@ -49,11 +49,17 @@ export async function promptInstallMode(
         label: `Globally${recommended === "global" ? " (recommended)" : ""}`,
         hint: globalHint,
       },
-      {
-        value: "local" as const,
-        label: `This project only${recommended === "local" ? " (recommended)" : ""}`,
-        hint: "Adds @swmansion/argent to devDependencies and commits MCP config that runs the local copy — best for teams",
-      },
+      // Blocked with no package.json: both options are dead ends here, so local
+      // is dropped rather than offered only to hit installLocally's error.
+      ...(recommended === null
+        ? []
+        : [
+            {
+              value: "local" as const,
+              label: `This project only${recommended === "local" ? " (recommended)" : ""}`,
+              hint: "Adds @swmansion/argent to devDependencies and commits MCP config that runs the local copy — best for teams",
+            },
+          ]),
     ],
     initialValue: recommended === "local" ? "local" : defaultMode,
   });

@@ -17,7 +17,11 @@ import type { PackageManager } from "./package-manager.js";
 // Argument vector that makes each manager print a directory its global installs
 // live under. Only npm's and pnpm's name the node_modules itself; yarn classic
 // prints its parent and bun the bin directory it links shims into — near enough
-// to answer "can this user write there", which is all the probe asks.
+// to answer "can this user write there", which is all the probe asks. The cost
+// of that near-enough: for yarn/bun, walking up from <queried>/@swmansion/argent
+// probes an ancestor of the real module directory rather than the directory
+// itself, so a module dir made root-owned by an earlier `sudo yarn global add`
+// or `sudo bun add -g` is not caught.
 const GLOBAL_DIR_QUERY: Record<PackageManager, readonly string[]> = {
   npm: ["root", "-g"],
   pnpm: ["root", "-g"],
@@ -51,9 +55,11 @@ function queryGlobalInstallDir(pm: PackageManager): string | null {
 }
 
 /**
- * True when `target` is inside the Nix store. Honors NIX_STORE_DIR, which
- * rootless / relocated installs (nix-portable, `--store`) set to something
- * other than the /nix/store default.
+ * True when `target` is inside the Nix store. Honors NIX_STORE_DIR, which only
+ * a relocated Nix (a custom build or an admin-exported override) sets to
+ * something other than the /nix/store default — nix-portable virtualizes
+ * /nix/store but keeps those paths, and nix's own --store is a per-invocation
+ * flag that exports nothing.
  */
 export function isNixStorePath(target: string): boolean {
   const storeDir = path.resolve(process.env.NIX_STORE_DIR || "/nix/store");
