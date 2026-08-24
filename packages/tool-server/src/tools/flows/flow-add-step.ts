@@ -655,8 +655,11 @@ async function captureTapSelector(
  * finished, restarted or evicted by now, and the read below would report another
  * take's step count as this one's. Check and read hold the flow lock, as
  * {@link appendStepToFlow} does — the check is synchronous, the read is not, and
- * `flow-start-recording` truncates under that same lock, so a restart between
- * the two would report the SUPERSEDED take's count as a success.
+ * `flow-start-recording` TRUNCATES before it re-registers, both under that same
+ * lock. A restart landing between the two would therefore pass the check and
+ * then have the file replaced underneath, so the read would report the FRESH
+ * take's count — 0 — as this take's. Holding the lock is what preserves this
+ * take's own count.
  *
  * `ranOnDevice` says whether the refused call already ran, which decides what
  * the liveness error tells the author to undo.
