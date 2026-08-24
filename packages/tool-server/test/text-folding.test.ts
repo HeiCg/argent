@@ -446,6 +446,26 @@ describe("confusableTextNote", () => {
     expect(short).toContain("U+0053 U+0061 U+0076 U+0065 U+034F");
   });
 
+  it("windows BOTH dumps on the same region, not each on its own centre", () => {
+    // Only one side holds the blocker, so a per-string centre sent the other
+    // side back to index 0 and the two lists described different parts of the
+    // label — while the note's `actual [...] vs expected [...]` shape invites
+    // reading them side by side.
+    const lead = "Your order was placed on 14 March and will arrive by ";
+    const actual = `${lead}Save${CGJ}Changes tail`;
+    const expected = `${lead}SaveChanges tail`;
+    expect([...actual].length).toBeGreaterThan(48);
+    const note = confusableTextNote(actual, expected)!;
+    const [, gotActual, gotExpected] = /actual \[(.+)\] vs expected \[(.+)\]/.exec(note)!;
+    // Both windows reach the blocker's neighbourhood: each ends on "tail", and
+    // the expected side shows the position the CGJ occupies in the actual one.
+    const TAIL = "U+0074 U+0061 U+0069 U+006C";
+    expect(gotActual.endsWith(TAIL)).toBe(true);
+    expect(gotExpected.endsWith(TAIL)).toBe(true);
+    expect(gotActual).toContain("U+0065 U+034F U+0043");
+    expect(gotExpected).toContain("U+0065 U+0043");
+  });
+
   it("stays silent for a prepended concatenation mark, which is NOT ignorable", () => {
     // U+110BD is category Cf, but it changes how the digits after it render.
     expect(confusableTextNote("PLN 42\u{110BD}", "PLN 42")).toBeUndefined();

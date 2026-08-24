@@ -357,6 +357,11 @@ const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/gu;
 /** {@link DEFAULT_IGNORABLE}, non-global - for a single-character test. */
 const DEFAULT_IGNORABLE_ONE = new RegExp(DEFAULT_IGNORABLE.source, "u");
 
+/** True for a default-ignorable character that builds no glyph in sequence. */
+function isInertIgnorable(ch: string): boolean {
+  return DEFAULT_IGNORABLE_ONE.test(ch) && !isSequenceBuilding(ch);
+}
+
 /** Every inert ignorable in `text`, in order, sequence-builders excluded. */
 function inertIgnorables(text: string): string[] {
   return (text.match(DEFAULT_IGNORABLE) ?? []).filter((ch) => !isSequenceBuilding(ch));
@@ -377,7 +382,7 @@ function placedIgnorables(text: string): string[] {
   const placed: string[] = [];
   let before = 0;
   for (const ch of text) {
-    if (DEFAULT_IGNORABLE_ONE.test(ch) && !isSequenceBuilding(ch)) {
+    if (isInertIgnorable(ch)) {
       placed.push(`${before}\u0000${ch}`);
     } else {
       before += 1;
@@ -459,18 +464,64 @@ const CODEPOINT_DUMP_MAX = 48;
  * string does not fit {@link CODEPOINT_DUMP_MAX}. `assertText` prefers the
  * hoisted `subtreeText`, so one card produced an 11,532 character reason.
  */
-function codepoints(text: string, blocking: readonly string[] = []): string {
-  const chars = Array.from(text);
+function codepoints(chars: readonly string[], centre: number): string {
   if (chars.length <= CODEPOINT_DUMP_MAX) return chars.map(codepointName).join(" ");
-  const found = chars.findIndex((ch) => blocking.includes(ch));
-  const centre = found === -1 ? 0 : found;
   const start = Math.min(
     Math.max(0, centre - Math.floor(CODEPOINT_DUMP_MAX / 2)),
     chars.length - CODEPOINT_DUMP_MAX
   );
   const end = start + CODEPOINT_DUMP_MAX;
   const body = chars.slice(start, end).map(codepointName).join(" ");
-  return `${start > 0 ? "… " : ""}${body}${end < chars.length ? " …" : ""}`;
+  return `${start > 0 ? "\u2026 " : ""}${body}${end < chars.length ? " \u2026" : ""}`;
+}
+
+/** Characters before `index` that {@link inertIgnorables} does not collect. */
+function visibleBefore(chars: readonly string[], index: number): number {
+  let seen = 0;
+  for (let i = 0; i < index; i += 1) if (!isInertIgnorable(chars[i])) seen += 1;
+  return seen;
+}
+
+/** The index in `chars` that `count` visible characters reaches. */
+function indexAfterVisible(chars: readonly string[], count: number): number {
+  let seen = 0;
+  for (let i = 0; i < chars.length; i += 1) {
+    if (seen === count) return i;
+    if (!isInertIgnorable(chars[i])) seen += 1;
+  }
+  return chars.length;
+}
+
+/**
+ * The two strings as code points, windowed on the SAME region of both. Only
+ * one side holds the blocking character - that is what makes it blocking - so
+ * a per-string centre sent the other side back to index 0, and past
+ * {@link CODEPOINT_DUMP_MAX} the two lists described different parts of the
+ * label while the note's `actual [...] vs expected [...]` shape invites reading
+ * them side by side. The side that lacks the character is centred on the same
+ * position measured in VISIBLE characters, the count {@link placedIgnorables}
+ * already tags an ignorable with.
+ */
+function codepointPair(
+  actual: string,
+  expected: string,
+  blocking: readonly string[]
+): [string, string] {
+  const a = Array.from(actual);
+  const e = Array.from(expected);
+  const foundIn = (chars: readonly string[]): number =>
+    chars.findIndex((ch) => blocking.includes(ch));
+  let centreA = foundIn(a);
+  let centreE = foundIn(e);
+  if (centreA === -1 && centreE === -1) {
+    centreA = 0;
+    centreE = 0;
+  } else if (centreA === -1) {
+    centreA = indexAfterVisible(a, visibleBefore(e, centreE));
+  } else if (centreE === -1) {
+    centreE = indexAfterVisible(e, visibleBefore(a, centreA));
+  }
+  return [codepoints(a, centreA), codepoints(e, centreE)];
 }
 
 /**
@@ -494,10 +545,8 @@ function ignorableDifferenceNote(
         "drawn — a soft hyphen paints a real hyphen where the line breaks, U+180E breaks " +
         "Arabic cursive joining as ZWNJ does — so the screen and the text really do differ"
       : "the two strings differ only in invisible characters";
-  return (
-    `${lead} — actual [${codepoints(actual, differing)}] ` +
-    `vs expected [${codepoints(expected, differing)}]`
-  );
+  const [dumpActual, dumpExpected] = codepointPair(actual, expected, differing);
+  return `${lead} — actual [${dumpActual}] vs expected [${dumpExpected}]`;
 }
 
 /**
