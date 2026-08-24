@@ -53,7 +53,12 @@ import {
   stepRequiresDevice,
   type FlowPlatform,
 } from "./flow-device";
-import { isNestedOrchestratorTool, nestedOrchestratorOutcome } from "./flow-nested-outcome";
+import {
+  isNestedOrchestratorTool,
+  nestedOrchestratorOutcome,
+  nestedWeakPassNote,
+  RUN_SEQUENCE_TOOL_ID,
+} from "./flow-nested-outcome";
 import {
   runDirective,
   invokeOnDevice,
@@ -2396,7 +2401,15 @@ async function execLeafStep(
         // Keyed on the TOOL, not on the presence of a `note`. Other tools return
         // one on a perfectly healthy result — see KEYBOARD_TOOL_ID for the list —
         // and a step that warns on every run is a step nobody reads.
-        const note = step.name === KEYBOARD_TOOL_ID ? resultNote(result) : undefined;
+        //
+        // `run-sequence` carries the same clear one level down, where the
+        // top-level read cannot reach it — see `nestedWeakPassNote`.
+        const note =
+          step.name === KEYBOARD_TOOL_ID
+            ? resultNote(result)
+            : step.name === RUN_SEQUENCE_TOOL_ID
+              ? nestedWeakPassNote(result)
+              : undefined;
         return {
           ...base,
           status: "pass",

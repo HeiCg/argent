@@ -1,4 +1,5 @@
 import type { StepStatus } from "./flow-run";
+import { KEYBOARD_TOOL_ID, resultNote } from "./flow-actions";
 
 /**
  * Reading the verdict of a nested orchestrator step.
@@ -60,6 +61,38 @@ function firstFailingStep(steps: unknown): string | undefined {
 
 function count(value: unknown): number {
   return typeof value === "number" ? value : 0;
+}
+
+/**
+ * The weak-pass note a `run-sequence` step buried in its per-step results.
+ *
+ * `run-sequence` is a first-class flow tool step, `keyboard` is one of its
+ * allowed tools, and `argent-device-interact` prescribes this spelling for a
+ * clear that types: `{ clear: true, text }`, then `{ key: "enter" }`. The note
+ * that says the clear took a weaker path then lands at
+ * `result.steps[i].result.note`, where the runner's own top-level read cannot
+ * see it and no CLI renders it — so the step reported a clean green over a clear
+ * nothing verified.
+ *
+ * Only `keyboard` steps are read, for the reason KEYBOARD_TOOL_ID gives: a
+ * `note` on any other tool describes a healthy call.
+ *
+ * A sequence may hold more than one clear, so every note is kept. Each is a
+ * finished sentence, so joining them needs no separator beyond the space.
+ *
+ * Narrows defensively throughout: this report crossed the registry boundary as
+ * `unknown`, and a shape not recognised here must leave the step exactly as the
+ * runner would have reported it.
+ */
+export function nestedWeakPassNote(result: unknown): string | undefined {
+  if (!isRecord(result) || !Array.isArray(result.steps)) return undefined;
+  const notes: string[] = [];
+  for (const entry of result.steps) {
+    if (!isRecord(entry) || entry.tool !== KEYBOARD_TOOL_ID) continue;
+    const note = resultNote(entry.result);
+    if (note !== undefined) notes.push(note);
+  }
+  return notes.length > 0 ? notes.join(" ") : undefined;
 }
 
 /** A nested `flow-execute` result: a run report, or a prerequisite notice. */
