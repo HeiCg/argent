@@ -641,6 +641,10 @@ export class FlowScriptExecutor {
       terminal = message;
     });
 
+    // Kept beside the timer, because the timer is not proof the limit passed: a
+    // stall in the tool server's own event loop holds its callback behind
+    // whatever the poll phase already has ready. See `classifyOutcome`.
+    const deadlineAt = Date.now() + timeoutMs;
     const timer = setTimeout(() => interrupt("timeout"), timeoutMs);
     const onAbort = () => interrupt("cancelled");
     request.signal?.addEventListener("abort", onAbort, { once: true });
@@ -670,6 +674,7 @@ export class FlowScriptExecutor {
     }
 
     const exit = await exited;
+    const deadlinePassed = Date.now() >= deadlineAt;
     clearTimeout(timer);
     request.signal?.removeEventListener("abort", onAbort);
 
@@ -701,6 +706,7 @@ export class FlowScriptExecutor {
         startedSeen,
         interrupted,
         timeoutMs,
+        deadlinePassed,
         heapFatalSeen: capture.heapFatalSeen,
         heapLimitMb: bounds.heapLimitMb,
       }),
@@ -734,6 +740,8 @@ interface ClassifyInput {
   startedSeen: boolean;
   interrupted: "timeout" | "cancelled" | null;
   timeoutMs: number;
+  /** Whether the time limit had already passed when the exit was observed. */
+  deadlinePassed: boolean;
   heapFatalSeen: boolean;
   heapLimitMb: number;
 }
@@ -770,13 +778,7 @@ function classifyOutcome(
     return failed("cancelled", "The run was cancelled and the script process was stopped.");
   }
 
-  if (input.interrupted === "timeout") {
-    return failed(
-      "timeout",
-      `The script did not finish within its ${describeDuration(input.timeoutMs)} time limit ` +
-        `and its process tree was stopped.`
-    );
-  }
+  if (input.interrupted === "timeout") return timedOut(input.timeoutMs);
 
   // V8 does not throw when it hits the heap limit: it prints a fatal error and
   // aborts. Ahead of the `startedSeen` row because a script can exhaust the
@@ -793,6 +795,12 @@ function classifyOutcome(
   }
 
   if (exit.signal) {
+    // The clock rather than the timer, which a stall in the tool server's own
+    // event loop can hold behind the exit it is racing. Past that stall the
+    // child's deadline watchdog has already killed the group, and reporting its
+    // SIGKILL as unexplained sends the author looking for a killer that is the
+    // step's own time limit.
+    if (input.deadlinePassed) return timedOut(input.timeoutMs);
     return failed(
       "signal",
       `The script process was killed by ${exit.signal} before it returned output. ` +
@@ -936,6 +944,14 @@ function clampText(text: string | undefined, max: number): string | undefined {
     marked = `${text.slice(0, cut)}${omissionMarker(text.length - cut)}`;
   }
   return marked;
+}
+
+function timedOut(timeoutMs: number): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
+  return failed(
+    "timeout",
+    `The script did not finish within its ${describeDuration(timeoutMs)} time limit ` +
+      `and its process tree was stopped.`
+  );
 }
 
 function failed(
