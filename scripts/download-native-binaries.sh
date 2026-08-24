@@ -177,8 +177,6 @@ gh release download "${TAG}" \
 # bundledHelperApkPath()'s expectation.
 ANDROID_VERSION_NAME="$(node -p "require('$PWD/${ANDROID_MANIFEST_FILE}').versionName")"
 ANDROID_TARGET="${ANDROID_BIN_DIR}/argent-android-devtools-${ANDROID_VERSION_NAME}.apk"
-mv -f "${TMP_APK}" "${ANDROID_TARGET}"
-trap - EXIT
 
 # Verify the downloaded APK carries the versionCode the manifest promises.
 #
@@ -192,6 +190,12 @@ trap - EXIT
 # reinstalls the helper once per device, and every protocol-gated call falls back
 # to its weaker path while the build itself looks healthy. Fail here instead.
 #
+# Checked on the TEMP file, before the move below. The target path is the one
+# `bundledHelperApkPath()` reads, so verifying after the move aborts having
+# installed the bad state it just diagnosed — and having cleared the EXIT trap,
+# so the download is kept twice over. Failing here leaves the previous APK in
+# place and the trap removes the temp.
+#
 # aapt2 ships with the Android build-tools. Hosts without it (no Android SDK)
 # skip the check, like the vtool and apksigner checks around it.
 AAPT2="$(command -v aapt2 || true)"
@@ -203,7 +207,7 @@ if [ -z "${AAPT2}" ]; then
 fi
 if [ -n "${AAPT2}" ]; then
   ANDROID_VERSION_CODE="$(node -p "require('$PWD/${ANDROID_MANIFEST_FILE}').versionCode")"
-  BADGING="$("${AAPT2}" dump badging "${ANDROID_TARGET}")"
+  BADGING="$("${AAPT2}" dump badging "${TMP_APK}")"
   APK_VERSION_CODE="$(printf '%s\n' "${BADGING}" | sed -n "1s/.*versionCode='\([0-9]*\)'.*/\1/p")"
   if [ "${APK_VERSION_CODE}" != "${ANDROID_VERSION_CODE}" ]; then
     echo "Error: argent-android-devtools.apk on release '${TAG}' is versionCode" >&2
@@ -217,6 +221,9 @@ if [ -n "${AAPT2}" ]; then
 else
   echo "  Skipping Android helper versionCode check: aapt2 not found." >&2
 fi
+
+mv -f "${TMP_APK}" "${ANDROID_TARGET}"
+trap - EXIT
 
 echo "Downloaded native binaries to ${DYLIBS_DIR}/, ${IOS_BIN_DIR}/, and ${ANDROID_BIN_DIR}/"
 
