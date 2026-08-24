@@ -239,23 +239,18 @@ export interface StepReport {
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
   /**
-   * A `script` step's captured stdout and stderr, in arrival order, possibly
-   * truncated. Arrival order is not written order: a burst to both streams
-   * inside one event-loop turn can land in either stream's order, so only each
-   * stream's own sequence carries causality. NOT redacted: the executor scrubs
-   * only the secrets it is handed, and {@link runScriptStep} hands it none. Set
-   * whatever the step's status while the run's shared log budget lasts — a run
-   * an earlier script exhausted drops a later one's output entirely — since a
-   * passing script's log is the only record of what it did.
+   * A `script` step's stdout and stderr in arrival order — which is not written
+   * order, so only each stream's own sequence carries causality. NOT redacted:
+   * the executor scrubs only the secrets it is handed, and {@link runScriptStep}
+   * hands it none. Set whatever the step's status, while the run's shared log
+   * budget lasts.
    */
   scriptLog?: string;
   /**
-   * Some of that script's output is missing from the log. A log limit is one
-   * cause; the executor also sets it when it collapses a fatal error's frame
-   * dump, which no limit caused — so neither renderer names a cause. The log
-   * text carries no marker of its own, and a run-wide budget an earlier step
-   * exhausted drops a later script's output entirely — so this flag can be set
-   * with no {@link scriptLog} at all.
+   * A log limit is one cause; the executor also sets it when it collapses a
+   * fatal error's frame dump, which no limit caused — so neither renderer names
+   * a cause. A run-wide budget an earlier step exhausted drops a later script's
+   * output entirely, so this can be set with no {@link scriptLog} at all.
    */
   scriptLogTruncated?: boolean;
   /**
@@ -958,13 +953,12 @@ interface ExecState extends Omit<ActionEnv, "device"> {
    */
   attachedAppPath?: string;
   /**
-   * The caller's `project_root` — a `script:` step's first choice of working
-   * directory, so a script resolves its own relative `fs` paths against the
-   * project the agent is working in rather than against wherever the flow file
-   * happens to sit.
+   * A `script:` step's first choice of working directory, so a script resolves
+   * its relative `fs` paths against the project the agent is working in rather
+   * than wherever the flow file happens to sit.
    */
   projectRoot: string;
-  /** The log allowance every `script` step in this run draws from: one per run, not per step. */
+  /** The log allowance every `script` step in this run draws from: one per run. */
   scriptLogBudget: FlowScriptLogBudget;
   /** Live progress hook: receives every report the moment it is appended. */
   onStepReport?: (report: StepReport) => void;
@@ -2145,16 +2139,12 @@ interface ResolvedFlowRelativeFile {
  *   relative (parse rejects an absolute or drive-prefixed target), so the
  *   concatenation is well-formed.
  * - The casing check lists the directory the target is SPELLED in, NOT
- *   `path.dirname(canonical)`. The basename compared is always the SUPPLIED one
- *   (`path.posix.basename(target)`), so a canonical-directory listing would
- *   compare that name against entries it was never written among: for a link
- *   reached across directories, the link's own directory holds no entry that
- *   case-folds to the supplied name, so the verdict would be `absent` — which
- *   refuses nothing — and a MIS-CASED spelling of the link's own name would
- *   skip the check entirely, reopening the ENOENT-on-Linux-CI hazard the check
- *   exists for. The spelled directory is the listing that holds the link.
- *   `path.dirname` removes a segment without collapsing `..`,
- *   so a `..` still reaches readdir intact.
+ *   `path.dirname(canonical)`. The basename compared is always the SUPPLIED
+ *   one, and only the spelled directory is guaranteed to hold an entry under
+ *   that name: for a symlink whose target lives elsewhere, the canonical
+ *   directory holds the target's name instead, so a mis-cased spelling of the
+ *   link's own name would go unjudged. `path.dirname` removes a segment without
+ *   collapsing `..`, so a `..` still reaches readdir intact.
  *
  * There is deliberately NO path fence here. A target is reachable exactly when
  * the tool-server user can read it, the same reach the front door already
@@ -2162,10 +2152,6 @@ interface ResolvedFlowRelativeFile {
  * route that carries untrusted content, an uploaded flow, never arrives here —
  * {@link assertUploadSelfContained} rejects every `run:` and `script:` step on
  * that path.
- *
- * The listing is taken eagerly, before the callers apply their own cycle and
- * depth guards, so a chain about to be refused pays one readdir it does not
- * need — the same trade the extra realpath already makes on that failing path.
  */
 async function resolveFlowRelativeFile(
   anchorDir: string,
@@ -2264,13 +2250,10 @@ async function execRunStep(
   // and a case-insensitive one (APFS, NTFS) opens a file really named
   // "frag.yaml" for `run: Frag.yaml`. Every expanded step is then attributed to
   // a fragment no directory entry carries, and the identical tree fails with
-  // ENOENT on a case-sensitive volume (Linux CI). parseRunTarget already holds
-  // this line for the ".yaml" extension of this same string, and
-  // resolveFlowSource for the root flow's own basename. Only a case-folded
-  // verdict refuses: a basename matching nothing at all is an ordinary missing
-  // fragment, which the read's own ENOENT reports far better, and an unreadable
-  // listing vouches for nothing so it must refuse nothing. Only the basename is
-  // checked, matching the two root-flow routes' scope.
+  // ENOENT on a case-sensitive volume (Linux CI). Only a case-folded verdict
+  // refuses: a basename matching nothing at all is an ordinary missing fragment,
+  // which the read's own ENOENT reports far better, and an unreadable listing
+  // vouches for nothing so it must refuse nothing.
   const suppliedBase = path.posix.basename(target);
   if (spelling.state === "case_folded") {
     // Quote a replacement target only when parseRunTarget would accept one —
@@ -2328,8 +2311,6 @@ async function execRunStep(
 type ScriptStepOutcome = Pick<StepReport, "status" | "reason" | "scriptLog" | "scriptLogTruncated">;
 
 /**
- * Run one `script` step.
- *
  * The path is checked here at the step, not in a preflight — the same way
  * {@link execRunStep} resolves one `run:` hop at a time as it executes. So a
  * wrong path fails at its own step, and a script behind a `when:` guard that
@@ -2403,8 +2384,6 @@ async function runScriptStep(
 }
 
 /**
- * Why the resolved script file cannot be run, or null when it can be.
- *
  * `stat`, not `access`: a directory named `seed.mjs` is readable, so an access
  * check would pass it to the fork and the failure would surface from inside
  * Node's module loader, naming neither the flow nor the step.
@@ -2422,8 +2401,6 @@ async function scriptFileProblem(canonical: string): Promise<string | null> {
 }
 
 /**
- * The executor's outcome as a step verdict.
- *
  * The line between `fail` and `error` is who is at fault. A `fail` is the
  * SCRIPT's answer: it threw, it never loaded, it returned something that cannot
  * cross into flow state, or it stopped its own process. An `error` is
@@ -2432,12 +2409,11 @@ async function scriptFileProblem(canonical: string): Promise<string | null> {
  * lets CI read a red script step: a `fail` is a regression in the flow or the
  * system it talks to, an `error` is the machine it ran on.
  *
- * A cancellation the executor reports is an `error`, not a `skip`: `skip` means
- * the step did not run ({@link FlowRunResult.skipped} counts it), and a script
- * that ran and was then killed left whatever state it created behind. The
- * genuine "did not run" case never reaches the executor — {@link execSteps}'
- * pre-step cancellation gate skips it — and the remainder, a step cancelled
- * while queued for a concurrency slot, says so in its reason.
+ * A cancellation is an `error`, not a `skip`: `skip` means the step did not run
+ * ({@link FlowRunResult.skipped} counts it), and a script that ran and was then
+ * killed left whatever state it created behind. The genuine "did not run" case
+ * never reaches the executor — {@link execSteps}' pre-step cancellation gate
+ * skips it.
  *
  * Notes ride into the reason on every outcome, pass included: they are how the
  * executor says a time limit was clamped to the host's maximum, or that the

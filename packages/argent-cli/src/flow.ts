@@ -46,20 +46,15 @@ export interface StepReport {
    */
   artifacts?: Record<string, unknown>;
   /**
-   * A `script` step's captured stdout and stderr, in arrival order, possibly
-   * truncated by the tool server. Arrival order is not written order: a burst to
-   * both streams inside one event-loop turn can land in either stream's order,
-   * so only each stream's own sequence carries causality. Not redacted — it
-   * arrives as the script wrote it, credentials included. Printed for a passing
-   * script as much as a failing one, since it is the only record of what the
-   * script did.
+   * A `script` step's stdout and stderr, bounded by the tool server. Not
+   * redacted — it arrives as the script wrote it, credentials included. Printed
+   * for a passing script as much as a failing one.
    */
   scriptLog?: string;
   /**
-   * Some of that output is missing from the log. A log limit is one cause; the
-   * executor also sets it when it collapses a fatal error's frame dump. The
-   * text carries no marker of its own, so without this the log reads as
-   * complete.
+   * A log limit is one cause; the executor also sets it when it collapses a
+   * fatal error's frame dump. The text carries no marker of its own, so without
+   * this the log reads as complete.
    */
   scriptLogTruncated?: boolean;
 }
@@ -303,8 +298,8 @@ export function renderUnderStepLine(s: StepReport, n: number, text: string): str
 }
 
 /**
- * A `script` step's captured output, one indented line per line the script
- * wrote, so it reads as the step's own output rather than as the CLI's.
+ * One indented line per line the script wrote, so it reads as the step's own
+ * output rather than as the CLI's.
  *
  * Untrusted wire data, so a non-string is dropped rather than interpolated. A
  * trailing newline is not a blank line — scripts end their output with one —
@@ -320,9 +315,6 @@ export function renderScriptLogLines(s: StepReport, n: number): string[] {
   // Printed even with no text above it: a run-wide budget an earlier step
   // exhausted can drop a script's output entirely, and silence would read as a
   // script that printed nothing. `=== true` because the value is wire data.
-  // Cause-neutral on purpose: a log limit is not the only thing that sets the
-  // flag — the executor's frame collapser also sets it when it drops a fatal
-  // error's frame dump.
   if (s.scriptLogTruncated === true) {
     lines.push(renderUnderStepLine(s, n, "│ … output truncated"));
   }
