@@ -68,11 +68,9 @@ const zodSchema = z.object({
 type Params = z.infer<typeof zodSchema>;
 
 interface IdleResult {
-  /** True if the screen rendered content and went still before the timeout. */
+  /** Screen rendered content and went still before the timeout. */
   settled: boolean;
-  /** Wall-clock time waited (ms). */
   waitedMs: number;
-  /** Number of tree reads taken. */
   polls: number;
   /**
    * Why a false `settled` is not a screen that stayed busy — e.g. the device
@@ -89,10 +87,8 @@ const capability: ToolCapability = {
   harmony: { device: true },
 };
 
-// A cheap fingerprint of the screen: role + label + value + frame (rounded to
-// 1% of the screen) for every node below the synthetic root. Rounding tolerates
-// sub-pixel jitter while still catching real motion (a slide/fade animation),
-// so an unchanged signature means the screen has genuinely stopped moving.
+// Frames are normalized 0..1, so rounding to 0.01 tolerates sub-pixel jitter
+// while still catching real motion (a slide/fade animation).
 function treeSignature(root: DescribeNode): string {
   const round = (n: number) => Math.round(n * 100) / 100;
   const parts: string[] = [];
@@ -126,10 +122,8 @@ function idleNote(poll: PollDescribeTreeResult<true>): string | undefined {
   return settledOn.hint;
 }
 
-// `await-screen-idle` waits for the screen to *settle* — render content and stop
-// changing — rather than for a named element like `await-ui-element`. The MCP
-// layer uses it to time its auto-screenshot: capture once the screen is stable
-// instead of after a fixed delay.
+// The MCP layer times its auto-screenshot with this: capture once the screen is
+// stable instead of after a fixed delay.
 export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Params, IdleResult> {
   function fetchTree(
     device: DeviceInfo,
@@ -191,9 +185,9 @@ Use after a launch/navigation to wait for the UI to render before screenshotting
       else if (device.platform === "android") await ensureDeps(androidRequires);
       else if (device.platform === "harmony") await ensureDeps(harmonyRequires);
 
-      // Resolved once, outside the poll loop, like `isTvOs` — an unlisted
-      // serial's TV probe is never cached, so leaving it inside
-      // `describeAndroid` would spawn `adb devices` per poll.
+      // Hoisted out of the poll loop: `isAndroidTv` runs `adb devices` (plus an
+      // avdName getprop) on every call, even on a cache hit, so letting
+      // `describeAndroid` probe would pay that per poll.
       const isTvOs = device.platform === "ios" && (await isTvOsSimulator(device.id));
       const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));
       const minStableMs = params.minStableMs ?? DEFAULT_MIN_STABLE_MS;

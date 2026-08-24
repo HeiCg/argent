@@ -76,9 +76,9 @@ type Params = z.infer<typeof zodSchema>;
 export interface ScreenshotDiffResult {
   summary: string;
   /**
-   * Artifact handles (not raw host paths): the client materializes the diff
-   * images to files on ITS machine, so the agent can open them — and the MCP
-   * adapter can inline `contextDiff` — even when the tool-server is remote.
+   * Artifact handles, not host paths: the client materializes them locally so the
+   * agent can open them — and the MCP adapter can inline the context diff — even
+   * when the tool-server is remote.
    */
   diffPath?: ArtifactHandle;
   contextDiffPath?: ArtifactHandle;
@@ -93,12 +93,8 @@ const capability: ToolCapability = {
 };
 
 /**
- * The saved PNGs live on the AGENT's machine (typically materialized there by
- * an earlier full-res `screenshot` call), so both path params cross the file
- * boundary as `file` inputs. `outputDir` is only probed: when the agent-chosen
- * directory doesn't exist on this host, the tool creates it if its parent is
- * already here (a local agent naming a fresh folder) and otherwise falls back to
- * its temp default rather than recreating an agent-side path tree here.
+ * The saved PNGs live on the AGENT's machine, so both path params cross the file
+ * boundary as `file` inputs. `outputDir` is only probed — see resolveOutputDir.
  */
 const fileInputs: FileInputSpec[] = [
   { target: "baselinePath", path: "${baselinePath}", kind: "file", optional: true },
@@ -126,9 +122,8 @@ Fails if the input sources are invalid, PNG files cannot be read, outputDir cann
   capability,
   fileInputs,
   services: (params): Record<string, ServiceRef> => {
-    // Only request the SimulatorServer when a live capture is actually needed.
-    // Requesting it unconditionally causes it to be resolved (and started) even
-    // for pure static-PNG diffs, which fails on tvOS simulators that have no
+    // Requesting the SimulatorServer unconditionally would resolve (and start) it
+    // even for pure static-PNG diffs, which fails on tvOS simulators that have no
     // SimulatorServer backend.
     if (!params.captureBaseline && !params.captureCurrent) return {};
     const device = resolveDevice(params.udid);
@@ -189,11 +184,19 @@ export async function executeScreenshotDiffTool(
   return {
     summary: result.summary,
     ...(result.diffPath
-      ? { diffPath: await artifacts.register(result.diffPath, { mimeType: "image/png" }) }
+      ? {
+          diffPath: await artifacts.register({
+            hostPath: result.diffPath,
+            kind: "screenshot-diff",
+            mimeType: "image/png",
+          }),
+        }
       : {}),
     ...(result.contextDiffPath
       ? {
-          contextDiffPath: await artifacts.register(result.contextDiffPath, {
+          contextDiffPath: await artifacts.register({
+            hostPath: result.contextDiffPath,
+            kind: "screenshot-diff-context",
             mimeType: "image/png",
           }),
         }
@@ -202,20 +205,14 @@ export async function executeScreenshotDiffTool(
 }
 
 /**
- * Where diff artifacts (and live-capture intermediates) are written on this
- * host. An agent-supplied outputDir is honored when it is usable here — i.e.
- * not flagged absent by the boundary probe (a remote client's local directory).
- * Everything else gets a per-call temp dir; the diff images travel back as
- * artifacts, so the directory's location no longer matters to the agent.
+ * An agent-supplied outputDir is honored when it is usable on this host;
+ * everything else gets a per-call temp dir (the diffs travel back as artifacts
+ * either way).
  *
- * The probe only answers "does this path already exist on this host", so a local
- * agent naming a fresh output directory is indistinguishable from a remote
- * client's own path — both come back `presentOnHost: false`. Creating the
- * directory non-recursively separates them: it succeeds only when the parent
- * already exists here, which is true for a local agent picking a new subfolder
- * and false for a remote client's unrelated directory tree. Without this, a
- * perfectly good local `outputDir` was silently swapped for a temp dir and the
- * caller was never told, so the diffs never appeared where they asked.
+ * The probe only answers "does this path already exist here", so a local agent
+ * naming a fresh directory is indistinguishable from a remote client's own path —
+ * both come back `presentOnHost: false`. The non-recursive mkdir separates them:
+ * it succeeds only when the parent already exists here.
  */
 async function resolveOutputDir(params: Params, options?: Partial<ToolContext>): Promise<string> {
   const probe = options?.fileInputs?.outputDir;
@@ -227,10 +224,9 @@ async function resolveOutputDir(params: Params, options?: Partial<ToolContext>):
       await fs.mkdir(params.outputDir);
       return params.outputDir;
     } catch (err) {
-      // EEXIST means it raced into existence between probe and now — still ours.
+      // EEXIST: it appeared since the probe — still a usable host directory.
       if ((err as NodeJS.ErrnoException).code === "EEXIST") return params.outputDir;
-      // Anything else (missing parent, not writable) means this path is not
-      // meaningful on this host; fall back to the temp dir below.
+      // Missing parent or unwritable: not a meaningful path here — use temp below.
     }
   }
   const dir = path.join(
@@ -384,14 +380,10 @@ function validateInputSources(params: Params): void {
   }
 }
 
-// simulatorServer is declared as an unconditional service dependency, so the
-// registry resolves it before execute() runs. Guard anyway: executeScreenshotDiffTool
-// is exported and a direct caller (e.g. a test) can pass a services map without it —
-// a clear error beats a downstream TypeError on `.captureScreenshot`. Only the
-// live-capture branches call this, so non-capture diffs never require the service.
-// Because the service is always resolved on the registry path, this can only trip
-// for a direct/test caller (never the telemetry path), so it stays a plain Error
-// without a code — a code here could never bucket a real failure.
+// On the registry path the service is always resolved before a live-capture branch
+// runs, so this can only trip a direct caller of the exported
+// executeScreenshotDiffTool (e.g. a test) — hence a plain Error with no failure
+// code, which could never bucket a real failure.
 function requireSimulatorServer(services: Record<string, unknown>): SimulatorServerApi {
   const api = services.simulatorServer as SimulatorServerApi | undefined;
   if (!api) {

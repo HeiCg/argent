@@ -7,12 +7,9 @@ export interface OpenUrlResult {
   opened: boolean;
   url: string;
   /**
-   * What `opened: true` leaves unsaid. On iOS and Android it is the web-URL
-   * caveat — an http/https link may have opened in the browser rather than
-   * deep-linked into a native app — and a custom scheme carries none. On
-   * HarmonyOS every URL carries one, since `aa start -U` reports success for any
-   * URI the system accepts (see that platform's impl). Absent for Chromium
-   * navigations, which land on the page they were given.
+   * Deep-link caveat: set for http(s) URLs on iOS/Android, and on HarmonyOS for
+   * every URL (`aa start -U` reports success for any URI the system accepts);
+   * never for custom schemes or Chromium.
    */
   note?: string;
 }
