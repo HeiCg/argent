@@ -52,8 +52,9 @@ describe("ArtifactStore", () => {
       const filePath = join(dir, "shot.png");
       await writeFile(filePath, Buffer.from([1, 2, 3, 4]));
 
-      const handle = await new ArtifactStore().register(filePath);
+      const handle = await new ArtifactStore().register({ hostPath: filePath, kind: "screenshot" });
       expect(handle.__argentArtifact).toBe(true);
+      expect(handle.kind).toBe("screenshot");
       expect(handle.filename).toBe("shot.png");
       expect(handle.mimeType).toBe("image/png");
       expect(handle.size).toBe(4);
@@ -71,7 +72,9 @@ describe("ArtifactStore", () => {
     try {
       const filePath = join(dir, "raw.bin");
       await writeFile(filePath, "hi");
-      const handle = await new ArtifactStore().register(filePath, {
+      const handle = await new ArtifactStore().register({
+        hostPath: filePath,
+        kind: "screenshot",
         filename: "pretty.png",
         mimeType: "image/png",
       });
@@ -89,7 +92,11 @@ describe("ArtifactStore", () => {
       await mkdir(bundle, { recursive: true });
       await writeFile(join(bundle, "data.bin"), "trace");
 
-      const handle = await new ArtifactStore().register(bundle);
+      const handle = await new ArtifactStore().register({
+        hostPath: bundle,
+        kind: "native-profile-trace",
+      });
+      expect(handle.kind).toBe("native-profile-trace");
       expect(handle.archive).toBe("tar.gz");
       expect(handle.filename).toBe("session.trace");
       expect(handle.hostPath).toBe(bundle);
@@ -99,7 +106,9 @@ describe("ArtifactStore", () => {
   });
 
   it("honours an explicit archive option when the path can't be stat'd", async () => {
-    const handle = await new ArtifactStore().register("/tmp/does-not-exist-yet.trace", {
+    const handle = await new ArtifactStore().register({
+      hostPath: "/tmp/does-not-exist-yet.trace",
+      kind: "native-profile-trace",
       archive: "tar.gz",
     });
     expect(handle.archive).toBe("tar.gz");
@@ -111,11 +120,16 @@ describe("ArtifactStore", () => {
       const filePath = join(dir, "shot.png");
       await writeFile(filePath, "png");
       const store = new ArtifactStore();
-      const handle = await store.register(filePath, { mimeType: "image/png" });
+      const handle = await store.register({
+        hostPath: filePath,
+        kind: "screenshot",
+        mimeType: "image/png",
+      });
 
       expect(store.list()).toEqual([
         {
           id: handle.id,
+          kind: "screenshot",
           filename: "shot.png",
           mimeType: "image/png",
           size: 3,
@@ -154,7 +168,11 @@ describe("GET /artifacts", () => {
       const filePath = join(dir, "img.png");
       await writeFile(filePath, "image");
       const registry = stubRegistry();
-      const artifact = await registry.artifacts.register(filePath, { mimeType: "image/png" });
+      const artifact = await registry.artifacts.register({
+        hostPath: filePath,
+        kind: "screenshot",
+        mimeType: "image/png",
+      });
       isFlagEnabledMock.mockReturnValue(true);
 
       handle = createHttpApp(registry);
@@ -165,6 +183,7 @@ describe("GET /artifacts", () => {
         artifacts: [
           {
             id: artifact.id,
+            kind: "screenshot",
             filename: "img.png",
             mimeType: "image/png",
             size: 5,
@@ -194,7 +213,11 @@ describe("GET /artifacts/:id", () => {
       const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xaa, 0xbb]);
       await writeFile(filePath, bytes);
       const registry = stubRegistry();
-      const artifact = await registry.artifacts.register(filePath, { mimeType: "image/png" });
+      const artifact = await registry.artifacts.register({
+        hostPath: filePath,
+        kind: "screenshot",
+        mimeType: "image/png",
+      });
 
       handle = createHttpApp(registry);
       const res = await supertest(handle.app).get(`/artifacts/${artifact.id}`);
@@ -216,7 +239,10 @@ describe("GET /artifacts/:id", () => {
       await writeFile(join(bundle, "sub", "nested.txt"), "nested");
 
       const registry = stubRegistry();
-      const artifact = await registry.artifacts.register(bundle);
+      const artifact = await registry.artifacts.register({
+        hostPath: bundle,
+        kind: "native-profile-trace",
+      });
       handle = createHttpApp(registry);
       const res = await supertest(handle.app)
         .get(`/artifacts/${artifact.id}`)
@@ -249,7 +275,7 @@ describe("GET /artifacts/:id", () => {
     const filePath = join(dir, "gone.png");
     await writeFile(filePath, "x");
     const registry = stubRegistry();
-    const artifact = await registry.artifacts.register(filePath);
+    const artifact = await registry.artifacts.register({ hostPath: filePath, kind: "screenshot" });
     await rm(dir, { recursive: true, force: true });
 
     handle = createHttpApp(registry);

@@ -2,10 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArtifactStore } from "@argent/registry";
 
 // The tvOS and Vega branches shell out; stub their edges so each backend's
-// branch can be driven without a device.
+// branch can be driven without a device. The android rotation probe that the
+// simulator-server capture performs also shells out (`adb`), so the default
+// execFile must invoke its error-back — a mock that settles nothing would hang
+// the probe forever instead of failing it like a missing device does.
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
-  execFile: vi.fn(),
+  execFile: vi.fn(((_cmd: string, _args: string[], _opts: unknown, cb: (e: Error) => void) =>
+    cb(new Error("screenshot-tool.test: execFile is stubbed"))) as never),
 }));
 vi.mock("../src/utils/ios-devices", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/ios-devices")>()),
@@ -65,6 +69,7 @@ describe("screenshot tool", () => {
     // the unreachable `127.0.0.1` media URL is no longer surfaced.
     expect(result.image).toMatchObject({
       __argentArtifact: true,
+      kind: "screenshot",
       mimeType: "image/png",
       hostPath: "/tmp/screenshot.png",
     });

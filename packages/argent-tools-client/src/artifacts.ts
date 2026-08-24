@@ -1,30 +1,22 @@
 /**
- * Artifact materializer — the client side of the remote file boundary.
+ * Artifact materializer — the client side of the remote file boundary, shared
+ * by both consumers of the tool-server (the MCP server and the CLI).
  *
- * Shared by both consumers of the tool-server (the MCP server and the CLI).
- * Tool results from the (possibly remote) tool-server carry {@link ArtifactHandle}
- * markers in place of host paths. This module deep-walks a result, resolves each
- * handle to a real **local** path — reading it in place when the file is already
- * on this host, or downloading it over the remote-aware tools URL
- * (`GET /artifacts/:id`) into a cache under the OS temp dir — and rewrites the
- * marker to that path so all downstream rendering is location-agnostic.
+ * Tool results carry {@link ArtifactHandle} markers in place of host paths;
+ * each is rewritten to a real **local** path — read in place when the file is
+ * already on this host, else downloaded over `GET /artifacts/:id` — so all
+ * downstream rendering is location-agnostic.
  *
- * The root lives in `tmpdir()` so materialized artifacts are disposable scratch
- * the OS reclaims — matching how the sim-server (its own TempDir) and the
- * profiler (`tmpdir()/argent-profiler-cwd`) already treat produced files, and
- * leaving no persistent footprint under $HOME. Point ARGENT_ARTIFACTS_DIR at a
- * durable location to opt into cross-session persistence.
- *
- * Cache layout (override the root with ARGENT_ARTIFACTS_DIR):
+ * Cache layout, rooted in `tmpdir()` so it is scratch the OS reclaims (point
+ * ARGENT_ARTIFACTS_DIR elsewhere for cross-session persistence):
  *
  *   <root>/<project>/<session>/<device>/<filename>
  *
- * - project  — basename(cwd) + short hash of the full path. Readable yet
- *              collision-safe across multiple checkouts of the same repo.
- * - session  — minted once per client process, so re-runs don't pile into one
- *              bucket and old sessions are trivially GC-able.
- * - device   — udid / serial when the artifact is device-scoped; omitted
- *              otherwise.
+ * - project  — basename(cwd) + hash of the full path, so multiple checkouts of
+ *              one repo stay separate.
+ * - session  — minted once per client process, keeping re-runs apart and old
+ *              sessions trivially GC-able.
+ * - device   — udid / serial when the artifact is device-scoped.
  */
 
 import { copyFile, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -39,37 +31,61 @@ import { argentHomeDir, findProjectRoot, getConfigValueByKey } from "@argent/con
 /** Must match the tool-server's wire contract (`tool-server/src/artifacts.ts`). */
 export const ARTIFACT_MARKER = "__argentArtifact" as const;
 
+/**
+ * Semantic artifact categories the tool-server emits today. Must match the
+ * server-side union (`registry/src/artifacts.ts`). Kept separate on purpose:
+ * this client may talk to a tool-server that is older (no `kind` at all) or
+ * newer (kinds this build has never heard of), so consumers read `kind`
+ * through {@link ArtifactHandle.kind}'s widened, optional type and treat
+ * anything unrecognized as opaque.
+ */
+export type ArtifactKind =
+  | "screenshot"
+  | "screenshot-diff"
+  | "screenshot-diff-context"
+  | "screen-recording"
+  | "native-profile-trace"
+  | "native-profile-cpu"
+  | "native-profile-hangs"
+  | "native-profile-leaks"
+  | "native-profile-report"
+  | "react-profile-cpu"
+  | "react-profile-commits"
+  | "react-profile-report";
+
 export interface ArtifactHandle {
   [ARTIFACT_MARKER]: true;
   id: string;
+  /**
+   * Semantic category of the artifact, distinct from MIME type. Absent when
+   * the tool-server predates artifact kinds; may hold a value outside
+   * {@link ArtifactKind} when the server is newer than this client — the
+   * `string & {}` arm keeps that honest while preserving autocomplete.
+   */
+  kind?: ArtifactKind | (string & {});
   filename: string;
   mimeType: string;
   size: number;
   /**
-   * Absolute path of the file on the tool-server host. When the tool-server is
-   * co-located with this client, the file is already on disk here — the gate
-   * reads it directly instead of downloading it over `/artifacts/:id`, avoiding
-   * a redundant second copy. Verified against {@link size}/{@link mtimeMs}
-   * before it is trusted; any mismatch (or a remote host) falls back to the
-   * download path. Absent on older tool-servers that don't emit it.
+   * Absolute path of the file on the tool-server host. A co-located client
+   * reads it in place instead of downloading over `/artifacts/:id`, but only
+   * after verifying {@link size}/{@link mtimeMs}; a mismatch (or a remote host)
+   * falls back to the download path.
    */
   hostPath?: string;
   /** mtime of {@link hostPath} (ms) at registration, for the integrity check. */
   mtimeMs?: number;
   /**
    * Present when the artifact is a directory bundle (e.g. an Instruments
-   * `.trace`). Locally the gate uses the directory in place; on a remote miss
-   * the download is a gzipped tar that the client unpacks back into a directory.
+   * `.trace`). Used in place locally; on a remote miss the download is a
+   * gzipped tar the client unpacks back into a directory.
    */
   archive?: "tar.gz";
   /**
-   * A relative directory the tool asked the artifact to be durably persisted
-   * into — e.g. `.argent/recordings` for a screen recording — instead of the
-   * ephemeral temp cache. The client resolves it against its own project root
-   * (the nearest ancestor with `.git`/`package.json`/`.argent`), falling back to
-   * its home when not in a project, and hardens it (relative, no `..`) before
-   * use — so for a remote `argent link` server the file lands *here*, on the
-   * client, in the project it belongs to. Absent ⇒ disposable temp-cache scratch.
+   * Relative directory the tool asks the artifact to be durably persisted into
+   * — e.g. `.argent/recordings` — instead of the temp cache. Resolved and
+   * hardened client-side (see {@link durableSaveTarget}), so with a remote
+   * `argent link` server the file lands *here*. Absent ⇒ temp-cache scratch.
    */
   saveDir?: string;
 }
@@ -118,33 +134,24 @@ export function artifactDir(deviceId?: string): string {
 }
 
 /**
- * Base directory the `saveDir` hint is resolved against: the client's project
- * root when it is inside one, else the user's home. This is what makes a
- * recording land in the *project's* `.argent/recordings/` (shared with the rest
- * of argent's per-project config) while still working — under the global
- * `~/.argent/recordings/` — when the client is run from somewhere that isn't a
- * project (no `.git`/`package.json`/`.argent` in any ancestor). Anchored at the
- * project root rather than raw cwd so a recording taken from a subdirectory
- * still lands in the one project-level `.argent`.
+ * Base the `saveDir` hint resolves against: the client's project root (nearest
+ * ancestor with `.argent`/`.git`/`package.json`), else the user's home. Anchored
+ * at the project root rather than raw cwd so a recording taken from a
+ * subdirectory still lands in the one project-level `.argent`.
  */
 function durableBaseDir(): string {
   const projectRoot = findProjectRoot(process.cwd());
-  // argentHomeDir() is `<home>/.argent`; its parent is the home dir, and the
-  // `saveDir` hint (`.argent/recordings`) re-adds the `.argent` segment — so the
-  // global fallback resolves to `~/.argent/recordings`, matching the project
-  // case's `<root>/.argent/recordings`.
+  // argentHomeDir() is `<home>/.argent`, so its parent is the home dir and the
+  // hint re-adds the `.argent` segment: the global fallback lands on
+  // `~/.argent/recordings`, mirroring `<root>/.argent/recordings`.
   return projectRoot ?? dirname(argentHomeDir());
 }
 
 /**
- * The durable save destinations the client will honor — a client-side allowlist.
- * `saveDir` arrives on the wire from a possibly-remote or compromised `argent
- * link` tool-server, so the set of directories an artifact may be persisted into
- * is decided *here*, on the client, not by whatever value the server sends. Every
- * entry is a project-relative directory under argent's own `.argent/` tree; the
- * `filename` (sanitized to a single segment) then lands inside it. Add an entry
- * when a new tool needs a durable home. Stored normalized so the wire value is
- * compared in the same form regardless of separator style.
+ * Durable destinations the client will honor. `saveDir` arrives on the wire from
+ * a possibly-compromised `argent link` tool-server, so which directories may be
+ * written is decided here, not by the server. Add an entry when a new tool needs
+ * a durable home. Stored normalized to match the wire value's separator style.
  */
 const ALLOWED_SAVE_DIRS: ReadonlySet<string> = new Set([
   normalize(".argent/recordings"),
@@ -152,33 +159,27 @@ const ALLOWED_SAVE_DIRS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The wire hint a finished screen recording arrives with. Its *destination* can
- * be redirected by the `recordings.directory` configuration (see
- * {@link configuredRecordingsDir}); the hint itself stays fixed so old and new
- * clients/servers interoperate.
+ * The wire hint a finished screen recording arrives with. Fixed, so old and new
+ * clients/servers interoperate; `recordings.directory` redirects where it lands
+ * (see {@link configuredRecordingsDir}).
  */
 const RECORDINGS_SAVE_DIR = normalize(".argent/recordings");
 
 /**
- * The user-configured recordings directory — the effective value of the
- * `recordings.directory` config entry (project scope overriding global, per its
- * schema merge policy) — or null when unset, blank, or unreadable. The value is
- * read on *this* host: with a remote `argent link` tool-server the mp4 is
- * persisted on the client, so it is the client's config that decides where.
- *
- * Resolution: `~`/`~/…` expands to the user's home; a relative path is anchored
- * at {@link durableBaseDir} (the project root, or home when not in a project);
- * an absolute path is used as-is. Unlike the wire `saveDir` hint this value
- * comes from the client's own config files, not from a possibly-hostile server,
- * so it is trusted to name any directory the user can write to.
+ * Effective `recordings.directory` (project scope over global), or null when
+ * unset, blank, or unreadable. Read on *this* host, since the mp4 is persisted
+ * client-side. `~`/`~/…` expands to home, a relative path is anchored at
+ * {@link durableBaseDir}, an absolute one is used as-is. Unlike the wire
+ * `saveDir` hint this comes from the client's own config, so it is trusted to
+ * name any directory the user can write to.
  */
 function configuredRecordingsDir(): string | null {
   let value: unknown;
   try {
     value = getConfigValueByKey("recordings.directory");
   } catch {
-    // Unknown key can't happen (it's on the schema); treat any config-layer
-    // failure as unset so a broken config degrades to the default location.
+    // Unknown key can't happen (it's on the schema); a broken config file or
+    // an unparsable value degrades to the default location.
     return null;
   }
   if (typeof value !== "string") return null;
@@ -208,13 +209,11 @@ function configuredRecordingsDir(): string | null {
 const MAX_DURABLE_BYTES = 2 * 1024 * 1024 * 1024;
 
 /**
- * Read a fetch response body into a Buffer, refusing to buffer more than `cap`
- * bytes. Rejects early when the declared `Content-Length` already exceeds the
- * cap, and otherwise aborts the stream the moment the accumulated bytes pass it
- * — so a server that under-declares its `size` then streams an unbounded body
- * can't exhaust memory. Falls back to a still-capped `arrayBuffer()` read when
- * the response exposes no readable stream (e.g. an injected test fetch). Returns
- * null when the cap is exceeded.
+ * Read a response body into a Buffer, or null once `cap` bytes are exceeded —
+ * checked against `Content-Length` up front and again per chunk, so a server
+ * that under-declares its `size` then streams on can't exhaust memory. Falls
+ * back to a still-capped `arrayBuffer()` when the response exposes no readable
+ * stream (e.g. an injected test fetch).
  */
 async function readCapped(res: Response, cap: number): Promise<Buffer | null> {
   const headers = (res as { headers?: { get?: (k: string) => string | null } }).headers;
@@ -284,33 +283,24 @@ async function writeDurableUnique(
 }
 
 /**
- * Resolve an artifact's durable save destination from its `saveDir` hint, or
- * `null` when it has none (⇒ the disposable temp cache is used instead). The
- * hint (e.g. `.argent/recordings`) is resolved against {@link durableBaseDir} —
- * the client's project root, or its home when not in a project — so a file
- * produced by a remote (`argent link`) tool-server is persisted on the *client*
- * host, in the project it belongs to.
+ * Resolve an artifact's durable destination from its `saveDir` hint, or `null`
+ * (⇒ the temp cache) when it has none or the hint is rejected. Resolved against
+ * {@link durableBaseDir} so a remote (`argent link`) artifact is persisted on
+ * the *client* host.
  *
- * The hint is hardened before use: a directory bundle (`archive`) is excluded
- * (durable persistence is for single files only), and — crucially — the value
- * must be on {@link ALLOWED_SAVE_DIRS}, the client's own allowlist. A relative,
- * non-`..` path is *not* enough: the base is the project root, so an unlisted
- * destination like `.git` (⇒ overwriting `.git/config` for code execution), `.`
- * (a source file or `package.json`), or `.argent` (argent's own config) all sit
- * *inside* the base and would otherwise be writable by a hostile tool-server.
- * The absolute/`..` structural checks stay as defense in depth. A rejected hint
- * falls back to `null`, so an untrusted `saveDir` degrades to scratch rather than
- * writing somewhere dangerous.
+ * Directory bundles are excluded (durable persistence is single-file only) and
+ * the hint must be on {@link ALLOWED_SAVE_DIRS}. A relative, non-`..` path is
+ * not enough: the base is the project root, so `.git` (⇒ `.git/config` for code
+ * execution), `.` (sources, `package.json`) and `.argent` all sit inside it. The
+ * absolute/`..` checks stay as defense in depth.
  */
 export function durableSaveTarget(
   handle: ArtifactHandle
 ): { dir: string; path: string; base: string; rel: string } | null {
-  // `saveDir` is unvalidated wire JSON (isArtifactHandle only checks id/filename),
-  // so reject anything that isn't a non-empty string here — a truthy non-string
-  // (number, object, array) would otherwise make `normalize()` below throw
-  // `ERR_INVALID_ARG_TYPE`, and since this runs *outside* the caller's try/catch
-  // that would reject the whole `materializeArtifacts` and lose every sibling
-  // artifact, instead of this one handle degrading to the temp cache.
+  // `saveDir` is unvalidated wire JSON. A truthy non-string would make
+  // `normalize()` throw `ERR_INVALID_ARG_TYPE`, and this runs *outside* the
+  // caller's try/catch — rejecting the whole `materializeArtifacts` and losing
+  // every sibling artifact instead of degrading this one to the temp cache.
   if (typeof handle.saveDir !== "string" || !handle.saveDir || handle.archive) return null;
   // `normalize` keeps a trailing separator, so `.argent/screenshots/` would miss
   // the allowlist and degrade to scratch with nothing to show for it. The two
@@ -324,17 +314,14 @@ export function durableSaveTarget(
   ) {
     return null;
   }
-  // The destination must be one the client sanctions — not merely a
-  // non-escaping relative path, which still resolves *inside* the project root
-  // (where `.git`, sources, and argent's own config live).
+  // Must be a destination the client sanctions — a merely non-escaping relative
+  // path still resolves inside the project root.
   if (!ALLOWED_SAVE_DIRS.has(rel)) return null;
-  // Past the allowlist, the wire value has only *selected* a sanctioned
-  // destination kind — where that kind actually lands is decided here, from the
-  // client's own config. For recordings, `recordings.directory` redirects the
-  // whole directory; `base` is the configured dir itself and `rel` is empty, so
-  // the post-mkdir real-path check degenerates to "the configured directory
-  // resolves to itself" — a user-chosen path may legitimately be, or traverse,
-  // a symlink, exactly like the default base may.
+  // The wire value has only *selected* a sanctioned destination kind; where it
+  // lands comes from the client's own config. With `recordings.directory` set,
+  // `base` is that directory and `rel` is empty, so the post-mkdir real-path
+  // check degenerates to "it resolves to itself" — a user-chosen path may
+  // legitimately be, or traverse, a symlink, exactly as the default base may.
   if (rel === RECORDINGS_SAVE_DIR) {
     const configured = configuredRecordingsDir();
     if (configured) {
@@ -348,25 +335,20 @@ export function durableSaveTarget(
   }
   const base = durableBaseDir();
   const dir = join(base, rel);
-  // `base` and `rel` are returned so the caller can re-check, after `mkdir`,
-  // that the *resolved* directory still lands at `<base>/<rel>` — the allowlist
-  // is a lexical check and can't see a symlink standing in for `dir` (or one of
-  // its segments) that redirects the write elsewhere. See {@link
-  // confineToRealBase}.
+  // `base`/`rel` let the caller re-check after `mkdir` that the *resolved*
+  // directory is still `<base>/<rel>`: the allowlist is lexical and can't see a
+  // symlink standing in for a segment of `dir`. See {@link confineToRealBase}.
   return { dir, path: join(dir, sanitizeSegment(handle.filename)), base, rel };
 }
 
 /**
- * Guard against a symlinked durable directory. The allowlist and `..` checks in
- * {@link durableSaveTarget} are purely lexical, and the exclusive leaf write
- * only protects the final file — so if `.argent/recordings` (or an ancestor
- * segment) is a **symlink** pre-planted in the victim's checkout, a durable
- * write would follow it out of the intended directory (e.g. into `.git`, where
- * a fresh file under `hooks/` is code execution). After the directory exists,
- * verify its real path is exactly `<realpath(base)>/<rel>`: the base itself may
- * legitimately be reached through a symlink (e.g. macOS `/var`→`/private/var`),
- * but the `rel` portion must not traverse one. Returns false ⇒ the durable
- * write is refused and the artifact degrades to the disposable cache.
+ * Guard against a symlinked durable directory: a pre-planted symlink at
+ * `.argent/recordings` (or an ancestor segment) would carry the write out of the
+ * intended tree — e.g. into `.git/hooks`, which is code execution — and neither
+ * the lexical checks in {@link durableSaveTarget} nor the exclusive leaf write
+ * catch that. `base` itself may legitimately be reached through a symlink (macOS
+ * `/var`→`/private/var`); only `rel` must not traverse one. False ⇒ refuse the
+ * durable write and fall back to the disposable cache.
  */
 async function confineToRealBase(dir: string, base: string, rel: string): Promise<boolean> {
   try {
@@ -388,10 +370,10 @@ export interface MaterializeContext {
   toolsUrl: string;
   deviceId?: string;
   /**
-   * Bearer token for the tool-server. Required when the server is remote and
-   * authenticated (`argent link`); the `/artifacts/:id` route sits behind the
-   * same auth gate as `/tools`, so a token-less download would 401 and the
-   * artifact would read as missing. Empty/unset ⇒ unauthenticated server.
+   * Bearer token for the tool-server. `/artifacts/:id` sits behind the same auth
+   * gate as `/tools`, so against an authenticated (`argent link`) server a
+   * token-less download 401s and the artifact reads as missing. Empty/unset ⇒
+   * unauthenticated server.
    */
   authToken?: string;
   /**
@@ -421,23 +403,20 @@ export interface MaterializeResult {
 }
 
 /**
- * Resolve a handle's `hostPath` to a directly-usable local file, or `null` if
- * it can't be trusted. The file must exist, be a regular file, and match the
- * handle's recorded `size` (and `mtimeMs` when present). This is the gate's
- * "is the file already here?" check: it succeeds when the tool-server is
- * co-located (same machine, or a shared filesystem — where a match means it's
- * literally the same file), and fails for a genuinely remote host, falling
- * through to the download path. The integrity check guards against a stale or
- * unrelated file sitting at the same path.
+ * The gate's "is the file already here?" check: resolve a handle's `hostPath`
+ * when it exists, is a regular file, and matches the recorded `size` (and
+ * `mtimeMs` when present), else null. Succeeds for a co-located tool-server
+ * (same machine or shared filesystem) and fails for a genuinely remote one,
+ * falling through to the download path; the size/mtime match is what rules out
+ * a stale or unrelated file sitting at that path.
  */
 async function resolveLocalFile(handle: ArtifactHandle): Promise<string | null> {
   if (!handle.hostPath) return null;
   try {
     const st = await stat(handle.hostPath);
     if (handle.archive) {
-      // Directory bundle: existence as a directory is the integrity check
-      // (size/mtime are meaningless for a dir). A hit means we use the bundle
-      // in place — the remote tar.gz round-trip is skipped entirely.
+      // Directory bundle: size/mtime are meaningless for a dir, so existence as
+      // one is the whole check; a hit skips the tar.gz round-trip.
       return st.isDirectory() ? handle.hostPath : null;
     }
     if (!st.isFile()) return null;
@@ -452,10 +431,8 @@ async function resolveLocalFile(handle: ArtifactHandle): Promise<string | null> 
 }
 
 /**
- * Download a directory artifact (a gzipped tar) and unpack it back into a
- * directory under `dir`, returning the unpacked path. Uses the system `tar`
- * (universally present on macOS/Linux and Windows 10+); returns null if `tar`
- * is unavailable or extraction fails, so a missing bundle degrades to a
+ * Unpack a downloaded gzipped tar back into a directory under `dir`, returning
+ * the unpacked path. Null when extraction fails, so a bad bundle degrades to a
  * missing-file signal rather than throwing.
  */
 async function downloadAndExtractArchive(
@@ -466,8 +443,7 @@ async function downloadAndExtractArchive(
   const tarball = join(dir, `${sanitizeSegment(handle.filename)}.tar.gz`);
   try {
     await writeFile(tarball, data);
-    // Slip-hardened: a compromised tool-server shouldn't be able to write
-    // outside the artifact cache via a `../` member.
+    // Slip-hardened: a `../` member must not write outside the cache.
     return await safeExtractTarGz(tarball, dir, handle.filename);
   } catch {
     return null;
@@ -477,15 +453,12 @@ async function downloadAndExtractArchive(
 }
 
 /**
- * Walk `result`, resolving every artifact handle to a local path, and return
- * the rewritten result plus any image artifacts. Each handle is resolved by a
- * gate: if its `hostPath` is already readable locally (co-located tool-server),
- * it is used in place with no copy; otherwise the bytes are downloaded over
- * `/artifacts/:id` into a temp cache. Either way the handle is replaced by a
- * real local path, so all downstream rendering is location-agnostic. A handle
- * that resolves to neither is rewritten to `null` so the caller sees a
- * missing-file signal rather than a dangling reference. Results with no handles
- * pass through untouched (no fetch, no temp dir created).
+ * Walk `result`, replacing every artifact handle with a local path, and return
+ * the rewritten result plus any image artifacts. A handle whose `hostPath` is
+ * readable here is used in place with no copy; otherwise the bytes are
+ * downloaded over `/artifacts/:id` into the temp cache. Neither ⇒ `null`, so the
+ * caller sees a missing-file signal rather than a dangling reference. Results
+ * with no handles pass through untouched (no fetch, no temp dir created).
  */
 export async function materializeArtifacts(
   result: unknown,
@@ -607,11 +580,12 @@ export async function materializeArtifacts(
       // Gate: prefer the file already on this host; only download on a miss.
       const localPath = await resolveLocalFile(value);
 
-      // Durable destination (e.g. `.argent/recordings`): persist under the
-      // client's own cwd instead of the disposable temp cache. Copy when the
-      // file is already local (co-located server), download otherwise — so an
-      // `argent link` recording ends up on the *client* host, not the server.
-      // A `transient` request declines persistence for everything it produced.
+      // Durable destination (e.g. `.argent/screenshots`): persist under the
+      // client's own project root instead of the disposable temp cache. Copy
+      // when the file is already local (co-located server), download
+      // otherwise — so an `argent link` screenshot ends up on the *client*
+      // host, not the server. A `transient` request declines persistence for
+      // everything it produced.
       const saveTarget = ctx.transient ? null : durableSaveTarget(value);
       if (saveTarget) {
         const saved = await saveDurably(saveTarget, value, localPath);
@@ -645,14 +619,12 @@ export async function materializeArtifacts(
         if (!res.ok) return null;
         const data = Buffer.from(await res.arrayBuffer());
         await ensureDir();
-        // Directory bundle: the download is a gzipped tar — unpack it back into
-        // a directory rather than writing the archive as a single file.
+        // Directory bundle: unpack the tar rather than writing it as a file.
         if (value.archive === "tar.gz") {
           return await downloadAndExtractArchive(value, data, dir);
         }
-        // Integrity: don't persist a cleanly-truncated download as if it were
-        // whole. Mirrors the gate's size check on the local path; skipped when
-        // size is unknown (0, e.g. a lazily-registered file).
+        // Don't persist a cleanly-truncated download as if it were whole.
+        // Skipped when size is unknown (0, e.g. a lazily-produced file).
         if (value.size > 0 && data.length !== value.size) return null;
         const downloadedPath = join(dir, sanitizeSegment(value.filename));
         await writeFile(downloadedPath, data);
