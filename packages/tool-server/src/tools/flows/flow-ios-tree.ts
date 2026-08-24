@@ -269,8 +269,10 @@ const FULL_HIERARCHY_FIELDS = [
   "windowFrame",
   "hidden",
   "alpha",
-  // The type directive's focus wait; an older injected framework ignores the
-  // request, which just leaves the wait's poll unconfirmed.
+  // The type directive's focus wait. An older injected framework ignores the
+  // request, so no leaf reports firstResponder and the wait's poll comes back
+  // unconfirmed — which now fails the type step (nothing typed) rather than
+  // typing blind as it used to.
   "firstResponder",
 ];
 

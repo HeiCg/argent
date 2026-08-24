@@ -644,13 +644,16 @@ function framesOverlap(a: DescribeFrame, b: DescribeFrame): boolean {
  * The Android adapter derives `TextField` from EditText/TextInput classes, iOS
  * maps UITextField/UITextView/SearchField to `AXTextField`, and the Chromium
  * DOM walker reports the ARIA `role` attribute when one is set (so the
- * canonical editable roles `textbox`/`searchbox`) or the raw tag name
- * (`input`, `textarea`) otherwise. A bare `contenteditable` div carries no
- * distinguishing role today — the walker does not surface that flag — so such
- * an element falls in as a non-editable container; noted here because it is
- * the one editable shape this rule cannot see.
+ * canonical editable roles `textbox`/`searchbox`, plus the text-entry
+ * `combobox`/`spinbutton` patterns, which take DOM focus on the widget itself)
+ * or the raw tag name (`input`, `textarea`) otherwise. Two editable shapes are
+ * invisible to this rule today and fall in as non-editable containers: a bare
+ * `contenteditable` div (the walker does not surface that flag) and a shadow
+ * host whose focused input lives inside it — noted here because they are the
+ * shapes this rule cannot see.
  */
-const EDITABLE_ROLES = /^(textfield|axtextfield|input|textarea|textbox|searchbox)$/i;
+const EDITABLE_ROLES =
+  /^(textfield|axtextfield|input|textarea|textbox|searchbox|combobox|spinbutton)$/i;
 
 /**
  * Is `focused` evidence that `target` has keyboard focus?

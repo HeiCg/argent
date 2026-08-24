@@ -602,4 +602,51 @@ describe("type directive focus wait", () => {
     expect(result.steps.at(-1)!.reason).toContain("did not take keyboard focus");
     expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
   }, 30_000);
+
+  // Same mechanism, the other ARIA text-entry pattern: an aria-activedescendant
+  // combobox takes DOM focus on the widget itself, so a focused combobox
+  // covering elements behind it is exactly as capable of swallowing the keys.
+  it("treats an ARIA combobox ancestor as the input it is (chromium)", async () => {
+    currentFetch = () => ({
+      source: "cdp-dom",
+      tree: {
+        role: "Screen",
+        frame: { x: 0, y: 0, width: 1, height: 1 },
+        children: [
+          {
+            role: "combobox",
+            identifier: "picker-combo",
+            focused: true,
+            frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.6 },
+            children: [],
+          },
+          {
+            role: "generic",
+            identifier: "label-behind",
+            focused: false,
+            frame: { x: 0.4, y: 0.3, width: 0.2, height: 0.05 },
+            children: [],
+          },
+        ],
+      },
+    });
+    const calls: Call[] = [];
+    const registry = mockRegistry(calls, () => ({ xml: "" }));
+
+    await writeFlow("aria-combo", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { identifier: "label-behind" }, text: "WRONG", submit: false }],
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "aria-combo", project_root: tmpDir, device: IOS_DEVICE }
+      )
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.steps.at(-1)!.reason).toContain("did not take keyboard focus");
+    expect(calls.filter((c) => c.id === "keyboard")).toHaveLength(0);
+  }, 30_000);
 });
