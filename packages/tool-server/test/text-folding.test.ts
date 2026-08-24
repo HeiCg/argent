@@ -149,6 +149,17 @@ describe("foldText", () => {
     expect(includesCI("bar foo", "bar\n")).toBe(false);
   });
 
+  it("folds the three that move only WHERE the line breaks, a documented cost", () => {
+    // Measured in Chromium at 20px text: "ตา<ZWSP>กลม" draws ตา / กลม and
+    // "ตาก<ZWSP>ลม" draws ตาก / ลม, while U+2060 and U+FEFF move the break the
+    // bare CJK string takes. Dropping a stray ZWSP is the point of the fold, so
+    // this is deliberate — but `equals` therefore cannot pin the segmentation,
+    // and the docs say so rather than claiming the set is inert.
+    expect(equalsCI("ตา​กลม", "ตาก​ลม")).toBe(true);
+    expect(equalsCI("日本語", "日本⁠語")).toBe(true);
+    expect(equalsCI("日本語", "日本﻿語")).toBe(true);
+  });
+
   it("keeps COMPATIBILITY variants distinct — the eye can see those", () => {
     // NFC, not NFKC: NFKC equates a blackletter name with the plain account.
     // Each case asserts positively too, because a no-change fold passes `not.toBe`.

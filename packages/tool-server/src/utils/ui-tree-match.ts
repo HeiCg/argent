@@ -39,7 +39,7 @@ export const selectorFieldsSchema = z
       })
       .optional()
       .describe(
-        "Case-insensitive substring of the element's visible label or value. Compared on FOLDED text: a non-breaking space matches a plain one, a run of spaces or tabs matches a single space, and an LTR bidi wrapper around otherwise left-to-right text is ignored, so you can type what you see. Characters that change the rendering are NOT folded (bidi controls that reorder, a soft hyphen, emoji ZWJ/variation selectors, and a line break, which no number of spaces matches). A leading or trailing space is significant and constrains the match; a value with no visible character at all is rejected."
+        "Case-insensitive substring of the element's visible label or value. Compared on FOLDED text: a non-breaking space matches a plain one, a run of spaces or tabs matches a single space, and an LTR bidi wrapper around otherwise left-to-right text is ignored, so you can type what you see. Characters that change which glyphs are drawn, or their order, are NOT folded (bidi controls that reorder, a soft hyphen, emoji ZWJ/variation selectors, and a line break, which no number of spaces matches). One that only moves where a line breaks IS folded away (a zero-width space, a word joiner, a byte-order mark). A leading or trailing space is significant and constrains the match; a value with no visible character at all is rejected."
       ),
     identifier: z
       .string()
@@ -152,10 +152,19 @@ const SPACE_LIKE = /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/gu;
 const LINE_BREAKS_G = /\r\n|[\n\r\v\f\u2028\u2029]/gu;
 
 /**
- * Invisible formatting that cannot change a glyph or its position in any
- * context: ZWSP, word joiner, the invisible math operators, the deprecated
- * format controls, BOM. The gaps in the class skip the sequence builders and
- * the unassigned U+2065.
+ * Invisible formatting that changes no glyph and no glyph ORDER: ZWSP, word
+ * joiner, the invisible math operators, the deprecated format controls, BOM.
+ * The gaps in the class skip the sequence builders and the unassigned U+2065.
+ *
+ * Three of them do move a glyph's POSITION, and are folded anyway: U+200B adds
+ * a line-break opportunity, U+2060 and U+FEFF suppress one. Measured in
+ * Chromium at 20px text, `ตา<ZWSP>กลม` draws as ตา / กลม and `ตาก<ZWSP>ลม` as
+ * ตาก / ลม, while `日本<U+2060>語` moves the break the bare string takes. A
+ * stray ZWSP from a copy-paste is the common case and dropping it is the point
+ * of the fold, so this is deliberate — but it is a real cost, not an empty
+ * set: `equals` cannot pin the word segmentation of a Thai, Lao or Khmer
+ * label, nor a CJK no-break, and reports a pass rather than reporting that it
+ * cannot. The layout itself stays legible in the frame `describe` reports.
  */
 const INVISIBLE = /[\u200b\u2060-\u2064\u206a-\u206f\ufeff]/gu;
 
