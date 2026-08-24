@@ -53,9 +53,6 @@ function runCopy(root: string): void {
 
 describe("tool-server build assets", () => {
   it("copies every listed asset into dist, byte for byte", () => {
-    // Checking an existing `dist/` would pass on whatever the last build left
-    // there, including one predating a file being added to the list. `cpSync`
-    // creates parents, so this works on a tree that has never been built.
     const root = fixtureRoot(ASSETS);
     runCopy(root);
 
@@ -97,9 +94,6 @@ describe("tool-server build assets", () => {
   });
 
   it("is run by every build that produces this package's dist", () => {
-    // The cases above prove the script works; this proves a build runs it.
-    // Dropping the copy step from either `package.json` would otherwise leave
-    // the whole file green while `dist` ships short.
     const buildScript = (file: string): string =>
       (JSON.parse(fs.readFileSync(file, "utf8")) as { scripts: Record<string, string> }).scripts
         .build ?? "";

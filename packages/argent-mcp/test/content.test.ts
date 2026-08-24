@@ -305,7 +305,6 @@ describe("flowRunToMcpContent", () => {
   });
 
   it("renders a script step's captured output as its own block", async () => {
-    // A multi-line log appended to the step line would bury the step's reason.
     const input: FlowExecuteResult = {
       flow: "f",
       steps: [
@@ -328,8 +327,6 @@ describe("flowRunToMcpContent", () => {
   });
 
   it("indents a nested script step's output block with its step line", async () => {
-    // Without the step line's indent, a nested script's output reads as if it
-    // belonged to the outer flow.
     const blocks = await flowRunToMcpContent({
       flow: "f",
       steps: [
@@ -362,9 +359,6 @@ describe("flowRunToMcpContent", () => {
     });
     expect(JSON.stringify(truncated)).toContain("output truncated");
 
-    // A run-wide budget an earlier step exhausted drops a later script's output
-    // entirely; the notice has to stand on its own or the report reads as a
-    // script that printed nothing.
     const nothingLeft = await flowRunToMcpContent({
       flow: "f",
       steps: [{ index: 0, kind: "script", status: "pass", scriptLogTruncated: true }],

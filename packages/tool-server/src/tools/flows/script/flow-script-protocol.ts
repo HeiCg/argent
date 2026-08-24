@@ -9,7 +9,6 @@
  * has been serialized.
  */
 
-/** 1 MiB of encoded output. The child enforces it; the parent re-checks. */
 export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 /**
@@ -23,7 +22,6 @@ export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
 export const SCRIPT_MAX_FAILURE_MESSAGE_CHARS = 8 * 1024;
 export const SCRIPT_MAX_FAILURE_STACK_CHARS = 16 * 1024;
 
-/** Parent → child. Sent once, immediately after the fork. */
 export interface ScriptExecuteRequest {
   type: "execute";
   /**
@@ -32,18 +30,11 @@ export interface ScriptExecuteRequest {
    * from one parked inside a top-level `await` that never settles.
    */
   scriptUrl: string;
-  /** The current flow output, already encoded. `"{}"` when the flow has none yet. */
   outputJson: string;
   deadlineMs: number;
   maxOutputBytes: number;
 }
 
-/**
- * `load` is a module that never evaluated (missing file, bad syntax, an import
- * Node refused); `output` is a value that cannot cross into flow state; `exit`
- * is the script reporting its own failure through a non-zero exit code;
- * `protocol` is the runner itself failing before or around the script.
- */
 export type ScriptFailureType = "load" | "runtime" | "output" | "exit" | "protocol";
 
 /**
@@ -71,11 +62,6 @@ const FAILURE_TYPES: readonly ScriptFailureType[] = [
   "protocol",
 ];
 
-/**
- * `null` for anything that matches no shape. The parent treats that as a
- * protocol failure rather than coercing it: guessing at the intent of a runner
- * that has run arbitrary script code is how a wrong verdict reaches the report.
- */
 export function parseScriptResponse(raw: unknown): ScriptResponse | null {
   if (typeof raw !== "object" || raw === null) return null;
   const msg = raw as Record<string, unknown>;

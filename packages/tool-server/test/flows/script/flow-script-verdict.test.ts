@@ -13,18 +13,6 @@ import type {
   FlowScriptResult,
 } from "../../../src/tools/flows/script/flow-script-executor";
 
-/**
- * The translation from an executor outcome to a step verdict.
- *
- * The executor is mocked here, and only here. Four of its twelve failure kinds
- * are reachable from a real script (it threw, it exited, it ran long, the run
- * was cancelled) and are covered against real processes in
- * flow-script-step-run.test.ts. The other eight need a host in trouble — a
- * process that will not start, a heap ceiling, a full queue, a runner that
- * broke its own protocol — so the seam is what makes the whole table testable
- * rather than a third of it.
- */
-
 const { executeMock } = vi.hoisted(() => ({ executeMock: vi.fn() }));
 
 vi.mock("../../../src/tools/flows/script/flow-script-executor", async (importOriginal) => {
@@ -90,8 +78,6 @@ beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "flow-script-verdict-"));
   await fs.mkdir(path.join(root, ".argent", "flows"), { recursive: true });
   await fs.mkdir(path.join(root, "scripts"), { recursive: true });
-  // A real file, because the step checks the path itself before it ever calls
-  // the executor. Its contents never run.
   await fs.writeFile(path.join(root, "scripts", "seed.mjs"), "");
   await fs.writeFile(
     path.join(root, ".argent", "flows", "verdict.yaml"),
@@ -106,18 +92,11 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-/**
- * Every failure kind and the verdict it takes, forced complete BY THE COMPILER:
- * `Record` over the union rejects a missing kind and an extra one alike, so a
- * kind added to the executor without a row here fails `typecheck:tests`.
- */
 const VERDICTS: Record<FlowScriptFailureKind, "fail" | "error"> = {
-  // The script's own answer.
   load: "fail",
   runtime: "fail",
   output: "fail",
   exit: "fail",
-  // Everything the runner did to it.
   protocol: "error",
   timeout: "error",
   cancelled: "error",
@@ -142,9 +121,6 @@ describe("which side of the fail/error line a script failure lands on", () => {
   });
 
   it("errors, rather than blaming the flow, for a result carrying no failure at all", async () => {
-    // A shape `FlowScriptResult`'s own contract forbids (`failure` is present
-    // exactly when `ok` is false). The default still has to be the safe one:
-    // `fail` would blame the flow for something only the host can explain.
     executeMock.mockResolvedValue(outcome({ ok: false }));
 
     expect(await runScript()).toMatchObject({
@@ -156,10 +132,6 @@ describe("which side of the fail/error line a script failure lands on", () => {
 
 describe("an executor note on the step report", () => {
   it("rides into the reason of a step that PASSED", async () => {
-    // Notes are how the executor says a time limit was clamped to the host's
-    // maximum, or that the working directory it was given did not exist — and a
-    // script that silently ran somewhere else is exactly the pass that must not
-    // stay silent.
     executeMock.mockResolvedValue(
       outcome({
         ok: true,

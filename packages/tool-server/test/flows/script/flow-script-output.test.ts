@@ -40,8 +40,6 @@ describe("flow script executor — output validation", () => {
   });
 
   it("takes a replaced binding, not only a mutated one", async () => {
-    // `output = …` resolves to the global property, so a reference captured
-    // before the script ran would keep the pre-replacement value.
     const result = await run(`output.seeded = 1; output = { replaced: true };`);
     expect(result.output).toEqual({ replaced: true });
   });
@@ -105,10 +103,6 @@ describe("flow script executor — output validation", () => {
   });
 
   it("rejects a cycle reached through toJSON", async () => {
-    // `toJSON` is a route back up the tree that the walk cannot see in the
-    // object it came from: without recording that object, the transform is
-    // followed until V8 gives up and the report names a stack overflow instead
-    // of the path the cycle is on.
     const result = await run(`const a = { toJSON() { return a; } }; output.a = a;`);
     expect(result.failure?.kind).toBe("output");
     expect(result.failure?.message).toBe("output.a is a cyclic reference; output must be a tree");
@@ -146,8 +140,6 @@ describe("flow script executor — output validation", () => {
   });
 
   it("encodes a sparse array the way JSON.stringify does", async () => {
-    // A hole is not an `undefined` the author wrote, so rejecting it would name
-    // an index nobody wrote.
     const result = await run(`const a = []; a[2] = "third"; output.a = a;`);
     expect(result.failure).toBeUndefined();
     expect(result.output).toEqual({ a: [null, null, "third"] });
@@ -163,9 +155,6 @@ describe("flow script executor — output validation", () => {
   });
 
   it("commits the value it validated, not the one a second read returns", async () => {
-    // Every accessor on the document is free to answer differently the second
-    // time, so what is encoded has to be the copy the walk built rather than a
-    // second read of the live object.
     const getter = await run(
       `let n = 0;
        output.data = { get id() { n++; return n === 1 ? 1 : NaN; } };`
@@ -188,19 +177,12 @@ describe("flow script executor — output validation", () => {
   });
 
   it("rejects an own __proto__ key rather than passing it into flow state", async () => {
-    // `JSON.parse` creates this as an own key, so `output.settings =
-    // JSON.parse(untrustedBody)` carries it into flow state, where an
-    // `Object.assign` writes a prototype rather than a property.
     const result = await run(`output.settings = JSON.parse('{"__proto__": {"admin": true}}');`);
     expect(result.failure?.kind).toBe("output");
     expect(result.failure?.message).toContain("__proto__");
   });
 
   it("encodes with the JSON.stringify that existed before the script ran", async () => {
-    // The realistic trigger is accidental: any instrumentation, polyfill or
-    // serialization shim in the dependency tree that wraps `JSON.stringify`.
-    // Reading it off the global at encode time would commit a document the
-    // script never wrote, own `__proto__` key included.
     const swapped = await run(
       `JSON.stringify = () => '{"fake":true}';
        output.real = "what the script actually wrote";`
@@ -217,8 +199,6 @@ describe("flow script executor — output validation", () => {
   });
 
   it("reports an output it could not even read", async () => {
-    // A throwing getter or a Proxy trap: the walk itself is what fails, and the
-    // step must still get a verdict rather than a crash.
     const result = await run(
       `output.account = { get id() { throw new Error("lazy field exploded"); } };`
     );
@@ -228,8 +208,6 @@ describe("flow script executor — output validation", () => {
   });
 
   it("bounds a failure message and stack, the last unbounded fields on the channel", async () => {
-    // An IPC message is deserialized whole into the tool server's heap before
-    // anything can inspect it, so the ceiling has to hold in the child.
     const result = await run(
       `throw new Error("Unexpected response: " + "y".repeat(8 * 1024 * 1024));`
     );
@@ -242,10 +220,6 @@ describe("flow script executor — output validation", () => {
 
   it("refuses a caller output document that cannot be encoded, without spawning", async () => {
     const ws = workspace();
-    // The document the flow hands *in*, not the one the script hands back. It
-    // is encoded before the fork and inside the setup guard, so an unencodable
-    // one is a verdict rather than a raw `TypeError` out of `execute` with a
-    // child left running until the time limit. The marker proves nothing ran.
     const marker = ws.resolve("ran.txt");
     const script = ws.write(
       "noop.mjs",
@@ -272,10 +246,6 @@ describe("flow script executor — output validation", () => {
   });
 
   it("says how much of a clamped message was really dropped", async () => {
-    // The child clamps and the parent re-clamps the same field at the same
-    // ceiling, so the marker has to count against that ceiling: one left
-    // outside it is what the parent's cut lands on and discards, reporting the
-    // length of the marker it just dropped instead of the text.
     const body = "y".repeat(1_000_000);
     const thrown = `Unexpected response: ${body}`;
     const result = await run(`throw new Error("Unexpected response: " + "y".repeat(1000000));`);
@@ -283,7 +253,6 @@ describe("flow script executor — output validation", () => {
     const message = result.failure?.message ?? "";
     const omitted = /… \[(\d+) more characters omitted]$/.exec(message);
     expect(result.failure?.kind).toBe("runtime");
-    // The whole field fits the ceiling, marker included, so nothing re-clamps it.
     expect(message.length).toBe(SCRIPT_MAX_FAILURE_MESSAGE_CHARS);
     expect(Number(omitted?.[1])).toBe(thrown.length - (message.length - omitted![0].length));
   }, 30_000);

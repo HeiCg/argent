@@ -50,7 +50,6 @@ function flow(name: string, yaml: string): Promise<string> {
   return write(path.join(".argent", "flows", `${name}.yaml`), yaml);
 }
 
-/** The ctx the flow_path file-input boundary produces for a co-located path. */
 function boundaryCtx(flowPath: string): ToolContext {
   return {
     artifacts: new ArtifactStore(),
@@ -144,8 +143,6 @@ describe("a script step in a run", () => {
   });
 
   it("flags a log a limit cut short, because the text carries no marker", async () => {
-    // 64 KiB is the per-step ceiling; a silently dropped tail would read as a
-    // complete record of what the script did.
     await write(
       "scripts/chatty.mjs",
       `for (let i = 0; i < 4000; i++) console.log("line " + i + " " + "x".repeat(40));`
@@ -159,12 +156,6 @@ describe("a script step in a run", () => {
   });
 
   it("spends one run-wide budget across the run's steps through the runner", async () => {
-    // Pins the WIRING of state.scriptLogBudget (the executor-level test in
-    // flow-script-logs.test.ts pins the budget itself): each chatty step fills
-    // its own 64 KiB step ceiling, four of them exhaust the 256 KiB run, and
-    // everything after reports no text at all — with the flag still set, so
-    // the report never reads as "printed nothing". Deleting the logBudget
-    // pass-through turns the cap into 64 KiB x steps, which this catches.
     await write("scripts/chatty.mjs", `process.stdout.write("z".repeat(64 * 1024));`);
     await write("scripts/quiet.mjs", `console.log("the quiet one ran");`);
     const chattyStep = "  - script: { path: ../../scripts/chatty.mjs }\n";
@@ -180,7 +171,6 @@ describe("a script step in a run", () => {
       expect(starved.scriptLog).toBeUndefined();
       expect(starved.scriptLogTruncated).toBe(true);
     }
-    // And the earlier steps were truncated by their own ceiling, not starved.
     expect(result.steps[0]!.scriptLog).not.toBe("");
   });
 
@@ -206,7 +196,6 @@ describe("a script step that fails", () => {
     expect(result.ok).toBe(false);
     expect(result.steps[0]).toMatchObject({ kind: "script", status: "fail" });
     expect(result.steps[0]!.reason).toContain("seed API returned 500");
-    // A failed leaf step hard-stops the flow, like every other kind.
     expect(result.steps.slice(1).map((s) => [s.kind, s.status])).toEqual([
       ["echo", "skip"],
       ["wait", "skip"],
@@ -223,12 +212,10 @@ describe("a script step that fails", () => {
 
     expect(result.steps[0]).toMatchObject({ status: "fail" });
     expect(result.steps[0]!.reason).toContain("exit code 3");
-    // The log survives the exit — it is the only record of what ran.
     expect(result.steps[0]!.scriptLog).toContain("about to bail");
   });
 
   it("reports a script the host stopped at its time limit as an error", async () => {
-    // `fail` would read as a regression in the flow; the host stopped it.
     await write("scripts/slow.mjs", `await new Promise((r) => setTimeout(r, 30000));`);
     await flow("slow", "steps:\n  - script: { path: ../../scripts/slow.mjs, timeout: 800 }\n");
 
@@ -248,8 +235,6 @@ describe("a script path is checked at its own step", () => {
 
     expect(result.steps[0]).toMatchObject({ status: "fail", kind: "script" });
     expect(result.steps[0]!.reason).toContain('script "../../scripts/gone.mjs" does not exist');
-    // Nothing exists to realpath, so the reason quotes the join the runner
-    // formed — flow directory plus target, `..` never collapsed lexically.
     expect(result.steps[0]!.reason).toMatch(
       /resolved to \S*[/\\]\.argent[/\\]flows[/\\]\.\.[/\\]\.\.[/\\]scripts[/\\]gone\.mjs\)$/
     );
@@ -278,9 +263,6 @@ describe("a script path is checked at its own step", () => {
   });
 
   it("reports a stat failure that is neither as its own text, not as absence", async () => {
-    // Any other stat answer is a fact about the host, and guessing "does not
-    // exist" would send the author looking for a file that may well be there.
-    // A too-long name needs no permission juggling to reproduce.
     const tooLong = `${"n".repeat(300)}.mjs`;
     // The directory has to exist, or the missing component answers ENOENT
     // first and this never reaches the arm under test.
@@ -295,8 +277,6 @@ describe("a script path is checked at its own step", () => {
   });
 
   it("never checks a path behind a guard that does not fire", async () => {
-    // The check is at the step, not in a preflight pass, which would fail this
-    // flow over a path nothing ever opens.
     await flow(
       "guarded",
       "steps:\n" +
@@ -339,11 +319,6 @@ describe("a script path is checked at its own step", () => {
   });
 
   it("refuses a mis-cased spelling of a script reached through a cross-directory symlink", async () => {
-    // The link lives in scripts/ but points into lib/, so the only listing
-    // that holds its name is the SPELLED directory's. resolveFlowRelativeFile
-    // lists that one — this pins it, because listing `path.dirname(canonical)`
-    // instead would compare the supplied name against lib/'s entries, read
-    // `absent` (which refuses nothing), and let the mis-cased path run.
     await fs.mkdir(path.join(root, "lib"), { recursive: true });
     await fs.writeFile(path.join(root, "lib", "real.mjs"), `console.log("ok");`);
     await fs.mkdir(path.join(root, "scripts"), { recursive: true });
@@ -362,9 +337,6 @@ describe("a script path is checked at its own step", () => {
   });
 
   it("asks for a rename when the spelling on disk is one no path could name", async () => {
-    // `ALT.MJS` case-folds onto the requested `alt.mjs`, so the file IS the one
-    // meant — but SCRIPT_FILE_NAME_PATTERN rejects the uppercase extension, so
-    // quoting it back would be a dead end. Ask for the rename instead.
     await write("scripts/ALT.MJS", `console.log("ok");`);
     await flow("noncase", "steps:\n  - script: { path: ../../scripts/alt.mjs }\n");
 
@@ -376,8 +348,6 @@ describe("a script path is checked at its own step", () => {
   });
 
   it("treats a hyphen difference as an ordinary missing file, not a casing problem", async () => {
-    // Only the CASE can differ: `create-user.mjs` names a different file than
-    // `createUser.mjs` on all three platforms.
     await write("scripts/createUser.mjs", `console.log("ok");`);
     await flow("hyphen", "steps:\n  - script: { path: ../../scripts/create-user.mjs }\n");
 
@@ -390,8 +360,6 @@ describe("a script path is checked at its own step", () => {
 
 describe("where a script path resolves", () => {
   it("anchors at the flow file that names the step, not the root flow", async () => {
-    // The property `run:` composition exists to have: the SAME fragment
-    // resolves the SAME script whichever flow composed it.
     await write("scripts/shared.mjs", `console.log("shared script ran");`);
     await write(
       path.join(".argent", "flows", "frag", "seed.yaml"),
@@ -403,8 +371,6 @@ describe("where a script path resolves", () => {
       "steps:\n  - run: ../frag/seed.yaml\n"
     );
 
-    // Both flows compose with `run:`, which needs a device whatever its
-    // fragment holds — the script step is what is device-free, not the flow.
     const a = await runFlow("root-a", { booted: [DEVICE], device: DEVICE });
     const bPath = path.join(root, ".argent", "flows", "deep", "root-b.yaml");
     const b = await run(
@@ -435,11 +401,6 @@ describe("where a script path resolves", () => {
   });
 
   it("resolves a `..` after a symlinked component with kernel semantics", async () => {
-    // .argent/flows/link is a symlink to lex/other, so on disk
-    // `link/../seed.mjs` means lex/seed.mjs — `..` names the parent of the
-    // link's TARGET. A lexical collapse would instead name the flows-dir
-    // sibling seed.mjs, planted here as a decoy. Proven for `run:` in
-    // flow-composition.test.ts; a script path shares the resolver.
     await fs.mkdir(path.join(root, "lex", "other"), { recursive: true });
     await fs.writeFile(path.join(root, "lex", "seed.mjs"), `console.log("kernel-resolved");`);
     await write(path.join(".argent", "flows", "seed.mjs"), `console.log("lexical decoy");`);
@@ -454,9 +415,6 @@ describe("where a script path resolves", () => {
   });
 
   it("runs a script reached through a symlink under the name the flow spells", async () => {
-    // An alias is a legitimate way to name a shared script: the casing check
-    // lists the SPELLED directory, where readdir sees the link itself, so
-    // `alias.mjs` is an exact entry rather than a mis-casing.
     await write("scripts/real.mjs", `console.log("through the alias");`);
     await fs.symlink(
       path.join(root, "scripts", "real.mjs"),
@@ -486,11 +444,6 @@ describe("where a script path resolves", () => {
   });
 
   it("runs the script in project_root, not in the flow file's directory", async () => {
-    // Pins the WIRING, not the executor (flow-script-environment.test.ts pins
-    // that): state.projectRoot reaches execute() as projectRoot. The mutation
-    // that swaps it for flowDir passes every fixture whose flow sits under
-    // the same root it probes, so this keeps the two candidates distinct —
-    // the flow lives in elsewhere/, the cwd must still be project_root.
     await write("scripts/cwd.mjs", `console.log(process.cwd());`);
     await write(
       path.join("elsewhere", "standalone.yaml"),
@@ -526,8 +479,6 @@ describe("a script step and the run's device", () => {
   });
 
   it("still resolves a device when the same flow uses run:", async () => {
-    // `run:` needs one whatever its fragment contains, because the runner
-    // resolves the target at run time rather than during classification.
     await write("scripts/seed.mjs", `console.log("seeded");`);
     await write(
       path.join(".argent", "flows", "narrate.yaml"),
@@ -621,9 +572,6 @@ describe("cancelling a run that contains a script step", () => {
   });
 
   it("errors a script that HAD started, because what it did is still done", async () => {
-    // `skip` means "the step did not run", and every reader of a report acts on
-    // that meaning. A script that reached a backend and was then killed is the
-    // one case where saying so is dangerous.
     const marker = path.join(root, "started.txt");
     await write(
       "scripts/slow.mjs",

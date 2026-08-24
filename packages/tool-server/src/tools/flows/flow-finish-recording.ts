@@ -399,15 +399,10 @@ export function summarizeStep(step: FlowStep, n: number): string {
     case "idle":
       return `${n}. await: screen idle`;
     case "script":
-      // The time limit changes what replays, the same reason `times` and
-      // `duration` are rendered above.
       return `${n}. script: ${step.path}${step.timeout !== undefined ? ` (timeout ${step.timeout}ms)` : ""}`;
     case "tool":
       return `${n}. tool: ${step.name} ${renderToolArgs(step.args)}${delayLabel(step)}`;
     default: {
-      // Exhaustive rather than sharing the `tool` arm: that arm reads `name`
-      // and `args`, so a kind carrying either would be summarized as somebody
-      // else's step instead of failing the build.
       const unsummarized: never = step;
       void unsummarized;
       return `${n}. ${(unsummarized as FlowStep).kind}`;

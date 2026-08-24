@@ -232,20 +232,7 @@ export interface StepReport {
   snapshotKey?: string;
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
-  /**
-   * A `script` step's stdout and stderr in arrival order — which is not written
-   * order, so only each stream's own sequence carries causality. NOT redacted:
-   * the executor scrubs only the secrets it is handed, and `runFlowScriptStep`
-   * (flow-script-step.ts) hands it none. Set whatever the step's status, while
-   * the run's shared log budget lasts.
-   */
   scriptLog?: string;
-  /**
-   * A log limit is one cause; the executor also sets it when it collapses a
-   * fatal error's frame dump, which no limit caused — so neither renderer names
-   * a cause. A run-wide budget an earlier step exhausted drops a later script's
-   * output entirely, so this can be set with no {@link scriptLog} at all.
-   */
   scriptLogTruncated?: boolean;
   /**
    * Nesting depth for display: omitted at top level, +1 inside each nesting
@@ -946,13 +933,7 @@ interface ExecState extends Omit<ActionEnv, "device"> {
    * `attached:` identity, having never been told what the instance runs.
    */
   attachedAppPath?: string;
-  /**
-   * A `script:` step's first choice of working directory, so a script resolves
-   * its relative `fs` paths against the project the agent is working in rather
-   * than wherever the flow file happens to sit.
-   */
   projectRoot: string;
-  /** The log allowance every `script` step in this run draws from: one per run. */
   scriptLogBudget: FlowScriptLogBudget;
   /** Live progress hook: receives every report the moment it is appended. */
   onStepReport?: (report: StepReport) => void;
@@ -2217,7 +2198,6 @@ async function execRunStep(
   );
 }
 
-/** The half of a `script` step's report that the step itself decides. */
 type ScriptStepOutcome = Pick<StepReport, "status" | "reason" | "scriptLog" | "scriptLogTruncated">;
 
 async function runScriptStep(
@@ -2235,13 +2215,6 @@ async function runScriptStep(
   return outcome;
 }
 
-/**
- * The step kinds {@link execLeafStep} handles: everything except the two
- * {@link execSteps} dispatches before it, `run:` and the block directives.
- * Narrowing the parameter rather than carrying those kinds as dead arms is what
- * lets the leaf switch's `default:` bind `never` and mean it — a new leaf kind
- * is a build error here, while a new BLOCK kind leaves this switch alone.
- */
 type LeafStep = Exclude<FlowStep, BlockStep | { kind: "run" }>;
 
 async function execLeafStep(
@@ -2460,9 +2433,6 @@ async function execLeafStep(
     }
 
     default: {
-      // Without the binding a leaf kind with no case of its own would compile
-      // and simply report "unsupported step kind" at run time — a flow that
-      // looks executed and is not.
       const unexecuted: never = step;
       void unexecuted;
       return { ...base, status: "error", reason: `unsupported step kind` };

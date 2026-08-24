@@ -226,8 +226,6 @@ describe("flow-execute chromium boot", () => {
   });
 
   it("boots the leading launch of a flow that seeds a backend before it", async () => {
-    // A `script:` step drives a backend, never the device, so the launch behind
-    // it is still the launch the run BEGINS with and still has to be hoisted.
     const flowFile = await writeFlow(
       "steps:\n  - script: { path: ./seed.mjs }\n  - launch: { chromium: ./app }\n"
     );
@@ -245,8 +243,6 @@ describe("flow-execute chromium boot", () => {
     expect(bootElectronApp.mock.calls[0][0].appPath).toBe(path.join(flowDir, "app"));
     expect(result.device).toBe("chromium-cdp-12345");
     expect(result.ok).toBe(true);
-    // The reason is the owned-vs-attached signal: the run booted this instance
-    // rather than settling onto a window that was already open.
     expect(result.steps[1]).toMatchObject({
       kind: "launch",
       status: "pass",
@@ -1809,9 +1805,6 @@ describe("flow-execute prerequisite vs leading launch chain", () => {
   });
 
   it("rejects a prerequisite fragment that seeds a backend before the run: into a launch", async () => {
-    // Same shape as the narrating hop below: e2e-a's launch still lands at the
-    // run's first device-touching step and still wipes the state the handshake
-    // asked the caller to set up.
     const fragment = await writeFlow(
       'executionPrerequisite: "the counter must already read taps: 1"\n' +
         "steps:\n  - script: { path: seed.mjs }\n  - run: e2e-a\n"

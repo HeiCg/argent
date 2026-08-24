@@ -27,11 +27,6 @@ function withEnv(name: string, value: string): void {
   process.env[name] = value;
 }
 
-/**
- * Run with `process.platform` faked, so the two branches only a Windows host
- * takes are reachable from the suite. Neither reads anything of the OS beyond
- * the name: what they change is how environment names are compared.
- */
 async function asWindows<T>(body: () => Promise<T>): Promise<T> {
   const real = process.platform;
   Object.defineProperty(process, "platform", { value: "win32", configurable: true });
@@ -178,9 +173,6 @@ describe("flow script executor — the environment allowlist", () => {
   }, 30_000);
 
   it("refuses a reserved name in non-canonical casing on Windows", async () => {
-    // The same case-insensitivity on the way in: on a Windows host
-    // `Electron_Run_As_Node` decides whether the child boots as Node at all,
-    // exactly as the canonical spelling does.
     const ws = workspace();
     const script = ws.write("env.mjs", `output.ok = true;`);
     const result = await asWindows(() =>
@@ -305,8 +297,6 @@ describe("flow script executor — the working directory", () => {
   });
 
   it("falls back to the flow file's directory when project_root does not exist, and says so", async () => {
-    // Without the existence check the child spawns into a directory that is not
-    // there and fails with a bare ENOENT.
     const ws = workspace();
     const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
     const missing = path.join(os.tmpdir(), "argent-not-a-real-project-root");
@@ -323,9 +313,6 @@ describe("flow script executor — the working directory", () => {
   it("refuses a relative project_root rather than resolving it against its own cwd", async () => {
     const ws = workspace();
     const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
-    // A relative path is resolved by the OS against the *tool server's* working
-    // directory — the one value this must never inherit, since an editor sets it
-    // and it can be `/` or `$HOME`.
     const result = await executor().execute({
       scriptPath: script,
       projectRoot: ".",
@@ -340,7 +327,6 @@ describe("flow script executor — the working directory", () => {
   it('refuses an absolute project_root carrying a ".." segment', async () => {
     const ws = workspace();
     const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
-    // Absolute and it exists, so the two rules beside it both pass it.
     const result = await executor().execute({
       scriptPath: script,
       // Joined by hand: `path.join` would normalise the segment away.
@@ -355,8 +341,6 @@ describe("flow script executor — the working directory", () => {
   it("says a project_root that is a file is not a directory", async () => {
     const ws = workspace();
     const script = ws.write("cwd.mjs", `output.cwd = process.cwd();`);
-    // Naming the flow file instead of its directory: "does not exist" would
-    // send the author looking for the wrong problem.
     const result = await executor().execute({
       scriptPath: script,
       projectRoot: script,

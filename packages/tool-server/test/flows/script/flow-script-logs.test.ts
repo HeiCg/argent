@@ -67,8 +67,6 @@ describe("flow script executor — log capture", () => {
 
   it("truncates at the per-step limit without blocking the script", async () => {
     const ws = workspace();
-    // A capture that paused the stream would fill the pipe buffer and wedge the
-    // child, so the proof it never pauses is that the script still finishes.
     const script = ws.write(
       "loud.mjs",
       `const line = "y".repeat(1023) + "\\n";
@@ -112,8 +110,6 @@ describe("flow script executor — log capture", () => {
 describe("flow script executor — cutting the log", () => {
   it("never cuts a multi-byte character in half", async () => {
     const ws = workspace();
-    // Every other log fixture is ASCII, where a naive byte cut is
-    // indistinguishable from a correct one.
     const script = ws.write(
       "wide.mjs",
       `console.log("日本語テキスト".repeat(20000));
@@ -123,8 +119,6 @@ describe("flow script executor — cutting the log", () => {
 
     expect(result.logTruncated).toBe(true);
     expect(result.log).not.toContain("\uFFFD");
-    // A cut inside a 3-byte character would decode to a replacement character
-    // and change the length; the kept text is whole characters only.
     expect(Buffer.byteLength(result.log, "utf8")).toBeLessThanOrEqual(SCRIPT_STEP_LOG_LIMIT_BYTES);
   }, 30_000);
 });
@@ -132,10 +126,6 @@ describe("flow script executor — cutting the log", () => {
 describe("flow script executor — the heap verdict", () => {
   it("recognises a heap banner split across two pipe chunks", async () => {
     const ws = workspace();
-    // The banner is matched on the live stream, and a pipe hands over whatever
-    // the kernel had rather than whatever the script wrote — so the phrase can
-    // arrive in halves. Without the rolling window the abort below degrades
-    // from the heap verdict, which names the limit, to the signal one.
     const script = ws.write(
       "split-heap.mjs",
       `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -170,15 +160,11 @@ describe("flow script executor — the V8 frame collapser", () => {
     });
 
     expect(result.log).toMatch(/\[\d+ V8 stack frames omitted]/);
-    // Collapsed frames are output the report does not carry, which is what
-    // this flag means.
     expect(result.logTruncated).toBe(true);
   }, 60_000);
 
   it("keeps a short run of frame lines verbatim, even after a fatal error", async () => {
     const ws = workspace();
-    // Fewer than the collapse threshold, so an ordinary log line that happens
-    // to look like a frame survives as written.
     const script = ws.write(
       "short-run.mjs",
       `console.error("FATAL ERROR: something the script printed itself");
@@ -195,9 +181,6 @@ describe("flow script executor — the V8 frame collapser", () => {
 
   it("arms on a banner split across two pipe chunks", async () => {
     const ws = workspace();
-    // A pipe hands over whatever the kernel had, not whatever the script
-    // wrote, so the phrase that arms the collapser can arrive in halves. The
-    // await between the two writes is what guarantees two `data` events.
     const script = ws.write(
       "split-banner.mjs",
       `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -216,9 +199,6 @@ describe("flow script executor — the V8 frame collapser", () => {
 
   it("flushes a partial line the collapser cannot classify rather than holding it", async () => {
     const ws = workspace();
-    // Once armed the collapser buffers by line, so an unterminated write has to
-    // be let go at some length or it parks until the step ends — and text the
-    // script wrote *afterwards*, on the other stream, goes into the log first.
     const script = ws.write(
       "long-partial.mjs",
       `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -236,8 +216,6 @@ describe("flow script executor — the V8 frame collapser", () => {
 
   it("leaves frame-shaped lines from the script alone", async () => {
     const ws = workspace();
-    // No fatal error printed, so nothing arms the collapser: a `0x…` frame
-    // shape here is the script's own output.
     const script = ws.write(
       "hexdump.mjs",
       `for (let i = 1; i <= 6; i++) console.error(\` \${i}: 0x1049\${i}1aec some symbol\`);
@@ -262,8 +240,6 @@ describe("flow script executor — order", () => {
 
   it("keeps what the script wrote in the order it wrote it", async () => {
     const ws = workspace();
-    // An unterminated stderr write — a progress indicator — must not park
-    // until its newline arrives while stdout written afterwards goes first.
     const result = await executor().execute({
       scriptPath: ws.write("order.mjs", WRITES),
       projectRoot: ws.dir,
@@ -275,9 +251,6 @@ describe("flow script executor — order", () => {
 
   it("keeps that order when a secret is configured", async () => {
     const ws = workspace();
-    // The hold-back that protects a value split across two chunks must not
-    // delay text that could never be part of one: adding a secret to a flow
-    // cannot reorder its log.
     const result = await executor().execute({
       scriptPath: ws.write("order.mjs", WRITES),
       projectRoot: ws.dir,
@@ -289,10 +262,6 @@ describe("flow script executor — order", () => {
 
   it("keeps that order when the held tail is a prefix of the secret", async () => {
     const ws = workspace();
-    // Here the unterminated write ends in a character that *starts* a
-    // configured value, so the tail really is held. The hold-back is per stream
-    // and the buffer is shared, so held text has to land back where it was
-    // written rather than after what the other stream wrote in between.
     const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
        process.stderr.write("Resolving packages: 42% h");
        await wait(60);
@@ -310,9 +279,6 @@ describe("flow script executor — order", () => {
 
   it("redacts a value the two streams wrote half of each, in place", async () => {
     const ws = workspace();
-    // The same hold-back across streams: the head held on stdout has to land
-    // where it was written, adjacent to the tail stderr wrote, or the final
-    // pass has no whole value to match.
     const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
        process.stdout.write("token=sk-live-9d");
        await wait(60);
@@ -328,10 +294,6 @@ describe("flow script executor — order", () => {
 
   it("keeps that order for a value that overlaps itself", async () => {
     const ws = workspace();
-    // `abcab` starts with its own tail, so the chunk carrying `b` completes a
-    // prefix while extending another one: the split lands *inside* what was
-    // held rather than past it. Releasing all of the hold-back there would
-    // append the head after text written later, and leave the value whole.
     const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
        for (const piece of ["[", "abca", "b", "]"]) {
          process.stdout.write(piece);
@@ -348,9 +310,6 @@ describe("flow script executor — order", () => {
 
   it("keeps that order for a self-overlapping value with the other stream between", async () => {
     const ws = workspace();
-    // The value spans the join between two chunks, so its replacement goes with
-    // the chunk that completed it — after what the other stream wrote in
-    // between. What must not happen is the rest of the buffer moving with it.
     const source = `const wait = (ms) => new Promise((r) => setTimeout(r, ms));
        const writes = [
          [process.stdout, "["],
@@ -392,8 +351,6 @@ describe("flow script executor — redaction", () => {
 
   it("replaces a secret in the failure message and stack, not only in the log", async () => {
     const ws = workspace();
-    // The author never writes the value into a string: `assert` quotes both
-    // sides for them, and the error is what carries it out of the process.
     const script = ws.write(
       "assert.mjs",
       `import assert from "node:assert/strict";
@@ -414,7 +371,6 @@ describe("flow script executor — redaction", () => {
 
   it("replaces a secret in the output document, at any depth and in a key", async () => {
     const ws = workspace();
-    // The output document outlives the report, because later steps read it.
     const script = ws.write(
       "echo.mjs",
       `const key = process.env.API_KEY;
@@ -439,9 +395,6 @@ describe("flow script executor — redaction", () => {
 
   it("leaves a marker well formed when a value occurs inside another secret's name", async () => {
     const ws = workspace();
-    // The streaming pass writes `{{secret:Q0}}`, and the final pass runs over
-    // what it wrote: replacing `Q` inside that name would nest one marker in
-    // another and leave neither the shape a reader parses.
     const script = ws.write("marker.mjs", `console.log("value=Q");`);
     const result = await executor().execute({
       scriptPath: script,
@@ -469,8 +422,6 @@ describe("flow script executor — redaction", () => {
 
   it("replaces a secret split across two pipe chunks", async () => {
     const ws = workspace();
-    // Two writes with a gap between them arrive as two chunks, so a per-chunk
-    // replacement would see neither half of the value.
     const script = ws.write(
       "split.mjs",
       `const value = process.env.API_KEY;
@@ -493,10 +444,6 @@ describe("flow script executor — redaction", () => {
 
   it("replaces the longer of two nested secrets when the chunk splits between them", async () => {
     const ws = workspace();
-    // The host is a secret and so is the URL containing it. The hold-back is
-    // measured on the text as written, before scrubbing: rewrite the host to
-    // its placeholder first and the chunk no longer ends in anything that could
-    // grow into the URL.
     const host: FlowScriptSecret = { name: "HOST", value: "api.internal.example.com" };
     const url: FlowScriptSecret = {
       name: "URL",
@@ -521,11 +468,6 @@ describe("flow script executor — redaction", () => {
 
   it("replaces every occurrence of a value that starts with its own tail", async () => {
     const ws = workspace();
-    // A periodic value occurs at every period, so the boundary between two
-    // chunks lands inside an occurrence *and* on the edge of the next. Holding
-    // back the longest tail that is a prefix of the value would reach back
-    // inside an occurrence already replaced, releasing the rest of one whole
-    // occurrence per chunk with nothing left to match it afterwards.
     const value = "0123456789".repeat(4);
     const script = ws.write(
       "periodic.mjs",
@@ -546,8 +488,6 @@ describe("flow script executor — redaction", () => {
 
   it("keeps a secret that straddles the truncation cut out of the report", async () => {
     const ws = workspace();
-    // The cap keeps the earliest bytes and a whole-value replacement matches no
-    // prefix, so redaction has to run before the cap, not after it.
     const script = ws.write(
       "straddle.mjs",
       `process.stdout.write("f".repeat(${SCRIPT_STEP_LOG_LIMIT_BYTES} - 6));
@@ -569,9 +509,6 @@ describe("flow script executor — redaction", () => {
 
   it("keeps a secret that straddles the failure-message ceiling out of the report", async () => {
     const ws = workspace();
-    // The child clamps the message — the only side that can bound what crosses
-    // the channel — and has no secret list, so a value cut by the ceiling
-    // leaves a prefix nothing matches.
     const script = ws.write(
       "long-throw.mjs",
       `throw new Error(
@@ -587,7 +524,6 @@ describe("flow script executor — redaction", () => {
 
     expect(result.failure?.kind).toBe("runtime");
     expect(result.failure?.message).not.toContain(SECRET.value.slice(0, 8));
-    // The omission marker counts the dropped prefix too.
     expect(result.failure?.message).toMatch(/… \[\d+ more characters omitted]$/);
     expect(result.failure?.stack).not.toContain(SECRET.value.slice(0, 8));
   });
@@ -595,9 +531,6 @@ describe("flow script executor — redaction", () => {
   it("redacts a value that straddled a chunk boundary before its secret was known", async () => {
     const ws = workspace();
     const value = "sk-live-9d3f0a1b2c3d4e5f6071";
-    // The hold-back can only cover values it knows about at that chunk. Here
-    // the head is released while the set is still empty and the tail arrives
-    // after the run resolved the secret, so neither half matches on its own.
     const script = ws.write(
       "straddles.mjs",
       `const value = ${JSON.stringify(value)};

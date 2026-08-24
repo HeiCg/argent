@@ -33,16 +33,9 @@ import {
 } from "./flow-script-protocol";
 
 const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
-/**
- * Counted on the bytes the report carries, not the bytes the script wrote:
- * redaction and frame collapsing both run first, so a long value shrinks to
- * its marker and a short one grows into it.
- */
 export const SCRIPT_STEP_LOG_LIMIT_BYTES = 64 * 1024;
 const SCRIPT_RUN_LOG_LIMIT_BYTES = 256 * 1024;
-/** How long the outcome waits for the log streams once it is otherwise known. */
 const SETTLE_TIMEOUT_MS = 500;
-/** Grace between asking a process tree to stop and forcing it. */
 const STOP_GRACE_MS = 1_500;
 /**
  * How far behind the parent's timer the child's own deadline watchdog sits.
@@ -54,15 +47,10 @@ const STOP_GRACE_MS = 1_500;
  * timed-out step is reported as an unexplained signal.
  */
 const CHILD_DEADLINE_MARGIN_MS = 2_000;
-/** How often the stop path re-checks whether a process group has emptied. */
 const GROUP_POLL_MS = 50;
-/** How long a forced stop waits for the kernel to finish tearing the tree down. */
 const FORCE_GRACE_MS = 500;
-/** Steps allowed to queue for a slot before a step is refused outright. */
 const QUEUE_DEPTH_LIMIT = 32;
-/** A queue wait longer than this is worth telling the caller about. */
 const QUEUE_WAIT_REPORT_MS = 5_000;
-/** A partial stderr line longer than this is passed through unclassified. */
 const MAX_BUFFERED_LINE_CHARS = 8 * 1024;
 /**
  * V8's heap-exhaustion banner. Coarse on purpose: the wording is not a
@@ -70,12 +58,10 @@ const MAX_BUFFERED_LINE_CHARS = 8 * 1024;
  * rather than to a wrong verdict.
  */
 const V8_HEAP_FATAL_RE = /FATAL ERROR:[^\n]*(?:heap limit|heap out of memory|Allocation failed)/i;
-/** Enough of the stream to hold a banner split across two pipe chunks. */
 const HEAP_FATAL_WINDOW_CHARS = 256;
 
 const RUNNER_FILE = "flow-script-runner.mjs";
 
-/** Marks the one process the runner preload may activate in. See `buildChildEnv`. */
 const RUNNER_ACTIVATION_ENV = "ARGENT_FLOW_SCRIPT_RUNNER";
 
 /**
@@ -152,7 +138,6 @@ const ALLOWED_ENV_NAMES: readonly string[] = [
   "CI",
 ];
 
-/** Copied so a project's npm settings survive. */
 const ALLOWED_ENV_PREFIXES: readonly string[] = ["npm_config_"];
 
 /**
@@ -179,13 +164,11 @@ const RESERVED_ENV_NAMES: readonly string[] = [
   RUNNER_ACTIVATION_ENV,
 ];
 
-/** A resolved secret whose value must never reach a report. */
 export interface FlowScriptSecret {
   name: string;
   value: string;
 }
 
-/** The log allowance shared by every script step in one flow run. */
 export interface FlowScriptLogBudget {
   remainingBytes: number;
 }
@@ -195,47 +178,29 @@ export function createScriptLogBudget(): FlowScriptLogBudget {
 }
 
 export interface FlowScriptRequest {
-  /** Resolved against the working directory when relative. */
   scriptPath: string;
-  /** Handed to the script as its `output` global. */
   output?: Record<string, unknown>;
-  /** Layered on top of the allowlist. */
   env?: Record<string, string>;
-  /** Defaults to 30s, clamped to the configured maximum. */
   timeoutMs?: number;
-  /** The caller's `project_root` — first choice for the working directory. */
   projectRoot?: string;
-  /** The working-directory fallback. */
   flowDir?: string;
-  /** Re-read on every chunk, so a set that grows mid-step is respected. */
   secrets?: readonly FlowScriptSecret[];
-  /** Omitted ⇒ only the per-step limit applies. */
   logBudget?: FlowScriptLogBudget;
-  /** A queued step gives up its position at once. */
   signal?: AbortSignal;
-  /** Test seam: the directory holding the runner and watchdog `.mjs` files. */
   runnerDir?: string;
 }
 
 export type FlowScriptFailureKind =
-  /** The module never evaluated — missing file, bad syntax, a refused import. */
   | "load"
-  /** The script's own code threw. */
   | "runtime"
-  /** The value in `output` cannot cross into flow state. */
   | "output"
-  /** The runner misbehaved, or never reached the script. */
   | "protocol"
   | "timeout"
   | "cancelled"
-  /** The script stopped its own process, or reported failure through its exit code. */
   | "exit"
-  /** Killed by a signal it did not choose. */
   | "signal"
   | "heap"
-  /** The child could not be started at all. */
   | "spawn"
-  /** The step never got a concurrency slot. */
   | "queue"
   | "invalid";
 
@@ -246,30 +211,20 @@ export interface FlowScriptFailure {
 }
 
 export interface FlowScriptResult {
-  /** True only when the script returned a valid output document. */
   ok: boolean;
-  /** Present exactly when `ok`. */
   output?: Record<string, unknown>;
-  /** Present exactly when not `ok`. */
   failure?: FlowScriptFailure;
-  /** stdout and stderr in written order, redacted and possibly truncated. */
   log: string;
   logTruncated: boolean;
-  /** Excludes the queue wait. */
   durationMs: number;
   queuedMs: number;
-  /** Things worth telling the caller that are not failures. */
   notes: string[];
 }
 
 export interface FlowScriptExecutorOptions {
-  /** Defaults to a CPU-derived limit. */
   concurrency?: number;
-  /** Overrides `scripts.maxTimeoutMs`. */
   maxTimeoutMs?: number;
-  /** Overrides `scripts.heapLimitMb`. */
   heapLimitMb?: number;
-  /** Defaults to twice the maximum script time limit. */
   queueWaitMs?: number;
 }
 
@@ -285,13 +240,8 @@ interface QueueWaiter {
   settled: boolean;
 }
 
-/**
- * Separate from a queue refusal so the caller can tell "you stopped it" from
- * "the host was full".
- */
 class ScriptCancelledError extends Error {}
 
-/** A request that cannot be turned into a spawn. Carries its own verdict kind. */
 class ScriptSetupError extends Error {
   constructor(
     readonly kind: FlowScriptFailureKind,
@@ -309,18 +259,10 @@ export class FlowScriptExecutor {
 
   constructor(private readonly options: FlowScriptExecutorOptions = {}) {}
 
-  /**
-   * Read once per executor rather than per step: the configured bounds only
-   * change with a server restart, so a step should not go to the filesystem.
-   */
   private resolveBounds(): ResolvedBounds {
     if (!this.bounds) {
       this.bounds = {
-        // `positive` rather than `??`: `concurrency: 0` is not nullish, and
-        // would queue every step until the wait bound refused it.
         concurrency: positive(this.options.concurrency) ?? defaultConcurrency(),
-        // Capped at the largest delay `setTimeout` can hold: past that Node
-        // clamps the timer to 1ms, so every script would "time out" at once.
         maxTimeoutMs: Math.min(
           MAX_TIMER_MS,
           positive(this.options.maxTimeoutMs) ??
@@ -374,12 +316,7 @@ export class FlowScriptExecutor {
     }
   }
 
-  // One tool server serves every local agent and project, so the limit protects
-  // the host rather than one script's throughput. The queue bounds stop an
-  // unbounded queue; they are not tuned to shape normal use.
   private acquireSlot(signal: AbortSignal | undefined, waitBoundMs: number): Promise<() => void> {
-    // Idempotent: a double release would leave `running` below the live
-    // process count, permanently raising the effective limit.
     let released = false;
     const release = () => {
       if (released) return;
@@ -464,9 +401,6 @@ export class FlowScriptExecutor {
   ): Promise<FlowScriptResult> {
     const notes: string[] = [];
     const startedAt = Date.now();
-    // An abort raised between the queue's check and this one — `const p =
-    // execute(…); if (bad) controller.abort();` — lands in the gap the queue's
-    // promise opens up. Nothing spawns for it.
     if (request.signal?.aborted) {
       return emptyResult(
         { kind: "cancelled", message: "The run was cancelled before the script started." },
@@ -481,10 +415,6 @@ export class FlowScriptExecutor {
       cwd = resolveWorkingDirectory(request, notes);
       env = buildChildEnv(request.env);
       runnerPath = resolveRunnerPath(request.runnerDir);
-      // Before the fork, and inside this guard: a cyclic or BigInt document
-      // makes `JSON.stringify` throw, and throwing after the fork would reject
-      // `execute` instead of returning a verdict, leaving a child running until
-      // the time limit reaped it.
       outputJson = encodeRequestOutput(request.output);
     } catch (err) {
       const kind = err instanceof ScriptSetupError ? err.kind : "spawn";
@@ -559,7 +489,6 @@ export class FlowScriptExecutor {
     let protocolProblem: string | null = null;
     let spawnProblem: string | null = null;
     let interrupted: "timeout" | "cancelled" | null = null;
-    /** See {@link interrupt}. Closes the window in which a verdict still counts. */
     let interruptionSealed = false;
 
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
@@ -571,13 +500,8 @@ export class FlowScriptExecutor {
         });
       }
     );
-    // `close` fires once every stdio stream AND the IPC channel have closed, so
-    // it is the point at which no further message or log byte can arrive.
     const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
 
-    // The one cleanup path, whatever ended the step: a script's descendants are
-    // reparented rather than stopped, so a step that returned normally has to
-    // reap them too.
     let stopped: Promise<void> | undefined;
     const stop = () => (stopped ??= stopProcessTree(child, STOP_GRACE_MS));
 
@@ -604,9 +528,6 @@ export class FlowScriptExecutor {
     child.stderr?.on("data", (chunk: Buffer) => capture.push("stderr", chunk));
 
     child.on("message", (raw) => {
-      // A second terminal response is ignored rather than obeyed: the run
-      // already has its verdict, and a runner still talking after it finished
-      // is no longer following the protocol.
       if (terminal) return;
       const message = parseScriptResponse(raw);
       if (!message) {
@@ -618,21 +539,14 @@ export class FlowScriptExecutor {
         startedSeen = true;
         return;
       }
-      // A verdict the stop had time to produce is the stop's, not the script's.
-      // See `interrupt`.
       if (interruptionSealed) return;
       terminal = message;
     });
 
-    // Kept beside the timer, because the timer is not proof the limit passed: a
-    // stall in the tool server's own event loop holds its callback behind
-    // whatever the poll phase already has ready. See `classifyOutcome`.
     const deadlineAt = Date.now() + timeoutMs;
     const timer = setTimeout(() => interrupt("timeout"), timeoutMs);
     const onAbort = () => interrupt("cancelled");
     request.signal?.addEventListener("abort", onAbort, { once: true });
-    // `addEventListener` never fires for a signal that aborted before it was
-    // attached, and nothing else re-reads the flag.
     if (request.signal?.aborted) onAbort();
 
     const message: ScriptExecuteRequest = {
@@ -645,9 +559,6 @@ export class FlowScriptExecutor {
     try {
       child.send(message, (err) => {
         if (!err) return;
-        // The channel died before the script could be named. The child can do
-        // nothing useful without the request, so stop it rather than wait out
-        // its time limit.
         protocolProblem ??= `The script runner closed its channel before the request arrived: ${errorMessage(err)}`;
         void stop();
       });
@@ -666,11 +577,6 @@ export class FlowScriptExecutor {
     // the log text of the same script. The bound covers a descendant that
     // inherited the streams and is holding them open.
     await Promise.race([closed, sleep(SETTLE_TIMEOUT_MS)]);
-    // On a passing step this is the only cleanup there is: on POSIX the process
-    // group outlives the runner, so a descendant still holding a port is reaped
-    // here. One that deliberately left the group is out of reach on purpose.
-    // Windows has nothing for `taskkill` to walk from once the child is gone,
-    // so a descendant of a normally-returning step survives there.
     await stop();
     capture.end();
     child.stdout?.destroy();
@@ -708,7 +614,6 @@ export class FlowScriptExecutor {
 
 let shared: FlowScriptExecutor | undefined;
 
-/** The tool server's one executor — the concurrency limit is per server. */
 export function flowScriptExecutor(): FlowScriptExecutor {
   shared ??= new FlowScriptExecutor();
   return shared;
@@ -722,17 +627,11 @@ interface ClassifyInput {
   startedSeen: boolean;
   interrupted: "timeout" | "cancelled" | null;
   timeoutMs: number;
-  /** Whether the time limit had already passed when the exit was observed. */
   deadlinePassed: boolean;
   heapFatalSeen: boolean;
   heapLimitMb: number;
 }
 
-/**
- * The exit is read *together with* the messages received, never alone: a
- * process killed by a signal did not choose to stop, and reporting that as
- * self-termination sends the author to the wrong line of code.
- */
 function classifyOutcome(
   input: ClassifyInput
 ): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
@@ -740,13 +639,8 @@ function classifyOutcome(
   if (input.spawnProblem) return failed("spawn", input.spawnProblem);
   if (input.protocolProblem) return failed("protocol", input.protocolProblem);
 
-  // A verdict the script produced before the stop had a turn to take effect
-  // outranks the interruption, for a cancel exactly as for a timeout;
-  // `interrupt` in `runOne` is where that line is drawn.
   if (input.terminal) {
     if (input.terminal.type === "failure") {
-      // Re-clamped: the child bounds both fields before sending, but must not
-      // be trusted to stay compliant once script code has run inside it.
       return failed(
         input.terminal.failureType,
         clampText(input.terminal.message, SCRIPT_MAX_FAILURE_MESSAGE_CHARS),
@@ -797,12 +691,6 @@ function classifyOutcome(
   );
 }
 
-/**
- * Every field of a verdict is redacted like the log, because none of the text
- * is the executor's: a `runtime` failure is the script's own message and stack,
- * and an output document that echoes back a credential outlives the report,
- * because later steps read it.
- */
 function redactSecrets(
   verdict: Pick<FlowScriptResult, "ok" | "output" | "failure">,
   secrets: readonly FlowScriptSecret[]
@@ -844,8 +732,6 @@ function scrubDocument(root: Record<string, unknown>, secrets: readonly FlowScri
       const value = record[key];
       if (typeof value === "string") record[key] = scrubSecretValues(value, secrets);
       else if (value !== null && typeof value === "object") pending.push(value);
-      // A secret can be the key as easily as the value — `output[apiKey] = …`
-      // is how a script indexes a per-credential result.
       const scrubbedKey = scrubSecretValues(key, secrets);
       if (scrubbedKey !== key) {
         record[scrubbedKey] = record[key];
@@ -856,8 +742,6 @@ function scrubDocument(root: Record<string, unknown>, secrets: readonly FlowScri
 }
 
 function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
-  // A second line only: the child already enforced this, but must not be
-  // trusted to stay compliant once script code has run inside it.
   const bytes = Buffer.byteLength(outputJson, "utf8");
   if (bytes > SCRIPT_MAX_OUTPUT_BYTES) {
     return failed(
@@ -895,10 +779,8 @@ function redactTruncated(text: string, secrets: readonly FlowScriptSecret[]): st
   return `${head.slice(0, head.length - partial)}${omissionMarker(omitted)}`;
 }
 
-/** The tail {@link clampText} leaves behind, read back by {@link redactTruncated}. */
 const OMISSION_RE = /… \[(\d+) more characters omitted]$/;
 
-/** The same tail, written. The runner carries its own copy of both. */
 function omissionMarker(omitted: number): string {
   return `… [${omitted} more characters omitted]`;
 }
@@ -972,8 +854,6 @@ function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): s
   for (const candidate of named) {
     const problem = describeDirectoryProblem(candidate.value!);
     if (!problem) {
-      // Name every rejected candidate: a silent fallback is how a wrong input
-      // keeps working until it does not.
       if (problems.length > 0) {
         notes.push(`${problems.join("; ")}; the script ran in ${candidate.value} instead.`);
       }
@@ -989,13 +869,6 @@ function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): s
   );
 }
 
-/**
- * The absolute-path rule is the load-bearing one — the same rule
- * `assertValidProjectRoot` in `flow-utils.ts` applies to every other flow path.
- * A relative candidate is resolved by the OS against the tool server's own
- * working directory, the one value this function exists to keep out, and one
- * that happens to exist would beat a perfectly good absolute fallback.
- */
 function describeDirectoryProblem(candidate: string): string | null {
   if (!path.isAbsolute(candidate)) {
     return "is not an absolute path (a relative path would resolve against the tool server's own working directory)";
@@ -1024,10 +897,6 @@ function encodeRequestOutput(output: Record<string, unknown> | undefined): strin
   return encoded;
 }
 
-/**
- * Falls back to the path itself: a missing script is Node's error to report,
- * with the name the author wrote.
- */
 function realPathOrSelf(candidate: string): string {
   try {
     return fs.realpathSync(candidate);
@@ -1110,8 +979,6 @@ function clampTimeout(
   maxTimeoutMs: number,
   notes: string[]
 ): number {
-  // A step that asked for nothing gets the default, silently bounded by the
-  // host maximum; only an explicit over-ask is worth a note.
   const wanted = positive(requested);
   if (wanted === undefined) return Math.min(DEFAULT_SCRIPT_TIMEOUT_MS, maxTimeoutMs);
   if (wanted <= maxTimeoutMs) return wanted;
@@ -1122,10 +989,6 @@ function clampTimeout(
   return maxTimeoutMs;
 }
 
-/**
- * Derived from the CPU count because the failure it prevents is a CPU one. The
- * floor of 2 keeps a two-core CI box from serializing every script step.
- */
 function defaultConcurrency(): number {
   const cpus = os.cpus()?.length || 1;
   return Math.max(2, Math.min(8, cpus - 2));
@@ -1182,9 +1045,6 @@ async function stopProcessTree(child: ChildProcess, graceMs: number): Promise<vo
 
   if (!groupHasMembers(pid)) return;
   killGroup(child, pid, "SIGTERM");
-  // What has to be gone is the *group*, not the runner: the runner installs no
-  // SIGTERM handler and dies at once, so waiting on it alone would skip the
-  // escalation below while a slower descendant was still running.
   await waitForGroupToEmpty(child, pid, graceMs);
   if (!groupHasMembers(pid)) return;
   killGroup(child, pid, "SIGKILL");
@@ -1222,13 +1082,9 @@ function groupHasMembers(pid: number): boolean {
 
 function killGroup(child: ChildProcess, pid: number, signal: NodeJS.Signals): void {
   try {
-    // The negative pid names the process group the runner leads because it was
-    // forked `detached`.
     process.kill(-pid, signal);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ESRCH") {
-      // No group — the fork fell back to the parent's, or the tree is already
-      // gone. Aim at the process itself, not at the tool server's group.
       tryKill(() => child.kill(signal));
     }
   }
@@ -1249,10 +1105,8 @@ function hasExited(child: ChildProcess): boolean {
 interface StreamState {
   decoder: StringDecoder;
   holdback: string;
-  /** The place in the shared buffer the hold-back belongs in. See `release`. */
   holdbackAt?: number;
   collapser?: V8FrameCollapser;
-  /** Only stderr carries V8's fatal banner. */
   watchForHeapFatal?: boolean;
 }
 
@@ -1308,12 +1162,6 @@ class ScriptLogCapture {
     this.streams.clear();
   }
 
-  /**
-   * A last pass with the secret set as it stands at the end of the step: a
-   * value whose head was released before the run resolved it has its two halves
-   * rejoined here in plaintext. Streaming stays first, because it is what
-   * protects the truncation boundary.
-   */
   get text(): string {
     return scrubSecretValues(this.parts.join(""), this.secrets());
   }
@@ -1322,11 +1170,6 @@ class ScriptLogCapture {
     return this.truncatedFlag;
   }
 
-  /**
-   * Read off the live stream rather than the finished log: V8 prints its banner
-   * last, so a script that logged past its budget before dying would lose the
-   * one line that names the cause to the truncation.
-   */
   get heapFatalSeen(): boolean {
     return this.heapFatalFlag;
   }
@@ -1348,8 +1191,6 @@ class ScriptLogCapture {
       state = {
         decoder: new StringDecoder("utf8"),
         holdback: "",
-        // A V8 fatal error prints its banner and frame dump on stderr, so only
-        // that stream pays the cost of line buffering or of being watched.
         ...(stream === "stderr"
           ? { collapser: new V8FrameCollapser(), watchForHeapFatal: true }
           : {}),
@@ -1365,57 +1206,28 @@ class ScriptLogCapture {
     const secrets = this.secrets();
     const held = state.holdback;
     const pending = held + text;
-    // Only a tail that could still grow into a secret is held back: a fixed
-    // `longest value - 1` hold-back delays whole lines that could never match,
-    // and adding a secret to a flow must not reorder its log. The scrub decides
-    // where that tail begins, because only it knows which of the values it
-    // replaced are settled — a value that starts with its own tail would
-    // otherwise have the hold-back reach back inside a replacement already made
-    // and release the rest of a whole occurrence.
     const { emit, held: keep } = scrubSecretChunk(pending, secrets, final);
     const split = pending.length - keep;
     state.holdback = pending.slice(split);
-    // The released text, which is only *part* of what was held when a value
-    // overlaps itself: `abca` held for `abcab` keeps `ab` once `b` arrives, so
-    // the split lands inside the hold-back rather than past it.
     this.release(state, held.slice(0, split), emit);
-    // A collapsed frame dump is output the report does not carry, which is what
-    // `logTruncated` means.
     if (state.collapser?.collapsed) this.truncatedFlag = true;
-    // Reserve where the tail now held back belongs in the shared buffer, before
-    // the other stream can append past it. Text still held from an earlier
-    // chunk keeps the place it already had.
     if (!state.holdback) state.holdbackAt = undefined;
     else if (split >= held.length) state.holdbackAt = this.parts.push("") - 1;
   }
 
-  /**
-   * The hold-back is per stream and the buffer is shared, so released text held
-   * from an earlier chunk belongs *before* whatever the other stream wrote in
-   * between — appending it now would move it past that text.
-   *
-   * `released` is the part of the hold-back this chunk let go of, never the
-   * whole of it: a value that overlaps itself can hold text back across the
-   * chunk that arrived after it.
-   */
   private release(state: StreamState, released: string, emit: string): void {
     const at = state.holdbackAt;
     if (at === undefined || !emit) {
       this.append(state.collapser ? state.collapser.write(emit) : emit);
       return;
     }
-    // Scrubbing the released text on its own says how much of `emit` is that
-    // text, whenever no value spans the join. A value that does span it has no
-    // side to belong to, so its replacement goes with the chunk that completed it.
     const head = scrubSecretValues(released, this.secrets());
     const headText = emit.startsWith(head) ? head : "";
-    // The collapser is a stream transform, so it has to see the two in order.
     this.append(state.collapser ? state.collapser.write(headText) : headText, at);
     const tailText = emit.slice(headText.length);
     this.append(state.collapser ? state.collapser.write(tailText) : tailText);
   }
 
-  /** Append to the end of the buffer, or into the place reserved at `at`. */
   private append(text: string, at?: number): void {
     if (!text) return;
     const runRemaining = this.runBudget
@@ -1439,10 +1251,6 @@ class ScriptLogCapture {
   }
 }
 
-/**
- * How many characters at the end of `text` are a proper prefix of some secret
- * value — the only tail a later chunk could complete into a whole value.
- */
 function partialSecretTail(text: string, secrets: readonly FlowScriptSecret[]): number {
   let keep = 0;
   for (const { value } of secrets) {
@@ -1457,9 +1265,6 @@ function partialSecretTail(text: string, secrets: readonly FlowScriptSecret[]): 
   return keep;
 }
 
-/**
- * Back off to the start of a UTF-8 sequence so a cut never splits a character.
- */
 export function utf8SafeCut(buffer: Buffer, max: number): number {
   let cut = Math.min(max, buffer.length);
   while (cut > 0 && (buffer[cut] & 0xc0) === 0x80) cut -= 1;
@@ -1473,16 +1278,8 @@ const V8_FRAME_RE = /^\s*\d+:\s+0x[0-9a-f]+/i;
  * frame-shaped output, while a missed dump costs sixty lines of log budget.
  */
 const ARM_FRAME_COLLAPSE_RE = /FATAL ERROR|Fatal error in|Fatal JavaScript|# Fatal/i;
-/** Below this many consecutive frame lines, the run is passed through as written. */
 const COLLAPSE_THRESHOLD = 3;
 
-/**
- * Collapses a V8 fatal-error frame dump — roughly sixty lines of internal frame
- * addresses — to one marker line, so an abort does not push the script's own
- * output out of the step's log budget. A run shorter than
- * {@link COLLAPSE_THRESHOLD} is emitted verbatim, so an ordinary log line that
- * happens to look like a frame survives.
- */
 class V8FrameCollapser {
   private partial = "";
   private held: string[] = [];
@@ -1498,10 +1295,6 @@ class V8FrameCollapser {
   write(text: string): string {
     if (!text) return "";
     if (!this.armed) {
-      // Until V8 has printed a fatal error there is no frame dump to collapse,
-      // and line buffering would only hold text back — an unterminated progress
-      // line would wait for its newline while later stdout was appended first.
-      // The window is wide enough to catch a banner split across two chunks.
       const armed = ARM_FRAME_COLLAPSE_RE.test(this.armWindow + text);
       this.armWindow = armed ? "" : (this.armWindow + text).slice(-HEAP_FATAL_WINDOW_CHARS);
       if (!armed) return text;
@@ -1512,8 +1305,6 @@ class V8FrameCollapser {
     const lines = this.partial.split("\n");
     this.partial = lines.pop() ?? "";
     for (const line of lines) out += this.classify(`${line}\n`);
-    // A line that never ends would otherwise buffer without bound; past this
-    // length it cannot usefully be classified anyway.
     if (this.partial.length > MAX_BUFFERED_LINE_CHARS) {
       out += this.flush() + this.partial;
       this.partial = "";
@@ -1566,18 +1357,11 @@ function emptyResult(
   };
 }
 
-/**
- * `formatErrorForAgent` walks the `.cause` chain — a `fetch failed` wrapping
- * `connect ECONNREFUSED` is exactly the shape a script produces. Anything that
- * is not an `Error` keeps the capped rendering, since it can be arbitrarily
- * large.
- */
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return formatErrorForAgent(err) || String(err);
   return typeof err === "string" ? err : describeUnknown(err);
 }
 
-/** A short rendering of an unexpected value, for a message that quotes it. */
 function describeUnknown(value: unknown): string {
   let text: string;
   try {
@@ -1585,8 +1369,6 @@ function describeUnknown(value: unknown): string {
   } catch {
     text = String(value);
   }
-  // A misbehaving runner controls this string, so it must not be able to make
-  // the failure message arbitrarily long.
   return text.length > 200 ? `${text.slice(0, 200)}…` : text;
 }
 

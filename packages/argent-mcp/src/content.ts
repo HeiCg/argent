@@ -215,17 +215,7 @@ export type FlowStepResult = {
    * wire data: a non-handle value renders as text or is skipped.
    */
   artifacts?: Record<string, unknown>;
-  /**
-   * A `script` step's stdout and stderr, bounded by the tool server. Not
-   * redacted — it arrives as the script wrote it, credentials included.
-   * Rendered for a passing script too. Untrusted wire data: a non-string is
-   * ignored rather than interpolated.
-   */
   scriptLog?: string;
-  /**
-   * Some of that output is missing from the log — a log limit, or the executor
-   * collapsing a fatal error's frame dump. The text carries no marker.
-   */
   scriptLogTruncated?: boolean;
   /** Legacy field from pre-report flow-execute results. */
   error?: string;
@@ -310,17 +300,11 @@ export async function flowRunToMcpContent(
       text: `[${num}] ${glyph}${stepIndent(step.depth)}${stepLabel(step)}${suffix}${warning}`,
     });
 
-    // Kept out of the step line so a multi-line log does not bury the line's
-    // own reason. The truncation notice stands on its own when a run-wide
-    // budget dropped the output entirely — silence would read as a script that
-    // printed nothing.
     const scriptLog = typeof step.scriptLog === "string" ? step.scriptLog : "";
     const scriptLogTruncated = step.scriptLogTruncated === true;
     if (scriptLog || scriptLogTruncated) {
       const parts = [`${stepIndent(step.depth)}script output:`];
       if (scriptLog) parts.push(scriptLog.endsWith("\n") ? scriptLog.slice(0, -1) : scriptLog);
-      // Cause-neutral: the flag also fires when the executor's frame collapser
-      // drops a fatal error's frame dump, which no log limit caused.
       if (scriptLogTruncated) parts.push("… output truncated");
       blocks.push({ type: "text", text: parts.join("\n") });
     }

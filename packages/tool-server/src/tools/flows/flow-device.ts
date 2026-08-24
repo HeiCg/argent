@@ -168,8 +168,6 @@ export function stripDeviceKeys(args: Record<string, unknown>): Record<string, u
  */
 export function stepRequiresDevice(registry: Registry, step: FlowStep): boolean {
   switch (step.kind) {
-    // The runner routes no device to a `script`'s Node process, which is what
-    // lets a script-only flow run with nothing booted.
     case "echo":
     case "wait":
     case "script":
