@@ -83,8 +83,8 @@ export async function openUsbmuxRunnerSocket(
 }
 
 /**
- * Map a non-zero `Connect` result to the typed verdict the route resolver
- * branches on. Result 2 (device gone) must land on the same unattached path as
+ * Map a non-zero `Connect` result to the typed verdict the send layer and
+ * runner-client branch on. Result 2 (device gone) must land on the same unattached path as
  * a missing `ListDevices` entry — it covers the device being unplugged between
  * the lookup and the connect, and both then surface the same actionable
  * connect-the-cable hint. Result 3

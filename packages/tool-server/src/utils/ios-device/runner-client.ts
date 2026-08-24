@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SendRunnerCommand } from "./runner-route";
+import { sleep, type SendRunnerCommand } from "./runner-route";
 import { IosDeviceTransportError, isIosDeviceTransportError } from "./usbmux-protocol";
 
 /**
@@ -19,7 +19,7 @@ export const RUNNER_COMMAND_TIMEOUT_MS = 45_000;
 /**
  * Recovery must be fast: it runs while a user-visible command is already
  * failing, and a reachable runner answers `status` in milliseconds. The 3s is
- * one whole-transport budget per route attempt — usbmux handshake and HTTP
+ * one whole-transport budget per send attempt — usbmux handshake and HTTP
  * exchange included — and a runner that cannot answer within it is
  * effectively gone, so the transport error is the honest answer.
  */
@@ -82,7 +82,7 @@ export class RunnerCommandError extends Error {
 }
 
 export interface RunCommandOptions {
-  /** See SendRunnerCommandOptions: read-only commands may be retried by the route layer. */
+  /** See SendRunnerCommandOptions: read-only commands may be retried by the send layer. */
   readOnly?: boolean;
   timeoutMs?: number;
 }
@@ -99,7 +99,7 @@ export interface RunnerClient {
 export function createRunnerClient(options: {
   udid: string;
   port: number;
-  /** The route resolver's sendCommand — injected so the client is transport-agnostic. */
+  /** The usbmux sender's sendCommand — injected so the client is transport-agnostic. */
   send: SendRunnerCommand;
 }): RunnerClient {
   const run = async (
@@ -118,10 +118,13 @@ export function createRunnerClient(options: {
       return unwrapEnvelope(response);
     } catch (error) {
       if (!isIosDeviceTransportError(error)) throw error;
-      // Read-only commands are idempotent — the route layer already retried
+      // Read-only commands are idempotent — the send layer already retried
       // them, and there is nothing to recover. Status commands must never
       // recurse into recovery.
       if (readOnly || command.command === "status" || !commandId) throw error;
+      // Pre-send kinds: the usbmux connection never opened, so the command
+      // cannot have executed and a status probe would ride the same dead route.
+      if (error.kind === "device-unattached" || error.kind === "runner-not-listening") throw error;
       return await recoverAfterLostResponse(stamped, commandId, error);
     }
   };
@@ -250,8 +253,4 @@ function parseRetainedResponse(value: unknown): unknown | null {
   } catch {
     return null;
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -23,7 +23,7 @@ import {
   type RunnerArtifact,
 } from "../utils/ios-device/runner-build";
 import * as fs from "node:fs/promises";
-import { createRunnerRouteResolver } from "../utils/ios-device/runner-route";
+import { createUsbmuxCommandSender } from "../utils/ios-device/runner-route";
 import { isIosDeviceTransportError } from "../utils/ios-device/usbmux-protocol";
 import { readRunnerCrashSummary } from "../utils/ios-device/runner-crash";
 import {
@@ -210,11 +210,11 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         derivedDataPath: artifact.derivedDataPath,
         port,
       });
-      const resolver = createRunnerRouteResolver();
+      const sender = createUsbmuxCommandSender();
       const client = createRunnerClient({
         udid,
         port,
-        send: resolver.sendCommand.bind(resolver),
+        send: sender.sendCommand,
       });
       try {
         await waitForRunnerReady(client, { timeoutMs: RUNNER_READY_TIMEOUT_MS });

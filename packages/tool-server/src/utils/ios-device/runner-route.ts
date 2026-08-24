@@ -3,12 +3,12 @@ import { createDeadline, openUsbmuxRunnerSocket, type Deadline } from "./usbmux"
 import { isIosDeviceTransportError } from "./usbmux-protocol";
 
 /**
- * Route resolution for physical iOS devices: usbmux (USB cable), only.
- *
- * usbmuxd answers in milliseconds and stays responsive across idle gaps. The
- * CoreDevice Wi-Fi tunnel could reach a cable-less device too, but it re-probes
- * `devicectl` — seconds per command — and has never been hardware-verified, so
- * it is deliberately not a route: a Wi-Fi-only device fails fast with usbmuxd's
+ * The usbmux send for physical iOS devices, wrapped in retry policy: mutating
+ * commands go out AT MOST ONCE, read-only commands retry with backoff on
+ * retryable errors. USB cable is the only transport — the CoreDevice Wi-Fi
+ * tunnel could reach a cable-less device too, but it re-probes `devicectl` —
+ * seconds per command — and has never been hardware-verified, so it is
+ * deliberately not a fallback: a Wi-Fi-only device fails fast with usbmuxd's
  * typed "device-unattached" verdict, whose hint says to connect the cable.
  */
 
@@ -34,7 +34,7 @@ export type SendRunnerCommand = (
   options: SendRunnerCommandOptions
 ) => Promise<unknown>;
 
-export function createRunnerRouteResolver(
+export function createUsbmuxCommandSender(
   options: {
     /**
      * Test seam: replaces the usbmux socket + HTTP send. The deadline is the
@@ -53,17 +53,7 @@ export function createRunnerRouteResolver(
   return {
     sendCommand: async (udid, port, body, sendOptions) => {
       if (!sendOptions.readOnly) {
-        try {
-          return await sendViaUsbmux(udid, port, body, createDeadline(sendOptions.timeoutMs));
-        } catch (error) {
-          // Carry the commandId on the typed error so the client can run
-          // status recovery for exactly the command that was in flight.
-          if (isIosDeviceTransportError(error)) {
-            const commandId = readCommandId(body);
-            if (commandId) error.commandId = commandId;
-          }
-          throw error;
-        }
+        return sendViaUsbmux(udid, port, body, createDeadline(sendOptions.timeoutMs));
       }
       let lastError: unknown;
       for (let attempt = 1; attempt <= READ_ONLY_MAX_ATTEMPTS; attempt += 1) {
@@ -103,12 +93,7 @@ function defaultSendViaUsbmux(
   });
 }
 
-function readCommandId(body: unknown): string | undefined {
-  if (typeof body !== "object" || body === null) return undefined;
-  const commandId = (body as { commandId?: unknown }).commandId;
-  return typeof commandId === "string" && commandId.length > 0 ? commandId : undefined;
-}
-
-function sleep(ms: number): Promise<void> {
+/** Also serves runner-client's readiness poll — deliberately defined once. */
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

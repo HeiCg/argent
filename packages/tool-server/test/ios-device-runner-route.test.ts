@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRunnerRouteResolver } from "../src/utils/ios-device/runner-route";
+import { createUsbmuxCommandSender } from "../src/utils/ios-device/runner-route";
 import type { Deadline } from "../src/utils/ios-device/usbmux";
 import {
   IosDeviceTransportError,
@@ -27,12 +27,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("createRunnerRouteResolver", () => {
+describe("createUsbmuxCommandSender", () => {
   it("sends over usbmux", async () => {
     const sendViaUsbmux = vi.fn(async () => OK);
-    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
 
-    const result = await resolver.sendCommand(
+    const result = await sender.sendCommand(
       UDID,
       PORT,
       { command: "status" },
@@ -50,9 +50,9 @@ describe("createRunnerRouteResolver", () => {
     const sendViaUsbmux = vi.fn(async () => {
       throw unattachedError();
     });
-    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
 
-    const error = await resolver
+    const error = await sender
       .sendCommand(UDID, PORT, { command: "status" }, { timeoutMs: 1_000, readOnly: true })
       .catch((caught: unknown) => caught);
 
@@ -69,9 +69,9 @@ describe("createRunnerRouteResolver", () => {
     const sendViaUsbmux = vi.fn(async () => {
       throw notListeningError();
     });
-    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
 
-    const error = await resolver
+    const error = await sender
       .sendCommand(
         UDID,
         PORT,
@@ -82,8 +82,6 @@ describe("createRunnerRouteResolver", () => {
 
     expect(sendViaUsbmux).toHaveBeenCalledTimes(1);
     expect((error as IosDeviceTransportError).kind).toBe("runner-not-listening");
-    // The typed error carries the commandId so the caller can run status recovery.
-    expect((error as IosDeviceTransportError).commandId).toBe("argent-abc");
   });
 
   it("retries read-only commands on retryable errors with backoff, up to 3 attempts", async () => {
@@ -92,9 +90,9 @@ describe("createRunnerRouteResolver", () => {
       .mockRejectedValueOnce(notListeningError())
       .mockRejectedValueOnce(notListeningError())
       .mockResolvedValueOnce(OK);
-    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
 
-    const pending = resolver.sendCommand(
+    const pending = sender.sendCommand(
       UDID,
       PORT,
       { command: "status" },
@@ -113,9 +111,9 @@ describe("createRunnerRouteResolver", () => {
     const sendViaUsbmux = vi.fn(async () => {
       throw notListeningError();
     });
-    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
 
-    const pending = resolver
+    const pending = sender
       .sendCommand(UDID, PORT, { command: "status" }, { timeoutMs: 1_000, readOnly: true })
       .catch((caught: unknown) => caught);
     await vi.runAllTimersAsync();
@@ -128,9 +126,9 @@ describe("createRunnerRouteResolver", () => {
     const sendViaUsbmux = vi.fn(async () => {
       throw new IosDeviceTransportError("protocol", "bad packet", { retryable: false });
     });
-    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
 
-    const error = await resolver
+    const error = await sender
       .sendCommand(UDID, PORT, { command: "status" }, { timeoutMs: 1_000, readOnly: true })
       .catch((caught: unknown) => caught);
 
@@ -146,9 +144,9 @@ describe("createRunnerRouteResolver", () => {
         return OK;
       }
     );
-    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
 
-    await resolver.sendCommand(
+    await sender.sendCommand(
       UDID,
       PORT,
       { command: "tap", commandId: "argent-abc" },
@@ -172,9 +170,9 @@ describe("createRunnerRouteResolver", () => {
         throw notListeningError();
       }
     );
-    const resolver = createRunnerRouteResolver({ sendViaUsbmux });
+    const sender = createUsbmuxCommandSender({ sendViaUsbmux });
 
-    const pending = resolver
+    const pending = sender
       .sendCommand(UDID, PORT, { command: "status" }, { timeoutMs: 3_000, readOnly: true })
       .catch((caught: unknown) => caught);
     await vi.runAllTimersAsync();

@@ -23,7 +23,13 @@ export const USBMUX_MESSAGE_TYPE_PLIST = 8;
  */
 export const USBMUX_MAX_PACKET_BYTES = 4 * 1024 * 1024;
 
-/** Discriminates the failure modes callers branch on (fallback vs retry vs surface). */
+/**
+ * Labels the transport failure mode. "device-unattached" (no device on the
+ * cable) and "runner-not-listening" (device fine, only the runner port is
+ * closed) are produced exclusively pre-send, while opening the usbmux
+ * connection; the remaining kinds can also arrive after HTTP bytes were
+ * written.
+ */
 export type IosDeviceTransportErrorKind =
   | "device-unattached"
   | "runner-not-listening"
@@ -36,21 +42,19 @@ export type IosDeviceTransportErrorKind =
  * subclass on purpose: this module is imported by dependency-free transport
  * code, so it cannot reach for the richer error types in `@argent/registry`.
  *
- * `kind` is the routing verdict ("device-unattached" lets the route resolver
- * fall back to the CoreDevice tunnel; "runner-not-listening" means the device
- * is fine and only the runner port is closed), `retryable` is the retry-policy
- * verdict, and `hint` carries the human recovery step.
+ * `kind` labels the failure for messages, hints, and tests, and has two
+ * structural consumers: runner-client.ts skips lost-response recovery for the
+ * pre-send kinds ("device-unattached", "runner-not-listening" — nothing was
+ * sent, so nothing can have run), and ios-device-runner.ts's runner-death
+ * diagnosis excludes "device-unattached" (the connect-the-cable story wins
+ * even when the runner also died). `retryable` is the retry-policy verdict,
+ * consumed by runner-route.ts's read-only retry loop. `hint` carries the
+ * human recovery step.
  */
 export class IosDeviceTransportError extends Error {
   readonly kind: IosDeviceTransportErrorKind;
   readonly retryable: boolean;
   readonly hint?: string;
-  /**
-   * Stamped by the route resolver on post-send failures of mutating commands
-   * so the caller can run status recovery for exactly the command that was
-   * in flight.
-   */
-  commandId?: string;
 
   constructor(
     kind: IosDeviceTransportErrorKind,

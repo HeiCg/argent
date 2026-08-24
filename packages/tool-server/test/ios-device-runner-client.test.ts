@@ -230,10 +230,45 @@ describe("createRunnerClient", () => {
         .run({ command: "snapshot" }, { readOnly: true })
         .catch((caught: unknown) => caught);
 
-      // The route layer already retried idempotent sends; a status probe
+      // The send layer already retried idempotent sends; a status probe
       // could tell us nothing a retry did not.
       expect(error).toBe(original);
       expect(sent).toHaveLength(1);
+    });
+
+    it.each([
+      ["device-unattached", false],
+      ["runner-not-listening", true],
+    ] as const)(
+      "does not attempt recovery for the pre-send kind %s — one send, original error rethrown",
+      async (kind, retryable) => {
+        const original = new IosDeviceTransportError(kind, "usbmux connect failed", { retryable });
+        const { send, sent } = createFakeSend([original]);
+        const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+        const error = await client
+          .run({ command: "tap", x: 1, y: 2 })
+          .catch((caught: unknown) => caught);
+
+        // The usbmux connection never opened: the tap cannot have landed, and
+        // a status probe would ride the same dead route.
+        expect(error).toBe(original);
+        expect(sent).toHaveLength(1);
+      }
+    );
+
+    it("still attempts recovery for a post-send timeout — the command may have run", async () => {
+      const original = new IosDeviceTransportError("timeout", "HTTP exchange timed out", {
+        retryable: false,
+      });
+      const { send, sent } = createFakeSend([original, { ok: true, data: { state: "started" } }]);
+      const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+      const error = await client.run({ command: "tap" }).catch((caught: unknown) => caught);
+
+      expect(error).toBe(original);
+      expect(sent).toHaveLength(2);
+      expect(sent[1]?.body.command).toBe("status");
     });
 
     it("surfaces the retained ok:false envelope as the command's real outcome", async () => {
