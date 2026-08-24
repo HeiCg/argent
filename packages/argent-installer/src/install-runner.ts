@@ -109,9 +109,8 @@ function localVersion(fallback: string): string {
   return getLocallyInstalledVersion(resolveProjectRoot(process.cwd())) ?? fallback;
 }
 
-// ── Local (committable devDependency) ─────────────────────────────────────────
 // Exits the process on a missing package.json or a failed/empty install — the
-// caller proceeds only once the dep is verified on disk (or is a known PnP
+// caller proceeds only once the dep is verified on disk (or is a Yarn PnP
 // layout, which has no node_modules).
 async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry }): Promise<void> {
   const { fromTar, tel } = opts;
@@ -133,9 +132,8 @@ async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry
   }
 
   // Reuse only when the project's OWN package.json declares the dep AND it is
-  // on disk. Mere resolvability (isLocallyInstalled) could be a hoisted or
-  // transitive copy the manifest never backs — teammates' `npm install`
-  // wouldn't get argent. Declared but not materialized falls through to install.
+  // on disk: mere resolvability could be a hoisted or transitive copy the
+  // manifest never backs, so teammates' `npm install` wouldn't get argent.
   if (isDeclaredLocally(projectRoot) && isLocallyInstalled(projectRoot) && !fromTar) {
     const startedAt = performance.now();
     p.log.info(`${PACKAGE_NAME} is already a devDependency ${pc.dim(`(${projectRoot})`)}.`);
@@ -145,9 +143,8 @@ async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry
 
   const pm = detectProjectPackageManager(projectRoot);
   const installTarget = fromTar ?? PACKAGE_NAME;
-  // Declared but not materialized (fresh clone): run the plain project install,
-  // which honors the committed version pin — `add` would resolve to @latest and
-  // silently rewrite the team's pin.
+  // Declared but not materialized (fresh clone): the plain project install
+  // honors the committed pin — `add` would resolve to @latest and rewrite it.
   const materializeOnly = isDeclaredLocally(projectRoot) && !fromTar;
   const cmd = materializeOnly ? projectInstallCommand(pm) : localInstallCommand(pm, installTarget);
   const cmdStr = formatShellCommand(cmd);
@@ -158,10 +155,9 @@ async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry
       : `Adding ${PACKAGE_NAME} to devDependencies (${pm})...`
   );
   const startedAt = performance.now();
-  // Success is decided from the DISK, not the exit code (see runTrustingDisk —
-  // pnpm 10+ exits non-zero on blocked build scripts). isYarnPnp covers PnP
-  // layouts with no node_modules; otherwise a missing node_modules entry means
-  // the add really failed — don't write a config that runs a missing binary.
+  // Success is decided from the DISK, not the exit code (pnpm 10+ exits
+  // non-zero on blocked build scripts); isYarnPnp covers layouts with no
+  // node_modules. Never write a config that runs a missing binary.
   const attempt = (): Promise<{ landed: boolean; exitError: Error | null }> =>
     runTrustingDisk(
       () => runShellCommand(cmd, { cwd: projectRoot }),
@@ -171,14 +167,12 @@ async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry
   let retryCount = 0;
   let { landed, exitError: installError } = await attempt();
 
-  // The project's package manager isn't on this machine at all (e.g. a cloned
-  // pnpm repo where only npm is installed). Deterministic — don't retry; fail
-  // with a message that names the real problem, because the generic "install
-  // manually" advice fails the same way in the user's shell. POSIX spawns the
-  // manager directly (ENOENT); Windows goes through cmd.exe (see
-  // runShellCommand), which exits 9009 — cmd.exe's locale-independent
-  // command-not-found code (its "is not recognized" stderr text is localized,
-  // so it can't be matched).
+  // The project's package manager isn't on this machine at all. Deterministic
+  // — don't retry, and don't give the generic "install manually" advice, which
+  // fails the same way in the user's shell. POSIX spawns the manager directly
+  // (ENOENT); Windows goes through cmd.exe, which exits 9009 — its
+  // locale-independent command-not-found code ("is not recognized" is
+  // localized).
   const isMissingBinaryError = (err: Error | null): boolean =>
     err !== null &&
     ((err as NodeJS.ErrnoException).code === "ENOENT" ||
@@ -186,32 +180,24 @@ async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry
   const missingBinary = !landed && isMissingBinaryError(installError);
 
   // A signal-terminated install is a cancellation, not a transient failure —
-  // retrying would silently spawn a second full install after the user (or CI
-  // supervisor) killed the first one. Interactive Ctrl-C never reaches here
-  // (clack's raw-mode stdin turns it into a keypress that exits argent), but a
-  // signal-delivered SIGINT/SIGTERM (CI, `kill`, a timeout wrapper) surfaces
-  // as `code null` + signal on the child.
+  // retrying would spawn a second full install after the user or CI killed the
+  // first one. A signal-delivered SIGINT/SIGTERM (CI, `kill`, a timeout
+  // wrapper) surfaces as `code null` + signal on the child.
   const wasInterrupted = (err: Error | null): boolean =>
     err instanceof ShellCommandError && (err.signal !== null || err.exitCode === null);
   const interrupted = !landed && wasInterrupted(installError);
 
   if (!landed && installError && !missingBinary && !interrupted) {
-    // The package manager ran and failed. Retry once before giving up: first
-    // attempts fail on transient registry/network errors (argent is a large
-    // download) and on pnpm's own first-run state mutations (e.g. it may write
-    // build-script policy stubs and exit non-zero), where an identical rerun
-    // succeeds.
+    // The package manager ran and failed. Retry once: first attempts fail on
+    // transient registry/network errors, where an identical rerun succeeds.
     spinner.message(`${pm} failed — retrying once...`);
     retryCount = 1;
     lastAttemptStartedAt = performance.now();
     ({ landed, exitError: installError } = await attempt());
   }
 
-  // Retry visibility for the failure funnel: retry_count tells whether (and
-  // how often) the retry fires and helps, and last_attempt_duration_ms keeps
-  // the per-attempt duration fingerprint usable when duration_ms spans both
-  // attempts (the fast-fail cluster that motivated the retry was identified
-  // by exactly that signature).
+  // Failure-funnel visibility: duration_ms spans both attempts, so
+  // last_attempt_duration_ms keeps the per-attempt fingerprint usable.
   const attemptTelemetry = (): { retry_count: number; last_attempt_duration_ms: number } => ({
     retry_count: retryCount,
     last_attempt_duration_ms: performance.now() - lastAttemptStartedAt,
@@ -261,8 +247,6 @@ async function installLocally(opts: { fromTar: string | null; tel: InitTelemetry
   );
 
   if (installError) {
-    // Installed, but the package manager exited non-zero — almost always pnpm's
-    // blocked build scripts; point pnpm users at the optional approve-builds step.
     p.log.warn(pc.dim(`${pm} exited non-zero but ${PACKAGE_NAME} is installed — continuing.`));
     if (pm === "pnpm") {
       p.log.info(
@@ -478,7 +462,8 @@ async function runGlobal(opts: {
   }
 
   if (fromTar) {
-    // Developer-only reinstall path; it is not a product install decision.
+    // Developer-only reinstall (`--from`) — not a product install decision, so
+    // no decision event.
     const pm = detectPackageManager();
     // Replacing the existing install writes to the same unwritable directory a
     // fresh one would.
@@ -506,16 +491,13 @@ async function runGlobal(opts: {
     return { version, installMode: "global", pathHint };
   }
 
-  // Already installed → offer an interactive update.
-  //
   // Compare the registry against the GLOBAL install's version, never the
   // running package's: under `npx ... init` the running package is the npx
-  // cache — always latest — which would mask a stale global binary (the bug
-  // topology.ts's getGloballyInstalledVersion exists for). That global version
-  // also becomes this run's version — it is the install the written configs
-  // run. If it can't be read (Windows argent.cmd wrapper hides the owning
-  // package — see getGloballyInstalledPackageRoot), say so and skip the check
-  // rather than fall back to the running package's version.
+  // cache — always latest — which would mask a stale global binary. That
+  // global version also becomes this run's version, since it is the install
+  // the written configs run. If it can't be read (a Windows argent.cmd wrapper
+  // hides the owning package), say so and skip the check rather than fall back
+  // to the running package's version.
   const globalVersion = getGloballyInstalledVersion();
   version = globalVersion ?? version;
   const packageActionStartedAt = performance.now();
@@ -547,8 +529,8 @@ async function runGlobal(opts: {
       ? null
       : probeGlobalInstallTarget(updatePm, getGloballyInstalledPackageRoot());
     if (nonInteractive) {
-      // A --yes/CI install implicitly skips the update; emit the same
-      // update_decision as the other branches so the upgrade funnel isn't blind.
+      // Emit the same update_decision as the interactive branches so the
+      // upgrade funnel isn't blind to --yes/CI runs.
       track("installation:update_decision", {
         from_major: fromMajor,
         to_major: toMajor,
@@ -607,8 +589,8 @@ async function runGlobal(opts: {
           version = getGloballyInstalledVersion() ?? getInstalledVersion() ?? version;
           await tel.trackPackageAction("init_triggered_update", updateStartedAt, true);
 
-          // Re-sync and prune argent skills in every scope that tracks them —
-          // the only point in init that surfaces orphans from the old version
+          // Re-sync and prune skills in every scope that tracks them — the
+          // only point in init that surfaces orphans from the old version
           // before Step 2's single-scope `skills add`.
           reportSkillRefresh(resolveProjectRoot(process.cwd()), "installer_skills_refresh");
         } catch (err) {

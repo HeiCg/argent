@@ -96,10 +96,16 @@ let projDir: string;
 let originalCwd: string;
 let savedHome: string | undefined;
 let savedUserProfile: string | undefined;
+let savedAgent: string | undefined;
 let exitSpy: ReturnType<typeof vi.spyOn>;
 let savedIsTty: boolean | undefined;
 
 beforeEach(() => {
+  // detectPackageManager() reads npm_config_user_agent, so the install/update
+  // commands these tests assert on are whichever package manager runs the
+  // suite. Unset it to pin the npm shape.
+  savedAgent = process.env.npm_config_user_agent;
+  delete process.env.npm_config_user_agent;
   vi.clearAllMocks();
   // The prompts these tests answer only exist for a user who can answer them.
   savedIsTty = process.stdin.isTTY;
@@ -135,6 +141,8 @@ afterEach(() => {
   exitSpy.mockRestore();
   setIsTty(savedIsTty);
   process.chdir(originalCwd);
+  if (savedAgent === undefined) delete process.env.npm_config_user_agent;
+  else process.env.npm_config_user_agent = savedAgent;
   if (savedHome === undefined) delete process.env.HOME;
   else process.env.HOME = savedHome;
   if (savedUserProfile === undefined) delete process.env.USERPROFILE;
