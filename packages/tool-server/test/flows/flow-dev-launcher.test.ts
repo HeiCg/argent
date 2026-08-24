@@ -791,6 +791,53 @@ describe("getting a launch past the chooser", () => {
     expect(calls).toEqual([]);
   });
 
+  it("retries a pick that landed on the face the chooser shows while discovering", async () => {
+    // The discovering face has drawn content, so the appear-wait settles on it
+    // — but its list is empty because mDNS has not answered YET, not because
+    // nothing is live. One read later Metro is listed, and the launch must open
+    // it rather than error against a state that was already resolving itself.
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(noServersTree(), discoveredTree(), app);
+    const { calls, actionEnv } = env();
+
+    await expect(
+      dismissDevLauncher(actionEnv, "com.anonymous.devclientprobe", 8091, new Map())
+    ).resolves.toEqual({
+      handled: true,
+      ok: true,
+      url: "http://192.168.0.94:8091",
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does not wait once live rows are listed, even for a port none of them carries", async () => {
+    // A populated list is a finished discovery: a miss there is real, and the
+    // "no live server" verdict comes at once instead of after a second window.
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(launcherTree());
+    const { calls, actionEnv } = env();
+
+    const outcome = await dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8085, new Map());
+    expect(outcome).toMatchObject({ handled: true, ok: false });
+    expect(outcome).toHaveProperty(
+      "reason",
+      expect.stringContaining("lists no live server on port 8085")
+    );
+    expect(calls).toEqual([]);
+    expect(fetchFlowTree).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the launch alone when the chooser leaves while still discovering", async () => {
+    vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
+    reads(noServersTree(), app);
+    const { calls, actionEnv } = env();
+
+    await expect(
+      dismissDevLauncher(actionEnv, "xyz.blueskyweb.app", 8081, new Map())
+    ).resolves.toEqual({ handled: false });
+    expect(calls).toEqual([]);
+  });
+
   it("reports a failed tap as a launch failure instead of throwing out of the run", async () => {
     vi.mocked(adbShell).mockResolvedValue(DEV_DUMP);
     reads(launcherTree());
@@ -1372,6 +1419,28 @@ describe("what the launch step reports", () => {
     ]);
 
     const steps = await runFlow("reinstall", {});
+
+    expect(steps.map((s) => s.status)).toEqual(["pass", "pass", "pass"]);
+    expect(adbShell).toHaveBeenCalledTimes(2);
+  });
+
+  it("probes again after a nested composition that could have reinstalled the app", async () => {
+    // The nested `tool: flow-execute` run keeps its own state and dispatches its
+    // steps through the registry, so a `reinstall-app` in there moves what is
+    // installed without the outer run ever seeing a reinstall step. The cache
+    // must be dropped after ANY composition step — here the second launch meets
+    // a build whose answer the first launch's probe says nothing about.
+    chooserEveryLaunch();
+    await writeFlow("inner", [
+      { kind: "tool", name: "reinstall-app", args: { appPath: "/tmp/dev.apk" } },
+    ]);
+    await writeFlow("nested", [
+      { kind: "launch", app: "com.example.dev" },
+      { kind: "tool", name: "flow-execute", args: { name: "inner" } },
+      { kind: "launch", app: "com.example.dev" },
+    ]);
+
+    const steps = await runFlow("nested", {});
 
     expect(steps.map((s) => s.status)).toEqual(["pass", "pass", "pass"]);
     expect(adbShell).toHaveBeenCalledTimes(2);

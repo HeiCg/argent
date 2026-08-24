@@ -51,7 +51,11 @@ import {
   stepRequiresDevice,
   type FlowPlatform,
 } from "./flow-device";
-import { FLOW_EXECUTE_TOOL_ID, nestedOrchestratorOutcome } from "./flow-nested-outcome";
+import {
+  FLOW_EXECUTE_TOOL_ID,
+  RUN_SEQUENCE_TOOL_ID,
+  nestedOrchestratorOutcome,
+} from "./flow-nested-outcome";
 import {
   runDirective,
   invokeOnDevice,
@@ -2299,6 +2303,10 @@ async function execLeafStep(
       // Android only, which is all the parameter is for: the nested run binds
       // this same device, and off Android its launch never reads the port, so
       // forwarding it would only put an inert argument in the step's args.
+      // (`metroPort` is the only state forwarded: the inner run crosses the
+      // registry's validated boundary as plain args, which can carry a number
+      // but not the run's mutable maps — so its `devBuilds` probe answers are
+      // its own, and the eviction below covers what that costs.)
       if (
         step.name === FLOW_EXECUTE_TOOL_ID &&
         device?.platform === "android" &&
@@ -2319,7 +2327,22 @@ async function execLeafStep(
         // remembered `false` would skip the chooser recovery on a build that
         // shows the chooser. Dropped whole rather than by key: the step names a
         // PATH, which says nothing about the app id the probe is keyed by.
-        if (step.name === REINSTALL_APP_TOOL_ID) state.devBuilds.clear();
+        //
+        // The reinstall need not be a DIRECT step of this run. A nested
+        // orchestrator (`flow-execute`, `run-sequence`) keeps its own state and
+        // dispatches its steps through the registry, so a `reinstall-app` in
+        // there moves what is installed without this run's steps ever naming
+        // one — and its own fresh map dies with it, leaving this run's
+        // remembered answer stale. Evicted after every composition step for
+        // that reason; the cost is one extra probe on a later launch, which is
+        // the cheap direction to be wrong in.
+        if (
+          step.name === REINSTALL_APP_TOOL_ID ||
+          step.name === FLOW_EXECUTE_TOOL_ID ||
+          step.name === RUN_SEQUENCE_TOOL_ID
+        ) {
+          state.devBuilds.clear();
+        }
         if (isUnmetUiWaitResult(step.name, result)) {
           const note = (result as { note?: string }).note;
           return {
