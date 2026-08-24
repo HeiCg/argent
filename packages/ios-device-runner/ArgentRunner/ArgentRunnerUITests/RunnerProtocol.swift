@@ -99,10 +99,6 @@ struct CommandRequest: Codable {
   let settle: Bool?
   /// `type`: the text delivered to the focused input.
   let text: String?
-  /// `snapshot`: keep only interactive elements.
-  let interactiveOnly: Bool?
-  /// `snapshot`: maximum emitted depth.
-  let depth: Int?
 
   var normalizedCommandId: String? {
     guard let trimmed = commandId?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -216,11 +212,8 @@ struct SnapshotNodePayload: Encodable {
   let enabled: Bool
   let focused: Bool?
   let selected: Bool?
-  let hittable: Bool
   let depth: Int
   let parentIndex: Int?
-  var hiddenContentAbove: Bool?
-  var hiddenContentBelow: Bool?
 }
 
 struct SnapshotQualityPayload: Encodable {

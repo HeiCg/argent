@@ -8,7 +8,8 @@ extension ArgentRunnerSession {
     .switch, .tabBar, .textField, .secureTextField, .textView, .toggle, .webView,
   ]
 
-  /// Containers whose content scrolls; they anchor the hidden-content hints.
+  /// Containers whose content scrolls; included even when unlabeled so the
+  /// tree shows where scrolling is possible.
   static let scrollContainerTypes: Set<XCUIElement.ElementType> = [
     .scrollView, .table, .collectionView, .webView,
   ]
@@ -19,6 +20,9 @@ extension ArgentRunnerSession {
 
   /// Guard against cyclic or absurdly deep raw trees.
   private static let rawDepthLimit = 100
+
+  /// Ceiling on emitted node depth.
+  private static let emittedDepthLimit = 60
 
   /// Captures the accessibility tree in ONE XPC round trip (`snapshot()` on
   /// the app element) and then flattens it in-process — the traversal itself
@@ -46,11 +50,7 @@ extension ArgentRunnerSession {
       )
     }
 
-    let nodes = Self.flatten(
-      root,
-      interactiveOnly: request.interactiveOnly ?? false,
-      maxDepth: request.depth ?? 60
-    )
+    let nodes = Self.flatten(root)
 
     let capped = nodes.count >= Self.snapshotNodeBudget
 
@@ -69,30 +69,21 @@ extension ArgentRunnerSession {
 
   /// Pure tree walk over the one-shot snapshot: filters to elements an agent
   /// can name or act on, assigns indices and parent links in emission order,
-  /// dedupes mirror elements, and annotates scroll containers whose content
-  /// extends beyond the visible viewport.
-  static func flatten(
-    _ root: XCUIElementSnapshot,
-    interactiveOnly: Bool,
-    maxDepth: Int
-  ) -> [SnapshotNodePayload] {
+  /// and dedupes mirror elements.
+  static func flatten(_ root: XCUIElementSnapshot) -> [SnapshotNodePayload] {
     struct WorkItem {
       let snapshot: XCUIElementSnapshot
       let rawDepth: Int
       let emittedDepth: Int
       let parentIndex: Int
-      let scrollAnchor: (index: Int, rect: CGRect)?
     }
 
     let viewport = root.frame
-    var nodes = [makeNode(root, index: 0, depth: 0, parentIndex: nil, visible: true)]
+    var nodes = [makeNode(root, index: 0, depth: 0, parentIndex: nil)]
     var seen: Set<String> = [identity(root)]
-    var hiddenAbove: Set<Int> = []
-    var hiddenBelow: Set<Int> = []
 
-    let rootAnchor = scrollAnchor(root, index: 0)
     var stack = root.children.reversed().map {
-      WorkItem(snapshot: $0, rawDepth: 1, emittedDepth: 1, parentIndex: 0, scrollAnchor: rootAnchor)
+      WorkItem(snapshot: $0, rawDepth: 1, emittedDepth: 1, parentIndex: 0)
     }
 
     while let item = stack.popLast() {
@@ -102,36 +93,22 @@ extension ArgentRunnerSession {
       let snapshot = item.snapshot
       let frame = snapshot.frame
       let visible = viewport.isEmpty || (!frame.isEmpty && viewport.intersects(frame))
-      if !visible, let anchor = item.scrollAnchor {
-        if frame.maxY <= anchor.rect.minY {
-          hiddenAbove.insert(anchor.index)
-        } else if frame.minY >= anchor.rect.maxY {
-          hiddenBelow.insert(anchor.index)
-        }
-      }
 
-      let include =
-        visible && item.emittedDepth <= maxDepth
-        && shouldInclude(snapshot, interactiveOnly: interactiveOnly)
+      let include = visible && item.emittedDepth <= emittedDepthLimit && shouldInclude(snapshot)
       let key = identity(snapshot)
       let duplicate = seen.contains(key)
 
       var childParentIndex = item.parentIndex
       var childEmittedDepth = item.emittedDepth
-      var childAnchor = item.scrollAnchor
 
       if include && !duplicate {
         seen.insert(key)
         let index = nodes.count
         nodes.append(
-          makeNode(
-            snapshot, index: index, depth: item.emittedDepth, parentIndex: item.parentIndex,
-            visible: visible
-          )
+          makeNode(snapshot, index: index, depth: item.emittedDepth, parentIndex: item.parentIndex)
         )
         childParentIndex = index
         childEmittedDepth += 1
-        childAnchor = scrollAnchor(snapshot, index: index) ?? item.scrollAnchor
       }
 
       for child in snapshot.children.reversed() {
@@ -140,27 +117,17 @@ extension ArgentRunnerSession {
             snapshot: child,
             rawDepth: item.rawDepth + 1,
             emittedDepth: childEmittedDepth,
-            parentIndex: childParentIndex,
-            scrollAnchor: childAnchor
+            parentIndex: childParentIndex
           )
         )
       }
     }
 
-    for index in nodes.indices {
-      if hiddenAbove.contains(index) { nodes[index].hiddenContentAbove = true }
-      if hiddenBelow.contains(index) { nodes[index].hiddenContentBelow = true }
-    }
-
     return nodes
   }
 
-  private static func shouldInclude(
-    _ snapshot: XCUIElementSnapshot,
-    interactiveOnly: Bool
-  ) -> Bool {
+  private static func shouldInclude(_ snapshot: XCUIElementSnapshot) -> Bool {
     if interactiveTypes.contains(snapshot.elementType) { return true }
-    if interactiveOnly { return false }
     if scrollContainerTypes.contains(snapshot.elementType) { return true }
 
     return !snapshot.label.isEmpty || !snapshot.identifier.isEmpty
@@ -171,8 +138,7 @@ extension ArgentRunnerSession {
     _ snapshot: XCUIElementSnapshot,
     index: Int,
     depth: Int,
-    parentIndex: Int?,
-    visible: Bool
+    parentIndex: Int?
   ) -> SnapshotNodePayload {
     let frame = snapshot.frame
     return SnapshotNodePayload(
@@ -191,13 +157,8 @@ extension ArgentRunnerSession {
       enabled: snapshot.isEnabled,
       focused: snapshot.hasFocus ? true : nil,
       selected: snapshot.isSelected ? true : nil,
-      // A one-shot snapshot carries no true hittability; visible + enabled is
-      // the honest approximation and the tool layer treats it as advisory.
-      hittable: visible && snapshot.isEnabled,
       depth: depth,
-      parentIndex: parentIndex,
-      hiddenContentAbove: nil,
-      hiddenContentBelow: nil
+      parentIndex: parentIndex
     )
   }
 
@@ -226,13 +187,6 @@ extension ArgentRunnerSession {
   /// Non-finite coordinates collapse to 0 for the wire payload (see makeNode).
   private static func finite(_ v: CGFloat) -> Double {
     v.isFinite ? Double(v) : 0
-  }
-
-  private static func scrollAnchor(
-    _ snapshot: XCUIElementSnapshot,
-    index: Int
-  ) -> (index: Int, rect: CGRect)? {
-    scrollContainerTypes.contains(snapshot.elementType) ? (index, snapshot.frame) : nil
   }
 
   private static func valueText(_ value: Any?) -> String? {

@@ -36,10 +36,7 @@ function node(
     enabled: true,
     focused: null,
     selected: null,
-    hittable: true,
     parentIndex: null,
-    hiddenContentAbove: null,
-    hiddenContentBelow: null,
     ...partial,
   };
 }

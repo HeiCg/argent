@@ -31,7 +31,6 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 | `durationMs`               | `longPress`, `drag` | Press duration / movement duration.                                     |
 | `settle`                   | `drag`              | Rest at the destination before lifting (~0 release velocity, no fling). |
 | `text`                     | `type`              | Text for the focused input.                                             |
-| `interactiveOnly`, `depth` | `snapshot`          | Tree filtering.                                                         |
 
 ## Commands
 
@@ -75,11 +74,8 @@ Flat list in emission order; `parentIndex` links reconstruct the tree.
   "enabled": true,
   "focused": null,
   "selected": null,
-  "hittable": true,
   "depth": 3,
-  "parentIndex": 44,
-  "hiddenContentAbove": null,
-  "hiddenContentBelow": null
+  "parentIndex": 44
 }
 ```
 
@@ -88,8 +84,6 @@ Flat list in emission order; `parentIndex` links reconstruct the tree.
   label/identifier/value; visible in the viewport; deduped by
   type+texts+geometry. Hard cap 1500 nodes (`quality.state` becomes
   `degraded`, `reasonCode: "node_cap"`).
-- `hiddenContentAbove/Below` on a scroll container: content exists beyond the
-  visible viewport in that direction.
 - `quality`: `{state: healthy|degraded, backend: "xctest", reason?,
 reasonCode?}`.
 

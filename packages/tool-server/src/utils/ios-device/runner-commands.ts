@@ -158,11 +158,8 @@ export interface RunnerSnapshotNode {
   enabled: boolean;
   focused: boolean | null;
   selected: boolean | null;
-  hittable: boolean;
   depth: number;
   parentIndex: number | null;
-  hiddenContentAbove: boolean | null;
-  hiddenContentBelow: boolean | null;
 }
 
 export interface RunnerSnapshotQuality {
@@ -200,12 +197,7 @@ export async function captureSnapshot(
   if (pending) return pending;
   const request = (async () => {
     const data = (await api.run(
-      {
-        command: "snapshot",
-        appBundleId: bundleId,
-        interactiveOnly: opts.interactiveOnly ?? false,
-        ...(opts.depth != null ? { depth: opts.depth } : {}),
-      },
+      { command: "snapshot", appBundleId: bundleId },
       { readOnly: true, timeoutMs: 45_000 }
     )) as SnapshotData;
     return { nodes: data.nodes ?? [], quality: data.quality ?? null };
