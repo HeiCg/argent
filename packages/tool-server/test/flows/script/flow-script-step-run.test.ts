@@ -158,6 +158,32 @@ describe("a script step in a run", () => {
     expect(result.steps[0]!.scriptLog).toContain("line 0 ");
   });
 
+  it("spends one run-wide budget across the run's steps through the runner", async () => {
+    // Pins the WIRING of state.scriptLogBudget (the executor-level test in
+    // flow-script-logs.test.ts pins the budget itself): each chatty step fills
+    // its own 64 KiB step ceiling, four of them exhaust the 256 KiB run, and
+    // everything after reports no text at all — with the flag still set, so
+    // the report never reads as "printed nothing". Deleting the logBudget
+    // pass-through turns the cap into 64 KiB x steps, which this catches.
+    await write("scripts/chatty.mjs", `process.stdout.write("z".repeat(64 * 1024));`);
+    await write("scripts/quiet.mjs", `console.log("the quiet one ran");`);
+    const chattyStep = "  - script: { path: ../../scripts/chatty.mjs }\n";
+    await flow(
+      "budget",
+      "steps:\n" + chattyStep.repeat(5) + "  - script: { path: ../../scripts/quiet.mjs }\n"
+    );
+
+    const { result } = await runFlow("budget");
+
+    expect(result.ok).toBe(true);
+    for (const starved of result.steps.slice(4)) {
+      expect(starved.scriptLog).toBeUndefined();
+      expect(starved.scriptLogTruncated).toBe(true);
+    }
+    // And the earlier steps were truncated by their own ceiling, not starved.
+    expect(result.steps[0]!.scriptLog).not.toBe("");
+  });
+
   it("classifies as needing no device", () => {
     const registry = mockRegistry().registry;
     expect(stepRequiresDevice(registry, { kind: "script", path: "seed.mjs" })).toBe(false);
@@ -312,6 +338,29 @@ describe("a script path is checked at its own step", () => {
     expect(result.steps[0]!.reason).toContain('write it as "../../scripts/createUser.mjs"');
   });
 
+  it("refuses a mis-cased spelling of a script reached through a cross-directory symlink", async () => {
+    // The link lives in scripts/ but points into lib/, so the only listing
+    // that holds its name is the SPELLED directory's. resolveFlowRelativeFile
+    // lists that one — this pins it, because listing `path.dirname(canonical)`
+    // instead would compare the supplied name against lib/'s entries, read
+    // `absent` (which refuses nothing), and let the mis-cased path run.
+    await fs.mkdir(path.join(root, "lib"), { recursive: true });
+    await fs.writeFile(path.join(root, "lib", "real.mjs"), `console.log("ok");`);
+    await fs.mkdir(path.join(root, "scripts"), { recursive: true });
+    await fs.symlink(
+      path.join(root, "lib", "real.mjs"),
+      path.join(root, "scripts", "CreateUser.mjs")
+    );
+    await flow("cased-link", "steps:\n  - script: { path: ../../scripts/createUser.mjs }\n");
+
+    const { result } = await runFlow("cased-link");
+
+    expect(result.steps[0]).toMatchObject({ status: "error" });
+    expect(result.steps[0]!.reason).toContain(
+      'mis-cased script path "../../scripts/createUser.mjs"'
+    );
+  });
+
   it("asks for a rename when the spelling on disk is one no path could name", async () => {
     // `ALT.MJS` case-folds onto the requested `alt.mjs`, so the file IS the one
     // meant — but SCRIPT_FILE_NAME_PATTERN rejects the uppercase extension, so
@@ -434,6 +483,30 @@ describe("where a script path resolves", () => {
 
     expect(result.ok).toBe(true);
     expect(result.steps[0]!.scriptLog).toContain("from flow_path");
+  });
+
+  it("runs the script in project_root, not in the flow file's directory", async () => {
+    // Pins the WIRING, not the executor (flow-script-environment.test.ts pins
+    // that): state.projectRoot reaches execute() as projectRoot. The mutation
+    // that swaps it for flowDir passes every fixture whose flow sits under
+    // the same root it probes, so this keeps the two candidates distinct —
+    // the flow lives in elsewhere/, the cwd must still be project_root.
+    await write("scripts/cwd.mjs", `console.log(process.cwd());`);
+    await write(
+      path.join("elsewhere", "standalone.yaml"),
+      "steps:\n  - script: { path: ../scripts/cwd.mjs }\n"
+    );
+    const flowPath = path.join(root, "elsewhere", "standalone.yaml");
+    const result = await run(
+      mockRegistry().registry,
+      { flow_path: flowPath },
+      boundaryCtx(flowPath)
+    );
+
+    expect(result.ok).toBe(true);
+    const reported = fsSync.realpathSync(result.steps[0]!.scriptLog!.trim());
+    expect(reported).toBe(fsSync.realpathSync(root));
+    expect(reported).not.toBe(fsSync.realpathSync(path.join(root, "elsewhere")));
   });
 });
 

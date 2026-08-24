@@ -42,7 +42,7 @@ describe("script log rendering", () => {
   it("says so when a log limit dropped output, since the text carries no marker", () => {
     const lines = renderScriptLogLines({ ...PASSING, scriptLogTruncated: true }, 1);
     expect(lines).toHaveLength(3);
-    expect(lines.at(-1)).toContain("… output truncated (script log limit reached)");
+    expect(lines.at(-1)).toContain("… output truncated");
   });
 
   it("prints the truncation notice alone when the whole log was dropped", () => {
@@ -53,7 +53,7 @@ describe("script log rendering", () => {
       1
     );
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("… output truncated (script log limit reached)");
+    expect(lines[0]).toContain("… output truncated");
   });
 
   it("prints nothing for a step with no log, or a non-string one off the wire", () => {

@@ -317,7 +317,9 @@ export async function flowRunToMcpContent(
     if (scriptLog || scriptLogTruncated) {
       const parts = [`${stepIndent(step.depth)}script output:`];
       if (scriptLog) parts.push(scriptLog.endsWith("\n") ? scriptLog.slice(0, -1) : scriptLog);
-      if (scriptLogTruncated) parts.push("… output truncated (script log limit reached)");
+      // Cause-neutral: the flag also fires when the executor's frame collapser
+      // drops a fatal error's frame dump, which no log limit caused.
+      if (scriptLogTruncated) parts.push("… output truncated");
       blocks.push({ type: "text", text: parts.join("\n") });
     }
 

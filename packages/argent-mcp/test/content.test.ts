@@ -349,7 +349,7 @@ describe("flowRunToMcpContent", () => {
     expect(blocks[2]).toEqual({ type: "text", text: "[2] ✓   script scripts/seed.mjs" });
     expect(blocks[3]).toEqual({
       type: "text",
-      text: "  script output:\ncreating order\n… output truncated (script log limit reached)",
+      text: "  script output:\ncreating order\n… output truncated",
     });
   });
 
@@ -360,7 +360,7 @@ describe("flowRunToMcpContent", () => {
         { index: 0, kind: "script", status: "fail", scriptLog: "…", scriptLogTruncated: true },
       ],
     });
-    expect(JSON.stringify(truncated)).toContain("output truncated (script log limit reached)");
+    expect(JSON.stringify(truncated)).toContain("output truncated");
 
     // A run-wide budget an earlier step exhausted drops a later script's output
     // entirely; the notice has to stand on its own or the report reads as a
@@ -371,7 +371,7 @@ describe("flowRunToMcpContent", () => {
     });
     expect(nothingLeft[2]).toEqual({
       type: "text",
-      text: "script output:\n… output truncated (script log limit reached)",
+      text: "script output:\n… output truncated",
     });
 
     const hostile = await flowRunToMcpContent({

@@ -239,9 +239,13 @@ export interface StepReport {
   /** Snapshot-step artifacts (baseline/current/diff) as materializable handles. */
   artifacts?: SnapshotArtifacts;
   /**
-   * A `script` step's captured stdout and stderr, in written order, possibly
-   * truncated. NOT redacted: the executor scrubs only the secrets it is handed,
-   * and {@link runScriptStep} hands it none. Set whatever the step's status — a
+   * A `script` step's captured stdout and stderr, in arrival order, possibly
+   * truncated. Arrival order is not written order: a burst to both streams
+   * inside one event-loop turn can land in either stream's order, so only each
+   * stream's own sequence carries causality. NOT redacted: the executor scrubs
+   * only the secrets it is handed, and {@link runScriptStep} hands it none. Set
+   * whatever the step's status while the run's shared log budget lasts — a run
+   * an earlier script exhausted drops a later one's output entirely — since a
    * passing script's log is the only record of what it did.
    */
   scriptLog?: string;
@@ -2139,10 +2143,15 @@ interface ResolvedFlowRelativeFile {
  *   relative (parse rejects an absolute or drive-prefixed target), so the
  *   concatenation is well-formed.
  * - The casing check lists the directory the target is SPELLED in, NOT
- *   `path.dirname(canonical)`: realpath rewrites a symlinked target to its own
- *   target's name, so `run: alias.yaml` (alias.yaml → a.yaml) — a legitimate
- *   layout the cycle guard already relies on — would be refused for not being
- *   named "a.yaml". `path.dirname` removes a segment without collapsing `..`,
+ *   `path.dirname(canonical)`. The basename compared is always the SUPPLIED one
+ *   (`path.posix.basename(target)`), so a canonical-directory listing would
+ *   compare that name against entries it was never written among: for a link
+ *   reached across directories, the link's own directory holds no entry that
+ *   case-folds to the supplied name, so the verdict would be `absent` — which
+ *   refuses nothing — and a MIS-CASED spelling of the link's own name would
+ *   skip the check entirely, reopening the ENOENT-on-Linux-CI hazard the check
+ *   exists for. The spelled directory is the listing that holds the link.
+ *   `path.dirname` removes a segment without collapsing `..`,
  *   so a `..` still reaches readdir intact.
  *
  * There is deliberately NO path fence here. A target is reachable exactly when
@@ -2355,9 +2364,8 @@ async function runScriptStep(
     return {
       status: "error",
       reason:
-        `mis-cased script path "${target}": no directory entry is named "${suppliedBase}" ` +
-        `(this filesystem matched it case-insensitively to "${spelling.actual}"), so this flow ` +
-        `runs here and fails with ENOENT on a case-sensitive checkout — ${recovery}`,
+        `mis-cased script path "${target}": the directory holds "${spelling.actual}", not ` +
+        `"${suppliedBase}" — a case-sensitive checkout (Linux CI) fails this step with ENOENT — ${recovery}`,
     };
   }
 
@@ -2769,9 +2777,11 @@ export async function resolveFlowSource(
   // Before either branch, so both are covered. `getFlowPath` validates the root
   // on the `name` branch only, and deleting `setActiveProjectRoot` — which ran
   // here, unconditionally, and whose body is today's assertValidProjectRoot —
-  // removed the check on the `flow_path` branch entirely. Nothing reads
-  // project_root on that branch today, so this restores a guardrail rather than
-  // fixing a live exploit.
+  // removed the check on the `flow_path` branch entirely, letting relative and
+  // ".."-bearing roots through. That branch is no longer free of reads either:
+  // ExecState.projectRoot carries it to a script: step as the child's
+  // working directory, so this guard is what keeps a relative or
+  // ".."-bearing root from becoming a script's cwd.
   assertValidProjectRoot(params.project_root);
 
   if (params.flow_path !== undefined) {
@@ -2782,8 +2792,8 @@ export async function resolveFlowSource(
           `an upload — sibling run: files, baselines, and baseline write-back all resolve beside ` +
           `the copy this server materialized, alone in a temp directory. Pass name + ` +
           `project_root to run a self-contained flow from a remote client; name uploads the same ` +
-          `way, so a flow with run: or snapshot: steps needs the client and tool server on one ` +
-          `filesystem.`,
+          `way, so a flow with run:, script: or snapshot: steps needs the client and tool server ` +
+          `on one filesystem.`,
         {
           error_code: FAILURE_CODES.FLOW_FILE_INVALID,
           failure_stage: "flow_path_shared_filesystem",

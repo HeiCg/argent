@@ -398,7 +398,7 @@ describe("argent flow run", () => {
     expect(out).toContain("✓  1 script scripts/seed.mjs");
     expect(out).toContain("       │ creating order");
     expect(out).toContain("       │ order 4711 created");
-    expect(out).toContain("       │ … output truncated (script log limit reached)");
+    expect(out).toContain("       │ … output truncated");
     // Live mode owns the step lines, so the buffered renderer must not print
     // the same run a second time underneath them.
     expect(out.match(/script scripts\/seed\.mjs/g)).toHaveLength(1);

@@ -315,8 +315,11 @@ export function renderScriptLogLines(s: StepReport, n: number): string[] {
   // Printed even with no text above it: a run-wide budget an earlier step
   // exhausted can drop a script's output entirely, and silence would read as a
   // script that printed nothing. `=== true` because the value is wire data.
+  // Cause-neutral on purpose: a log limit is not the only thing that sets the
+  // flag — the executor's frame collapser also sets it when it drops a fatal
+  // error's frame dump.
   if (s.scriptLogTruncated === true) {
-    lines.push(renderUnderStepLine(s, n, "│ … output truncated (script log limit reached)"));
+    lines.push(renderUnderStepLine(s, n, "│ … output truncated"));
   }
   return lines;
 }
