@@ -100,16 +100,7 @@ function findDependencyMissing(err: unknown): DependencyMissingError | null {
   return findErrorInCauseChain(err, DependencyMissingError);
 }
 
-/**
- * Wire-safe failure classification for a tool-error response, so a caller can
- * tell a per-request rejection (e.g. `error_kind: "validation"`) from an infra
- * fault without parsing the message. Signals carry only static allowlisted
- * fields — never paths, hosts, or argv — so they are safe to put on the wire.
- */
-/**
- * A shallow copy without the named keys — for reading a caller's own parameter
- * names back to them after the file boundary has added its derived ones.
- */
+/** A shallow copy without the named keys, so a message reads back only the caller's own. */
 function omitKeys(args: unknown, keys: readonly string[]): unknown {
   if (keys.length === 0 || args === null || typeof args !== "object" || Array.isArray(args)) {
     return args;
@@ -119,6 +110,12 @@ function omitKeys(args: unknown, keys: readonly string[]): unknown {
   return copy;
 }
 
+/**
+ * Wire-safe failure classification for a tool-error response, so a caller can
+ * tell a per-request rejection (e.g. `error_kind: "validation"`) from an infra
+ * fault without parsing the message. Signals carry only static allowlisted
+ * fields — never paths, hosts, or argv — so they are safe to put on the wire.
+ */
 function errorSignalFields(err: unknown): { error_code?: string; error_kind?: string } {
   const signal = getFailureSignal(err);
   return signal ? { error_code: signal.error_code, error_kind: signal.error_kind } : {};
@@ -781,21 +778,12 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
             req.body,
             { invalid_params: deriveInvalidParams(parseResult.error, declared) }
           );
-          // Not `parseResult.error.message`: that is the raw issue JSON, which
-          // names the parameter the tool wanted and never the one the caller
-          // sent. See describeParamIssues.
-          //
-          // Rendered against the caller's own KEYS, which `bodyArgs` is not:
-          // `resolveFileInputs` has run by here, so a derived `flow_file` would
-          // be listed beside the misspelling the "You sent:" clause exists to
-          // expose. Values stay `bodyArgs`, so every verdict is still read off
-          // what zod parsed.
-          //
-          // `issues` carries the machine-readable form alongside it: `argent
-          // run` maps each issue back to the FLAG the user typed, prints the
-          // tool's help block, and exits 2 — none of which it can do from a
-          // sentence. A separate field also lets the client recognize input
-          // validation structurally rather than by wording.
+          // `describeParamIssues`, not `parseResult.error.message`: the raw
+          // issue JSON never names the key the caller sent. Keys come from
+          // `omitKeys` because `resolveFileInputs` has run by here, and a
+          // derived `flow_file` would sit beside the misspelling the message
+          // exists to expose. `issues` carries the machine-readable form, which
+          // `argent run` needs to name the flag the user typed.
           res.status(400).json({
             error: describeParamIssues(parseResult.error, omitKeys(bodyArgs, derivedTargets)),
             issues: parseResult.error.issues,
@@ -1032,15 +1020,10 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           res.status(400).json({ error: invalidInputErr.message, ...errorSignalFields(err) });
           return;
         }
-        // A schema miss the REGISTRY caught, rather than the HTTP layer's own
-        // copy of the check above. Only flow-add-step's sub-tool reaches here,
-        // where the outer call's params parsed fine — so the same mistyped
-        // argument was a 400 sent directly and a 500 sent inside a recording.
-        // The failure already carries `error_kind: "validation"`.
-        //
-        // The other two dispatchers never get here: run-sequence catches every
-        // sub-invoke failure into `steps[].error`, and the flow runner returns
-        // its `tool:` steps as `status: "error"`. Both answer 200.
+        // A schema miss the REGISTRY caught, not the HTTP layer's own check
+        // above. Only flow-add-step's sub-tool reaches here: run-sequence
+        // catches sub-invoke failures into `steps[].error` and the flow runner
+        // reports its `tool:` steps as `status: "error"`, so both answer 200.
         if (getFailureSignal(err)?.error_code === FAILURE_CODES.TOOL_INPUT_INVALID) {
           res.status(400).json({ error: formatErrorForAgent(err), ...errorSignalFields(err) });
           return;

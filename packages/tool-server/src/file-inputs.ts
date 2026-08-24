@@ -60,12 +60,9 @@ export interface ResolveFileInputsResult {
   /** Per-target outcomes, forwarded to the tool via `InvokeToolOptions.fileInputs`. */
   fileInputs: Record<string, ResolvedFileInput> | undefined;
   /**
-   * Targets the CLIENT synthesized for this call, rather than the caller having
-   * named them — so an error message can leave them out of the keys it reads
-   * back. Nearly every spec interpolates its own target, so the wrapper carries
-   * what the caller wrote; `flow_file` is the exception, built from
-   * `project_root` plus `name`. Only a target that arrived as a WRAPPER is
-   * listed — a plain value on the same key is a caller override.
+   * Targets the client built out of other params (`flow_file`) rather than the
+   * caller naming them, so an error message can leave them out of the keys it
+   * reads back.
    */
   derivedTargets: string[];
   /**
@@ -125,9 +122,8 @@ function isParamSet(value: unknown): boolean {
 }
 
 /**
- * Whether ANY of a gate's named params is set. A gate may name several
- * spellings of one source (`name` and its `flow_name` alias), and any one of
- * them makes the call dual-source.
+ * A gate may name both spellings of one source (`name` and its `flow_name`
+ * alias); any one of them makes the call dual-source.
  */
 function isAnyParamSet(names: string | string[], args: Record<string, unknown>): boolean {
   return (typeof names === "string" ? [names] : names).some((n) => isParamSet(args[n]));
@@ -316,8 +312,8 @@ export async function resolveFileInputs(
     for (const spec of specs) {
       const value = args[spec.target];
       if (!isFileInputWire(value)) continue;
-      // A template naming anything but its own target was built by the client
-      // out of OTHER params, so this key is the client's, not the caller's.
+      // A path template naming anything but its own target was built by the
+      // client, so this key is the client's, not the caller's.
       if (spec.path !== `\${${spec.target}}` && !derivedTargets.includes(spec.target)) {
         derivedTargets.push(spec.target);
       }

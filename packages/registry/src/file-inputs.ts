@@ -138,9 +138,8 @@ export interface FileInputSpec {
    * hands zod both params as plain strings. Clients ignore this field: they
    * still wrap `target` whenever it is set, which is the wire this handles.
    *
-   * A LIST when the alternate source has more than one accepted spelling (e.g.
-   * flow-execute's `name` and its `flow_name` alias): any one of them being set
-   * makes the call dual-source, so any one must suppress the resolution.
+   * A list when the alternate source has more than one spelling (flow-execute's
+   * `name` and its `flow_name` alias): any one being set is a dual source.
    */
   unwrapWhenSet?: string | string[];
 }

@@ -58,21 +58,15 @@ export function findMissingRequired(
 }
 
 /**
- * The server's schema-validation issue list, from whichever channel carried it — or null when this
- * failure did not carry one.
+ * The server's schema-validation issue list, or null when this failure did not carry one.
  *
- * Two channels, because the wire changed. A tool-server now answers a rejected call with PROSE in
+ * Two channels, because the wire changed: a tool-server now answers a rejected call with prose in
  * `error` and the issue list beside it in `issues`; before that, the issue list WAS the message.
- * Reading the structured field first and falling back to parsing the message covers NEW client ->
- * OLD server.
+ * Reading the structured field first and falling back to parsing the message covers a new client
+ * against an old server.
  *
  * The reverse direction is a real break and is reachable, since `argent link` can point a local
- * CLI at a remote tool-server with no version handshake: an already-released CLI knows only
- * `JSON.parse(message)`, so prose makes it fall through to a bare `console.error(message)`, losing
- * the `--flag` attribution, the help block, and a `--json` caller's JSON object. Nothing here can
- * fix that. (`argent flow run` is unaffected — `requireLocalToolServer` refuses env/link routing.)
- *
- * Neither channel is trusted on faith: the payload must still BE a non-empty list of issues.
+ * CLI at a remote tool-server with no version handshake. Nothing here can fix that.
  */
 function serverIssueList(err: unknown): ValidationIssue[] | null {
   const carried = (err as { issues?: unknown } | null)?.issues;

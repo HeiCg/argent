@@ -226,11 +226,9 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           }
           results.push({ tool: step.tool, result });
         } catch (err) {
-          // Re-render a schema miss from the STEP's own args, not the merged
-          // ones: `udid` is injected into every step, so the registry's
-          // "You sent:" list would name a key the author never typed beside the
-          // misspelling it exists to expose. Re-rendering rather than
-          // pre-flighting keeps the step's `toolInvoked`/`toolFailed` events.
+          // Re-render from the STEP's own args, not the merged ones: `udid` is
+          // injected into every step, so the message would name a key the
+          // author never typed beside the misspelling it exists to expose.
           const reframed = describeNestedParamError(
             registry,
             err,

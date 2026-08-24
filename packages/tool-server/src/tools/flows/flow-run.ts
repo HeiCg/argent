@@ -86,11 +86,8 @@ import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flo
 import { describeVega } from "../describe/platforms/vega";
 import { pinStatusBar, restoreStatusBar } from "../../utils/status-bar";
 
-// `flow_name` is the parameter name callers reach for, since the tool is
-// `flow-execute`. `name` is `.optional()` here so `flow_path` can stand in, so
-// a `flow_name` call never tripped a missing-`name` check — it tripped the
-// exactly-one-source rule below, anchored on the one source field the caller
-// had no reason to send. Accept the alias instead of spending a turn on it.
+// `flow_name` is the spelling callers reach for, since the tool is
+// `flow-execute`, so it is accepted as an alias for `name`.
 const zodSchema = z
   .object({
     name: z
@@ -148,22 +145,20 @@ const zodSchema = z
       ),
   })
   .superRefine((params, ctx) => {
-    // The alias counts as a name here: a caller who spelled it `flow_name` has
-    // named a flow source, and must not also be told to pick one.
+    // The alias counts as a name: it names a flow source too.
     const named = params.name !== undefined || params.flow_name !== undefined;
     if (named === (params.flow_path !== undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        // A call with NO source at all is the one that needs the alias spelled
-        // out: the caller may well have named the flow under a key zod stripped.
+        // A call with NO source may have named the flow under a key zod
+        // stripped, so that one needs the alias spelled out.
         message: named
           ? "Pass exactly one flow source: name or flow_path."
           : "Pass exactly one flow source: name or flow_path. flow-execute needs the flow's " +
             "name in `name` (`flow_name` is accepted as an alias) — it resolves " +
             "<project_root>/.argent/flows/<name>.yaml.",
-        // The ROOT, not `flow_path`: this rule spans the source fields, so
-        // anchoring it on one points the reader at a field they may well have
-        // got right and prefixes the sentence with "`flow_path`:".
+        // The ROOT, not `flow_path`: the rule spans both source fields, and a
+        // path would prefix the message with "`flow_path`:".
         path: [],
       });
     }
@@ -172,19 +167,15 @@ const zodSchema = z
 type Params = z.infer<typeof zodSchema>;
 
 /**
- * The flow name, from `name` or its alias. Required, but deliberately not by
- * the schema: a Zod `required` failure names the field it wanted and never the
- * one the caller sent, which is why the alias exists.
+ * The flow name, from `name` or its alias.
  *
- * The message names the rejected spellings itself. Every other tool's schema
- * error closes with the caller's own keys, but this check runs AFTER zod has
- * stripped the unknown ones, so a caller who wrote `flowName` is no longer
+ * The message spells out the rejected spellings itself, because this runs AFTER
+ * zod stripped the unknown keys: a caller who wrote `flowName` is no longer
  * distinguishable here from one who sent no name at all.
  *
  * `InvalidToolInputError`, not a plain `Error`: a missing name is a client
  * input error, so it must reach the HTTP boundary as a 400 and telemetry as a
- * `validation` signal. Making `name` optional moved this check out of zod, so
- * it carries that classification itself.
+ * `validation` signal.
  */
 export function resolveFlowName(
   params: { name?: string; flow_name?: string },
@@ -196,8 +187,7 @@ export function resolveFlowName(
   if (name === undefined || name === "") {
     // Over the wire this is reachable ONLY for an empty-string `name` or
     // `flow_name`: a call spelling it `flowName` sets no source at all, so the
-    // schema's exactly-one-source rule fires first and names their own key. So
-    // this text must not claim to cover that caller.
+    // schema's exactly-one-source rule fires first and echoes their own key.
     throw new InvalidToolInputError(
       `${toolName} needs the flow's name in \`name\` (\`flow_name\` is accepted as an alias) — ` +
         "it resolves <project_root>/.argent/flows/<name>.yaml. An empty string is not a name, and " +
@@ -222,17 +212,14 @@ const fileInputs: FileInputSpec[] = [
     path: "${flow_path}",
     kind: "file",
     optional: true,
-    // Both spellings, because both name a flow: naming only `name` would have
-    // the boundary resolve an alias-only caller's flow_path and answer with a
-    // 422 about a file the call never needed, not the 400 for the real mistake.
+    // Both spellings: the alias names a flow too, so a flow_name + flow_path
+    // call must reach zod's exactly-one rule, not a 422 about the flow_path file.
     unwrapWhenSet: ["name", "flow_name"],
   },
   // Two specs, one target: the client interpolates whichever spelling the
-  // caller sent, so the alias survives the file-input boundary. Without the
-  // `flow_name` spec an alias-only call uploads nothing and a REMOTE
-  // tool-server reads a client-side path that is not on its host. The `name`
-  // spec is LAST so it wins the client's last-write-wins merge, matching
-  // `resolveFlowName`'s `name || flow_name` precedence.
+  // caller sent, so an alias-only call still ships its flow file to a REMOTE
+  // tool-server instead of a client-side path. The `name` spec is LAST so it
+  // wins the client's last-write-wins merge, matching `name || flow_name`.
   {
     target: "flow_file",
     path: "${project_root}/.argent/flows/${flow_name}.yaml",
@@ -1097,8 +1084,6 @@ function displayFlowName(params: {
 }): string {
   const stem =
     params.flow_path === undefined ? undefined : path.basename(params.flow_path, ".yaml");
-  // `flow_name` is the accepted alias, so an alias-only call must render its
-  // name here rather than falling through to the placeholder.
   return params.name || params.flow_name || stem || params.flow_path || "(unspecified)";
 }
 
@@ -1237,9 +1222,8 @@ Pass exactly one flow source: name for a saved flow under project_root (\`flow_n
     services: () => ({}),
     async execute(_services, params, ctx?: ToolContext) {
       const signal = ctx?.signal;
-      // Fold the `flow_name` alias into `name` so both spellings take one
-      // path. Only for a name call: a flow_path call names no flow, and
-      // `resolveFlowName` would reject it for a name it is not meant to have.
+      // Fold the alias into `name`. Only for a name call: a flow_path call
+      // names no flow, so `resolveFlowName` would reject it.
       const named = params.flow_path === undefined ? resolveFlowName(params) : undefined;
       const { filePath, flowName, viaUpload } = await resolveFlowSource(
         named === undefined ? params : { ...params, name: named },
@@ -2619,10 +2603,8 @@ async function execLeafStep(
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
-        // Re-render a schema miss from the step's RECORDED args, not the bound
-        // ones: `bindDeviceArgs` re-injects the resolved device key, so the
-        // registry's "You sent:" list would name a key the flow author cannot
-        // have written.
+        // Re-render a schema miss from the step's RECORDED args: `bindDeviceArgs`
+        // injects the resolved device key, which the flow author never wrote.
         const reframed = describeNestedParamError(registry, err, step.name, args, step.args ?? {});
         return { ...base, status: "error", tool: step.name, reason: reframed ?? errMsg(err) };
       }
@@ -2687,10 +2669,9 @@ export async function resolveFlowSource(
   fileInput?: ResolvedFileInput,
   flowPathInput?: ResolvedFileInput
 ): Promise<{ filePath: string; flowName: string; viaUpload: boolean }> {
-  // Both spellings, matching the schemas: reading `name` alone, a `flow_name` +
-  // `flow_path` call looks single-source and complains about the file-input
-  // boundary instead of the two sources it was given. execute() folds the alias
-  // in first, so this only fires for direct callers.
+  // Both spellings, matching the schemas: reading `name` alone, a flow_name +
+  // flow_path call looks single-source and is diagnosed as a file-input
+  // boundary failure instead of the two sources it was given.
   const named = params.name ?? params.flow_name;
   // The schemas' superRefine already enforces this for flow-execute and
   // flow-read-prerequisite; this copy covers direct execute() callers (tests,
