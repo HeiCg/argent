@@ -43,43 +43,35 @@ const zodSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         // Same split as flow-execute: a call with NO source may have named the
-        // flow under a key zod stripped, so that one needs the alias spelled
-        // out. This tool is the documented pre-flight, so it is the first place
-        // an agent can learn the spelling.
+        // flow under a key zod stripped, so that one needs the alias spelled out.
         message: named
           ? "Pass exactly one flow source: name or flow_path."
           : "Pass exactly one flow source: name or flow_path. flow-read-prerequisite needs the " +
             "flow's name in `name` (`flow_name` is accepted as an alias) — it resolves " +
             "<project_root>/.argent/flows/<name>.yaml.",
-        // The ROOT, matching flow-execute: the rule spans the source fields, so
-        // it must not be anchored on one of them. See flow-run.ts.
+        // The ROOT, matching flow-execute: the rule spans both source fields,
+        // so it must not be anchored on one of them.
         path: [],
       });
     }
   });
 
-// Mirror of flow-execute's specs, field for field: the documented pre-flight is
-// "read the prerequisite, then run", so both tools must resolve the same source
-// under the same boundary rules. A spec that diverged — e.g. one that silently
-// dropped flow_path — would have this tool answer for the saved flow of the
-// same stem while flow-execute runs the explicit file: same flow identity, two
-// contracts. See flow-run.ts for why a dual-source wire is unwrapped
-// (caller-authored flow_path beside name) or dropped (client-derived flow_file
-// beside flow_path) rather than resolved.
+// Must stay field-for-field identical to flow-execute's specs, or the same
+// params resolve to different files here and there — e.g. dropping flow_path
+// would answer for the saved flow of the same stem. flow-run.ts explains the
+// unwrapWhenSet/skipWhenSet choices.
 const fileInputs: FileInputSpec[] = [
   {
     target: "flow_path",
     path: "${flow_path}",
     kind: "file",
     optional: true,
-    // Both spellings, matching flow-execute: the alias names a flow too, so a
-    // flow_name + flow_path call must reach zod's exactly-one rule rather than
-    // a 422 about the flow_path file.
+    // Both spellings: the alias names a flow too, so a flow_name + flow_path
+    // call must reach zod's exactly-one rule, not a 422 about the flow_path file.
     unwrapWhenSet: ["name", "flow_name"],
   },
-  // Two specs, one target — the alias survives the file-input boundary the same
-  // way flow-execute's does (the `name` spec is LAST so it wins the client's
-  // last-write-wins merge when both are sent, matching resolveFlowName).
+  // Two specs, one target, matching flow-execute: the `name` spec is LAST so it
+  // wins the client's last-write-wins merge when both are sent.
   {
     target: "flow_file",
     path: "${project_root}/.argent/flows/${flow_name}.yaml",
@@ -116,14 +108,10 @@ Address the flow exactly as you will address it in flow-execute: name or flow_pa
   fileInputs,
   services: () => ({}),
   async execute(_services, params, ctx?: ToolContext) {
-    // The same resolver flow-execute uses, gates included: the prerequisite
-    // reported here must be the contract of exactly the file flow-execute
-    // would run for these params — flow_path clears the statVerified
-    // co-location boundary (never uploads, never raw server paths) and reports
-    // its basename-derived logical name, while the name branch keeps the
-    // flow_file containment under project_root.
-    // Same alias fold as flow-execute, and for the same reason: only a name
-    // call resolves one, since a flow_path call names no flow.
+    // The same resolver flow-execute uses, gates included, so the prerequisite
+    // reported is the contract of exactly the file flow-execute would run for
+    // these params. Same alias fold too: only a name call resolves one, since a
+    // flow_path call names no flow.
     const named =
       params.flow_path === undefined
         ? resolveFlowName(params, "flow-read-prerequisite")

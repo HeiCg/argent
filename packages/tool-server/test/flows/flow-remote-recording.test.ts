@@ -601,11 +601,10 @@ describe("flow replay with an explicit boundary-resolved flow_path", () => {
   });
 
   it("resolves an UPLOADED flow named through the flow_name alias", async () => {
-    // The remote path the alias exists to serve: a client with no shared
-    // filesystem interpolates `${project_root}/.argent/flows/${flow_name}.yaml`,
-    // uploads it, and the server runs the materialized temp copy. Only the
-    // co-located spellings are covered elsewhere, so without this the source
-    // resolver could reject the alias and every local test stay green.
+    // The remote path: a client with no shared filesystem interpolates
+    // `${project_root}/.argent/flows/${flow_name}.yaml`, uploads it, and the
+    // server runs the materialized copy. Elsewhere only the co-located
+    // spellings are covered.
     const uploaded = path.join(os.tmpdir(), "argent-upload-aliased.yaml");
     await fs.writeFile(uploaded, "steps: []", "utf8");
     try {
