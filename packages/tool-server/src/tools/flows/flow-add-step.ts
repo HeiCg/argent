@@ -12,6 +12,7 @@ import {
   requireRecordingSession,
   appendStepToFlow,
   assertSessionStillLive,
+  dropMovedWarnings,
   withRecordingLock,
   appIdForPlatform,
   parseFlow,
@@ -667,6 +668,7 @@ async function activeFlowState(
   return withRecordingLock(session, async () => {
     assertSessionStillLive(session, ranOnDevice);
     if (session.persist === "host") {
+      const before = session.flow.steps;
       try {
         session.flow = parseFlow(await fs.readFile(session.filePath, "utf8"));
       } catch (err) {
@@ -677,6 +679,14 @@ async function activeFlowState(
             `the step count is from the last valid in-memory snapshot.`,
         };
       }
+      // The re-read ABSORBS a hand edit exactly as an append's does, and after
+      // it the finish can no longer tell one happened. So ask the same question
+      // here, or a verdict slides onto whichever step inherited its number —
+      // see {@link dropMovedWarnings}. Nothing is appended, so the two views
+      // differ only by the edit.
+      session.discardedWarnings =
+        (session.discardedWarnings ?? 0) +
+        dropMovedWarnings(session.stepWarnings, session.flow.steps, before);
     }
     return { stepCount: session.flow.steps.length };
   });

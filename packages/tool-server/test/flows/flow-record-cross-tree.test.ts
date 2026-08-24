@@ -1947,6 +1947,62 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     );
   });
 
+  it("drops the verdict when the call that absorbed the edit recorded nothing", async () => {
+    // A refusal re-reads the file just as an append does, so it ABSORBS a hand
+    // edit — and once `session.flow` has caught up, the finish's length check
+    // compares the edit against itself and passes. The twins defeat the anchor
+    // compare that is left: step 1 diverges, step 2 is its byte-identical twin
+    // that AGREED, and deleting step 1 slides the verdict onto the twin that
+    // checked out. The refusal itself is correct either way; what it must not
+    // do is take a signal away without saying so.
+    await startRecording("refused-absorb");
+    serveTree(iosRunnerTree([iosLabel("Proceed")]));
+    await recordWait("refused-absorb", { condition: "visible", selector: { text: "Continue" } });
+    serveTree(iosRunnerTree([iosLabel("Continue")]));
+    await recordWait("refused-absorb", { condition: "visible", selector: { text: "Continue" } });
+
+    const file = path.join(tmpDir, ".argent", "flows", "refused-absorb.yaml");
+    const parsed = parseFlow(await fs.readFile(file, "utf8"));
+    parsed.steps = parsed.steps.slice(1);
+    await fs.writeFile(file, serializeFlow(parsed), "utf8");
+
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "run-sequence") {
+          return {
+            completed: 0,
+            total: 1,
+            steps: [{ tool: "keyboard", error: "device went away" }],
+          };
+        }
+        throw new ToolNotFoundError(id);
+      }),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    const refusal = await createFlowAddStepTool(registry).execute(
+      {},
+      {
+        name: "refused-absorb",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({ udid: IOS, steps: [{ tool: "keyboard", args: { text: "hi" } }] }),
+      }
+    );
+    expect(refusal.recorded).toBeUndefined();
+    expect(refusal.stepCount).toBe(1);
+
+    const finished = await flowFinishRecordingTool.execute(
+      {},
+      { name: "refused-absorb", project_root: tmpDir }
+    );
+
+    expect(finished.summary).toHaveLength(1);
+    expect(verdictsIn(finished.summary).size).toBe(0);
+    expect(finished.message).toContain(
+      "1 warning raised during this recording is NOT in `summary`"
+    );
+  });
+
   it("drops the verdict when an inserted twin takes the warned step's number", async () => {
     // The same blindness reversed: number 1 holds an inserted copy, never probed.
     await startRecording("grown");

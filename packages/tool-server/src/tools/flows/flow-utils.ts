@@ -3351,19 +3351,20 @@ function anchorHolds(now: (string | null)[], before: (string | null)[], n: numbe
  * Drop the verdicts a mid-recording hand edit moved, at the one moment the move
  * is visible.
  *
- * Host mode re-reads the file before every append, so an edit becomes part of
- * the take and `session.flow` catches up to it. After that the finish has
- * nothing left to compare, and a verdict can land on a step it never judged
- * while the step it did judge reads clean.
+ * Host mode re-reads the file before every append AND before every return that
+ * records nothing, so an edit becomes part of the take and `session.flow`
+ * catches up to it. After that the finish has nothing left to compare, and a
+ * verdict can land on a step it never judged while the step it did judge reads
+ * clean.
  *
- * The append that ABSORBS the edit still holds both views, so ask here. A
+ * The call that ABSORBS the edit still holds both views, so ask there. A
  * verdict at number `n` survives only where {@link anchorHolds} shows the first
  * `n` steps are still those steps. Verdicts behind the edit keep theirs.
  *
  * Returns how many were dropped, so the finish can report a shortfall rather
  * than a clean bill of health.
  */
-function dropMovedWarnings(
+export function dropMovedWarnings(
   warnings: Map<number, RecordedStepWarning> | undefined,
   now: FlowStep[],
   before: FlowStep[]
