@@ -58,6 +58,7 @@ import {
   runDirective,
   invokeOnDevice,
   resultNote,
+  KEYBOARD_TOOL_ID,
   ABORTED_OUTCOME,
   probeWhenCondition,
   type ActionEnv,
@@ -2391,7 +2392,11 @@ async function execLeafStep(
         // step's warning; a raw tool step carrying the same clear would
         // otherwise report a clean pass with the note buried in `result` — which
         // no CLI renders, since `StepReport` there has no `result` field at all.
-        const note = resultNote(result);
+        //
+        // Keyed on the TOOL, not on the presence of a `note`. Other tools return
+        // one on a perfectly healthy result — see KEYBOARD_TOOL_ID for the list —
+        // and a step that warns on every run is a step nobody reads.
+        const note = step.name === KEYBOARD_TOOL_ID ? resultNote(result) : undefined;
         return {
           ...base,
           status: "pass",

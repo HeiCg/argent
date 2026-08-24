@@ -290,6 +290,22 @@ async function dispatchForResult(
 }
 
 /**
+ * The one tool whose result `note` reports a WEAKER pass.
+ *
+ * `note` is not a shared "this went badly" channel. Several tools attach one to
+ * a healthy result — `open-url` explains that an `http(s)` URL may open the
+ * browser, `react-profiler-status` declares `note` REQUIRED and fills it on the
+ * running-session path, `await-ui-element` says a `hidden` wait was met at once.
+ * None of those weakens the step, so promoting every `note` to a warning marks
+ * ordinary steps `⚠` forever and empties the signal this exists to carry.
+ *
+ * The Android `keyboard` clear is the one that does mean it: its `note` appears
+ * only when the verified accessibility replace did NOT run. Callers therefore
+ * name the tool rather than read the key structurally.
+ */
+export const KEYBOARD_TOOL_ID = "keyboard";
+
+/**
  * The `note` a tool result carries, when it carries one.
  *
  * Structural rather than typed against `KeyboardResult`: `invokeOnDevice`
@@ -2419,7 +2435,7 @@ async function runType(
   // actually handled.
   let warning: string | undefined;
   if (step.clear || step.text !== undefined) {
-    const sent = await dispatchForResult(env, "keyboard", {
+    const sent = await dispatchForResult(env, KEYBOARD_TOOL_ID, {
       ...(step.clear ? { clear: true } : {}),
       ...(step.text !== undefined ? { text: step.text } : {}),
     });
@@ -2460,7 +2476,7 @@ async function runType(
     // reaches here at all: `runDirective` gates `type` on Vega alone, and an
     // Apple TV stops at the focus tap above, whose `gesture-tap` resolves
     // simulator-server and rejects a tvOS UDID.)
-    if (!(await dispatchOrAbort(env, "keyboard", { key: "enter" }))) {
+    if (!(await dispatchOrAbort(env, KEYBOARD_TOOL_ID, { key: "enter" }))) {
       return ABORTED_OUTCOME;
     }
   }
