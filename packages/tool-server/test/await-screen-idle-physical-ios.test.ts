@@ -106,26 +106,31 @@ describe("await-screen-idle against a still physical-iPhone screen", () => {
     expect(r.note).toMatch(/screenshot/);
   });
 
-  it("leaves a physical ANDROID phone on the ordinary signature", async () => {
+  it("keeps a physical ANDROID phone's signature sensitive to frames", async () => {
     // `rotatingRead` narrows on platform AND kind, and a physical Android phone
     // is also `kind: "device"`. Dropping the platform half would give Android
-    // the order- and frame-free signature — which stops catching an animation
-    // that only moves things — and the CoreDevice truncation refusal, on a tree
-    // that has neither problem.
+    // the order- and frame-free signature, which equates two trees that differ
+    // only in frames — so a mid-animation screen (labels still, elements
+    // moving) would read as settled. With the narrowing intact the
+    // frame-bearing signature changes every poll and the wait must run out.
     const rows = LIMIT + 5;
-    describeAndroid.mockImplementation(async () => ({
-      source: "uiautomator",
-      tree: {
-        role: "AXGroup",
-        frame: { x: 0, y: 0, width: 1, height: 1 },
-        children: Array.from({ length: rows }, (_, i) => ({
-          role: "AXButton",
-          label: `Row ${i}`,
-          frame: { x: 0.04, y: i / rows, width: 0.92, height: 0.05 },
-          children: [],
-        })),
-      },
-    }));
+    let flip = false;
+    describeAndroid.mockImplementation(async () => {
+      flip = !flip;
+      return {
+        source: "uiautomator",
+        tree: {
+          role: "AXGroup",
+          frame: { x: 0, y: 0, width: 1, height: 1 },
+          children: Array.from({ length: rows }, (_, i) => ({
+            role: "AXButton",
+            label: `Row ${i}`,
+            frame: { x: 0.04, y: (i + (flip ? 0.5 : 0)) / rows, width: 0.92, height: 0.05 },
+            children: [],
+          })),
+        },
+      };
+    });
     const p = tool.execute({}, { udid: "R5CT30ABCDE" } as never) as Promise<{
       settled: boolean;
       note?: string;
@@ -134,8 +139,8 @@ describe("await-screen-idle against a still physical-iPhone screen", () => {
     void p.then(() => (done = true));
     for (let i = 0; i < 400 && !done; i++) await vi.advanceTimersByTimeAsync(250);
     const r = await p;
+    expect(r.settled, "a moving Android screen is not idle").toBe(false);
     expect(r.note, "the CoreDevice element ceiling is not Android's").toBeUndefined();
-    expect(r.settled).toBe(true);
   });
 
   it("leaves a simulator's tree alone, however large", async () => {

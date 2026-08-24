@@ -62,6 +62,7 @@ import { nativeProfilerStopTool } from "../src/tools/profiler/native-profiler/na
 import { nativeProfilerAnalyzeTool } from "../src/tools/profiler/native-profiler/native-profiler-analyze";
 import { profilerStackQueryTool } from "../src/tools/profiler/query/profiler-stack-query";
 import { profilerCombinedReportTool } from "../src/tools/profiler/combined/profiler-combined-report";
+import { settingsPermissionsTool } from "../src/tools/settings-permissions";
 
 const mockFlag = vi.mocked(isFlagEnabled);
 
@@ -784,15 +785,19 @@ describe("capability matrix is honest about physical-iOS support (clean 400 at t
     ).not.toThrow();
   });
 
-  // Every tool whose backend is simulator-only, enumerated rather than sampled:
-  // an unlisted one is how a physical iPhone reaches a `simctl spawn` / xctrace
-  // path and fails deep with a 500 instead of at the gate with a 400.
-  it("every simulator-only tool rejects a physical iPhone, and none of them lost simulator support", () => {
+  // Per-tool pinning for the simulator-only family: each entry fails if that
+  // tool's own capability silently gains or loses `apple.device`. This list
+  // does NOT claim to be exhaustive — the registry-derived sweep in
+  // physical-ios-capability-sweep.test.ts owns the "every simulator-only tool
+  // rejects a physical iPhone" claim, by construction, including tools added
+  // after this file was written.
+  it("each known simulator-only tool rejects a physical iPhone, and none of them lost simulator support", () => {
     const simulatorOnly: ReadonlyArray<readonly [string, ToolCapability | undefined]> = [
       ["paste", createPasteTool({} as never).capability],
       ["gesture-pinch", gesturePinchTool.capability],
       ["gesture-rotate", gestureRotateTool.capability],
       ["tv-remote", createTvRemoteTool({} as never).capability],
+      ["settings-permissions", settingsPermissionsTool.capability],
       ["native-describe-screen", nativeDescribeScreenTool.capability],
       ["native-devtools-status", nativeDevtoolsStatusTool.capability],
       ["native-find-views", nativeFindViewsTool.capability],

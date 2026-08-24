@@ -49,6 +49,8 @@ Whenever something changed YOU MUST first call `describe`, or another appropriat
 
 If a **tap fails twice** at the same coordinates, **stop retrying**. Re-run the discovery tool.
 
+**Exception — connected physical iPhone** (`platform: "ios"`, `kind: "device"` in `list-devices`): this rule is inverted. `describe` there returns synthesised, rotating placeholder frames, so use it only to learn WHAT is on screen; locate anything you intend to tap with `screenshot` first and tap those coordinates.
+
 If `describe` fails, **read the exact error before reacting**, follow the recovery guidance in `argent-device-interact` to choose the correct next action.
 
 Before starting to interact with the app, read the `argent-device-interact` skill first.

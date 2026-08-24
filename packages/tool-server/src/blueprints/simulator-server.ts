@@ -261,7 +261,10 @@ async function spawnSimulatorServerProcess(
       stderrTail = (stderrTail + data.toString()).slice(-2000);
     });
 
-    proc.on("exit", (code, signal) => {
+    // 'close', not 'exit': 'exit' can fire while stderr is still unread in the
+    // pipe, so the tail below would race empty and lose the diagnosis this
+    // handler exists to deliver. 'close' fires only after the stdio streams end.
+    proc.on("close", (code, signal) => {
       const detail = stderrTail
         .trim()
         .split("\n")

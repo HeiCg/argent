@@ -375,10 +375,47 @@ describe("a bundled simulator-server that predates the requested controller", ()
     const factoryPromise = simulatorServerBlueprint.factory({}, device, { device });
     setImmediate(() => {
       fakeProc.stderr.push(stderr);
-      setImmediate(() => fakeProc.emit("exit", code, null));
+      setImmediate(() => {
+        fakeProc.emit("exit", code, null);
+        fakeProc.emit("close", code, null);
+      });
     });
     return (await factoryPromise.catch((e: unknown) => e)) as Error;
   }
+
+  /**
+   * Same death, but with the libuv ordering the race is about: 'exit' fires
+   * before the pending stderr read is delivered. The classification must wait
+   * for stdio to end ('close') or the diagnosis is lost.
+   */
+  async function failWithStderrAfterExit(stderr: string, code: number): Promise<Error> {
+    const fakeProc = makeFakeProc();
+    spawnMock.mockReturnValue(fakeProc);
+    const { simulatorServerBlueprint } = await import("../src/blueprints/simulator-server");
+    const device = iosDevice("11111111-2222-3333-4444-555555555555");
+    const factoryPromise = simulatorServerBlueprint.factory({}, device, { device });
+    setImmediate(() => fakeProc.emit("exit", code, null));
+    setImmediate(() => {
+      fakeProc.stderr.push(stderr);
+      setImmediate(() => fakeProc.emit("close", code, null));
+    });
+    return (await factoryPromise.catch((e: unknown) => e)) as Error;
+  }
+
+  it("classifies stderr that arrives after 'exit' but before 'close'", async () => {
+    // A listener on 'exit' reads `stderrTail` before libuv delivers the pipe
+    // data, so an old bundled binary's "Unrecognized argument" could come back
+    // as a generic crash instead of the upgrade advice.
+    const err = await failWithStderrAfterExit(
+      "Unrecognized argument: ios_device\n\nRun simulator-server --help for more information.\n",
+      1
+    );
+    expect(err.message).toMatch(/predates this feature/);
+    expect(err.message).toMatch(/Upgrade argent/);
+    expect(getFailureSignal(err)?.error_code).toBe(
+      FAILURE_CODES.SIMULATOR_SERVER_SUBCOMMAND_UNSUPPORTED
+    );
+  });
 
   it("says to upgrade argent, and buckets apart from a crash", async () => {
     // Verified against the released binary on this machine: `simulator-server

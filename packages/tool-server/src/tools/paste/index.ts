@@ -10,9 +10,11 @@ const capability: ToolCapability = {
   // `apple.device: false`: the iOS impl sends the sim-server's `paste` command,
   // and the `ios_device` controller's clipboard-write arm sits behind a cargo
   // feature the shipped simulator-server binary is not built with. `sendCommand`
-  // is fire-and-forget — the same property the tvOS guard in the simulator-server
-  // blueprint exists for — so without this gate the tool would report
-  // `pasted: true` for text that never reached the phone.
+  // is fire-and-forget, so a hardware paste could report `pasted: true` for
+  // text that never reached the phone. Note this declaration is inert today:
+  // the tool is defined outside `createRegistry` (see interaction-messages.test.ts),
+  // so no dispatch path consults it — it exists so a future registration cannot
+  // silently enable hardware without revisiting that fire-and-forget gap.
   apple: { simulator: true, device: false },
   // A remote sim pastes over the MoQ transport (`simctl pbcopy` + ⌘V); the HTTP
   // clipboard route does not exist there.

@@ -32,6 +32,9 @@ type IosDevice = {
   runtime?: string;
   // simulators only: "tv" for an Apple TV simulator, "mobile" for iOS/iPadOS.
   runtimeKind?: "mobile" | "tv";
+  // simulators only: owning CoreSimulator device-set directory, absent for the
+  // default set. The tool description promises this tag — keep it flowing.
+  deviceSet?: string;
   // physical devices only (Apple product type, e.g. "iPhone15,4")
   productType?: string | null;
 };
@@ -257,6 +260,7 @@ Booted/ready devices are listed first. Platforms whose CLI is unavailable are si
           state: s.state,
           runtime: s.runtime,
           runtimeKind: s.runtimeKind,
+          ...(s.deviceSet ? { deviceSet: s.deviceSet } : {}),
         })
       ),
       ...iosPhysical.map(

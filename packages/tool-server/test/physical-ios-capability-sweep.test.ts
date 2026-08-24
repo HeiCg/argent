@@ -26,8 +26,9 @@ const SIM_UDID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 
 /**
  * Every tool the server can dispatch, keyed by id. `paste` is defined outside
- * `createRegistry` (macOS-only registration), so it is added explicitly — the
- * same reason `interaction-messages.test.ts` adds it to its catalog.
+ * `createRegistry` — like the Lens tools and `simulator-server`, it belongs to
+ * the set of definitions that intentionally exist outside the registry (see
+ * interaction-messages.test.ts) — so it is added explicitly to stay covered.
  */
 function allCapabilities(): Map<string, ToolCapability | undefined> {
   const registry = createRegistry();
