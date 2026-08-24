@@ -61,7 +61,7 @@
     // scripts/e2e-full/ harness included — is outside the gate however it runs.
     ".": {
       // The physical-iOS E2E driver is invoked by hand against a connected
-      // iPhone (see docs/ios-physical-devices.md), so nothing knip can parse
+      // iPhone (see packages/ios-device-runner/README.md), so nothing knip can parse
       // reaches it either.
       "entry": ["scripts/ci/windows-chromium-e2e.mjs", "scripts/e2e-ios-physical-device.mjs"],
     },

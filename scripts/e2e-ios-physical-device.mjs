@@ -5,7 +5,7 @@
  * Drives the real tool registry against a connected iPhone/iPad:
  *   list-devices -> launch-app -> describe -> gesture-tap -> describe -> screenshot
  *
- * Prerequisites (see docs/ios-physical-devices.md):
+ * Prerequisites (see packages/ios-device-runner/README.md):
  *   - `argent enable ios-physical-devices`
  *   - device paired + trusted, Developer Mode on, UNLOCKED, ideally on USB
  *   - ARGENT_IOS_TEAM_ID set (and ARGENT_IOS_RUNNER_BUNDLE_ID for free accounts)
