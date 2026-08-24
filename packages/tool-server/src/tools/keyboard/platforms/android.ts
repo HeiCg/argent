@@ -121,8 +121,10 @@ function devtoolsHierarchyReader(
  * The `ping` and `setText` calls after it are bounded by the RPC client's own
  * timeouts, not by this: 5s for `ping` (DEFAULT_RPC_TIMEOUT_MS) and 15s for
  * `setText`, which shares `getHierarchy`'s LONG_RPC_TIMEOUT_MS because
- * abandoning a WRITE does not stop the device. So a helper that accepts the
- * socket and then goes silent costs up to 20s on top of this budget. They are
+ * abandoning a WRITE does not stop the device. So a helper that answers `ping`
+ * slowly and then goes silent on the write costs up to 20s on top of this
+ * budget. One that goes silent straight away costs 5s: `ping` is awaited first,
+ * and `setText` is never sent. They are
  * deliberately not raced down further: the client serialises every RPC onto one
  * host-side chain and exposes no cancel, so abandoning a request in flight does
  * not free the chain — it just hides the wait from this caller and hands it to

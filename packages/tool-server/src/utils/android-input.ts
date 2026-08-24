@@ -338,9 +338,13 @@ interface AndroidClearOptions {
    *
    * Only the over-length refusal reads it, and only to stop saying "Nothing was
    * modified" — a sentence that makes a retry against the original value look
-   * safe. The caller sets it for the two `setText` outcomes where `applied` is
-   * true and the write could not be confirmed (`unverifiable`, `value_mismatch`),
-   * which is exactly when the injected path is a SECOND write.
+   * safe. The caller sets it from the helper's own `applied` flag, never from
+   * the reason's NAME: the two coincide for every reply this build knows
+   * (`unverifiable` and `value_mismatch` are the pair the helper sets it on),
+   * but a reply carrying `applied: true` with no reason, or a reason from a
+   * newer helper, would answer "nothing was written" under a name-keyed rule —
+   * the one answer that must not be guessed. See `DOUBLED` in
+   * `keyboard/android-clear-note.ts`, which is decided the same way.
    */
   atomicWriteApplied?: boolean;
   /**

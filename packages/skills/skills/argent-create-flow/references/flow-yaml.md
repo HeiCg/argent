@@ -125,7 +125,7 @@ Before clearing, the runner checks focus. It accepts the target, its only input,
 
 The runner proceeds when successful checks report no focus. This supports iOS trees without focus data. Hidden or truncated fields can cause the same result. Therefore, verify important values after `clear`. Read [Field value assertions](asserting-field-values.md) before adding that check.
 
-On Android the clear prefers one accessibility edit and reads the field back. When it cannot, the result carries a note and the step passes **with a warning**. This applies to a `type:` step, a raw `keyboard` step, and a `keyboard` step inside `run-sequence`. No warning means the clear was the verified one.
+On Android the clear prefers one accessibility edit and reads the field back. When it cannot, the result carries a note and the step passes **with a warning**. This applies to a `type:` step, a raw `keyboard` step, and a `keyboard` step inside `run-sequence` or a composed `flow-execute`. On Android no warning means the clear was the verified one; iOS and Chromium never warn either way.
 
 Store external values as `{{secret:NAME}}`. The runner uses the first source that defines the name: environment `ARGENT_SECRET_NAME`; project `.argent/secrets.env`; project `.env.local`, then `.env`; then `~/.argent/secrets.env`. The two `secrets.env` files accept the bare `NAME`, but the shared dotenv files expose only `ARGENT_SECRET_`-prefixed keys, so a bare `NAME=…` in `.env` or `.env.local` stays unresolved. The runner redacts every resolved value, so do not use a placeholder for content a report must show.
 

@@ -77,8 +77,9 @@ export interface KeyboardResult {
    *     - Injected (`input`): parses the `keycombination` output, so a level
    *       without the subcommand takes the measured delete path instead of
    *       silently degrading to a one-character backspace, and a clear-only call
-   *       reads the field back afterwards and finishes with a delete run if the
-   *       chord left a residue. A `{ clear, text }` cannot be checked that way —
+   *       reads the field back afterwards and finishes with a delete run when
+   *       what it read is something it can tell apart from the field's own
+   *       placeholder. A `{ clear, text }` cannot be checked that way —
    *       the field is meant to still hold its value when the chord lands — so a
    *       widget that swallows the chord (a Flutter `TextField` does) keeps its
    *       whole value with the text spliced in at the caret, reported as
