@@ -1675,8 +1675,9 @@ async function startHarmonyEmulator(
   // instance, and the coalescing map only covers one process's own window. A
   // shared name opened `"w"` let the loser truncate the winner's diagnostic
   // before anyone read it. Uniqueness means nothing reaps yesterday's logs, so
-  // attempts older than a day are swept first; a manager holding a swept file
-  // only loses diagnostics it was never going to print this long after start.
+  // attempts older than a day are swept first — harmless, because nothing reads
+  // a start log once its boot has returned, and every consumer of the exit
+  // latch lives inside that boot's deadline-bounded waits.
   try {
     for (const entry of readdirSync(tmpdir())) {
       if (!entry.startsWith("argent-harmony-") || !entry.endsWith(".log")) continue;

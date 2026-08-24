@@ -130,13 +130,15 @@ function percentSegments(text: string): string[] {
  * searching for arbitrary runs blanks the ordinary words of a diagnostic
  * whenever a secret happens to contain one.
  *
- * The pieces a SPACE split produces are matched only between the quotes of an
- * echoed command line (`'staple' failed`). A passphrase's pieces ARE ordinary
- * words; matched anywhere in the message they blank every `device`,
- * `offline` or `battery` in a diagnostic that merely shares vocabulary with
- * the credential, and the agent loses the actionable half of it. Whole values
- * and `%` cuts travel unquoted in real messages too (HID/CDP injection echoes
- * no shell line), so those stay global.
+ * The pieces a SPACE split produce are matched between the quotes of an echoed
+ * command line (`'staple' failed`) rather than globally. A passphrase's pieces
+ * ARE ordinary words; matched anywhere in the message they blank every
+ * `device`, `offline` or `battery` in a diagnostic that merely shares
+ * vocabulary with the credential, and the agent loses the actionable half of
+ * it. Whole values and `%` cuts travel unquoted in real messages too (HID/CDP
+ * injection echoes no shell line), so those stay global — and where one
+ * secret's whole value IS another's piece, the global registration wins (see
+ * the upgrade in `redactSecretsFromError`).
  */
 interface Spelling {
   text: string;
