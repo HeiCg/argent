@@ -109,16 +109,54 @@ export function scrubSecretValues(
   text: string,
   secrets: ReadonlyArray<{ name: string; value: string }>
 ): string {
-  // Longest value first: one value can contain another — a host inside a URL
-  // that is itself a secret — and replacing the shorter one first rewrites the
-  // middle of the longer one, leaving its tail in the text.
-  return [...secrets]
-    .sort((a, b) => b.value.length - a.value.length)
-    .reduce(
-      (acc, { name, value }) =>
-        value ? acc.split(value).join(`${SECRET_PLACEHOLDER_MARKER}${name}}}`) : acc,
-      text
-    );
+  const ordered = orderedSecrets(secrets);
+  if (ordered.length === 0) return text;
+  let out = "";
+  let copied = 0;
+  let at = 0;
+  const names = new Set(ordered.map((secret) => secret.name));
+  while (at < text.length) {
+    // A marker one pass wrote is not text the next may look inside: a value
+    // that occurs in some *name* would otherwise be replaced there, nesting one
+    // marker inside another and leaving neither the shape a reader parses.
+    const marker = markerLengthAt(text, at, names);
+    if (marker > 0) {
+      at += marker;
+      continue;
+    }
+    // Longest value first: one value can contain another — a host inside a URL
+    // that is itself a secret — and taking the shorter one would leave the rest
+    // of the longer one in the text.
+    const hit = ordered.find((secret) => text.startsWith(secret.value, at));
+    if (!hit) {
+      at += 1;
+      continue;
+    }
+    out += `${text.slice(copied, at)}${SECRET_PLACEHOLDER_MARKER}${hit.name}}}`;
+    at += hit.value.length;
+    copied = at;
+  }
+  return copied === 0 ? text : out + text.slice(copied);
+}
+
+/** Values worth replacing, longest first, ties in the order they were given. */
+function orderedSecrets(
+  secrets: ReadonlyArray<{ name: string; value: string }>
+): Array<{ name: string; value: string }> {
+  return secrets
+    .filter(({ value }) => value.length > 0)
+    .sort((a, b) => b.value.length - a.value.length);
+}
+
+/** The length of the `{{secret:NAME}}` starting at `at`, or 0 for anything else. */
+function markerLengthAt(text: string, at: number, names: ReadonlySet<string>): number {
+  if (!text.startsWith(SECRET_PLACEHOLDER_MARKER, at)) return 0;
+  const from = at + SECRET_PLACEHOLDER_MARKER.length;
+  const end = text.indexOf("}}", from);
+  // Only a name this call would itself write: a `{{secret:X}}` the script
+  // printed for an X that is no secret here stays ordinary text, so a value
+  // inside it is still replaced.
+  return end >= 0 && names.has(text.slice(from, end)) ? end + 2 - at : 0;
 }
 
 /**

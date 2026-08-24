@@ -434,6 +434,36 @@ describe("flow script executor — redaction", () => {
     });
   });
 
+  it("leaves a marker well formed when a value occurs inside another secret's name", async () => {
+    const ws = workspace();
+    // The streaming pass writes `{{secret:Q0}}`, and the final pass runs over
+    // what it wrote: replacing `Q` inside that name would nest one marker in
+    // another and leave neither the shape a reader parses.
+    const script = ws.write("marker.mjs", `console.log("value=Q");`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [{ name: "Q0", value: "Q" }],
+    });
+
+    expect(result.log).toBe("value={{secret:Q0}}\n");
+  });
+
+  it("leaves a marker well formed when two secrets swap name and value", async () => {
+    const ws = workspace();
+    const script = ws.write("swapped.mjs", `console.log("id=TOKEN_ABC and OKEN");`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [
+        { name: "TOKEN_ABC", value: "OKEN" },
+        { name: "OKEN", value: "TOKEN_ABC" },
+      ],
+    });
+
+    expect(result.log).toBe("id={{secret:OKEN}} and {{secret:TOKEN_ABC}}\n");
+  });
+
   it("replaces a secret split across two pipe chunks", async () => {
     const ws = workspace();
     // Two writes with a gap between them arrive as two chunks, so a per-chunk
