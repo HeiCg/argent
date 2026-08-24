@@ -1,10 +1,9 @@
 /**
  * Runs one trusted local JavaScript file in a fresh Node.js child process.
  *
- * A script has the same trust level as a local npm script, so the child process
- * is a *reliability* boundary, not a security one: what it buys is that a
- * synchronous infinite loop, a heap exhaustion or a `process.exit` cannot take
- * the tool server down with it.
+ * The child is a *reliability* boundary, not a security one: a script is as
+ * trusted as a local npm script, and all the process buys is that an infinite
+ * loop, a heap exhaustion or a `process.exit` cannot take the server down.
  */
 
 import { fork, spawn, type ChildProcess, type ForkOptions } from "node:child_process";
@@ -35,12 +34,9 @@ import {
 
 const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
 /**
- * What one step and one flow run may keep of a script's console output.
- *
- * Counted on the bytes the report carries, not on the bytes the script wrote:
- * redaction and frame collapsing both run first, so a long value shrinks to its
- * marker and a short one grows into it. What the limits bound is the size of
- * the report, which is what has to cross back to the caller.
+ * Counted on the bytes the report carries, not the bytes the script wrote:
+ * redaction and frame collapsing both run first, so a long value shrinks to
+ * its marker and a short one grows into it.
  */
 export const SCRIPT_STEP_LOG_LIMIT_BYTES = 64 * 1024;
 const SCRIPT_RUN_LOG_LIMIT_BYTES = 256 * 1024;
@@ -69,9 +65,8 @@ const QUEUE_WAIT_REPORT_MS = 5_000;
 /** A partial stderr line longer than this is passed through unclassified. */
 const MAX_BUFFERED_LINE_CHARS = 8 * 1024;
 /**
- * V8's heap-exhaustion banner, matched on the live stream. Deliberately coarse:
- * neither the frame layout nor the address format nor the surrounding wording
- * is a stability contract. An unrecognized abort degrades to the signal report
+ * V8's heap-exhaustion banner. Coarse on purpose: the wording is not a
+ * stability contract, and an unrecognized abort degrades to the signal report
  * rather than to a wrong verdict.
  */
 const V8_HEAP_FATAL_RE = /FATAL ERROR:[^\n]*(?:heap limit|heap out of memory|Allocation failed)/i;
@@ -84,13 +79,10 @@ const RUNNER_FILE = "flow-script-runner.mjs";
 const RUNNER_ACTIVATION_ENV = "ARGENT_FLOW_SCRIPT_RUNNER";
 
 /**
- * Environment names copied from the tool server into a script process.
- *
  * An allowlist rather than a denylist because what it must keep out — the
- * tool-server bearer token, the tool-server port, every `ARGENT_SECRET_*` value
- * — is exactly the set that grows without this file being touched. Leak
- * hygiene, not containment: a script has filesystem access and can read
- * `~/.argent/tool-server.json` itself.
+ * bearer token, the port, every `ARGENT_SECRET_*` value — is exactly the set
+ * that grows without this file being touched. Leak hygiene, not containment: a
+ * script can read `~/.argent/tool-server.json` itself.
  */
 const ALLOWED_ENV_NAMES: readonly string[] = [
   "PATH",
@@ -125,8 +117,6 @@ const ALLOWED_ENV_NAMES: readonly string[] = [
   "NUMBER_OF_PROCESSORS",
   "PROCESSOR_ARCHITECTURE",
   "OS",
-  // `NODE_EXTRA_CA_CERTS` covers the script's own process; the two
-  // `SSL_CERT_*` names cover a subprocess such as `curl` or `git`.
   "HTTP_PROXY",
   "HTTPS_PROXY",
   "NO_PROXY",
@@ -136,9 +126,8 @@ const ALLOWED_ENV_NAMES: readonly string[] = [
   "NODE_EXTRA_CA_CERTS",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
-  // The version-manager names matter because a host using fnm, asdf, mise or
-  // volta would otherwise run against a different Node than the developer's
-  // shell, or against none at all.
+  // Without these, a host using fnm, asdf, mise or volta runs against a
+  // different Node than the developer's shell, or against none at all.
   "NODE_PATH",
   "NVM_DIR",
   "NVM_BIN",
@@ -163,24 +152,23 @@ const ALLOWED_ENV_NAMES: readonly string[] = [
   "CI",
 ];
 
-/** Every `npm_config_*` name is copied, so a project's npm settings survive. */
+/** Copied so a project's npm settings survive. */
 const ALLOWED_ENV_PREFIXES: readonly string[] = ["npm_config_"];
 
 /**
- * npm's own spelling of `NODE_OPTIONS`: it defines `node-options` as a real
- * config key and translates it back into the variable for what it starts, so
- * the `npm_config_` prefix would carry through exactly what the exact name is
- * reserved to keep out. npm reads its config names without regard to case, so
- * this one is matched that way on every platform.
+ * npm's own spelling of `NODE_OPTIONS`: it translates its `node-options` config
+ * key back into the variable for what it starts, so the `npm_config_` prefix
+ * would carry through what the exact name is reserved to keep out. Matched
+ * case-insensitively on every platform, as npm reads its config names.
  */
 const NPM_NODE_OPTIONS_ENV = "npm_config_node_options";
 
 /**
- * Names refused in a caller-supplied environment map, because each steers the
- * runner's own process rather than the host: `NODE_CHANNEL_FD` and
- * `NODE_UNIQUE_ID` name the IPC channel this protocol runs on,
- * `ELECTRON_RUN_AS_NODE` decides whether the child boots as Node at all, and
- * the activation flag decides which process the runner preload takes over.
+ * Refused in a caller-supplied environment map, because each steers the
+ * runner's own process: `NODE_CHANNEL_FD` and `NODE_UNIQUE_ID` name the IPC
+ * channel this protocol runs on, `ELECTRON_RUN_AS_NODE` decides whether the
+ * child boots as Node at all, and the activation flag decides which process
+ * the runner preload takes over.
  */
 const RESERVED_ENV_NAMES: readonly string[] = [
   "NODE_CHANNEL_FD",
@@ -197,10 +185,7 @@ export interface FlowScriptSecret {
   value: string;
 }
 
-/**
- * The log allowance shared by every script step in one flow run: one object per
- * run, passed to every step in it.
- */
+/** The log allowance shared by every script step in one flow run. */
 export interface FlowScriptLogBudget {
   remainingBytes: number;
 }
@@ -210,32 +195,28 @@ export function createScriptLogBudget(): FlowScriptLogBudget {
 }
 
 export interface FlowScriptRequest {
-  /** The script file. Resolved against the working directory when relative. */
+  /** Resolved against the working directory when relative. */
   scriptPath: string;
-  /** The flow output handed to the script as its `output` global. */
+  /** Handed to the script as its `output` global. */
   output?: Record<string, unknown>;
-  /** Environment values layered on top of the allowlist. */
+  /** Layered on top of the allowlist. */
   env?: Record<string, string>;
-  /** Per-step time limit. Defaults to 30s, clamped to the configured maximum. */
+  /** Defaults to 30s, clamped to the configured maximum. */
   timeoutMs?: number;
   /** The caller's `project_root` — first choice for the working directory. */
   projectRoot?: string;
-  /** Directory of the flow file naming the step — the working-directory fallback. */
+  /** The working-directory fallback. */
   flowDir?: string;
-  /**
-   * Values to redact from captured logs. Re-read on every chunk, so a set that
-   * grows as the run resolves more secrets is respected mid-step.
-   */
+  /** Re-read on every chunk, so a set that grows mid-step is respected. */
   secrets?: readonly FlowScriptSecret[];
-  /** The run's shared log allowance. Omitted ⇒ only the per-step limit applies. */
+  /** Omitted ⇒ only the per-step limit applies. */
   logBudget?: FlowScriptLogBudget;
-  /** Cancels the step; a queued step gives up its position at once. */
+  /** A queued step gives up its position at once. */
   signal?: AbortSignal;
   /** Test seam: the directory holding the runner and watchdog `.mjs` files. */
   runnerDir?: string;
 }
 
-/** Why a script step did not produce output. */
 export type FlowScriptFailureKind =
   /** The module never evaluated — missing file, bad syntax, a refused import. */
   | "load"
@@ -245,21 +226,17 @@ export type FlowScriptFailureKind =
   | "output"
   /** The runner misbehaved, or never reached the script. */
   | "protocol"
-  /** The step ran past its time limit and was stopped. */
   | "timeout"
-  /** The run was cancelled. */
   | "cancelled"
   /** The script stopped its own process, or reported failure through its exit code. */
   | "exit"
-  /** The process was killed by a signal it did not choose. */
+  /** Killed by a signal it did not choose. */
   | "signal"
-  /** The process exhausted its heap limit. */
   | "heap"
   /** The child could not be started at all. */
   | "spawn"
   /** The step never got a concurrency slot. */
   | "queue"
-  /** The request itself was not usable. */
   | "invalid";
 
 export interface FlowScriptFailure {
@@ -271,32 +248,28 @@ export interface FlowScriptFailure {
 export interface FlowScriptResult {
   /** True only when the script returned a valid output document. */
   ok: boolean;
-  /** The validated output document. Present exactly when `ok`. */
+  /** Present exactly when `ok`. */
   output?: Record<string, unknown>;
-  /** Why the step failed. Present exactly when not `ok`. */
+  /** Present exactly when not `ok`. */
   failure?: FlowScriptFailure;
   /** stdout and stderr in written order, redacted and possibly truncated. */
   log: string;
   logTruncated: boolean;
-  /** Wall clock for the step. Excludes the queue wait. */
+  /** Excludes the queue wait. */
   durationMs: number;
-  /** Wall clock spent waiting for a free concurrency slot. */
   queuedMs: number;
   /** Things worth telling the caller that are not failures. */
   notes: string[];
 }
 
 export interface FlowScriptExecutorOptions {
-  /** How many script processes run at once. Defaults to a CPU-derived limit. */
+  /** Defaults to a CPU-derived limit. */
   concurrency?: number;
   /** Overrides `scripts.maxTimeoutMs`. */
   maxTimeoutMs?: number;
   /** Overrides `scripts.heapLimitMb`. */
   heapLimitMb?: number;
-  /**
-   * How long a step may wait for a concurrency slot before it is refused.
-   * Defaults to twice the maximum script time limit.
-   */
+  /** Defaults to twice the maximum script time limit. */
   queueWaitMs?: number;
 }
 
@@ -313,9 +286,8 @@ interface QueueWaiter {
 }
 
 /**
- * A cancellation raised out of the queue, before any process exists. Separate
- * from a queue refusal so the caller can tell "you stopped it" from "the host
- * was full".
+ * Separate from a queue refusal so the caller can tell "you stopped it" from
+ * "the host was full".
  */
 class ScriptCancelledError extends Error {}
 
@@ -338,9 +310,8 @@ export class FlowScriptExecutor {
   constructor(private readonly options: FlowScriptExecutorOptions = {}) {}
 
   /**
-   * The three host bounds, read once per executor rather than per step: the two
-   * configured ones only change with a server restart, so a step should not go
-   * to the filesystem for them.
+   * Read once per executor rather than per step: the configured bounds only
+   * change with a server restart, so a step should not go to the filesystem.
    */
   private resolveBounds(): ResolvedBounds {
     if (!this.bounds) {
@@ -368,7 +339,6 @@ export class FlowScriptExecutor {
     return this.bounds;
   }
 
-  /** Steps currently holding a slot. */
   get activeCount(): number {
     return this.running;
   }
@@ -404,11 +374,9 @@ export class FlowScriptExecutor {
     }
   }
 
-  // One tool server serves every local agent and every project, and a script
-  // *can* spin a core, so the limit protects the host rather than the
-  // throughput of one script. The two queue bounds are deliberately generous:
-  // they stop an unbounded queue rather than shape normal use.
-
+  // One tool server serves every local agent and project, so the limit protects
+  // the host rather than one script's throughput. The queue bounds stop an
+  // unbounded queue; they are not tuned to shape normal use.
   private acquireSlot(signal: AbortSignal | undefined, waitBoundMs: number): Promise<() => void> {
     // Idempotent: a double release would leave `running` below the live
     // process count, permanently raising the effective limit.
@@ -550,11 +518,10 @@ export class FlowScriptExecutor {
         // which would carry a dev-mode parent's ts-node/vitest loaders and any
         // inspector flag into every script process.
         //
-        // The runner rides in as a preload rather than as the entry module, so
-        // the *script* is what Node runs and `process.argv[1]`/`require.main`
-        // name it — an "am I the main module?" guard runs its body. Node awaits
-        // an `--import` module before the entry, which is what leaves room for
-        // the runner's handshake.
+        // The runner rides in as a preload, not as the entry module, so the
+        // *script* is what `process.argv[1]`/`require.main` name and an "am I
+        // the main module?" guard runs its body. Node awaits an `--import`
+        // module before the entry, which leaves room for the handshake.
         execArgv: [
           `--max-old-space-size=${bounds.heapLimitMb}`,
           "--import",
@@ -615,17 +582,15 @@ export class FlowScriptExecutor {
     const stop = () => (stopped ??= stopProcessTree(child, STOP_GRACE_MS));
 
     /**
-     * Record why the step is being stopped, and start stopping it.
-     *
      * `??=` because the first interruption is the true one: a script that
      * survives SIGTERM until its deadline passes was cancelled, not timed out.
      *
-     * The seal keeps a stop from being reported as a pass: SIGTERM is a normal
-     * shutdown request, and a script with the ordinary handler for it empties
-     * its event loop and lets the runner report a half-written document as a
-     * result. Sealing and the kill share one check-phase callback, in that
-     * order, so a message answering the SIGTERM cannot precede the seal, while
-     * one already readable is delivered in the same iteration's poll phase.
+     * The seal keeps a stop from being reported as a pass: a script with the
+     * ordinary SIGTERM handler empties its event loop and lets the runner
+     * report a half-written document as a result. Sealing and the kill share
+     * one check-phase callback, in that order, so a message answering the
+     * SIGTERM cannot precede the seal, while one already readable is delivered
+     * in the same iteration's poll phase.
      */
     const interrupt = (why: "timeout" | "cancelled") => {
       interrupted ??= why;
@@ -701,12 +666,11 @@ export class FlowScriptExecutor {
     // the log text of the same script. The bound covers a descendant that
     // inherited the streams and is holding them open.
     await Promise.race([closed, sleep(SETTLE_TIMEOUT_MS)]);
-    // Idempotent, and on a passing step this is the only cleanup there is: on
-    // POSIX the process group outlives the runner, so a descendant still
-    // holding a port is reaped here. One that deliberately left the group
-    // (`detached`) is out of reach on purpose. Windows has nothing for
-    // `taskkill` to walk from once the child is gone, so a descendant of a
-    // normally-returning step survives there.
+    // On a passing step this is the only cleanup there is: on POSIX the process
+    // group outlives the runner, so a descendant still holding a port is reaped
+    // here. One that deliberately left the group is out of reach on purpose.
+    // Windows has nothing for `taskkill` to walk from once the child is gone,
+    // so a descendant of a normally-returning step survives there.
     await stop();
     capture.end();
     child.stdout?.destroy();
@@ -834,10 +798,10 @@ function classifyOutcome(
 }
 
 /**
- * Every field of a verdict carries the same redaction the log does: none of the
- * text is the executor's. A `runtime` failure is the script's own message and
- * stack, and an output document commonly holds a credential an API echoed back
- * — and that document outlives the report, because later steps read it.
+ * Every field of a verdict is redacted like the log, because none of the text
+ * is the executor's: a `runtime` failure is the script's own message and stack,
+ * and an output document that echoes back a credential outlives the report,
+ * because later steps read it.
  */
 function redactSecrets(
   verdict: Pick<FlowScriptResult, "ok" | "output" | "failure">,
@@ -858,12 +822,9 @@ function redactSecrets(
 }
 
 /**
- * Scrub every string in a parsed output document, keys included.
- *
  * Iterative rather than recursive: the document came from a child that ran
  * arbitrary code, and a megabyte of `[[[[…` is legal JSON that would overflow
- * the stack inside `execute`, which owes its caller a verdict rather than a
- * throw.
+ * the stack inside `execute`, which owes its caller a verdict, not a throw.
  */
 function scrubDocument(root: Record<string, unknown>, secrets: readonly FlowScriptSecret[]): void {
   const pending: unknown[] = [root];
@@ -918,8 +879,6 @@ function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output
 }
 
 /**
- * Scrub a field the ceiling may already have cut, including across the cut.
- *
  * A failure message is clamped by the child, the only side that can bound what
  * crosses the channel, and the child has no secret list — so a value straddling
  * the cut leaves a prefix that a whole-value replacement never matches. That
@@ -945,8 +904,6 @@ function omissionMarker(omitted: number): string {
 }
 
 /**
- * Cut child-controlled text to a ceiling, saying how much was left out.
- *
  * The marker counts against the ceiling, as it does in the runner's copy of
  * this function, so re-applying the same ceiling downstream cannot cut again
  * and report only how much of the *marker* it dropped.
@@ -998,9 +955,8 @@ function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null
 }
 
 /**
- * The working directory is always set explicitly, to the first candidate that
- * exists on the server — never inherited from the tool server, whose own cwd is
- * whatever the editor that spawned it chose.
+ * Always set explicitly, never inherited: the tool server's own cwd is whatever
+ * the editor that spawned it chose.
  *
  * The existence check is load-bearing: `project_root` names the *calling
  * agent's* working directory and can be mistyped or since moved, and without it
@@ -1034,8 +990,6 @@ function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): s
 }
 
 /**
- * Why a candidate cannot be the working directory, or `null` when it can.
- *
  * The absolute-path rule is the load-bearing one — the same rule
  * `assertValidProjectRoot` in `flow-utils.ts` applies to every other flow path.
  * A relative candidate is resolved by the OS against the tool server's own
@@ -1054,7 +1008,6 @@ function describeDirectoryProblem(candidate: string): string | null {
   }
 }
 
-/** Encode the caller's output document, as a verdict rather than a throw. */
 function encodeRequestOutput(output: Record<string, unknown> | undefined): string {
   let encoded: string | undefined;
   try {
@@ -1072,8 +1025,8 @@ function encodeRequestOutput(output: Record<string, unknown> | undefined): strin
 }
 
 /**
- * The real path of a file, or the path itself when it cannot be resolved: a
- * missing script is Node's error to report, with the name the author wrote.
+ * Falls back to the path itself: a missing script is Node's error to report,
+ * with the name the author wrote.
  */
 function realPathOrSelf(candidate: string): string {
   try {
@@ -1085,10 +1038,9 @@ function realPathOrSelf(candidate: string): string {
 
 /**
  * The three layouts the runner can be in — the published bundle (beside
- * `tool-server.cjs` in `dist`), the compiled package (beside the compiled
- * executor) and the workspace source (beside this file) — are all
- * `path.join(__dirname, name)`. The tool-server package is CommonJS, so
- * `__dirname` is available here and under vitest.
+ * `tool-server.cjs` in `dist`), the compiled package and the workspace source
+ * — are all `path.join(__dirname, name)`. The tool-server package is CommonJS,
+ * so `__dirname` is available here and under vitest.
  */
 function resolveRunnerPath(runnerDir: string | undefined): string {
   const dir = runnerDir ?? __dirname;
@@ -1194,15 +1146,13 @@ function configuredNumber(key: string): number | undefined {
 }
 
 /**
- * Request normal termination, wait a short grace, then force.
- *
  * POSIX names the runner's process group, which outlives the runner and holds
  * every descendant that did not deliberately leave it; an empty group is the
  * proof that the tree is gone. Windows has no such group, so `taskkill /T`
  * walks the live parent-child tree instead: a re-parented grandchild escapes
- * it, and once the child is gone there is nothing left to walk from — so on the
- * clean path a descendant survives there. A deliberately detached descendant is
- * out of reach on either, which is how a script outlives its step.
+ * it, and once the child is gone there is nothing left to walk from. A
+ * deliberately detached descendant is out of reach on either, which is how a
+ * script outlives its step.
  */
 async function stopProcessTree(child: ChildProcess, graceMs: number): Promise<void> {
   const pid = child.pid;
@@ -1221,8 +1171,7 @@ async function stopProcessTree(child: ChildProcess, graceMs: number): Promise<vo
       });
       // A `spawn` that cannot launch reports it through an asynchronous
       // `error` event, not a throw the `tryKill` above could catch, and an
-      // unhandled `error` would end the tool server — from the one stop path
-      // Windows has. `child.kill()` below is already the fallback.
+      // unhandled `error` would end the tool server.
       killer.on("error", () => {});
       killer.unref();
     });
@@ -1258,8 +1207,6 @@ async function waitForGroupToEmpty(
 }
 
 /**
- * Whether anything is still running in the process group the runner leads.
- *
  * Signal 0 checks reachability without delivering anything, and `ESRCH` is the
  * only answer that means "nothing there": `EPERM` means the group exists and
  * this process may not signal it, which still counts as alive.
@@ -1313,12 +1260,11 @@ interface StreamState {
  * stdout and stderr, captured into one buffer in arrival order.
  *
  * Console text deliberately does *not* also travel over IPC: any subprocess the
- * script starts writes to the same two descriptors, so one channel captures
- * everything in written order, and an IPC message is serialized whole — one
- * large `console.log` could not be limited while draining, as pipe data can.
- * Arrival order is faithful to written order except for a burst written to
- * *both* streams inside one turn, and nothing else here may add reordering on
- * top of that — see the hold-back and the frame collapser below.
+ * script starts writes to the same two descriptors, and an IPC message is
+ * serialized whole — one large `console.log` could not be limited while
+ * draining, as pipe data can. Arrival order is faithful to written order except
+ * for a burst written to *both* streams inside one turn, and nothing else here
+ * may add reordering on top of that.
  *
  * Redaction runs on the live stream, ahead of both limits: a value can straddle
  * two pipe chunks and a per-chunk replacement sees neither half, and one
@@ -1344,7 +1290,7 @@ class ScriptLogCapture {
   /**
    * Never pauses the stream: a paused one fills the pipe buffer and blocks the
    * child from ever reaching its own time limit, so past the log limit the data
-   * is still drained and simply discarded.
+   * is still drained and discarded.
    */
   push(stream: "stdout" | "stderr", chunk: Buffer): void {
     const state = this.stateFor(stream);
@@ -1377,8 +1323,6 @@ class ScriptLogCapture {
   }
 
   /**
-   * Whether V8 printed a heap-exhaustion banner while the process was alive.
-   *
    * Read off the live stream rather than the finished log: V8 prints its banner
    * last, so a script that logged past its budget before dying would lose the
    * one line that names the cause to the truncation.
@@ -1446,8 +1390,6 @@ class ScriptLogCapture {
   }
 
   /**
-   * Write what this chunk released, each half where the script wrote it.
-   *
    * The hold-back is per stream and the buffer is shared, so released text held
    * from an earlier chunk belongs *before* whatever the other stream wrote in
    * between — appending it now would move it past that text.
@@ -1623,10 +1565,10 @@ function emptyResult(
 }
 
 /**
- * An error as a message. `formatErrorForAgent` for the `Error` case, which walks
- * the `.cause` chain — a `fetch failed` wrapping `connect ECONNREFUSED` is
- * exactly the shape a script produces. Anything else keeps the capped
- * rendering, since a value that is not an `Error` can be arbitrarily large.
+ * `formatErrorForAgent` walks the `.cause` chain — a `fetch failed` wrapping
+ * `connect ECONNREFUSED` is exactly the shape a script produces. Anything that
+ * is not an `Error` keeps the capped rendering, since it can be arbitrarily
+ * large.
  */
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return formatErrorForAgent(err) || String(err);

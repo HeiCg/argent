@@ -48,10 +48,10 @@ export function createScriptWorkspace(label = "ws"): ScriptWorkspace {
 }
 
 /**
- * Drop what a crashed run left behind — the root is under `node_modules`, so
- * nothing else ever sweeps it. The age bound is what makes this safe beside a
- * concurrent run: an hour is far longer than the whole suite takes, so a fixture
- * another vitest worker is using now is never old enough to be taken.
+ * The root is under `node_modules`, so nothing else ever sweeps it. The age
+ * bound is what makes this safe beside a concurrent run: an hour is far longer
+ * than the whole suite takes, so a fixture another vitest worker is using now
+ * is never old enough to be taken.
  */
 function pruneStaleFixtures(): void {
   const cutoff = Date.now() - STALE_FIXTURE_MS;

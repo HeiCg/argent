@@ -13,11 +13,10 @@
 export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 /**
- * Ceilings on the two free-text fields of a `failure`. An error message is
- * script-controlled — a `throw` that interpolates a whole response body is the
- * ordinary shape — and an IPC message is deserialized whole into the parent's
- * heap before anything can look at it, so only the sender can bound it. The
- * child enforces both; the parent re-checks, because it must not depend on a
+ * An error message is script-controlled — a `throw` interpolating a whole
+ * response body is the ordinary shape — and an IPC message is deserialized
+ * whole into the parent's heap before anything can look at it, so only the
+ * sender can bound it. The parent re-checks, because it must not depend on a
  * child staying compliant after arbitrary script code has run inside it.
  * `flow-script-runner.mjs` keeps its own copy — it imports nothing from here.
  */
@@ -41,10 +40,9 @@ export interface ScriptExecuteRequest {
 
 /**
  * `load` is a module that never evaluated (missing file, bad syntax, an import
- * Node refused); `runtime` is the script's own code throwing; `output` is a
- * value that cannot cross into flow state; `exit` is the script reporting its
- * own failure through a non-zero exit code; `protocol` is the runner itself
- * failing before or around the script.
+ * Node refused); `output` is a value that cannot cross into flow state; `exit`
+ * is the script reporting its own failure through a non-zero exit code;
+ * `protocol` is the runner itself failing before or around the script.
  */
 export type ScriptFailureType = "load" | "runtime" | "output" | "exit" | "protocol";
 
@@ -63,7 +61,6 @@ export type ScriptResponse =
       stack?: string;
     };
 
-/** The two responses that end a run. */
 export type ScriptTerminalResponse = Exclude<ScriptResponse, { type: "started" }>;
 
 const FAILURE_TYPES: readonly ScriptFailureType[] = [
