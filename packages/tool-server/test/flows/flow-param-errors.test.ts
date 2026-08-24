@@ -8,12 +8,6 @@ import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flo
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
 import { InvalidToolInputError } from "../../src/utils/capability";
 
-// An agent passing `flow_name` instead of `name` got back raw Zod JSON naming
-// neither spelling usefully: an `invalid_type` on `name` where it is required,
-// and on flow-execute the exactly-one-source rule anchored on `flow_path` — the
-// one source field the caller had no reason to send. Either way the mistake is
-// invisible, and finding it costs a whole turn.
-
 let tmpDir: string;
 
 function registry(): Registry {
@@ -56,9 +50,8 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("prefers `name` over `flow_name` when both are sent (matches the file-input merge)", async () => {
-    // `name || flow_name`: when both resolve, `name` wins — and the client's
-    // file-input merge puts the `name` spec last for the same precedence, so
-    // the file executed is always the one resolveFlowName reports.
+    // The client's file-input merge puts the `name` spec last, so the file that
+    // runs is always the one `name || flow_name` reports.
     await writeFlow("by-name");
     await writeFlow("by-alias");
 
@@ -75,8 +68,7 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("does not let an EMPTY name mask a valid alias", async () => {
-    // `??` would keep `""` and reject the call while pointing at the very
-    // field it ignored — the exact confusion the alias exists to prevent.
+    // resolveFlowName uses `||`: with `??` an empty `name` would mask the alias.
     await writeFlow("aliased");
 
     const result = await registry().invokeTool<FlowRunResult>("flow-execute", {
@@ -92,10 +84,8 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("names an invalid enum value by its parameter, not as raw Zod JSON", async () => {
-    // `platform` is a recognized top-level key with an invalid value — this
-    // exercises the generic per-issue prose, not the missing/nested branches
-    // (flow-execute's flat schema has no nested path to reach; those branches
-    // are covered directly in registry's describe-param-issues.test.ts).
+    // flow-execute's schema is flat, so the missing and nested branches are
+    // covered in registry's describe-param-issues.test.ts instead.
     let message = "";
     try {
       await registry().invokeTool("flow-execute", {
@@ -111,8 +101,8 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("says which parameter it needs when neither spelling is present", async () => {
-    // Answered by the schema's exactly-one-source rule, whose message was given
-    // the same wording as resolveFlowName's so both reads are one answer.
+    // The schema's exactly-one-source rule answers this, worded like
+    // resolveFlowName's so both checks read alike.
     await expect(
       registry().invokeTool("flow-execute", {
         project_root: tmpDir,
@@ -122,10 +112,7 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("classifies a source-less call as a client-input VALIDATION error, not an internal fault", async () => {
-    // Whichever check catches it, this must carry a validation signal so the
-    // HTTP boundary maps it to 400 and telemetry does not log
-    // ARGENT_UNCLASSIFIED_FAILURE — the classification the pre-alias zod
-    // rejection already had.
+    // The validation signal is what maps this to a 400 at the HTTP boundary.
     let caught: unknown;
     try {
       await registry().invokeTool("flow-execute", {
@@ -141,11 +128,9 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("reaches resolveFlowName's own rejection for an EMPTY name, and classifies it too", async () => {
-    // The source-less cases above never enter `execute` — the schema's
-    // exactly-one rule fires first with the same wording — so they hold
-    // whatever resolveFlowName does. An empty `name` counts as a named source
-    // to that rule, so it is the ONE input that reaches the throw. Spy on it,
-    // or this test drifts back into proving the schema.
+    // An empty `name` counts as a named source to the schema's exactly-one
+    // rule, so it is the only input that reaches resolveFlowName's throw. The
+    // spy on `execute` keeps this from drifting back into proving the schema.
     const r = new Registry();
     const tool = createRunFlowTool(r);
     const execute = vi.spyOn(tool, "execute");
@@ -157,9 +142,8 @@ describe("flow-execute parameter handling", () => {
         .then(() => undefined)
         .catch((err: unknown) => err);
 
-      // The registry wraps whatever execute throws, so the CLASS the HTTP
-      // boundary maps to 400 has to be found on the cause — a plain Error here
-      // would leave the same call a 500.
+      // The registry wraps whatever `execute` throws, so the class the HTTP
+      // boundary maps to 400 sits on the cause.
       expect((caught as Error).cause, JSON.stringify(params)).toBeInstanceOf(InvalidToolInputError);
       expect((caught as Error).message).toContain("needs the flow's name in `name`");
       const signal = getFailureSignal(caught);
@@ -178,18 +162,13 @@ describe("flow-execute parameter handling", () => {
     }
 
     expect(message).toContain("`project_root` is required");
-    // The other half of the fix: name the keys the caller actually sent, so a
-    // misspelling is self-evident instead of merely absent.
     expect(message).toContain("You sent: `name`");
-    // And not the raw issue JSON.
     expect(message).not.toContain('"code":"invalid_type"');
   });
 
   it("never renders 'undefined' in the interaction line for a name-less call", () => {
-    // The interaction message fires inside `invokeTool` BEFORE `execute`, so it
-    // is emitted even for the name-less call `resolveFlowName` later rejects.
-    // It must not read "Running flow undefined" in the event log, telemetry or
-    // MCP progress; and the alias path must still show the real flow name.
+    // `startedMsg` fires inside `invokeTool` before `execute`, so it is emitted
+    // even for a call `resolveFlowName` goes on to reject.
     const tool = createRunFlowTool(new Registry());
     const nameless = tool.interaction!.startedMsg!({ params: { project_root: "/x" } as never });
     expect(nameless).not.toContain("undefined");
@@ -198,11 +177,9 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("names only the keys the flow AUTHOR wrote, not the bound device key", async () => {
-    // `bindDeviceArgs` re-injects the resolved device key, so `udid` is always
-    // present and never came from the YAML — the recorder strips it so flows
-    // stay portable. Listing it beside the misspelling the list exists to
-    // expose points at a key the author cannot have written. This pins the flow
-    // runner to the sentence run-sequence already renders.
+    // `bindDeviceArgs` re-injects the resolved device key, so `udid` is in the
+    // dispatched args though the recorder strips it from the YAML. It must not
+    // be listed beside the misspelling.
     const dir = path.join(tmpDir, ".argent", "flows");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
@@ -211,9 +188,7 @@ describe("flow-execute parameter handling", () => {
       "utf8"
     );
 
-    // A real Registry with a real schema: the rejection has to come from the
-    // same check the live dispatch runs, and a stub `invokeTool` would not run
-    // one at all.
+    // A real Registry: a stub `invokeTool` runs no schema check at all.
     const r = new Registry();
     r.registerTool(createRunFlowTool(r) as never);
     r.registerTool({
@@ -240,11 +215,8 @@ describe("flow-execute parameter handling", () => {
 
   it("leaves a tool's OWN input rejection alone when the dispatched args parsed fine", async () => {
     // `describeNestedParamError` gates on `TOOL_INPUT_INVALID`, which
-    // `InvalidToolInputError` also DEFAULTS to — so a tool rejecting its
-    // arguments from inside `execute` passes that gate with args that parse
-    // fine. `resolveFlowName` is exactly that throw, and this step reaches it.
-    // There is no zod error to re-render then, and reaching for one throws
-    // `Cannot read properties of undefined (reading 'issues')`.
+    // `InvalidToolInputError` defaults to, so `resolveFlowName`'s throw reaches
+    // it with args that parsed fine and there is no zod error to re-render.
     const dir = path.join(tmpDir, ".argent", "flows");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
@@ -278,9 +250,8 @@ describe("flow-read-prerequisite parameter handling", () => {
   }
 
   it("accepts the alias THROUGH the schema, not only via a direct execute()", async () => {
-    // The tool's own alias tests call `.execute()` directly, bypassing zod — so
-    // the schema could stop accepting `flow_name` and they would stay green. Go
-    // through the registry, which validates on every dispatch path.
+    // The alias tests in flow-tools.test.ts call `.execute()` directly and
+    // bypass zod, so the schema could stop accepting `flow_name` unnoticed.
     await writeFlow("prereq-aliased");
 
     const result = await prereqRegistry().invokeTool<{
@@ -293,12 +264,9 @@ describe("flow-read-prerequisite parameter handling", () => {
   });
 
   it("advertises both spellings in the schema it publishes to MCP and HTTP clients", () => {
-    // A client generating calls from the schema must be able to learn of the
-    // alias. A top-level `oneOf` naming both spellings is out: the Anthropic
-    // Messages API rejects a top-level combinator with a 400 that fails every
-    // tool in the request (#773). So the alias has to be legible from the
-    // published `properties` — `flow_name` as its own field, described as an
-    // alias.
+    // A top-level `oneOf` over both spellings is not an option: the Anthropic
+    // Messages API rejects a top-level combinator (#773). The alias has to be
+    // legible from the published `properties` instead.
     for (const tool of [createRunFlowTool(new Registry()), flowReadPrerequisiteTool]) {
       const schema = zodObjectToJsonSchema(tool.zodSchema!) as {
         properties: Record<string, { description?: string }>;
@@ -310,8 +278,7 @@ describe("flow-read-prerequisite parameter handling", () => {
       );
       expect(schema.properties.flow_name.description, tool.id).toMatch(/alias for `name`/i);
 
-      // Neither spelling may be `required`, or the alias-only call the previous
-      // tests make would be rejected before the tool ever runs.
+      // `required` on either spelling would reject the alias-only calls above.
       expect(schema.required ?? [], tool.id).not.toContain("name");
       expect(schema.required ?? [], tool.id).not.toContain("flow_name");
       expect(schema.required ?? [], tool.id).not.toContain("flow_path");
@@ -319,21 +286,17 @@ describe("flow-read-prerequisite parameter handling", () => {
   });
 
   it("spells out the alias when neither flow source is present", async () => {
-    // The documented pre-flight: the skill has agents call this BEFORE the run,
-    // so a caller who named the flow under a key zod stripped meets this tool
-    // first. A bare "Pass exactly one flow source" would leave them with
-    // nothing saying which spellings are accepted.
+    // Callers read the prerequisite before flow-execute, so one who named the
+    // flow under a key zod stripped meets this tool first.
     await expect(
       prereqRegistry().invokeTool("flow-read-prerequisite", { project_root: tmpDir })
     ).rejects.toThrow(/needs the flow's name in `name`.*`flow_name` is accepted as an alias/s);
   });
 
   it("anchors the exactly-one-source rule at the ROOT, not on flow_path", async () => {
-    // The rule spans the source fields, so it must not be attributed to one.
-    // Anchored on `flow_path` it renders as "`flow_path`: Pass exactly one flow
-    // source…" to an agent and "--flow_path …" to `argent run`, both pointing
-    // at a field the caller may well have got right. An empty path makes both
-    // surfaces print the sentence alone.
+    // The rule spans the source fields. Anchored on `flow_path` it renders as
+    // "`flow_path`: …" to an agent and as `--flow_path` to `argent run`, both
+    // naming a field the caller may have got right.
     for (const tool of [createRunFlowTool(new Registry()), flowReadPrerequisiteTool]) {
       const parsed = tool.zodSchema!.safeParse({ project_root: tmpDir });
       expect(parsed.success, tool.id).toBe(false);
@@ -346,8 +309,7 @@ describe("flow-read-prerequisite parameter handling", () => {
   });
 
   it("stays terse when the caller named BOTH sources", async () => {
-    // Two sources named is not a spelling problem — the caller has to drop one,
-    // and the alias hint would only be noise.
+    // Two sources named is not a spelling problem, so the alias hint is noise.
     let message = "";
     try {
       await prereqRegistry().invokeTool("flow-read-prerequisite", {
@@ -365,12 +327,9 @@ describe("flow-read-prerequisite parameter handling", () => {
 
 describe("flow-file file-input spec order", () => {
   it("puts the `${flow_name}` spec before the `${name}` spec so `name` wins the client merge", () => {
-    // The client interpolates each spec and merges last-write-wins on `target`,
-    // so the `name` spec must come LAST to match `resolveFlowName`'s
-    // `name || flow_name` precedence. Otherwise a REMOTE call sending both keys
-    // uploads the `flow_name` file while the run reports `name`. The client's
-    // own merge is unit-tested against a hand-built array, which would not
-    // catch a reorder of THESE specs.
+    // The client merges specs last-write-wins on `target`, so the `name` spec
+    // must come last to match `name || flow_name`. Reversed, a remote call with
+    // both keys uploads the `flow_name` file while the run reports `name`.
     for (const tool of [createRunFlowTool(new Registry()), flowReadPrerequisiteTool]) {
       const flowFilePaths = (tool.fileInputs ?? [])
         .filter((spec) => spec.target === "flow_file")

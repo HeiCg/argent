@@ -52,10 +52,8 @@ describe("prepareFileInputs", () => {
   });
 
   it("resolves whichever of two same-target specs interpolates (the flow_name alias upload)", async () => {
-    // flow-execute declares flow_file twice — keyed on `${flow_name}` then
-    // `${name}` — so the alias survives the file-input boundary and uploads to
-    // a remote server. Prove an alias-only call still wraps flow_file (else
-    // nothing uploads), and that `name` wins the merge when both are sent.
+    // flow-execute declares flow_file twice, keyed on `${flow_name}` then `${name}`, so an
+    // alias-only call still wraps it and uploads to a remote server.
     const aliasPath = path.join(tmpDir, "aliased.yaml");
     const namePath = path.join(tmpDir, "named.yaml");
     await fs.writeFile(aliasPath, "steps: []");
@@ -80,10 +78,8 @@ describe("prepareFileInputs", () => {
     )) as Record<string, FileInputWire>;
     expect(both.flow_file?.path).toBe(namePath); // name wins the last-write-wins merge
 
-    // The commonest call of all: `name` alone, with the non-interpolating
-    // `${flow_name}` spec now sitting AHEAD of it. That spec must skip
-    // silently — a spec whose params are absent is not a spec that failed —
-    // or adding the alias would have broken every existing caller.
+    // `name` alone: the `${flow_name}` spec ahead of it cannot interpolate and must skip
+    // silently, or adding the alias would break every existing caller.
     const nameOnly = (await prepareFileInputs(
       specs,
       { dir: tmpDir, name: "named" },

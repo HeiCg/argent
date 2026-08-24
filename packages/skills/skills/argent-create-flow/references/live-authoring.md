@@ -25,7 +25,7 @@ Other returns are also success-shaped and record nothing. A composed `flow-execu
 
 Some of these refusals ran first and some ran nothing: a prerequisite notice executes no step, and a batch rejected on its first step dispatches none. Do not infer which from the case. Read `message`: it warns that the device may have moved when a step was reached, and stays silent when none was. On that warning, treat the device as possibly moved off your recorded prefix's end state — check with `describe` or `screenshot` and restore it by hand. Do not relaunch the app: that lands on the start screen, not where your prefix ended.
 
-A recorded `flow-execute` has two names. The top-level `name` identifies the recording. `args.name`, or its `args.flow_name` alias, identifies the sibling flow captured as `run:`.
+A recorded `flow-execute` has two names. The top-level `name` identifies the recording. `args.name` identifies the sibling flow captured as `run:`.
 
 Obey these lifecycle rules:
 
@@ -257,7 +257,7 @@ Resolve every hit and confirm:
 
 Run `flow-execute` on the complete YAML with the absolute project root. For a fragment, verify its prerequisite before setting `prerequisiteAcknowledged: true`.
 
-`flow-execute` takes exactly one flow source: `name`, for a flow saved under `.argent/flows/`, or `flow_path`, an absolute path to any flow `.yaml`. `flow_name` is accepted as an alias for `name` on `flow-execute` and `flow-read-prerequisite`, resolving the same saved file; `name` wins if both are sent, so send one. `flow-start-recording` takes `name` only. `run:` targets and baselines resolve on the tool server's filesystem, beside the YAML it actually reads. `flow_path` therefore requires the agent and the tool server to share a filesystem and is refused when they do not. `name` still runs remotely, but the server receives only that one YAML in a fresh temp directory, so a `run:` target fails as a missing fragment and a `snapshot` fails for a missing baseline. Replay self-contained flows remotely; a composing or snapshotting flow needs one shared filesystem.
+`flow-execute` takes exactly one flow source: `name`, for a flow saved under `.argent/flows/`, or `flow_path`, an absolute path to any flow `.yaml`. `run:` targets and baselines resolve on the tool server's filesystem, beside the YAML it actually reads. `flow_path` therefore requires the agent and the tool server to share a filesystem and is refused when they do not. `name` still runs remotely, but the server receives only that one YAML in a fresh temp directory, so a `run:` target fails as a missing fragment and a `snapshot` fails for a missing baseline. Replay self-contained flows remotely; a composing or snapshotting flow needs one shared filesystem.
 
 Manual rescue invalidates the pass. An `errored` step was never evaluated: an `idle` wait whose tree source could not be read, a step that threw, an unresolvable `run:` target, or a `launch:` that did not start the app. Read the reason — most name the environment, but a failed `launch:` is a verdict about the app. Unconfirmed focus is not in this class at all: the replay focus poll has no failure return, so a `type:` step whose focus was never confirmed is scored a **pass**, and only the value check after typing catches it.
 

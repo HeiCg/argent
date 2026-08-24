@@ -2,11 +2,6 @@ import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { describeParamIssues } from "../src/registry";
 
-// `describeParamIssues` renders a Zod failure as prose. The behaviors below are
-// the ones flow-execute's flat schema cannot reach (nested paths, unrecognized
-// keys, the value-never-leaked guarantee, the 24-key cap), so they are covered
-// directly here rather than through a tool.
-
 function issuesOf(schema: z.ZodTypeAny, value: unknown) {
   const parsed = schema.safeParse(value);
   if (parsed.success) throw new Error("expected the parse to fail");
@@ -23,9 +18,7 @@ describe("describeParamIssues", () => {
   });
 
   it("path-qualifies an unrecognized NESTED key (selector.id, not a bare id)", () => {
-    // The hottest instance is flow YAML's `id` under a strict `selector` whose
-    // schema wants `identifier`: a bare `id` would contradict the top-level
-    // "You sent:" list printed one clause later.
+    // A bare `id` would contradict the "You sent:" list, which names top-level keys only.
     const schema = z.object({
       selector: z.object({ identifier: z.string().optional() }).strict(),
     });
@@ -39,24 +32,19 @@ describe("describeParamIssues", () => {
     const value = { token: "hunter2-SUPER-SECRET" };
     const msg = describeParamIssues(issuesOf(schema, value), value);
     expect(msg).not.toContain("hunter2-SUPER-SECRET");
-    expect(msg).toContain("`token`"); // the key is named
+    expect(msg).toContain("`token`");
   });
 
   it("does not leak a present-but-wrong ENUM value (invalid_value branch, secret-shaped value)", () => {
-    // The enum branch renders "Invalid option: expected one of …" — the ALLOWED
-    // options, which are schema-public. The rejected value the caller sent must
-    // never appear, since it can carry a secret (a tenant id, a token).
+    // The branch prints the allowed options, which are schema-public; the sent value is not.
     const schema = z.object({ mode: z.enum(["read", "write"]) });
     const value = { mode: "SECRET-TENANT-ID-abc123" };
     const msg = describeParamIssues(issuesOf(schema, value), value);
     expect(msg).not.toContain("SECRET-TENANT-ID-abc123");
-    expect(msg).toContain("`mode`"); // the key is named
+    expect(msg).toContain("`mode`");
   });
 
   it("does not leak the VALUE of an unrecognized key (unrecognized_keys branch names the key only)", () => {
-    // The unrecognized-keys branch is the one most likely to receive a caller's
-    // stray secret under a misspelled key. It must name the KEY and never echo
-    // the value beside it.
     const schema = z.object({ known: z.string().optional() }).strict();
     const value = { secret_key: "sk-live-DEADBEEF" };
     const msg = describeParamIssues(issuesOf(schema, value), value);
@@ -66,24 +54,18 @@ describe("describeParamIssues", () => {
 
   it("caps the 'You sent:' list at 24 keys and SIGNALS the cut with an ellipsis", () => {
     const value: Record<string, unknown> = {};
-    for (let i = 0; i < 30; i++) value[`k${i}`] = i; // 30 unknown keys, all stripped
+    for (let i = 0; i < 30; i++) value[`k${i}`] = i;
     const schema = z.object({ needed: z.string() });
     const msg = describeParamIssues(issuesOf(schema, value), value);
     expect(msg).toContain("`needed` is required");
-    expect(msg).toContain("…"); // truncation is not silent
-    expect(msg).not.toContain("`k29`"); // the 30th key is dropped
-    // The cap is 24 and not merely "some number below 30": assert the last key
-    // that survives and the first that does not, so a narrower cap — which
-    // would drop the misspelling this list exists to surface — fails here.
+    expect(msg).toContain("…");
+    expect(msg).not.toContain("`k29`");
+    // Pin the cap at 24: the last key that survives, then the first that does not.
     expect(msg).toContain("`k23`");
     expect(msg).not.toContain("`k24`");
   });
 
   it("prints all 24 keys with NO ellipsis when the list exactly fills the cap", () => {
-    // The other side of the boundary. The ellipsis has to mean "keys were
-    // dropped", so a list that fits must not carry one — otherwise a reader
-    // who cannot find their key in the list cannot tell whether it was
-    // stripped as unknown or merely cut off.
     const value: Record<string, unknown> = {};
     for (let i = 0; i < 24; i++) value[`k${i}`] = i;
     const schema = z.object({ needed: z.string() });
@@ -112,10 +94,8 @@ describe("describeParamIssues", () => {
   });
 
   it("names an OMITTED required enum as missing, not 'Invalid option' (implying a bad value was sent)", () => {
-    // Zod emits `invalid_value` (not `invalid_type`) for a missing enum, so its
-    // message is "Invalid option: expected one of ...", which reads as though a
-    // wrong value was sent when the field was simply absent. The verdict must
-    // come from the input (value undefined), not the message.
+    // Zod emits `invalid_value` for a missing enum, so the verdict has to come from the
+    // input, not from the message.
     const schema = z.object({ mode: z.enum(["a", "b"]) });
     const msg = describeParamIssues(issuesOf(schema, {}), {});
     expect(msg).toContain("`mode` is required and was not provided");
@@ -123,8 +103,6 @@ describe("describeParamIssues", () => {
   });
 
   it("still reports a PRESENT-but-wrong enum value as an invalid option (not as missing)", () => {
-    // The mirror case: a value WAS sent, it is just not allowed. This must not
-    // be swept into the "is required" wording; the caller did supply the key.
     const schema = z.object({ mode: z.enum(["a", "b"]) });
     const value = { mode: "c" };
     const msg = describeParamIssues(issuesOf(schema, value), value);
@@ -152,10 +130,8 @@ describe("describeParamIssues", () => {
   });
 
   it("names an OMITTED field named after a prototype member as missing, not a type error", () => {
-    // A bare `params[key]` reads `Object.prototype.toString` for an absent
-    // `toString` field, which is `!== undefined`, so it would be misreported as
-    // "expected string, received function". The lookup must be own-property
-    // only.
+    // A bare `params[key]` finds `Object.prototype.toString`, so an absent field would be
+    // misreported as "received function". The lookup must be own-property only.
     const schema = z.object({ toString: z.string() });
     const msg = describeParamIssues(issuesOf(schema, {}), {});
     expect(msg).toContain("`toString` is required (string) and was not provided");
@@ -163,10 +139,6 @@ describe("describeParamIssues", () => {
   });
 
   it("enumerates a UNION's branches instead of Zod's bare 'Invalid input'", () => {
-    // A union's own message carries nothing — the alternatives live in a nested
-    // per-branch array. `tv-remote`'s `button` is this exact shape, and it is
-    // the parameter a caller most often gets wrong, so losing the 16-value
-    // enumeration would make this message worse than the JSON it replaced.
     const schema = z.object({
       button: z.union([
         z.enum(["up", "down", "select"]),
@@ -183,10 +155,8 @@ describe("describeParamIssues", () => {
   });
 
   it("renders a SCALAR union's branches with no dangling path prefix", () => {
-    // The guard is `inner.path.length > 0 ? … : ""`, and the union tests around
-    // it all assert fragments — so dropping it renders a bare "button." before
-    // every branch and stays green. Compare the WHOLE string, since the defect
-    // is a prefix every `toContain` fragment survives.
+    // Compare the whole string: the other union tests assert fragments, which a stray
+    // path prefix on every branch would survive.
     const schema = z.object({
       button: z.union([
         z.enum(["up", "down", "select"]),
@@ -218,18 +188,14 @@ describe("describeParamIssues", () => {
   });
 
   it("caps a union's enumerated branches at 12 and SIGNALS the cut", () => {
-    // A union branch that is an ARRAY reports one issue per element, so the
-    // branch-issue count follows the caller's input rather than the schema.
-    // Both the enumeration and the work spent building it have to stop.
     const schema = z.object({
       button: z.union([z.enum(["up"]), z.array(z.enum(["up"]))]),
     });
     const value = { button: Array.from({ length: 40 }, (_, i) => `bad-${i}`) };
     const msg = describeParamIssues(issuesOf(schema, value), value);
-    // Each element's reason is distinct (zod qualifies it by index), so 41
-    // alternatives are available — the scalar branch's own reason plus one per
-    // element — and exactly 12 must be printed.
-    expect(msg.match(/; or /g)?.length).toBe(12); // 12 alternatives + the "; or …"
+    // Each element's reason is distinct (zod qualifies it by index), so 41 alternatives
+    // are available: the scalar branch's reason plus one per element.
+    expect(msg.match(/; or /g)?.length).toBe(12); // 11 joiners plus the "; or …"
     expect(msg).toContain("; or ….");
     expect(msg).toContain("button.0:");
     expect(msg).toContain("button.10:");
@@ -237,8 +203,6 @@ describe("describeParamIssues", () => {
   });
 
   it("does not truncate a union that fits, and adds no ellipsis to it", () => {
-    // The boundary the cap above is measured against: 12 alternatives render in
-    // full, so the ellipsis is evidence of a cut and never decoration.
     const schema = z.object({
       button: z.union([z.enum(["up"]), z.array(z.enum(["up"]))]),
     });
@@ -257,8 +221,6 @@ describe("describeParamIssues", () => {
   });
 
   it("does not double the full stop of a custom message that already ends in one", () => {
-    // A custom refinement's message survives verbatim and is author-written
-    // prose, so it normally ends in a period. `toContain` passes on "..".
     const schema = z
       .object({ deltaX: z.number().optional(), deltaY: z.number().optional() })
       .superRefine((_v, ctx) =>
@@ -288,10 +250,7 @@ describe("describeParamIssues", () => {
   });
 
   it("path-qualifies a custom rule BOUND to a field, so the prose names its parameter", () => {
-    // The live instance is `selector.text`'s visible-character rule, reached by
-    // `await-ui-element` — which also declares `expectedText`, so bare prose
-    // about "text" lands ambiguously between the two. "You sent:" only ever
-    // carries top-level keys, so without the path the sub-key is named nowhere.
+    // "You sent:" lists top-level keys only, so without the path the sub-key is named nowhere.
     const schema = z.object({
       selector: z.object({
         text: z.string().refine(() => false, { message: "text must contain a visible character" }),
@@ -303,8 +262,6 @@ describe("describeParamIssues", () => {
   });
 
   it("leaves a ROOT-anchored cross-field rule unqualified", () => {
-    // The other half of the pair above. A rule spanning several fields has no
-    // one field to name, so the author's prose is the whole message.
     const schema = z
       .object({ a: z.string().optional(), b: z.string().optional() })
       .superRefine((_v, ctx) =>
@@ -317,8 +274,7 @@ describe("describeParamIssues", () => {
   });
 
   it("leaves a multi-sentence message's internal periods alone", () => {
-    // Only the TERMINAL stop is ours to drop — flow-execute's no-source message
-    // is two sentences and the first one's period must survive.
+    // Only the terminal stop is dropped. flow-execute's no-source message is two sentences.
     const schema = z.object({ a: z.string().optional() }).superRefine((_v, ctx) =>
       ctx.addIssue({
         code: "custom",
