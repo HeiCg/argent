@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 /**
  * Wrappers around `xcrun devicectl` — Apple's CoreDevice CLI (Xcode 15+) and
  * the control plane for physical iPhones/iPads: discovery, app lifecycle,
- * screenshots, and Wi-Fi tunnel info. The XCUITest runner (interaction/
+ * screenshots, and tunnel readiness. The XCUITest runner (interaction/
  * snapshot path) is separate; see runner-build.ts / the ios-device-runner
  * blueprint.
  *
@@ -264,25 +264,24 @@ export async function captureScreenshot(udid: string, outPath: string): Promise<
   });
 }
 
-export interface DeviceTunnelInfo {
+interface DeviceTunnelInfo {
   tunnelState: string | null;
-  tunnelIpAddress: string | null;
 }
 
 interface DevicectlDetailsPayload {
   result?: {
-    connectionProperties?: { tunnelState?: string; tunnelIPAddress?: string };
-    device?: { connectionProperties?: { tunnelState?: string; tunnelIPAddress?: string } };
+    connectionProperties?: { tunnelState?: string };
+    device?: { connectionProperties?: { tunnelState?: string } };
   };
 }
 
 /**
- * Read the device's CoreDevice connection details. `tunnelIPAddress` (IPv6) is
- * the Wi-Fi route to on-device TCP listeners when usbmuxd can't see the device
- * (Wi-Fi devices ride `remoted`, invisible to usbmuxd). `tunnelState:
- * "connecting"` means NOT ready — commands issued in that window time out.
+ * Read the device's CoreDevice connection details. `tunnelState: "connecting"`
+ * means NOT ready — commands issued in that window time out. (The tunnel is
+ * CoreDevice's own control channel and exists over USB too; this is a
+ * readiness probe, not a Wi-Fi route.)
  */
-export async function deviceInfoDetails(
+async function deviceInfoDetails(
   udid: string,
   opts: { timeoutSeconds?: number } = {}
 ): Promise<DeviceTunnelInfo> {
@@ -297,7 +296,6 @@ export async function deviceInfoDetails(
     payload?.result?.connectionProperties ?? payload?.result?.device?.connectionProperties;
   return {
     tunnelState: conn?.tunnelState ?? null,
-    tunnelIpAddress: conn?.tunnelIPAddress ?? null,
   };
 }
 

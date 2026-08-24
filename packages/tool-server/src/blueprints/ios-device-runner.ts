@@ -6,7 +6,7 @@ import {
   type ServiceEvents,
   type ServiceInstance,
 } from "@argent/registry";
-import { deviceInfoDetails, ensureDeviceReady } from "../utils/ios-device/devicectl";
+import { ensureDeviceReady } from "../utils/ios-device/devicectl";
 import {
   ensureRunnerArtifact,
   isProfileMissingDeviceFailure,
@@ -138,10 +138,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         derivedDataPath: artifact.derivedDataPath,
         port,
       });
-      const resolver = createRunnerRouteResolver({
-        resolveTunnelIpAddress: async (deviceUdid: string) =>
-          (await deviceInfoDetails(deviceUdid)).tunnelIpAddress,
-      });
+      const resolver = createRunnerRouteResolver();
       const client = createRunnerClient({
         udid,
         port,

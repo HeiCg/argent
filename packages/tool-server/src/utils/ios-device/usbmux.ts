@@ -71,8 +71,8 @@ export async function openUsbmuxRunnerSocket(
  * Map a non-zero `Connect` result to the typed verdict the route resolver
  * branches on. Result 2 (device gone) must land on the same unattached path as
  * a missing `ListDevices` entry — it covers the device being unplugged between
- * the lookup and the connect, and a CoreDevice-backed device can then fall
- * back to its Wi-Fi tunnel instead of failing with a cable hint. Result 3
+ * the lookup and the connect, and both then surface the same actionable
+ * connect-the-cable hint. Result 3
  * means the opposite: the device is attached and only the runner port is not
  * bound yet, which resolves on its own once the runner finishes starting — so
  * it is the one retryable verdict.

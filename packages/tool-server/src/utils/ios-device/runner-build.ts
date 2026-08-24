@@ -290,8 +290,8 @@ export async function ensureRunnerArtifact(
  * Clone the .xctestrun with ARGENT_RUNNER_PORT injected into every test
  * target's env dictionaries (all four maps — xctestrun format v2 nests targets
  * under TestConfigurations). The Swift runner reads the port from its
- * environment and binds it on all interfaces so usbmux and the CoreDevice
- * tunnel can both reach it.
+ * environment and binds it on all interfaces, where usbmux's device-side
+ * connect reaches it.
  */
 export async function prepareXctestrunWithPort(
   xctestrunPath: string,

@@ -40,8 +40,8 @@ build-for-testing` (signed with the user's team — see the environment
 2. Per session it clones the `.xctestrun` with `ARGENT_RUNNER_PORT` injected
    and launches `xcodebuild test-without-building` detached; testmanagerd
    installs and starts the runner on the device.
-3. Commands travel as one HTTP POST per command, usbmux-first (USB) with a
-   CoreDevice-tunnel fallback (Wi-Fi). `PROTOCOL.md` documents the contract.
+3. Commands travel as one HTTP POST per command over usbmux (USB cable
+   only). `PROTOCOL.md` documents the contract.
 
 ## Build-time configuration
 
