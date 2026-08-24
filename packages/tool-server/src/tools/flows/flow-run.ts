@@ -259,7 +259,9 @@ export interface StepReport {
   /**
    * The runner had begun this step when the run was cancelled, so its `skip` is
    * NOT proof that the device is untouched. A `launch` reaches its abort only
-   * after `restart-app` relaunched the app. Set on every skip a reached step
+   * downstream of something that already moved the run: a `restart-app`
+   * relaunch on the native platforms, and on chromium a boot or a CDP attach.
+   * Set on every skip a reached step
    * produces: a cancelled `launch`, a cancelled directive, a cancelled
    * `await-ui-element` tool step, and a cancelled nested orchestrator whose own
    * report says it reached one of ITS steps. The pre-step guard, a fixed
@@ -2318,8 +2320,13 @@ async function execLeafStep(
       const r = await runLaunch(state, step.app);
       // A run cancelled mid-launch is a skip (matching the pre-step guard and
       // the directives), never a step failure — the app did nothing wrong.
-      // Still `reached`: every abort exit in `runLaunch` is after the relaunch
-      // or the chromium attach.
+      // Still `reached`: every abort exit in the launch family sits downstream
+      // of something that already moved the run. On the native platforms that
+      // is the `restart-app` relaunch. Chromium never reaches `restart-app`,
+      // which declares no chromium support, and each of its three exits is
+      // after a boot or a CDP attach — the hoisted boot on the owned-instance
+      // branch, the attach on the branch below it, and this step's own boot on
+      // the third.
       if (r.aborted) return { ...base, status: "skip", reason: r.reason, reached: true };
       return { ...base, status: r.ok ? "pass" : "error", reason: r.reason };
     }
