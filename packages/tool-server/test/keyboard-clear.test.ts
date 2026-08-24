@@ -2990,11 +2990,13 @@ describe("keyboard clear — tool schema", () => {
   });
 
   it("declares itself long-running, since one call budgets a clear and an injection", () => {
-    // The clear is capped at 26s on Android and the one injection that can
-    // follow it — `text` or `key`, never both — keeps its own 15s cap, so a
-    // `{ clear, text }` worst case of ~41s still sums past the MCP adapter's 30s
-    // per-request fetch timeout, which abandons the request while adb is still
-    // typing on the device.
+    // On Android the clear now starts with the accessibility replace — 8s to
+    // start the helper, then a 5s `ping` and a 15s `setText` — before the 26s
+    // injected clear, and the one injection that can follow it — `text` or
+    // `key`, never both — keeps its own 15s cap. A `{ clear, text }` worst case
+    // is well past a minute, and well past the MCP adapter's 30s per-request
+    // fetch timeout, which abandons the request while adb is still typing on the
+    // device.
     expect(tool.longRunning).toBe(true);
   });
 

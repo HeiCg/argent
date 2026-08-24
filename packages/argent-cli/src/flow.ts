@@ -29,8 +29,9 @@ export interface StepReport {
    * `await: { idle: true }`, which never fails a run and says here what its
    * green actually bought; by a selector-less gesture a tree-source outage left
    * unsettled; and by a `keyboard` clear that could not take its verified path,
-   * which says which weaker one ran (see StepReport.warning in the tool-server's
-   * flow-run). Also carries the caveat older tool-servers put on a snapshot
+   * which says which weaker one ran — from a `type` step, a raw `keyboard` step,
+   * or a `keyboard` step inside a `run-sequence` (see StepReport.warning in the
+   * tool-server's flow-run). Also carries the caveat older tool-servers put on a snapshot
    * that adopted a missing baseline, which now fails the step instead. Live
    * either way: dropping the field would silently delete the only thing those
    * checks report — this type has no `result` field, so a tool step's own

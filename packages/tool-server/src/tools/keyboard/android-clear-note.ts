@@ -8,8 +8,9 @@ import type { SetTextReason } from "../../blueprints/android-devtools";
  * - `helper_unavailable` — nothing was holding the devtools connection and it
  *   could not be started inside the attempt's budget.
  * - `helper_outdated` — the helper answering on this device predates `setText`.
- *   Reachable even with a current bundle: the process holding the connection is
- *   whatever started first, possibly from another argent install.
+ *   Reachable even with a current bundle: the installed APK can satisfy the
+ *   version gate while its code predates the method, and the install cache can
+ *   outlive the package it recorded — see SET_TEXT_MIN_PROTOCOL for both.
  * - `rpc_failed` — a round trip to the helper rejected: a severed socket, a
  *   helper that died after the service resolved, or one that stopped answering
  *   and hit the RPC client's own timeout.

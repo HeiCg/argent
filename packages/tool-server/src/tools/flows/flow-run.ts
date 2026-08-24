@@ -204,10 +204,15 @@ export interface StepReport {
    * waited.
    *
    * Raised by a THIRD family too: a `keyboard` clear that could not take the
-   * verified path and said so in its own `note`. It reaches a step report both
-   * ways — from the `type` directive, and from a raw `keyboard` tool step, whose
-   * result would otherwise carry the note where no CLI renders it. Only Android
-   * produces one; see `KeyboardResult.note`.
+   * verified path and said so in its own `note`. It reaches a step report three
+   * ways — from the `type` directive, from a raw `keyboard` tool step, and from
+   * a `keyboard` step nested inside `run-sequence` — whose result would
+   * otherwise carry the note where no CLI renders it. Only Android produces one;
+   * see `KeyboardResult.note`.
+   *
+   * `keyboard` is the ONLY tool read this way. Several others put a `note` on a
+   * healthy result, and a step that warns on every run is a step nobody reads —
+   * see `KEYBOARD_TOOL_ID`.
    */
   warning?: string;
   /** Underlying tool id for `tool` steps. */
@@ -1003,6 +1008,11 @@ relaunch the app so the instrumentation loads), or accept the warning where the 
 the first such gesture proves the outage and later ones spend that verdict without paying the settle
 window again. A tree read that comes back, or a relaunch, retires that verdict — which only makes the
 next gesture pay a fresh window, and it warns again if the source is still down.
+A clear PASSES carrying a \`warning\` of its own when Android could not take its verified accessibility
+path — from a \`type\` step, a raw \`keyboard\` step, or a \`keyboard\` step inside \`run-sequence\`. The note
+says which weaker path ran and what it cannot promise about the field. A helper that is missing, too old,
+or that could not start is environment: let it start on the device and rerun. Otherwise gate the next
+action on an app result rather than on the field.
 A \`when:\` block (condition + \`steps:\`, no else) runs its steps only if the condition holds —
 checked once with the short assert grace — for one-sided divergences like interstitials and coach
 marks; a skipped block reports distinctly and failures inside an entered block are real failures.
