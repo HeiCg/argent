@@ -27,6 +27,21 @@ function withEnv(name: string, value: string): void {
   process.env[name] = value;
 }
 
+/**
+ * Run with `process.platform` faked, so the two branches only a Windows host
+ * takes are reachable from the suite. Neither reads anything of the OS beyond
+ * the name: what they change is how environment names are compared.
+ */
+async function asWindows<T>(body: () => Promise<T>): Promise<T> {
+  const real = process.platform;
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  try {
+    return await body();
+  } finally {
+    Object.defineProperty(process, "platform", { value: real, configurable: true });
+  }
+}
+
 function withoutEnv(name: string): void {
   const before = process.env[name];
   restoreEnv.push(() => {
@@ -147,6 +162,38 @@ describe("flow script executor — the environment allowlist", () => {
       expect((result.output?.env as Record<string, string>).ELECTRON_RUN_AS_NODE).toBe("1");
     }
   );
+
+  it("copies an allowlisted name in non-canonical casing on Windows", async () => {
+    // Windows environment names are case-insensitive, so a host may surface
+    // any of them under a casing the list does not spell. `SystemRoot` is the
+    // one a script that makes any network call fails without.
+    withEnv("systemroot", "C:\\Windows");
+    const ws = workspace();
+    const script = ws.write("env.mjs", reporter(["systemroot"]));
+    const result = await asWindows(() =>
+      executor().execute({ scriptPath: script, projectRoot: ws.dir })
+    );
+
+    expect((result.output?.env as Record<string, string>).systemroot).toBe("C:\\Windows");
+  }, 30_000);
+
+  it("refuses a reserved name in non-canonical casing on Windows", async () => {
+    // The same case-insensitivity on the way in: on a Windows host
+    // `Electron_Run_As_Node` decides whether the child boots as Node at all,
+    // exactly as the canonical spelling does.
+    const ws = workspace();
+    const script = ws.write("env.mjs", `output.ok = true;`);
+    const result = await asWindows(() =>
+      executor().execute({
+        scriptPath: script,
+        projectRoot: ws.dir,
+        env: { Electron_Run_As_Node: "1" },
+      })
+    );
+
+    expect(result.failure?.kind).toBe("invalid");
+    expect(result.failure?.message).toContain("Electron_Run_As_Node");
+  }, 30_000);
 
   it("does not set the Electron flag when the server's environment lacks it", async () => {
     // A developer running the suite from an Electron-hosted shell has the flag
