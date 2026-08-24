@@ -408,7 +408,12 @@ export async function injectAndroidClear(
   // treating it as failure would spend a blind BLIND_DELETE_COUNT run on every
   // clear taken where `measureFocusedTextLength` cannot see. A measurement that
   // is really a placeholder costs a run that deletes nothing.
-  const residue = await measureFocusedTextLength(serial, deadline, options.readHierarchy, 1);
+  //
+  // `unmeasurableIsUnreadable` carries that rule to the fields the dump cannot
+  // read: without it a focused password field floors to BLIND_DELETE_COUNT (see
+  // the measurement), so every successful clear of a credential box would read
+  // 150 back and fire a 158-keyevent run into the field just emptied.
+  const residue = await measureFocusedTextLength(serial, deadline, options.readHierarchy, 1, true);
   if (residue !== undefined && residue > 0) {
     await clearByDeleting(serial, deadline, options, residue);
   }
@@ -786,7 +791,10 @@ async function readHierarchy(
  * Undefined is returned when the dump fails or the device refuses it (locked
  * screen, secure overlay) or when no focused node is an `EditText`. A focused
  * password field is not measured either, but it does not make the whole result
- * undefined — it contributes BLIND_DELETE_COUNT, see below.
+ * undefined — it contributes BLIND_DELETE_COUNT, see below. Passing
+ * `unmeasurableIsUnreadable` inverts that: any unmeasurable focused editable
+ * makes the whole result undefined, which is what the select-all's read-back
+ * wants (see {@link injectAndroidClear}).
  *
  * Password fields are skipped because what uiautomator reports for them is not
  * the value: on API 36 it is the masked rendering (a 35-character password dumps
@@ -821,7 +829,8 @@ async function measureFocusedTextLength(
   serial: string,
   deadline: number,
   preferredRead?: () => Promise<string | undefined>,
-  maxDumps?: number
+  maxDumps?: number,
+  unmeasurableIsUnreadable?: boolean
 ): Promise<number | undefined> {
   let xml: string | undefined;
   try {
@@ -834,6 +843,7 @@ async function measureFocusedTextLength(
   if (!root) return undefined;
 
   let longest: number | undefined;
+  let anyUnmeasurable = false;
   const stack = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
@@ -854,10 +864,18 @@ async function measureFocusedTextLength(
     // backspaces where the field alone would have got the blind count. Flooring
     // keeps `longest` monotonic, which is what makes the "over-deleting is a
     // no-op, under-deleting truncates" rule above actually hold.
+    //
+    // `unmeasurableIsUnreadable` opts out of the floor for the select-all's
+    // read-back, where the reading decides only whether a rescue runs and a
+    // floored password field would read as residue over a field that is empty.
+    // There the ambiguity must not delete, so any unmeasurable focused editable
+    // makes the whole reading undefined — evidence of nothing, like a failed
+    // dump.
     const text = attrIsTrue(attrs, "password") ? undefined : attrs.text;
+    if (text === undefined) anyUnmeasurable = true;
     longest = Math.max(longest ?? 0, text === undefined ? BLIND_DELETE_COUNT : [...text].length);
   }
-  return longest;
+  return unmeasurableIsUnreadable && anyUnmeasurable ? undefined : longest;
 }
 
 /**

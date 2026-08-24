@@ -666,6 +666,21 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
   });
 
+  it("leaves a cleared password field alone instead of reading its blind floor as residue", async () => {
+    // The read-back must not inherit the sizing read's blind floor. A focused
+    // password field is unmeasurable — uiautomator reports the mask, not the
+    // value — and the sizing read floors it to BLIND_DELETE_COUNT because
+    // over-deleting there is a no-op. Read as a residue over the just-emptied
+    // credential box, that same floor fires a 158-keyevent run after every
+    // successful `{ clear: true, text: "{{secret:…}}" }`. Unmeasurable is
+    // unreadable here: evidence of nothing, like the refused dump above.
+    seedDump(dumpWith("", true));
+
+    await makeAndroidImpl(registryWith({})).handler({}, { udid: ANDROID.id, clear: true }, ANDROID);
+
+    expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
+  });
+
   it("does not retry the read-back dump the way the sizing read does", async () => {
     // The sizing read retries past DUMP_RETRY_BACKOFF_MS because losing the
     // UiAutomation race there means the blind count and a truncated field. The
