@@ -6,7 +6,8 @@ import {
   HARMONY_INTERACTION_TIMEOUT_MS,
   assertHarmonyDisplayReady,
   harmonyDisplay,
-  harmonySwipe,
+  holdUitestQueue,
+  remainingBudget,
   toDevicePoint,
 } from "../../utils/harmony-uitest";
 import { ensureDep } from "../../utils/check-deps";
@@ -93,25 +94,33 @@ Pass settle:true for a momentum-free swipe that lands exactly where the finger l
     if (device.platform === "harmony") {
       await ensureDep("hdc");
       const connectKey = harmonyConnectKey(device.id);
-      // One deadline for the geometry read and the injection it feeds, so the
-      // pair stays under the MCP layer's abort-and-replay cap.
+      // One deadline for both display reads and the injection they feed, so the
+      // whole gesture stays under the MCP layer's abort-and-replay cap.
       const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
+      // Fast prefilter, ahead of the queue wait: a panel already suspended or
+      // not yet composited is refused without waiting behind this device's
+      // queued work. It is NOT the check the injection trusts — see inside.
       const display = await harmonyDisplay(connectKey);
       // A swipe against a panel that is suspended, or that the render service
       // could not size, reports `No Error` and lands nowhere.
       assertHarmonyDisplayReady(display, "swipe");
-      const fromPx = toDevicePoint(params.fromX, params.fromY, display);
-      const toPx = toDevicePoint(params.toX, params.toY, display);
-      const distance = Math.hypot(toPx.x - fromPx.x, toPx.y - fromPx.y);
-      const seconds = Math.max(duration, 1) / 1000;
-      await harmonySwipe(
-        connectKey,
-        settle ? "swipe" : "fling",
-        fromPx,
-        toPx,
-        distance / seconds,
-        deadline - Date.now()
-      );
+      await holdUitestQueue(connectKey, deadline, async (ui) => {
+        // The check the injection trusts, read while holding the queue: the
+        // prefilter saw a state that may be a full queue depth stale by the
+        // time this call reaches the device — and on a foldable the geometry
+        // may have changed with it, so the endpoints scale against what is
+        // live now.
+        const live = await harmonyDisplay(
+          connectKey,
+          remainingBudget(connectKey, deadline, "the display re-read")
+        );
+        assertHarmonyDisplayReady(live, "swipe");
+        const fromPx = toDevicePoint(params.fromX, params.fromY, live);
+        const toPx = toDevicePoint(params.toX, params.toY, live);
+        const distance = Math.hypot(toPx.x - fromPx.x, toPx.y - fromPx.y);
+        const seconds = Math.max(duration, 1) / 1000;
+        await ui.swipe(settle ? "swipe" : "fling", fromPx, toPx, distance / seconds);
+      });
       return { swiped: true, timestampMs };
     }
     const api = services.simulatorServer as SimulatorServerApi;

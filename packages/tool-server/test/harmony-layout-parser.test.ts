@@ -358,6 +358,19 @@ describe("parseHarmonyLayout", () => {
       expect(target.children[0].role).toBe("Image");
     });
 
+    it("keeps a mapped wrapper role through the collapse", () => {
+      // ArkUI puts the meaningful widget on the OUTER node (`ListItem` -> Cell)
+      // and fills it with a bare layout child at identical bounds. Collapsing
+      // onto the child's role reports the same row as `Row` or `Cell` depending
+      // on where focus happens to sit.
+      const B = "[0,0][1216,160]";
+      const target = wrap(
+        { type: "ListItem", bounds: B },
+        { type: "Row", id: "Setting.Display.dark_mode", clickable: "true", bounds: B }
+      );
+      expect(target.role).toBe("Cell");
+    });
+
     it("keeps a wrapper that carries the identifier an agent selects on", () => {
       const B = "[0,0][200,100]";
       const target = wrap(
@@ -569,7 +582,29 @@ describe("parseHarmonyLayout", () => {
     ).tree;
     const overlay = tree.children[0].children[0];
     expect(overlay.role).toBe("SystemOverlay");
-    expect(overlay.label).toMatch(/another process/);
+    expect(overlay.identifier).toBe("AppSelector");
+  });
+
+  it("keeps the overlay explanation out of the label slot", () => {
+    // The matcher reads `label` as visible text, and a full-screen node whose
+    // label is a sentence containing "system", "contents" or "screenshot" makes
+    // `exists: {text: ...}` true on every screen a share sheet or app selector
+    // covers - the same phantom-text problem that keeps the window bundle name
+    // in `identifier`.
+    const tree = parseHarmonyLayout(
+      root([
+        node({ type: "root", bundleName: "com.ohos.sceneboard", bounds: "[0,0][1216,2688]" }, [
+          node({ type: "UIExtensionComponent", bounds: "[0,0][1216,2688]" }),
+        ]),
+      ]),
+      SCREEN
+    ).tree;
+    const overlay = tree.children[0].children[0];
+    for (const word of ["system", "process", "contents", "screenshot", "layout", "dump"]) {
+      expect(overlay.label?.includes(word) ?? false, `label contains "${word}"`).toBe(false);
+    }
+    // An id-less placeholder still answers for itself.
+    expect(overlay.identifier).toBeTruthy();
   });
 
   it("parses a UIExtensionComponent's own subtree when the dump carries one", () => {
@@ -708,13 +743,18 @@ describe("parseHarmonyLayout", () => {
     });
 
     it("never lets a frame run past the screen, so a tap centre stays on it", () => {
-      for (const row of rows([
+      const kept = rows([
         ["ABOVE", "[0,-400][1216,-260]"],
         ["BELOW", "[0,2888][1216,3028]"],
         ["RIGHT", "[1266,400][1456,540]"],
         ["PART-RIGHT", "[1100,400][1456,540]"],
         ["VISIBLE", "[0,1000][1216,1140]"],
-      ])) {
+      ]);
+      // Every assertion below lives inside the loop, so an empty `kept` would
+      // otherwise pass vacuously — and this is the only case pinning
+      // `x + width <= 1` for a partially off-screen row.
+      expect(kept.length, "rows kept after pruning").toBeGreaterThan(0);
+      for (const row of kept) {
         const { x, y, width, height } = row.frame;
         expect(x + width, `${row.label}: x+width`).toBeLessThanOrEqual(1);
         expect(y + height, `${row.label}: y+height`).toBeLessThanOrEqual(1);

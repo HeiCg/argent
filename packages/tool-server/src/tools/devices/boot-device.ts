@@ -1317,8 +1317,13 @@ type HarmonyBootResult = {
 };
 
 // Coalesce concurrent HarmonyOS boots (mirrors `inFlightVegaBoots`): two callers
-// must not both shell out `Emulator -start` for the same instance.
-const inFlightHarmonyBoots = new Map<string, Promise<HarmonyBootResult>>();
+// must not both shell out `Emulator -start` for the same instance. The flag
+// travels beside the promise so a boot with the other `force` value can tell
+// sharing from serialization.
+const inFlightHarmonyBoots = new Map<
+  string,
+  { force: boolean; promise: Promise<HarmonyBootResult> }
+>();
 
 /**
  * Sized for a `force` restart, which spends one budget on a shutdown and a boot.
@@ -1471,6 +1476,20 @@ const HARMONY_UNLISTABLE_TARGETS =
   "not tell whether the instance registered — this says nothing about the instance itself. Check " +
   "that `hdc` works (`hdc list targets`), then call `list-devices` and drive the " +
   '`kind: "device"` entry for the instance.';
+
+/**
+ * Said when the boot budget ran out before the target wait could read `hdc`'s
+ * table even once — a `force` restart can spend all of it waiting out the
+ * shutdown. Distinct from {@link HARMONY_UNLISTABLE_TARGETS}, which reports
+ * listings that were asked for and failed: here `hdc` was never invoked by the
+ * wait at all, so sending the caller to check it would misdiagnose a short
+ * budget as a broken connector.
+ */
+const HARMONY_UNATTEMPTED_LISTING =
+  "The boot budget ran out before argent could ask `hdc list targets` once while the instance " +
+  "was coming up, so whether the instance registered was never checked — this says nothing " +
+  'about `hdc` itself. Call `list-devices` and drive the `kind: "device"` entry for the ' +
+  "instance once it appears.";
 
 /** Said when the instance started but the connector that would reach it is missing. */
 const HARMONY_NO_HDC =
@@ -1648,26 +1667,35 @@ async function startHarmonyEmulator(
       failure_command: "deveco_emulator",
     });
   }
-  // Escaped rather than blanked to `_`, because the log is opened `"w"`:
-  // collapsing every unsafe character onto one would point two instances the
-  // manager keeps apart ("Phone 1", "Phone_1") at a single file, and a boot of
-  // the second truncates the first's diagnostic mid-start — leaving a failure
-  // to be reported with nothing printed. `%` is itself escaped, so the mapping
-  // stays one-to-one.
+  // Unique per attempt, not per instance: unlike Android there is no AVD lock
+  // guaranteeing a single writer — two tool-server processes can boot the same
+  // instance, and the coalescing map only covers one process's own window. A
+  // shared name opened `"w"` let the loser truncate the winner's diagnostic
+  // before anyone read it.
   const safeName = instanceName.replace(/[^\w.-]/g, (c) => `%${c.codePointAt(0)!.toString(16)}`);
-  const logPath = join(tmpdir(), `argent-harmony-${safeName}.log`);
-  const logFd = openSync(logPath, "w");
+  const logPath = join(tmpdir(), `argent-harmony-${safeName}-${process.hrtime.bigint()}.log`);
+  // An unwritable tmpdir is an environment problem the boot should survive
+  // without its log — the diagnostic then reads "(nothing)" — rather than a raw
+  // `Error` escaping ahead of any failure signal of its own.
+  let logFd: number | null;
+  try {
+    logFd = openSync(logPath, "w");
+  } catch {
+    logFd = null;
+  }
   const child = spawn(bin, ["-start", instanceName], {
     detached: true,
-    stdio: ["ignore", logFd, logFd],
+    stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
   });
   child.unref();
   // The child holds its own handle; close the parent's copy so a descriptor
   // does not leak per boot.
-  try {
-    closeSync(logFd);
-  } catch {
-    // best-effort — the child keeps writing regardless
+  if (logFd !== null) {
+    try {
+      closeSync(logFd);
+    } catch {
+      // best-effort — the child keeps writing regardless
+    }
   }
 
   let exit: { reason: string; output: string } | null = null;
@@ -1705,6 +1733,7 @@ const HARMONY_NO_KEY_CAVEAT: Record<NonNullable<HarmonyTargetOutcome["reason"]>,
   mismatched: HARMONY_MISMATCHED_TARGET,
   unprobeable: HARMONY_UNPROBEABLE_TARGET,
   unlistable: HARMONY_UNLISTABLE_TARGETS,
+  unattempted: HARMONY_UNATTEMPTED_LISTING,
   none: HARMONY_NO_TARGET,
 };
 
@@ -1721,7 +1750,7 @@ const HARMONY_NO_KEY_CAVEAT: Record<NonNullable<HarmonyTargetOutcome["reason"]>,
 type HarmonyTargetOutcome = {
   key: string | null;
   unconfirmed?: boolean;
-  reason?: "ambiguous" | "mismatched" | "unprobeable" | "unlistable" | "none";
+  reason?: "ambiguous" | "mismatched" | "unprobeable" | "unlistable" | "unattempted" | "none";
 };
 
 /**
@@ -1816,8 +1845,12 @@ async function waitForHarmonyTarget(
   // Every listing so far having failed is a different answer from none having
   // arrived, and it is latched rather than sampled: `hdc` is often still coming
   // up on the first poll of a cold boot, so only a table that was never readable
-  // is worth reporting as one.
+  // is worth reporting as one. Whether the wait ever got to ask at all is a
+  // third answer again — a `force` restart can spend the whole budget before
+  // this loop's first look, and blaming `hdc` for listings it was never asked
+  // for would send the caller hunting a broken connector.
   let listedOnce = false;
+  let asked = false;
   // What was seen beats what was not: a target that registered and was declined
   // says more than an unreadable table, which in turn says more than nothing
   // having arrived.
@@ -1828,7 +1861,9 @@ async function waitForHarmonyTarget(
         ? "unprobeable"
         : listedOnce
           ? "none"
-          : "unlistable";
+          : asked
+            ? "unlistable"
+            : "unattempted";
   for (;;) {
     // The listing is bounded by the budget too, not just the probes it feeds:
     // `hdc list targets` carries its own 8s ceiling, so a daemon slow enough to
@@ -1837,9 +1872,15 @@ async function waitForHarmonyTarget(
     // names the key this whole wait exists to find.
     const budget = deadline - Date.now();
     if (budget <= 0) {
+      // Polled before giving up, not only mid-loop: an emulator that died inside
+      // the final poll interval — the sleep at the bottom clamps to `remaining`,
+      // so expiry always lands here — would otherwise fall through to a note
+      // telling the caller to raise the budget for a start that crashed.
+      checkAlive();
       return { key: null, reason: noKeyReason() };
     }
     const listing = await connectedHarmonyTargets(Math.min(HDC_LIST_TIMEOUT_MS, budget));
+    asked = true;
     if (listing.ok) listedOnce = true;
     const arrived = listing.targets.filter(
       (t) => !before.has(t.connectKey) && couldBeHarmonyEmulator(t)
@@ -1925,7 +1966,10 @@ async function waitForHarmonyDrivable(
       // the deadline itself, and a probe started then is one nothing will ever
       // read.
       const budget = deadline - Date.now();
-      if (budget <= 0) return false;
+      if (budget <= 0) {
+        checkAlive();
+        return false;
+      }
       // Capped by the budget as well as by `uitest`'s own ceiling: a probe this
       // wait abandons at the deadline still holds the device's `uitest` queue
       // until its client is killed, and the retry the caller is about to be told
@@ -2188,7 +2232,11 @@ async function bootHarmonyImpl(params: {
   // `-start` prints and exits at once — this must not become the whole-budget
   // wait the connector-absent path exists to avoid.
   if (!hdcAvailable) {
-    await waitForHarmonyExit(emulator, HARMONY_NO_HDC_GRACE_MS);
+    // Clamped against the boot deadline like every other wait on this path: the
+    // grace is a ceiling, not an entitlement of its own, and a caller with 2s of
+    // budget left must not be answered 3s past it.
+    const grace = Math.min(HARMONY_NO_HDC_GRACE_MS, Math.max(0, bootDeadline - Date.now()));
+    if (grace > 0) await waitForHarmonyExit(emulator, grace);
     assertEmulatorAlive();
   }
 
@@ -2233,17 +2281,32 @@ function bootHarmony(params: {
   bootTimeoutMs: number;
   force?: boolean;
 }): Promise<HarmonyBootResult> {
-  // Key the coalescing on `force` too, for the reason Vega does: a forced boot
-  // restarts the instance, so it must not join a plain one that would skip the
-  // restart and hand back the instance still running.
-  const key = `${params.instanceName}${params.force ? "force" : "normal"}`;
+  // Keyed on the instance alone, as the Android map keys on the AVD name. Two
+  // boots that would do the same work share one run; a boot with the opposite
+  // `force` value SERIALIZES behind the in-flight one instead, because letting
+  // a plain and a forced boot reach `-start` together started the instance
+  // twice (measured: one caller told BOOT_HARMONY_MANAGER_EXITED while the
+  // other handed back the booted connect key). Waiting the prior attempt out
+  // keeps `force`'s restart real — it runs its own stop+start against whatever
+  // the first boot left behind.
+  const key = params.instanceName;
+  const force = Boolean(params.force);
   const existing = inFlightHarmonyBoots.get(key);
-  if (existing) return existing;
-  const promise = bootHarmonyImpl(params).finally(() => {
-    inFlightHarmonyBoots.delete(key);
+  if (existing && existing.force === force) return existing.promise;
+  const tracked = (async () => {
+    if (existing) {
+      try {
+        await existing.promise;
+      } catch {
+        // The prior attempt failed; this one still runs and reports for itself.
+      }
+    }
+    return bootHarmonyImpl(params);
+  })().finally(() => {
+    if (inFlightHarmonyBoots.get(key)?.promise === tracked) inFlightHarmonyBoots.delete(key);
   });
-  inFlightHarmonyBoots.set(key, promise);
-  return promise;
+  inFlightHarmonyBoots.set(key, { force, promise: tracked });
+  return tracked;
 }
 
 const capability: ToolCapability = {

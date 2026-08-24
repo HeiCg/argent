@@ -428,6 +428,62 @@ describe("redactSecretsFromError", () => {
     redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "don't-tell" }]);
     expect(err.message).toBe("No keycode for character in {{secret:APP_PASSWORD}}");
   });
+
+  it("leaves a passphrase's ordinary words alone outside an echoed command line", () => {
+    // A word-per-keyevent backend echoes ONE WORD back, so its pieces have to
+    // be searched for — but a passphrase's pieces ARE ordinary words. Matched
+    // globally they blank every `device`, `offline` and `battery` in any
+    // diagnostic that happens to share vocabulary with the secret, and the
+    // agent loses the actionable half of the message.
+    const err = new Error(
+      "adb -s emulator-5554 shell input text 'x' failed: error: device offline; the battery is low"
+    );
+    const before = err.message;
+    redactSecretsFromError(err, [
+      { name: "PASSPHRASE", value: "correct horse battery staple device offline" },
+    ]);
+    expect(err.message).toBe(before);
+  });
+
+  it("still catches a single echoed word between the quotes of the command line", () => {
+    // The shape the word split exists for: the TV remote's failing call quotes
+    // exactly the one word it was typing.
+    const err = new Error("adb -s emulator-5554 shell input text 'staple' failed");
+    redactSecretsFromError(err, [
+      { name: "PASSPHRASE", value: "correct horse battery staple device offline" },
+    ]);
+    expect(err.message).toBe(
+      "adb -s emulator-5554 shell input text '{{secret:PASSPHRASE}}' failed"
+    );
+  });
+
+  it("redacts a piece at the length floor and passes one below it", () => {
+    // Pins the fence from both sides: at MIN-1 a fragment of a live credential
+    // silently stopped being redacted once, and only a fixture about piece
+    // LENGTH notices. Both fragments arrive quoted, as a per-word backend emits
+    // them.
+    const errAtFloor = new Error("adb -s emulator-5554 shell input text 'hunt' failed");
+    redactSecretsFromError(errAtFloor, [{ name: "APP_PASSWORD", value: "hunt admin" }]);
+    expect(errAtFloor.message).toBe(
+      "adb -s emulator-5554 shell input text '{{secret:APP_PASSWORD}}' failed"
+    );
+    const errBelow = new Error("adb -s emulator-5554 shell input text 'hun' failed");
+    const before = errBelow.message;
+    redactSecretsFromError(errBelow, [{ name: "APP_PASSWORD", value: "hun admin" }]);
+    expect(errBelow.message).toBe(before);
+  });
+
+  it("scrubs a stack that was already materialised before the call", () => {
+    // V8 builds `Error.prototype.stack` lazily from the live message, so a
+    // fixture that never touches `.stack` is rendered from the scrubbed message
+    // and cannot see the scrub line deleted. Reading the stack first freezes the
+    // raw credential into it — which is the state this line exists to clean up.
+    const err = new Error("adb -s emulator-5554 shell input text 'hunter2' failed");
+    expect(err.stack).toContain("hunter2");
+    redactSecretsFromError(err, [{ name: "APP_PASSWORD", value: "hunter2 admin" }]);
+    expect(err.stack ?? "").not.toContain("hunter2");
+    expect(err.stack ?? "").toContain("{{secret:APP_PASSWORD}}");
+  });
 });
 
 describe("keyboard tool with secret placeholders", () => {

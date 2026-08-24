@@ -6,8 +6,8 @@ import {
   HARMONY_INTERACTION_TIMEOUT_MS,
   assertHarmonyDisplayReady,
   harmonyDisplay,
-  harmonyKeyEvent,
-  harmonyTypeText,
+  holdUitestQueue,
+  remainingBudget,
 } from "../../../utils/harmony-uitest";
 import type { KeyboardParams, KeyboardResult } from "../types";
 
@@ -86,9 +86,9 @@ function resolveHarmonyKeycode(key: string): number {
   const lower = key.toLowerCase();
   // Own-property check, and case-folded for parity with the other named-key
   // backends: `key` is a free string, so a prototype key like "constructor"
-  // would otherwise pass the nullish guard with a garbage value and be
-  // interpolated into the remote shell line (`harmonyKeyEvent` builds
-  // `uiInput keyEvent ${key}`) instead of rejecting as an unknown key.
+  // would otherwise pass the nullish guard with a garbage value interpolated
+  // into the remote shell line (`uiInput keyEvent ${key}`) instead of
+  // rejecting as an unknown key.
   const code = Object.hasOwn(HARMONY_KEYCODES, lower) ? HARMONY_KEYCODES[lower] : undefined;
   if (code === undefined) {
     throw new InvalidToolInputError(
@@ -119,25 +119,39 @@ async function typeHarmony(connectKey: string, params: KeyboardParams): Promise<
   // sibling backend follows. Reaching the device first would let a suspended
   // panel fail a step that was never going to type anything.
   if (keycode === null && !params.text) return { typed: "", keys: 0 };
-  // One deadline for the display read and the injection it feeds, so the pair
-  // stays under the MCP layer's abort-and-replay cap.
+  // One deadline for both display reads and the injections they feed, so the
+  // whole call stays under the MCP layer's abort-and-replay cap.
   const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
-  // Typing into a panel that is suspended, or that the render service could not
-  // size, reports `No Error` and lands nowhere, so a dead screen fails the same
-  // way a tap does.
+  // Fast prefilter, ahead of the queue wait: typing into a panel that is
+  // suspended, or that the render service could not size, reports `No Error`
+  // and lands nowhere, so a dead screen fails the same way a tap does — without
+  // first waiting behind this device's queued work. It is NOT the check the
+  // injection trusts; that one runs inside the hold below.
   assertHarmonyDisplayReady(await harmonyDisplay(connectKey), "type");
   let keysPressed = 0;
-  if (params.text) {
-    // `uitest uiInput text` types into whatever holds focus, in one shot — there
-    // is no per-character injection, so `delayMs` has nothing to pace (the tool
-    // description already lists the platforms that ignore it).
-    await harmonyTypeText(connectKey, params.text, deadline - Date.now());
-    keysPressed += [...params.text].length;
-  }
-  if (keycode !== null) {
-    await harmonyKeyEvent(connectKey, String(keycode), deadline - Date.now());
-    keysPressed++;
-  }
+  await holdUitestQueue(connectKey, deadline, async (ui) => {
+    // The check the injection trusts, read while holding the queue: the
+    // prefilter above saw a state that may be a full queue depth stale by the
+    // time this call reaches the device.
+    assertHarmonyDisplayReady(
+      await harmonyDisplay(
+        connectKey,
+        remainingBudget(connectKey, deadline, "the display re-read")
+      ),
+      "type"
+    );
+    if (params.text) {
+      // `uitest uiInput text` types into whatever holds focus, in one shot — there
+      // is no per-character injection, so `delayMs` has nothing to pace (the tool
+      // description already lists the platforms that ignore it).
+      await ui.type(params.text);
+      keysPressed += [...params.text].length;
+    }
+    if (keycode !== null) {
+      await ui.keyEvent(String(keycode));
+      keysPressed++;
+    }
+  });
   return { typed: params.text ?? params.key ?? "", keys: keysPressed };
 }
 

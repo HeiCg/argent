@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -86,18 +86,33 @@ const staleEmulatorTarget = { connectKey: EMULATOR_KEY, connection: "TCP", state
 const foreignTarget = { connectKey: "127.0.0.1:5559", connection: "TCP", state: "Connected" };
 /** `hw.lcd.single.width`/`height` of the phone image, echoed by the guest's `render resolution`. */
 const PANEL = { width: 1320, height: 2856 };
-const logPath = join(tmpdir(), `argent-harmony-${INSTANCE}.log`);
+/**
+ * The start log is unique per boot attempt, so tests find it in the temp
+ * directory rather than reconstructing its name. Sorted, so `.at(-1)` is the
+ * newest attempt.
+ */
+function harmonyLogs(safeName: string): string[] {
+  return readdirSync(tmpdir())
+    .filter((f) => f.startsWith(`argent-harmony-${safeName}`) && f.endsWith(".log"))
+    .sort();
+}
+
+function lastHarmonyLog(): string {
+  const paths = harmonyLogs(INSTANCE);
+  expect(paths.length, "no harmony start log was opened").toBeGreaterThan(0);
+  return join(tmpdir(), paths.at(-1)!);
+}
 /** A second instance the manager keeps apart from {@link INSTANCE} by one space. */
 const SPACED_INSTANCE = "Phone 1";
-/** Its log: the space escaped, since the name is not a safe filename as it stands. */
-const spacedLogPath = join(tmpdir(), "argent-harmony-Phone%201.log");
+/** Its log prefix: the space escaped, since the name is not a safe filename as it stands. */
+const SPACED_LOG_PREFIX = "argent-harmony-Phone%201";
 
 /** Stands in for the detached `Emulator -start`, which normally never exits. */
 class FakeEmulator extends EventEmitter {
   unref = vi.fn();
   /** The manager dying early, having printed `output` to its log. */
   die(output: string, code = 0) {
-    writeFileSync(logPath, output);
+    writeFileSync(lastHarmonyLog(), output);
     this.emit("exit", code, null);
   }
 }
@@ -126,7 +141,11 @@ function targets(...rounds: HdcTargetRow[][]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  writeFileSync(logPath, "");
+  for (const name of readdirSync(tmpdir())) {
+    if (name.startsWith("argent-harmony-") && name.endsWith(".log")) {
+      rmSync(join(tmpdir(), name), { force: true });
+    }
+  }
   child = new FakeEmulator();
   spawnMock.mockReturnValue(child);
   ensureDep.mockResolvedValue(undefined);
@@ -151,6 +170,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("boot-device — HarmonyOS emulator path", () => {
@@ -561,6 +581,148 @@ describe("boot-device — HarmonyOS emulator path", () => {
     for (const listing of listings) {
       expect(listing.timeoutMs).toBeGreaterThan(0);
       expect(listing.at + listing.timeoutMs!).toBeLessThanOrEqual(startedAt + 30_000);
+    }
+  });
+
+  it("classifies a manager that died inside the arrival wait's final poll interval", async () => {
+    // The arrival wait's sleep is clamped to the remaining budget, so the loop
+    // always comes back to its top with none left. A manager that died during
+    // that last interval must still be classified there — otherwise the boot
+    // falls through to `booted: true` under a note telling the caller to raise
+    // `bootTimeoutMs` for a start that crashed.
+    targets([PHONE]);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 30_000 });
+    const settled = expect(pending).rejects.toThrow(/nothing is running to drive/);
+    await vi.advanceTimersByTimeAsync(29_000);
+    child.die("error: the emulator instance quit unexpectedly (disk image corrupted)");
+    await vi.advanceTimersByTimeAsync(2_000);
+    await settled;
+  });
+
+  it("does not blame hdc when the budget expired before the wait could ask it once", async () => {
+    // A force restart deliberately gives the shutdown the whole remaining
+    // budget. The pre-start snapshot then succeeds on its very last moment, and
+    // the target wait's first look has nothing left: the note has to say the
+    // budget ran out before the wait asked `hdc` once — not that `hdc` failed
+    // every time it was asked, which here it never was.
+    listHarmonyInstances
+      .mockResolvedValueOnce([
+        { name: INSTANCE, deviceType: "Phone", osVersion: null, running: true, display: PANEL },
+      ])
+      .mockResolvedValue([
+        { name: INSTANCE, deviceType: "Phone", osVersion: null, running: false, display: PANEL },
+      ]);
+    // The snapshot succeeds at the exact instant the budget expires.
+    listHarmonyHdcTargetsStrict.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([PHONE]), 6_000))
+    );
+    listHarmonyHdcTargets.mockResolvedValue([PHONE]);
+    vi.useFakeTimers();
+
+    const pending = boot({ force: true, bootTimeoutMs: 6_000 }) as Promise<{
+      udid: string;
+      note?: string;
+    }>;
+    await vi.advanceTimersByTimeAsync(7_000);
+    const result = await pending;
+
+    expect(result.udid).toBe("harmony-emulator-Phone_1");
+    expect(result.note).not.toContain("`hdc list targets` failed");
+    expect(result.note).toMatch(/before argent could ask/);
+  });
+
+  it("serializes a plain and a forced boot of the same stopped instance", async () => {
+    // When the instance is not already running the two calls do identical work,
+    // so keying the map by `force` ran `-start` twice for one instance at once —
+    // one caller told nothing is running while the other handed back the booted
+    // key. Joined on the instance alone they take turns instead when their
+    // `force` differs: the plain boot starts it, the forced one restarts it,
+    // and neither answer contradicts the other.
+    let listed = 0;
+    listHarmonyInstances.mockImplementation(() =>
+      Promise.resolve([
+        {
+          name: INSTANCE,
+          deviceType: "Phone",
+          osVersion: null,
+          // Down for the first boot's opening check, up for the forced boot's,
+          // down again once its stop-wait starts polling.
+          running: listed++ === 1,
+          display: PANEL,
+        },
+      ])
+    );
+    targets(
+      [PHONE],
+      [PHONE, emulatorTarget],
+      [PHONE, staleEmulatorTarget],
+      [PHONE, staleEmulatorTarget, emulatorTarget]
+    );
+    vi.useFakeTimers();
+
+    const plain = boot({ bootTimeoutMs: 30_000 });
+    const forced = boot({ force: true, bootTimeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const [a, b] = (await Promise.all([plain, forced])) as Array<{ udid: string; note?: string }>;
+
+    expect(a.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    expect(b.udid).toBe(`harmony-${EMULATOR_KEY}`);
+    // The restart followed the start it was serialized behind, not a parallel
+    // run of it: `-stop` was issued only once the first `-start` had spawned.
+    const stopOrder = runHarmonyEmulator.mock.invocationCallOrder[0]!;
+    const startOrder = spawnMock.mock.invocationCallOrder[0]!;
+    expect(stopOrder).toBeGreaterThan(startOrder);
+  });
+
+  it("clamps the no-connector grace against the boot deadline", async () => {
+    // Every other wait on this path caps against the caller's budget; the
+    // manager-exit grace built its own 3s deadline instead, so a host with no
+    // `hdc` and a small budget waited past the `bootTimeoutMs` it was given.
+    resolveHdc.mockResolvedValue(null);
+    vi.useFakeTimers();
+
+    const pending = boot({ bootTimeoutMs: 2_000 });
+    await vi.advanceTimersByTimeAsync(2_100);
+    const result = (await pending) as { booted: boolean; note?: string };
+    expect(result.booted).toBe(true);
+  });
+
+  it("gives each boot attempt its own start log", async () => {
+    // Two boots of one instance — across two tool-server processes, or past the
+    // coalescing window's edge inside one — used to share a path opened `"w"`,
+    // so the loser's diagnostic was truncated before anyone read it.
+    targets([PHONE], [PHONE, emulatorTarget]);
+    await boot({});
+    targets([PHONE], [PHONE, emulatorTarget]);
+    await boot({});
+
+    const paths = harmonyLogs(INSTANCE);
+    expect(paths.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(paths).size).toBe(paths.length);
+  });
+
+  it("boots without a log when the temp directory cannot be written", async () => {
+    // An unwritable tmpdir used to escape as a raw `Error` ahead of any failure
+    // signal. Degrading to a log-less start keeps the boot classifiable — the
+    // diagnostic reads "(nothing)" — which is honest about what happened.
+    // `/dev/null` is a file, so opening anything beneath it fails every time.
+    const prevTmp = process.env.TMPDIR;
+    process.env.TMPDIR = "/dev/null/argent-unwritable";
+    try {
+      targets([PHONE], [PHONE, emulatorTarget]);
+
+      const result = (await boot({})) as { booted: boolean };
+      expect(result.booted).toBe(true);
+      expect(spawnMock).toHaveBeenCalledWith(
+        expect.anything(),
+        ["-start", INSTANCE],
+        expect.objectContaining({ stdio: "ignore" })
+      );
+    } finally {
+      if (prevTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmp;
     }
   });
 
@@ -1428,7 +1590,9 @@ describe("boot-device — HarmonyOS emulator path", () => {
     const spaced = boot({ harmonyInstance: SPACED_INSTANCE, bootTimeoutMs: 900_000 });
     const spacedSettled = expect(spaced).rejects.toThrow(/Cannot find image for the profile/);
     await vi.advanceTimersByTimeAsync(1_000);
-    writeFileSync(spacedLogPath, "Cannot find image for the profile\n");
+    const spacedLogs = harmonyLogs(SPACED_LOG_PREFIX.slice("argent-harmony-".length));
+    expect(spacedLogs.length, "the spaced instance opened no start log").toBeGreaterThan(0);
+    writeFileSync(join(tmpdir(), spacedLogs.at(-1)!), "Cannot find image for the profile\n");
 
     const underscored = boot({ bootTimeoutMs: 900_000 }).catch((e: Error) => e);
     await vi.advanceTimersByTimeAsync(1_000);

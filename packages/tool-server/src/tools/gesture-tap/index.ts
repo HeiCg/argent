@@ -8,7 +8,8 @@ import {
   HARMONY_INTERACTION_TIMEOUT_MS,
   assertHarmonyDisplayReady,
   harmonyDisplay,
-  harmonyTouch,
+  holdUitestQueue,
+  remainingBudget,
   toDevicePoint,
 } from "../../utils/harmony-uitest";
 import { ensureDep } from "../../utils/check-deps";
@@ -115,24 +116,36 @@ async function tapHarmony(
   y: number,
   clickCount: number
 ): Promise<void> {
-  // One deadline for the read and every injection that follows it, so a
-  // multi-tap cannot spend a fresh ceiling per click and outlive the MCP layer's
-  // abort-and-replay cap — where the replay is another tap on the same spot.
+  // One deadline for both display reads and every injection that follows them,
+  // so a multi-tap cannot spend a fresh ceiling per click and outlive the MCP
+  // layer's abort-and-replay cap — where the replay is another tap on the same
+  // spot.
   const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
+  // Fast prefilter, ahead of the queue wait: a panel already suspended or not
+  // yet composited is refused without waiting behind this device's queued work.
+  // It is NOT the check the injection trusts — see inside the hold.
   const display = await harmonyDisplay(connectKey);
-  // A tap against a panel that is suspended, or that the render service could
-  // not size, reports `No Error` and lands nowhere — refuse it rather than
-  // report { tapped: true } for a touch that did nothing.
   assertHarmonyDisplayReady(display, "tap");
-  const point = toDevicePoint(x, y, display);
-  if (clickCount === 2) {
-    await harmonyTouch(connectKey, "doubleClick", point, deadline - Date.now());
-    return;
-  }
-  for (let i = 0; i < clickCount; i++) {
-    if (i > 0) await sleep(MULTI_TAP_GAP_MS);
-    await harmonyTouch(connectKey, "click", point, deadline - Date.now());
-  }
+  await holdUitestQueue(connectKey, deadline, async (ui) => {
+    // The check the injection trusts, read while holding the queue: the
+    // prefilter above saw a state that may be a full queue depth stale by the
+    // time this call reaches the device, and `uitest uiInput` answers `No
+    // Error` into a suspended panel regardless.
+    const live = await harmonyDisplay(
+      connectKey,
+      remainingBudget(connectKey, deadline, "the display re-read")
+    );
+    assertHarmonyDisplayReady(live, "tap");
+    const point = toDevicePoint(x, y, live);
+    if (clickCount === 2) {
+      await ui.touch("doubleClick", point);
+      return;
+    }
+    for (let i = 0; i < clickCount; i++) {
+      if (i > 0) await sleep(MULTI_TAP_GAP_MS);
+      await ui.touch("click", point);
+    }
+  });
 }
 
 export const gestureTapTool: ToolDefinition<Params, Result> = {

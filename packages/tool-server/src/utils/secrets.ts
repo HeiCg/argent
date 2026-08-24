@@ -129,20 +129,39 @@ function percentSegments(text: string): string[] {
  * The pieces are the ones those splits really produce, not every substring:
  * searching for arbitrary runs blanks the ordinary words of a diagnostic
  * whenever a secret happens to contain one.
+ *
+ * The pieces a SPACE split produces are matched only between the quotes of an
+ * echoed command line (`'staple' failed`). A passphrase's pieces ARE ordinary
+ * words; matched anywhere in the message they blank every `device`,
+ * `offline` or `battery` in a diagnostic that merely shares vocabulary with
+ * the credential, and the agent loses the actionable half of it. Whole values
+ * and `%` cuts travel unquoted in real messages too (HID/CDP injection echoes
+ * no shell line), so those stay global.
  */
-function secretSpellings(value: string): string[] {
-  const pieces = new Set<string>([value, ...percentSegments(value)]);
+interface Spelling {
+  text: string;
+  /** Match only when immediately wrapped in single quotes in the message. */
+  quotedOnly: boolean;
+}
+
+function secretSpellings(value: string): Spelling[] {
+  const out = new Map<string, Spelling>();
+  const add = (piece: string, quotedOnly: boolean) => {
+    if (!piece) return;
+    if (piece !== value && piece.length < MIN_REDACTED_PIECE) return;
+    for (const text of [piece, piece.replaceAll("'", `'\\''`)]) {
+      if (!out.has(text)) out.set(text, { text, quotedOnly });
+    }
+  };
+  add(value, false);
+  for (const segment of percentSegments(value)) add(segment, false);
   for (const word of value.split(" ")) {
-    pieces.add(word);
-    for (const segment of percentSegments(word)) pieces.add(segment);
+    if (word !== value) {
+      add(word, true);
+      for (const segment of percentSegments(word)) add(segment, true);
+    }
   }
-  const spellings = new Set<string>();
-  for (const piece of pieces) {
-    if (piece !== value && piece.length < MIN_REDACTED_PIECE) continue;
-    spellings.add(piece);
-    spellings.add(piece.replaceAll("'", `'\\''`));
-  }
-  return [...spellings];
+  return [...out.values()];
 }
 
 /**
@@ -158,10 +177,13 @@ export function redactSecretsFromError(
   secrets: Array<{ name: string; value: string }>
 ): unknown {
   const marked = new Map<string, string>();
+  const quotedOnly = new Set<string>();
   for (const { name, value } of secrets) {
     if (!value) continue;
     for (const spelling of secretSpellings(value)) {
-      if (!marked.has(spelling)) marked.set(spelling, `${SECRET_PLACEHOLDER_MARKER}${name}}}`);
+      if (!marked.has(spelling.text))
+        marked.set(spelling.text, `${SECRET_PLACEHOLDER_MARKER}${name}}}`);
+      if (spelling.quotedOnly) quotedOnly.add(spelling.text);
     }
   }
   if (marked.size === 0) return err;
@@ -190,7 +212,15 @@ export function redactSecretsFromError(
     let out = "";
     let cursor = 0;
     for (let at = 0; at < s.length; ) {
-      const hit = byFirstChar.get(s[at]!)?.find((spelling) => s.startsWith(spelling, at));
+      const hit = byFirstChar.get(s[at]!)?.find(
+        (spelling) =>
+          s.startsWith(spelling, at) &&
+          (!quotedOnly.has(spelling) ||
+            // A space-split piece counts only as the echoed argument it is:
+            // wrapped in the single quotes of a shell line. The same word
+            // standing in the diagnostic's own prose stays readable.
+            (s[at - 1] === "'" && s[at + spelling.length] === "'"))
+      );
       if (hit === undefined) {
         at += 1;
         continue;

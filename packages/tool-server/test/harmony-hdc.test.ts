@@ -82,21 +82,30 @@ describe("toDevicePoint", () => {
     expect(toDevicePoint(1, 1, display)).toEqual({ x: 1215, y: 2687 });
   });
 
-  it("clamps a point outside the unit square instead of going negative", () => {
-    // `uitest` *does* reject negative coordinates, so an un-clamped caller would
-    // turn an out-of-range frame into a hard error rather than an edge tap.
-    expect(toDevicePoint(-0.2, 1.4, display)).toEqual({ x: 0, y: 2687 });
+  it("clamps a point outside the unit square onto an addressable pixel", () => {
+    // `uitest` rejects any coordinate below 1 — negatives and 0 alike exit 1
+    // with "Please confirm that the coordinate values are correct." — so an
+    // un-clamped caller would turn an out-of-range frame into a hard error
+    // rather than an edge tap.
+    expect(toDevicePoint(-0.2, 1.4, display)).toEqual({ x: 1, y: 2687 });
   });
 
-  it("puts the origin at the first pixel", () => {
-    expect(toDevicePoint(0, 0, display)).toEqual({ x: 0, y: 0 });
+  it("keeps a screen-edge point off the rejected zero coordinate", () => {
+    // Measured on a HarmonyOS 6.1.1 emulator (1320x2856): `uiInput click 0 0`,
+    // `click 100 0` and `click 0 100` each exit 1 refusing the coordinate,
+    // while `click 1 1` runs — so normalized 0.0, which both gesture tools
+    // document as valid ("left=0"), must land on pixel 1, not on the origin.
+    // An edge-swipe back gesture (fromX 0) or a swipe ending at the top edge
+    // (toY 0) is an ordinary request, not a failure.
+    expect(toDevicePoint(0, 0, display)).toEqual({ x: 1, y: 1 });
+    expect(toDevicePoint(0.5, 0, { width: 1320, height: 2856 })).toEqual({ x: 660, y: 1 });
   });
 
-  it("collapses every point onto the origin when the display has no size", () => {
+  it("collapses every point onto one pixel when the display has no size", () => {
     // Not a behaviour to rely on — the reason `assertHarmonyDisplayReady` refuses
     // a 0x0 read before any of this runs. The clamp has no in-range pixel to
-    // pick, so a tap anywhere on the screen becomes a tap on the top-left one.
-    expect(toDevicePoint(0.83, 0.42, { width: 0, height: 0 })).toEqual({ x: 0, y: 0 });
+    // pick, so a tap anywhere on the screen becomes a tap on the same corner one.
+    expect(toDevicePoint(0.83, 0.42, { width: 0, height: 0 })).toEqual({ x: 1, y: 1 });
   });
 });
 
@@ -110,9 +119,9 @@ describe("assertHarmonyDisplayReady", () => {
   it("refuses a non-positive panel, naming the size the render service reported", () => {
     // `render resolution=0x0` is what a guest prints while its compositor is
     // still coming up, and `harmonyDisplay` parses it without complaint. Every
-    // coordinate then collapses onto the origin (above) while `uitest uiInput`
-    // answers `No Error`, so the injection reports the tap that was asked for
-    // and lands somewhere else entirely.
+    // coordinate then collapses onto one corner pixel (above) while `uitest
+    // uiInput` answers `No Error`, so the injection reports the tap that was
+    // asked for and lands somewhere else entirely.
     const err = (() => {
       try {
         assertHarmonyDisplayReady({ width: 0, height: 0, screenOn: true }, "tap");

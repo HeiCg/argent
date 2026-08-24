@@ -169,6 +169,8 @@ It **never fails a run.** Every outcome short of a clean settle passes with a wa
 
 Only a tree source this step could not read stops the run, as an errored step — one still failing when the wait ends, one that wedges after answering, one that answers with an empty tree it flags as degraded (an unattached Vega toolkit, an AX service asking to be relaunched), or one that never answers (raise `timeout` before suspecting the app). The run is then not ok and every later step is skipped. A single failed read is not that: the hold restarts from the next good read. The same outage stops no [selector-less gesture](#directives), which needs no frame and passes with its own warning instead.
 
+On a platform flows have no UI-tree source on at all (HarmonyOS), `idle` cannot run: it errors immediately — no polling, and no relaunch can help, since there is nothing to restore — names `wait:` as the replacement, and skips the rest of the run.
+
 `idle` proves readiness only and never identifies the screen, so it cannot serve as acceptance evidence or replace the identity gate. Gate the next action on a stable element. Add `idle` during polish after each screen change, not after every step.
 
 ## Optional divergences

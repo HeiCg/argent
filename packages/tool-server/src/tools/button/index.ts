@@ -6,7 +6,8 @@ import {
   HARMONY_INTERACTION_TIMEOUT_MS,
   assertHarmonyDisplayReady,
   harmonyDisplay,
-  harmonyKeyEvent,
+  holdUitestQueue,
+  remainingBudget,
 } from "../../utils/harmony-uitest";
 import { UnsupportedOperationError } from "../../utils/capability";
 import { sendCommand } from "../../utils/simulator-client";
@@ -130,21 +131,30 @@ Fails if the device backend is not reachable — the simulator-server for iOS, \
       // guarantees a key name exists for every accepted button.
       await ensureDep("hdc");
       const connectKey = harmonyConnectKey(device.id);
-      // One deadline for the display read and the press, so the pair stays under
-      // the MCP layer's abort-and-replay cap.
+      // One deadline for both display reads and the press, so the pair stays
+      // under the MCP layer's abort-and-replay cap.
       const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
-      // `uitest uiInput keyEvent` answers `No Error` against a suspended panel
-      // while the press lands nowhere, so `home` and `back` share the guard the
-      // tap, swipe and typing backends use: a screen timeout mid-session must
-      // not turn the keys an agent recovers with into silent no-ops.
-      //
-      // `power` is exempt, and exempt before the display read — it is what the
-      // refusal tells the caller to wake the device with, and the one key that
-      // works while the panel is suspended.
-      if (params.button !== "power") {
-        assertHarmonyDisplayReady(await harmonyDisplay(connectKey), `press ${params.button}`);
-      }
-      await harmonyKeyEvent(connectKey, HARMONY_BUTTON_KEYS[params.button]!, deadline - Date.now());
+      await holdUitestQueue(connectKey, deadline, async (ui) => {
+        // `uitest uiInput keyEvent` answers `No Error` against a suspended panel
+        // while the press lands nowhere, so `home` and `back` share the guard
+        // every other input tool uses — read while holding the queue, since a
+        // pre-queue check would describe a state a queue depth stale by the
+        // time the press reaches the device.
+        //
+        // `power` is exempt, and exempt before any display read — it is what
+        // the refusal tells the caller to wake the device with, and the one key
+        // that works while the panel is suspended.
+        if (params.button !== "power") {
+          assertHarmonyDisplayReady(
+            await harmonyDisplay(
+              connectKey,
+              remainingBudget(connectKey, deadline, "the display re-read")
+            ),
+            `press ${params.button}`
+          );
+        }
+        await ui.keyEvent(HARMONY_BUTTON_KEYS[params.button]!);
+      });
       return { pressed: params.button };
     }
     const api = services.simulatorServer as SimulatorServerApi;

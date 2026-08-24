@@ -14,33 +14,43 @@ import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/c
 // wiring while the backends underneath them keep changing.
 // Hoisted with the `vi.mock` factories that close over them — a plain top-level
 // const is still in its temporal dead zone when the factory runs.
-const { launchStub, restartStub, openUrlStub, keyboardStub, describeStub } = vi.hoisted(() => {
-  // Full dispatch signature, so the device it was handed stays typed below.
-  const stub = <T>(result: T) => ({
-    handler: vi.fn(
-      async (_services: unknown, _params: unknown, device: { platform: string; kind: string }) => {
-        void device;
-        return result;
-      }
-    ),
+const { launchStub, restartStub, openUrlStub, keyboardStub, androidKeyboardStub, describeStub } =
+  vi.hoisted(() => {
+    // Full dispatch signature, so the device it was handed stays typed below.
+    const stub = <T>(result: T) => ({
+      handler: vi.fn(
+        async (
+          _services: unknown,
+          _params: unknown,
+          device: { platform: string; kind: string }
+        ) => {
+          void device;
+          return result;
+        }
+      ),
+    });
+    return {
+      launchStub: stub({ launched: true, bundleId: "com.huawei.hmos.calculator" }),
+      restartStub: stub({ restarted: true, bundleId: "com.huawei.hmos.calculator" }),
+      openUrlStub: stub({ opened: true, url: "https://example.com" }),
+      keyboardStub: stub({ typed: "hi" }),
+      // The android keyboard arm shells out to `adb` (an is-this-a-TV probe,
+      // then `input text`) — reachable from this file's one non-harmony case,
+      // so it is stubbed like the leaves above to keep every test here off the
+      // host's adb and whatever device it points at.
+      androidKeyboardStub: stub({ typed: "hi", keys: 2 }),
+      // `describe` dispatches to a bare function, not a `{ handler }` impl.
+      describeStub: vi.fn(async (_connectKey: string) => ({
+        tree: {
+          role: "Screen",
+          frame: { x: 0, y: 0, width: 1, height: 1 },
+          pixelBounds: null,
+          children: [],
+        },
+        source: "harmony-uitest" as const,
+      })),
+    };
   });
-  return {
-    launchStub: stub({ launched: true, bundleId: "com.huawei.hmos.calculator" }),
-    restartStub: stub({ restarted: true, bundleId: "com.huawei.hmos.calculator" }),
-    openUrlStub: stub({ opened: true, url: "https://example.com" }),
-    keyboardStub: stub({ typed: "hi" }),
-    // `describe` dispatches to a bare function, not a `{ handler }` impl.
-    describeStub: vi.fn(async (_connectKey: string) => ({
-      tree: {
-        role: "Screen",
-        frame: { x: 0, y: 0, width: 1, height: 1 },
-        pixelBounds: null,
-        children: [],
-      },
-      source: "harmony-uitest" as const,
-    })),
-  };
-});
 
 vi.mock("../src/tools/launch-app/platforms/harmony", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -57,6 +67,10 @@ vi.mock("../src/tools/open-url/platforms/harmony", async (orig) => ({
 vi.mock("../src/tools/keyboard/platforms/harmony", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   harmonyImpl: keyboardStub,
+}));
+vi.mock("../src/tools/keyboard/platforms/android", async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  makeAndroidImpl: () => androidKeyboardStub,
 }));
 vi.mock("../src/tools/describe/platforms/harmony", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -144,11 +158,21 @@ describe("HarmonyOS dispatch wiring", () => {
   it("does not reach a harmony branch for a device of another platform", async () => {
     // Guards the inverse mutation: a `harmony` entry wired onto the wrong arm of
     // the table would satisfy the cases above and silently hijack Android.
+    //
+    // `not.toHaveBeenCalled()` alone is equally satisfied by a dispatch that
+    // threw or timed out before the harmony branch was reachable, so pin the
+    // android arm positively first: resolving with the tool's own result proves
+    // dispatch completed.
     keyboardStub.handler.mockClear();
-    await createKeyboardTool(registry).execute!({}, {
-      udid: "emulator-5554",
-      text: "hi",
-    } as never).catch(() => undefined);
+    androidKeyboardStub.handler.mockClear();
+    await expect(
+      createKeyboardTool(registry).execute!({}, { udid: "emulator-5554", text: "hi" } as never)
+    ).resolves.toEqual({ typed: "hi", keys: 2 });
+    expect(androidKeyboardStub.handler).toHaveBeenCalledOnce();
+    expect(androidKeyboardStub.handler.mock.calls[0]![2]).toMatchObject({
+      platform: "android",
+      kind: "emulator",
+    });
     expect(keyboardStub.handler).not.toHaveBeenCalled();
   });
 });

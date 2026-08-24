@@ -25,10 +25,13 @@ import { hdcFileRecv, runHdcShell, shellQuote } from "./harmony-hdc";
  *
  * - **It validates almost nothing.** A click at `99999 99999`, far outside a
  *   1216x2688 display, returns `No Error` and exit 0 having done nothing
- *   observable. Only *negative* and non-numeric coordinates are rejected. So
- *   out-of-range coordinates are argent's to catch: `toDevicePoint` clamps into
- *   the display, which is what keeps a normalized 0-1 rounding error at the
- *   right edge from silently becoming a no-op tap.
+ *   observable. What it does refuse is any coordinate below 1: measured on a
+ *   HarmonyOS 6.1.1 emulator, `click 0 0`, `click 100 0` and `click 0 100`
+ *   each exit 1 with `Please confirm that the coordinate values are correct.`,
+ *   while `click 1 1` runs. So out-of-range coordinates are argent's to catch:
+ *   `toDevicePoint` clamps into the addressable pixels on BOTH ends, which
+ *   keeps a normalized 0-1 rounding error from silently becoming a no-op tap
+ *   at one edge or a refused gesture at the other.
  *
  * **Why not the simulator-server**, which is how iOS and Android reach a
  * device: neither of its controllers has a counterpart here. An Android
@@ -142,21 +145,18 @@ export function remainingBudget(connectKey: string, deadline: number, step: stri
   );
 }
 
-/** Run a `uitest` subcommand, throwing with its own diagnostic if it exits non-zero. */
-async function runUitest(connectKey: string, args: string, timeoutMs: number): Promise<string> {
-  // The ceiling spans the queue as well as the call. A clock started once this
-  // device's queue hands over cannot see the wait in front of it, so a caller
-  // queued behind another — the one case that makes an interaction outlive its
-  // budget — would be charged against no ceiling at all.
-  const deadline = Date.now() + timeoutMs;
-  const { stdout, exitCode } = await enqueueUitest(connectKey, () =>
-    runHdcShell(
-      connectKey,
-      `uitest ${args}`,
-      // The subcommand alone — the arguments carry the text being typed.
-      remainingBudget(connectKey, deadline, `\`uitest ${args.split(" ")[0]}\``)
-    )
-  );
+/** The budget label `remainingBudget` names in its refusal, from the subcommand alone — the arguments carry the text being typed. */
+function uitestStep(args: string): string {
+  return `\`uitest ${args.split(" ")[0]}\``;
+}
+
+/** Run one `uitest` subcommand, throwing with its own diagnostic if it exits non-zero. */
+async function runUitestDirect(
+  connectKey: string,
+  args: string,
+  timeoutMs: number
+): Promise<string> {
+  const { stdout, exitCode } = await runHdcShell(connectKey, `uitest ${args}`, timeoutMs);
   if (exitCode !== 0) {
     throw new FailureError(`uitest ${args} failed on ${connectKey}: ${uitestDiagnostic(stdout)}`, {
       error_code: FAILURE_CODES.HARMONY_UITEST_FAILED,
@@ -167,6 +167,18 @@ async function runUitest(connectKey: string, args: string, timeoutMs: number): P
     });
   }
   return stdout;
+}
+
+/** Run a `uitest` subcommand on a ceiling of its own, queued behind this device's previous one. */
+async function runUitest(connectKey: string, args: string, timeoutMs: number): Promise<string> {
+  // The ceiling spans the queue as well as the call. A clock started once this
+  // device's queue hands over cannot see the wait in front of it, so a caller
+  // queued behind another — the one case that makes an interaction outlive its
+  // budget — would be charged against no ceiling at all.
+  const deadline = Date.now() + timeoutMs;
+  return enqueueUitest(connectKey, () =>
+    runUitestDirect(connectKey, args, remainingBudget(connectKey, deadline, uitestStep(args)))
+  );
 }
 
 interface HarmonyDisplay {
@@ -246,17 +258,20 @@ export async function harmonyDisplay(
 /**
  * Convert argent's normalized 0-1 coordinates to device pixels.
  *
- * Clamped to the last addressable pixel rather than the bound itself: `uitest`
- * accepts an out-of-range coordinate silently (see the header), so `y = 1.0`
- * would otherwise inject at `height`, one row past the display, and report
- * success for a touch that never happened.
+ * Clamped into the addressable pixel range rather than to either bound. At the
+ * top: `uitest` accepts an out-of-range coordinate silently (see the header),
+ * so `y = 1.0` would otherwise inject at `height`, one row past the display,
+ * and report success for a touch that never happened. At the bottom: it
+ * refuses 0 outright, so an edge-normalized coordinate — a swipe ending at
+ * the top edge, a back gesture starting at the left one — would otherwise be
+ * handed a value the binary rejects and fail hard.
  */
 export function toDevicePoint(
   x: number,
   y: number,
   display: { width: number; height: number }
 ): { x: number; y: number } {
-  const clamp = (v: number, max: number) => Math.max(0, Math.min(max - 1, Math.round(v * max)));
+  const clamp = (v: number, max: number) => Math.max(1, Math.min(max - 1, Math.round(v * max)));
   return { x: clamp(x, display.width), y: clamp(y, display.height) };
 }
 
@@ -269,8 +284,8 @@ export function toDevicePoint(
  *
  * - **A non-positive panel.** The render service prints `render resolution=0x0`
  *   while the guest's compositor is still coming up, and every normalized
- *   coordinate then clamps to the origin — a tap at (0.83, 0.42) goes out as
- *   `uiInput click 0 0` and comes back as the tap that was asked for.
+ *   coordinate then clamps onto the same corner pixel — a tap at (0.83, 0.42)
+ *   goes out as a tap on that pixel, reported as the tap that was asked for.
  *   `boot-device` refuses the same read as unreadable rather than act on it.
  * - **A suspended panel.** Measured: a tap on the WLAN row of Settings with
  *   `powerStatus=POWER_STATUS_OFF` returned success and changed nothing.
@@ -313,15 +328,6 @@ export function assertHarmonyDisplayReady(display: HarmonyDisplay, action: strin
 
 type HarmonyTouchCommand = "click" | "doubleClick";
 
-export async function harmonyTouch(
-  connectKey: string,
-  command: HarmonyTouchCommand,
-  point: { x: number; y: number },
-  timeoutMs: number
-): Promise<void> {
-  await runUitest(connectKey, `uiInput ${command} ${point.x} ${point.y}`, timeoutMs);
-}
-
 type HarmonySwipeCommand = "swipe" | "fling";
 
 /**
@@ -331,12 +337,16 @@ type HarmonySwipeCommand = "swipe" | "fling";
 const HARMONY_VELOCITY_MIN = 200;
 const HARMONY_VELOCITY_MAX = 40_000;
 
+function touchArgs(command: HarmonyTouchCommand, point: { x: number; y: number }): string {
+  return `uiInput ${command} ${point.x} ${point.y}`;
+}
+
 /**
- * `uitest` takes a **velocity**, not a duration, so the duration argent's tools
- * speak is converted by the caller: velocity = pixels travelled / seconds.
- * Doing it the other way — passing a fixed velocity — would make a short swipe
- * and a screen-length one take wildly different times, and the callers that
- * pace a scroll loop against `durationMs` would be pacing against nothing.
+ * `uitest` takes a **velocity**, not a duration, so the caller translating a
+ * duration speaks pixels travelled per second. Doing it the other way — passing
+ * a fixed velocity — would make a short swipe and a screen-length one take
+ * wildly different times, and the callers that pace a scroll loop against
+ * `durationMs` would be pacing against nothing.
  *
  * `settle` picks the verb rather than reshaping the path. `uitest` exposes both
  * `swipe` (a drag that ends where it ends) and `fling` (which hands the scroller
@@ -345,37 +355,79 @@ const HARMONY_VELOCITY_MAX = 40_000;
  * between the two commands; the resulting difference in coast distance was not
  * measured here.
  */
-export async function harmonySwipe(
-  connectKey: string,
+function swipeArgs(
   command: HarmonySwipeCommand,
   from: { x: number; y: number },
   to: { x: number; y: number },
-  velocity: number,
-  timeoutMs: number
-): Promise<void> {
+  velocity: number
+): string {
   const v = Math.max(HARMONY_VELOCITY_MIN, Math.min(HARMONY_VELOCITY_MAX, Math.round(velocity)));
-  await runUitest(
-    connectKey,
-    `uiInput ${command} ${from.x} ${from.y} ${to.x} ${to.y} ${v}`,
-    timeoutMs
+  return `uiInput ${command} ${from.x} ${from.y} ${to.x} ${to.y} ${v}`;
+}
+
+/**
+ * The injections one hold of this device's queue may put on the wire. Every leg
+ * is charged what is left of the hold's shared deadline rather than a ceiling of
+ * its own.
+ */
+export interface UitestSlot {
+  touch(command: HarmonyTouchCommand, point: { x: number; y: number }): Promise<void>;
+  swipe(
+    command: HarmonySwipeCommand,
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+    velocity: number
+  ): Promise<void>;
+  keyEvent(key: string): Promise<void>;
+  /** Type into whatever currently holds focus, in one shot. */
+  type(text: string): Promise<void>;
+}
+
+/**
+ * Hold this device's `uitest` queue while one whole input interaction runs:
+ * the display re-read, its check and every injection come out of ONE slot, so
+ * the state that is checked is the state that holds on the wire.
+ *
+ * The reason the read belongs inside the hold: an input tool that reads the
+ * display before acquiring the queue checks a panel it does not act on until
+ * every earlier call has drained — a wait as long as the queue is deep, during
+ * which anything that does not go through `uitest` (`power-shell`, the physical
+ * key, the OS timeout) can suspend the panel. Measured: a tap issued against an
+ * awake panel injected 5.9s later, answering `No Error` into
+ * `POWER_STATUS_OFF`. Re-reading inside the slot shrinks the checked state and
+ * the injection to adjacent round trips.
+ *
+ * The read is a `hidumper` service dump, not a `uitest` invocation, so running
+ * it inside the hold neither overlaps two `uitest` processes nor waits on
+ * anything in this queue: no deadlock. What the adjacency cannot close is an
+ * actor suspending the panel DURING the final round trip — physical button,
+ * foreign host process, OS timeout mid-injection — which no ordering here can
+ * see, let alone prevent. That residual is inherent to checking then acting
+ * over a wire, and accepted.
+ *
+ * Nothing inside `unit` may enqueue again: every `uitest` leg goes through the
+ * slot, which runs directly against the device this hold already owns.
+ */
+export async function holdUitestQueue<T>(
+  connectKey: string,
+  deadline: number,
+  unit: (slot: UitestSlot) => Promise<T>
+): Promise<T> {
+  const run = async (args: string): Promise<void> => {
+    await runUitestDirect(
+      connectKey,
+      args,
+      remainingBudget(connectKey, deadline, uitestStep(args))
+    );
+  };
+  return enqueueUitest(connectKey, () =>
+    unit({
+      touch: (command, point) => run(touchArgs(command, point)),
+      swipe: (command, from, to, velocity) => run(swipeArgs(command, from, to, velocity)),
+      keyEvent: (key) => run(`uiInput keyEvent ${key}`),
+      type: (text) => run(`uiInput text ${shellQuote(text)}`),
+    })
   );
-}
-
-export async function harmonyKeyEvent(
-  connectKey: string,
-  key: string,
-  timeoutMs: number
-): Promise<void> {
-  await runUitest(connectKey, `uiInput keyEvent ${key}`, timeoutMs);
-}
-
-/** Type into whatever currently holds focus. */
-export async function harmonyTypeText(
-  connectKey: string,
-  text: string,
-  timeoutMs: number
-): Promise<void> {
-  await runUitest(connectKey, `uiInput text ${shellQuote(text)}`, timeoutMs);
 }
 
 /**

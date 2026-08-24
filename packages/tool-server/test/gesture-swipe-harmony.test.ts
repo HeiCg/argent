@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getFailureSignal } from "@argent/registry";
 
 // Only the hdc transport is faked. Everything between the tool and the wire -
@@ -31,6 +33,7 @@ import { runHdcShell as realRunHdcShell } from "../src/utils/harmony-hdc";
 import {
   HARMONY_DISPLAY_TIMEOUT_MS,
   HARMONY_INTERACTION_TIMEOUT_MS,
+  harmonyScreenCap,
 } from "../src/utils/harmony-uitest";
 import { sendCommand } from "../src/utils/simulator-client";
 
@@ -74,6 +77,9 @@ beforeEach(() => {
       : { stdout: "No Error", exitCode: 0 }
   );
 });
+
+/** Let every microtask that can run, run — without releasing any device call. */
+const settle = () => new Promise((r) => setImmediate(r));
 
 /** The single `uitest uiInput …` line the swipe put on the wire, and who it went to. */
 function uiInput(): { connectKey: string; command: string } {
@@ -146,6 +152,97 @@ describe("gesture-swipe on HarmonyOS", () => {
     expect(sendCommand).not.toHaveBeenCalled();
   });
 
+  it("keeps edge-normalized endpoints off the zero coordinate `uitest` refuses", async () => {
+    // Measured on a HarmonyOS 6.1.1 emulator (1320x2856): `uiInput fling
+    // 660 2285 660 0 <v>` exits 1 refusing the coordinate, so a scroll that
+    // ends at the top edge (toY 0) or an edge-swipe back gesture (fromX 0)
+    // would fail hard — yet both are documented-valid requests ("left=0").
+    await expect(
+      gestureSwipeTool.execute(services, {
+        udid: HARMONY_UDID,
+        fromX: 0,
+        fromY: 0.8,
+        toX: 0.5,
+        toY: 0,
+        durationMs: 500,
+      })
+    ).resolves.toMatchObject({ swiped: true });
+
+    const [, , verb, fromX, fromY, toX, toY] = uiInput().command.split(" ");
+    expect(verb).toMatch(/fling|swipe/);
+    for (const [field, value] of [
+      ["fromX", fromX],
+      ["fromY", fromY],
+      ["toX", toX],
+      ["toY", toY],
+    ] as const) {
+      expect(Number(value), field).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("re-reads the panel inside the queue slot, refusing instead of injecting into a panel that went dark while the call waited", async () => {
+    // The screen-power check and the injection are two separate round trips.
+    // Everything between them is unbounded by anything but the budget: another
+    // caller's slow `uitest` work holds this device's queue while the swipe has
+    // already read an awake panel — and anything that does NOT go through
+    // `uitest` (power-shell, the physical key, the OS timeout) can suspend the
+    // panel in that window. Measured: the injection 5.9s later answered
+    // `No Error` into POWER_STATUS_OFF. The state that holds when the injection
+    // runs is the one to check, so the read is repeated inside the queue slot,
+    // immediately before the wire.
+    let power = "POWER_STATUS_ON";
+    const blocked: (() => void)[] = [];
+    runHdcShell.mockImplementation(async (_connectKey, command) => {
+      if (command.startsWith("hidumper")) {
+        return { stdout: screenDump(DISPLAY_WIDTH, DISPLAY_HEIGHT, power), exitCode: 0 };
+      }
+      if (command.startsWith("uitest ")) {
+        await new Promise<void>((resolve) => blocked.push(resolve));
+      }
+      return { stdout: "", exitCode: 0 };
+    });
+
+    // Another caller's `uitest` work holds the queue…
+    harmonyScreenCap(CONNECT_KEY, join(tmpdir(), `argent-swipe-window-${process.pid}.png`)).catch(
+      () => {}
+    );
+    await settle();
+    // …the swipe reads an awake panel and queues behind it…
+    const swipe = gestureSwipeTool.execute(services, base);
+    // Handler attached NOW, before anything can reject: the refusal below is
+    // expected, and an unhandled window between release and this await would
+    // fail the run as an unhandled rejection rather than an assertion.
+    const outcome = swipe.then(
+      () => null,
+      (e: unknown) => e
+    );
+    await settle();
+    expect(runHdcShell.mock.calls.filter(([, c]) => c.startsWith("uitest uiInput"))).toHaveLength(
+      0
+    );
+
+    // …and the panel is suspended while both wait.
+    power = "POWER_STATUS_SUSPEND";
+    blocked.shift()?.();
+    await settle();
+    // Whatever took the vacated queue slot next — on the code without the
+    // in-slot re-read, that IS the injection — gets released too, so the
+    // per-device queue this file's tests share is left fully drained.
+    blocked.shift()?.();
+    await settle();
+
+    const err = await outcome;
+    expect(getFailureSignal(err)?.failure_stage).toBe("harmony_screen_off");
+    expect((err as Error).message).toMatch(/Wake it with `button` \(power\)/);
+    expect(runHdcShell.mock.calls.filter(([, c]) => c.startsWith("uitest uiInput"))).toHaveLength(
+      0
+    );
+    while (blocked.length > 0) {
+      blocked.shift()?.();
+      await settle();
+    }
+  });
+
   it("refuses to swipe while the display is suspended, injecting nothing", async () => {
     // `uitest uiInput` answers `No Error` and exits 0 against a suspended panel
     // (measured), so without the guard the swipe resolves `{swiped: true}` for a
@@ -179,9 +276,9 @@ describe("gesture-swipe on HarmonyOS", () => {
   it("refuses to swipe when the render service reports a 0x0 render resolution", async () => {
     // What a guest prints while its compositor is still coming up — parsed here
     // rather than stubbed, since `render resolution=0x0` is a line the parser
-    // accepts without complaint. Both endpoints would clamp onto the origin, so
-    // the swipe would go out as `uiInput fling 0 0 0 0 <v>`: a gesture from the
-    // corner to itself, reported as `{ swiped: true }`.
+    // accepts without complaint. Both endpoints would clamp onto the same corner
+    // pixel, so the swipe would go out as a gesture from one spot to itself,
+    // reported as `{ swiped: true }`.
     runHdcShell.mockImplementation(async (_connectKey, command) =>
       command.startsWith("hidumper")
         ? { stdout: screenDump(0, 0), exitCode: 0 }

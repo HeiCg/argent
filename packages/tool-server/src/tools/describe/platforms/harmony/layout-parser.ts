@@ -174,9 +174,12 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
       {
         ...blank(attrs, bounds),
         role: "SystemOverlay",
-        label:
-          "[system UI rendered in another process — its contents are not in the layout dump; " +
-          "screenshot to see it]",
+        // In `identifier`, not `label`, for the reason the window tag below
+        // spells out: the matcher reads `label` as visible text, and a
+        // full-screen node labelled with a sentence containing "system",
+        // "contents" or "screenshot" answers `exists: {text: ...}` on every
+        // screen a share sheet or app selector covers.
+        identifier: attrText(attrs.id) || attrText(attrs.key) || "ui-extension-overlay",
         children: [],
       },
     ];
@@ -221,7 +224,17 @@ function build(node: HarmonyLayoutNode): HarmonyNode[] {
   if (own.children.length === 1 && own.pixelBounds && !ownCarriesState(own)) {
     const only = own.children[0];
     if (only.pixelBounds && rectsEqual(only.pixelBounds, own.pixelBounds) && !own.label) {
-      return [{ ...only, clickable: only.clickable || own.clickable }];
+      // The wrapper's role wins when its type maps onto the shared vocabulary:
+      // ArkUI puts the meaningful widget on the outer node (`ListItem` -> Cell)
+      // and fills it with a bare layout child. An unmapped type carries no such
+      // information, so the child's role stands.
+      return [
+        {
+          ...only,
+          clickable: only.clickable || own.clickable,
+          ...(MAPPED_ROLES.has(type) ? { role: own.role } : {}),
+        },
+      ];
     }
   }
 
@@ -267,6 +280,31 @@ function blank(attrs: Record<string, string>, bounds: PixelRect | null): Harmony
     children: [],
   };
 }
+
+/** Types deriveRole maps explicitly; anything else reports its raw type. */
+const MAPPED_ROLES = new Set([
+  "Text",
+  "Span",
+  "TextClock",
+  "TextInput",
+  "TextArea",
+  "SearchField",
+  "Search",
+  "Image",
+  "SymbolGlyph",
+  "Toggle",
+  "Checkbox",
+  "Slider",
+  "List",
+  "Grid",
+  "Scroll",
+  "WaterFlow",
+  "ListItem",
+  "GridItem",
+  "Swiper",
+  "Dialog",
+  "Button",
+]);
 
 /**
  * Map an ArkUI component type onto the role vocabulary the describe formatter

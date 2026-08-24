@@ -15,14 +15,15 @@ vi.mock("../src/utils/android-input", async (importOriginal) => ({
   injectAndroidKeycode: vi.fn(),
 }));
 
-// HarmonyOS presses go over `uitest uiInput keyEvent` on the device; neutralise
-// it for the same reason as the adb call above. `harmonyDisplay` is the read the
-// press is gated on, stubbed awake by default (see beforeEach);
-// `assertHarmonyDisplayReady` stays real so the tests see the guard's own refusal.
-vi.mock("../src/utils/harmony-uitest", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/utils/harmony-uitest")>()),
-  harmonyKeyEvent: vi.fn(),
-  harmonyDisplay: vi.fn(),
+// HarmonyOS presses go over `uitest uiInput keyEvent` on the device; fake the
+// hdc transport they leave on (same reason as the adb call above), so what the
+// assertions read is the actual wire line. `harmonyDisplay`, the read the press
+// is gated on, stays REAL behind that transport and parses whatever dump the
+// fake serves — so the tests see the guard's own refusal, off a dump shaped like
+// the ones a device prints.
+vi.mock("../src/utils/harmony-hdc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/harmony-hdc")>()),
+  runHdcShell: vi.fn(),
 }));
 
 // The Android branch preflights adb via `ensureDep("adb")` before injecting.
@@ -38,12 +39,11 @@ import { buttonTool, BUTTONS_BY_PLATFORM } from "../src/tools/button";
 import { UnsupportedOperationError } from "../src/utils/capability";
 import { ANDROID_BUTTON_KEYCODES, injectAndroidKeycode } from "../src/utils/android-input";
 import { DependencyMissingError, ensureDep } from "../src/utils/check-deps";
-import {
-  HARMONY_INTERACTION_TIMEOUT_MS,
-  harmonyDisplay,
-  harmonyKeyEvent,
-} from "../src/utils/harmony-uitest";
+import { runHdcShell as realRunHdcShell } from "../src/utils/harmony-hdc";
+import { HARMONY_INTERACTION_TIMEOUT_MS } from "../src/utils/harmony-uitest";
 import { sendCommand } from "../src/utils/simulator-client";
+
+const runHdcShell = vi.mocked(realRunHdcShell);
 
 const iosUdid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 const androidUdid = "emulator-5554";
@@ -65,12 +65,30 @@ const HARMONY_KEY_NAMES: Record<string, string> = {
   power: "Power",
 };
 
-/** A Mate 60's render resolution, awake. */
-const HARMONY_AWAKE = { width: 1216, height: 2688, screenOn: true };
-const HARMONY_SUSPENDED = { ...HARMONY_AWAKE, screenOn: false };
+/**
+ * What `hidumper -s RenderService -a screen` prints, in the shape measured on a
+ * HarmonyOS 6.1.1 guest: one `screen[N]:` line per panel carrying BOTH the power
+ * state and the size — the pair `harmonyDisplay` reads off that one line.
+ */
+function screenDump(power = "POWER_STATUS_ON", size = "1216x2688"): string {
+  return (
+    `-- ScreenInfo\nscreen[0]: id=0, powerStatus=${power}, backlight=1, ` +
+    `screenType=EXTERNAL_TYPE, render resolution=${size}, physical resolution=${size}, ` +
+    `isVirtual=false`
+  );
+}
+
+/** The `uitest uiInput …` lines the press put on the wire. */
+const uiInputs = () =>
+  runHdcShell.mock.calls.filter(([, command]) => command.startsWith("uitest uiInput"));
 
 beforeEach(() => {
-  vi.mocked(harmonyDisplay).mockReset().mockResolvedValue(HARMONY_AWAKE);
+  runHdcShell.mockReset();
+  runHdcShell.mockImplementation(async (_connectKey, command) =>
+    command.startsWith("hidumper")
+      ? { stdout: screenDump(), exitCode: 0 }
+      : { stdout: "", exitCode: 0 }
+  );
 });
 
 describe("button tool — per-platform validation", () => {
@@ -184,12 +202,12 @@ describe("button tool — per-platform validation", () => {
     await expect(
       buttonTool.execute(services, { udid: harmonyUdid, button: "volumeUp" })
     ).rejects.toThrow(/Supported: home, back, power/);
-    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+    expect(uiInputs()).toHaveLength(0);
   });
 
   it("injects the matching key name for EVERY HarmonyOS button, over hdc only", async () => {
     for (const button of BUTTONS_BY_PLATFORM.harmony) {
-      vi.mocked(harmonyKeyEvent).mockClear();
+      runHdcShell.mockClear();
       vi.mocked(sendCommand).mockClear();
       vi.mocked(injectAndroidKeycode).mockClear();
       vi.mocked(ensureDep).mockClear();
@@ -198,13 +216,13 @@ describe("button tool — per-platform validation", () => {
       });
       const expectedKey = HARMONY_KEY_NAMES[button];
       expect(expectedKey, `no uitest key name for "${button}"`).toBeTypeOf("string");
-      // The connect key, not the `harmony-` prefixed device id — `uitest` is
-      // addressed by what `hdc list targets` reports.
-      expect(harmonyKeyEvent).toHaveBeenCalledWith(
-        harmonyConnectKey,
-        expectedKey,
-        expect.any(Number)
-      );
+      // The whole wire line: a swapped pair or a reordered argument still exits
+      // 0 on-device, so only the exact `uitest uiInput keyEvent <name>` catches
+      // it. The connect key, not the `harmony-` prefixed device id — `uitest`
+      // is addressed by what `hdc list targets` reports.
+      const [connectKey, command] = uiInputs().at(-1) ?? [];
+      expect(connectKey).toBe(harmonyConnectKey);
+      expect(command).toBe(`uitest uiInput keyEvent ${expectedKey}`);
       // hdc is preflighted so a missing connector fails with a 424 install hint.
       expect(ensureDep).toHaveBeenCalledWith("hdc");
       // Neither of the other backends is touched — in particular the press must
@@ -216,19 +234,21 @@ describe("button tool — per-platform validation", () => {
   });
 
   it("preflights hdc before injecting so a missing connector surfaces as 424, not 500", async () => {
-    vi.mocked(harmonyKeyEvent).mockClear();
+    runHdcShell.mockClear();
     vi.mocked(ensureDep).mockRejectedValueOnce(
       new DependencyMissingError(["hdc"], "install the HarmonyOS command line tools")
     );
     await expect(
       buttonTool.execute(services, { udid: harmonyUdid, button: "home" })
     ).rejects.toBeInstanceOf(DependencyMissingError);
-    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+    expect(uiInputs()).toHaveLength(0);
   });
 
   it("surfaces an hdc transport failure as a throw, not a silent `{ pressed }`", async () => {
-    vi.mocked(ensureDep).mockResolvedValueOnce(undefined);
-    vi.mocked(harmonyKeyEvent).mockRejectedValueOnce(new Error("[Fail]Not match target found"));
+    runHdcShell.mockImplementation(async (_connectKey, command) => {
+      if (command.startsWith("hidumper")) return { stdout: screenDump(), exitCode: 0 };
+      throw new Error("[Fail]Not match target found");
+    });
     await expect(
       buttonTool.execute(services, { udid: harmonyUdid, button: "home" })
     ).rejects.toThrow(/Not match target found/);
@@ -243,13 +263,16 @@ describe("button tool — a suspended HarmonyOS panel", () => {
   // that state, and `home`/`back` are the keys an agent reaches for to recover
   // from a screen timeout.
   beforeEach(() => {
-    vi.mocked(harmonyKeyEvent).mockClear();
     vi.mocked(ensureDep).mockClear();
   });
 
   for (const button of ["home", "back"] as const) {
     it(`refuses \`${button}\` while the display is suspended, injecting nothing`, async () => {
-      vi.mocked(harmonyDisplay).mockResolvedValue(HARMONY_SUSPENDED);
+      runHdcShell.mockImplementation(async (_connectKey, command) =>
+        command.startsWith("hidumper")
+          ? { stdout: screenDump("POWER_STATUS_SUSPEND"), exitCode: 0 }
+          : { stdout: "", exitCode: 0 }
+      );
       const err = await buttonTool.execute(services, { udid: harmonyUdid, button }).then(
         () => {
           throw new Error("expected the press to reject, but it resolved");
@@ -263,28 +286,30 @@ describe("button tool — a suspended HarmonyOS panel", () => {
       // The refusal names the button, not "tap": the shared helper takes the
       // verb from its caller.
       expect((err as Error).message).toContain(`press ${button}`);
-      expect(harmonyKeyEvent).not.toHaveBeenCalled();
+      expect(uiInputs()).toHaveLength(0);
     });
   }
 
   it("still presses `power` while the display is suspended — it is the way back", async () => {
     // The refusal above tells the caller to wake the device with `button`
     // (power). Gating power on the same check would make that advice
-    // unfollowable, so it is carved out — and carved out before the display
+    // unfollowable, so it is carved out — and carved out before any display
     // read, so waking a device does not depend on the render service answering.
-    vi.mocked(harmonyDisplay).mockResolvedValue(HARMONY_SUSPENDED);
+    runHdcShell.mockImplementation(async () => ({ stdout: "", exitCode: 0 }));
     await expect(
       buttonTool.execute(services, { udid: harmonyUdid, button: "power" })
     ).resolves.toEqual({ pressed: "power" });
-    expect(harmonyKeyEvent).toHaveBeenCalledWith(harmonyConnectKey, "Power", expect.any(Number));
-    expect(harmonyDisplay).not.toHaveBeenCalled();
+    const [connectKey, command] = uiInputs().at(-1) ?? [];
+    expect([connectKey, command]).toEqual([harmonyConnectKey, "uitest uiInput keyEvent Power"]);
+    expect(runHdcShell.mock.calls.filter(([, c]) => c.startsWith("hidumper"))).toHaveLength(0);
   });
 
   it("presses `home` as usual once the display is awake", async () => {
     await expect(
       buttonTool.execute(services, { udid: harmonyUdid, button: "home" })
     ).resolves.toEqual({ pressed: "home" });
-    expect(harmonyKeyEvent).toHaveBeenCalledWith(harmonyConnectKey, "Home", expect.any(Number));
+    const [, command] = uiInputs().at(-1) ?? [];
+    expect(command).toBe("uitest uiInput keyEvent Home");
   });
 
   it("refuses `home` when the render service reports a 0x0 display", async () => {
@@ -293,7 +318,11 @@ describe("button tool — a suspended HarmonyOS panel", () => {
     // parsed off the same dump. The tap and swipe paths refuse it through the
     // same helper; a press that went ahead would inject against a device that
     // has no screen yet and still resolve `{ pressed: "home" }`.
-    vi.mocked(harmonyDisplay).mockResolvedValue({ width: 0, height: 0, screenOn: true });
+    runHdcShell.mockImplementation(async (_connectKey, command) =>
+      command.startsWith("hidumper")
+        ? { stdout: screenDump("POWER_STATUS_ON", "0x0"), exitCode: 0 }
+        : { stdout: "", exitCode: 0 }
+    );
 
     const err = await buttonTool.execute(services, { udid: harmonyUdid, button: "home" }).then(
       () => {
@@ -305,27 +334,30 @@ describe("button tool — a suspended HarmonyOS panel", () => {
     expect(getFailureSignal(err)?.failure_stage).toBe("harmony_display_zero");
     expect((err as Error).message).toContain("press home");
     expect((err as Error).message).toContain("0x0 display");
-    expect(harmonyKeyEvent).not.toHaveBeenCalled();
+    expect(uiInputs()).toHaveLength(0);
   });
 
-  it("gives the press what is left of ONE budget shared with the display read", async () => {
-    // Both legs on `UITEST_TIMEOUT_MS` put a press's worst case at 40s, above
-    // the 30s at which the MCP client aborts a call and REPLAYS it — a second
-    // `Back` for one the caller believes never happened. The read is charged
-    // against the same deadline, so the press gets what it left behind.
+  it("gives the press what is left of ONE budget shared with both display reads", async () => {
+    // Legs handed fresh ceilings put a press's worst case at 60s, above the 30s
+    // at which the MCP client aborts a call and REPLAYS it — a second `Back`
+    // for one the caller believes never happened. Both reads (the fast prefilter
+    // and the authoritative one inside the queue hold) are charged against the
+    // same deadline, so the press gets what they left behind.
     const READ_MS = 60;
-    vi.mocked(harmonyDisplay).mockImplementation(async () => {
+    runHdcShell.mockImplementation(async (_connectKey, command, timeoutMs) => {
+      if (!command.startsWith("hidumper")) return { stdout: "", exitCode: 0 };
       await new Promise((r) => setTimeout(r, READ_MS));
-      return HARMONY_AWAKE;
+      void timeoutMs;
+      return { stdout: screenDump(), exitCode: 0 };
     });
 
     await buttonTool.execute(services, { udid: harmonyUdid, button: "home" });
 
-    const budget = vi.mocked(harmonyKeyEvent).mock.calls[0][2];
-    // Not pinned to the millisecond — `setTimeout` can fire a touch early, and
-    // under a loaded suite this boundary has come back 1ms over. What has to
-    // discriminate is a press handed a FRESH ceiling, which arrives as 20000.
-    expect(budget).toBeLessThan(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS / 2);
+    // Half a read of tolerance, not the millisecond: `setTimeout` can fire a
+    // touch early. What has to discriminate is a press handed a FRESH ceiling,
+    // which arrives as the untouched HARMONY_INTERACTION_TIMEOUT_MS.
+    const budget = uiInputs()[0]?.[2];
+    expect(budget).toBeLessThan(HARMONY_INTERACTION_TIMEOUT_MS - READ_MS);
     expect(budget).toBeGreaterThan(0);
   });
 });

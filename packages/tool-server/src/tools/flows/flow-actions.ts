@@ -796,6 +796,24 @@ export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise
           : `${step.kind} is unsupported on HarmonyOS — \`uitest uiInput\` injects one contact at a time and \`/dev/input\` is closed to \`hdc\`'s uid, so there is no multi-touch to build it from; drive the app's own zoom/rotate controls with \`tap\``,
     };
   }
+  // `await: { idle }` judges stillness by two signals, and one of them — the
+  // flow tree — does not exist on every platform (`supportsFlowTree`). Where it
+  // is absent every read fails by construction, so the step would spend its
+  // whole timeout polling — each round also re-resolving whatever service its
+  // capture half needs, cycling STARTING → ERROR on a platform whose blueprint
+  // refuses it — before being scored never-judged with a remedy ("check the app
+  // is in the foreground") that no amount of foregrounding can satisfy where
+  // there is no source at all. Refuse up front with the reason that holds.
+  if (step.kind === "idle" && !supportsFlowTree(env.device.platform)) {
+    return {
+      ok: false,
+      indeterminate: true,
+      reason:
+        `\`await: { idle }\` cannot run on ${env.device.platform}: flows have no UI-tree source on ` +
+        `this platform, so screen stillness can never be judged. Replace this step with an explicit ` +
+        `\`wait:\`.`,
+    };
+  }
   switch (step.kind) {
     case "tap":
       return runTap(env, step);

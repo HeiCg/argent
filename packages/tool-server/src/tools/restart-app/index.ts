@@ -63,7 +63,7 @@ export function createRestartAppTool(registry: Registry): ToolDefinition<Params,
       failedMsg: ({ params, failureSignal }) =>
         `Failed to restart ${params.bundleId}: ${failureSignal.error_code}`,
     },
-    description: `Terminate then relaunch an app by bundle id / package name.
+    description: `Terminate then relaunch an app by its bundle id (iOS, HarmonyOS) or package name (Android).
 Use when you need a clean in-memory state without a full reinstall. Also refreshes the native-devtools injection before the relaunch (the iOS slice on iOS, the tvOS slice on Apple TV); on tvOS, interaction is focus-driven — use the tv-* tools rather than coordinate taps.
 Returns { restarted, bundleId }. Fails if the app is not installed.`,
     alwaysLoad: true,
