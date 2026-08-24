@@ -549,7 +549,14 @@ function walk(value, path, ancestors) {
   }
   if (typeof value.toJSON === "function") {
     // Walk what `JSON.stringify` would actually have encoded, and keep that.
-    return walk(value.toJSON(), path, ancestors);
+    // Recorded first, because the transform is a route back up the tree the
+    // author cannot see: `{ toJSON() { return this; } }` would otherwise
+    // recurse until V8 gave up, and report a stack overflow in place of the
+    // path the cycle is on.
+    ancestors.add(value);
+    const walked = walk(value.toJSON(), path, ancestors);
+    ancestors.delete(value);
+    return walked;
   }
   if (!isPlainObject(value)) {
     // A Map, a Set or a class instance encodes to something a later step cannot
