@@ -2451,9 +2451,13 @@ async function execLeafStep(
         // Deliberately narrow, not "the signal is set, so this step is a skip".
         // Every other cancellation here already lands correctly. A nested
         // orchestrator reports the cancel IN ITS OWN WORDS below, and a generic
-        // skip would drop that sub-report. A tool that finished before the
-        // cancel arrived did run, and `skip` means "did not run" everywhere
-        // else in this file.
+        // skip would drop that sub-report. What a cancel takes away is the
+        // right to TRUST a verdict, not the fact that the step ran: a tool that
+        // finished and answered before the cancel arrived was judged on that
+        // answer, so it keeps its verdict. `reached` is what carries the rest —
+        // several skips in this file are steps that did act (see
+        // {@link StepReport.reached}), so a `skip` is never proof of an
+        // untouched device.
         if (signal?.aborted && isUnmetUiWaitResult(step.name, result)) {
           // The sub-tool ran and returned, unlike the pre-invoke delay skip.
           return {
