@@ -451,6 +451,12 @@ export async function launchRunner(opts: {
  * test sessions on one device conflict in testmanagerd, so the factory sweeps
  * before every launch. Matches only OUR processes: `test-without-building`,
  * this device's destination, and our cache root in the argv.
+ *
+ * Resolves only once every signaled pid has exited (or been SIGKILLed after
+ * `STALE_EXIT_TIMEOUT_MS`) — returning on the bare SIGTERM would let a fast
+ * cache-hit start race the old session's testmanagerd teardown, recreating
+ * exactly the conflict this sweep exists to prevent. No stale runners means
+ * no wait at all.
  */
 export async function killStaleRunnersForDevice(udid: string): Promise<number> {
   let stdout: string;
@@ -461,7 +467,7 @@ export async function killStaleRunnersForDevice(udid: string): Promise<number> {
   } catch {
     return 0;
   }
-  let killed = 0;
+  const signaled: number[] = [];
   for (const line of stdout.split("\n")) {
     if (
       !line.includes("test-without-building") ||
@@ -481,9 +487,68 @@ export async function killStaleRunnersForDevice(udid: string): Promise<number> {
         continue;
       }
     }
-    killed += 1;
+    signaled.push(pid);
   }
-  return killed;
+  if (signaled.length > 0) await waitForPidsToExit(signaled);
+  return signaled.length;
+}
+
+/** SIGTERM-to-SIGKILL escalation delay — mirrors killRunnerProcess's 5s. */
+const STALE_EXIT_TIMEOUT_MS = 5_000;
+const STALE_EXIT_POLL_INTERVAL_MS = 100;
+
+/**
+ * Wait (bounded) for already-signaled pids to exit, then SIGKILL holdouts —
+ * process group first with a pid fallback, like killRunnerProcess. Pids dead
+ * on entry cost nothing; live ones are re-probed every poll interval, so a
+ * cooperative exit returns within one interval. Returns the SIGKILLed pids.
+ * The probe/kill/sleep parameters are test seams over the process table.
+ */
+export async function waitForPidsToExit(
+  pids: readonly number[],
+  opts: {
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+    isAlive?: (pid: number) => boolean;
+    kill?: (pid: number, signal: NodeJS.Signals) => void;
+    sleep?: (ms: number) => Promise<void>;
+  } = {}
+): Promise<number[]> {
+  const timeoutMs = opts.timeoutMs ?? STALE_EXIT_TIMEOUT_MS;
+  const pollIntervalMs = opts.pollIntervalMs ?? STALE_EXIT_POLL_INTERVAL_MS;
+  const isAlive = opts.isAlive ?? pidIsAlive;
+  const kill = opts.kill ?? process.kill.bind(process);
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  const maxPolls = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
+  let remaining = pids.filter((pid) => isAlive(pid));
+  for (let poll = 0; poll < maxPolls && remaining.length > 0; poll += 1) {
+    await sleep(pollIntervalMs);
+    remaining = remaining.filter((pid) => isAlive(pid));
+  }
+  for (const pid of remaining) {
+    try {
+      kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        kill(pid, "SIGKILL");
+      } catch {
+        /* exited between the last poll and the escalation */
+      }
+    }
+  }
+  return remaining;
+}
+
+/** Signal 0 probes liveness without delivering anything. */
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Kill a runner's whole process group (xcodebuild spawns helpers). */

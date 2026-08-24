@@ -9,6 +9,7 @@ import {
   prepareXctestrunWithPort,
   resolveSigningHint,
   runnerBuildStaticArgs,
+  waitForPidsToExit,
   XctestrunFormatError,
   type RunnerSigningConfig,
 } from "../src/utils/ios-device/runner-build";
@@ -218,5 +219,118 @@ describe("resolveSigningHint", () => {
 
   it("returns null for output with no signing signature", () => {
     expect(resolveSigningHint("ld: symbol(s) not found for architecture arm64")).toBeNull();
+  });
+});
+
+/**
+ * Fake process table driving waitForPidsToExit's seams — no real processes.
+ * `dyingAfterPolls` maps a pid to the number of sleeps after which its
+ * liveness probe starts reporting it gone; pids absent from the map are dead
+ * from the start, Infinity ignores SIGTERM forever.
+ */
+function fakeProcessTable(dyingAfterPolls: Record<number, number>) {
+  let polls = 0;
+  const sleeps: number[] = [];
+  const kills: Array<{ pid: number; signal: string }> = [];
+  return {
+    sleeps,
+    kills,
+    isAlive: (pid: number) => (dyingAfterPolls[pid] ?? -1) > polls,
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+      polls += 1;
+    },
+    kill: (pid: number, signal: string) => {
+      kills.push({ pid, signal });
+    },
+  };
+}
+
+describe("waitForPidsToExit", () => {
+  it("resolves without sleeping or killing when every pid is already gone", async () => {
+    const table = fakeProcessTable({});
+
+    const holdouts = await waitForPidsToExit([101, 102], table);
+
+    expect(holdouts).toEqual([]);
+    expect(table.sleeps).toEqual([]); // the no-stale-runners start pays nothing
+    expect(table.kills).toEqual([]);
+  });
+
+  it("returns after one poll interval when the SIGTERMed pid exits promptly", async () => {
+    const table = fakeProcessTable({ 101: 1 });
+
+    const holdouts = await waitForPidsToExit([101], {
+      ...table,
+      timeoutMs: 5_000,
+      pollIntervalMs: 100,
+    });
+
+    expect(holdouts).toEqual([]);
+    expect(table.sleeps).toEqual([100]); // fast exit does not burn the window
+    expect(table.kills).toEqual([]);
+  });
+
+  it("polls the bounded window then SIGKILLs the process group of a holdout", async () => {
+    const table = fakeProcessTable({ 101: Infinity });
+
+    const holdouts = await waitForPidsToExit([101], {
+      ...table,
+      timeoutMs: 500,
+      pollIntervalMs: 100,
+    });
+
+    expect(holdouts).toEqual([101]);
+    expect(table.sleeps).toEqual([100, 100, 100, 100, 100]); // ceil(500/100) polls
+    expect(table.kills).toEqual([{ pid: -101, signal: "SIGKILL" }]);
+  });
+
+  it("SIGKILLs only the holdout when the other pid exits mid-window", async () => {
+    const table = fakeProcessTable({ 101: 2, 102: Infinity });
+
+    const holdouts = await waitForPidsToExit([101, 102], {
+      ...table,
+      timeoutMs: 300,
+      pollIntervalMs: 100,
+    });
+
+    expect(holdouts).toEqual([102]);
+    expect(table.kills).toEqual([{ pid: -102, signal: "SIGKILL" }]);
+  });
+
+  it("falls back to the bare pid when the group SIGKILL fails", async () => {
+    const table = fakeProcessTable({ 101: Infinity });
+    const kills: Array<{ pid: number; signal: string }> = [];
+
+    const holdouts = await waitForPidsToExit([101], {
+      ...table,
+      timeoutMs: 100,
+      pollIntervalMs: 100,
+      kill: (pid, signal) => {
+        kills.push({ pid, signal });
+        if (pid < 0) throw new Error("ESRCH: no such process group");
+      },
+    });
+
+    expect(holdouts).toEqual([101]);
+    expect(kills).toEqual([
+      { pid: -101, signal: "SIGKILL" },
+      { pid: 101, signal: "SIGKILL" },
+    ]);
+  });
+
+  it("tolerates a pid exiting between the last poll and the escalation", async () => {
+    const table = fakeProcessTable({ 101: Infinity });
+
+    const holdouts = await waitForPidsToExit([101], {
+      ...table,
+      timeoutMs: 100,
+      pollIntervalMs: 100,
+      kill: () => {
+        throw new Error("ESRCH: no such process");
+      },
+    });
+
+    expect(holdouts).toEqual([101]); // reported as escalated, never thrown
   });
 });
