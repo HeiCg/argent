@@ -181,9 +181,18 @@ export function redactSecretsFromError(
   for (const { name, value } of secrets) {
     if (!value) continue;
     for (const spelling of secretSpellings(value)) {
-      if (!marked.has(spelling.text))
+      if (!marked.has(spelling.text)) {
         marked.set(spelling.text, `${SECRET_PLACEHOLDER_MARKER}${name}}}`);
-      if (spelling.quotedOnly) quotedOnly.add(spelling.text);
+        if (spelling.quotedOnly) quotedOnly.add(spelling.text);
+      } else if (!spelling.quotedOnly) {
+        // Another secret's whole value or `%` cut IS this piece. That text can
+        // then be an unquoted echo of the other secret, so matching reverts to
+        // global rather than staying gated to a quoting context it never
+        // travelled through — under the global owner's name, since any given
+        // occurrence is as likely to be its value as this piece.
+        quotedOnly.delete(spelling.text);
+        marked.set(spelling.text, `${SECRET_PLACEHOLDER_MARKER}${name}}}`);
+      }
     }
   }
   if (marked.size === 0) return err;

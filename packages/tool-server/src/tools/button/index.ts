@@ -134,12 +134,18 @@ Fails if the device backend is not reachable — the simulator-server for iOS, \
       // One deadline for both display reads and the press, so the pair stays
       // under the MCP layer's abort-and-replay cap.
       const deadline = Date.now() + HARMONY_INTERACTION_TIMEOUT_MS;
+      // Fast prefilter, ahead of the queue wait: a panel already suspended is
+      // refused without waiting behind this device's queued work. It is NOT the
+      // check the injection trusts — see inside the hold.
+      if (params.button !== "power") {
+        assertHarmonyDisplayReady(await harmonyDisplay(connectKey), `press ${params.button}`);
+      }
       await holdUitestQueue(connectKey, deadline, async (ui) => {
         // `uitest uiInput keyEvent` answers `No Error` against a suspended panel
         // while the press lands nowhere, so `home` and `back` share the guard
-        // every other input tool uses — read while holding the queue, since a
-        // pre-queue check would describe a state a queue depth stale by the
-        // time the press reaches the device.
+        // every other input tool uses — re-read while holding the queue, since
+        // the prefilter saw a state that may be stale by the time the press
+        // reaches the device.
         //
         // `power` is exempt, and exempt before any display read — it is what
         // the refusal tells the caller to wake the device with, and the one key

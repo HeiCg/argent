@@ -457,6 +457,30 @@ describe("redactSecretsFromError", () => {
     );
   });
 
+  it("does not let one secret's piece demote another secret's whole value", () => {
+    // The gate travels per spelling TEXT across all secrets in the call: when
+    // a passphrase's word IS another secret's entire value, that text must
+    // stay matched globally — HID/CDP echoes reach an error message unquoted,
+    // and quote-gating it there leaks the other credential in full.
+    const message = "device battery drained; HID echoed device verbatim";
+    for (const secrets of [
+      [
+        { name: "PASSPHRASE", value: "correct device battery" },
+        { name: "DEVICE", value: "device" },
+      ],
+      [
+        { name: "DEVICE", value: "device" },
+        { name: "PASSPHRASE", value: "correct device battery" },
+      ],
+    ]) {
+      const err = new Error(message);
+      redactSecretsFromError(err, secrets);
+      expect(err.message, JSON.stringify(secrets.map((s) => s.name))).toBe(
+        "{{secret:DEVICE}} battery drained; HID echoed {{secret:DEVICE}} verbatim"
+      );
+    }
+  });
+
   it("redacts a piece at the length floor and passes one below it", () => {
     // Pins the fence from both sides: at MIN-1 a fragment of a live credential
     // silently stopped being redacted once, and only a fixture about piece

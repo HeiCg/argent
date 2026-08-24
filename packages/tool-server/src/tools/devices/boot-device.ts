@@ -1,5 +1,5 @@
 import { execFile, spawn, type StdioOptions } from "node:child_process";
-import { openSync, closeSync, readFileSync } from "node:fs";
+import { openSync, closeSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1349,6 +1349,9 @@ const HARMONY_TARGET_POLL_MS = 2_000;
  */
 const HARMONY_NO_HDC_GRACE_MS = 3_000;
 
+/** How long a spent start-attempt log may keep occupying tmpdir before a sweep. */
+const HARMONY_LOG_TTL_MS = 24 * 60 * 60 * 1_000;
+
 /** Cadence for the grace above; short, since it is only outlasting a process start. */
 const HARMONY_EXIT_POLL_MS = 50;
 
@@ -1651,8 +1654,8 @@ function couldBeHarmonyEmulator(target: { connection: string | null }): boolean 
  * `-start` awaited under a 15-minute budget returned only when that budget
  * killed it, taking the running emulator with it). So it is spawned detached
  * exactly as the Android emulator is, which also leaves the emulator up across
- * a tool-server restart. Its output goes to a per-instance log so a start that
- * dies early can still be classified by what the manager printed.
+ * a tool-server restart. Its output goes to a log unique to this attempt so a
+ * start that dies early can still be classified by what the manager printed.
  */
 async function startHarmonyEmulator(
   instanceName: string
@@ -1671,7 +1674,23 @@ async function startHarmonyEmulator(
   // guaranteeing a single writer — two tool-server processes can boot the same
   // instance, and the coalescing map only covers one process's own window. A
   // shared name opened `"w"` let the loser truncate the winner's diagnostic
-  // before anyone read it.
+  // before anyone read it. Uniqueness means nothing reaps yesterday's logs, so
+  // attempts older than a day are swept first; a manager holding a swept file
+  // only loses diagnostics it was never going to print this long after start.
+  try {
+    for (const entry of readdirSync(tmpdir())) {
+      if (!entry.startsWith("argent-harmony-") || !entry.endsWith(".log")) continue;
+      try {
+        if (Date.now() - statSync(join(tmpdir(), entry)).mtimeMs > HARMONY_LOG_TTL_MS) {
+          rmSync(join(tmpdir(), entry), { force: true });
+        }
+      } catch {
+        // best-effort — a file another process holds or already removed is fine
+      }
+    }
+  } catch {
+    // An unreadable tmpdir is handled by the guarded open below.
+  }
   const safeName = instanceName.replace(/[^\w.-]/g, (c) => `%${c.codePointAt(0)!.toString(16)}`);
   const logPath = join(tmpdir(), `argent-harmony-${safeName}-${process.hrtime.bigint()}.log`);
   // An unwritable tmpdir is an environment problem the boot should survive
