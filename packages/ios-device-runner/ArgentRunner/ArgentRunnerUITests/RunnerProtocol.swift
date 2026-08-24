@@ -15,7 +15,6 @@ enum CommandKind: String, Codable {
   case drag
   case type
   case keyboardReturn
-  case keyboardDismiss
   case home
   case snapshot
   case screenshot
@@ -30,7 +29,7 @@ extension CommandKind {
     switch self {
     case .status, .viewport, .snapshot, .screenshot:
       return true
-    case .tap, .longPress, .drag, .type, .keyboardReturn, .keyboardDismiss, .home, .shutdown:
+    case .tap, .longPress, .drag, .type, .keyboardReturn, .home, .shutdown:
       return false
     }
   }
@@ -41,7 +40,7 @@ extension CommandKind {
   /// retargeting would hide it.
   var requiresAppBundleId: Bool {
     switch self {
-    case .viewport, .tap, .longPress, .drag, .type, .keyboardReturn, .keyboardDismiss, .snapshot:
+    case .viewport, .tap, .longPress, .drag, .type, .keyboardReturn, .snapshot:
       return true
     case .status, .home, .screenshot, .shutdown:
       return false

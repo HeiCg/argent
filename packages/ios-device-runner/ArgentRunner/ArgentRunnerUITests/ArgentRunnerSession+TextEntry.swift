@@ -30,12 +30,18 @@ extension ArgentRunnerSession {
   func performKeyboardReturn(on app: XCUIApplication) -> Envelope {
     // Prefer tapping the visible submit key: its label carries the action the
     // app configured (Search, Go, …) and tapping works even when typeText
-    // would balk at focus.
-    for label in ["return", "Return", "Enter", "Go", "go", "Search", "search", "Next", "Done", "Send", "Join", "Continue"] {
-      for candidate in [app.keyboards.buttons[label], app.keyboards.keys[label]] {
-        if candidate.exists && candidate.isHittable {
-          candidate.tap()
-          return .success(MessagePayload(message: "pressed keyboard \(label)"))
+    // would balk at focus. Only when a keyboard is actually up, though: each
+    // exists/isHittable probe below is a live AX query (up to ~48 of them),
+    // and on a heavy screen with no keyboard the scan can burn toward the 30s
+    // watchdog — the typeText fallback already yields the clean focus error.
+    let keyboard = app.keyboards.firstMatch
+    if keyboard.exists && !keyboard.frame.isEmpty {
+      for label in ["return", "Return", "Enter", "Go", "go", "Search", "search", "Next", "Done", "Send", "Join", "Continue"] {
+        for candidate in [app.keyboards.buttons[label], app.keyboards.keys[label]] {
+          if candidate.exists && candidate.isHittable {
+            candidate.tap()
+            return .success(MessagePayload(message: "pressed keyboard \(label)"))
+          }
         }
       }
     }
@@ -50,34 +56,5 @@ extension ArgentRunnerSession {
       )
     }
     return .success(MessagePayload(message: "typed return"))
-  }
-
-  func performKeyboardDismiss(on app: XCUIApplication) -> Envelope {
-    guard visibleKeyboardFrame(app) != nil else {
-      return .success(MessagePayload(message: "keyboard was not visible"))
-    }
-    for label in ["Hide keyboard", "Dismiss keyboard", "Done", "done"] {
-      for candidate in [
-        app.keyboards.buttons[label],
-        app.keyboards.keys[label],
-        app.toolbars.buttons[label],
-      ] {
-        if candidate.exists && candidate.isHittable {
-          candidate.tap()
-          _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 2)
-          return .success(MessagePayload(message: "dismissed keyboard via \(label)"))
-        }
-      }
-    }
-    // Blind background taps are never attempted: no coordinate outside the
-    // keyboard can be proven side-effect-free, and a "dismiss" that also
-    // navigated would be worse than an honest refusal.
-    return .failure(
-      .unsupportedOperation,
-      "the keyboard exposes no dismiss control",
-      hint:
-        "Interact with the next target directly — the keyboard rarely blocks taps — "
-        + "or use keyboardReturn to submit."
-    )
   }
 }

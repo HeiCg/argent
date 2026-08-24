@@ -49,26 +49,23 @@ extension ArgentRunnerSession {
     // analogue of the simulator's ease-out swipe.
     let endHold = request.settle == true ? 0.3 : 0.05
 
+    let velocity: XCUIGestureVelocity
     if let durationMs = request.durationMs, durationMs > 0 {
       // Honor the requested duration through drag velocity (points/second),
       // clamped to a range XCTest executes faithfully.
       let distance = ((toX - fromX) * (toX - fromX) + (toY - fromY) * (toY - fromY)).squareRoot()
-      let velocity = min(max(distance / (durationMs / 1000), 60), 5000)
-
-      start.press(
-        forDuration: 0.05,
-        thenDragTo: end,
-        withVelocity: XCUIGestureVelocity(rawValue: CGFloat(velocity)),
-        thenHoldForDuration: endHold
-      )
+      let pointsPerSecond = min(max(distance / (durationMs / 1000), 60), 5000)
+      velocity = XCUIGestureVelocity(rawValue: CGFloat(pointsPerSecond))
     } else {
-      start.press(
-        forDuration: 0.05,
-        thenDragTo: end,
-        withVelocity: .default,
-        thenHoldForDuration: endHold
-      )
+      velocity = .default
     }
+
+    start.press(
+      forDuration: 0.05,
+      thenDragTo: end,
+      withVelocity: velocity,
+      thenHoldForDuration: endHold
+    )
 
     return .success(MessagePayload(message: "dragged"))
   }
@@ -91,13 +88,5 @@ extension ArgentRunnerSession {
     return .success(
       ViewportPayload(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height)
     )
-  }
-
-  func visibleKeyboardFrame(_ app: XCUIApplication) -> CGRect? {
-    let keyboard = app.keyboards.firstMatch
-    guard keyboard.exists else { return nil }
-    let frame = keyboard.frame
-
-    return frame.isEmpty ? nil : frame
   }
 }

@@ -28,7 +28,7 @@ extension ArgentRunnerSession {
   /// the app element) and then flattens it in-process — the traversal itself
   /// never talks to the AX server, which is what keeps this fast and immune
   /// to per-element query stalls.
-  func captureSnapshot(_ request: CommandRequest, of app: XCUIApplication) -> Envelope {
+  func captureSnapshot(of app: XCUIApplication) -> Envelope {
     var root: XCUIElementSnapshot?
     var lastError = ""
 

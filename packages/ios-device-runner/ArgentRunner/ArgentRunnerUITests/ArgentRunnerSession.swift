@@ -23,7 +23,6 @@ final class ArgentRunnerSession: XCTestCase {
   /// enters this queue, so health checks and lost-reply recovery stay
   /// responsive while a command runs.
   private let executionQueue = DispatchQueue(label: "argent.runner.execution")
-  private var server: RunnerHTTPServer?
 
   private let finishLock = NSLock()
   private var done: XCTestExpectation?
@@ -85,7 +84,6 @@ final class ArgentRunnerSession: XCTestCase {
       dispatch: { [weak self] body, deliver in self?.dispatch(body: body, deliver: deliver) },
       onFinish: { [weak self] in self?.finish() }
     )
-    self.server = server
     try server.start(port: port)
     NSLog("ARGENT_RUNNER_SERVING")
 

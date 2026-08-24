@@ -18,7 +18,7 @@ ArgentRunner/
     ArgentRunnerSession+Commands.swift   Target resolution, exception guard,
                                          recorded-failure detection
     ArgentRunnerSession+Gestures.swift   tap / longPress / drag / viewport
-    ArgentRunnerSession+TextEntry.swift  type / keyboardReturn / keyboardDismiss
+    ArgentRunnerSession+TextEntry.swift  type / keyboardReturn
     ArgentRunnerSession+Snapshot.swift   one-shot AX tree capture + flattening
     ArgentRunnerSession+Screenshot.swift inline base64 PNG
     RunnerProtocol.swift                 wire models (see PROTOCOL.md)

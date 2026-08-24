@@ -99,10 +99,8 @@ extension ArgentRunnerSession {
       return performType(request, on: app)
     case .keyboardReturn:
       return performKeyboardReturn(on: app)
-    case .keyboardDismiss:
-      return performKeyboardDismiss(on: app)
     case .snapshot:
-      return captureSnapshot(request, of: app)
+      return captureSnapshot(of: app)
     default:
       return .failure(.invalidRequest, "\(request.command.rawValue) is not an app-scoped command")
     }

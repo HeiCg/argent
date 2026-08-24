@@ -43,7 +43,7 @@ App-scoped (require `appBundleId`; the runner foregrounds the target first):
   XCUICoordinate (public API; orientation-safe).
 - `type` → `{message}` — types into the current first responder.
   `TEXT_INPUT_NOT_FOCUSED` when nothing has keyboard focus.
-- `keyboardReturn`, `keyboardDismiss` → `{message}`.
+- `keyboardReturn` → `{message}`.
 - `snapshot` → `{nodes, quality}` — one-shot accessibility tree (below).
 
 Device-scoped:
