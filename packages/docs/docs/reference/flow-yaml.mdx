@@ -123,6 +123,7 @@ Each step contains one directive. A failed directive stops the flow.
 | `wait`       | `<milliseconds>`                                                   | Pause for a fixed time                                                                            |
 | `snapshot`   | `<name>` or `{ name, maxMismatch, cropOn }`                        | Compare a screenshot with a stored baseline. See [Snapshots](#snapshots)                          |
 | `run`        | `<path>`                                                           | Run another flow file inline. See [Composition](#composition)                                     |
+| `script`     | `{ path, timeout }`                                                | Run a local `.mjs` file in a new Node process. See [Local scripts](#local-scripts)                |
 | `when`       | `{ <condition> }` or `{ platform }`, with `steps:`                 | Run the nested steps only when the condition holds. See [Optional steps](#optional-steps)         |
 | `echo`       | `<message>`                                                        | Print a message in the report                                                                     |
 | `tool`       | `<tool name>`, with `args:` and optional `delayMs:`                | Call any Argent tool with the given arguments                                                     |
@@ -237,6 +238,38 @@ A snapshot compares the current screen, or the frame of `cropOn`, with a stored 
 Baselines live in `.argent/flows/__baselines__/<flow>/`. Argent keys a baseline by platform and capture geometry, plus the selector for `cropOn`. Run `argent flow run <name> --update-baselines` to write the baselines from a known-good state. Review each baseline before you commit it.
 
 Use a snapshot for layout, color, spacing, typography, clipping and icons. Do not use a snapshot as the only proof of navigation, data or network behavior. Avoid timestamps, live data, ads and animation in the captured region. The runner pins the mobile status bar during a visual run.
+
+## Local scripts
+
+```yaml
+- script: { path: ../../scripts/seed-order.mjs }
+- script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
+```
+
+A `script` step runs a local JavaScript file in a new Node process. Use a script for work that no device step does: a call to an API, a command-line tool, a fixture file, or a cleanup after the run. The step drives no device. Thus a flow of only script steps runs with no booted device.
+
+The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`. `path` is required. `timeout` is the limit of the step in milliseconds. The default `timeout` is 30000.
+
+`path` resolves against the directory of the flow file that contains the step, as a `run` path does. The filename ends with a lowercase `.mjs`. Write the path with the letter case of the file on disk. macOS and Windows open a file whose case does not agree, but Linux fails with `ENOENT`. Argent refuses a mis-cased filename and prints the spelling on disk.
+
+Argent runs the script with the project root as the working directory. Argent gives the process an allowlist of environment names: `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. Every other name is absent, including each value in a project `.env` file. Let the script read what it needs from a file. There is no `env` key.
+
+The script can set the `output` global. No step reads the value yet. Argent fails the step when it cannot serialize the value.
+
+Argent prints the standard output and the standard error of the script below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. Argent prints a line of its own when it cuts the output. **Argent does not redact this log.** Do not print a credential from a script.
+
+The verdict of a failed step names the side that caused the failure. Both verdicts stop the flow.
+
+| Verdict | Cause      | Examples                                                                                                                                                           |
+| ------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Failed  | The script | The script threw an error, did not load, exited with a non-zero code, or set an `output` value that Argent cannot serialize                                        |
+| Errored | The host   | A time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a filename whose letter case does not match the file on disk |
+
+`scripts.maxTimeoutMs` caps the `timeout` of each step. A larger `timeout` runs at the cap, and the report says so. `scripts.heapLimitMb` sets the heap of the process. Argent reads both keys from the global configuration file only. See [Available keys](/docs/reference/configuration#available-keys).
+
+On iOS, Android and Vega, a `script` step above the `launch` step runs before Argent restarts the app. On Chromium, Argent boots the app before step 1, so the same script runs while the app is up.
+
+A `script` step needs one filesystem for the client and the tool-server. Argent rejects a `script` step in an uploaded flow, because the `.mjs` file stays on the client.
 
 ## The `argent flow` command
 
