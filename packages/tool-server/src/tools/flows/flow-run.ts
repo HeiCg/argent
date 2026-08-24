@@ -250,11 +250,11 @@ export interface StepReport {
   /**
    * A `script` step's captured stdout and stderr, in written order, possibly
    * truncated by the executor. NOT redacted: the executor scrubs the secrets it
-   * is handed, and {@link runScriptStep} resolves none to hand it, so the text
-   * arrives exactly as the script wrote it. Present on every script
-   * step that produced output, whatever its status — a passing seed script's
-   * "created order 4711" is as load-bearing as a failing one's stack, since it
-   * is the only record of what the script did.
+   * is handed, and `runFlowScriptStep` (flow-script-step.ts) resolves none to
+   * hand it, so the text arrives exactly as the script wrote it. Present on
+   * every script step that produced output, whatever its status — a passing
+   * seed script's "created order 4711" is as load-bearing as a failing one's
+   * stack, since it is the only record of what the script did.
    */
   scriptLog?: string;
   /**

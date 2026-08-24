@@ -3000,8 +3000,13 @@ function* outputReferenceFields(step: FlowStep): Generator<StepField> {
     // with the ones below: that release yields them here.
     case "script":
       return;
-    // Carry no text a reference could be resolved in: a launch is app ids and
-    // paths, a `run:` is a file path, `idle`/`wait` are numbers.
+    // Off the supported list, so a reference in one is never resolved and must
+    // not be refused either — refusing it would refuse a flow the release that
+    // resolves references still would not resolve. A launch definition and a
+    // `run:` path are anchored before any step runs; `idle`/`wait` are numbers.
+    // A Chromium launch's `args` is the one arm that is neither an id nor a
+    // path — it is arbitrary CLI text — and it is excluded for the same reason
+    // the rest of the definition is, not for want of somewhere to put a value.
     case "launch":
     case "run":
     case "idle":

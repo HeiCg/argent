@@ -232,7 +232,9 @@ The filename must end with a lowercase `.mjs`, and use only letters, digits, `_`
 
 ### What the step reports
 
-The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run; a `flow-add-script` recording is one step at a time, so only the first applies there. If the runner cuts the output, it says so on a line of its own.
+The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. If the runner cuts the output, it says so on a line of its own.
+
+A `flow-add-script` recording is one step at a time, so only the 64 KiB step limit applies there — and it reports a cut differently. There is no line in the text: the `log` field is simply shorter, and the separate `logTruncated` field is the only thing that says so. Read that field.
 
 **The log has no redaction.** Do not print a credential from a script. The value goes to the step report, the terminal, and each CI log.
 
