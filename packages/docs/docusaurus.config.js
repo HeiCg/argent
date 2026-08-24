@@ -1,5 +1,4 @@
 // @ts-check
-// Note: type annotations allow type checking and IDEs autocompletion
 
 const path = require("path");
 
@@ -28,11 +27,10 @@ const config = {
     "An agentic toolkit that gives your AI assistant direct access to simulators, emulators, devices, TVs and desktop apps.",
   favicon: "img/favicon.png",
 
-  // Production url of the site.
   url: "https://docs.swmansion.com",
   baseUrl: "/argent/",
 
-  // GitHub pages deployment config.
+  // GitHub Pages deployment.
   organizationName: "software-mansion",
   projectName: "argent",
 
@@ -52,6 +50,16 @@ const config = {
     defaultLocale: "en",
     locales: ["en"],
   },
+
+  headTags: [
+    {
+      tagName: "meta",
+      attributes: {
+        name: "google-site-verification",
+        content: "U0xic78Z5DjD9r0wrxOYQrLZPuSF_DZidnZeXPR4D0k",
+      },
+    },
+  ],
 
   stylesheets: [
     "https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap",
