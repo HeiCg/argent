@@ -159,6 +159,15 @@ const ALLOWED_ENV_NAMES: readonly string[] = [
 const ALLOWED_ENV_PREFIXES: readonly string[] = ["npm_config_"];
 
 /**
+ * npm's own spelling of `NODE_OPTIONS`: it defines `node-options` as a real
+ * config key and translates it back into the variable for what it starts, so
+ * the `npm_config_` prefix would carry through exactly what the exact name is
+ * reserved to keep out. npm reads its config names without regard to case, so
+ * this one is matched that way on every platform.
+ */
+const NPM_NODE_OPTIONS_ENV = "npm_config_node_options";
+
+/**
  * Names refused in a caller-supplied environment map, because each steers the
  * runner's own process rather than the host: `NODE_CHANNEL_FD` and
  * `NODE_UNIQUE_ID` name the IPC channel this protocol runs on,
@@ -169,6 +178,7 @@ const RESERVED_ENV_NAMES: readonly string[] = [
   "NODE_CHANNEL_FD",
   "NODE_UNIQUE_ID",
   "NODE_OPTIONS",
+  NPM_NODE_OPTIONS_ENV,
   "ELECTRON_RUN_AS_NODE",
   RUNNER_ACTIVATION_ENV,
 ];
@@ -1091,9 +1101,17 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   const allowed = new Set(
     ALLOWED_ENV_NAMES.map((name) => (caseInsensitive ? name.toLowerCase() : name))
   );
+  const reservedName = (name: string) =>
+    RESERVED_ENV_NAMES.find((candidate) =>
+      caseInsensitive || candidate === NPM_NODE_OPTIONS_ENV
+        ? candidate.toLowerCase() === name.toLowerCase()
+        : candidate === name
+    );
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
+    // Ahead of the allowlist, because a prefix admits names nobody listed.
+    if (reservedName(name)) continue;
     const key = caseInsensitive ? name.toLowerCase() : name;
     if (allowed.has(key) || ALLOWED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
       env[name] = value;
@@ -1109,10 +1127,7 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   }
 
   for (const [name, value] of Object.entries(overrides ?? {})) {
-    const reserved = RESERVED_ENV_NAMES.find((candidate) =>
-      caseInsensitive ? candidate.toLowerCase() === name.toLowerCase() : candidate === name
-    );
-    if (reserved) {
+    if (reservedName(name)) {
       throw new ScriptSetupError(
         "invalid",
         `${name} cannot be set for a script: it steers the runner's own process ` +

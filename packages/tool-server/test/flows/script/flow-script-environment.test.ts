@@ -81,6 +81,20 @@ describe("flow script executor — the environment allowlist", () => {
     );
   });
 
+  it("keeps npm's own spelling of NODE_OPTIONS out", async () => {
+    // npm defines `node-options` as a real config key and hands it back as
+    // NODE_OPTIONS to what it starts, so the `npm_config_` prefix would carry
+    // through exactly what the exact name is reserved to keep out.
+    withEnv("npm_config_node_options", "--max-old-space-size=8");
+    const ws = workspace();
+    const script = ws.write("env.mjs", reporter(["npm_config_node_options"]));
+    const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+    expect(
+      (result.output?.env as Record<string, string | null>).npm_config_node_options
+    ).toBeNull();
+  });
+
   it("copies the caller's own environment values on top", async () => {
     const ws = workspace();
     const script = ws.write("env.mjs", reporter(["API_URL", "API_KEY"]));
@@ -99,6 +113,10 @@ describe("flow script executor — the environment allowlist", () => {
     "NODE_OPTIONS",
     "NODE_CHANNEL_FD",
     "NODE_UNIQUE_ID",
+    "npm_config_node_options",
+    // npm reads its config names without regard to case wherever it runs, so
+    // this spelling is refused on POSIX too, where the others are exact.
+    "NPM_CONFIG_NODE_OPTIONS",
     "ELECTRON_RUN_AS_NODE",
     "ARGENT_FLOW_SCRIPT_RUNNER",
   ])("refuses %s in a caller-supplied environment", async (name) => {
