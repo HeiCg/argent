@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createToolsClient, ToolInvocationError } from "../src/tools-client.js";
+import { createToolsClient, errorBodyMessage, ToolInvocationError } from "../src/tools-client.js";
 
 let server: Server | undefined;
 
@@ -212,5 +212,17 @@ describe("callTool progress streaming", () => {
     await expect(callTool("streamy", {}, { onProgress: () => {} })).rejects.toThrow(
       /without a result/
     );
+  });
+});
+
+describe("errorBodyMessage", () => {
+  it("takes the prose only when the body is the validation pair", () => {
+    const issues = [{ code: "too_big", path: ["x"], message: "Too big" }];
+    expect(errorBodyMessage({ error: "[...]", message: "prose", issues })).toBe("prose");
+    // `message` without `issues` is some other body's field, so `error` wins.
+    expect(errorBodyMessage({ error: "boom", message: "prose" })).toBe("boom");
+    expect(errorBodyMessage({ error: "boom" })).toBe("boom");
+    expect(errorBodyMessage({ message: "prose" })).toBe("prose");
+    expect(errorBodyMessage({})).toBeUndefined();
   });
 });

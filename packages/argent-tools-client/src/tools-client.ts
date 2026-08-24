@@ -126,6 +126,23 @@ async function consumeToolStream(
   return { data, note: final.note };
 }
 
+/**
+ * The human-readable message in a tool-server error body.
+ *
+ * A schema rejection sends the raw issue JSON in `error`, which is what a CLI
+ * released before `issues` parses, and the prose in `message`. Every other error
+ * body sends `error` alone. Shared so the MCP and this client cannot drift into
+ * showing different text for one response.
+ */
+export function errorBodyMessage(body: {
+  error?: string;
+  message?: string;
+  issues?: unknown;
+}): string | undefined {
+  if (Array.isArray(body.issues) && typeof body.message === "string") return body.message;
+  return body.error ?? body.message;
+}
+
 export function createToolsClient(options: CreateToolsClientOptions = {}): ToolsClient {
   let cached: ToolsServerHandle | null = null;
 
@@ -206,20 +223,11 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
       issues?: unknown;
     };
     if (!res.ok) {
-      // A schema rejection sends both: `error` holds the raw issue JSON that a
-      // CLI released before `issues` existed parses, `message` the prose. Take
-      // the prose when the pair identifies that shape, so an agent reading this
-      // message is told which key it sent.
-      const validationProse =
-        Array.isArray(json.issues) && typeof json.message === "string" ? json.message : undefined;
-      throw new ToolInvocationError(
-        validationProse ?? json.error ?? json.message ?? `${res.status} ${res.statusText}`,
-        {
-          errorCode: json.error_code,
-          errorKind: json.error_kind,
-          issues: Array.isArray(json.issues) ? json.issues : undefined,
-        }
-      );
+      throw new ToolInvocationError(errorBodyMessage(json) ?? `${res.status} ${res.statusText}`, {
+        errorCode: json.error_code,
+        errorKind: json.error_kind,
+        issues: Array.isArray(json.issues) ? json.issues : undefined,
+      });
     }
     // File boundary, inbound: persist client-write directives (e.g. recorded
     // flow YAMLs) and rewrite them to the written paths.
