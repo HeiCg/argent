@@ -204,14 +204,14 @@ export interface StepReport {
    * NOT proof that the device is untouched. A `launch` reaches its abort only
    * downstream of something that already moved the run: a `restart-app`
    * relaunch on the native platforms, and on chromium a boot or a CDP attach.
-   * Set on every skip a reached step
-   * produces: a cancelled `launch`, a cancelled directive that had already
-   * dispatched, a cancelled `await-ui-element` tool step, and a cancelled
-   * nested orchestrator whose own report says it reached one of ITS steps. The
-   * pre-step guard, a fixed `wait`, an unreached block and a directive
-   * cancelled before its gesture went out leave it absent, which is what makes
-   * their silence provable. The flow recorder reads it to decide whether to warn that
-   * the recorded prefix may no longer reproduce.
+   * Set on every skip a reached step produces: a cancelled `launch`, a
+   * cancelled directive that had already dispatched, a cancelled
+   * `await-ui-element` tool step, and a cancelled nested orchestrator whose own
+   * report says it reached one of ITS steps. The pre-step guard, a fixed
+   * `wait`, an unreached block and a directive cancelled before its gesture
+   * went out leave it absent, which is what makes their silence provable. The
+   * flow recorder reads it to decide whether to warn that the recorded prefix
+   * may no longer reproduce.
    */
   reached?: true;
   /** Underlying tool id for `tool` steps. */
