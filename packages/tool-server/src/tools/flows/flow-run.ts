@@ -420,8 +420,12 @@ export function flowLaunchGateReason(
       // injection diagnosis `adviseOnUninjectedApp` produces for this state.
       // That diagnosis rests on a relaunch this reader did not perform — it
       // needs a `stale_process` hand-out recorded against one pid and a later
-      // reading against a different one — whereas here the relaunch is the
-      // step's own and the reading arrives one window later, where a cold start
+      // reading against a different one, and that configuration CAN obtain
+      // here (an authoring-time `native-devtools-status` probe records the
+      // hand-out, the step's own launch replaces the process). The gate stays
+      // safe by never consulting the record, not because the record's
+      // precondition is structurally absent — whereas here the reading arrives
+      // one launch-wait after the step's own relaunch, where a cold start
       // produces the identical one. So a re-run stays worth its cost instead of
       // terminal, and the sentence below is what keeps it from being read as
       // "restart things".

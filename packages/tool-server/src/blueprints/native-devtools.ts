@@ -918,6 +918,9 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         } catch {
           return;
         }
+        // JSON.parse("null") succeeds, and a TypeError on the line handler below
+        // would surface as an uncaughtException and crash the whole tool-server.
+        if (msg == null || typeof msg !== "object") return;
 
         // Handshake: must be the first message.
         if (bundleId === null) {
