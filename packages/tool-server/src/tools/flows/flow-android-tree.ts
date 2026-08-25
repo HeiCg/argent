@@ -166,7 +166,7 @@ function projectAndroidNode(
     // its subtree, so a row scrolled out of view — but still on the device
     // screen — is dropped, matching the describe path's prune.
     rect,
-    scrolls: isUiAutomatorScrollable(attrs),
+    scrolls: isUiAutomatorScrollable(attrs, inWebView),
   };
 }
 

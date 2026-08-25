@@ -193,8 +193,16 @@ const SCROLL_CLASSES = new Set([
  * `scrollable` (RN's ScrollView dumps as a scrollable ViewGroup). Its bounds become
  * the clip window for the scroll-clip prune. Shared with `flow-android-tree` so
  * both trees agree on which containers clip.
+ *
+ * Inside a WebView the class name is Chromium's mapping of an HTML tag, not a
+ * real scroll container: a `<ul>` arrives as `android.widget.ListView` and a
+ * `<table>` as `android.widget.GridView`, neither of which scrolls — the page's
+ * only scroller is the WebView itself. Trust the framework's own `scrollable`
+ * flag there and never the class name, so an element positioned outside its
+ * list's box is not treated as scrolled away and dropped.
  */
-export function isUiAutomatorScrollable(attrs: Record<string, string>): boolean {
+export function isUiAutomatorScrollable(attrs: Record<string, string>, inWebView = false): boolean {
+  if (inWebView) return attrIsTrue(attrs, "scrollable");
   return SCROLL_CLASSES.has(attrs.class ?? "") || attrIsTrue(attrs, "scrollable");
 }
 
@@ -439,7 +447,7 @@ function pruneSubtree(root: ParsedXmlNode, opts: PruneOptions): UiNode[] {
       top.visited = true;
       const attrs = top.parsed.attrs;
       const myBounds = parseUiAutomatorBounds(attrs.bounds ?? "");
-      const isScroll = isUiAutomatorScrollable(attrs);
+      const isScroll = isUiAutomatorScrollable(attrs, top.inWebView);
       // Children inherit my bounds if I scroll, else the clip I was handed.
       const childClip = isScroll && myBounds ? myBounds : top.scrollClip;
       // Everything below a WebView is web DOM, not native widgets — the flag
@@ -531,7 +539,11 @@ function computeNodeOutput(
       webView.clickable ||= inner.clickable;
       webView.longClickable ||= inner.longClickable;
       webView.scrollable ||= inner.scrollable;
+      webView.checkable ||= inner.checkable;
+      webView.checked ||= inner.checked;
+      webView.disabled ||= inner.disabled;
       if (!webView.identifier && inner.identifier) webView.identifier = inner.identifier;
+      if (!webView.value && inner.value) webView.value = inner.value;
     }
     const hiddenUnderWebView = hiddenInScroll + (inner?.scrollHidden ?? 0);
     if (hiddenUnderWebView > 0) webView.scrollHidden = hiddenUnderWebView;

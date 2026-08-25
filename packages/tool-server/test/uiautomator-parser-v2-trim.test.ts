@@ -210,6 +210,66 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     expect(webview?.identifier).toBe("host_web_view");
   });
 
+  it("does not let a web list clip content positioned outside its box", () => {
+    // Chromium maps a <ul> onto android.widget.ListView, which is a scroll
+    // class — but a web list does not scroll, the WebView does. Treating it as
+    // a scroll container turns its box into a clip window, so a submenu the
+    // page positions below the list is dropped as "scrolled away" while it is
+    // plainly on screen.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][1080,2400]" text="Menu Page">
+    <node class="android.widget.ListView" bounds="[20,170][1060,260]" scrollable="false">
+      <node class="android.view.View" bounds="[20,170][220,230]">
+        <node class="android.widget.TextView" bounds="[20,170][220,230]" text="Inbox item"/>
+        <node class="android.view.View" bounds="[20,1220][260,1280]" content-desc="Escaped link" clickable="true"/>
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+    const labels = flatten(parseUiAutomatorDump(xml, 1080, 2400)).map((n) => n.label);
+    expect(labels).toContain("Inbox item");
+    expect(labels).toContain("Escaped link");
+  });
+
+  it("still clips against a web container the framework marks scrollable", () => {
+    // A web scroller is real when Chromium says so (overflow: scroll). Its box
+    // is then a genuine viewport and content outside it is genuinely hidden.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][1080,2400]" text="Menu Page">
+    <node class="android.widget.ListView" bounds="[20,170][1060,260]" scrollable="true">
+      <node class="android.view.View" bounds="[20,170][220,230]">
+        <node class="android.widget.TextView" bounds="[20,170][220,230]" text="Inbox item"/>
+        <node class="android.view.View" bounds="[20,1220][260,1280]" content-desc="Below the fold" clickable="true"/>
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+    const labels = flatten(parseUiAutomatorDump(xml, 1080, 2400)).map((n) => n.label);
+    expect(labels).toContain("Inbox item");
+    expect(labels).not.toContain("Below the fold");
+  });
+
+  it("carries every flag and value the inner half of the WebView pair held", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][200,400]">
+    <node class="android.webkit.WebView" bounds="[0,0][201,402]" resource-id="inner_web_view" text="Docs" checkable="true" checked="true" enabled="false" content-desc="Documentation">
+      <node class="android.widget.TextView" bounds="[10,10][190,40]" text="Chapter 1"/>
+    </node>
+  </node>
+</hierarchy>`;
+    const webview = flatten(parseUiAutomatorDump(xml, 200, 400)).find((n) => n.role === "WebView");
+    // The outer node carries none of these, so every one of them can only have
+    // come from the inner half of the collapsed pair.
+    expect(webview?.identifier).toBe("inner_web_view");
+    expect(webview?.checkable).toBe(true);
+    expect(webview?.checked).toBe(true);
+    expect(webview?.disabled).toBe(true);
+    expect(webview?.value).toBe("Docs");
+  });
+
   it("reads a bare web text container as StaticText, and only inside a WebView", () => {
     // Chromium maps a generic web text run onto android.view.View, which
     // deriveUiAutomatorRole reports as "View" — unmatchable by an
