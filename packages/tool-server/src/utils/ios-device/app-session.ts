@@ -7,11 +7,24 @@
  * describe tools don't carry a bundle id in their params; instead, launch-app
  * / restart-app record the launched app here and the tool layer injects it
  * into every runner command.
+ *
+ * Lifecycle: an entry means this bundle was started (or attached, for system
+ * UI) under automation and has not been knowingly killed by us. It
+ * deliberately survives runner respawn and cable unplug — runner death does
+ * not kill the app, and commands re-attach per call via `appBundleId`. It is
+ * invalidated only when we kill the process, which today means reinstall.
  */
 const currentAppByUdid = new Map<string, string>();
 
 export function setCurrentIosDeviceApp(udid: string, bundleId: string): void {
   currentAppByUdid.set(udid, bundleId);
+}
+
+/** Delete the entry when it matches `bundleId`, or unconditionally when omitted. */
+export function clearCurrentIosDeviceApp(udid: string, bundleId?: string): void {
+  if (bundleId === undefined || currentAppByUdid.get(udid) === bundleId) {
+    currentAppByUdid.delete(udid);
+  }
 }
 
 export function requireCurrentIosDeviceApp(udid: string): string {

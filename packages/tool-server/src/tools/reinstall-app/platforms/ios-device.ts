@@ -1,5 +1,6 @@
 import { resolve as resolvePath } from "node:path";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
+import { clearCurrentIosDeviceApp } from "../../../utils/ios-device/app-session";
 import { ensureDeviceReady, installApp, uninstallApp } from "../../../utils/ios-device/devicectl";
 import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } from "../types";
 
@@ -17,6 +18,9 @@ export const iosDeviceImpl: PlatformImpl<
   handler: async (_services, params) => {
     await ensureDeviceReady(params.udid);
     await uninstallApp(params.udid, params.bundleId);
+    // Uninstall killed the process; the session is stale from here even if
+    // the install below fails.
+    clearCurrentIosDeviceApp(params.udid, params.bundleId);
     await installApp(params.udid, resolvePath(params.appPath));
     return { reinstalled: true, bundleId: params.bundleId };
   },
