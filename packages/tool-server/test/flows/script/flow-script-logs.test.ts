@@ -420,6 +420,25 @@ describe("flow script executor — redaction", () => {
     expect(result.log).toBe("id={{secret:OKEN}} and {{secret:TOKEN_ABC}}\n");
   });
 
+  it("replaces a value that starts inside marker-shaped text the script printed", async () => {
+    const ws = workspace();
+    // The shape a script echoing an unresolved placeholder writes: it looks
+    // like a marker, so skipping it whole would carry the value out in plain
+    // text — no pass ever visits a position inside a span that was jumped.
+    const script = ws.write("echoed.mjs", `console.log("head {{secret:TOK}}TAIL tail");`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [
+        { name: "TOK", value: "tok" },
+        { name: "V", value: "TOK}}TAIL" },
+      ],
+    });
+
+    expect(result.log).not.toContain("TOK}}TAIL");
+    expect(result.log).toContain("{{secret:V}}");
+  });
+
   it("replaces a secret split across two pipe chunks", async () => {
     const ws = workspace();
     const script = ws.write(
