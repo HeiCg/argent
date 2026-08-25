@@ -113,14 +113,6 @@ function isParamSet(value: unknown): boolean {
   return value !== undefined;
 }
 
-/**
- * A gate may name both spellings of one source (`name` and its `flow_name`
- * alias); any one of them makes the call dual-source.
- */
-function isAnyParamSet(names: string | string[], args: Record<string, unknown>): boolean {
-  return (typeof names === "string" ? [names] : names).some((n) => isParamSet(args[n]));
-}
-
 function formatBytes(bytes: number | undefined): string {
   if (bytes == null) return "unknown size";
   return bytesUtil(bytes, { decimalPlaces: 1, unitSeparator: " " }) ?? `${bytes} B`;
@@ -308,7 +300,7 @@ export async function resolveFileInputs(
       if (spec.path !== `\${${spec.target}}` && !derivedTargets.includes(spec.target)) {
         derivedTargets.push(spec.target);
       }
-      if (spec.unwrapWhenSet !== undefined && isAnyParamSet(spec.unwrapWhenSet, args)) {
+      if (spec.unwrapWhenSet !== undefined && isParamSet(args[spec.unwrapWhenSet])) {
         // Caller-authored dual-source: the superseding source param is also
         // set, so the tool's own exactly-one validation must diagnose the
         // call — not this wrapper's resolution (whose outcome hinges on

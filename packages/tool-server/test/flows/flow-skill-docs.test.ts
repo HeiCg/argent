@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
-import type { Registry } from "@argent/registry";
+import { zodObjectToJsonSchema, type Registry } from "@argent/registry";
 import {
   IDLE_DEFAULT_STABLE_FOR_MS,
   IDLE_DEFAULT_TIMEOUT_MS,
@@ -162,55 +162,44 @@ describe("create-flow idle docs", () => {
   });
 });
 
-/**
- * The two surfaces that enumerate the directive answers instead of citing them:
- * the recorder-contract paragraph and flow-add-step's own `description`.
- */
 describe("create-flow directive-answer docs", () => {
   const answered = STEP_DIRECTIVE_KEYS.filter((key) => directiveCommandHint(key) !== undefined);
-  // flow-record-cross-tree.test.ts pins this phrase with the per-directive
-  // reason that follows it.
   const withoutRecordingTool = answered.filter((key) =>
     directiveCommandHint(key)!.includes("records one")
   );
   const withRecordingTool = answered.filter((key) => !withoutRecordingTool.includes(key));
 
-  /** The sentence carrying `marker`, so one clause cannot satisfy the other. */
   function sentenceWith(paragraph: string, marker: string): string {
     const hit = paragraph.split(". ").find((s) => s.includes(marker));
     expect(hit, `no sentence mentions "${marker}"`).toBeDefined();
     return hit!;
   }
 
-  function recorderContract(): string {
-    const section = between(LIVE_AUTHORING, "## Recorder contract", "\nObey these lifecycle rules");
-    const paragraph = section
-      .split("\n")
-      .find((line) => line.startsWith("`command` takes a **tool** name"));
-    expect(paragraph, "the recorder-contract paragraph is missing").toBeDefined();
-    return paragraph!;
+  function commandParamDescription(): string {
+    const schema = zodObjectToJsonSchema(createFlowAddStepTool({} as Registry).zodSchema!) as {
+      properties: Record<string, { description?: string }>;
+    };
+    const described = schema.properties.command?.description;
+    expect(described, "`command` no longer describes itself").toBeDefined();
+    return described!;
   }
 
-  it("names each directive answered with the tool that records it, and only those", () => {
-    // An empty bucket would agree with every list.
-    expect(withRecordingTool.length).toBeGreaterThan(0);
-    const clause = sentenceWith(recorderContract(), "names the tool that records the directive");
-    for (const key of withRecordingTool) expect(clause, key).toContain(`\`${key}\``);
-    for (const key of withoutRecordingTool) expect(clause, key).not.toContain(`\`${key}\``);
+  it("names every directive it answers, so a new one cannot go unmentioned", () => {
+    expect(answered.length).toBeGreaterThan(0);
+    const clause = sentenceWith(commandParamDescription(), "is answered with guidance");
+    for (const key of answered) expect(clause, key).toContain(`"${key}"`);
   });
 
   it("names each directive that has no recording tool, on both surfaces", () => {
     expect(withoutRecordingTool.length).toBeGreaterThan(0);
-    // An absent `description` would read as a surface that lists nothing.
     const { description } = createFlowAddStepTool({} as Registry);
     expect(description, "flow-add-step no longer declares a description").toBeDefined();
-    const clauses = [
-      sentenceWith(recorderContract(), "have no recording tool"),
-      sentenceWith(description!, "have no recording tool"),
-    ];
-    for (const clause of clauses) {
-      for (const key of withoutRecordingTool) expect(clause, key).toContain(`\`${key}\``);
-      for (const key of withRecordingTool) expect(clause, key).not.toContain(`\`${key}\``);
+    for (const key of withoutRecordingTool) {
+      expect(sentenceWith(description!, "have no recording tool"), key).toContain(`\`${key}\``);
+      expect(commandParamDescription(), key).toContain(`"${key}"`);
+    }
+    for (const key of withRecordingTool) {
+      expect(sentenceWith(description!, "have no recording tool"), key).not.toContain(`\`${key}\``);
     }
   });
 });

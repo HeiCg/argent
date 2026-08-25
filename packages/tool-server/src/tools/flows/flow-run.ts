@@ -81,31 +81,22 @@ import {
 import { bootElectronApp, killChromiumByPortAndWait } from "../devices/boot-electron";
 import { untrackChromiumPort } from "../../utils/chromium-discovery";
 import { parseChromiumCdpPort, resolveDevice } from "../../utils/device-info";
-import { InvalidToolInputError } from "../../utils/capability";
 import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flow-visual";
 import { describeVega } from "../describe/platforms/vega";
 import { pinStatusBar, restoreStatusBar } from "../../utils/status-bar";
 
-// `flow_name` is the spelling callers reach for, since the tool is
-// `flow-execute`, so it is accepted as an alias for `name`.
 const zodSchema = z
   .object({
     name: z
       .string()
       .optional()
       .describe(
-        'Name of a saved flow to run from `.argent/flows` (e.g. "settings-explore"). Omit when flow_path is set; otherwise required, via `name` or its `flow_name` alias. Optional in the schema because flow_path can stand in, so a missing name is answered by the tool rather than by zod.'
-      ),
-    flow_name: z
-      .string()
-      .optional()
-      .describe(
-        "Alias for `name` — same meaning, same `.argent/flows/<value>.yaml` resolution. If both are sent, `name` wins (the file-input specs are ordered to match), so send only one."
+        'Name of a saved flow to run from `.argent/flows` (e.g. "settings-explore"). Omit when flow_path is set.'
       ),
     project_root: z
       .string()
       .describe(
-        "Absolute path to the calling agent's project root — the cwd it is working in. With name (or its flow_name alias), the saved flow is read from `.argent/flows/<name>.yaml` under this root; with flow_path, the flow, its run: siblings, and baselines all resolve beside the YAML instead, so pass the agent's cwd."
+        "Absolute path to the calling agent's project root — the cwd it is working in. With name, the saved flow is read from `.argent/flows/<name>.yaml` under this root; with flow_path, the flow, its run: siblings, and baselines all resolve beside the YAML instead, so pass the agent's cwd."
       ),
     flow_file: z
       .string()
@@ -145,18 +136,14 @@ const zodSchema = z
       ),
   })
   .superRefine((params, ctx) => {
-    // The alias counts as a name: it names a flow source too.
-    const named = params.name !== undefined || params.flow_name !== undefined;
-    if (named === (params.flow_path !== undefined)) {
+    if ((params.name === undefined) === (params.flow_path === undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        // A call with NO source may have named the flow under a key zod
-        // stripped, so that one needs the alias spelled out.
-        message: named
-          ? "Pass exactly one flow source: name or flow_path."
-          : "Pass exactly one flow source: name or flow_path. flow-execute needs the flow's " +
-            "name in `name` (`flow_name` is accepted as an alias) — it resolves " +
-            "<project_root>/.argent/flows/<name>.yaml.",
+        message:
+          params.name !== undefined
+            ? "Pass exactly one flow source: name or flow_path."
+            : "Pass exactly one flow source: name or flow_path. flow-execute needs the flow's " +
+              "name in `name` — it resolves <project_root>/.argent/flows/<name>.yaml.",
         // The ROOT, not `flow_path`: the rule spans both source fields, and a
         // path would prefix the message with "`flow_path`:".
         path: [],
@@ -165,38 +152,6 @@ const zodSchema = z
   });
 
 type Params = z.infer<typeof zodSchema>;
-
-/**
- * The flow name, from `name` or its alias.
- *
- * The message spells out the rejected spellings itself, because this runs AFTER
- * zod stripped the unknown keys: a caller who wrote `flowName` is no longer
- * distinguishable here from one who sent no name at all.
- *
- * `InvalidToolInputError`, not a plain `Error`: a missing name is a client
- * input error, so it must reach the HTTP boundary as a 400 and telemetry as a
- * `validation` signal.
- */
-export function resolveFlowName(
-  params: { name?: string; flow_name?: string },
-  toolName = "flow-execute"
-): string {
-  // `||`, not `??`: an empty `name` is not a name and must not mask a valid
-  // alias.
-  const name = params.name || params.flow_name;
-  if (name === undefined || name === "") {
-    // Over the wire this is reachable ONLY for an empty-string `name` or
-    // `flow_name`: a call spelling it `flowName` sets no source at all, so the
-    // schema's exactly-one-source rule fires first and echoes their own key.
-    throw new InvalidToolInputError(
-      `${toolName} needs the flow's name in \`name\` (\`flow_name\` is accepted as an alias) — ` +
-        "it resolves <project_root>/.argent/flows/<name>.yaml. An empty string is not a name, and " +
-        "no other spelling supplies one: `flowName` and `flow` are discarded before the tool " +
-        "runs, and `flow_file` is a path, not a name."
-    );
-  }
-  return name;
-}
 
 // A dual-source call (name + flow_path) must be diagnosed by the schema's
 // exactly-one rule, not by whether either unused file happens to exist:
@@ -210,19 +165,7 @@ const fileInputs: FileInputSpec[] = [
     path: "${flow_path}",
     kind: "file",
     optional: true,
-    // Both spellings: the alias names a flow too, so a flow_name + flow_path
-    // call must reach zod's exactly-one rule, not a 422 about the flow_path file.
-    unwrapWhenSet: ["name", "flow_name"],
-  },
-  // Two specs, one target: the client interpolates whichever spelling the
-  // caller sent, so an alias-only call still ships its flow file to a REMOTE
-  // tool-server instead of a client-side path. The `name` spec is LAST so it
-  // wins the client's last-write-wins merge, matching `name || flow_name`.
-  {
-    target: "flow_file",
-    path: "${project_root}/.argent/flows/${flow_name}.yaml",
-    kind: "file",
-    skipWhenSet: "flow_path",
+    unwrapWhenSet: "name",
   },
   {
     target: "flow_file",
@@ -1037,14 +980,10 @@ interface BootedChromium {
  * intact, and the fallbacks keep a pathological source from rendering as "" or
  * "undefined".
  */
-function displayFlowName(params: {
-  name?: string;
-  flow_name?: string;
-  flow_path?: string;
-}): string {
+function displayFlowName(params: { name?: string; flow_path?: string }): string {
   const stem =
     params.flow_path === undefined ? undefined : path.basename(params.flow_path, ".yaml");
-  return params.name || params.flow_name || stem || params.flow_path || "(unspecified)";
+  return params.name || stem || params.flow_path || "(unspecified)";
 }
 
 /**
@@ -1173,18 +1112,15 @@ a relaunch that retired an older owned instance names both.
 
 If a fragment has an execution prerequisite and prerequisiteAcknowledged is not set to true, the tool
 returns a notice with the prerequisite instead of running.
-Pass exactly one flow source: name for a saved flow under project_root (\`flow_name\` is an accepted alias for \`name\`; \`name\` wins if both are sent), or flow_path for an explicit YAML — both together, or neither, fails the call.`,
+Pass exactly one flow source: name for a saved flow under project_root, or flow_path for an explicit YAML — both together, or neither, fails the call.`,
     longRunning: true,
     zodSchema,
     fileInputs,
     services: () => ({}),
     async execute(_services, params, ctx?: ToolContext) {
       const signal = ctx?.signal;
-      // Fold the alias into `name`. Only for a name call: a flow_path call
-      // names no flow, so `resolveFlowName` would reject it.
-      const named = params.flow_path === undefined ? resolveFlowName(params) : undefined;
       const { filePath, flowName, viaUpload } = await resolveFlowSource(
-        named === undefined ? params : { ...params, name: named },
+        params,
         ctx?.fileInputs?.flow_file,
         ctx?.fileInputs?.flow_path
       );
@@ -2543,8 +2479,6 @@ async function execLeafStep(
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
-        // Re-render a schema miss from the step's RECORDED args: `bindDeviceArgs`
-        // injects the resolved device key, which the flow author never wrote.
         const reframed = describeNestedParamError(registry, err, step.name, args, step.args ?? {});
         return { ...base, status: "error", tool: step.name, reason: reframed ?? errMsg(err) };
       }
@@ -2595,7 +2529,6 @@ function errMsg(err: unknown): string {
 export async function resolveFlowSource(
   params: {
     name?: string;
-    flow_name?: string;
     project_root: string;
     flow_file?: string;
     flow_path?: string;
@@ -2603,14 +2536,10 @@ export async function resolveFlowSource(
   fileInput?: ResolvedFileInput,
   flowPathInput?: ResolvedFileInput
 ): Promise<{ filePath: string; flowName: string; viaUpload: boolean }> {
-  // Both spellings, matching the schemas: reading `name` alone, a flow_name +
-  // flow_path call looks single-source and is diagnosed as a file-input
-  // boundary failure instead of the two sources it was given.
-  const named = params.name ?? params.flow_name;
   // The schemas' superRefine already enforces this for flow-execute and
   // flow-read-prerequisite; this copy covers direct execute() callers (tests,
-  // in-process invocations) and keeps the `named!` below sound.
-  if ((named === undefined) === (params.flow_path === undefined)) {
+  // in-process invocations) and keeps the params.name! below sound.
+  if ((params.name === undefined) === (params.flow_path === undefined)) {
     throw new FailureError("Pass exactly one flow source: name or flow_path.", {
       error_code: FAILURE_CODES.FLOW_FILE_INVALID,
       failure_stage: "flow_source",
@@ -2787,7 +2716,7 @@ export async function resolveFlowSource(
     return { filePath: params.flow_path, flowName, viaUpload: false };
   }
 
-  const flowName = named!;
+  const flowName = params.name!;
   assertSafeFlowName(flowName);
   const expected = getFlowPath(params.project_root, flowName);
   // A path the boundary materialized from uploaded content is a fresh temp file

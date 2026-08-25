@@ -18,7 +18,6 @@ describe("describeParamIssues", () => {
   });
 
   it("path-qualifies an unrecognized NESTED key (selector.id, not a bare id)", () => {
-    // A bare `id` would contradict the "You sent:" list, which names top-level keys only.
     const schema = z.object({
       selector: z.object({ identifier: z.string().optional() }).strict(),
     });
@@ -36,7 +35,6 @@ describe("describeParamIssues", () => {
   });
 
   it("does not leak a present-but-wrong ENUM value (invalid_value branch, secret-shaped value)", () => {
-    // The branch prints the allowed options, which are schema-public; the sent value is not.
     const schema = z.object({ mode: z.enum(["read", "write"]) });
     const value = { mode: "SECRET-TENANT-ID-abc123" };
     const msg = describeParamIssues(issuesOf(schema, value), value);
@@ -60,7 +58,6 @@ describe("describeParamIssues", () => {
     expect(msg).toContain("`needed` is required");
     expect(msg).toContain("…");
     expect(msg).not.toContain("`k29`");
-    // Pin the cap at 24: the last key that survives, then the first that does not.
     expect(msg).toContain("`k23`");
     expect(msg).not.toContain("`k24`");
   });
@@ -94,8 +91,6 @@ describe("describeParamIssues", () => {
   });
 
   it("names an OMITTED required enum as missing, not 'Invalid option' (implying a bad value was sent)", () => {
-    // Zod emits `invalid_value` for a missing enum, so the verdict has to come from the
-    // input, not from the message.
     const schema = z.object({ mode: z.enum(["a", "b"]) });
     const msg = describeParamIssues(issuesOf(schema, {}), {});
     expect(msg).toContain("`mode` is required and was not provided");
@@ -112,7 +107,6 @@ describe("describeParamIssues", () => {
   });
 
   it("treats a PRESENT null for a required field as a type error, not as missing", () => {
-    // `null` is a value the caller chose to send; only `undefined` is absence.
     const schema = z.object({ name: z.string() });
     const value = { name: null };
     const msg = describeParamIssues(issuesOf(schema, value), value);
@@ -130,8 +124,6 @@ describe("describeParamIssues", () => {
   });
 
   it("names an OMITTED field named after a prototype member as missing, not a type error", () => {
-    // A bare `params[key]` finds `Object.prototype.toString`, so an absent field would be
-    // misreported as "received function". The lookup must be own-property only.
     const schema = z.object({ toString: z.string() });
     const msg = describeParamIssues(issuesOf(schema, {}), {});
     expect(msg).toContain("`toString` is required (string) and was not provided");
@@ -155,8 +147,6 @@ describe("describeParamIssues", () => {
   });
 
   it("renders a SCALAR union's branches with no dangling path prefix", () => {
-    // Compare the whole string: the other union tests assert fragments, which a stray
-    // path prefix on every branch would survive.
     const schema = z.object({
       button: z.union([
         z.enum(["up", "down", "select"]),
@@ -193,8 +183,6 @@ describe("describeParamIssues", () => {
     });
     const value = { button: Array.from({ length: 40 }, (_, i) => `bad-${i}`) };
     const msg = describeParamIssues(issuesOf(schema, value), value);
-    // Each element's reason is distinct (zod qualifies it by index), so 41 alternatives
-    // are available: the scalar branch's reason plus one per element.
     expect(msg.match(/; or /g)?.length).toBe(12); // 11 joiners plus the "; or …"
     expect(msg).toContain("; or ….");
     expect(msg).toContain("button.0:");
@@ -250,7 +238,6 @@ describe("describeParamIssues", () => {
   });
 
   it("path-qualifies a custom rule BOUND to a field, so the prose names its parameter", () => {
-    // "You sent:" lists top-level keys only, so without the path the sub-key is named nowhere.
     const schema = z.object({
       selector: z.object({
         text: z.string().refine(() => false, { message: "text must contain a visible character" }),
@@ -274,7 +261,6 @@ describe("describeParamIssues", () => {
   });
 
   it("leaves a multi-sentence message's internal periods alone", () => {
-    // Only the terminal stop is dropped. flow-execute's no-source message is two sentences.
     const schema = z.object({ a: z.string().optional() }).superRefine((_v, ctx) =>
       ctx.addIssue({
         code: "custom",
