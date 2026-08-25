@@ -52,6 +52,29 @@ export function findMissingRequired(
 }
 
 /**
+ * Two channels, because the wire grew one: a tool-server now sends the issue list in `issues`,
+ * where before the list WAS the message. Reading the structured field first and falling back to
+ * parsing the message covers a new client against an old server.
+ */
+function serverIssueList(err: unknown): ValidationIssue[] | null {
+  const carried = (err as { issues?: unknown } | null)?.issues;
+  if (Array.isArray(carried)) {
+    return carried.length > 0 && carried.every(isValidationIssue) ? carried : null;
+  }
+
+  const message = err instanceof Error ? err.message : typeof err === "string" ? err : null;
+  if (message === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(message);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+  return parsed.every(isValidationIssue) ? parsed : null;
+}
+
+/**
  * Interpret a failed tool call as input validation, or return null to leave it alone.
  *
  * Recognition is structural — the issue list's shape and the tool's own schema decide it, never
@@ -63,17 +86,8 @@ export function describeServerValidationFailure(
   payload: Record<string, unknown>,
   schema: JsonSchema | undefined
 ): ValidationReport | null {
-  const message = err instanceof Error ? err.message : typeof err === "string" ? err : null;
-  if (message === null) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(message);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed) || parsed.length === 0) return null;
-  if (!parsed.every(isValidationIssue)) return null;
+  const parsed = serverIssueList(err);
+  if (parsed === null) return null;
 
   const properties = schema?.properties ?? {};
   // Every issue must address a field this tool declares, or the payload as a whole (an empty
