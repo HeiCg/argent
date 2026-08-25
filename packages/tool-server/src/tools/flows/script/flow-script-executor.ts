@@ -16,6 +16,7 @@ import {
   getConfigDefinition,
   getConfigValue,
   MIN_SCRIPT_HEAP_LIMIT_MB,
+  MIN_SCRIPT_TIMEOUT_MS,
   type ConfigDefinition,
 } from "@argent/configuration-core";
 import { isElectronHostedEnv } from "../../../utils/electron-env";
@@ -301,9 +302,12 @@ export class FlowScriptExecutor {
       concurrency: this.concurrency(),
       maxTimeoutMs: Math.min(
         MAX_TIMER_MS,
-        positive(this.options.maxTimeoutMs) ??
-          configuredNumber("scripts.maxTimeoutMs") ??
-          5 * 60_000
+        Math.max(
+          MIN_SCRIPT_TIMEOUT_MS,
+          positive(this.options.maxTimeoutMs) ??
+            configuredNumber("scripts.maxTimeoutMs") ??
+            5 * 60_000
+        )
       ),
       // Floored, not just defaulted: a heap too small to start V8 fails
       // during the child's own startup, naming neither this bound nor the
