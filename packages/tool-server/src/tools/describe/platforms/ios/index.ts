@@ -134,7 +134,8 @@ export interface DescribeIosOptions {
   // wait times out, while the record is written per read. Opting it in would
   // arm a relaunch hand-out on waits that go on to succeed, and a later process
   // replacement would then read as a relaunch nobody was asked to perform. The
-  // remaining callers never render it at all.
+  // remaining callers never show one to an agent (the Lens preview serialises a
+  // hint for a human, which is not who the record must be promised to).
   hintReachesAgent?: boolean;
 }
 

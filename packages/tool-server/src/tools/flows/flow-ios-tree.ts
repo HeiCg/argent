@@ -302,6 +302,12 @@ async function unreadableHierarchyReason(
   // The diagnosis already names the corrective action — for `unregistered` a
   // tool-server restart, where telling a flow author to relaunch would loop.
   // The trailing sentence says why a tree read needed one at all.
+  //
+  // This surface records deliberately despite settling swallowing some throws:
+  // the common path renders the reason as the step's failure, a swallowed
+  // window self-heals on the next step's read (whose settle starts with no
+  // tree), and withholding the record would delay the anti-loop verdict for
+  // exactly the reader — a looping flow author — who needs it most.
   const advice = adviseOnUninjectedApp(nativeApi, bundleId, state, FLOW_SELECTOR_RECOVERY);
   // The terminal diagnosis carries the flow-level remedy already, so the
   // trailing sentence would only restate what it just said.

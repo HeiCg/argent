@@ -269,16 +269,28 @@ export function buildAppStateMessage(
  * the fault to this app's binary. No peer at all leaves all three in scope —
  * that is the closest thing to a load confirmation available here, since the
  * process table can show the insertion but never the load.
+ *
+ * The verdict has exactly one false positive, and the message discloses it
+ * rather than claiming it away: an app whose first devtools connection lands
+ * past NATIVE_DEVTOOLS_CONNECT_BUDGET_MS reads `unregistered` identically while
+ * still warming up (#778 was such a cold start). The prescribed disambiguator
+ * is one passive re-probe after a wait — it prescribes no restart, so it cannot
+ * reopen the cycle this verdict exists to close.
  */
-function buildInjectionFailedDiagnosis(bundleId: string, connectedPeers: string[]): string {
+function buildInjectionFailedDiagnosis(
+  bundleId: string,
+  connectedPeers: string[],
+  connectBudgetMs: number
+): string {
   const localisation =
     connectedPeers.length > 0
       ? `Other apps on this simulator are connected (${connectedPeers.join(", ")}), so the launchd environment, the dylib and this service's listener all work — the fault is specific to this app's binary: check that it is a simulator build for this platform and that it does not enforce library validation. `
-      : `No app on this simulator is connected to this tool-server, so a dylib dyld never loads and a listener nothing can reach still read the same. Re-boot the simulator (boot-device with force=true) and confirm argent's native binaries are installed. A tool-server restart does not help here either: it leaves this app older than the new listener, which reads as the restart-app prompt again, and a second, freshly bound listener would see nothing too. `;
+      : `No app on this simulator is connected to this tool-server, so a dylib dyld never loads and a listener nothing can reach still read the same. If the re-probe still reads unregistered, re-boot the simulator (boot-device with force=true) and confirm argent's native binaries are installed. A tool-server restart does not help here either: it leaves this app older than the new listener, which reads as the restart-app prompt again, and a second, freshly bound listener would see nothing too. `;
 
   return (
     `${bundleId} was told to relaunch, and the process now running is a different one, so the relaunch happened — and it still never connected. ` +
     `It carries argent's bootstrap dylib pointed at this simulator's devtools endpoint and it started after this service's listener bound, so the launchd environment reached it. That proves the dylib was handed to the process, not that dyld loaded it: dyld skips an inserted library silently when its slice does not match the simulator's platform, when it is unsigned, or when one of its dependencies is missing. Relaunching it again reproduces exactly this reading. ` +
+    `One reading can mimic this with nothing wrong: a cold start that takes longer than ${Math.round(connectBudgetMs / 1000)} seconds to make its first connection. Before treating this as final, wait about thirty seconds and probe native-devtools-status once more — an app that has connected by then clears this verdict. ` +
     localisation
   );
 }
@@ -353,7 +365,11 @@ export function adviseOnUninjectedApp(
     return {
       terminal: true,
       message:
-        buildInjectionFailedDiagnosis(bundleId, api.listConnectedBundleIds()) + terminalRecovery,
+        buildInjectionFailedDiagnosis(
+          bundleId,
+          api.listConnectedBundleIds(),
+          NATIVE_DEVTOOLS_CONNECT_BUDGET_MS
+        ) + terminalRecovery,
     };
   }
   return { terminal: false, message: buildAppStateMessage(bundleId, state) };
@@ -906,7 +922,23 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
         // Handshake: must be the first message.
         if (bundleId === null) {
           if (msg.type !== "Control") return;
-          bundleId = msg.payload.bundleId as string;
+          // The socket is local and unauthenticated, but a peer id is not inert:
+          // it becomes a map key, can supersede another app's live socket, and —
+          // since the injection-failed diagnosis cites connected peers as
+          // evidence — is interpolated verbatim into agent-facing prose. Only a
+          // plain bundle identifier (letters, digits, dot, hyphen, underscore;
+          // no whitespace, separators or control characters) is admitted.
+          const requested = msg.payload?.bundleId;
+          if (
+            typeof requested !== "string" ||
+            requested.length === 0 ||
+            requested.length > 256 ||
+            !/^[A-Za-z0-9][A-Za-z0-9.\-_]*$/.test(requested)
+          ) {
+            socket.destroy();
+            return;
+          }
+          bundleId = requested;
 
           // The same app reconnecting (fast restart) supersedes the old socket.
           const existing = connections.get(bundleId);

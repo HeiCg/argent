@@ -2886,6 +2886,22 @@ describe("flow composition (run:)", () => {
       expect(reason).toMatch(/Re-running the flow repeats the same launch/);
     });
 
+    // This is the one reader that deliberately does NOT consume the terminal
+    // injection_failed diagnosis: its relaunch is the step's own and the
+    // reading arrives one launch-wait later, where a slow cold start produces
+    // the identical unregistered reading (#778). If someone ever routes the
+    // gate through adviseOnUninjectedApp, an agent's earlier native-devtools
+    // hand-out plus this step's own launch would flip the arm terminal and
+    // tell the author to stop re-running a flow that a re-run would fix. Pin
+    // the divergence so that unification fails here first.
+    it("keeps the unregistered arm worth a re-run instead of terminal", () => {
+      const reason = flowLaunchGateReason("com.acme.app", "unregistered");
+
+      expect(reason).toMatch(/re-run the flow to relaunch and wait again/);
+      expect(reason).not.toMatch(/was told to relaunch/);
+      expect(reason).not.toMatch(/injection_failed/);
+    });
+
     // The `not.toContain` guards below compare rendered substrings, so they only
     // mean anything while neither figure is a suffix of the other: 500/1500 would
     // make `"1500 ms".includes("500 ms")` true and fail them for the wrong
