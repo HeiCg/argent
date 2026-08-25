@@ -1074,6 +1074,43 @@ describe("touch visualizer", () => {
     expect(api.recordingActive).toBe(false);
   });
 
+  it("does not stamp a host capture whose readiness resolved after dispose killed the encoder", async () => {
+    // The readiness await can settle on its fail-fast timer alone: if dispose
+    // SIGKILLs the just-spawned child inside the grace and the death is
+    // observed only after the timer fired, nothing else stops this start from
+    // declaring a capture teardown has already ended.
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const api = instance.api;
+    fakeStream();
+    // FakeChild.kill does not emit 'exit', modelling the death notification
+    // losing the race against the readiness timer.
+    const child = fakeChild();
+
+    const promise = startCapture(api, {
+      streamUrl: STREAM_URL,
+      timeLimitSeconds: 180,
+      watermark: false,
+      trimStatic: false,
+    });
+    promise.catch(() => {});
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.pendingChild).toBe(child as unknown as ChildProcess);
+
+    await instance.dispose();
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+
+    await vi.advanceTimersByTimeAsync(READY_GRACE_MS);
+
+    await expect(promise).rejects.toMatchObject({
+      message: expect.stringContaining("shutting down"),
+    });
+    // A stamped session here would also register the module-global reminder,
+    // which nothing could ever clear again.
+    expect(getActiveScreenRecordings()).toHaveLength(0);
+  });
+
   it("warns at stop when the overlay could not be enabled", async () => {
     const api = await makeSession(iosDevice);
     fakeStream();

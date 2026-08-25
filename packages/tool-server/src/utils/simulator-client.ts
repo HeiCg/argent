@@ -194,7 +194,9 @@ export async function startServerRecording(
     // strand the server's copy with nothing left to stop it.
     throw new FailureError(
       `screen-recording-start failed: simulator-server answered the recording command with ` +
-        `${JSON.stringify(body).slice(0, 200)} instead of a status.`,
+        `${JSON.stringify(body).slice(0, 200)} instead of a status. A recording an earlier ` +
+        `start attempt began may still be running inside simulator-server — for example one ` +
+        `whose reply was lost — and ends at its own time limit; retrying after that should succeed.`,
       {
         error_code: FAILURE_CODES.SCREEN_RECORDING_PROCESS_ERROR,
         failure_stage: "screen_recording_server_start",

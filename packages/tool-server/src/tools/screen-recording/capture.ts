@@ -235,8 +235,9 @@ function stopPump(api: ScreenRecordingSessionApi): void {
 
 /**
  * End the capture: stop producing frames and close ffmpeg's stdin, which is
- * what makes it write the mp4 trailer. Used by stop, by the time-limit cap and
- * by session teardown, so all three finalize identically.
+ * what makes it write the mp4 trailer. Used by stop and by the time-limit cap,
+ * so both finalize identically. Session teardown finalizes inline instead, with
+ * a shorter grace (see DISPOSE_FINALIZE_GRACE_MS) — it owes the file no caller.
  */
 function finalizeCapture(api: ScreenRecordingSessionApi): void {
   stopPump(api);
@@ -358,6 +359,12 @@ async function startCaptureLocked(
 
   try {
     await waitForEncoderReady(child, stderrRef);
+    // Readiness can resolve on its fail-fast timer alone: if dispose killed the
+    // just-spawned child inside the grace but the death was observed after the
+    // timer settled, this await still resolves. Abort here rather than stamp a
+    // session for a capture dispose has already ended — the same window the
+    // server path guards at its pointer-enable await.
+    if (api.disposed) assertNotDisposed(api, "screen_recording_start");
   } catch (err) {
     stream.close();
     if (logoFile) await fs.rm(logoFile, { force: true }).catch(() => {});
