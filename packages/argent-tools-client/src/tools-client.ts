@@ -127,12 +127,9 @@ async function consumeToolStream(
 }
 
 /**
- * The human-readable message in a tool-server error body.
- *
  * A schema rejection sends the raw issue JSON in `error`, which is what a CLI
  * released before `issues` parses, and the prose in `message`. Every other error
- * body sends `error` alone. Shared so the MCP and this client cannot drift into
- * showing different text for one response.
+ * body sends `error` alone.
  */
 export function errorBodyMessage(body: {
   error?: string;

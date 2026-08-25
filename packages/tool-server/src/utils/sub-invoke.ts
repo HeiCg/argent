@@ -46,9 +46,8 @@ export async function invokeSubTool<T = unknown>(
 }
 
 /**
- * A nested schema rejection re-rendered against the args the CALLER wrote, or
- * undefined when `err` is not one. Dispatchers rewrite the args they forward,
- * and the registry can only describe what it was handed.
+ * Dispatchers rewrite the args they forward, and the registry can only
+ * describe what it was handed.
  *
  * Re-parsing rather than pre-flighting the dispatch: the invoke is what emits
  * `toolInvoked`/`toolFailed`, so validating up front would make an invalid step

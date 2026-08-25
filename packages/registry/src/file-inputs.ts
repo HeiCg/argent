@@ -121,11 +121,8 @@ export interface FileInputSpec {
    * would erase the caller's mistake and silently run the other source).
    * Unwrapping hands zod both params as plain strings. Clients ignore this
    * field.
-   *
-   * A list when the alternate source has more than one spelling (flow-execute's
-   * `name` and its `flow_name` alias): any one being set is a dual source.
    */
-  unwrapWhenSet?: string | string[];
+  unwrapWhenSet?: string;
 }
 
 /** Per-target resolution outcome, passed to the tool via `ctx.fileInputs`. */

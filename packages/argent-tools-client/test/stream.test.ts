@@ -154,8 +154,6 @@ describe("callTool progress streaming", () => {
   });
 
   it("reads the prose from `message`, leaving `error` to an older CLI", async () => {
-    // The 400 sends both: `error` holds the raw issue JSON a CLI released
-    // before `issues` parses, `message` the prose an agent is shown.
     const issues = [{ code: "too_big", path: ["x"], message: "Too big: expected <=1" }];
     await startServer((_req, res) => {
       res.statusCode = 400;
@@ -176,8 +174,6 @@ describe("callTool progress streaming", () => {
   });
 
   it("keeps `error` as the message when the body carries no `issues`", async () => {
-    // Only the validation pair redirects to `message`; every other error body
-    // still reads `error`, which is the only field they send.
     await startServer((_req, res) => {
       res.statusCode = 500;
       res.setHeader("Content-Type", "application/json");
@@ -219,7 +215,6 @@ describe("errorBodyMessage", () => {
   it("takes the prose only when the body is the validation pair", () => {
     const issues = [{ code: "too_big", path: ["x"], message: "Too big" }];
     expect(errorBodyMessage({ error: "[...]", message: "prose", issues })).toBe("prose");
-    // `message` without `issues` is some other body's field, so `error` wins.
     expect(errorBodyMessage({ error: "boom", message: "prose" })).toBe("boom");
     expect(errorBodyMessage({ error: "boom" })).toBe("boom");
     expect(errorBodyMessage({ message: "prose" })).toBe("prose");

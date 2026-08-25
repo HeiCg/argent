@@ -123,17 +123,11 @@ export class Registry {
       if (definition.zodSchema) {
         const parsed = definition.zodSchema.safeParse(params ?? {});
         if (!parsed.success) {
-          // Signal it: an unsignalled Error is wrapped as
-          // REGISTRY_TOOL_EXECUTION_FAILED / `error_kind: "unknown"`, so a
-          // caller mistake would read as an internal fault. The code also lets
-          // the HTTP boundary answer a nested miss with a 400.
           throw new FailureError(
             `Invalid params for tool "${id}": ${describeParamIssues(parsed.error, params)}`,
             {
               error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
               failure_stage: "tool_params_parse",
-              // "registry", not "tool_server": this parse runs before
-              // `execute`. "tool_server" means the tool attached the signal.
               failure_area: "registry",
               error_kind: "validation",
             }
@@ -459,10 +453,6 @@ function terminatingSignalCause(message: string): FailureError {
   });
 }
 
-/**
- * The value at a Zod issue's `path` in the caller's params, or `undefined` when
- * any segment is absent. Tells an omitted field from a present-but-wrong one.
- */
 function valueAtPath(root: unknown, path: readonly PropertyKey[]): unknown {
   let current: unknown = root;
   for (const key of path) {
@@ -482,11 +472,6 @@ function valueAtPath(root: unknown, path: readonly PropertyKey[]): unknown {
  */
 const MAX_UNION_ALTERNATIVES = 12;
 
-/**
- * A schema failure as one sentence per bad parameter, instead of Zod's raw
- * issue JSON. The raw form names the parameter the tool wanted but never the
- * one the caller sent, so a misspelled key stays invisible.
- */
 export function describeParamIssues(
   error: { issues: readonly ZodIssue[] },
   params: unknown
@@ -497,16 +482,12 @@ export function describeParamIssues(
     params !== null && typeof params === "object" && !Array.isArray(params)
       ? Object.keys(params as object)
       : [];
-  // Cap the echoed list, but signal the cut: when the schema strips unknowns
-  // this list is the only clue to a misspelled key.
   const supplied = allKeys.slice(0, 24);
   const truncated = allKeys.length > supplied.length;
   const parts = error.issues.map((issue) => {
     const at = issue.path.length > 0 ? issue.path.join(".") : "(root)";
     // First, so the absence check below cannot rewrite an author-written
     // message anchored on an omitted field into "`expectedText` is required".
-    // The path is still printed: a refinement bound to a field reads as prose
-    // naming no parameter. A cross-field rule anchors at the root instead.
     if (issue.code === "custom") {
       return issue.path.length > 0 ? `\`${at}\`: ${issue.message}` : issue.message;
     }
@@ -520,8 +501,6 @@ export function describeParamIssues(
     }
     if (issue.code === "unrecognized_keys") {
       const keys = (issue as { keys?: readonly string[] }).keys ?? [];
-      // Qualify by path: a key nested in `selector` reported bare contradicts
-      // the top-level-only "You sent:" list one clause later.
       const at = issue.path.length > 0 ? `${issue.path.join(".")}.` : "";
       return `unknown parameter${keys.length === 1 ? "" : "s"} ${keys.map((k) => `\`${at}${k}\``).join(", ")}`;
     }
@@ -531,9 +510,6 @@ export function describeParamIssues(
     if (issue.code === "invalid_union") {
       const branches = (issue as { errors?: readonly (readonly ZodIssue[])[] }).errors ?? [];
       const alternatives: string[] = [];
-      // Branch issues are caller-sized: a union branch that is an array
-      // reports one issue per element. Hence a `Set` rather than a linear
-      // scan, and a cap so the work follows what is printed, not what was sent.
       const seen = new Set<string>();
       let moreAlternatives = false;
       for (const branch of branches) {
@@ -542,7 +518,6 @@ export function describeParamIssues(
           // would read as a top-level key.
           const innerAt = inner.path.length > 0 ? `${at}.${inner.path.join(".")}: ` : "";
           const text = `${innerAt}${inner.message}`;
-          // Two branches can fail identically (enums over the same values).
           if (seen.has(text)) continue;
           if (alternatives.length >= MAX_UNION_ALTERNATIVES) {
             moreAlternatives = true;
@@ -554,8 +529,6 @@ export function describeParamIssues(
         if (moreAlternatives) break;
       }
       if (alternatives.length > 0) {
-        // Signal the cut: a silently shortened list reads as the complete set
-        // of legal forms.
         return `\`${at}\`: ${alternatives.join("; or ")}${moreAlternatives ? "; or …" : ""}`;
       }
     }
