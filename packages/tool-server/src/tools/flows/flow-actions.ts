@@ -104,6 +104,16 @@ export interface ActionEnv {
    * `ActionEnv` by hand, which leaves every settle on its own budget.
    */
   treeOutage?: { proven?: { deviceId: string; error: Error } };
+  /**
+   * Whether this directive has dispatched at the device yet. {@link
+   * runDirective} installs a fresh one per step and {@link invokeOnDevice}
+   * sets it, so an aborted directive can say which side of the dispatch the
+   * cancel landed on instead of assuming the worse one.
+   *
+   * Absent for a caller that builds an `ActionEnv` by hand, and for the
+   * dispatches the runner makes outside a directive — nothing reads it there.
+   */
+  dispatch?: { reached: boolean };
 }
 
 /** Outcome of a selector directive: ok, or a machine-readable reason it failed. */
@@ -112,6 +122,15 @@ export interface DirectiveOutcome {
   reason?: string;
   /** The run was cancelled mid-step — reported as a skip, not a step failure. */
   aborted?: boolean;
+  /**
+   * On an `aborted` outcome only: whether this directive had already dispatched
+   * at the device when the cancel landed. A settle is where most of a step's
+   * time goes, so most cancels land BEFORE the gesture and this is `false` —
+   * which is the difference between telling an author to go and check a screen
+   * and leaving one that provably did not move alone. Read from the dispatch
+   * scope, never guessed: a tree read is not a dispatch.
+   */
+  reached?: boolean;
   /**
    * The condition could not be evaluated — unknown, not false: the window never
    * produced a trustworthy read, or a `hidden` check ended on a blind or failed
@@ -159,12 +178,18 @@ export type DirectiveStep = Extract<
   }
 >;
 
-/** Dispatch a tool with the run's resolved device id bound into its args. */
+/**
+ * Dispatch a tool with the run's resolved device id bound into its args. The
+ * one choke point through which a directive acts, so it is also where "the
+ * device may have moved" becomes true — marked BEFORE the await, because a call
+ * that is already out can land whether or not it answers.
+ */
 export function invokeOnDevice(
   env: ActionEnv,
   tool: string,
   args: Record<string, unknown>
 ): Promise<unknown> {
+  if (env.dispatch) env.dispatch.reached = true;
   return invokeSubTool(
     env.registry,
     env.ctx,
@@ -747,7 +772,20 @@ export function offscreenHint(sel: FlowSelector): string {
  * Execute one directive step: the selector-acting ones plus `idle`, which takes
  * no selector because stillness is a property of the whole screen.
  */
-export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise<DirectiveOutcome> {
+export async function runDirective(
+  outerEnv: ActionEnv,
+  step: DirectiveStep
+): Promise<DirectiveOutcome> {
+  // Fresh per step: the question is what THIS directive sent, not what the run
+  // has sent so far.
+  const dispatch = { reached: false };
+  const outcome = await dispatchDirective({ ...outerEnv, dispatch }, step);
+  // Only a cancel leaves the answer in doubt. Every other outcome says on its
+  // own terms whether the step acted.
+  return outcome.aborted === true ? { ...outcome, reached: dispatch.reached } : outcome;
+}
+
+async function dispatchDirective(env: ActionEnv, step: DirectiveStep): Promise<DirectiveOutcome> {
   // Vega is remote-driven — there is no touch input. Fail upfront with
   // authoring guidance instead of a low-level gesture dispatch error after the
   // selector resolves.

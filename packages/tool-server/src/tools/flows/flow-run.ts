@@ -205,11 +205,12 @@ export interface StepReport {
    * downstream of something that already moved the run: a `restart-app`
    * relaunch on the native platforms, and on chromium a boot or a CDP attach.
    * Set on every skip a reached step
-   * produces: a cancelled `launch`, a cancelled directive, a cancelled
-   * `await-ui-element` tool step, and a cancelled nested orchestrator whose own
-   * report says it reached one of ITS steps. The pre-step guard, a fixed
-   * `wait`, and an unreached block leave it absent, which is what makes their
-   * silence provable. The flow recorder reads it to decide whether to warn that
+   * produces: a cancelled `launch`, a cancelled directive that had already
+   * dispatched, a cancelled `await-ui-element` tool step, and a cancelled
+   * nested orchestrator whose own report says it reached one of ITS steps. The
+   * pre-step guard, a fixed `wait`, an unreached block and a directive
+   * cancelled before its gesture went out leave it absent, which is what makes
+   * their silence provable. The flow recorder reads it to decide whether to warn that
    * the recorded prefix may no longer reproduce.
    */
   reached?: true;
@@ -2282,10 +2283,19 @@ async function execLeafStep(
       try {
         const r = await runDirective(deviceEnv(state), step);
         // A run cancelled mid-directive is a skip (matching the pre-step guard
-        // and `wait`), never a step failure — the app did nothing wrong. Still
-        // `reached`: the cancel can land after the gesture was dispatched, and
-        // the outcome does not say which side it landed on.
-        if (r.aborted) return { ...base, status: "skip", reason: r.reason, reached: true };
+        // and `wait`), never a step failure — the app did nothing wrong. The
+        // outcome says which side of the dispatch the cancel landed on (see
+        // {@link DirectiveOutcome.reached}), so a cancel caught in the settle
+        // — where most of a step's time goes, and so where most cancels land —
+        // is left unmarked rather than warned about.
+        if (r.aborted) {
+          return {
+            ...base,
+            status: "skip",
+            reason: r.reason,
+            ...(r.reached === false ? {} : { reached: true as const }),
+          };
+        }
         // `indeterminate` is `idle`'s only non-passing outcome: a screen that
         // merely kept moving passes with a warning, and so does one that
         // rendered nothing, so what is left here is a wait that could not run

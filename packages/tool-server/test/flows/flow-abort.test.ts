@@ -115,13 +115,14 @@ describe("run cancellation mid-directive", () => {
     expect(calls).not.toContain("gesture-tap");
   });
 
-  it("marks a cancelled directive reached, and the guard's skip not", async () => {
+  it("leaves a directive cancelled in its settle unmarked, like the guard's skip", async () => {
     // Two identical taps and one cancel. The first reaches `runDirective` and
-    // takes its abort exit; the second never starts, so the pre-step guard
-    // skips it. Same kind, same status, same reason — only `reached` separates
-    // "the gesture may already have gone out" from "provably nothing did". The
-    // marker is deliberately conservative on this exit: the outcome does not
-    // say which side of the dispatch the cancel landed on.
+    // takes its abort exit out of the auto-wait; the second never starts, so
+    // the pre-step guard skips it. Neither sent anything, and the reports say
+    // so: a settle resolves a frame off the tree and dispatches nothing, and
+    // most of a step's time is spent there, so this is where a cancel usually
+    // lands. Marking it would send the author to check a screen that provably
+    // did not move.
     const controller = new AbortController();
     let reads = 0;
     currentFetch = () => {
@@ -141,12 +142,54 @@ describe("run cancellation mid-directive", () => {
       ],
     });
 
-    const result = await run("cancelled-tap-pair", mockRegistry([]), controller.signal);
+    const calls: string[] = [];
+    const result = await run("cancelled-tap-pair", mockRegistry(calls), controller.signal);
 
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["tap:skip", "tap:skip"]);
     expect(result.steps.map((s) => s.reason)).toEqual(["run aborted", "run aborted"]);
-    expect(result.steps[0].reached).toBe(true);
+    expect(result.steps[0].reached).toBeUndefined();
     expect(result.steps[1].reached).toBeUndefined();
+    // What makes the silence provable rather than optimistic.
+    expect(calls).not.toContain("gesture-tap");
+  });
+
+  it("marks a directive whose gesture had already gone out", async () => {
+    // The control for the pair above, and the case the marker exists for. A
+    // `type` taps to focus and only then waits out the app's focus round-trip,
+    // so a cancel landing in that wait arrives AFTER a gesture reached the
+    // device. Same kind of skip, same reason — only the marker separates it.
+    const controller = new AbortController();
+    currentFetch = () => ({
+      tree: screen([n({ label: "Email", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.1 } })]),
+      source: "native-devtools",
+    });
+    const calls: string[] = [];
+    const registry = {
+      invokeTool: vi.fn(async (id: string) => {
+        calls.push(id);
+        if (id === "list-devices") return { devices: [] };
+        // The cancel lands the moment the focus tap is dispatched, so the
+        // directive's next abort checkpoint is its first one after a gesture.
+        if (id === "gesture-tap") controller.abort();
+        return { ok: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+
+    await writeFlow("cancelled-type", {
+      executionPrerequisite: "",
+      steps: [{ kind: "type", into: { text: "Email", loose: true }, text: "a@b.c" }],
+    });
+
+    const result = await run("cancelled-type", registry, controller.signal);
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["type:skip"]);
+    expect(result.steps[0].reason).toBe("run aborted");
+    expect(result.steps[0].reached).toBe(true);
+    // The tap went out; the keyboard never did — which is exactly the state
+    // the marker warns about, a step that acted without finishing.
+    expect(calls).toContain("gesture-tap");
+    expect(calls).not.toContain("keyboard");
   });
 
   it("dispatches no tap when the run is cancelled during the settle-completing tree read", async () => {
