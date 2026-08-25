@@ -6,10 +6,8 @@ import type { Registry } from "@argent/registry";
 import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/contract";
 import type { WaitCondition } from "../../src/utils/ui-tree-match";
 
-// Same tree stub as the when tests: flows resolve against the platform's
-// full-hierarchy source and hard-fail rather than degrade, so the fetch itself
-// is stubbed. `currentTree` is a function so a drain can watch the screen
-// change underneath it as its iterations tap things away.
+// Same tree stub as the when tests. `currentTree` is a function so a drain can
+// watch the screen change underneath it as its iterations tap things away.
 let currentTree: () => DescribeNode;
 let currentHint: string | undefined;
 vi.mock("../../src/tools/flows/flow-tree", () => ({
@@ -23,9 +21,7 @@ vi.mock("../../src/tools/flows/flow-tree", () => ({
 }));
 
 // Mock ONLY runSnapshot, the snapshot-step suite's idiom: the load-fence tests
-// below need a fragment whose snapshot must NEVER run under a repeat — the
-// mock's call count is the proof — and a control where the same fragment
-// outside one runs it to a cheap pass. The visual pipeline itself is
+// below prove themselves on its call count, and the visual pipeline itself is
 // flow-visual's suite to pin.
 vi.mock("../../src/tools/flows/flow-visual", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/tools/flows/flow-visual")>()),
@@ -221,11 +217,9 @@ describe("repeat: parse/serialize", () => {
   });
 
   it("rejects a zero, fractional, oversized, or non-numeric bound at every spelling", () => {
-    // The bound check is reached from three sites — the bare-integer sugar,
-    // `{ times: N }`, and a drain's `max: N` — so each spelling is pinned on
-    // its own, against the message naming its own field. `max` is the drain's
-    // only exit besides convergence: unvalidated, `max: 0` or a non-number is
-    // an uncapped run, not a parse error.
+    // Three sites reach the bound check — the bare-integer sugar, `{ times: N }`
+    // and a drain's `max: N` — so each spelling is pinned on its own, against
+    // the message naming its own field.
     for (const bad of ["0", "1.5", "101"]) {
       expect(() => parseFlow(`steps:\n  - repeat: ${bad}\n    steps: [{ tap: A }]\n`)).toThrow(
         /repeat\.times must be a literal integer between 1 and 100/i
@@ -318,10 +312,9 @@ describe("repeat: parse/serialize", () => {
   }
 
   it("takes exactly the when guard vocabulary, minus platform", () => {
-    // The one difference between the two guard directives is `platform` (the
-    // test below). Comparing the vocabularies themselves — rather than one
-    // sample each — is what makes a condition kind that reaches only one of
-    // them a failure instead of a silently untested spelling.
+    // Comparing the vocabularies themselves, rather than one sample each, is
+    // what makes a condition kind reaching only one directive a failure instead
+    // of a silently untested spelling.
     expect(vocabulary("until")).toEqual(Object.keys(UNTIL_GUARDS));
     expect(vocabulary("when")).toEqual([...vocabulary("until"), "platform"]);
   });
@@ -369,21 +362,16 @@ describe("repeat: parse/serialize", () => {
   });
 
   it("points every until error at the repeat bound the author wrote", () => {
-    // The guard is not a step: an error echoing it alone would show a
-    // `{"until":…}` entry that appears nowhere in the file, so the echo is the
-    // `{ repeat: … }` wrap — a key the author wrote, and bounded by the bound
-    // rather than the step's body (the truncation test below). Each message
-    // names `repeat.until` to point inside that wrap.
+    // The guard is not a step, so its errors echo the `{ repeat: … }` wrap — a
+    // key the author wrote — and name `repeat.until` to point inside it.
     for (const guard of [
       "{ platform: ios }",
       "{}",
       "{ hidden: X, timeout: 5000 }",
       "{ hidden: '{{secret:APP_PASSWORD}}' }",
       "{ text: { in: A, contain: x } }",
-      // One guard per until-reachable error site inside parseWaitFields (the
-      // selector-shaped ones echo their own fragment and are pinned in the test
-      // below): stray guard key, non-map text body, comparator count, empty
-      // comparator, invalid regex pattern.
+      // One guard per until-reachable error site inside parseWaitFields; the
+      // selector-shaped ones echo their own fragment and are pinned below.
       "{ visible: A, bogus: 1 }",
       "{ text: nope }",
       "{ text: { in: A } }",
@@ -399,10 +387,9 @@ describe("repeat: parse/serialize", () => {
 
   it("echoes the bound untruncated when a long steps-first body precedes it", () => {
     // YAML mapping keys are unordered: with `steps:` written first, an echo of
-    // the whole step would hit the 200-char render cap before reaching
-    // `repeat`, truncating away the very part the message names. The
-    // `{ repeat: … }` wrap is bounded by the bound, so the `$`-anchored full
-    // echo below cannot be pushed off by the body at either error site.
+    // the whole step would truncate away the part the message names. The
+    // `{ repeat: … }` wrap is bounded by the bound, so the `$`-anchored echo
+    // below cannot be pushed off by the body.
     const longBody = [
       '      - tap: { text: "Load more results from the server and then some more" }',
       '      - await: { visible: "Results loaded successfully after a long wait" }',
@@ -419,11 +406,9 @@ describe("repeat: parse/serialize", () => {
   });
 
   it("names repeat.until at every until-reachable error site in the guard parser", () => {
-    // The guard shares parseWaitFields with await/assert, and every error site
-    // in there spells its label through directiveLabel — one exact-message
-    // sample per reachable site, so a single site reverting to the bare
-    // directive name (`until …`) fails here instead of hiding behind the sites
-    // the entry-echo loop above happens to hit first.
+    // Every parseWaitFields error site spells its label through directiveLabel,
+    // so one exact-message sample per reachable site catches a single site
+    // reverting to the bare directive name (`until …`).
     const cases: [string, RegExp][] = [
       // top-level unknown key — rejectUnknownKeys(entry, b, …, label); the
       // allowed-keys list doubles as proof `until` offers no `timeout`
@@ -457,11 +442,9 @@ describe("repeat: parse/serialize", () => {
         guard
       ).toThrow(message);
     }
-    // Selector-shaped errors go through parseSelector, whose two call sites
-    // spell the label `${label}.<condition>` and `${label}.text.in`. Unlike the
-    // sites above it echoes the selector fragment it was handed, not the whole
-    // repeat step — the label carries the path back to the step, so both parts
-    // are pinned together here.
+    // Selector-shaped errors go through parseSelector, which echoes the
+    // selector fragment it was handed rather than the whole repeat step, so the
+    // label is what carries the path back. Both parts are pinned together.
     expect(() =>
       parseFlow("steps:\n  - repeat: { until: { visible: { txt: A } } }\n    steps: [{ tap: A }]\n")
     ).toThrow(
@@ -505,11 +488,9 @@ describe("repeat: parse/serialize", () => {
   });
 
   it("echoes the bound untruncated when a long steps-first body holds the snapshot", () => {
-    // Same unordered-keys hazard as the bound errors above: an echo of the
-    // whole step hits the 200-char render cap inside the body, so the
-    // `{ repeat: … }` wrap is what identifies the block the message refuses.
-    // The message already names the snapshot, so the `$`-anchored match is what
-    // proves the echo survived rather than being elided into `…(+N chars)`.
+    // Same unordered-keys hazard as the bound errors above, so the
+    // `{ repeat: … }` wrap identifies the block. The `$`-anchored match proves
+    // the echo survived rather than being elided into `…(+N chars)`.
     const longBody = [
       '      - tap: { text: "Load more results from the server and then some more" }',
       '      - await: { visible: "Results loaded successfully after a long wait" }',
@@ -540,15 +521,13 @@ describe("repeat: parse/serialize", () => {
 });
 
 describe("repeat: e2e classification", () => {
-  // isE2eFlow judges "begins by launching" on the flow as it would EXECUTE: a
-  // times block is its body pasted N times, so wrapping the leading launch in
-  // `repeat: 1` must not turn an e2e flow into a fragment that may declare the
-  // executionPrerequisite validateFlow exists to refuse.
+  // isE2eFlow judges "begins by launching" on the flow as it would EXECUTE, so
+  // wrapping the leading launch in `repeat: 1` must not turn an e2e flow into a
+  // fragment that may declare an executionPrerequisite.
   it("refuses executionPrerequisite behind a times-wrapped leading launch, like the unwrapped form", () => {
-    // The same rejection the unwrapped spelling gets (flow-composition's
-    // "rejects an e2e flow that declares executionPrerequisite"): pasted out,
-    // `repeat: 1` IS that flow, marker line aside — the launch still runs
-    // unconditionally at step 1 and wipes the state the prerequisite demands.
+    // The same rejection the unwrapped spelling gets: pasted out, `repeat: 1`
+    // IS that flow, so the launch still wipes the state the prerequisite
+    // demands.
     expect(() =>
       parseFlow(
         "executionPrerequisite: nope\nsteps:\n  - repeat: 1\n    steps: [{ launch: com.acme.app }]\n"
@@ -557,12 +536,10 @@ describe("repeat: e2e classification", () => {
   });
 
   it("spells the remedy against the step the file actually has", () => {
-    // The refusal is only actionable if it names something to delete. Wrapped,
-    // the flow's own first step is the block, so "drop the leading launch" —
-    // the unwrapped spelling's remedy, and the one this reached before —
-    // sends the author looking for a top-level launch that is not there. The
-    // message also travels to flow-add-step, flow-add-echo and
-    // flow-finish-recording, which show it verbatim.
+    // The refusal is only actionable if it names something to delete: wrapped,
+    // the flow's own first step is the block, so the unwrapped spelling's
+    // remedy sends the author looking for a top-level launch that is not there.
+    // flow-add-step, flow-add-echo and flow-finish-recording show it verbatim.
     const wrapped = (): void => {
       parseFlow(
         "executionPrerequisite: nope\nsteps:\n  - repeat: 1\n    steps: [{ launch: com.acme.app }]\n"
@@ -632,10 +609,9 @@ describe("repeat: e2e classification", () => {
   });
 
   it("does not call a flow e2e for a launch behind an until drain", () => {
-    // The transparency is times-only. A drain's guard is checked BEFORE each
-    // iteration, so an already-satisfied guard runs the body — launch included
-    // — zero times: a launch that may never happen controls no start state,
-    // and the prerequisite stays legal.
+    // The transparency is times-only: a drain may run its body — launch
+    // included — zero times, and a launch that may never happen controls no
+    // start state.
     expect(() =>
       parseFlow(
         "executionPrerequisite: on the profile screen\n" +
@@ -661,10 +637,9 @@ describe("repeat: e2e classification", () => {
     ).not.toThrow();
   });
 
-  // The run-time twin of the same rule. Parse validates one file, so a chain
-  // that only reaches its launch across a `run:` hop is the runner's to refuse
-  // — and its refusal has to spell the remedy against the same reading, or the
-  // wrapped spelling is told to delete a step the named fragment has not got.
+  // The run-time twin of the same rule: parse validates one file, so a chain
+  // reaching its launch across a `run:` hop is the runner's to refuse, against
+  // the same reading of where the launch is written.
   it("spells the block remedy when the launch a run: hop reaches is wrapped in a times block", async () => {
     await writeFlow("blocked-launch", {
       executionPrerequisite: "",
@@ -694,9 +669,8 @@ describe("repeat: e2e classification", () => {
 
   it("keeps the direct remedy when the fragment's own first step is the launch", async () => {
     // The control the wording above is only distinguishable against: same
-    // cross-file chain, unwrapped launch. Naming a repeat block here would be
-    // the mirror error, and the phrasing is what flow-add-step and the CLI
-    // print verbatim, so it is pinned whole.
+    // cross-file chain, unwrapped launch. Pinned whole, since flow-add-step and
+    // the CLI print the phrasing verbatim.
     await writeFlow("direct-launch", {
       executionPrerequisite: "",
       steps: [{ kind: "launch", app: "com.acme.app" }],
@@ -715,11 +689,9 @@ describe("repeat: e2e classification", () => {
   });
 
   it("reads the block against the file the message names, not the chain into it", async () => {
-    // A `run:` hop is a file hop, not a block: the fragment's launch is its own
-    // top-level step, and whatever wrapped the `run:` that reached it is in a
-    // different file from the one the author is being sent to. Carrying the
-    // wrap across the hop would send them looking for a repeat block that file
-    // has not got — the same misdirection, one hop over.
+    // A `run:` hop is a file hop, not a block: whatever wrapped the `run:` is
+    // in a different file from the one the author is sent to, so carrying the
+    // wrap across the hop is the same misdirection, one hop over.
     await writeFlow("direct-launch", {
       executionPrerequisite: "",
       steps: [{ kind: "launch", app: "com.acme.app" }],
@@ -777,18 +749,16 @@ describe("repeat: times", () => {
     ]);
     // The bound is the whole marker: no `reason` restating it, so the renderers
     // do not join the two into `repeat 3 times — 3 iterations`. Read explicitly
-    // because no other assertion here can see it — {@link shape} folds
-    // `target ?? message ?? reason`, so a marker's reason is invisible to every
-    // shape line in this file for as long as the marker carries a target.
+    // because {@link shape} folds `target ?? message ?? reason`, so a marker's
+    // reason is invisible to every shape line in this file.
     expect(result.steps[0]?.reason).toBeUndefined();
     expect(result.passed).toBe(3);
   });
 
   it("says `1 time` for a single-iteration block, `N times` for any other", async () => {
-    // `repeat: 1` is a legal bound — the range starts at 1 — and this label is
-    // what every line naming the block carries (the opening marker, the
-    // cancellation line, a skip standing in for a block that never ran), so an
-    // unpluralized count would read `repeat 1 times` on all of them.
+    // `repeat: 1` is a legal bound, and this label is what every line naming
+    // the block carries, so an unpluralized count would read `repeat 1 times`
+    // on all of them.
     currentTree = () => screen([notification()]);
     await writeFlow("once", {
       executionPrerequisite: "",
@@ -809,9 +779,8 @@ describe("repeat: times", () => {
 
   it("counts exactly what the same steps pasted out count", async () => {
     // The directive's whole promise is that `repeat: 3` IS the block written
-    // three times. If its markers were counted the summary would say 7 passed
-    // for three taps — and scale with N — so the equivalence has to hold in
-    // the counters, not just in what the device saw.
+    // three times, so the equivalence has to hold in the counters and not just
+    // in what the device saw: counted markers would say 7 passed for three taps.
     currentTree = () => screen([notification()]);
     await writeFlow("looped", {
       executionPrerequisite: "",
@@ -924,10 +893,8 @@ describe("repeat: until", () => {
       'repeat pass hidden text="Clear notification" after 3 iterations @0',
     ]);
     // As on a times marker, the bound is the whole opening line — and here a
-    // `reason` would restate it in a SECOND spelling, since the target is built
-    // with `selectorLabel` and the terminal line above with `describeSelector`.
-    // Explicit for the same reason as there: {@link shape} shows a line's
-    // reason only when it has no target, so it cannot see this one.
+    // `reason` would restate it in a SECOND spelling, the target being built
+    // with `selectorLabel` and the terminal line with `describeSelector`.
     expect(result.steps[0]?.reason).toBeUndefined();
     // That terminal line is an evaluated outcome, not structure: it counts.
     // Three taps plus the drain's own verdict — the markers count for nothing.
@@ -936,14 +903,10 @@ describe("repeat: until", () => {
   }, 20000);
 
   it("converges the same way on a visible and on a text guard", async () => {
-    // `hidden` is the drain's headline shape (clear a list until it is empty),
-    // but the bound takes the whole guard vocabulary: a drain can equally run
-    // until something APPEARS, or until an element READS a given value. Same
-    // probe, same terminal line — only the label differs.
-    //
-    // The banner is IN the tree throughout and only gains a frame on the second
-    // tap, so the drain converges on `visible` and would converge instantly on
-    // `exists` — the guard's own condition is what ends it, not the selector.
+    // `hidden` is the drain's headline shape, but the bound takes the whole
+    // guard vocabulary. The banner is IN the tree throughout and only gains a
+    // frame on the second tap, so the drain converges on `visible` and would
+    // converge instantly on `exists`: the guard's condition is what ends it.
     currentTree = () =>
       screen([
         notification(),
@@ -1043,9 +1006,8 @@ describe("repeat: until", () => {
 
     // An already-empty list is a converged drain, not a skipped block: the
     // terminal marker PASSES. The authored steps still report one skip line
-    // each, at the depth they would have run at and between the block's opening
-    // marker and its verdict — the bracketing a drain with work to do produces,
-    // so the block brackets the same way whether or not there was work.
+    // each, between the opening marker and the verdict, so the block brackets
+    // the same way whether or not there was work.
     expect(result.ok).toBe(true);
     expect(tapCount).toBe(0);
     expect(shape(result.steps)).toEqual([
@@ -1055,13 +1017,10 @@ describe("repeat: until", () => {
       'repeat pass hidden text="Clear notification" after 0 iterations @0',
     ]);
     expect(result.skipped).toBe(2);
-    // Each stand-in says WHY it was skipped, and it is this branch's own
-    // reason. Pinned on `reason` directly: {@link shape} folds
-    // `target ?? message ?? reason`, so on a line with a target — every
-    // stand-in above — it renders the target and the reason is invisible to
-    // it. Swapped with the errored branch's string, a PASSING zero-iteration
-    // drain would tell the operator its body was skipped because the "until
-    // guard errored".
+    // Each stand-in says WHY it was skipped, in this branch's own words:
+    // swapped with the errored branch's string, a PASSING zero-iteration drain
+    // would blame an "until guard errored". Pinned on `reason` directly, which
+    // {@link shape} cannot see on a line that has a target.
     expect(result.steps.slice(1, 3).map((s) => s.reason)).toEqual([
       "until guard already met",
       "until guard already met",
@@ -1108,19 +1067,11 @@ describe("repeat: until", () => {
 
   it("names the failed final read on the cap verdict when the last probe blipped", async () => {
     // The trailing-blip tolerance, met at the cap. The tree source disconnects
-    // inside the LAST probe only, ~one poll before that probe's 1s deadline:
-    // trusted reads carry the whole window bar its tail, so the probe answers
-    // "still unmet" determinately instead of erroring the block — and the read
-    // that failed under that answer belongs on the line the answer produces.
-    // Dropped, the report tells the author the app never reached the state and
-    // says nothing about the runner having gone blind while concluding it,
-    // which is the one fact that would send them to the tree source rather
-    // than to the app.
-    //
-    // `visible`, not this suite's usual `hidden`: gone-ness is unconfirmable
-    // over ANY failed final read, so a `hidden` drain has no determinate-unmet
-    // blip to carry — it errors on the evidence gap instead (flow-when covers
-    // that bar). The guard element never appears, so the drain runs to its cap.
+    // inside the LAST probe only, so it still answers "still unmet"
+    // determinately, and the failed read belongs on the line that answer
+    // produces. `visible`, not this suite's usual `hidden`: gone-ness is
+    // unconfirmable over a failed final read, so a `hidden` drain errors on the
+    // evidence gap instead and has no blip to carry.
     let darkFrom: number | undefined;
     currentTree = () => {
       // The taps resolve their target at `tapCount` 0 and 1, so only the third
@@ -1162,12 +1113,9 @@ describe("repeat: until", () => {
   }, 20000);
 
   it("passes a drain that converges on exactly its max-th iteration", async () => {
-    // Three items, `max: 3` — the bound set to the number of items the author
-    // expects, the cap's common shape. The third tap empties the list, so the
-    // probe that finds the guard met is the same one at which `done >= max`
-    // first holds. Convergence wins: the cap fires only while the guard is
-    // still unmet, which makes `max` an inclusive bound — tested cap-first,
-    // this exact run would flip to the fail above with the same three taps.
+    // Three items, `max: 3`: the probe that finds the guard met is the same one
+    // at which `done >= max` first holds. Convergence wins, which makes `max`
+    // inclusive — tested cap-first, this run would flip to the fail above.
     currentTree = () => (tapCount >= 3 ? screen([]) : screen([notification()]));
     await writeFlow("exact-max", {
       executionPrerequisite: "",
@@ -1199,9 +1147,8 @@ describe("repeat: until", () => {
   it("says `after 1 iteration`, singular, when one pass converges or a max of 1 caps", async () => {
     // The count in a drain's terminal reason can be exactly 1 in both
     // directions: a one-item list converges after a single pass, and `max: 1`
-    // is a legal bound (the range starts at 1). The `times` marker pins its
-    // `1 time` twice; these are the drain verdicts' — asserted on `reason`
-    // directly, so the string is the very one the renderers print.
+    // is a legal bound. Asserted on `reason`, so the string is the one the
+    // renderers print.
     currentTree = () => (tapCount >= 1 ? screen([]) : screen([notification()]));
     await writeFlow("drains-in-one", {
       executionPrerequisite: "",
@@ -1276,12 +1223,10 @@ describe("repeat: until", () => {
     expect(result.ok).toBe(false);
     expect(result.errored).toBe(1);
     expect(tapCount).toBe(0);
-    // No iteration ran, so the body reports one skip line — inside the block,
-    // between the opening marker and the guard's error, which closes it. The
-    // stand-in carries this branch's own reason, pinned directly for the same
-    // cause as the converged branch's "until guard already met": {@link shape}
-    // renders a skipped tap's target, never its reason — and swapped, an
-    // errored drain would explain its un-run body with an already-met guard.
+    // No iteration ran, so the body reports one skip line inside the block,
+    // between the opening marker and the guard's error. The stand-in carries
+    // this branch's own reason: swapped, an errored drain would explain its
+    // un-run body with an already-met guard.
     expect(result.steps[1]?.status).toBe("skip");
     expect(result.steps[1]?.depth).toBe(1);
     expect(result.steps[1]?.reason).toBe("until guard errored");
@@ -1291,23 +1236,19 @@ describe("repeat: until", () => {
     // while the opening marker above it contributes no pass.
     expect(result.steps[2]?.structural).toBeUndefined();
     expect(result.passed).toBe(0);
-    // An unevaluable guard is a hard stop, exactly like the cap's fail above:
-    // the step after the block skips instead of running against a screen the
-    // runner just said it cannot read. A bare skip, not a stand-in — the
-    // hard-stop branch stamps no reason.
+    // An unevaluable guard is a hard stop, like the cap's fail above: the step
+    // after the block skips rather than run against a screen the runner just
+    // said it cannot read. A bare skip — the hard-stop branch stamps no reason.
     expect(shape(result.steps).at(-1)).toBe("echo skip after @0");
     expect(result.steps.at(-1)?.reason).toBeUndefined();
   }, 20000);
 
   it("errors a later probe without re-listing the body — one iteration already reported", async () => {
     // The `done === 0` bracketing above is for a body that never got to say
-    // anything. Here the first probe sees the notification (a trusted, unmet
-    // read) and the body runs; the tap flips the screen to the blind read that
-    // makes the SECOND probe indeterminate. The authored steps must NOT come
-    // back as stand-in skips — their lines are already in the report — and the
-    // guard's error still hard-stops the flow, carrying the trailing step to a
-    // skip: iterating on against an unreadable screen is the one thing this
-    // branch exists to prevent.
+    // anything. Here the first probe is unmet, the body runs, and the tap makes
+    // the SECOND probe indeterminate: the authored steps must NOT come back as
+    // stand-in skips, their lines being in the report already, and the guard's
+    // error must still hard-stop the flow.
     currentTree = () => (tapCount >= 1 ? screen([]) : screen([notification()]));
     onTap = () => {
       currentHint = "native-devtools disconnected";
@@ -1359,15 +1300,11 @@ describe("repeat: until", () => {
   /**
    * A three-row list that rebuilds asynchronously: the next {@link GAP_READS}
    * reads after each tap find the list gone, every read after those finds the
-   * rows that are left. That is refetch-after-mutate (equally a key-less
-   * re-render, or a list data change) modelled off the READ SEQUENCE rather
-   * than off the wall clock, so the three tests below differ in the flow they
-   * run and in nothing else.
-   *
-   * The page chrome outlives the gap, as it does in a real re-render. Nothing
-   * marks those reads as suspect either — no degraded hint, and the selector
-   * has not matched earlier in the same probe — so the drain trusts them and
-   * concludes `hidden` from them, which is exactly the hazard below.
+   * rows that are left. Refetch-after-mutate modelled off the READ SEQUENCE
+   * rather than the wall clock, so the three tests below differ in the flow
+   * they run and in nothing else. Nothing marks those reads as suspect — no
+   * degraded hint, no earlier match in the same probe — so the drain trusts
+   * them and concludes `hidden`, which is the hazard below.
    */
   function useRebuildingList(): void {
     let gapReads = 0;
@@ -1398,20 +1335,15 @@ describe("repeat: until", () => {
   }
 
   it("takes the body's own re-render gap for convergence — recorded, not endorsed", async () => {
-    // A REAL HAZARD, pinned as it stands rather than as a nicety: `hidden` is
-    // satisfied by the first poll that finds no match, and the guard is probed
-    // directly after the body mutated the screen — so a body that tears its
-    // list down and rebuilds it asynchronously is read inside its own gap, and
-    // the drain absorbs that gap as convergence: one iteration, a green pass,
-    // two thirds of the list still on screen.
+    // A REAL HAZARD, pinned as it stands: `hidden` is satisfied by the first
+    // poll that finds no match, and the guard is probed directly after the body
+    // mutated the screen, so a body that rebuilds asynchronously is read inside
+    // its own gap and the drain absorbs that gap as convergence.
     //
-    // Deliberately unguarded — do not "fix" this. No signal in a read separates
-    // a re-render gap from a converged drain, so a confirming hold could only
-    // be a guess: it would cost every clean drain its length and still miss a
-    // gap longer than it. And the probe is `when:`/`assert:`'s own
-    // (`probeWhenCondition`), so reading the screen differently under `until`
-    // would give one condition two meanings in one file. The settling belongs
-    // to the body instead, which is what the next test writes.
+    // Deliberately unguarded — do not "fix" this. Nothing in a read separates a
+    // re-render gap from a converged drain, and reading the screen differently
+    // under `until` would give one condition two meanings. The settling belongs
+    // to the body, which is what the next test writes.
     useRebuildingList();
     await writeFlow("gap-drain", {
       executionPrerequisite: "",
@@ -1446,29 +1378,12 @@ describe("repeat: until", () => {
   }, 20000);
 
   it("drains that same list correctly when the body waits for the rebuild", async () => {
-    // The remedy, on the identical fixture: the body ends with an `await:` for
+    // The remedy on the identical fixture: the body ends with an `await:` for
     // the state the next probe must read. What clears the gap is POLARITY, not
-    // budget. A negative condition — the guard, and an `await: { hidden }`
-    // alike — returns on the first read that finds no match, and inside a
-    // teardown that is its very first read, so no window of any size outlasts
-    // the gap (the test below gives one a 10s budget and it still returns
-    // mid-gap). An `await:` for the rebuilt list polls a POSITIVE condition and
-    // cannot return until it sees the rebuild, so it holds the iteration open
-    // across all GAP_READS reads and the probe after it lands on a rebuilt
-    // list. Three taps, an empty list, `after 3 iterations`.
-    //
-    // Sensitivity is the tests either side: drop this one step and the very
-    // same fixture converges after ONE iteration with two rows left; keep the
-    // step but flip its polarity and it does the same. The awaited element is
-    // the list container, not a row, because the last iteration legitimately
-    // leaves no rows — a `visible` await on a row would fail the run exactly
-    // when the drain is finally right.
-    //
-    // ~11s of wall clock: three waits of GAP_READS polls 300ms apart, plus the
-    // three guard probes that come back unmet at ~1s each and the taps' own
-    // settle on top. The gap is read-driven, so load moves the clock and
-    // nothing else — hence the 40s budget it shares with the settled cart
-    // below.
+    // budget — a positive condition cannot return until it sees the rebuild,
+    // while a negative one returns on its first read. The tests either side are
+    // the sensitivity. The awaited element is the container, not a row, because
+    // the last iteration legitimately leaves none.
     useRebuildingList();
     await writeFlow("settled-drain", {
       executionPrerequisite: "",
@@ -1508,19 +1423,13 @@ describe("repeat: until", () => {
   }, 40000);
 
   it("takes the gap all the same when the body's wait is negative — polarity, not budget", async () => {
-    // The polarity claim above, pinned rather than asserted. Same fixture, same
-    // body shape, one `await: { hidden }` where the test above has the positive
-    // wait, and a 10s budget where the guard gets ~1s: `hidden` is satisfied by
-    // the first read that finds no match, so the wait returns on read 1 of
-    // GAP_READS having held nothing open, and the probe after it reads the same
-    // torn-down list the hazard test read. One iteration, a green pass, two
-    // rows left — the hazard intact, with a wait in the body and a budget ten
-    // times the guard's that it never needs to spend.
-    //
-    // This also pins the fixture's gap WIDTH against a regression to one read:
-    // at one read this body's own wait would consume the whole teardown, the
-    // drain would empty the list, and the remedy test above would pass for a
-    // reason that has nothing to do with the settling it is about.
+    // The polarity claim above, pinned rather than asserted. Same fixture, one
+    // `await: { hidden }` where the test above has the positive wait, and a 10s
+    // budget where the guard gets ~1s: the wait returns on read 1 having held
+    // nothing open, and the probe after it reads the same torn-down list. One
+    // iteration, a green pass, two rows left — the hazard intact despite a
+    // budget ten times the guard's. It also pins the fixture's gap WIDTH: at
+    // one read the remedy test above would pass for the wrong reason.
     useRebuildingList();
     await writeFlow("gap-await", {
       executionPrerequisite: "",
@@ -1613,14 +1522,12 @@ describe("repeat: until", () => {
   } as const;
 
   it("over-fires a body whose effect lands after the grace, overshooting its target", async () => {
-    // The other direction of the same one-probe reading, pinned for the same
-    // reason. The guard reads what the app has ACKNOWLEDGED, not what it has
-    // been asked to do, so an effect slower than the grace leaves every probe
-    // on stale state: the drain fires again with an effect already in flight
-    // and converges on a count it then walks straight past. The verdict is true
-    // about the instant it was taken and the run is green, while the app is
-    // left in a state the flow never asserted and a later correct step takes
-    // the blame.
+    // The other direction of the same one-probe reading. The guard reads what
+    // the app has ACKNOWLEDGED, so an effect slower than the grace leaves every
+    // probe on stale state: the drain fires again with an effect in flight and
+    // converges on a count it then walks past. The verdict is true about the
+    // instant it was taken, and the app is left in a state the flow never
+    // asserted.
     const settledCart = useSlowCart();
     await writeFlow("slow-cart", {
       executionPrerequisite: "",
@@ -1644,19 +1551,11 @@ describe("repeat: until", () => {
   }, 20000);
 
   it("converges without overshooting when the body waits for its effect", async () => {
-    // Same fixture, same target, one authored wait: `await: { hidden: Syncing }`
-    // holds the iteration open until the app has acknowledged the tap, so the
-    // next probe reads a settled counter and the drain stops on the tap that
-    // actually reached three. Sensitivity is the test above: drop this step and
-    // the same fixture fires four taps and leaves the cart at four.
-    //
-    // ~10s of wall clock, and the waits are not all of it: three waits, each up
-    // to EFFECT_READS polls 300ms apart, plus an unmet 1s guard probe at every
-    // iteration boundary and the taps' own settle on top. The counts are
-    // read-driven, so load moves the clock and nothing else — hence the 40s
-    // budget this and the settled drain above take where the rest of the file
-    // takes 20s, which is what keeps a slow box from turning the cost into a
-    // flake.
+    // Same fixture, one authored wait: `await: { hidden: Syncing }` holds the
+    // iteration open until the app has acknowledged the tap, so the next probe
+    // reads a settled counter. Sensitivity is the test above: drop this step
+    // and the same fixture fires four taps. The counts are read-driven, so load
+    // moves the ~10s clock and nothing else — hence the 40s budget.
     const settledCart = useSlowCart();
     await writeFlow("settled-cart", {
       executionPrerequisite: "",
@@ -1726,13 +1625,11 @@ describe("repeat: composition", () => {
   }, 15000);
 
   it("nests directly under itself, re-running the whole inner block per outer pass", async () => {
-    // The multiplication the MAX_REPEAT_ITERATIONS docstring reasons about —
-    // the bound is per-block and nested blocks multiply — at the smallest
-    // product that shows it: one authored tap, 2 × 2 = 4 dispatched. The
-    // parse/serialize round-trip covers repeat-in-repeat as data only; this is
-    // the executing case, so it also pins where each line lands: the inner
-    // block's marker sits inside the outer iteration that re-introduced it,
-    // and its own iterations one level deeper again.
+    // The multiplication the MAX_REPEAT_ITERATIONS docstring reasons about, at
+    // the smallest product that shows it: one authored tap, 2 × 2 = 4
+    // dispatched. The executing case, so it also pins where each line lands —
+    // the inner block's marker inside the outer iteration that re-introduced
+    // it, and its own iterations one level deeper again.
     currentTree = () => screen([notification()]);
     await writeFlow("squared", {
       executionPrerequisite: "",
@@ -1774,8 +1671,8 @@ describe("repeat: composition", () => {
   it("re-runs a run: fragment once per iteration, attributed to the fragment", async () => {
     // Both directions at once: a fragment invoked from inside a repeat body,
     // and a repeat block inside that fragment. The fragment is loaded and
-    // expanded per iteration — it is not hoisted or expanded once — so the
-    // inner block's two taps happen on every outer pass: 2 × 2 = 4.
+    // expanded per iteration, so the inner block's two taps happen on every
+    // outer pass: 2 × 2 = 4.
     currentTree = () => screen([notification()]);
     await writeFlow("frag", {
       executionPrerequisite: "",
@@ -1797,10 +1694,8 @@ describe("repeat: composition", () => {
     expect(result.ok).toBe(true);
     expect(tapCount).toBe(4);
     // Attribution follows the fragment boundary, not the block: everything from
-    // the `run:` line inward says `frag`, so a reader can tell which file to
-    // open — and depth keeps accumulating across it (the fragment's steps are
-    // one deeper than the composition point, its own block one deeper again),
-    // rather than restarting at the fragment's top level.
+    // the `run:` line inward says `frag`, and depth keeps accumulating across
+    // it rather than restarting at the fragment's top level.
     const pass = [
       "repeat pass outer iteration N/2 @1",
       "run pass frag frag.yaml @1",
@@ -1858,13 +1753,11 @@ describe("repeat: composition", () => {
 
   it("attributes a fragment drain's converged and cap verdicts to the fragment", async () => {
     // A drain's verdict is pushed by the repeat block itself, not by the run:
-    // step, so its `flow` stamp is the only thing telling the CLI which file
-    // the verdict came from (the `[frag]` suffix reads exactly this field).
-    // The two tests above pin the stamp on the markers; the drain suite pins
-    // the verdicts, but only at top level — where the stamp equals the root
-    // flow — and through {@link shape}, which never reads `flow`. Two
-    // fragments in one run put both evaluated verdicts across the boundary:
-    // the first drain converges, the second runs into its cap.
+    // step, so its `flow` stamp is the only thing telling the CLI which file it
+    // came from (the `[frag]` suffix reads this field). The tests above pin the
+    // stamp on the markers, and the drain suite pins the verdicts only at top
+    // level, where the stamp equals the root flow. Two fragments here put both
+    // evaluated verdicts across the boundary.
     currentTree = () =>
       screen([
         notification(),
@@ -1934,10 +1827,9 @@ describe("repeat: composition", () => {
 
   it("attributes a fragment drain's guard-error and cancellation lines to the fragment", async () => {
     // The block's other two terminal lines — the guard's error and the shared
-    // cancellation line — are hard stops, so each needs its own run; one
-    // fragment serves both. Like the verdicts above they are pushed from
-    // inside the fragment's repeat, and only their `flow` stamp keeps them
-    // from reading as the caller's own.
+    // cancellation line — are hard stops, so each needs its own run. Like the
+    // verdicts above, only their `flow` stamp keeps them from reading as the
+    // caller's own.
     await writeFlow("frag", {
       executionPrerequisite: "",
       steps: [
@@ -2385,11 +2277,10 @@ describe("repeat: snapshot smuggled in through a nested tool: flow-execute", () 
 
   it("takes the prerequisite handshake when the nested flow's leading run: reaches a snapshot-bearing fragment", async () => {
     // The nested run's leading-launch scan reads the same seeded repeat scope
-    // execSteps does, so it stops at frag's load exactly where the executor
-    // would: the launch behind that hop can never run, and refusing the
-    // composition for declaring executionPrerequisite would send the author to
-    // drop a launch that was never what fails the run. Scan-blind to the scope,
-    // this walked straight through to the launch and refused.
+    // execSteps does, so it stops at frag's load where the executor would: the
+    // launch behind that hop can never run, and refusing the composition would
+    // send the author to drop a launch that was never the problem. Scan-blind
+    // to the scope, this walked through to the launch and refused.
     await writeGatedChain();
     await writeGatedSmuggler("gated-smuggler", { name: "gated" });
 
@@ -2428,16 +2319,13 @@ describe("repeat: snapshot smuggled in through a nested tool: flow-execute", () 
 
 /**
  * A `repeat:` marker is scaffolding because of what the line IS, not because of
- * the path that reported it. Four sites report a block that will not run — a
- * hard stop, a cancellation, an enclosing block skipped, and the device-free
- * error the runner deliberately leaves counted (a structural line is dropped
- * from the counts whatever its status, so stamping an `error` would zero
- * `errored` and turn a broken run green). If only the executing site stamps
- * `structural`, the same block takes no step number when it runs and a number
- * when it is skipped over: every later step shifts by one between two runs of
- * one flow, and the skipped run's counts gain a step nobody wrote. {@link shape}
- * is blind to this (it never reads the flag), so these tests assert on
- * `structural`, on {@link numbered} and on the counters.
+ * the path that reported it. If only the executing site stamps `structural`,
+ * the same block takes no step number when it runs and a number when it is
+ * skipped over, shifting every later step between two runs of one flow. The
+ * device-free error is the deliberate exception — a structural line is dropped
+ * from the counts whatever its status, so stamping it would zero `errored` and
+ * turn a broken run green. {@link shape} never reads the flag, so these tests
+ * assert on `structural`, {@link numbered} and the counters.
  */
 describe("repeat: the block marker is structure wherever it is reported", () => {
   /**
@@ -2447,11 +2335,9 @@ describe("repeat: the block marker is structure wherever it is reported", () => 
    * both times, so any numbering difference is the runner's, not the author's.
    *
    * `times: 1` deliberately: the invariant is that the MARKER consumes no step
-   * number, not that a block's followers are numbered alike whatever it does. A
-   * `times: 3` block genuinely numbers three taps when it runs and one skipped
-   * tap when it doesn't — one line per authored step is the promise, and the
-   * body is authored once. At one iteration the two runs have the same counted
-   * lines, so any shift left is the marker's alone.
+   * number, not that a block's followers are numbered alike whatever it does.
+   * At one iteration the two runs have the same counted lines, so any shift
+   * left is the marker's alone.
    */
   const GUARDED: FlowStep[] = [
     { kind: "assert", condition: "visible", selector: { text: "Clear notification" } },
@@ -2580,11 +2466,10 @@ describe("repeat: cancellation inside the block", () => {
 
     const result = await run("cancelled-mid-times", controller.signal);
 
-    // Iterations 3-5 never run — and the terminal line is the only thing in the
-    // block saying so: without it this reads as five promised iterations, two
-    // all-pass taps, and no account of the missing three. It carries the
-    // block's bound, so it names what it closes rather than reading as a bare
-    // `repeat — run aborted` (the reason itself says only that the run ended).
+    // Iterations 3-5 never run, and the terminal line is the only thing saying
+    // so: without it this reads as five promised iterations, two all-pass taps
+    // and no account of the missing three. It carries the block's bound, so it
+    // names what it closes rather than reading as a bare `repeat — run aborted`.
     expect(tapCount).toBe(2);
     expect(shape(result.steps)).toEqual([
       "repeat pass 5 times @0",
@@ -2642,12 +2527,9 @@ describe("repeat: cancellation inside the block", () => {
 
   it("still says it when the abort lands with steps left in the body, in either bound", async () => {
     // The one-step bodies above cannot tell the block's two exits apart: the
-    // abort lands on the body's last step, so `execSteps` runs out of steps
-    // without entering its own abort branch and `stopped` stays false either
-    // way. Leave a step behind the tap — the shape most flows have — and both
-    // flags are true on return: `execSteps` skips the leftover as `run aborted`
-    // and sets `stopped`. Only testing the abort first still reaches the
-    // block's line; checking the cheap `stopped` first would drop it.
+    // abort lands on the last step, so `stopped` stays false either way. Leave
+    // a step behind the tap and both flags are true on return, so only testing
+    // the abort first still reaches the block's line.
     currentTree = () => screen([notification()]);
     const ECHO: FlowStep = { kind: "echo", message: "after" };
     await writeFlow("cut-mid-body-times", {
@@ -2713,10 +2595,8 @@ describe("repeat: cancellation inside the block", () => {
   it("adds no line when the cancellation lands on the last step of the last iteration", async () => {
     // The line stands in for iterations the block promised and will never
     // start, so it takes more than a live abort: the block has to still owe
-    // one. Three runs of the same shape, all cancelled from the second tap,
-    // separate a block with an iteration left from two without one — including
-    // the case whose body the abort cut in half, where the abandoned step
-    // reports its own skip and the block still owes nothing.
+    // one. Three runs of the same shape separate a block with an iteration left
+    // from two without one, including the case whose body the abort cut in half.
     currentTree = () => screen([notification()]);
     const ECHO: FlowStep = { kind: "echo", message: "after" };
     await writeFlow("abort-on-last-step", {
@@ -2755,10 +2635,9 @@ describe("repeat: cancellation inside the block", () => {
     // for a block that delivered everything its marker promised.
     expect(counts(complete)).toEqual({ ok: false, passed: 2, failed: 0, skipped: 0, errored: 0 });
 
-    // The same final iteration, one step short of its end: the echo never
-    // runs, and it says so itself. The block's answer does not change — it
-    // still promised two iterations and delivered two — so it closes silently
-    // here as well, and the abandoned echo is accounted for exactly once.
+    // The same final iteration, one step short of its end: the echo never runs
+    // and says so itself. The block still promised two iterations and delivered
+    // two, so it closes silently and the echo is accounted for exactly once.
     expect(shape(midBody.steps)).toEqual([
       "repeat pass 2 times @0",
       "repeat pass iteration 1/2 @1",
@@ -2790,15 +2669,11 @@ describe("repeat: cancellation inside the block", () => {
   }, 25000);
 
   it("closes every enclosing block with its own line when the abort cuts a nested repeat short", async () => {
-    // One cancellation, and both blocks still owe iterations when it lands —
-    // the inner its third, the outer its second: the inner repeat closes
-    // itself, the leftover body step skips on its own account, then the outer
-    // block closes too. Each line carries its own block's bound, so the two
-    // `run aborted` entries are told apart by target, not just by the depth
-    // indent — and `skipped` carries one per level, each level's unstarted
-    // iterations being its own loss to report: a level without its line would
-    // read as an all-pass block whose marker promised iterations that never
-    // ran.
+    // One cancellation, both blocks still owing iterations: the inner repeat
+    // closes itself, the leftover body step skips on its own account, then the
+    // outer block closes too. Each line carries its own block's bound, so the
+    // two `run aborted` entries are told apart by target and not by indent
+    // alone, and `skipped` carries one per level.
     currentTree = () => screen([notification()]);
     const controller = abortDuringTap(2);
     await writeFlow("cancelled-in-nested", {
@@ -2841,23 +2716,11 @@ describe("repeat: cancellation inside the block", () => {
   }, 15000);
 
   it("closes only the enclosing blocks that still owed an iteration", async () => {
-    // Which levels close is decided by the iterations each level has left, and
-    // by nothing else — least of all by whether the abort happened to land on
-    // the body's last step. Four runs of the same nested pair: cancelled from
-    // the last tap of the last iteration of both blocks, no level owes an
-    // iteration and no level says anything; cancelled on the inner block's
-    // last tap under the outer's FIRST iteration, only the outer owes one and
-    // only the outer says so; cancelled early, both levels owe one and both
-    // say so. The mixed run is what pins each level answering for itself: the
-    // condition reads that block's own bound, so an inner block that finished
-    // cannot silence an outer one that did not.
-    //
-    // The middle run is the point of the rule. It is the first flow with a
-    // trailing `echo:` inside the inner body, so the abort leaves an authored
-    // step undone — and the answer must not move: the echo reports its own
-    // `run aborted` skip, which is the whole of what the cancellation cost,
-    // and a closing line at either level would be a second account of it,
-    // charged as a skip to a block that ran every iteration it promised.
+    // Which levels close is decided by the iterations each level has left and
+    // nothing else, so an inner block that finished cannot silence an outer one
+    // that did not. The trailing `echo:` makes it sharp: it reports its own
+    // `run aborted` skip, so a closing line at either level would be a second
+    // account of the same loss.
     currentTree = () => screen([notification()]);
     const ECHO: FlowStep = { kind: "echo", message: "after" };
     const nested = (steps: FlowStep[]): FlowStep => ({
@@ -3026,9 +2889,7 @@ describe("repeat: cancellation inside the block", () => {
     const result = await run("cancelled-at-probe", controller.signal);
 
     // No iteration ran, so the authored steps still report one skip line each,
-    // bracketed by the block the way a cancellation caught mid-body brackets
-    // its leftovers: opening marker, children one level deeper, then the shared
-    // cancellation line closing the block at the enclosing depth.
+    // bracketed the way a cancellation caught mid-body brackets its leftovers.
     expect(tapCount).toBe(0);
     expect(shape(result.steps)).toEqual([
       'repeat pass until hidden "Clear notification" (max 10) @0',
@@ -3044,13 +2905,10 @@ describe("repeat: cancellation inside the block", () => {
   }, 15000);
 
   it("adds no stand-in skips when the cancellation lands at a later guard probe", async () => {
-    // Same probe boundary, one iteration in. The trigger still fires from
-    // inside a tree fetch, but only once the first body has run: the first
-    // probe's whole window and the tap's own settle reads all see tapCount 0,
-    // and the tap dispatches before incrementing it, so the first fetch that
-    // aborts is the second probe's. The body's lines are already in the
-    // report, so nothing is re-listed — the cancellation line alone closes
-    // the block, exactly as when the abort is caught after the body.
+    // Same probe boundary, one iteration in: the tap dispatches before
+    // incrementing tapCount, so the first fetch that aborts is the second
+    // probe's. The body's lines are already in the report, so nothing is
+    // re-listed and the cancellation line alone closes the block.
     const controller = new AbortController();
     currentTree = () => {
       if (tapCount >= 1) controller.abort();

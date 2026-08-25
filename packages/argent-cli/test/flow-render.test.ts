@@ -284,11 +284,8 @@ describe("flow report rendering", () => {
   it("numbers and counts a drain's verdict lines (converged pass, cap fail)", () => {
     // Two `repeat: { until }` blocks as the tool-server reports them: only the
     // opening and iteration markers are structural. Each block's closing
-    // verdict is its assertion — kind "repeat", NO target (its reason spells
-    // the condition), no structural flag, at the enclosing depth — so it MUST
-    // take a step number and be counted, or the summary would count a verdict
-    // no numbered line carries. Numbering: the five markers take none; the
-    // taps take 1, 3, 4 and the verdicts 2 and 5.
+    // verdict is its assertion, so it MUST take a step number and be counted,
+    // or the summary would count a verdict no numbered line carries.
     const out = renderReport(
       mkReport([
         {
@@ -366,12 +363,10 @@ describe("flow report rendering", () => {
   });
 
   it("numbers and counts a drain's guard-error verdict and a bound's cancellation", () => {
-    // The other two repeat-kind lines the runner deliberately leaves
-    // unstamped. A guard that errored on the first probe: the marker, then the
-    // authored body as skip stand-ins (zero iterations ran), then the errored
-    // verdict — no target, reason names the guard. Numbering: marker takes
-    // none, the skipped tap is 1, the verdict is 2 — and the verdict is what
-    // makes the report FAIL, so it must carry a number.
+    // The other two repeat-kind lines the runner deliberately leaves unstamped.
+    // A guard that errored on the first probe: the marker, then the authored
+    // body as skip stand-ins, then the errored verdict — which is what makes
+    // the report FAIL, so it must carry a number.
     const errored = renderReport(
       mkReport([
         {
@@ -409,11 +404,9 @@ describe("flow report rendering", () => {
     );
 
     // A `repeat: 3` cancelled after its first iteration: the closing line is
-    // the one terminal that repeats the marker's target (the bound), status
-    // skip, reason "run aborted" — and it too is a counted, numbered step.
-    // Numbering: two markers take none, the tap is 1, the cancellation is 2.
-    // The runner folds the abort into the verdict (summarize's `ok` includes
-    // `!aborted`), so a report carrying this line is always FAIL.
+    // the one terminal that repeats the marker's target, and it too is a
+    // counted, numbered step. The runner folds the abort into the verdict, so a
+    // report carrying this line is always FAIL.
     const aborted = renderReport(
       mkReport(
         [
@@ -704,9 +697,9 @@ describe("flow report rendering", () => {
   it("renderFailedSteps prints a failure line a server stamped structural", () => {
     // Wire data again: `structural` is the server's word, and batch mode prints
     // these lines and nothing else. A server that marked a failing line
-    // structural while still counting it failed used to print a FAIL summary
-    // with no failure line under it — renderSummary counts from the report's
-    // own fields, which is why the counts here disagree with the flags.
+    // structural used to print a FAIL summary with no failure line under it —
+    // renderSummary counts from the report's own fields, which is why the
+    // counts here disagree with the flags.
     const report = mkReport(
       [
         { index: 0, kind: "tap", status: "pass", target: '"A"' },

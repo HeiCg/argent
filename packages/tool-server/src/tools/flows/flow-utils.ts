@@ -663,19 +663,13 @@ export type UiWhenCondition = Extract<WhenCondition, { kind: "ui" }>;
 /**
  * A `repeat:` block's bound — exactly one of two forms, never both:
  *
- * - `times`: a literal iteration count. Statically known, so the block is
- *   precisely equivalent to pasting its steps N times — which is the whole
- *   justification for the directive: compression, no new semantic power. A
- *   completed run's counts hold that equivalence too: the block and iteration
- *   marker lines report as structural (see StepReport.structural) and are
- *   counted no more than `echo` is — completed, because a block cut short by a
- *   failure does not pad its unrun iterations as skips.
+ * - `times`: a literal iteration count, so the block is precisely equivalent to
+ *   pasting its steps N times. A completed run's counts hold that equivalence,
+ *   the markers reporting as structural (see StepReport.structural).
  * - `until`: drain a UI condition, checked BEFORE each iteration (so an
  *   already-satisfied guard runs zero iterations), bounded by `max`. Hitting
  *   `max` with the guard still unmet FAILS: a drain that didn't converge
- *   asserts nothing if it passes. That terminal line is an evaluated outcome
- *   rather than structure, so it IS counted — a converged drain's pass, the
- *   cap's fail.
+ *   asserts nothing if it passes, so that terminal line IS counted.
  *
  * `max` is stored resolved (DEFAULT_REPEAT_MAX when the author omitted it) so
  * the runner never re-derives a default; the serializer drops it again when it
@@ -733,23 +727,12 @@ export type FlowFile = {
 /**
  * The literal child steps of a block directive, or undefined for a leaf step.
  *
- * The single predicate for "this step has authored children", read at nine
- * sites. Four expand a block that will NOT execute into skip lines, so a report
- * keeps one line per authored step no matter where the run ended: `execSteps`'
- * hard-stop, device-free and cancellation gates, plus `reportBlockSkipped`
- * recursing into a nested block. (Two executors reach those same skip lines by
- * another route, having the block in hand and passing `step.steps` straight to
- * `reportBlockSkipped`: `execWhenStep` on an unmet guard, and `execRepeatStep`
- * on a drain that runs no iteration.) The fifth is the upload preflight's walk,
- * where a block it cannot see hides a nested `run:`/`snapshot` from validation.
- * The sixth and seventh, `flowRequiresDevice` and `flowScopesDevice`
- * (flow-device.ts), read children to resolve the flow's device decisions from a
- * block's body — dead while every block kind classifies device-requiring, and
- * the guard against a later one. The eighth and ninth hunt a `snapshot:` down a
- * block's nesting, the two halves of one refusal: `assertNoSnapshotInRepeat`
- * below, throwing at parse for the file it can see, and `findFragmentSnapshot`
- * (flow-run.ts), the same walk without the throw for a fragment resolved at run
- * time. A block invisible to either hides the snapshot the refusal is about.
+ * The single predicate for "this step has authored children". Readers expand a
+ * block that will NOT execute into skip lines; the upload preflight walks
+ * children so a block cannot hide a nested `run:`/`snapshot`; `flowRequiresDevice`
+ * and `flowScopesDevice` (flow-device.ts) resolve device decisions from a
+ * block's body; and `assertNoSnapshotInRepeat` below and `findFragmentSnapshot`
+ * (flow-run.ts) hunt a `snapshot:` down a block's nesting.
  *
  * Those sites used to ask `kind === "when"` directly, so a second block
  * directive would have had to remember every one of them and a forgotten site
@@ -779,23 +762,11 @@ export function isBlockStep(step: FlowStep): step is BlockStep {
  * only says the block exists and how it is bounded, false for `when:`, whose
  * line records a guard that really was evaluated.
  *
- * The companion to {@link blockSteps}: that generalizes "a block's children
- * expand wherever it does not execute", this generalizes the other per-directive
- * property of the same line, so a third block directive cannot pick one up and
- * miss the other. Five sites synthesize a marker — the one that executes the
- * block, plus the four that report one that never ran (hard stop, device-free
- * flow, cancellation, an enclosing block skipped) — and the flag decides both
- * the run's counts and the renderers' step numbering. Four of them stamp it;
- * the device-free branch deliberately does not — its line is an `error`, which
- * a structural stamp would drop from `errored`, handing a green PASS to a run
- * that could not execute a step (reasoned through at the branch, and
- * unreachable for a `repeat:` today since stepRequiresDevice answers true for
- * it). Stamped by some of the skip paths and not others, the same `repeat:`
- * block takes a step number when it is skipped over and none when it runs,
- * sliding every later step's number between two runs of one flow. `echo` never
- * had that problem: the renderers derive it from `kind`
- * alone, so every producer gets it right for free. A wire flag has to be stamped
- * by each producer, and this is the one question they all ask.
+ * The companion to {@link blockSteps}, so a third block directive cannot pick
+ * one up and miss the other. Every site that synthesizes a marker must stamp
+ * it: stamped on some skip paths and not others, the same block takes a step
+ * number when skipped and none when it runs. The one exception is the
+ * device-free branch in flow-run, which reasons through why at the branch.
  */
 export function isStructuralBlockMarker(step: FlowStep): boolean {
   return step.kind === "repeat";
@@ -803,21 +774,14 @@ export function isStructuralBlockMarker(step: FlowStep): boolean {
 
 /**
  * A flow is end-to-end iff it BEGINS by launching an app — its first
- * executable step (ignoring `echo` narration) is a `launch`. "Begins" is
- * judged on the flow as it would EXECUTE, i.e. as the PASTED-OUT form: a
- * `times`-bounded `repeat:` block is precisely its body written N times (see
- * RepeatSpec), so the scan descends into it — the first iteration's launch
- * runs unconditionally at step 1, exactly where the unwrapped spelling puts
- * it — and an all-narration body contributes nothing, so the scan continues
- * with the steps after the block, as the inlined echoes would. Without the
- * descent, `repeat: 1` around a leading launch would be a wrapper that parses
- * an e2e flow as a fragment, letting it declare the `executionPrerequisite`
- * that {@link validateFlow} exists to refuse. An `until` drain stays opaque,
- * deliberately: its guard is checked BEFORE each iteration, so its body —
- * launch included — may run zero times, and a conditional launch controls
- * nothing (`when:` reads the same way; like any other executable step, either
- * ends the scan as "not e2e"). Such a flow controls its own start state, so it
- * must not declare an `executionPrerequisite`. Everything else is a fragment.
+ * executable step (ignoring `echo` narration) is a `launch`. Such a flow
+ * controls its own start state, so it must not declare an
+ * `executionPrerequisite`. Everything else is a fragment.
+ *
+ * Judged on the flow as it would EXECUTE, so the scan descends into a
+ * `times`-bounded `repeat:` (see RepeatSpec), which otherwise becomes a wrapper
+ * that parses an e2e flow as a fragment. An `until` drain stays opaque: its
+ * body may run zero times, and a conditional launch controls nothing.
  */
 function isE2eFlow(flow: FlowFile): boolean {
   const site = beginsWithLaunch(flow.steps);
@@ -825,30 +789,17 @@ function isE2eFlow(flow: FlowFile): boolean {
 }
 
 /**
- * Where {@link isE2eFlow}'s launch is written, which is not always where it
- * runs: `"direct"` — the leading launch is a step of the flow itself;
- * `"blocked"` — it is reached only by descending into a `times` block, so no
- * step of the flow itself is the launch this refusal is about (a later
- * top-level `launch` may well exist, and is not it). {@link validateFlow}
- * spells its remedy off this: told to "drop the leading launch", an author of
- * the blocked spelling has no step in front of them that is one.
- *
- * Exported for the run-time twin of that refusal (flow-run's `leadingLaunch`,
- * which follows a leading `run:` chain across files): it classifies the flow
- * that OWNS the launch the same way and spells the same remedy off it, so one
- * spelling cannot get two readings depending on which check caught it.
+ * Where {@link isE2eFlow}'s launch is written: `"direct"` — a step of the flow
+ * itself; `"blocked"` — reached only by descending into a `times` block, so no
+ * step in front of the author is one. {@link validateFlow} and its run-time
+ * twin (flow-run's `leadingLaunch`) both spell their remedy off this.
  */
 export type LeadingLaunchSite = "direct" | "blocked";
 
 /**
- * {@link isE2eFlow}'s scan, four-valued so a `times` block can be exactly as
- * wide as its pasted-out body while still being distinguishable from the
- * unwrapped spelling: a {@link LeadingLaunchSite} — the first executable step
- * is a launch, written here or inside a block that opens these steps; `false` —
- * it is something else, launch or not further down; `null` — these steps
- * contribute no executable step at all, so an enclosing scan carries on after
- * them (collapsing `null` to `false` at this level would let an all-echo block
- * hide a launch that follows it).
+ * {@link isE2eFlow}'s scan. `null` — these steps contribute no executable step
+ * at all, so an enclosing scan carries on after them; collapsing it to `false`
+ * would let an all-echo block hide a launch that follows it.
  */
 function beginsWithLaunch(steps: FlowStep[]): LeadingLaunchSite | false | null {
   for (const step of steps) {
@@ -1301,9 +1252,8 @@ function idleToYaml(step: Extract<FlowStep, { kind: "idle" }>): YamlStep {
   return { await: body };
 }
 
-/** parseRepeatCount from the serialize side: a count outside [1,
- * MAX_REPEAT_ITERATIONS] — or fractional, or not a number at all from an
- * untyped caller — has no spelling the parser reads back. */
+/** parseRepeatCount from the serialize side: a count the parser cannot read
+ * back has no spelling to emit. */
 function assertRepeatCount(count: number, field: "times" | "max"): void {
   if (!Number.isInteger(count) || count < 1 || count > MAX_REPEAT_ITERATIONS) {
     throw new Error(
@@ -1316,23 +1266,13 @@ function assertRepeatCount(count: number, field: "times" | "max"): void {
  * Sugar a `repeat:` bound for YAML output, rejecting bounds that would
  * serialize to a flow the parser cannot read back.
  *
- * Only the iteration count is checked here — `times`, or a drain's `max`. The
- * `until` guard is part of the bound too and is NOT checked: a hand-built spec
- * with a `text` condition and no `expectedText` serializes through
- * `textWaitToYaml`'s `?? ""` fallback to `contains: ""`, which the parser then
- * refuses to read back. That hole belongs to every condition the serializer
- * writes — `when:`, `await` and `assert` spell theirs through the same
- * `waitToYaml` — and nothing that came out of the parser can reach it (a `text`
- * condition parses only with a non-empty comparator), so plugging it on this
- * arm alone would claim a completeness the serializer does not have. The body's
- * invariants — a non-empty `steps:` list, no `snapshot:` inside — are left out
- * for that reason and one more: they belong to the block, not to the spec, and
- * `when:` shares the first verbatim.
+ * Only the iteration count is checked: the `until` guard's own unserializable
+ * shapes are a hole every condition through `waitToYaml` shares, unreachable
+ * from anything the parser produced.
  */
 function repeatSpecToYaml(spec: RepeatSpec): YamlRepeatBody {
-  // Canonical spellings: a count sugars to the bare integer, and a `max` that
-  // matches the default drops out — both so parse ∘ serialize is the identity
-  // on already-canonical input.
+  // Canonical spellings, so parse ∘ serialize is the identity on already
+  // canonical input.
   if (spec.mode === "times") {
     assertRepeatCount(spec.times, "times");
     return spec.times;
@@ -1765,12 +1705,9 @@ type GuardDirective = "when" | "until";
 
 /**
  * How a directive names itself in its own parse errors. `until` is spelled with
- * its parent because it is not a step of its own: the entry its errors echo back
- * is the `{ repeat: <bound> }` wrap {@link parseRepeatStep} passes (the bound
- * alone, so a long `steps:` body cannot push the named part past the entry
- * render cap), which carries `repeat` but says nothing about which of its keys
- * is wrong. Every message a guard can produce takes its spelling from here, so
- * the two cannot drift apart again.
+ * its parent because it is not a step of its own: its errors echo the
+ * `{ repeat: <bound> }` wrap {@link parseRepeatStep} passes, which carries
+ * `repeat` but says nothing about which of its keys is wrong.
  */
 function directiveLabel(kind: "await" | "assert" | GuardDirective): string {
   return kind === "until" ? "repeat.until" : kind;
@@ -1789,10 +1726,9 @@ function directiveLabel(kind: "await" | "assert" | GuardDirective): string {
 function parseWaitFields(
   raw: unknown,
   kind: "await" | "assert" | GuardDirective,
-  // The entry the errors echo back. The default puts the body back under its
-  // own directive key, which is how `await`/`assert`/`when` are written;
-  // `until` is the one caller for which that is false, so it passes its own
-  // (see parseWhenCondition).
+  // The entry the errors echo back. The default puts the body under its own
+  // directive key, which is how `await`/`assert`/`when` are written; `until` is
+  // the one caller for which that is false, so it passes its own.
   entry: unknown = { [kind]: raw }
 ): WaitFields {
   const label = directiveLabel(kind);
@@ -2456,16 +2392,11 @@ function parseWhenCondition(
   directive: GuardDirective = "when",
   // The entry the errors echo back. A `when:` step opens with its own key, so
   // wrapping the condition rebuilds a fragment the author can find in the file;
-  // an `until` lives inside a `repeat:` step, so parseRepeatSpec passes the
-  // same one-key wrap under `repeat:` — bounded by the bound like `when:`'s,
-  // rather than a `{ until: … }` entry that appears nowhere.
+  // an `until` appears nowhere on its own, so parseRepeatSpec passes the
+  // `{ repeat: <bound> }` wrap instead.
   entry: unknown = { [directive]: raw }
 ): WhenCondition {
   const label = directiveLabel(directive);
-  // `until` is the when-guard vocabulary minus `platform`: the platform is
-  // fixed for a run, so a platform exit test never changes between iterations —
-  // the loop is infinite or empty by construction. Rejected at parse rather
-  // than left to fail at `max`.
   const allowPlatform = directive === "when";
   const conditionKeys = allowPlatform
     ? `${WAIT_CONDITIONS.join(", ")}, platform`
@@ -2523,9 +2454,8 @@ function parseWhenCondition(
   // literal placeholder text that is never on screen: exists/visible/text
   // guards are permanently false and a `hidden` guard vacuously true. In an
   // assert that mistake fails loudly on the first run; here the guard silently
-  // degenerates into a constant, so it fails at parse instead. An `until`
-  // guard degenerates the same way, into the two ends of the drain: never met
-  // (runs to `max` and fails) or vacuously met (zero iterations).
+  // degenerates into a constant, so it fails at parse instead. An `until` guard
+  // degenerates the same way, into the two ends of the drain.
   const { selector, expectedText } = cond;
   // Walk the whole relation tree: a placeholder in a scope degrades the guard
   // exactly as one in the target's own fields would.
@@ -2722,41 +2652,18 @@ function completeRunExtension(value: string): string {
   return FLOW_FILE_NAME_PATTERN.test(path.posix.basename(candidate)) ? candidate : value;
 }
 
-/**
- * Default cap on an `until` drain. Overridable (`max:`) — the defaulted-knob
- * pattern, like `long-press` duration. Requiring an explicit `max` was
- * considered and rejected as noise on the common case.
- */
+/** Default cap on an `until` drain, overridable with `max:`. */
 const DEFAULT_REPEAT_MAX = 10;
 
 /**
- * Sanity bound on `times` and `max` alike. Not a semantic limit — a repeat
+ * Sanity bound on `times` and `max` alike, like every other count in a flow: a
  * block emits one marker plus its whole body per iteration, so an unbounded
- * literal (`repeat: 1000000`) is a hung run and a report no one can read. Every
- * other count in a flow is capped for the same reason.
+ * literal is a hung run and a report no one can read.
  *
- * The guarantee is per-block, and only per-block: nested blocks multiply, and
- * nothing bounds the product. MAX_BLOCK_DEPTH does not — it is there to catch
- * cyclic aliases, so twenty levels of `repeat: 100` inside each other parse
- * clean and only the twenty-first is a parse error. Two nested is 10^4 body
- * executions, each paying for its own UI tree fetch; three is 10^6, and since
- * `state.reports` is retained whole in the run's result the report array grows
- * with the product too, which makes deep enough an OOM rather than merely a
- * slow run.
- *
- * Capping the product was considered and rejected. Not because every flow is
- * trusted — the upload route carries foreign YAML, and its preflight
- * (assertUploadSelfContained) rejects only `run:` and `snapshot` steps, so
- * nested repeats sail through — but because a cap there bounds nothing: an
- * uploader is a tool client whose connection can already drive the device
- * indefinitely (a tap loop, flow runs back to back), so the pathological
- * product enables nothing that connection could not already do. What remains
- * is author error, where the fix is the correct input. And there is no
- * principled threshold to pick: `repeat: 20` inside `repeat: 20` is 400 and
- * entirely legitimate, a drain with `max: 100` inside `repeat: 20` is 2000 and
- * also legitimate — both sit well above any cap that would catch the
- * pathological case. Any number chosen trades a rare self-inflicted hang for
- * common false rejections of valid flows.
+ * Per-block only. Nested blocks multiply and the product is deliberately not
+ * capped — an uploader is a tool client whose connection can already drive the
+ * device indefinitely, and no threshold catches the pathological product
+ * without rejecting the legitimate `repeat: 20` inside `repeat: 20`.
  */
 const MAX_REPEAT_ITERATIONS = 100;
 
@@ -2773,9 +2680,8 @@ function parseRepeatCount(raw: unknown, entry: unknown, field: "times" | "max"):
 
 /**
  * Parse a `repeat:` bound — the bare-integer sugar or the `until` map. Exactly
- * one of `times` | `until`, never both and never neither: they are the two
- * different questions "how many" and "until when", and a block answering both
- * has no defined meaning.
+ * one of `times` | `until`, never both and never neither: "how many" and "until
+ * when" are different questions, and a block answering both has no meaning.
  */
 function parseRepeatSpec(raw: unknown, entry: unknown): RepeatSpec {
   // Bare-integer sugar. Unambiguous by construction: a condition is a map.
@@ -2821,20 +2727,13 @@ function parseRepeatSpec(raw: unknown, entry: unknown): RepeatSpec {
 /**
  * Reject `snapshot:` anywhere inside a repeat body. A snapshot name maps to one
  * baseline, but a repeat body is written to be re-run, so a later iteration
- * compares its own legitimately different screen — that difference is usually
- * why the block loops at all — against that same baseline. There is
- * deliberately no per-iteration index to disambiguate names (see the rejected
- * loop-variable), so the only honest answer is to refuse at parse.
+ * compares its own legitimately different screen against that same baseline.
  *
- * The refusal is on the construct, not the bound: `repeat: 1` and `max: 1` are
- * refused like any other block, since a block bounded at 1 is one edit from N
- * and a rule that turned on the count would flip while an author narrows a
- * failing block down.
- *
- * Walks nested blocks via {@link blockSteps}. A `snapshot:` reached through a
- * `run:` fragment is invisible here (different file, resolved at run time) —
- * execRunStep closes that hole at fragment load, the earliest the runner can
- * see the fragment's steps, by failing the `run:` step itself.
+ * Refused on the construct, not the bound: `repeat: 1` is refused too, since a
+ * rule keyed on the count would flip while an author narrows a failing block
+ * down. Walks nested blocks via {@link blockSteps}; a `snapshot:` reached
+ * through a `run:` fragment is invisible here, and execRunStep closes that hole
+ * at fragment load.
  */
 function assertNoSnapshotInRepeat(steps: FlowStep[], entry: unknown): void {
   for (const step of steps) {
@@ -2854,9 +2753,9 @@ function assertNoSnapshotInRepeat(steps: FlowStep[], entry: unknown): void {
  * sibling shape as `when:`, so the two nest in each other and around `run:`
  * for free.
  *
- * Repeat is NOT retry. A failure inside any iteration is a real failure and
- * hard-stops the flow like any other; re-running a side-effecting iteration
- * would double-fire it. "Repeat until it works" is the Maestro-habit misread.
+ * Repeat is NOT retry, the Maestro-habit misread: a failure inside any
+ * iteration hard-stops the flow, since re-running a side-effecting iteration
+ * would double-fire it.
  */
 function parseRepeatStep(raw: Record<string, unknown>, depth: number): FlowStep {
   assertBlockDepth(raw, depth);
@@ -2866,12 +2765,9 @@ function parseRepeatStep(raw: Record<string, unknown>, depth: number): FlowStep 
       "a repeat step takes exactly { repeat: <count | { until, max? }>, steps: [...] }"
     );
   }
-  // The bound errors and the snapshot refusal both echo `{ repeat: … }`, not
+  // The bound errors and the snapshot refusal echo `{ repeat: … }` rather than
   // the whole step: keys are unordered, so a steps-first long body would push
-  // what each echo is there to carry — the bound for a bound error, the
-  // identity of the block for a refusal that already names the snapshot — past
-  // the MAX_ENTRY_RENDER_CHARS truncation. The wrap is sized by the bound
-  // alone, so no body can cost either message its echo.
+  // the bound past the MAX_ENTRY_RENDER_CHARS truncation.
   const boundEntry = { repeat: raw.repeat };
   const spec = parseRepeatSpec(raw.repeat, boundEntry);
   const steps = parseBlockSteps(raw, depth, "repeat needs a non-empty steps list to run");
@@ -3121,13 +3017,10 @@ export function serializeFlow(flow: FlowFile): string {
 /** Validate cross-field invariants that are checkable without other files. */
 export function validateFlow(flow: FlowFile): void {
   if (isE2eFlow(flow) && flow.executionPrerequisite) {
-    // The remedy names a step the file actually has: a blocked launch is
-    // written inside a `repeat:` block, and "drop the leading launch" sends
-    // its author looking for a top-level launch step the leading launch is
-    // not — a later one, if the file has any, being the wrong one. Scanned
-    // again rather than threaded through: this arm only runs when the flow is
-    // already being refused, and one predicate owning "is this e2e" is worth
-    // more than the walk.
+    // The remedy names a step the file actually has: "drop the leading launch"
+    // sends the author of a blocked one looking for a top-level launch step
+    // that is not there. Scanned again rather than threaded through — this arm
+    // only runs when the flow is already being refused.
     const remedy =
       beginsWithLaunch(flow.steps) === "blocked"
         ? "Drop the leading launch out of the repeat block around it (or drop the block)"

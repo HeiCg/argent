@@ -173,25 +173,11 @@ export function stepRequiresDevice(registry: Registry, step: FlowStep): boolean 
       return false;
     case "tool":
       return toolRequiresDevice(registry, step.name);
-    // A block directive needs a device unconditionally rather than recursing
-    // into its body to see whether any child does — `when` because its guard
-    // reads the tree, `repeat` by the same blanket answer. A `repeat: { times }`
-    // over only `wait:`/`echo:` steps genuinely needs none, and this "yes" makes
-    // flowRequiresDevice say yes for the whole flow, so resolveRunDevice
-    // resolves one before step 1. What that costs turns on the host: with
-    // nothing booted, or several, the run is refused outright — `No booted
-    // device found …` / `<n> booted devices matched …`, neither refusal naming
-    // the wrapper that introduced the requirement. With exactly one there is no
-    // refusal at all: the run attaches to a device it never acts on, reports
-    // it, and touches it on the way in and out — the status-bar pin and its
-    // teardown restore on ios/android, `frontChromiumPage` on chromium. So the
-    // wrapper makes the flow's outcome and reported device depend on what else
-    // is booted, the property resolveRunDevice's null return exists to keep.
-    // Same "yes", second cost: wrapping a `devices`-scoped cleanup flow in a
-    // block hands the answer to this line, so the run never reaches the
-    // flowScopesDevice question, which would have run the sweep unscoped rather
-    // than refuse it. Kept for one answer per step kind, cost accepted
-    // knowingly and pinned by a test.
+    // One answer per step kind: a block directive needs a device without
+    // recursing into its body. `when` because its guard reads the tree, and
+    // `repeat` by the same blanket answer — which costs a `times` block over
+    // pure `wait:`/`echo:` steps a device it never acts on. Accepted knowingly
+    // and pinned by a test.
     case "when":
     case "repeat":
     case "run":

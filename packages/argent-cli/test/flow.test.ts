@@ -1215,14 +1215,11 @@ describe("argent flow run", () => {
   });
 
   it("prints streamed steps through the real live renderer — markers unnumbered, a hostile structural value numbered", async () => {
-    // Drives the production onStepReport closure, not a test-local copy of its
-    // loop: the mocked callTool invokes the onProgress callback the handler
-    // passed it, event by event, and the transcript below is whatever that
-    // closure printed. A `repeat: { until }` block as the tool-server streams
-    // it — opening and iteration markers structural, the closing verdict not —
-    // plus one hostile line: `structural` is untrusted wire data, so only a
-    // literal `true` may go unnumbered, and a truthy "yes" must number like
-    // any step or the live numbering drifts from the counts the server sends.
+    // Drives the production onStepReport closure, not a test-local copy: the
+    // mocked callTool invokes the onProgress callback the handler passed it,
+    // and the transcript below is whatever that closure printed. One hostile
+    // line: `structural` is untrusted wire data, so a truthy "yes" must number
+    // like any step or the live numbering drifts from the server's counts.
     const streamed: StepReport[] = [
       { index: 0, kind: "repeat", status: "pass", target: "2 times", structural: true },
       {
@@ -1277,13 +1274,11 @@ describe("argent flow run", () => {
   });
 
   it("streams a structural marker's warning under its line, its artifacts in the tail", async () => {
-    // Same production closure, driven with a marker a server stamped
-    // structural while hanging a warning and a path on it. The live stream and
-    // the buffered report must say the same thing about it: the warning prints
-    // under the marker (padded to the blank the marker's own line printed), and
-    // the path rides the tail, where paths only exist once the final report
-    // lands. Dropping either would end the run on a summary counting a warning
-    // whose text never reached the screen.
+    // Same production closure, driven with a marker a server stamped structural
+    // while hanging a warning and a path on it. The warning prints under the
+    // marker, and the path rides the tail where paths only exist once the final
+    // report lands; dropping either would end the run on a summary counting a
+    // warning whose text never reached the screen.
     const streamed: StepReport[] = [
       {
         index: 0,

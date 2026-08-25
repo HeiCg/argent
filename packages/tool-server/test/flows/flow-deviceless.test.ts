@@ -207,14 +207,11 @@ describe("a flow that does touch a device still demands one", () => {
   });
 
   it("when a repeat block wraps steps that would each run device-free", async () => {
-    // The expected answer, not a bug — and the sharpest case, because a
-    // `repeat: { times }` has no guard of its own: unlike `when`, nothing here
-    // reads the device. `stepRequiresDevice` gives ONE answer per step kind and
-    // a block directive answers yes without recursing into its body, so
-    // wrapping narration in a repeat block is what makes the run demand a
-    // device — and it is demanded up front, before step 1, naming neither the
-    // block nor the fact that the same steps unwrapped need nothing. This is
-    // the refusal half of that cost; the quiet half is the suite below.
+    // The expected answer, not a bug — and the sharpest case, a `times` block
+    // having no guard of its own. `stepRequiresDevice` gives ONE answer per
+    // step kind without recursing into the body, so wrapping narration in a
+    // repeat block is what makes the run demand a device, up front and before
+    // step 1. The quiet half of that cost is the suite below.
     const body: FlowStep[] = [
       { kind: "echo", message: "tick" },
       { kind: "wait", ms: 1 },
@@ -280,11 +277,11 @@ describe("a repeat block over a device-free body, with one device booted", () =>
   ];
 
   it("attaches to that device and reports it, where the same steps unwrapped report none", async () => {
-    // The quiet half of the block directives' blanket device answer: exactly
-    // one booted device resolves, so there is no refusal to notice — the run
-    // just carries a device it never acts on, and is attributed to it. The
-    // wrapper is the only difference between the two flows here, so it is the
-    // wrapper that makes the report depend on what else is booted on the host.
+    // The quiet half of the blanket device answer: exactly one booted device
+    // resolves, so there is no refusal to notice and the run just carries a
+    // device it never acts on. The wrapper is the only difference between the
+    // two flows here, so it is what makes the report depend on what else is
+    // booted.
     await writeFlow("looped-narration", [
       { kind: "repeat", spec: { mode: "times", times: 2 }, steps: body },
     ]);

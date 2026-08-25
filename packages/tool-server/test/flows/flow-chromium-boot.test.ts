@@ -1135,10 +1135,9 @@ describe("flow-execute chromium boot", () => {
 
   it("boots for a chromium launch inside a leading times block", async () => {
     // A literal count is paste-equivalence, so the first iteration's launch runs
-    // unconditionally at step 1 exactly as the unwrapped spelling does, and the
-    // hoist has to boot for it. Without the descent the block is a wrapper that
-    // makes a launch-first run invisible: no boot, and the run attaches to
-    // whatever chromium instance happens to be up, green launch step and all.
+    // at step 1 exactly as the unwrapped spelling does. Without the descent the
+    // block is a wrapper that makes a launch-first run invisible: no boot, and
+    // the run attaches to whatever chromium instance happens to be up.
     const flowFile = await writeFlow(
       "steps:\n  - repeat: 2\n    steps:\n      - launch: { chromium: { path: ./app, args: [--e2e] } }\n"
     );
@@ -1175,13 +1174,11 @@ describe("flow-execute chromium boot", () => {
   });
 
   it("boots for a launch a leading times block reaches through a run: hop", async () => {
-    // The composed spelling of the fixture above, and the shape that pins what
-    // the descent carries into the body: the same stack, since the block adds no
-    // file hop, so `run: e2e-chromium` resolves against the containing file
-    // precisely as the executor expands it; and a repeat scope that fences only
-    // snapshot-bearing fragments (the two snapshot-fence tests further down),
-    // never a clean one. Get either wrong and the hop is a dead end — no boot,
-    // and the run attaches to whatever instance happens to be up.
+    // The composed spelling of the fixture above, pinning what the descent
+    // carries into the body: the same stack, since the block adds no file hop,
+    // and a repeat scope that fences only snapshot-bearing fragments. Get
+    // either wrong and the hop is a dead end — no boot, and the run attaches to
+    // whatever instance happens to be up.
     const top = await writeFlow(
       "steps:\n  - repeat: 1\n    steps:\n      - echo: warming up\n      - run: e2e-chromium\n"
     );
@@ -1208,11 +1205,9 @@ describe("flow-execute chromium boot", () => {
 
   it("boots the times block's first launch, not a later one in the body or behind the block", async () => {
     // Step 1 of the pasted-out flow is the body's FIRST executable step, so that
-    // is the launch the hoist owns. A descent that returned any other launch it
-    // met — the body's second, or the one after the block — would still boot,
-    // still report one call, and still tear down cleanly: only the app path
-    // tells the two apart. Booting app-b first would also fail iteration 1's
-    // launch, which settles the hoisted instance and finds the wrong app.
+    // is the launch the hoist owns. A descent that returned any other launch
+    // would still boot, still report one call and still tear down cleanly, so
+    // only the app path tells the two apart.
     const flowFile = await writeFlow(
       "steps:\n" +
         "  - repeat: 1\n" +
@@ -1240,12 +1235,10 @@ describe("flow-execute chromium boot", () => {
   });
 
   it("does not boot for a chromium launch inside an until drain", async () => {
-    // The negative twin of the three fixtures above, on the same branch:
-    // transparency is times-only. A drain's guard is checked BEFORE each
-    // iteration, so an already-satisfied guard runs the body — launch included —
-    // zero times, and a launch that may never happen is no basis for booting an
-    // app. Device resolution proceeds normally instead, and reports what it
-    // finds (nothing here).
+    // The negative twin of the three fixtures above: transparency is times-only.
+    // A drain may run its body — launch included — zero times, and a launch
+    // that may never happen is no basis for booting an app, so device
+    // resolution proceeds normally and reports what it finds (nothing here).
     const flowFile = await writeFlow(
       "steps:\n  - repeat: { until: { hidden: Busy } }\n    steps:\n      - launch: { chromium: ./app }\n"
     );
@@ -1297,12 +1290,11 @@ describe("flow-execute chromium boot", () => {
   });
 
   it("does not boot when that snapshot-bearing fragment sits a second run: hop down", async () => {
-    // The fence rides the recursion, not just the block's own first hop: the
-    // executor carries the repeat scope through every composition below the
-    // block, so a clean fragment that merely composes the snapshot-bearing one
-    // is refused at the SECOND load. A scan that dropped the scope one hop down
-    // would walk past a.yaml, report b.yaml's launch, and boot an app this run
-    // never reaches — the one-hop case above would stay green throughout.
+    // The fence rides the recursion, not just the block's own first hop, so a
+    // clean fragment that merely composes the snapshot-bearing one is refused at
+    // the SECOND load. A scan that dropped the scope one hop down would walk
+    // past a.yaml and boot an app this run never reaches, with the one-hop case
+    // above staying green throughout.
     const top = await writeFlow("steps:\n  - repeat: 1\n    steps:\n      - run: a.yaml\n");
     await writeSiblingFlow(top, "a", "steps:\n  - run: b.yaml\n");
     await writeSiblingFlow(

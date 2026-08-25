@@ -240,12 +240,9 @@ describe("create-flow repeat snippets", () => {
 
   it("both surfaces count the same deliberate edges off the paste-equivalence", () => {
     // The count is enumerated in the reference and quoted in the flow-execute
-    // description, which is the surface an MCP client carries in every session
-    // — so a fifth edge added to one leaves the other quietly undercounting.
-    // This pins the two prose counts to each other and no more: unlike the
-    // idle warning count above, the edges are not a list this can count, so
-    // an edge added to both prose surfaces without either count moving still
-    // passes.
+    // description, so a fifth edge added to one leaves the other undercounting.
+    // This pins the two prose counts to each other and no more: the edges are
+    // not a list it can count.
     const description = createRunFlowTool({} as unknown as Registry).description ?? "";
     const quoted = description.match(/minus\s+(\w+)\s+deliberate edges/);
     expect(quoted, "the flow-execute description no longer counts the edges").not.toBeNull();
@@ -270,8 +267,7 @@ describe("create-flow repeat snippets", () => {
   it("the snapshot refusal really does hold at bound 1, in both bounds", () => {
     // The section tells an author the refusal is on the construct, not the
     // count, and names the two spellings that bound a block at a single
-    // iteration. A parser that let either through would make that a lie at
-    // exactly the moment an author narrows a failing block down.
+    // iteration, so a parser that let either through would make that a lie.
     expect(repeatDocs()).toContain("`repeat: 1` and `max: 1` are refused like any other block");
     expect(() => parseFlow("steps:\n  - repeat: 1\n    steps: [{ snapshot: home }]\n")).toThrow(
       /cannot run inside a repeat block/i

@@ -17,10 +17,8 @@ import type { InvokeToolOptions, Registry, ToolContext } from "@argent/registry"
  *
  * The abort `signal` is forwarded on both paths so a client disconnect cancels a
  * sub-tool that would otherwise poll on to its own timeout. `inRepeatFlowScope`
- * rides both paths the same way — set explicitly via `overrides` by the flow
- * runner's repeat-scoped dispatch, or inherited from ctx by any orchestrator in
- * between — so a nested flow-execute learns it runs under a repeat at any
- * nesting distance.
+ * rides both paths the same way — set via `overrides` by the flow runner, or
+ * inherited from ctx by any orchestrator in between.
  */
 export async function invokeSubTool<T = unknown>(
   registry: Registry,
