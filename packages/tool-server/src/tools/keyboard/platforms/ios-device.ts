@@ -1,3 +1,4 @@
+import { FAILURE_CODES } from "@argent/registry";
 import type { Registry } from "@argent/registry";
 import type { PlatformImpl } from "../../../utils/cross-platform-tool";
 import { InvalidToolInputError } from "../../../utils/capability";
@@ -21,8 +22,16 @@ export function makeIosDeviceImpl(
       const key = params.key?.trim().toLowerCase();
       if (key && key !== "enter") {
         throw new InvalidToolInputError(
-          `Named key '${params.key}' is not supported on physical iOS devices — only 'enter'. ` +
-            "Type text into the focused field, or use gesture-tap to press on-screen keys."
+          `Named key '${params.key}' is not supported on physical iOS devices: only 'enter'. ` +
+            "Type text into the focused field, or use gesture-tap to press on-screen keys.",
+          {
+            // The bucket every unusable `key` value gets across backends — see
+            // the sibling guards in simulator-server-keys.ts / chromium.ts and
+            // the empty-key guard in ../index.ts.
+            error_code: FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED,
+            failure_stage: "keyboard_named_key_ios_device",
+            error_kind: "unsupported",
+          }
         );
       }
       // The empty request is the tool's documented no-op (see ../index.ts).
