@@ -201,6 +201,31 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     });
   }
 
+  it("leaves an app's own WebView subclass beside the host, not merged into it", () => {
+    // `deriveUiAutomatorRole` maps every class whose name contains "webview" to
+    // the role "WebView", so a role test cannot tell the doubled host apart
+    // from an unrelated native subclass a page embeds as a control. Merging
+    // that child would delete a tappable element and move its id and label onto
+    // the landmark, pointing a tap at the whole page instead.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][200,400]">
+    <node class="com.acme.player.MyWebView" bounds="[0,20][200,140]" resource-id="com.acme:id/player" content-desc="Video player" clickable="true"/>
+  </node>
+</hierarchy>`;
+    const tree = parseUiAutomatorDump(xml, 200, 400);
+    const host = tree.children[0]!;
+    // The landmark stays anonymous — it never adopts the child's identity.
+    expect(host.role).toBe("WebView");
+    expect(host.identifier).toBeUndefined();
+    expect(host.label).toBeUndefined();
+    // ...and the control is still its own tappable node underneath.
+    const player = host.children[0];
+    expect(player?.identifier).toBe("com.acme:id/player");
+    expect(player?.label).toBe("Video player");
+    expect(player?.clickable).toBe(true);
+  });
+
   it("collapses three nested WebView nodes down to one landmark", () => {
     const xml = `<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy>

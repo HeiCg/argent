@@ -240,6 +240,13 @@ interface UiNode {
   password: boolean;
   scrollHidden: number;
   children: UiNode[];
+  // Set only on the landmark emitted for a real `WEBVIEW_CLASSES` host, so the
+  // doubled-WebView merge can recognise its own kind. The role cannot: any
+  // class whose name contains "webview" derives the role "WebView", including
+  // an app's own `MyWebView` subclass, which is a separate control. Internal to
+  // this module — `finalizeUiNode` copies named fields only, so it never
+  // reaches the public tree.
+  hostsWebContent?: boolean;
 }
 
 interface PruneOptions {
@@ -540,12 +547,13 @@ function computeNodeOutput(
     let webChildren = keptChildren;
     let webLabel = own;
     let inner: UiNode | undefined;
-    if (keptChildren.length === 1 && keptChildren[0]!.role === "WebView") {
+    if (keptChildren.length === 1 && keptChildren[0]!.hostsWebContent) {
       inner = keptChildren[0]!;
       webChildren = inner.children;
       if (!webLabel && inner.label) webLabel = inner.label;
     }
     const webView = makeUiNode(attrs, "WebView", bounds, webLabel, webChildren);
+    webView.hostsWebContent = true;
     if (inner) {
       // Either half of the pair can be the one the framework marked, and which
       // half varies by WebView build, so the merged landmark inherits the union
