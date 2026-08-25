@@ -374,10 +374,11 @@ export async function injectAndroidClear(
     // retries against a field it believes is untouched.
     throw new FailureError(
       `keyboard clear: the delete did not finish on this device, so the focused field is ` +
-        `either empty or still holds its whole value with all of it SELECTED — the select-all ` +
-        `landed and survives, so the next character typed into it replaces the value. Nothing ` +
-        `was typed. Read the field's actual contents before continuing; do not treat it as ` +
-        `unchanged, and do not send a replacement that assumes it is empty.`,
+        `either empty or still holding its whole value — selected or not: \`input\` exits 0 ` +
+        `whether or not the select-all took, so the next character typed either replaces a ` +
+        `live selection or lands at the caret against the intact value. Nothing was typed. ` +
+        `Read the field's actual contents before continuing; do not treat it as unchanged, ` +
+        `and do not send a replacement that assumes it is empty.`,
       {
         error_code: FAILURE_CODES.KEYBOARD_CLEAR_INTERRUPTED,
         failure_stage: "keyboard_clear_delete_android",
@@ -557,10 +558,13 @@ async function clearByDeleting(
     // Why backspaces are the only clear left, and what the field is holding now,
     // both differ by caller: the legacy path is chosen because the level has no
     // `keycombination` and refuses before sending anything, while the rescue is
-    // reached only after a select-all that did not take and a DEL that did.
-    // Telling a caller nothing was modified there would be false — it is one
-    // character down — and "use a newer API level" would be no remedy at all,
-    // since the level already has the subcommand.
+    // reached only after a select-all and a DEL went out. Telling a caller
+    // nothing was modified there would be unjustified — the DEL removes one
+    // character wherever it lands — and "use a newer API level" would be no
+    // remedy at all, since the level already has the subcommand. The mutation is
+    // hedged rather than asserted because the reading behind this refusal can be
+    // another window's field or a placeholder (see measureFocusedTextLength), so
+    // the code cannot know what the DEL actually took.
     const why =
       rescueFrom === undefined
         ? `Without \`input keycombination\` (added after API 30) the only available clear is ` +
@@ -572,8 +576,9 @@ async function clearByDeleting(
     const state =
       rescueFrom === undefined
         ? `Nothing was modified and nothing was typed.`
-        : `The field HAS been modified: the delete that followed the select-all removed one ` +
-          `character from it. Nothing was typed.`;
+        : `The field MAY have been modified: the delete sent after the select-all removes one ` +
+          `character where it lands, though a count this long can also be another window's ` +
+          `field or an empty field's placeholder. Nothing was typed.`;
     const remedy =
       rescueFrom === undefined
         ? `Clear the field with the app's own affordance, or use an emulator on a newer API ` +

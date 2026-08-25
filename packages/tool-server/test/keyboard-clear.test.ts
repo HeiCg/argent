@@ -705,13 +705,15 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(adbExecOutBinary).toHaveBeenCalledTimes(1);
   });
 
-  it("says the field WAS modified when the residue is too long to backspace away", async () => {
-    // The legacy path refuses before sending anything, so its message says
-    // nothing was modified and offers a newer API level as the remedy. Reached
-    // from the select-all path both are wrong: the DEL has already taken a
-    // character, and the level demonstrably HAS `keycombination` — it just did
-    // not select. A caller told the field is untouched retries against a value
-    // that is one character down.
+  it("hedges the field's state when the residue is too long to backspace away", async () => {
+    // The legacy path refuses before sending anything, so its message can say
+    // nothing was modified and offer a newer API level as the remedy. Reached
+    // from the select-all path neither holds: a DEL went out first, and the
+    // level demonstrably HAS `keycombination` — it just did not select. But the
+    // mutation cannot be ASSERTED either: the reading behind this refusal is the
+    // longest focused EditText on screen, which can be another window's field or
+    // an empty field's placeholder (see measureFocusedTextLength), so what the
+    // DEL actually took is unknowable from here. The message hedges instead.
     seedDump(dumpWith("x".repeat(MAX_DELETE_COUNT + 1)));
 
     const err: unknown = await makeAndroidImpl(registryWith({}))
@@ -722,8 +724,10 @@ describe("keyboard clear — Android (adb input)", () => {
       );
 
     expect(err).toBeInstanceOf(InvalidToolInputError);
-    expect((err as Error).message).toContain("The field HAS been modified");
+    expect((err as Error).message).toContain("The field MAY have been modified");
+    expect((err as Error).message).toContain("removes one");
     expect((err as Error).message).not.toContain("Nothing was modified");
+    expect((err as Error).message).not.toContain("HAS been modified");
     expect((err as Error).message).not.toContain("newer API level");
     // Refused rather than half-deleted: no run was started.
     expect(inputCmds()).toEqual([SELECT_ALL_CMD, DEL_CMD]);
@@ -812,10 +816,12 @@ describe("keyboard clear — Android (adb input)", () => {
   });
 
   it("reports a killed modern DEL as INTERRUPTED, naming the surviving selection", async () => {
-    // The select-all has already landed when this leg runs, and it SURVIVES the
-    // kill — verified on API 36: the field still held its whole value and the
-    // next character typed into it replaced the lot. `adbShell`'s own error says
-    // only that `input keyevent 67` was killed, so a caller reads a transport
+    // When the select-all has landed, it SURVIVES the kill — verified on API 36:
+    // the field still held its whole value and the next character typed into it
+    // replaced the lot. Whether it landed is exactly what this device cannot be
+    // asked (`input` exits 0 either way), so the rewrap hedges rather than
+    // asserts the selection. `adbShell`'s own error says only that
+    // `input keyevent 67` was killed, so a caller reads a transport
     // fault and retries against a field it believes is untouched. The legacy
     // path's delete run has been rewrapped for this since it shipped; this leg
     // had no equivalent.
@@ -841,7 +847,7 @@ describe("keyboard clear — Android (adb input)", () => {
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.KEYBOARD_CLEAR_INTERRUPTED);
     // The kind is carried through, so a killed leg still reads as a timeout.
     expect(getFailureSignal(err)?.error_kind).toBe("timeout");
-    expect(err.message).toMatch(/all of it SELECTED/);
+    expect(err.message).toMatch(/selected or not/);
     expect(err.message).not.toMatch(/input keyevent/);
     // Refused before the typing: the replacement must not land on a selection.
     expect(inputCmds().some((cmd) => cmd.includes("input text"))).toBe(false);
