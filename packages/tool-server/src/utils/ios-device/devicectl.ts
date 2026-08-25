@@ -309,7 +309,8 @@ const SCREENSHOT_SUBCOMMAND_ROW = /^[ \t]{1,10}screenshot\b/m;
 
 /**
  * Whether this Xcode's devicectl has the `device screenshot` subcommand at
- * all — some toolchains reportedly do, devicectl 518.x (iOS 26 SDK) does not.
+ * all — no toolchain verified here ships it (devicectl 518.x does not); the
+ * probe, not this comment, decides at runtime.
  * Probed structurally, per the header's convention: list the subcommands
  * `devicectl device --help` advertises and look for a `screenshot` row — the
  * binary's own declaration of its command tree, independent of Apple's error
