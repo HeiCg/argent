@@ -1924,7 +1924,7 @@ function parseLaunch(raw: unknown): Launch {
 
 // The directive key that names each step kind, used to reject a step carrying
 // zero, several, or misspelled ones.
-const STEP_DIRECTIVE_KEYS: readonly string[] = [
+export const STEP_DIRECTIVE_KEYS: readonly string[] = [
   "echo",
   "launch",
   "run",
