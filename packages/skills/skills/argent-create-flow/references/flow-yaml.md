@@ -2,16 +2,23 @@
 
 Read this reference when polishing, composing, or manually reviewing a flow.
 
-- [File shape and flow type](#file-shape-and-flow-type)
-- [Selectors](#selectors)
-- [Directives](#directives)
-- [Verification conditions](#verification-conditions)
-- [Prove a navigation](#prove-a-navigation-identity-then-readiness)
-- [Optional divergences](#optional-divergences)
-- [Composition and platform limits](#composition-and-platform-limits)
-- [Local scripts: `script`](#local-scripts-script)
-- [Snapshots and standalone runs](#snapshots-and-standalone-runs)
-- [YAML safety](#yaml-safety)
+- [Flow YAML](#flow-yaml)
+  - [File shape and flow type](#file-shape-and-flow-type)
+  - [Selectors](#selectors)
+    - [The runner tree is not the discovery tree](#the-runner-tree-is-not-the-discovery-tree)
+    - [Relational scopes](#relational-scopes)
+  - [Directives](#directives)
+  - [Verification conditions](#verification-conditions)
+  - [Prove a navigation: identity, then readiness](#prove-a-navigation-identity-then-readiness)
+    - [`idle` readiness](#idle-readiness)
+  - [Optional divergences](#optional-divergences)
+  - [Composition and platform limits](#composition-and-platform-limits)
+  - [Local scripts: `script`](#local-scripts-script)
+    - [Where `path` points](#where-path-points)
+    - [What the script gets](#what-the-script-gets)
+    - [What the step reports](#what-the-step-reports)
+  - [Snapshots and standalone runs](#snapshots-and-standalone-runs)
+  - [YAML safety](#yaml-safety)
 
 ## File shape and flow type
 
@@ -193,59 +200,32 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 
 ## Local scripts: `script`
 
-A `script:` step runs a local JavaScript file in a new Node process. Use it for work that no device step can do: call an API, run a CLI, write fixture files, or clean up after a run. The runner needs no device for the step, so a flow of only script steps runs with no booted device.
+A `script:` step runs a local `.mjs` file in a new Node process. Use it for work that no device step can do: call an API, a database seed, or clean up after a run.
 
 ```yaml
 - script: { path: ../../scripts/seed-order.mjs }
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-**The value is always a map.** Parse rejects a bare `script: scripts/seed.mjs`, and a `timeout:` written beside the directive key. `path` is required. `timeout` is the step limit in milliseconds (default 30000).
-
-The machine config caps that limit with `scripts.maxTimeoutMs` (default 300000, five minutes). A larger `timeout:` runs at the cap, and the report shows the clamp. A cap below 30000 also lowers the default.
-
 ### Where `path` points
 
-`path` obeys the rules of a `run:` target, but for `.mjs` files. It resolves against the directory of the flow file that **contains the step**. A fragment therefore finds the same script in each flow that composes it:
-
-```yaml
-# .argent/flows/checkout.yaml -> <project>/scripts/seed.mjs
-- script: { path: ../../scripts/seed.mjs }
-
-# .argent/flows/onboarding/login.yaml -> the same file
-- script: { path: ../../../scripts/seed.mjs }
-```
-
-Keep scripts in one `scripts/` directory at the project root. The runner does not enforce this convention.
-
-The filename must end with a lowercase `.mjs`, and use only letters, digits, `_` and `-` before it. The extension pins the module type against the project `package.json`. Always write the extension: there is no bare-name completion.
-
-**Write the path with the letter case of the file on disk.** macOS and Windows open a file whose case does not agree, but Linux CI fails with `ENOENT`. The runner therefore refuses the step, and quotes the spelling on disk. That guard compares only the FILENAME against its directory's listing — a mis-cased directory component (`Scripts/seed.mjs` when the directory is `scripts/`) is not checked, so it runs green locally and fails with `ENOENT` on a case-sensitive checkout exactly as an unchecked filename would.
+`path` resolves against the directory of the flow file that **contains the step**, so a fragment finds the same script in each flow that composes it. Always write the extension.
 
 ### What the script gets
 
 - The working directory is `project_root`, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
-- The environment is an allowlist: `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. All other names are absent, such as `NODE_ENV`, `DATABASE_URL`, `API_KEY`, and each value in a project `.env`. Let the script read what it needs from a file. There is no `env:` key; parse rejects one.
-- The `output` global starts as an empty object. Nothing reads it yet, but a value that the runner cannot serialize **fails** the step.
+- The environment is an allowlist: `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. All other names are absent, such as `NODE_ENV`, `DATABASE_URL` and each value in a project `.env`. Let the script read what it needs from a file.
 
 ### What the step reports
 
-The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. If the runner cuts the output, it says so on a line of its own.
+The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run, and the runner says on its own line that it cut the output. **The log has no redaction**, and it reaches the step report, the terminal and each CI log. Do not print a credential from a script.
 
-**The log has no redaction.** Do not print a credential from a script. The value goes to the step report, the terminal, and each CI log.
+Both verdicts stop the flow. The verdict names the side that caused the failure, so CI can separate a regression from the machine that ran it.
 
-The step verdict tells you where the cause is, so CI can separate a regression from the machine that ran it. Both verdicts stop the flow.
-
-| Verdict     | Cause      | Examples                                                                                                                                                           |
-| ----------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **failed**  | the script | threw an error, did not load, exited non-zero, or wrote an `output` value that the runner cannot serialize                                                         |
-| **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, no free queue slot, a cancelled run, or a filename that does not match the letter case on disk |
-
-### Boundaries
-
-- A `script:` step needs one filesystem for the client and the tool server, so an uploaded flow is rejected: its `.mjs` file stays on the client.
-- A flow with a script step next to a `run:` step still resolves a device, because `run:` always needs one.
-- On Chromium the leading `launch:` boots the app before step 1, so a `script:` step above it runs while the app is up. iOS, Android and Vega restart the app at the `launch:` step, after the script.
+| Verdict     | Cause      | Examples                                                                                                                   |
+| ----------- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **failed**  | the script | threw an error, did not load, exited non-zero, or wrote an `output` value that the runner cannot serialize                 |
+| **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a mis-cased filename |
 
 ## Snapshots and standalone runs
 

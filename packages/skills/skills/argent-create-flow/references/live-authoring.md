@@ -2,13 +2,24 @@
 
 Read this file before creating or changing a flow. Exercise the saved path through the recorder. Perform syntax cleanup only after finishing.
 
-- [Recorder contract](#recorder-contract)
-- [Start in the correct order](#start-in-the-correct-order)
-- [Record the first walkthrough](#record-the-first-walkthrough)
-- [Finish and polish](#finish-and-polish)
-- [Worked example](#worked-example)
-- [Blocking audit](#blocking-audit)
-- [Replay](#replay)
+- [Live authoring](#live-authoring)
+  - [Recorder contract](#recorder-contract)
+  - [Start in the correct order](#start-in-the-correct-order)
+    - [iOS, Android, and Vega e2e flows](#ios-android-and-vega-e2e-flows)
+    - [Chromium e2e flows](#chromium-e2e-flows)
+    - [Fragments](#fragments)
+  - [Record the first walkthrough](#record-the-first-walkthrough)
+    - [Record identity, then readiness, after every navigation](#record-identity-then-readiness-after-every-navigation)
+    - [Record absence in three steps](#record-absence-in-three-steps)
+    - [Taps](#taps)
+    - [Typing](#typing)
+    - [Scrolling and swiping](#scrolling-and-swiping)
+    - [Live waits and checks](#live-waits-and-checks)
+    - [Wrong turns](#wrong-turns)
+  - [Finish and polish](#finish-and-polish)
+  - [Worked example](#worked-example)
+  - [Blocking audit](#blocking-audit)
+  - [Replay](#replay)
 
 ## Recorder contract
 
