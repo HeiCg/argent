@@ -7,6 +7,7 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { FAILURE_CODES, FailureError, withFailureSignal } from "@argent/registry";
+import { PS_BIN } from "../vega-process";
 
 const execFileAsync = promisify(execFile);
 
@@ -770,9 +771,19 @@ export async function killStaleRunnersForDevice(
   return signaled.length;
 }
 
+/**
+ * Argv of the real process-table snapshot, exported so tests can pin the
+ * binary: it must be `PS_BIN`, never bare "ps". A tool-server launched from a
+ * GUI / launchd context inherits a PATH without /bin, a bare "ps" spawn
+ * ENOENTs there, and the sweep's catch would read that failure as zero stale
+ * runners, silently reaping nothing; see PS_BIN's comment in vega-process.ts.
+ */
+export const PROCESS_TABLE_ARGV = [PS_BIN, "-ax", "-o", "pid=,ppid=,command="] as const;
+
 /** Real process-table snapshot behind `killStaleRunnersForDevice`'s seam. */
 async function listProcessTable(): Promise<string> {
-  const { stdout } = await execFileAsync("ps", ["-ax", "-o", "pid=,ppid=,command="], {
+  const [bin, ...args] = PROCESS_TABLE_ARGV;
+  const { stdout } = await execFileAsync(bin, args, {
     maxBuffer: 16 * 1024 * 1024,
   });
   return stdout;

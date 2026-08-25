@@ -13,6 +13,7 @@ import {
   MAX_RUNNER_LOG_FILES,
   planRunnerStorageSweep,
   prepareXctestrunWithPort,
+  PROCESS_TABLE_ARGV,
   resolveRunnerProjectPath,
   resolveSigningHint,
   runnerBuildStaticArgs,
@@ -22,6 +23,7 @@ import {
   type RunnerArtifact,
   type RunnerSigningConfig,
 } from "../src/utils/ios-device/runner-build";
+import { PS_BIN } from "../src/utils/vega-process";
 
 const execFileAsync = promisify(execFile);
 
@@ -904,5 +906,12 @@ describe("killStaleRunnersForDevice", () => {
 
     expect(await killStaleRunnersForDevice(STALE_UDID, deps)).toBe(0);
     expect(deps.kills).toEqual([]);
+  });
+
+  it("default ps provider spawns the absolute PS_BIN, immune to a GUI-launched /bin-less PATH", () => {
+    const [bin, ...args] = PROCESS_TABLE_ARGV;
+    expect(bin).toBe(PS_BIN);
+    expect(path.isAbsolute(bin)).toBe(true); // a bare "ps" would ENOENT under launchd's PATH
+    expect(args).toEqual(["-ax", "-o", "pid=,ppid=,command="]);
   });
 });
