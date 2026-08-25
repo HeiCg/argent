@@ -199,7 +199,7 @@ steps:
     const r = await run("ellipsis");
     const step = r.steps.at(-1)!;
     expect(step.status).toBe("fail");
-    expect(step.reason).toContain('the screen does show "Add more languages…"');
+    expect(step.reason).toContain('the element\'s text is "Add more languages…"');
     expect(step.reason).toContain("typographic variant");
   }, 20_000);
 
