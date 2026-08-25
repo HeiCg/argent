@@ -466,6 +466,30 @@ describe("flow script executor — redaction", () => {
     expect(result.log).toBe("calling {{secret:URL}}\n");
   });
 
+  it("replaces the longer of two secrets when the shorter one is its prefix", async () => {
+    const ws = workspace();
+    const prefix: FlowScriptSecret = { name: "PFX", value: "sk-" };
+    const full: FlowScriptSecret = { name: "FULL", value: "sk-live-9d3f0a1b" };
+    // The chunk ends where both values start, so taking the short one there
+    // settles it and leaves the long one's remainder for the next chunk to
+    // release in plaintext.
+    const script = ws.write(
+      "prefix.mjs",
+      `process.stdout.write("tok sk-");
+       await new Promise((r) => setTimeout(r, 120));
+       process.stdout.write("live-9d3f0a1b end\\n");
+       output.ok = true;`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [prefix, full],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.log).toBe("tok {{secret:FULL}} end\n");
+  });
+
   it("replaces every occurrence of a value that starts with its own tail", async () => {
     const ws = workspace();
     const value = "0123456789".repeat(4);

@@ -146,6 +146,12 @@ export function scrubSecretChunk(
       at += marker;
       continue;
     }
+    // Ahead of the match, because a value that fits in what is left is not
+    // proof that it is the value there: one value can be a prefix of another —
+    // `sk-` of `sk-live-…` — and replacing the short one at a position the long
+    // one also starts at settles it, leaving the long one's remainder to be
+    // released in plaintext by the next chunk.
+    if (!final && text.length - at < longestValue && beginsAValue(text, at, ordered)) break;
     // Longest value first: one value can contain another — a host inside a URL
     // that is itself a secret — and taking the shorter one would leave the rest
     // of the longer one in the text.
@@ -156,7 +162,6 @@ export function scrubSecretChunk(
       copied = at;
       continue;
     }
-    if (!final && text.length - at < longestValue && beginsAValue(text, at, ordered)) break;
     at += 1;
   }
   return {
