@@ -13,10 +13,7 @@ Read this reference when polishing, composing, or manually reviewing a flow.
     - [`idle` readiness](#idle-readiness)
   - [Optional divergences](#optional-divergences)
   - [Composition and platform limits](#composition-and-platform-limits)
-  - [Local scripts: `script`](#local-scripts-script)
-    - [Where `path` points](#where-path-points)
-    - [What the script gets](#what-the-script-gets)
-    - [What the step reports](#what-the-step-reports)
+  - [Local scripts](#local-scripts)
   - [Snapshots and standalone runs](#snapshots-and-standalone-runs)
   - [YAML safety](#yaml-safety)
 
@@ -198,9 +195,9 @@ A `run:` target is a YAML path resolved against the directory of the flow file c
 - Chromium boots one instance per launch **step**, not one per run. The leading launch — the flow's own, or the one its leading `run:` chain reaches — boots before step 1, unless you pinned the run with an explicit `device`, where it only attaches. Every later launch boots a fresh instance, moves the run onto it, and tears down the instance the run already owned for that app path. Nesting a Chromium e2e flow with its own launch is therefore the supported way to give a sub-scenario its own restart. Chromium rejects `pinch` and `rotate`. Use the app's own zoom or rotate controls.
 - Vega uses `tool: tv-remote` and raw `tool: keyboard`. The touch directives (`tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`) are unsupported. Gate focus and navigation results with `await`.
 
-## Local scripts: `script`
+## Local scripts
 
-A `script:` step runs a local `.mjs` file in a new Node process. Use it for work that no device step can do: call an API, a database seed, or clean up after a run.
+A `script:` step runs a local `.mjs` file in a new Node process. It drives no device. Use it for work no device step can do: call an API, seed a database, clean up after a run.
 
 ```yaml
 - script: { path: ../../scripts/seed-order.mjs }
@@ -209,27 +206,18 @@ A `script:` step runs a local `.mjs` file in a new Node process. Use it for work
 
 Record one live with `flow-add-script` rather than typing it in afterward. See [Live authoring](live-authoring.md#recorder-contract).
 
-### Where `path` points
+- **`path`** resolves against the directory of the flow file that **contains the step**, so a fragment finds the same script in each flow that composes it. Always write the extension, and match the letter case on disk: a mis-cased name is refused rather than run, because macOS and Windows open it and Linux CI does not.
+- **`timeout`** is milliseconds, default 30000, capped by the host's `scripts.maxTimeoutMs` (default five minutes). A clamped value is reported in the step's reason, not refused.
+- **The working directory is `project_root`**, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
+- **The environment is a fixed list**: the standard shell, proxy, TLS, Node, npm, Android and Java names. Every other name is absent, `NODE_ENV` and `DATABASE_URL` included, as is each value in a project `.env`. Let the script read what it needs from a file.
 
-`path` resolves against the directory of the flow file that **contains the step**, so a fragment finds the same script in each flow that composes it. Always write the extension. The letter case must match the file on disk: the runner refuses a mis-cased filename and quotes the spelling it found.
+The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run, and the report marks a cut on its own line. **The log has no redaction**, and it reaches the terminal and every CI log. Do not print a credential from a script.
 
-### What the script gets
-
-- The working directory is `project_root`, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
-- The environment is an allowlist: `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. All other names are absent, such as `NODE_ENV`, `DATABASE_URL` and each value in a project `.env`. Let the script read what it needs from a file.
-- The `output` global starts as an empty object. `flow-add-script` returns the document the script leaves in it, so you can see its shape. No flow step can read it yet. Writing `{{output:...}}` into one is refused, in the fields a later release will resolve it in: an echo message, a typed or expected text, a selector's text, id or role, and a string in `tool.args`. Patterns are not among them — `matches:` takes a regular expression, and a `{{` in one is a literal. A value the runner cannot serialize **fails** the step.
-
-### What the step reports
-
-The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run, and the runner says on its own line that it cut the output. **The log has no redaction**, and it reaches the step report, the terminal and each CI log. Do not print a credential from a script.
-
-A `flow-add-script` recording is one step at a time, so only the 64 KiB step limit applies there — and it reports a cut differently. There is no line in the text: the `log` field is simply shorter, and the separate `logTruncated` field is the only thing that says so. Read that field.
-
-Both verdicts stop the flow. The verdict names the side that caused the failure, so CI can separate a regression from the machine that ran it.
+Both verdicts stop the flow. The verdict names the side at fault, so CI can separate a regression from the machine that ran it.
 
 | Verdict     | Cause      | Examples                                                                                                                   |
 | ----------- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
-| **failed**  | the script | threw an error, did not load, exited non-zero, or wrote an `output` value that the runner cannot serialize                 |
+| **failed**  | the script | a missing file, a load error, a thrown error, or a non-zero exit                                                           |
 | **errored** | the host   | a time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a mis-cased filename |
 
 ## Snapshots and standalone runs

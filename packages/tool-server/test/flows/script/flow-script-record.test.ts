@@ -404,6 +404,9 @@ describe("recording a script step", () => {
     expect(result.status).toBe("pass");
     expect(result.logTruncated).toBe(true);
     expect(result.log!.length).toBeLessThanOrEqual(SCRIPT_STEP_LOG_LIMIT_BYTES);
+    // The cut leaves nothing in the text, which is why the flag is the only
+    // signal and the tool description tells the caller to read it.
+    expect(result.log).not.toContain("truncated");
     expect(await steps("chatty")).toHaveLength(1);
   });
 });

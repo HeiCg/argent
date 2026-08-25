@@ -33,12 +33,12 @@ The file has two top-level keys:
 
 A flow has one of two shapes:
 
-| Shape           | First non-echo step | Start state                                         |
-| --------------- | ------------------- | --------------------------------------------------- |
-| End-to-end flow | `launch:`           | Argent starts the app from scratch                  |
-| Fragment        | Any other step      | The app is already in the state that the flow needs |
+| Shape           | First step that is not `echo` or `script` | Start state                                         |
+| --------------- | ----------------------------------------- | --------------------------------------------------- |
+| End-to-end flow | `launch:`                                 | Argent starts the app from scratch                  |
+| Fragment        | Any other step                            | The app is already in the state that the flow needs |
 
-Argent skips leading `echo` steps when it classifies a flow. A flow that opens with an `echo` step and then a `launch:` step is still end-to-end. Put the named start state of an end-to-end flow in a leading `echo` step.
+Argent skips leading `echo` and `script` steps when it classifies a flow. A flow that opens with an `echo` or `script` step and then a `launch:` step is still end-to-end. Put the named start state of an end-to-end flow in a leading `echo` step.
 
 A file does not store a device id. The runner selects the device. A `launch:` restarts the process but does not clear the app data, the account or the backend data.
 
@@ -246,39 +246,29 @@ Use a snapshot for layout, color, spacing, typography, clipping and icons. Do no
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-A `script` step runs a local `.mjs` file in a new Node process. Use a script for work that no device step does: a call to an API, a database seed, or a cleanup after the run.
+A `script` step runs a local `.mjs` file in a new Node process.
 
 The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 
-| Key       | Required | Description                                                                                                                |
-| --------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `path`    | yes      | A file with a lowercase `.mjs` suffix. The path resolves as a `run` path does. The letter case must match the file on disk |
-| `timeout` | no       | The limit of the step in milliseconds. The default is 30000                                                                |
+| Key       | Required | Description                                                                                                                        |
+| --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `path`    | yes      | An `.mjs` file, relative to the flow file that holds the step. Write the extension in lowercase, and match the letter case on disk |
+| `timeout` | no       | The time limit of the step in milliseconds. The default is 30000                                                                   |
 
-Argent runs the script with the project root as the working directory. The script does not inherit your environment. Argent does not read a project `.env` file. Argent passes only `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. There is no `env` key. Let the script read a secret or a URL from a file.
+The working directory is the project root. Argent passes a fixed list of environment variables: the standard shell names, the proxy and TLS names, and the Node, npm, Android and Java toolchain names. A name outside the list does not reach the script, for example `DATABASE_URL`. Argent does not read a project `.env` file. Let the script read a secret or a URL from a file.
 
-The script can set the `output` global. No step reads the value yet, and Argent refuses a flow file that writes `{{output:...}}` into a step: the run stops before step 1. Argent looks for the reference in each field that a later release resolves it in:
-
-- The message of an `echo` step.
-- The text of a `type` step.
-- The expected text of an `await` or an `assert` step.
-- The `text`, the `id` and the `role` of a selector.
-- Each string in the `args` of a `tool` step.
-
-A `matches` pattern is not one of these fields. `matches` takes a regular expression, and Argent reads `{{` in a pattern as text.
-
-Argent prints the standard output and the standard error below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. **Argent does not redact this log.** Do not print a credential from a script.
+Argent prints the standard output and the standard error below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. The report marks a cut on its own line. **Argent does not redact this log.** Do not print a credential from a script.
 
 A failed step stops the flow. The verdict names the side that caused the failure.
 
 | Verdict | Cause      | Examples                                                                                                                   |
 | ------- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
-| Failed  | The script | An error, a load failure, a non-zero exit code, or a value in the `output` global that Argent cannot serialize             |
+| Failed  | The script | A missing file, a load error, a thrown error, or a non-zero exit code                                                      |
 | Errored | The host   | A time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a mis-cased filename |
 
-`scripts.maxTimeoutMs` caps the `timeout` of each step, and `scripts.heapLimitMb` sets the heap of the process. Argent reads both keys from the global configuration file only. See [Available keys](/docs/reference/configuration#available-keys).
+`scripts.maxTimeoutMs` caps the `timeout` of each step. `scripts.heapLimitMb` sets the heap of the process. See [Available keys](/docs/reference/configuration#available-keys).
 
-On iOS, Android and Vega, a `script` step above the `launch` step runs before Argent restarts the app. On Chromium, Argent boots the app before step 1, so the same script runs while the app is up.
+On Chromium, Argent boots the app before step 1. A script above the `launch` step therefore runs while the app is up.
 
 ## The `argent flow` command
 

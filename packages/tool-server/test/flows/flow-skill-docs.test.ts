@@ -185,19 +185,3 @@ describe("create-flow idle docs", () => {
     }
   });
 });
-
-describe("create-flow script-recording docs", () => {
-  it("counts the return fields the paragraph goes on to explain", () => {
-    const paragraph = readFileSync(LIVE_AUTHORING, "utf8")
-      .split("\n")
-      .find((line) => line.includes("return fields are not self-evident"));
-    expect(paragraph, `${LIVE_AUTHORING} no longer counts the return fields`).toBeDefined();
-    const explained = [...paragraph!.matchAll(/\.\s+`(\w+)`/g)].map((m) => m[1]!);
-    expect(explained.length).toBeGreaterThan(1);
-    const spelled = SPELLED[explained.length];
-    expect(spelled, `no spelling for ${explained.length} fields`).toBeDefined();
-    const counted = paragraph!.match(/^(\w+) return fields are not self-evident\./);
-    expect(counted, `${LIVE_AUTHORING} no longer opens that paragraph with a count`).not.toBeNull();
-    expect(counted![1]!.toLowerCase(), explained.join(", ")).toBe(spelled);
-  });
-});

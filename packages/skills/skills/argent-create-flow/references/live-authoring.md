@@ -32,15 +32,9 @@ args: "{\"udid\":\"DEVICE\",\"x\":0.5,\"y\":0.35}"
 
 A recorded `flow-execute` has two names. The top-level `name` identifies the recording. `args.name` identifies the sibling flow captured as `run:`.
 
-`flow-add-script` runs a local `.mjs` file and records it as a `script:` step. `path` resolves against the flow file being recorded, not against `project_root`; `timeout` is milliseconds. Both are the step's own keys, recorded verbatim, and it runs the file the way replay will. It takes no device. Read [Flow YAML](flow-yaml.md#local-scripts-script) for the `path` rules, including the on-disk casing it refuses.
+`flow-add-script` runs a local `.mjs` file and records it as a `script:` step. `path` resolves against the flow file being recorded, not against `project_root`; `timeout` is milliseconds. Both are recorded verbatim, and the file runs the way replay will run it. It takes no device. Read [Flow YAML](flow-yaml.md#local-scripts) for the `path` rules and the on-disk casing it refuses.
 
-Five return fields are not self-evident. `reason` carries the executor's note on a pass, which is where a clamped `timeout` shows up. `durationMs` is absent when the path was refused before anything ran. `outputJson` is the returned document as JSON text, and is present only on a pass. `logTruncated` says output is missing from `log`: the 64 KiB step limit cut it, or the executor collapsed a fatal error's frame dump. A limit leaves no mark in the text, so read the flag rather than the log — a cut log otherwise reads as the script's whole output. `outputTruncated` says the 64 KiB render limit cut `outputJson`.
-
-**A script that does not pass records nothing.** That is the one place a step call differs from `flow-add-step`, which appends whenever the call returns. The rest of the walkthrough would otherwise be recorded against state the failed script did not establish. Its side effects are real all the same; the `message` says whether anything ran, or that the runner failed around the script and cannot tell, so retry only when the re-run is safe to repeat. A transport error gives you no `message` at all, and a long call that ends in one can have run the script more than once. Look at the state the script touches before you call again.
-
-**Do not write `{{output:...}}` into a step because you have seen the document.** No flow step can read it yet, and the recorder refuses any step that spells one, in the fields a later release will resolve it in: an echo message, a typed or expected text, a selector's text, id or role, and a string in `tool.args`. The refusal costs a whole call, and `flow-add-step` has already run the tool call by then. Write the value the flow needs.
-
-`flow-add-script` is refused when the recording's `project_root` is not on the tool server's filesystem: the `.mjs` never left your machine. Record against a co-located tool server. Failing that, finish the recording and add the `script:` step to the saved YAML by hand — authoring outside the recorder, because no recorder can reach the file, rather than an insertion into a recorded flow.
+**A script that does not pass records nothing.** That is the one place a step call differs from `flow-add-step`, which appends whenever the call returns. The rest of the walkthrough would otherwise be recorded against state the failed script did not establish. Its side effects are real all the same: `message` says whether anything ran, or that the runner failed around the script and cannot tell. Retry only when the re-run is safe to repeat. A transport error returns no `message` at all, and a long call that ends in one can have run the script more than once, so look at the state the script touches before you call again.
 
 Obey these lifecycle rules:
 
@@ -57,11 +51,11 @@ Obey these lifecycle rules:
 ### iOS, Android, and Vega e2e flows
 
 1. Call `flow-start-recording` before launching or touching the app.
-2. Record any setup `script:` with `flow-add-script`, before the restart it prepares state for. That is where it runs at replay, so it is where the walkthrough has to establish that state too.
+2. Record any setup `script:` with `flow-add-script`, before the restart it prepares state for. That is where it runs at replay.
 3. Record a plain `restart-app` as the first action that is neither an echo nor a script. Pass only the device id and app id. The recorder converts it to `launch:`.
 4. Record `await-ui-element` for the real first screen immediately after restart.
 
-A leading script does not make the flow a fragment. The launch after it still leads the run, so the flow is e2e and must not declare `executionPrerequisite`.
+A leading script does not make the flow a fragment: the launch behind it still leads the run, so the flow is e2e and must not declare `executionPrerequisite`.
 
 Extra restart arguments prevent `launch:` conversion. An Android `activity`, for example, leaves a raw tool step and therefore a fragment.
 
@@ -85,7 +79,7 @@ steps:
 
 The path is relative to `.argent/flows/`. Copy the live boot arguments verbatim, and omit `args` when the boot passed none. This packaging exception represents the boot already exercised live. It does not permit a rehearsed UI path.
 
-Record a setup `script:` with `flow-add-script` here too, but a Chromium flow's leading `launch:` boots before step 1, so a script written above it still runs with the app already up. Record it where the walkthrough needs it, and do not rely on it running first.
+A Chromium flow's leading `launch:` boots before step 1, so a `script:` above it still runs with the app up. Record it where the walkthrough needs it; do not rely on it running first.
 
 ### Fragments
 
@@ -217,7 +211,7 @@ If polish reveals a missing action or structural check, restore its preceding st
 flow-start-recording { FLOW }
 flow-add-echo { FLOW, message: "Seed a note, restart Acme Notes; expect Home" }
 flow-add-script { FLOW, path: "../../scripts/seed-note.mjs", timeout: 30000 }
-# ran here; recorded as the block-style `script:` step below
+# ran here; recorded verbatim
 flow-add-step { FLOW, command: "restart-app", args: "{\"udid\":\"ABC\",\"bundleId\":\"com.acme.notes\"}" }
 # captured as: - launch: com.acme.notes
 flow-add-step { FLOW, command: "await-ui-element", args: "{\"udid\":\"ABC\",\"condition\":\"visible\",\"selector\":{\"identifier\":\"home-screen\"}}" }
@@ -282,7 +276,7 @@ Resolve every hit and confirm:
 
 Run `flow-execute` on the complete YAML with the absolute project root. For a fragment, verify its prerequisite before setting `prerequisiteAcknowledged: true`.
 
-`flow-execute` takes exactly one flow source: `name`, for a flow saved under `.argent/flows/`, or `flow_path`, an absolute path to any flow `.yaml`. `run:` targets and baselines resolve on the tool server's filesystem, beside the YAML it actually reads. `flow_path` therefore requires the agent and the tool server to share a filesystem and is refused when they do not. `name` still runs remotely, but the server receives only that one YAML in a fresh temp directory, so a `run:` target fails as a missing fragment and a `snapshot` fails for a missing baseline. A `script:` step is refused before the run starts, because its `.mjs` file stays on the client. Replay self-contained flows remotely; a composing, snapshotting, or script-bearing flow needs one shared filesystem.
+`flow-execute` takes exactly one flow source: `name`, for a flow saved under `.argent/flows/`, or `flow_path`, an absolute path to any flow `.yaml`. `run:` targets and baselines resolve on the tool server's filesystem, beside the YAML it actually reads. `flow_path` therefore requires the agent and the tool server to share a filesystem and is refused when they do not. `name` still runs remotely, but the server receives only that one YAML in a fresh temp directory. It checks the whole flow first and refuses a `run:`, `script:`, or `snapshot:` step at any depth, naming the missing co-location rather than a missing fragment, script, or baseline. Replay self-contained flows remotely; a composing, scripting, or snapshotting flow needs one shared filesystem.
 
 Manual rescue invalidates the pass. An `errored` step was never evaluated: an `idle` wait whose tree source could not be read, a step that threw, an unresolvable `run:` target, or a `launch:` that did not start the app. Read the reason — most name the environment, but a failed `launch:` is a verdict about the app. Unconfirmed focus is not in this class at all: the replay focus poll has no failure return, so a `type:` step whose focus was never confirmed is scored a **pass**, and only the value check after typing catches it.
 
