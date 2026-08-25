@@ -349,7 +349,9 @@ function parseRequest(raw) {
  */
 function startWatchdogs(deadlineMs) {
   const here = import.meta.url;
-  start(new URL(LIFELINE_WATCHDOG, here));
+  // Read here rather than in the worker: `process.ppid` is a property script
+  // code may replace, and the worker's own `process` is not the main thread's.
+  start(new URL(LIFELINE_WATCHDOG, here), { parentPid: process.ppid });
   start(new URL(DEADLINE_WATCHDOG, here), { deadlineMs });
 
   function start(url, workerData) {

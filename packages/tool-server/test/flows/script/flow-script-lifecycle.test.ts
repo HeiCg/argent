@@ -702,66 +702,78 @@ describe("flow script executor — process cleanup", () => {
     expect(isAlive(result.output?.started as number)).toBe(false);
   }, 30_000);
 
-  it("reaps a spinning orphan and its descendants when its parent is SIGKILLed", async () => {
-    const ws = workspace();
-    const pidFile = ws.resolve("runner.pid");
-    const descendantFile = ws.resolve("orphan-descendant.pid");
-    // A descendant is what a real script leaves behind — an emulator, a Metro
-    // — and the tool server that would have reaped it is the process being
-    // killed here, so the runner's own group kill is the only thing left.
-    const script = ws.write(
-      "orphan.mjs",
-      `import { spawn } from "node:child_process";
+  // Both ways in, because a script can take the lifeline's end of file away:
+  // descriptor 4 is a number script code can name, and the kernel drops a
+  // closed descriptor from the poller with no event to hear. The parent's own
+  // pid is what the watchdog reads then.
+  it.each([
+    ["leaves its lifeline alone", ""],
+    ["closes the lifeline descriptor", "fs.closeSync(4);"],
+  ])(
+    "reaps a spinning orphan and its descendants when its parent is SIGKILLed and the script %s",
+    async (_label, closesLifeline) => {
+      const ws = workspace();
+      const pidFile = ws.resolve("runner.pid");
+      const descendantFile = ws.resolve("orphan-descendant.pid");
+      // A descendant is what a real script leaves behind — an emulator, a Metro
+      // — and the tool server that would have reaped it is the process being
+      // killed here, so the runner's own group kill is the only thing left.
+      const script = ws.write(
+        "orphan.mjs",
+        `import { spawn } from "node:child_process";
        import fs from "node:fs";
+       ${closesLifeline}
        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
          stdio: "ignore",
        });
        fs.writeFileSync(${JSON.stringify(descendantFile)}, String(child.pid));
        fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
        for (;;) {}`
-    );
-    const driver = path.resolve(__dirname, "../../fixtures/flow-script-orphan-driver.ts");
-    const parent = spawn(
-      process.execPath,
-      [
-        require.resolve("ts-node/dist/bin.js"),
-        "-T",
-        "-P",
-        path.resolve(__dirname, "../../../tsconfig.json"),
-        driver,
-        script,
-        ws.dir,
-      ],
-      { cwd: path.resolve(__dirname, "../../.."), stdio: ["ignore", "ignore", "pipe"] }
-    );
-    let driverStderr = "";
-    parent.stderr?.on("data", (chunk: Buffer) => {
-      driverStderr += chunk.toString();
-    });
-    try {
-      const runnerPid = await readPidFile(pidFile, 30_000, () => driverStderr);
-      const descendantPid = await readPidFile(descendantFile, 30_000, () => driverStderr);
-      strays.push(runnerPid, descendantPid);
-      expect(isAlive(runnerPid)).toBe(true);
-      expect(isAlive(descendantPid)).toBe(true);
+      );
+      const driver = path.resolve(__dirname, "../../fixtures/flow-script-orphan-driver.ts");
+      const parent = spawn(
+        process.execPath,
+        [
+          require.resolve("ts-node/dist/bin.js"),
+          "-T",
+          "-P",
+          path.resolve(__dirname, "../../../tsconfig.json"),
+          driver,
+          script,
+          ws.dir,
+        ],
+        { cwd: path.resolve(__dirname, "../../.."), stdio: ["ignore", "ignore", "pipe"] }
+      );
+      let driverStderr = "";
+      parent.stderr?.on("data", (chunk: Buffer) => {
+        driverStderr += chunk.toString();
+      });
+      try {
+        const runnerPid = await readPidFile(pidFile, 30_000, () => driverStderr);
+        const descendantPid = await readPidFile(descendantFile, 30_000, () => driverStderr);
+        strays.push(runnerPid, descendantPid);
+        expect(isAlive(runnerPid)).toBe(true);
+        expect(isAlive(descendantPid)).toBe(true);
 
-      parent.kill("SIGKILL");
-      expect(await waitForExit(runnerPid, 15_000)).toBe(true);
-      expect(await waitForExit(descendantPid, 15_000)).toBe(true);
-    } finally {
-      parent.kill("SIGKILL");
-      // Also when the poll above timed out: the runner is detached and spins,
-      // so without this it outlives the suite until its own deadline reaps it.
-      for (const file of [pidFile, descendantFile]) {
-        try {
-          const written = Number(fs.readFileSync(file, "utf8").trim());
-          if (Number.isInteger(written)) strays.push(written);
-        } catch {
-          // Never written, so there is nothing to reap.
+        parent.kill("SIGKILL");
+        expect(await waitForExit(runnerPid, 15_000)).toBe(true);
+        expect(await waitForExit(descendantPid, 15_000)).toBe(true);
+      } finally {
+        parent.kill("SIGKILL");
+        // Also when the poll above timed out: the runner is detached and spins,
+        // so without this it outlives the suite until its own deadline reaps it.
+        for (const file of [pidFile, descendantFile]) {
+          try {
+            const written = Number(fs.readFileSync(file, "utf8").trim());
+            if (Number.isInteger(written)) strays.push(written);
+          } catch {
+            // Never written, so there is nothing to reap.
+          }
         }
       }
-    }
-  }, 60_000);
+    },
+    60_000
+  );
 
   // `taskkill /t` is the whole Windows stop path, on every timed-out or
   // cancelled step, and `spawn` reports a launch failure through an `error`
