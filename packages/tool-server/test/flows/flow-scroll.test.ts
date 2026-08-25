@@ -1303,6 +1303,10 @@ ${paragraphs()}
     expect(swipes[1].fromY).toBeCloseTo(0.5, 5);
     expect(swipes[2].fromX).toBeCloseTo(0.5, 5);
     expect(swipes[2].fromY).toBeCloseTo(0.5, 5);
+    // Deliberately silent: the capping round read where the last nudge left
+    // the target, so this is an ordinary short landing, not a swallowed
+    // gesture.
+    expect(result.steps[0].warning).toBeUndefined();
   });
 
   it("stops at the accepted frame when a nudge round loses the target", async () => {
@@ -2707,6 +2711,9 @@ ${paragraphs()}
     // scroller centre - not the 0.5 half-region search increment.
     expect(swipes[0].fromY).toBeCloseTo(0.5, 5);
     expect(swipes[0].fromY - swipes[0].toY).toBeCloseTo(0.12, 5);
+    // Deliberately silent: the progress check read where the nudge left the
+    // target, so this is an ordinary short landing, not a swallowed gesture.
+    expect(result.steps[0].warning).toBeUndefined();
   });
 
   it("does not read a clip that moved between rounds as nudge progress", async () => {

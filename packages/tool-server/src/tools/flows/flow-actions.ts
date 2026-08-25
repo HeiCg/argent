@@ -1003,7 +1003,12 @@ interface ScrollResolve {
    * What a post-acceptance bail-out swallowed. Those exits pass on purpose (a
    * nudge may delay a step but never fail one whose target was already
    * visible); passing SILENTLY is what left the author with no sign a gesture
-   * went missing, so each bail-out names its own.
+   * went missing, so each bail-out names its own. A bail-out is an exit whose
+   * nudge dispatch failed, or whose nudge went out with no round reading the
+   * landing back still accepted. The phase's three bounded stops - the
+   * progress check, the MAX_EDGE_NUDGES cap, the end-of-scroll fingerprint -
+   * read the landing back and still accept it, so they pass silently like
+   * every skip that never nudged at all.
    */
   warning?: string;
 }
