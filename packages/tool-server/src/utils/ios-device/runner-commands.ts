@@ -1,3 +1,4 @@
+import { FAILURE_CODES, withFailureSignal } from "@argent/registry";
 import type { IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 
 /**
@@ -47,8 +48,18 @@ export async function getViewport(
     height: data.height ?? 0,
   };
   if (!(viewport.width > 0) || !(viewport.height > 0)) {
-    throw new Error(
-      "The app's interaction viewport is unavailable. Bring the app to the foreground, then retry."
+    // Same precondition-rejection stamp as the app-session gate: the request
+    // is refused for the current app state with a do-this-then-retry recovery.
+    throw withFailureSignal(
+      new Error(
+        "The app's interaction viewport is unavailable. Bring the app to the foreground, then retry."
+      ),
+      {
+        error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+        failure_stage: "ios_device_viewport",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      }
     );
   }
   return viewport;

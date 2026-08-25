@@ -11,7 +11,7 @@ vi.mock("../src/utils/ios-device/devicectl", () => ({
   installApp: (...a: unknown[]) => installApp(...a),
 }));
 
-import type { DeviceInfo } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 import { iosDeviceImpl } from "../src/tools/reinstall-app/platforms/ios-device";
 import type { ReinstallAppParams, ReinstallAppServices } from "../src/tools/reinstall-app/types";
 import {
@@ -73,5 +73,21 @@ describe("ios-device reinstall — app-session invalidation", () => {
     await iosDeviceImpl.handler(SERVICES, PARAMS, DEVICE);
     setCurrentIosDeviceApp(UDID, BUNDLE);
     expect(requireCurrentIosDeviceApp(UDID)).toBe(BUNDLE);
+  });
+
+  it("stamps the no-app-under-automation rejection with a failure signal", () => {
+    let caught: unknown;
+    try {
+      requireCurrentIosDeviceApp(UDID);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect((caught as Error).message).toContain("No app is under automation");
+    // Telemetry classification (T44): the launch-the-app-first rejection must
+    // not fall into the registry's unclassified bucket.
+    const signal = getFailureSignal(caught);
+    expect(signal?.error_code).toBe(FAILURE_CODES.TOOL_INPUT_INVALID);
+    expect(signal?.failure_stage).toBe("ios_device_app_session");
   });
 });

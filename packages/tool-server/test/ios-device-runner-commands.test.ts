@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import { getDescribeTapPoint } from "../src/tools/describe/contract";
 import {
   captureSnapshot,
@@ -136,5 +137,19 @@ describe("getViewport", () => {
     expect(run).toHaveBeenCalledTimes(2);
     expect(first).toEqual({ x: 0, y: 0, width: 390, height: 844 });
     expect(second).toEqual({ x: 0, y: 0, width: 844, height: 390 });
+  });
+
+  it("stamps the viewport-unavailable rejection with a failure signal", async () => {
+    const run = vi.fn().mockResolvedValue({ x: 0, y: 0, width: 0, height: 0 });
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    const error = await getViewport(api, "com.example.app").catch((caught: unknown) => caught);
+
+    expect((error as Error).message).toContain("Bring the app to the foreground");
+    // Telemetry classification (T44): a degenerate viewport is a per-request
+    // rejection, not an unclassified infra fault.
+    const signal = getFailureSignal(error);
+    expect(signal?.error_code).toBe(FAILURE_CODES.TOOL_INPUT_INVALID);
+    expect(signal?.failure_stage).toBe("ios_device_viewport");
   });
 });

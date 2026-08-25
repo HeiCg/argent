@@ -4,6 +4,7 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   computeRunnerCacheKey,
   ensureRunnerArtifact,
@@ -12,6 +13,7 @@ import {
   MAX_RUNNER_LOG_FILES,
   planRunnerStorageSweep,
   prepareXctestrunWithPort,
+  resolveRunnerProjectPath,
   resolveSigningHint,
   runnerBuildStaticArgs,
   sweepRunnerStorage,
@@ -356,6 +358,35 @@ describe("ensureRunnerArtifact", () => {
       slowGate.resolve();
       expect((await slow).fromCache).toBe(false);
     });
+  });
+});
+
+describe("resolveRunnerProjectPath", () => {
+  it("stamps the project-not-found error with a failure signal", () => {
+    const saved = process.env.ARGENT_IOS_RUNNER_PROJECT;
+    delete process.env.ARGENT_IOS_RUNNER_PROJECT;
+    try {
+      let caught: unknown;
+      try {
+        // The walk-up candidate exists in every real checkout, so the
+        // not-found arm is reached through the exists seam.
+        resolveRunnerProjectPath(() => false);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect((caught as Error).message).toContain(
+        "Could not locate the ios-device-runner Xcode project"
+      );
+      // Telemetry classification (T44): the broken-install story must not
+      // fall into the registry's unclassified bucket.
+      const signal = getFailureSignal(caught);
+      expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
+      expect(signal?.failure_stage).toBe("ios_device_runner_project_resolve");
+    } finally {
+      if (saved === undefined) delete process.env.ARGENT_IOS_RUNNER_PROJECT;
+      else process.env.ARGENT_IOS_RUNNER_PROJECT = saved;
+    }
   });
 });
 

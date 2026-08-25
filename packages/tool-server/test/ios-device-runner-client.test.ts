@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   createRunnerClient,
   RUNNER_COMMAND_TIMEOUT_MS,
@@ -136,6 +137,22 @@ describe("createRunnerClient", () => {
     expect((error as RunnerCommandError).retryable).toBe(true);
     // Hint-less envelopes keep their message untouched.
     expect((error as RunnerCommandError).message).toBe("busy");
+  });
+
+  it("stamps every RunnerCommandError with the runner-command failure signal", async () => {
+    const { send } = createFakeSend([
+      { ok: false, error: { code: "ELEMENT_NOT_FOUND", message: "no such element" } },
+    ]);
+    const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+    const error = await client.run({ command: "tap" }).catch((caught: unknown) => caught);
+
+    // Telemetry classification (T44): a runner-reported failure must not fall
+    // into the registry's unclassified bucket. The wire code stays on `.code`.
+    const signal = getFailureSignal(error);
+    expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICECTL_COMMAND_FAILED);
+    expect(signal?.failure_stage).toBe("ios_device_runner_command");
+    expect((error as RunnerCommandError).code).toBe("ELEMENT_NOT_FOUND");
   });
 
   describe("reactivated pass-through", () => {
@@ -305,6 +322,11 @@ describe("createRunnerClient", () => {
       const error = await client.run({ command: "tap" }).catch((caught: unknown) => caught);
 
       expect(error).toBe(original);
+      // The rethrown object is stamped IN PLACE (T44) — identity above proves
+      // the stamp cannot have replaced the error callers compare against.
+      const signal = getFailureSignal(error);
+      expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
+      expect(signal?.failure_stage).toBe("ios_device_runner_transport");
     });
 
     it("rethrows the transport error when the status probe itself fails", async () => {
@@ -361,6 +383,10 @@ describe("createRunnerClient", () => {
         // a status probe would ride the same dead route.
         expect(error).toBe(original);
         expect(sent).toHaveLength(1);
+        // Pre-send kinds are user-reachable too, so they carry the stamp.
+        const signal = getFailureSignal(error);
+        expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
+        expect(signal?.failure_stage).toBe("ios_device_runner_transport");
       }
     );
 
@@ -449,5 +475,11 @@ describe("waitForRunnerReady", () => {
     expect(error).toBeInstanceOf(IosDeviceTransportError);
     expect((error as IosDeviceTransportError).kind).toBe("timeout");
     expect(send.mock.calls.length).toBeGreaterThan(1);
+    // The ready-timeout is user-reachable when the child is still alive, so
+    // it carries the transport stamp with the timeout kind (T44).
+    const signal = getFailureSignal(error);
+    expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
+    expect(signal?.failure_stage).toBe("ios_device_runner_transport");
+    expect(signal?.error_kind).toBe("timeout");
   });
 });

@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { FAILURE_CODES, withFailureSignal, type FailureSignal } from "@argent/registry";
 import { sleep, type SendRunnerCommand } from "./runner-route";
-import { IosDeviceTransportError, isIosDeviceTransportError } from "./usbmux-protocol";
+import {
+  IosDeviceTransportError,
+  isIosDeviceTransportError,
+  type IosDeviceTransportErrorKind,
+} from "./usbmux-protocol";
 
 /**
  * Command client for the on-device XCUITest runner: stamps command ids,
@@ -90,6 +95,49 @@ export class RunnerCommandError extends Error {
     if (options.code !== undefined) this.code = options.code;
     if (options.hint !== undefined) this.hint = options.hint;
     this.retryable = options.code === RUNNER_BUSY_ERROR_CODE;
+    // Telemetry stamp so a runner-reported failure classifies instead of
+    // landing in the registry's unclassified fallback. The physical-iOS code
+    // family has no runner-command constant, so this reuses its one
+    // command-failure code; the stage tells the channels apart
+    // (ios_devicectl_command vs ios_device_runner_command). The runner's own
+    // wire `code` stays on the `code` field — the envelope's open set does not
+    // map onto the closed error_kind list, so the kind stays coarse.
+    withFailureSignal(this, {
+      error_code: FAILURE_CODES.IOS_DEVICECTL_COMMAND_FAILED,
+      failure_stage: "ios_device_runner_command",
+      failure_area: "tool_server",
+      error_kind: "unknown",
+    });
+  }
+}
+
+/**
+ * Failure signal for a transport error surfacing to users. Stamped HERE, not
+ * in the IosDeviceTransportError constructor: usbmux-protocol.ts is
+ * deliberately dependency-free (see its header) and cannot import
+ * `@argent/registry`, so classification happens at this layer boundary, where
+ * the errors are (re)thrown to callers. One code for "the runner was
+ * unreachable for this command"; the transport `kind` maps onto the
+ * error_kind/network_failure axes so telemetry can split cable, port, and
+ * mid-exchange failures.
+ */
+function transportFailureSignal(kind: IosDeviceTransportErrorKind): FailureSignal {
+  const base = {
+    error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,
+    failure_stage: "ios_device_runner_transport",
+    failure_area: "tool_server",
+  } as const;
+  switch (kind) {
+    case "device-unattached":
+      return { ...base, error_kind: "not_found" };
+    case "runner-not-listening":
+      return { ...base, error_kind: "network", network_failure: "connection_refused" };
+    case "timeout":
+      return { ...base, error_kind: "timeout" };
+    case "protocol":
+      return { ...base, error_kind: "network", network_failure: "invalid_response" };
+    case "http":
+      return { ...base, error_kind: "network", network_failure: "other" };
   }
 }
 
@@ -130,6 +178,10 @@ export function createRunnerClient(options: {
       return unwrapEnvelope(response);
     } catch (error) {
       if (!isIosDeviceTransportError(error)) throw error;
+      // Stamp once at catch-entry: every path below — the direct rethrows and
+      // recovery's `throw transportError` — surfaces this same object, and the
+      // in-place stamp preserves error identity for callers that compare it.
+      withFailureSignal(error, transportFailureSignal(error.kind));
       // Read-only commands are idempotent — the send layer already retried
       // them, and there is nothing to recover. Status commands must never
       // recurse into recovery.
@@ -207,10 +259,13 @@ export async function waitForRunnerReady(
   for (;;) {
     const remainingMs = expiresAt - Date.now();
     if (remainingMs <= 0) {
-      throw new IosDeviceTransportError(
-        "timeout",
-        `Runner did not become ready within ${options.timeoutMs}ms`,
-        { retryable: false, cause: lastError }
+      throw withFailureSignal(
+        new IosDeviceTransportError(
+          "timeout",
+          `Runner did not become ready within ${options.timeoutMs}ms`,
+          { retryable: false, cause: lastError }
+        ),
+        transportFailureSignal("timeout")
       );
     }
     try {

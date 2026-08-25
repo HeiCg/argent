@@ -1,3 +1,5 @@
+import { FAILURE_CODES, withFailureSignal } from "@argent/registry";
+
 /**
  * Tracks the app under automation per physical device.
  *
@@ -50,10 +52,22 @@ export function clearCurrentIosDeviceApp(udid: string, bundleId?: string): void 
 export function requireCurrentIosDeviceApp(udid: string): string {
   const bundleId = currentAppByUdid.get(udid);
   if (!bundleId) {
-    throw new Error(
-      "No app is under automation on this device. Launch the target app first with " +
-        "launch-app (or restart-app) so interactions and describe have a target; " +
-        "on physical iOS devices XCUITest interactions are app-scoped."
+    // Signal shape mirrors native-target-app.ts's no-target analog; the code
+    // follows the branch's precondition-rejection precedent (device-info.ts's
+    // flag gate): the call is rejected up front with a do-this-then-retry
+    // recovery, and the stage names this site for telemetry.
+    throw withFailureSignal(
+      new Error(
+        "No app is under automation on this device. Launch the target app first with " +
+          "launch-app (or restart-app) so interactions and describe have a target; " +
+          "on physical iOS devices XCUITest interactions are app-scoped."
+      ),
+      {
+        error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
+        failure_stage: "ios_device_app_session",
+        failure_area: "tool_server",
+        error_kind: "validation",
+      }
     );
   }
   return bundleId;

@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FAILURE_CODES, FailureError } from "@argent/registry";
+import { FAILURE_CODES, FailureError, withFailureSignal } from "@argent/registry";
 
 const execFileAsync = promisify(execFile);
 
@@ -54,9 +54,13 @@ export function resolveRunnerSigningConfig(): RunnerSigningConfig {
  * Locate the runner's Xcode project. Both src (ts-node) and dist layouts sit
  * at the same depth below packages/tool-server, so a fixed walk-up works for
  * dev and built runs alike; ARGENT_IOS_RUNNER_PROJECT overrides for exotic
- * installs.
+ * installs. `exists` is a test seam over the filesystem probe — the walk-up
+ * candidate exists in every real checkout, so the not-found arm is only
+ * reachable through it.
  */
-function resolveRunnerProjectPath(): string {
+export function resolveRunnerProjectPath(
+  exists: (candidatePath: string) => boolean = fs.existsSync
+): string {
   const override = process.env.ARGENT_IOS_RUNNER_PROJECT;
   if (override) return override;
   const candidate = path.resolve(
@@ -64,10 +68,20 @@ function resolveRunnerProjectPath(): string {
     "../../../..",
     "ios-device-runner/ArgentRunner/ArgentRunner.xcodeproj"
   );
-  if (fs.existsSync(candidate)) return candidate;
-  throw new Error(
-    `Could not locate the ios-device-runner Xcode project (looked at ${candidate}). ` +
-      `Set ARGENT_IOS_RUNNER_PROJECT to the ArgentRunner.xcodeproj path.`
+  if (exists(candidate)) return candidate;
+  // Same code family as this file's spawn failure: the runner can never come
+  // up from here, and the stage names which precondition broke.
+  throw withFailureSignal(
+    new Error(
+      `Could not locate the ios-device-runner Xcode project (looked at ${candidate}). ` +
+        `Set ARGENT_IOS_RUNNER_PROJECT to the ArgentRunner.xcodeproj path.`
+    ),
+    {
+      error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY,
+      failure_stage: "ios_device_runner_project_resolve",
+      failure_area: "tool_server",
+      error_kind: "not_found",
+    }
   );
 }
 
