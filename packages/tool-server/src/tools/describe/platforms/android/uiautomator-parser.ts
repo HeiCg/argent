@@ -254,9 +254,10 @@ export function attrIsTrue(attrs: Record<string, string>, key: string): boolean 
 
 /**
  * Whether the node itself receives touch/selection input. Narrower than
- * `isInteractive`, which also counts a labelled focusable node — inside a
- * WebView every web text run is focusable, so only the gesture flags can tell
- * a link apart from a paragraph.
+ * `isInteractive`, which also counts a labelled focusable node. Inside a
+ * WebView `focusable` does not track what a user can act on — Chromium sets it
+ * on some plain text runs and leaves it off others — so only the gesture flags
+ * separate a link from a paragraph.
  */
 function isTapTarget(attrs: Record<string, string>): boolean {
   return (
@@ -507,21 +508,31 @@ function computeNodeOutput(
     }
   }
 
-  // WebView: the DOM *is* published to the accessibility tree — Chromium maps
-  // an HTML `id` onto `resource-id`, so web controls are addressable exactly
-  // like native ones. Keep the WebView as a landmark (its label is the page
-  // <title>) and let the normal trim rules run over the DOM underneath. The
-  // visibility guard matches every other branch: a WebView clipped to zero
+  // WebView: the DOM *is* published to the accessibility tree — on most builds
+  // Chromium maps an HTML `id` onto `resource-id`, so web controls are
+  // addressable exactly like native ones (some WebView versions publish no ids
+  // at all, and then only text and frames identify a control). Keep the WebView
+  // as a landmark and let the normal trim rules run over the DOM underneath.
+  //
+  // The landmark is often unlabelled: some builds put the page <title> in the
+  // node's `text`, current ones leave `text` and `content-desc` empty. The
+  // renderer keeps the node in the describe output either way — "WebView" is
+  // one of its content roles — so an unlabelled landmark still reports its
+  // bounds instead of vanishing.
+  //
+  // The visibility guard matches every other branch: a WebView clipped to zero
   // area whose children are still on screen must not take the subtree down
   // with it.
   if (WEBVIEW_CLASSES.has(cls)) {
     if (!visible && keptChildren.length === 0) return [];
     const own = labelOf(attrs);
-    // Chromium emits two nested WebView nodes whose bounds drift by 1-2px, so
-    // the duplicate-wrapper collapse below (exact bounds + both clickable)
-    // never fires and the tree reads `WebView > WebView > ...`. Merge them
-    // here, keeping the outer node's on-screen bounds and whichever of the two
-    // carries the page title.
+    // Chromium emits the host WebView twice, nested, so without a merge the
+    // tree reads `WebView > WebView > ...`. The generic duplicate-wrapper
+    // collapse further down cannot help: this branch returns before reaching
+    // it, and the pair is rarely clickable anyway. The two nodes sit at
+    // identical bounds on some builds and a few pixels apart on others, so the
+    // merge must not depend on the bounds matching. Keep the outer node's
+    // on-screen bounds and whichever of the two carries a label.
     let webChildren = keptChildren;
     let webLabel = own;
     let inner: UiNode | undefined;
@@ -532,10 +543,10 @@ function computeNodeOutput(
     }
     const webView = makeUiNode(attrs, "WebView", bounds, webLabel, webChildren);
     if (inner) {
-      // Either half of the pair can be the one the framework marked — Chrome
-      // puts `scrollable` on the outer, the in-app WebView puts `focused` on
-      // the inner — so the merged landmark inherits the union rather than
-      // whichever side happened to survive.
+      // Either half of the pair can be the one the framework marked, and which
+      // half varies by WebView build, so the merged landmark inherits the union
+      // rather than whichever side happened to survive. The flags decide
+      // whether an agent treats the region as tappable or scrollable at all.
       webView.clickable ||= inner.clickable;
       webView.longClickable ||= inner.longClickable;
       webView.scrollable ||= inner.scrollable;
