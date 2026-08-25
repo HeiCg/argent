@@ -156,9 +156,6 @@ describe("argent run input validation", () => {
     expect(stderr()).not.toContain("missing required");
   });
 
-  // Built the way a live tool-server answers: prose in the message, the issue
-  // list beside it. A fixture that stringifies the issues into the message
-  // instead tests a wire no server sends any more.
   describe.each([
     [
       "a modern server (prose message + issues)",
@@ -231,8 +228,6 @@ describe("argent run input validation", () => {
 
     it("carries the tool's own issue list when the tool rejected a value", async () => {
       const issues = [{ code: "too_big", path: ["x"], message: "Too big: expected <=1" }];
-      // The live wire: the envelope a script parses must survive the server
-      // answering with prose, which is all `error` carries now.
       toolsClientMock.callTool.mockRejectedValue(
         new ToolInvocationError("`x`: Too big: expected <=1. You sent: `udid`, `x`, `y`.", {
           errorKind: "validation",

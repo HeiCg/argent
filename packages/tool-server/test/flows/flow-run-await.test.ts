@@ -182,6 +182,9 @@ steps:
       result: { completed: 1, total: 2 },
     });
     expect(result.steps[0]!.args).toBeDefined();
+    // One nested tap went out before the cancel, and the partial result says
+    // so, so the skip carries the marker the recorder's warning reads.
+    expect(result.steps[0]!.reached).toBe(true);
   });
 
   it("calls a CANCELLED await-ui-element a skip, not a condition the app failed", async () => {
@@ -221,6 +224,48 @@ steps:
       reason: "run aborted during wait",
     });
     expect(result.steps[0]!.reason).not.toContain("condition not met");
+    // The sub-tool ran and returned, so this skip is not proof the device is
+    // untouched. The recorder reads the marker to decide whether to warn.
+    expect(result.steps[0]!.reached).toBe(true);
+  });
+
+  it("leaves a step the cancel caught in its pre-invoke delay unmarked", async () => {
+    // The control for the marker above. Same status, same kind, one step
+    // earlier in the same function — the cancel lands in the delay BEFORE the
+    // sub-tool is invoked, so nothing could have gone to the device.
+    const flowFile = await writeFlow(`executionPrerequisite: ""
+steps:
+  - tool: gesture-tap
+    delayMs: 3000
+    args:
+      udid: X
+      x: 0.5
+      y: 0.5
+`);
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const registry = makeRegistry(async (id) => {
+      calls.push(id);
+      return { tapped: true };
+    });
+    const timer = setTimeout(() => controller.abort(), 40);
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "gated", project_root: PROJECT_ROOT, flow_file: flowFile, device: "X" },
+        { signal: controller.signal } as never
+      )
+    );
+    clearTimeout(timer);
+
+    expect(result.steps[0]).toMatchObject({
+      tool: "gesture-tap",
+      status: "skip",
+      reason: "run aborted during delay",
+    });
+    expect(result.steps[0]!.reached).toBeUndefined();
+    expect(calls).not.toContain("gesture-tap");
   });
 
   it("keeps a plain tool that finished before the cancel a PASS", async () => {

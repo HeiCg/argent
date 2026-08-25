@@ -74,7 +74,7 @@ The recorder rechecks each successful `await-ui-element` against the runner tree
 
 When several nodes match, the directive decides:
 
-- **Actions** (`tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`) take the most specific visible match: exact text/id beats substring, then the smallest frame, then reading order.
+- **Actions** (`tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`) take the most specific visible match: a whole-text or exact-id match beats a substring, a literal spelling beats one only [folding](#invisible-characters) makes equal, then the smallest frame, then reading order. The fold tier comes before the frame, so a decorative icon whose label differs from the real control only by an invisible character does not win on size.
 - **Conditions** (`await`, `assert`) do not rank. `exists`/`visible` hold if any match qualifies and `hidden` only if none does; `text` reads the first visible match in reading order.
 
 A container that aggregates a child's text therefore splits them: `tap` hits the leaf while `text.in` reads the container, so `equals` fails against correct UI. Use an `id` or a [relational scope](#relational-scopes) when an action and a check must agree, and a stricter selector when ranking can still choose the wrong element.
@@ -83,9 +83,9 @@ A container that aggregates a child's text therefore splits them: `tap` hits the
 
 Type what you see. Every literal comparison — `text` and `role` selectors, `contains`, `equals` — folds both sides first, so invisible differences are ignored: a non-breaking space matches a plain one, a stray zero-width space is dropped, and an LTR bidi wrapper around left-to-right text needs no reproducing. Around right-to-left text that same wrapper reorders what is drawn, so the comparison keeps it. Spell it out only in an `equals` of the whole label. A substring test — a `text` selector, or `contains` — takes the bare text you see, because a needle that carries half a wrapper puts the closing half mid-label and matches nothing.
 
-Anything that changes the rendering is deliberately not folded: reordering bidi controls, a soft hyphen, emoji joiners and variation selectors, and a line break. A run of spaces or tabs collapses to one space, but no number of spaces matches a label the screen breaks across two lines. `id` is never folded, because it is a machine key. `matches` is never folded either, because a regex carries its own precision.
+A character that changes which glyphs are drawn, or their order, is deliberately not folded: reordering bidi controls, a soft hyphen, emoji joiners and variation selectors, and a line break. A run of spaces or tabs collapses to one space, but no number of spaces matches a line break. Take the break from the TEXT, not from the picture: a label the screen draws on two lines usually reaches the tree as one line, because a `<pre>`, a `<br>` and a soft wrap all arrive with a space or with nothing, and a container joins its children with a space. A break that does survive usually comes from an accessibility name, which the screen draws on one line. Copy what `describe` prints, or what the failure message quotes. A character that only moves where a line breaks is folded away — a zero-width space, a word joiner, a byte-order mark — so `equals` cannot pin the word segmentation of a Thai, Lao, Khmer or CJK label. `id` is never folded, because it is a machine key. `matches` is never folded either, because a regex carries its own precision.
 
-Two consequences: a leading or trailing space in a `contains` needle is significant and acts as a word boundary, and a value made only of invisible characters folds to nothing and matches nothing rather than everything. Use `any: true` for "any element". When a check fails against strings that look identical, the failure reason names the differing code points or the typographic variant. Read it instead of guessing.
+Two consequences: a leading or trailing space in a `contains` needle is significant and has to match a real space in the label, and a value made only of invisible characters folds to nothing and matches nothing rather than everything. Use `any: true` for "any element". When a check fails against strings that look identical, the failure reason names the differing code points or the typographic variant. Read it instead of guessing.
 
 ### Relational scopes
 
@@ -138,7 +138,7 @@ A **selector-less gesture** — a coordinate `tap`/`long-press`, or a `pinch`/`r
 - `equals`: case-insensitive full match.
 - `matches`: case-sensitive JavaScript regex.
 
-Use `equals` or an anchored regex when boundaries matter. For example, `contains: "Taps: 3"` also matches `Taps: 30`, while `contains: "Taps: 3 "` with its trailing space does not. `contains` and `equals` compare [folded text](#invisible-characters); `matches` does not.
+Use `equals` or an anchored regex when boundaries matter. For example, `contains: "Taps: 3"` also matches `Taps: 30`; `equals: "Taps: 3"` does not. A trailing space is not a substitute: `contains: "Taps: 3 "` needs a real space after the `3`, so it rejects the label `Taps: 3` as well. Spell a boundary space only where the label truly has one, as `contains: "Save "` does against `Save Changes`. `contains` and `equals` compare [folded text](#invisible-characters); `matches` does not.
 
 Use `await` for an outcome that can take time. Its default is 7500 ms. Add a larger timeout only after the default expires. Use `assert` for settled state. It has a fixed 1000 ms grace and rejects `timeout`.
 
