@@ -187,6 +187,14 @@ Fails if the React DevTools hook is not present in the runtime or the app is not
     if (firstError !== null && HOOK_NOT_PRESENT_ERRORS.has(firstError)) {
       await cdp.evaluate(FIBER_ROOT_TRACKER_SCRIPT).catch(() => {});
       result = await evalRenders();
+      if (result?.exceptionDetails) {
+        throw new FailureError(`Runtime exception: ${result.exceptionDetails.text ?? "unknown"}`, {
+          error_code: FAILURE_CODES.REACT_PROFILER_RUNTIME_EXCEPTION,
+          failure_stage: "react_profiler_renders_runtime_eval",
+          failure_area: "tool_server",
+          error_kind: "subprocess",
+        });
+      }
       if (result?.result?.value) {
         parsed = JSON.parse(result.result.value) as ParsedRenders;
       }
@@ -207,9 +215,11 @@ Fails if the React DevTools hook is not present in the runtime or the app is not
     const entries: RenderEntry[] = Object.entries(parsed)
       .map(([component, data]) => ({
         component,
-        instanceCount: data.instanceCount,
-        maxActualDuration_ms: data.maxActualDuration,
-        selfBaseDuration_ms: data.selfBaseDuration,
+        // These cross the debuggee→host boundary as JSON; a non-finite duration
+        // serializes to null, and null.toFixed throws.
+        instanceCount: data.instanceCount ?? 0,
+        maxActualDuration_ms: data.maxActualDuration ?? 0,
+        selfBaseDuration_ms: data.selfBaseDuration ?? 0,
       }))
       .sort((a, b) => b.selfBaseDuration_ms - a.selfBaseDuration_ms)
       .slice(0, params.top_n);

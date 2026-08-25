@@ -364,10 +364,14 @@ function renderComponentCpu(
   const commitWindows = new Map<number, { start: number; end: number; duration: number }>();
   for (const c of componentCommits) {
     if (!commitWindows.has(c.commitIndex)) {
+      // Dump-read commits can carry nulled timestamps/durations (same source as
+      // profiler-commit-query, which guards every use the same way).
+      const start = c.timestamp ?? 0;
+      const duration = c.commitDuration ?? 0;
       commitWindows.set(c.commitIndex, {
-        start: c.timestamp,
-        end: c.timestamp + c.commitDuration,
-        duration: c.commitDuration,
+        start,
+        end: start + duration,
+        duration,
       });
     }
   }

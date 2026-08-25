@@ -330,7 +330,7 @@ function renderCascadeTree(commits: DevToolsFiberCommit[], commitIndex: number):
 
   const rendered = new Set<string>();
 
-  function renderNode(name: string, depth: number): void {
+  function renderNode(name: string, depth: number, path: Set<string>): void {
     if (rendered.has(`${name}:${depth}`)) return;
     rendered.add(`${name}:${depth}`);
 
@@ -345,14 +345,20 @@ function renderCascadeTree(commits: DevToolsFiberCommit[], commitIndex: number):
 
     const childCommits = children.get(name) ?? [];
     const childNames = new Set(childCommits.map((c) => c.componentName));
+    // Mutually recursive components (A renders B renders A) form a cycle in the
+    // name→parentName edges; without a path guard, `name:depth` dedupe never
+    // repeats and the walk descends until the stack overflows.
+    const nextPath = new Set(path);
+    nextPath.add(name);
     for (const childName of childNames) {
-      renderNode(childName, depth + 1);
+      if (nextPath.has(childName)) continue;
+      renderNode(childName, depth + 1, nextPath);
     }
   }
 
   const rootNames = new Set(roots.map((r) => r.componentName));
   for (const name of rootNames) {
-    renderNode(name, 0);
+    renderNode(name, 0, new Set());
   }
 
   return lines.join("\n");
