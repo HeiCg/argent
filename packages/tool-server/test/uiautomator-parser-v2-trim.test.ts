@@ -173,32 +173,93 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     expect(ids).toContain("login");
   });
 
-  it("collapses the doubled WebView Chromium emits with 1-2px bounds drift", () => {
-    // The generic duplicate-wrapper collapse needs exact bounds equality AND
-    // both nodes clickable, so it never fires here.
-    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+  // Chromium emits the host WebView twice, nested. Both shapes occur in the
+  // wild: the checked-in in-app fixture has the pair at identical bounds, and a
+  // current WebView on Android 15 reports the inner node a few pixels larger
+  // (measured: [0,0][1080,2400] outer, [0,0][1084,2402] inner). Neither reaches
+  // the generic duplicate-wrapper collapse further down — the WebView branch
+  // returns first — so both need the merge here.
+  for (const [shape, innerBounds] of [
+    ["identical bounds", "[0,220][1080,2154]"],
+    ["bounds that drift by a few px", "[0,220][1084,2156]"],
+  ] as const) {
+    it(`collapses the doubled WebView Chromium emits with ${shape}`, () => {
+      const xml = `<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy>
   <node class="android.webkit.WebView" bounds="[0,220][1080,2154]">
-    <node class="android.webkit.WebView" bounds="[0,220][1081,2156]" content-desc="The Internet">
+    <node class="android.webkit.WebView" bounds="${innerBounds}" content-desc="The Internet">
       <node class="android.widget.Button" bounds="[10,300][90,380]" text="Login" clickable="true"/>
     </node>
   </node>
 </hierarchy>`;
-    const tree = parseUiAutomatorDump(xml, 1080, 2400);
-    const webviews = flatten(tree).filter((n) => n.role === "WebView");
+      const tree = parseUiAutomatorDump(xml, 1080, 2400);
+      const webviews = flatten(tree).filter((n) => n.role === "WebView");
+      expect(webviews).toHaveLength(1);
+      // The surviving landmark keeps whichever of the two carried the page title.
+      expect(webviews[0]?.label).toBe("The Internet");
+      expect(webviews[0]?.children.some((c) => c.label === "Login")).toBe(true);
+    });
+  }
+
+  it("collapses three nested WebView nodes down to one landmark", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][200,400]">
+    <node class="android.webkit.WebView" bounds="[0,0][200,400]">
+      <node class="android.webkit.WebViewChromium" bounds="[0,0][200,400]" content-desc="Docs">
+        <node class="android.widget.TextView" bounds="[10,10][190,40]" text="Chapter 1"/>
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+    const webviews = flatten(parseUiAutomatorDump(xml, 200, 400)).filter(
+      (n) => n.role === "WebView"
+    );
     expect(webviews).toHaveLength(1);
-    // The surviving landmark keeps whichever of the two carried the page title.
-    expect(webviews[0]?.label).toBe("The Internet");
-    expect(webviews[0]?.children.some((c) => c.label === "Login")).toBe(true);
+    expect(webviews[0]?.label).toBe("Docs");
+    expect(webviews[0]?.children.map((c) => c.label)).toEqual(["Chapter 1"]);
+  });
+
+  it("keeps an on-screen WebView whose renderer has published no DOM", () => {
+    // The state right after launch, and for a page with no accessible content.
+    // The node carries no label, no id and no gesture flag, so nothing but the
+    // WebView role itself keeps the one element covering the screen on the page.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][100,100]"/>
+</hierarchy>`;
+    const webview = flatten(parseUiAutomatorDump(xml, 100, 100)).find((n) => n.role === "WebView");
+    expect(webview).toBeDefined();
+    expect(webview?.label).toBeUndefined();
+    expect(webview?.frame).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+  });
+
+  it("rolls the merged pair's hidden-child counts together", () => {
+    // A row scrolled out of a real web scroller is counted on the inner node.
+    // The merge drops that node, so its count has to move to the landmark or
+    // the "swipe before you tap" signal is silently lost.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][200,200]" scrollable="true">
+    <node class="android.webkit.WebView" bounds="[0,0][200,200]" content-desc="Feed">
+      <node class="android.widget.TextView" bounds="[10,10][190,40]" text="Row 1"/>
+      <node class="android.widget.TextView" bounds="[10,250][190,290]" text="Row 40"/>
+    </node>
+  </node>
+</hierarchy>`;
+    const webview = flatten(parseUiAutomatorDump(xml, 200, 400)).find((n) => n.role === "WebView");
+    expect(webview?.children.map((c) => c.label)).toEqual(["Row 1"]);
+    expect(webview?.scrollHidden).toBe(1);
   });
 
   it("keeps the interaction flags either half of the doubled WebView carried", () => {
-    // Chrome marks the outer node scrollable; the in-app WebView marks the
-    // inner one. The merged landmark must not drop whichever side had them.
+    // Whichever half the framework marked, the merged landmark inherits the
+    // union — the flags decide whether an agent treats the region as tappable
+    // or scrollable at all.
     const xml = `<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy>
   <node class="android.webkit.WebView" bounds="[0,0][200,400]" resource-id="host_web_view">
-    <node class="android.webkit.WebView" bounds="[0,0][201,402]" scrollable="true" clickable="true" content-desc="Docs">
+    <node class="android.webkit.WebView" bounds="[0,0][201,402]" scrollable="true" clickable="true" long-clickable="true" content-desc="Docs">
       <node class="android.widget.TextView" bounds="[10,10][190,40]" text="Chapter 1"/>
     </node>
   </node>
@@ -207,6 +268,7 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     const webview = flatten(tree).find((n) => n.role === "WebView");
     expect(webview?.scrollable).toBe(true);
     expect(webview?.clickable).toBe(true);
+    expect(webview?.longClickable).toBe(true);
     expect(webview?.identifier).toBe("host_web_view");
   });
 
@@ -291,6 +353,54 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     // Same class outside the WebView is untouched (regression guard for the
     // shared deriveUiAutomatorRole used by the flow selector tree).
     expect(byLabel.get("Native label")).toBe("View");
+  });
+
+  it("reads a focusable web text run as StaticText, and a container as a container", () => {
+    // Two guards on the remap that a gesture-flags test cannot reach. Chromium
+    // marks some web text runs focusable, so focus must not disqualify one —
+    // that is why the predicate is gesture flags only and not `isInteractive`.
+    // And a labelled node that still has kept children is a container, not a
+    // text run, whatever its class says.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][200,400]" content-desc="Article">
+    <node class="android.view.View" bounds="[10,10][190,40]" text="Focusable caption" focusable="true"/>
+    <node class="android.view.View" bounds="[10,50][190,140]" content-desc="Author card">
+      <node class="android.widget.TextView" bounds="[10,60][190,90]" text="Ada Lovelace"/>
+    </node>
+  </node>
+</hierarchy>`;
+    const byLabel = new Map(flatten(parseUiAutomatorDump(xml, 200, 400)).map((n) => [n.label, n]));
+    expect(byLabel.get("Focusable caption")?.role).toBe("StaticText");
+    expect(byLabel.get("Author card")?.role).toBe("View");
+    expect(byLabel.get("Author card")?.children).toHaveLength(1);
+  });
+
+  it("drops a child whose text its labelled tap target already spells out", () => {
+    // A tap target that carries its own label repeats its text as a child node
+    // on many screens (a link whose anchor text is also its content-desc, a
+    // like button whose count is a child TextView). Showing both makes the
+    // agent read one control as two items.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.Button" bounds="[0,0][200,60]" content-desc="Like (634 likes)" clickable="true">
+    <node class="android.widget.TextView" bounds="[10,10][60,50]" text="634"/>
+  </node>
+</hierarchy>`;
+    const nodes = flatten(parseUiAutomatorDump(xml, 200, 200));
+    expect(nodes.map((n) => n.label)).toEqual([undefined, "Like (634 likes)"]);
+  });
+
+  it("keeps a repeated child that is a tap target in its own right", () => {
+    // The same text under a tappable child is a separate control, not an echo.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.LinearLayout" bounds="[0,0][200,60]" content-desc="Powered by Elemental Selenium" clickable="true">
+    <node class="android.widget.TextView" bounds="[10,10][190,50]" text="Elemental Selenium" clickable="true"/>
+  </node>
+</hierarchy>`;
+    const labels = flatten(parseUiAutomatorDump(xml, 200, 200)).map((n) => n.label);
+    expect(labels).toContain("Elemental Selenium");
   });
 
   it("aggregates descendant labels into a clickable container with no own label", () => {

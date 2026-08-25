@@ -48,50 +48,98 @@ function flatten(tree: DescribeNode): DescribeNode[] {
   return out;
 }
 
+// One line per direct child of a node: role plus whatever identifies it, with
+// long body copy cut short so the expectation stays readable (and so a page's
+// prose does not get duplicated into this file).
+function webRows(n: DescribeNode): string[] {
+  return n.children.map((c) => {
+    // Chrome's own icon-font glyphs live in the Private Use Area and render as
+    // nothing, so drop them rather than embedding invisible characters here.
+    const name = (c.identifier ?? c.label ?? "").replace(/[\uE000-\uF8FF]/g, "").trim();
+    return [c.role, name.length > 32 ? name.slice(0, 32) + "…" : name].filter(Boolean).join(" ");
+  });
+}
+
+function roleByLabel(nodes: DescribeNode[]): Map<string | undefined, string> {
+  return new Map(nodes.map((n) => [n.label, n.role]));
+}
+
+function countWebViewNodes(xml: string): number {
+  return xml.split('class="android.webkit.WebView"').length - 1;
+}
+
 describe("Android WebView describe — real captures", () => {
   it("surfaces the in-app WebView login form", () => {
-    const tree = parseUiAutomatorDump(read("android-webview-inapp.xml"), SCREEN_W, SCREEN_H);
+    const xml = read("android-webview-inapp.xml");
+    // This capture is the doubled-node shape: Chromium published two nested
+    // WebView nodes, which the merge collapses into one landmark.
+    expect(countWebViewNodes(xml)).toBe(2);
+
+    const tree = parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H);
     const nodes = flatten(tree);
 
-    // One WebView landmark (Chromium's doubled node is collapsed), labelled
-    // with the page <title>.
     const webviews = nodes.filter((n) => n.role === "WebView");
     expect(webviews).toHaveLength(1);
     expect(webviews[0]!.label).toBe("Login Page");
 
-    // The whole form is reachable, and the HTML ids came through as
-    // identifiers, so every control is selector-addressable.
+    // The whole form is reachable, in page order, and the HTML ids came through
+    // as identifiers so every control is selector-addressable. Asserting the
+    // shape rather than a node count says what changed when it changes.
+    expect(webRows(webviews[0]!)).toEqual([
+      "StaticText Login Page",
+      "StaticText This is where you can log into t…",
+      "StaticText Username",
+      "TextField username",
+      "StaticText Password",
+      "TextField password",
+      "Button login",
+      "StaticText Powered by Elemental Selenium",
+    ]);
     const byId = new Map(nodes.filter((n) => n.identifier).map((n) => [n.identifier!, n]));
-    expect(byId.get("username")?.role).toBe("TextField");
-    expect(byId.get("password")?.role).toBe("TextField");
-    expect(byId.get("login")?.role).toBe("Button");
     expect(byId.get("login")?.label).toBe("Login");
     expect(byId.get("login")?.clickable).toBe(true);
 
-    // Web text runs read as text, not as bare "View" scaffolding.
-    const labels = nodes.filter((n) => n.role === "StaticText").map((n) => n.label);
-    expect(labels).toContain("Login Page");
-    expect(labels).toContain("Powered by Elemental Selenium");
-
-    // Locks the node budget: the sentinel emitted 2 nodes for this screen.
-    expect(nodes.length - 1).toBe(10);
+    // The two form labels are the nodes the contextual remap actually touches:
+    // Chromium emits them as bare `android.view.View`. ("Login Page" and the
+    // footer are TextViews, which map to StaticText without any remap.)
+    const roles = roleByLabel(nodes);
+    expect(roles.get("Username")).toBe("StaticText");
+    expect(roles.get("Password")).toBe("StaticText");
   });
 
   it("surfaces the Chrome tab's web DOM alongside Chrome's own toolbar", () => {
-    const tree = parseUiAutomatorDump(read("android-webview-chrome.xml"), SCREEN_W, SCREEN_H);
+    const xml = read("android-webview-chrome.xml");
+    // Chrome publishes a single WebView node, so this capture covers the
+    // un-doubled shape — the merge is exercised by the in-app fixture above.
+    expect(countWebViewNodes(xml)).toBe(1);
+
+    const tree = parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H);
     const nodes = flatten(tree);
 
     const webviews = nodes.filter((n) => n.role === "WebView");
     expect(webviews).toHaveLength(1);
     expect(webviews[0]!.label).toBe("The Internet");
 
-    const byId = new Map(nodes.filter((n) => n.identifier).map((n) => [n.identifier!, n]));
-    expect(byId.get("username")?.role).toBe("TextField");
-    expect(byId.get("password")?.role).toBe("TextField");
-    // Chrome's native chrome is unaffected and still sits beside the web DOM.
-    expect(byId.has("com.android.chrome:id/url_bar")).toBe(true);
+    expect(webRows(webviews[0]!)).toEqual([
+      "StaticText flash-messages",
+      "View Fork me on GitHub",
+      "StaticText Login Page",
+      "StaticText This is where you can log into t…",
+      "StaticText Username",
+      "TextField username",
+      "StaticText Password",
+      "TextField password",
+      "Button Login",
+      "StaticText Powered by",
+      "View Elemental Selenium",
+    ]);
 
-    expect(nodes.length - 1).toBe(22);
+    // Chrome's native chrome is unaffected and still sits beside the web DOM.
+    const byId = new Map(nodes.filter((n) => n.identifier).map((n) => [n.identifier!, n]));
+    expect(byId.has("com.android.chrome:id/url_bar")).toBe(true);
+    expect(byId.get("com.android.chrome:id/url_bar")?.label).toBe(
+      "the-internet.herokuapp.com/login"
+    );
   });
 
   it("never lets a WebView password input's plaintext escape", () => {
