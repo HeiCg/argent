@@ -733,20 +733,23 @@ export type FlowFile = {
 /**
  * The literal child steps of a block directive, or undefined for a leaf step.
  *
- * The single predicate for "this step has authored children". Four readers
- * expand a block that will NOT execute into skip lines, so a report keeps one
- * line per authored step no matter where the run ended: `execSteps`' hard-stop,
- * device-free and cancellation gates, plus `reportBlockSkipped` recursing into a
- * nested block. The fifth is the upload preflight's walk, where a block it
- * cannot see hides a nested `run:`/`snapshot` from validation. Two more,
- * `flowRequiresDevice` and `flowScopesDevice` (flow-device.ts), read children to
- * resolve the flow's device decisions from a block's body — dead while every
- * block kind classifies device-requiring, and the guard against a later one. The
- * last two hunt a `snapshot:` down a block's nesting, the two halves of one
- * refusal: `assertNoSnapshotInRepeat` below, throwing at parse for the file it
- * can see, and `findFragmentSnapshot` (flow-run.ts), the same walk without the
- * throw for a fragment resolved at run time. A block invisible to either hides
- * the snapshot the refusal is about.
+ * The single predicate for "this step has authored children", read at nine
+ * sites. Four expand a block that will NOT execute into skip lines, so a report
+ * keeps one line per authored step no matter where the run ended: `execSteps`'
+ * hard-stop, device-free and cancellation gates, plus `reportBlockSkipped`
+ * recursing into a nested block. (Two executors reach those same skip lines by
+ * another route, having the block in hand and passing `step.steps` straight to
+ * `reportBlockSkipped`: `execWhenStep` on an unmet guard, and `execRepeatStep`
+ * on a drain that runs no iteration.) The fifth is the upload preflight's walk,
+ * where a block it cannot see hides a nested `run:`/`snapshot` from validation.
+ * The sixth and seventh, `flowRequiresDevice` and `flowScopesDevice`
+ * (flow-device.ts), read children to resolve the flow's device decisions from a
+ * block's body — dead while every block kind classifies device-requiring, and
+ * the guard against a later one. The eighth and ninth hunt a `snapshot:` down a
+ * block's nesting, the two halves of one refusal: `assertNoSnapshotInRepeat`
+ * below, throwing at parse for the file it can see, and `findFragmentSnapshot`
+ * (flow-run.ts), the same walk without the throw for a fragment resolved at run
+ * time. A block invisible to either hides the snapshot the refusal is about.
  *
  * Those sites used to ask `kind === "when"` directly, so a second block
  * directive would have had to remember every one of them and a forgotten site
