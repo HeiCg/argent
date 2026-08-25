@@ -45,13 +45,23 @@ export async function describeIosDevice(
 
 /**
  * XCUITest element types → the AX-style content roles the describe formatter
- * emits unconditionally (see format-tree.ts CONTENT_ROLES). Unmapped types
- * (Window, Other, ScrollView, Cell, …) keep their XCTest name and surface via
- * the nested renderer's container rules — printed when labeled or when they
- * have printable descendants.
+ * emits unconditionally (see format-tree.ts CONTENT_ROLES). Covers the runner's
+ * interactive allowlist so icon-only Cells, compact date pickers, and valueless
+ * toggles survive the formatter's content gate; the mapping is grounded in the
+ * simulator trait adapter (button-ish traits → AXButton, adjustable →
+ * AXAdjustable), with on-device confirmation of the real XCTest
+ * type/label/value reporting still pending (DEVICE-TEST-PLAN item 20).
+ * Unmapped types (Window, Other, NavigationBar, …) keep their XCTest name and
+ * surface via the nested renderer's container rules — printed when labeled or
+ * when they have printable descendants. SegmentedControl stays unmapped on
+ * purpose: its Button children carry the interaction, and the container rule
+ * emits the control itself whenever it has children.
  */
 const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
   Button: "AXButton",
+  CheckBox: "AXButton",
+  MenuItem: "AXButton",
+  Cell: "AXButton",
   StaticText: "AXStaticText",
   Image: "AXImage",
   Link: "AXLink",
@@ -61,9 +71,21 @@ const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
   TextView: "AXTextField",
   TabBar: "AXTabBar",
   Switch: "AXAdjustable",
+  Toggle: "AXAdjustable",
   Slider: "AXAdjustable",
   Stepper: "AXAdjustable",
+  DatePicker: "AXAdjustable",
+  Picker: "AXAdjustable",
+  PickerWheel: "AXAdjustable",
 };
+
+// Containers whose content scrolls. Mirrors the Swift runner's
+// scrollContainerTypes (ArgentRunnerUITests/ArgentRunnerSession+Snapshot.swift)
+// — keep the two lists in lockstep. These deliberately get no content role:
+// `scrollable` alone keeps them emitted even unlabeled and childless, and puts
+// the [scrollable] flag on the rendered line so the agent knows where a swipe
+// can reveal more.
+const SCROLL_CONTAINER_TYPES = new Set(["ScrollView", "Table", "CollectionView", "WebView"]);
 
 function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
   // A zero-node snapshot has no root rect to normalize against: hand back the
@@ -102,6 +124,7 @@ function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
       ...(node.focused ? { focused: true } : {}),
       ...(node.selected ? { selected: true } : {}),
       ...(node.enabled === false ? { disabled: true } : {}),
+      ...(SCROLL_CONTAINER_TYPES.has(node.type) ? { scrollable: true } : {}),
     };
   };
 
