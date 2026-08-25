@@ -137,10 +137,6 @@ describe("a nested flow-execute reports its own verdict", () => {
   });
 
   it("still names the failing step when the run was cancelled after it failed", async () => {
-    // `summarize` folds the abort into the verdict. A step that failed and was
-    // then cancelled takes the abort branch, not the `ok: false` one that
-    // renders the detail. `reason` is the only string the recorder's refusal
-    // can render, so a loss here is a loss everywhere.
     const { result } = await run("flow-execute", { ...FAILED_SUBFLOW, aborted: true });
 
     expect(result.steps[0].status).toBe("skip");
@@ -150,8 +146,6 @@ describe("a nested flow-execute reports its own verdict", () => {
   });
 
   it("says only that it was aborted when no composed step failed", async () => {
-    // The other side of the same branch: a cancel that reached no failure has
-    // nothing to name, and must not grow an empty parenthesis.
     const { result } = await run("flow-execute", {
       ...FAILED_SUBFLOW,
       aborted: true,
@@ -199,10 +193,6 @@ describe("a nested run-sequence reports its own verdict", () => {
   });
 
   it("flags a nested failure whose error message is empty", () => {
-    // A tool that throws `new Error("")` records `error: ""`. A check on a
-    // non-empty message would skip that entry and score the failed sequence as
-    // a pass. The empty message is named, so the reason does not trail off at
-    // the colon.
     const out = nestedOrchestratorOutcome("run-sequence", {
       completed: 0,
       total: 1,
@@ -259,11 +249,6 @@ describe("a nested run-sequence reports its own verdict", () => {
 });
 
 describe("a cancelled nested run says whether it reached a step", () => {
-  // `skip` is the runner's "did not run" status, and a nested orchestrator is
-  // the one producer of it whose reach its own branch cannot settle: the
-  // sub-run reports which of ITS steps went to the device. The recorder reads
-  // `reached` to decide whether to warn that the device may have moved, so an
-  // unmarked skip here calls a batch that DID dispatch untouched.
   it("marks a cancelled sequence that had already dispatched", async () => {
     const { result } = await run("run-sequence", {
       completed: 1,
@@ -276,7 +261,6 @@ describe("a cancelled nested run says whether it reached a step", () => {
   });
 
   it("leaves a sequence cancelled before its first step unmarked", async () => {
-    // The control: same status, same reason shape, nothing dispatched.
     const { result } = await run("run-sequence", { completed: 0, total: 2, steps: [] });
 
     expect(result.steps[0].status).toBe("skip");
@@ -310,7 +294,6 @@ describe("a cancelled nested run says whether it reached a step", () => {
   });
 
   it("leaves a nested run that FAILED unmarked", async () => {
-    // `reached` qualifies a skip alone. A `fail` already says the step ran.
     const { result } = await run("flow-execute", FAILED_SUBFLOW);
 
     expect(result.steps[0].status).toBe("fail");

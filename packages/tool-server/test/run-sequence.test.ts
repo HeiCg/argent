@@ -129,17 +129,12 @@ describe("run-sequence", () => {
     expect(result.steps[0]).toMatchObject({
       tool: "not-a-tool",
       error: expect.stringContaining("not allowed"),
-      // The entry must say the step never reached the registry. `completed` is
-      // 0 for a step that ran and failed too, and these entries carry no
-      // status, so only this marker separates them.
       dispatched: false,
     });
     expect(registry.invokeTool).not.toHaveBeenCalled();
   });
 
   it("marks a step rejected by the capability pre-flight as never dispatched", async () => {
-    // The second pre-dispatch exit: the tool is allow-listed but does not
-    // support this target. `button` on a Chromium device is the ordinary case.
     const registry = {
       getTool: vi.fn(() => ({
         capability: { apple: { simulator: true }, android: { emulator: true } },
@@ -170,8 +165,6 @@ describe("run-sequence", () => {
   });
 
   it("does not mark a step that WAS dispatched and then failed", async () => {
-    // The control for the two above. The marker must be absent whenever the
-    // registry was reached, or a reader treats a real action as a no-op.
     const registry = mockRegistry((id: string) => {
       if (id === "keyboard") throw new Error("keyboard failed: device went away");
       return { ok: true };
@@ -227,10 +220,6 @@ describe("run-sequence", () => {
   });
 
   it("marks an unmet await-ui-element `dispatched: false` — it polled, it did not act", async () => {
-    // The wait is the one exit that RUNS and still sends nothing to the device:
-    // it reads the UI tree until the deadline. Unmarked, a sequence gated on it
-    // reads as "a step acted and then failed", and the flow recorder warns the
-    // author to go and check a screen nothing touched.
     const registry = mockRegistry((id: string) =>
       id === "await-ui-element"
         ? { success: false, elapsed: 5000, note: "not seen" }
@@ -253,8 +242,6 @@ describe("run-sequence", () => {
     );
 
     expect(result.steps[0]).toMatchObject({ tool: "await-ui-element", dispatched: false });
-    // The control for the marker: a wait that HELD leaves a plain result entry,
-    // so nothing here silences a sequence that went on to act.
     expect(result.completed).toBe(0);
     expect(registry.invokeTool).toHaveBeenCalledTimes(1);
   });
@@ -510,9 +497,6 @@ describe("run-sequence", () => {
     });
 
     it("marks the entry `dispatched: false`, since the parse precedes execute", async () => {
-      // The registry parses before it calls `execute`, so a schema miss touched
-      // the device as little as an unlisted tool name did. Without the marker
-      // the recorder reads the entry as "ran and then failed".
       const { registry, executed } = liveRegistry();
       const tool = createRunSequenceTool(registry);
 
@@ -526,9 +510,6 @@ describe("run-sequence", () => {
     });
 
     it("leaves a tool that rejects its OWN args unmarked", async () => {
-      // The control. `dispatched: false` must mean "sent no action to the
-      // device", not "the error mentions params". A tool that parses its args
-      // and then throws from inside `execute` DID act.
       const registry = new Registry();
       const executed: string[] = [];
       registry.registerTool({

@@ -647,9 +647,6 @@ async function captureTapSelector(
 }
 
 /**
- * Step count for a response that records nothing. Host mode re-reads the file,
- * so a mid-recording hand edit is counted.
- *
  * The liveness check comes first, as on the append path: the caller resolved its
  * session BEFORE a tool that can run for minutes, so the recording can be
  * finished, restarted or evicted by now, and the read below would report another
@@ -660,9 +657,6 @@ async function captureTapSelector(
  * then have the file replaced underneath, so the read would report the FRESH
  * take's count — 0 — as this take's. Holding the lock is what preserves this
  * take's own count.
- *
- * `ranOnDevice` says whether the refused call already ran, which decides what
- * the liveness error tells the author to undo.
  */
 async function activeFlowState(
   session: RecordingSession,
@@ -682,11 +676,6 @@ async function activeFlowState(
             `the step count is from the last valid in-memory snapshot.`,
         };
       }
-      // The re-read ABSORBS a hand edit exactly as an append's does, and after
-      // it the finish can no longer tell one happened. So ask the same question
-      // here, or a verdict slides onto whichever step inherited its number —
-      // see {@link dropMovedWarnings}. Nothing is appended, so the two views
-      // differ only by the edit.
       session.discardedWarnings =
         (session.discardedWarnings ?? 0) +
         dropMovedWarnings(session.stepWarnings, session.flow.steps, before);
@@ -843,31 +832,6 @@ export function directiveCommandHint(command: string): string | undefined {
   );
 }
 
-/**
- * Whether this step must be refused rather than recorded, and why.
- *
- * `flow-execute` and `run-sequence` report a failed, cancelled or never-run
- * nested run in their RESULT, not by throwing. If the recorder does not read
- * that result, a composition that failed everything becomes a step that passed.
- *
- * The verdict comes from {@link nestedOrchestratorOutcome}, the reader the
- * RUNNER scores a nested step with. A step the recorder refuses is a step the
- * runner would not have passed, so one reader keeps the two in agreement.
- *
- * `undefined` means the nested run finished cleanly, and only `run-sequence`
- * can finish cleanly under a cancel: its trailing inter-step delay pushes no
- * entry, so a cancel there still reads as "every declared step ran", and the
- * batch records.
- *
- * `flow-execute` has no such exit. Its per-step delay sleeps BEFORE the
- * sub-tool, and `summarize` samples the cancel flag once the steps are done,
- * whatever they scored — so a composed run whose every declared step PASSED
- * still comes back `aborted: true`, and this refuses it. That is the runner's
- * own verdict rather than a second reading of one: the same result scores the
- * nested step a `skip` inside a parent flow. What the author loses is the whole
- * batch, which is the general cost of composing mid-recording — record the
- * actions one call at a time and a cancel costs only the call it lands in.
- */
 function nestedRecordRefusal(
   command: string,
   result: unknown,
@@ -875,16 +839,6 @@ function nestedRecordRefusal(
 ): { reason: string; mayHaveMutated: boolean } | null {
   const outcome = nestedOrchestratorOutcome(command, result);
   if (!outcome) return null;
-  // Read the signal before the verdict, the order the runner uses.
-  // `run-sequence` has no abort field: a nested tool that is cancelled returns
-  // unmet or throws, and either becomes an ordinary error entry. A
-  // verdict-first read would file the author's own cancel as a failed nested
-  // step. `skip` is the reader's own abort branch, so it speaks for itself.
-  //
-  // `reached` is the third condition, because a cancel can only affect an
-  // outcome the run got far enough to have. A `flow-execute` prerequisite
-  // notice reached no step, so the wrapper would report a cancel of something
-  // that never started.
   const reason =
     aborted && outcome.reached && outcome.status !== "skip"
       ? `${command} was cancelled (${outcome.reason})`
@@ -892,15 +846,6 @@ function nestedRecordRefusal(
   return { reason, mayHaveMutated: outcome.reached };
 }
 
-/**
- * The advice asks for a CHECK, not a restore.
- *
- * The result cannot show whether a reached step moved the device (see
- * `NestedOutcome.reached`), so this fires on read-only nested runs too. A
- * composed flow of only `assert`s reaches a step and trips it. "Restore the
- * device" would invite a relaunch, and a relaunch shows the start screen, not
- * the state the recorded prefix leaves.
- */
 function partialMutationWarning(command: "flow-execute" | "run-sequence"): string {
   const stepKind = command === "flow-execute" ? "composed" : "nested";
   return (
@@ -1205,32 +1150,6 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     message: string;
     toolResult: unknown;
     stepCount: number;
-    /**
-     * The flow line just appended, and the discriminator for "was anything
-     * recorded at all". A path that records NOTHING returns normally with the
-     * unchanged `stepCount`, so the caller can see its take was left alone —
-     * unless the recording was finished, restarted or evicted while the call
-     * was in flight, which every one of them reports by THROWING
-     * `FLOW_NO_ACTIVE_RECORDING` from {@link activeFlowState}. There is no
-     * `stepCount` to compare then, and no absent `recorded` to read. Those
-     * paths are:
-     *
-     * - a `command` that names a recorder tool, or a flow-file directive
-     *   instead of a tool. Both answer with the call to make.
-     * - a nested `flow-execute` that failed, was cancelled, or returned a
-     *   prerequisite notice.
-     * - a nested `run-sequence` that stopped on a failed step or was cancelled
-     *   part-way.
-     *
-     * The list is NOT split by whether the call reached the device, because
-     * some refusals provably ran nothing. `message` carries that half. See
-     * {@link partialMutationWarning}.
-     *
-     * Required while every return appended a step; these returns are what
-     * reopened it, and a placeholder would claim a line that is not there. Also
-     * the discriminator the completion message reads, so the log line does not
-     * announce a step the body says was never recorded.
-     */
     recorded?: string;
     savedTo: FlowSavedTo;
   }
@@ -1241,11 +1160,6 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
       // Name the flow: recordings are concurrent, so several of these lines can
       // interleave in one log and "the recorded flow" would not say which.
       startedMsg: ({ params }) => `Adding ${params.command} step to flow ${params.name}`,
-      // Several returns succeed and record nothing: a refused directive command,
-      // or a nested orchestrator that failed or was cancelled. An unconditional
-      // "Added …" line would contradict its own result body, and an agent reads
-      // this log to reconstruct what a take contains. `recorded` is absent
-      // exactly when no line was appended.
       completedMsg: ({ params, result }) =>
         result.recorded === undefined
           ? `Did NOT add ${params.command} step to flow ${params.name} (see the returned message)`
@@ -1371,9 +1285,6 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
         ctx?.signal?.aborted === true
       );
       if (refusal) {
-        // The mutation warning below reads the same predicate, for the same
-        // reason. A refusal that provably ran nothing must not tell a
-        // superseded author their step "already ran on the device".
         const { stepCount, note } = await activeFlowState(session, refusal.mayHaveMutated);
         const mutationWarning = refusal.mayHaveMutated
           ? ` ${partialMutationWarning(

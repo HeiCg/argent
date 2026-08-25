@@ -61,20 +61,7 @@ type Params = z.infer<typeof zodSchema>;
 
 type StepResult =
   | { tool: string; result: unknown }
-  /**
-   * `dispatched: false` marks a step that provably sent NO action to the
-   * device. Three are rejected before the call: an unlisted tool name, one the
-   * target platform does not support, and args the registry's schema check
-   * refuses ahead of `execute`. The fourth does run, and only reads — an
-   * `await-ui-element` whose condition never held polls the UI tree and stops
-   * there. Without the marker, each looks like a step that acted and then
-   * failed.
-   *
-   * `completed` cannot stand in for it: it counts the EARLIER steps that
-   * SUCCEEDED, so such a step at any position but the first sits beside a
-   * non-zero count. These entries do carry no `status`. The flow recorder reads
-   * the marker to decide whether the device may have moved.
-   */
+  /** `dispatched: false` marks a step that provably sent NO action to the device. */
   | { tool: string; error: string; dispatched?: false };
 
 type RunSequenceResult = {
@@ -220,10 +207,6 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           const result = await invokeSubTool(registry, ctx, step.tool, toolArgs);
           if (isUnmetUiWaitResult(step.tool, result)) {
             const note = (result as { note?: string }).note;
-            // A wait that polls and gives up sends nothing to the device, so it
-            // carries the same marker as the three rejections above. It is the
-            // one of the four that DID run — the marker is about acting, not
-            // about being invoked.
             results.push({
               tool: step.tool,
               error: `await-ui-element condition not met${note ? `: ${note}` : ""}`,
@@ -240,10 +223,6 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
             toolArgs,
             step.args ?? {}
           );
-          // A re-rendered miss is the registry's own schema rejection, and
-          // that parse runs BEFORE `execute`. The step never reached the
-          // device, so it carries the same marker as the two exits above.
-          // Without it, a mistyped key reads as "ran and then failed".
           results.push({
             tool: step.tool,
             error: reframed ?? (err instanceof Error ? err.message : String(err)),

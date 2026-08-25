@@ -104,15 +104,6 @@ export interface ActionEnv {
    * `ActionEnv` by hand, which leaves every settle on its own budget.
    */
   treeOutage?: { proven?: { deviceId: string; error: Error } };
-  /**
-   * Whether this directive has dispatched at the device yet. {@link
-   * runDirective} installs a fresh one per step and {@link invokeOnDevice}
-   * sets it, so an aborted directive can say which side of the dispatch the
-   * cancel landed on instead of assuming the worse one.
-   *
-   * Absent for a caller that builds an `ActionEnv` by hand, and for the
-   * dispatches the runner makes outside a directive — nothing reads it there.
-   */
   dispatch?: { reached: boolean };
 }
 
@@ -124,11 +115,7 @@ export interface DirectiveOutcome {
   aborted?: boolean;
   /**
    * On an `aborted` outcome only: whether this directive had already dispatched
-   * at the device when the cancel landed. A settle is where most of a step's
-   * time goes, so most cancels land BEFORE the gesture and this is `false` —
-   * which is the difference between telling an author to go and check a screen
-   * and leaving one that provably did not move alone. Read from the dispatch
-   * scope, never guessed: a tree read is not a dispatch.
+   * at the device when the cancel landed.
    */
   reached?: boolean;
   /**
@@ -178,12 +165,7 @@ export type DirectiveStep = Extract<
   }
 >;
 
-/**
- * Dispatch a tool with the run's resolved device id bound into its args. The
- * one choke point through which a directive acts, so it is also where "the
- * device may have moved" becomes true — marked BEFORE the await, because a call
- * that is already out can land whether or not it answers.
- */
+/** Dispatch a tool with the run's resolved device id bound into its args. */
 export function invokeOnDevice(
   env: ActionEnv,
   tool: string,
@@ -776,12 +758,8 @@ export async function runDirective(
   outerEnv: ActionEnv,
   step: DirectiveStep
 ): Promise<DirectiveOutcome> {
-  // Fresh per step: the question is what THIS directive sent, not what the run
-  // has sent so far.
   const dispatch = { reached: false };
   const outcome = await dispatchDirective({ ...outerEnv, dispatch }, step);
-  // Only a cancel leaves the answer in doubt. Every other outcome says on its
-  // own terms whether the step acted.
   return outcome.aborted === true ? { ...outcome, reached: dispatch.reached } : outcome;
 }
 

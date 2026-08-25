@@ -142,10 +142,6 @@ describe("flow-execute with await-ui-element gating", () => {
   });
 
   it("keeps a nested orchestrator's own abort wording and payload on the skip", async () => {
-    // A nested run-sequence honours the cancel by returning a PARTIAL result
-    // and knows how far it got. The generic "run aborted during tool" wording
-    // would drop that progress, and a skip without `result` or `args` hides the
-    // partial sequence.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: run-sequence
@@ -182,15 +178,10 @@ steps:
       result: { completed: 1, total: 2 },
     });
     expect(result.steps[0]!.args).toBeDefined();
-    // One nested tap went out before the cancel, and the partial result says
-    // so, so the skip carries the marker the recorder's warning reads.
     expect(result.steps[0]!.reached).toBe(true);
   });
 
   it("calls a CANCELLED await-ui-element a skip, not a condition the app failed", async () => {
-    // A cancelled wait returns unmet, the same shape as one that timed out.
-    // Scored on the shape alone, it blames the app for the author's own cancel
-    // and fails a run that was only stopped.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: await-ui-element
@@ -224,18 +215,10 @@ steps:
       reason: "run aborted during wait",
     });
     expect(result.steps[0]!.reason).not.toContain("condition not met");
-    // The sub-tool ran and returned, so this skip is not proof the device is
-    // untouched. The recorder reads the marker to decide whether to warn.
     expect(result.steps[0]!.reached).toBe(true);
   });
 
   it("keeps a GENUINE miss a failure when an unrelated cancel lands in the same tick", async () => {
-    // The control for the guard above. Both results are `success: false` and
-    // both arrive with the signal already set; only the wait's own `cause`
-    // separates them. The loop reports `cancelled` where it GAVE UP and
-    // `unmet` where a read judged the condition, so a miss that resolved
-    // beside a cancel keeps the verdict it earned instead of being excused as
-    // a cancellation of the app's doing.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: await-ui-element
@@ -273,9 +256,6 @@ steps:
   });
 
   it("leaves a step the cancel caught in its pre-invoke delay unmarked", async () => {
-    // The control for the marker above. Same status, same kind, one step
-    // earlier in the same function — the cancel lands in the delay BEFORE the
-    // sub-tool is invoked, so nothing could have gone to the device.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: gesture-tap
@@ -312,9 +292,6 @@ steps:
   });
 
   it("keeps a plain tool that finished before the cancel a PASS", async () => {
-    // The cancel landed after the tap was dispatched and answered. That step
-    // ran in full, and the recorder records this shape. A `skip` here would
-    // contradict it and would mean something other than "did not run".
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: gesture-tap
@@ -341,9 +318,6 @@ steps:
   });
 
   it("keeps a nested step's FAILURE and its detail when the cancel lands too", async () => {
-    // A cancel that arrives while a nested step is failing must not overwrite
-    // the verdict. "run aborted" would hide the failure and drop the name of
-    // the step that caused it.
     const flowFile = await writeFlow(`executionPrerequisite: ""
 steps:
   - tool: run-sequence

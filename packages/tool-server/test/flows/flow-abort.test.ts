@@ -116,13 +116,6 @@ describe("run cancellation mid-directive", () => {
   });
 
   it("leaves a directive cancelled in its settle unmarked, like the guard's skip", async () => {
-    // Two identical taps and one cancel. The first reaches `runDirective` and
-    // takes its abort exit out of the auto-wait; the second never starts, so
-    // the pre-step guard skips it. Neither sent anything, and the reports say
-    // so: a settle resolves a frame off the tree and dispatches nothing, and
-    // most of a step's time is spent there, so this is where a cancel usually
-    // lands. Marking it would send the author to check a screen that provably
-    // did not move.
     const controller = new AbortController();
     let reads = 0;
     currentFetch = () => {
@@ -149,15 +142,10 @@ describe("run cancellation mid-directive", () => {
     expect(result.steps.map((s) => s.reason)).toEqual(["run aborted", "run aborted"]);
     expect(result.steps[0].reached).toBeUndefined();
     expect(result.steps[1].reached).toBeUndefined();
-    // What makes the silence provable rather than optimistic.
     expect(calls).not.toContain("gesture-tap");
   });
 
   it("marks a directive whose gesture had already gone out", async () => {
-    // The control for the pair above, and the case the marker exists for. A
-    // `type` taps to focus and only then waits out the app's focus round-trip,
-    // so a cancel landing in that wait arrives AFTER a gesture reached the
-    // device. Same kind of skip, same reason — only the marker separates it.
     const controller = new AbortController();
     currentFetch = () => ({
       tree: screen([n({ label: "Email", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.1 } })]),
@@ -168,8 +156,6 @@ describe("run cancellation mid-directive", () => {
       invokeTool: vi.fn(async (id: string) => {
         calls.push(id);
         if (id === "list-devices") return { devices: [] };
-        // The cancel lands the moment the focus tap is dispatched, so the
-        // directive's next abort checkpoint is its first one after a gesture.
         if (id === "gesture-tap") controller.abort();
         return { ok: true };
       }),
@@ -186,8 +172,6 @@ describe("run cancellation mid-directive", () => {
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["type:skip"]);
     expect(result.steps[0].reason).toBe("run aborted");
     expect(result.steps[0].reached).toBe(true);
-    // The tap went out; the keyboard never did — which is exactly the state
-    // the marker warns about, a step that acted without finishing.
     expect(calls).toContain("gesture-tap");
     expect(calls).not.toContain("keyboard");
   });
@@ -461,8 +445,6 @@ describe("run cancellation mid-launch", () => {
     // tree-source gate were cut short, so the launch verified nothing.
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:skip"]);
     expect(result.steps[0].reason).toBe("run aborted");
-    // The app was terminated and relaunched before the cancel, so this skip is
-    // not proof that the device is untouched.
     expect(result.steps[0].reached).toBe(true);
     expect(result.ok).toBe(false);
     expect(calls).toContain("restart-app");
@@ -488,15 +470,11 @@ describe("run cancellation mid-launch", () => {
     // A skip with the uniform abort reason — NOT an error blaming restart-app.
     expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:skip"]);
     expect(result.steps[0].reason).toBe("run aborted");
-    // restart-app can act and then be cancelled, so this exit is `reached` too.
     expect(result.steps[0].reached).toBe(true);
     expect(calls).toContain("restart-app");
   });
 
   it("leaves a step the cancel never reached unmarked", async () => {
-    // The control for `reached`. The pre-step guard skips the second launch
-    // without calling restart-app. Same status and reason, so only the marker
-    // separates "may have moved the device" from "provably did not".
     const controller = new AbortController();
     const calls: string[] = [];
     const registry = launchRegistry(calls, () => {

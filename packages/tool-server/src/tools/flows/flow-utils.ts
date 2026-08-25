@@ -365,17 +365,6 @@ export async function withFlowFileLock<T>(
   return withFlowLock(await resolveFlowKey(projectRoot, name), fn);
 }
 
-/**
- * The same lock for a caller that already holds a session. The returns that
- * record NOTHING read the file back to report the step count, and that read
- * must not straddle a restart.
- *
- * Keyed off `session.key`, not re-resolved from (projectRoot, name), for the
- * reason {@link appendStepToFlow} takes its own lock the same way: the key this
- * holds and the identity {@link assertSessionStillLive} checks must be one key.
- * A key that moved under the session — a symlink repointed mid-recording —
- * would otherwise let a caller hold one lock while asserting about another.
- */
 export async function withRecordingLock<T>(
   session: RecordingSession,
   fn: () => Promise<T>
@@ -3213,14 +3202,6 @@ export type FlowSavedTo = string | ClientFileDirective;
  * drop this session between the check and the write. That race is benign — the
  * step still lands in the file it was recorded for, and only the NEXT call on
  * the key reports the recording gone.
- *
- * The returns that record NOTHING call it too, under the same lock: same window,
- * same stake — the count and file path they report would otherwise be a
- * different take's.
- *
- * `ranOnDevice` picks the recovery clause, because only the caller knows whether
- * the action ran. An author told that a step they never ran "already ran on the
- * device" undoes something that never happened.
  */
 export function assertSessionStillLive(session: RecordingSession, ranOnDevice: boolean): void {
   const current = recordings.get(session.key);
