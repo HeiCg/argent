@@ -17,6 +17,7 @@ import { createFlowAddStepTool } from "../../../src/tools/flows/flow-add-step";
 import {
   __resetRecordingsForTesting,
   getRecordingSession,
+  holdsOutputReference,
   parseFlow,
   type FlowStep,
 } from "../../../src/tools/flows/flow-utils";
@@ -266,6 +267,42 @@ describe("recording a script step", () => {
     expect(signal?.error_code).toBe(FAILURE_CODES.FLOW_FILE_WRITE_FAILED);
     expect(signal?.error_kind).toBe("unknown");
     expect((err as Error).message).toContain("nothing it did was rolled back");
+  });
+
+  it("blames the hand-edited step, not the script, when the re-parse refuses an earlier one", async () => {
+    // The append re-parses the whole file, so an output reference a mid-recording
+    // hand edit put in an EARLIER step refuses this write. The script itself ran
+    // and passed; wording it as "recording it failed" would send the author back
+    // over the one call that did nothing wrong.
+    await write("scripts/seed.mjs", `output.ok = true;`);
+    await start("handedited");
+    await fs.writeFile(
+      flowPath("handedited"),
+      `steps:\n  - echo: "created {{output:user.id}}"\n`,
+      "utf8"
+    );
+
+    const err = (await addScript("handedited", "../../scripts/seed.mjs").catch(
+      (e: unknown) => e
+    )) as Error;
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/ran and passed in \d+ms/);
+    expect(err.message).toContain("a step ALREADY in the flow file spells an output reference");
+    expect(err.message).toContain("not this script");
+    expect(err.message).toContain(flowPath("handedited"));
+    expect(err.message).toContain("Step 1 (`echo`)");
+    // The refusal keeps its own signal; only the framing around it changed.
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED);
+  });
+
+  it("is never itself the step an output-reference refusal names", async () => {
+    // What lets the message above say "not this script" without asking: the scan
+    // reads no field a `script:` step has, so a refusal on the append path can
+    // only be about a step that was already in the file.
+    expect(
+      holdsOutputReference({ kind: "script", path: "../../scripts/{{output:user.id}}.mjs" })
+    ).toBe(false);
   });
 
   it("leaves a document inside the limit whole and unflagged", async () => {

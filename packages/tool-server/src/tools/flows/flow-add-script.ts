@@ -1,6 +1,12 @@
 import { z } from "zod";
 import * as nodePath from "node:path";
-import { FAILURE_CODES, FailureError, wrapFailure, type ToolDefinition } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  FailureError,
+  getFailureSignal,
+  wrapFailure,
+  type ToolDefinition,
+} from "@argent/registry";
 import {
   appendStepToFlow,
   countStepsOnDisk,
@@ -193,6 +199,14 @@ Refused when the recording's project root is not on this tool server's filesyste
     try {
       ({ savedTo, stepCount } = await appendStepToFlow(session, step));
     } catch (err) {
+      // A host-mode append re-parses the WHOLE file before it pushes, so the
+      // scan that refuses an output reference judges the steps already in it as
+      // well — and a mid-recording hand edit is a supported way for one of those
+      // to carry one. A `script` step spells none of the fields that scan reads,
+      // so a refusal on this path is never about the step just run: saying
+      // "recording it failed" would send the author back over the one call that
+      // did nothing wrong, and never name the edit that has to be undone.
+      const refusedAnEarlierStep = getFailureSignal(err)?.failure_stage === "flow_output_reference";
       throw wrapFailure(
         err,
         {
@@ -202,8 +216,14 @@ Refused when the recording's project root is not on this tool server's filesyste
           error_kind: "unknown",
         },
         `The script "${step.path}" ran and passed in ${result!.durationMs}ms and nothing it did ` +
-          `was rolled back, but recording it failed — so the step is not in the flow, and its ` +
-          `logs and output document are lost with this error. ` +
+          `was rolled back, but ` +
+          (refusedAnEarlierStep
+            ? `a step ALREADY in the flow file spells an output reference, so the append re-read ` +
+              `it and refused. The step named below is that one, not this script — remove the ` +
+              `reference from ${session.filePath} and the recording continues. This call's logs ` +
+              `and output document are lost with this error. `
+            : `recording it failed — so the step is not in the flow, and its logs and output ` +
+              `document are lost with this error. `) +
           `${err instanceof Error ? err.message : String(err)}`
       );
     }
