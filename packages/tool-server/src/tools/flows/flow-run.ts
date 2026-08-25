@@ -53,7 +53,7 @@ import {
 } from "./script/flow-script-executor";
 import type { TextMatchMode, WaitCondition } from "../../utils/ui-tree-match";
 import { sleepOrAbort } from "../../utils/timing";
-import { invokeSubTool } from "../../utils/sub-invoke";
+import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
 import { isUnmetUiWaitResult } from "../await-ui-element";
 import { isDebuggerNotConnectedResult } from "../debugger/not-connected";
 import {
@@ -150,8 +150,14 @@ const zodSchema = z
     if ((params.name === undefined) === (params.flow_path === undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Pass exactly one flow source: name or flow_path.",
-        path: ["flow_path"],
+        message:
+          params.name !== undefined
+            ? "Pass exactly one flow source: name or flow_path."
+            : "Pass exactly one flow source: name or flow_path. flow-execute needs the flow's " +
+              "name in `name` — it resolves <project_root>/.argent/flows/<name>.yaml.",
+        // The ROOT, not `flow_path`: the rule spans both source fields, and a
+        // path would prefix the message with "`flow_path`:".
+        path: [],
       });
     }
   });
@@ -2596,7 +2602,8 @@ async function execLeafStep(
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
-        return { ...base, status: "error", tool: step.name, reason: errMsg(err) };
+        const reframed = describeNestedParamError(registry, err, step.name, args, step.args ?? {});
+        return { ...base, status: "error", tool: step.name, reason: reframed ?? errMsg(err) };
       }
     }
 
