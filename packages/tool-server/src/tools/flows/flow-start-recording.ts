@@ -80,7 +80,7 @@ export const flowStartRecordingTool: ToolDefinition<
     failedMsg: ({ params, failureSignal }) =>
       `Failed to start recording of flow ${params.name}: ${failureSignal.error_code}`,
   },
-  description: `Start recording a new flow, resetting .argent/flows/<name>.yaml to an empty flow and replacing any existing one (an existing \`requires:\` block survives the reset when the flow file is on this host and parses, or - if that file was deleted since - when a live recording of the same flow still carries it: against a remote tool-server this host never reads that file, and an unparseable one carries nothing - in those cases the block is lost, the message says so, and re-adding it by hand is the only way back).
+  description: `Start recording a new flow, resetting .argent/flows/<name>.yaml to an empty flow and replacing any existing one (an existing \`requires:\` block survives the reset when the flow file is on this host and parses, or - if that file was deleted since - when a live recording of the same flow still carries it: against a remote tool-server this host never reads that file, and an unparseable one carries nothing - in those cases nothing survives, the message says so, and re-adding a block by hand is the only way back).
 Use when you want to capture a reusable sequence of device interactions for later replay.
 Returns { message, flowFile, savedTo } and optionally { restarted, discardedSteps } if a live recording of the same flow was discarded.
 Whether this server writes that file depends on where your project is: co-located, it creates it and fails if the .argent/flows/ directory cannot be created or the file cannot be written; against a remote tool-server it writes nothing and \`savedTo\` is a directive your client applies (a null \`savedTo\` back means it did not).
@@ -152,7 +152,8 @@ costs the finish the cross-tree verdicts anchored to them.`,
         // being replaced standing in where that file is gone. Client mode has
         // neither - a session's in-memory `requires` comes from this very
         // expression, so by induction it is undefined in every client-mode
-        // session and the message below says the block is gone.
+        // session and the message below can only warn that a block MAY have
+        // been lost: whether that file ever held one is unknowable from here.
         const onDisk = persist === "host" ? await requiresOnDisk(filePath) : undefined;
         // A READABLE file is the authority, hand-edits included: one that parses
         // and declares none means the flow was unfenced on purpose, so the block
@@ -208,7 +209,7 @@ costs the finish the cross-tree verdicts anchored to them.`,
       : requiresUnknown
         ? " The previous file did not parse, so any requires block it held was dropped - re-add it by hand if the flow was fenced."
         : persist === "client"
-          ? " This host cannot read the client-side flow file, so any requires block it held is gone - re-add it by hand if the flow was fenced."
+          ? " This host cannot read the client-side flow file, so any requires block it may have held was not carried over - re-add it by hand if the flow was fenced."
           : "";
 
     // Recordings are keyed per flow file, so only a same-key restart replaces

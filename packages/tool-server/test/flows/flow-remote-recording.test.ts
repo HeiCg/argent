@@ -1013,15 +1013,21 @@ describe("concurrent recordings against a remote client", () => {
     // Client mode has no source for the block: this host never reads the file,
     // and a session's in-memory `requires` is itself whatever a start carried,
     // so it is undefined for every session here. Both the first start and the
-    // restart must say the block is gone rather than claim one was kept.
+    // restart must warn rather than claim one was kept - and only warn: nothing
+    // here can tell whether that file even exists, so a note reporting a loss as
+    // fact hands the agent phantom data loss to relay.
     const started = await flowStartRecordingTool.execute(
       {},
       { name: "remote-flow", project_root: CLIENT_ROOT },
       remoteCtx()
     );
     expect(started.message).toContain(
-      "This host cannot read the client-side flow file, so any requires block it held is gone - re-add it by hand"
+      "This host cannot read the client-side flow file, so any requires block it may have held was not carried over - re-add it by hand"
     );
+    // A name never recorded before: no file was replaced and none is known to
+    // have existed, so the note must not read as a loss that happened.
+    expect(started.message).not.toContain("is gone");
+    expect(started.message).not.toContain("was dropped");
     await flowInsertEchoTool.execute(
       {},
       { name: "remote-flow", project_root: CLIENT_ROOT, message: "first take" }
@@ -1037,7 +1043,7 @@ describe("concurrent recordings against a remote client", () => {
     expect(parseFlow(directive.content).requires).toBeUndefined();
     expect(restarted.message).not.toContain("Kept the existing requires block");
     expect(restarted.message).toContain(
-      "This host cannot read the client-side flow file, so any requires block it held is gone - re-add it by hand"
+      "This host cannot read the client-side flow file, so any requires block it may have held was not carried over - re-add it by hand"
     );
     await expect(fs.stat(CLIENT_ROOT)).rejects.toThrow();
   });
