@@ -95,7 +95,6 @@ function findDependencyMissing(err: unknown): DependencyMissingError | null {
   return findErrorInCauseChain(err, DependencyMissingError);
 }
 
-/** A shallow copy without the named keys, so a message reads back only the caller's own. */
 function omitKeys(args: unknown, keys: readonly string[]): unknown {
   if (keys.length === 0 || args === null || typeof args !== "object" || Array.isArray(args)) {
     return args;
@@ -707,17 +706,6 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
             req.body,
             { invalid_params: deriveInvalidParams(parseResult.error, declared) }
           );
-          // Three fields, because three kinds of caller read this.
-          //
-          // `message` is the prose: the raw issue JSON never names the key the
-          // caller SENT, so a misspelling is invisible in it. Keys come from
-          // `omitKeys` because `resolveFileInputs` has run by here, and a
-          // derived `flow_file` would sit beside the misspelling the prose
-          // exists to expose.
-          //
-          // `issues` is the machine-readable form `argent run` reads to name
-          // the flag its user typed.
-          //
           // `error` keeps the raw issue JSON. Every CLI released before
           // `issues` existed reads this field and `JSON.parse`s it; prose here
           // makes that parse throw, and the CLI then loses the flag
@@ -938,10 +926,6 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           res.status(400).json({ error: invalidInputErr.message, ...errorSignalFields(err) });
           return;
         }
-        // A schema miss the REGISTRY caught, not the HTTP layer's own check
-        // above. Only flow-add-step's sub-tool reaches here: run-sequence
-        // catches sub-invoke failures into `steps[].error` and the flow runner
-        // reports its `tool:` steps as `status: "error"`, so both answer 200.
         if (getFailureSignal(err)?.error_code === FAILURE_CODES.TOOL_INPUT_INVALID) {
           res.status(400).json({ error: formatErrorForAgent(err), ...errorSignalFields(err) });
           return;
