@@ -6,7 +6,11 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     globals: true,
     // Suite-wide guards; each setup file documents why it exists.
-    setupFiles: ["test/setup/clear-argent-env.ts", "test/setup/stub-status-bar.ts"],
+    setupFiles: [
+      "test/setup/clear-argent-env.ts",
+      "test/setup/stub-status-bar.ts",
+      "test/setup/enable-ios-physical-flag.ts",
+    ],
   },
   resolve: {
     alias: {

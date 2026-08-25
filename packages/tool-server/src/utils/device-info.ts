@@ -79,9 +79,11 @@ export function isAndroidEmulatorSerial(serial: string): boolean {
 // Unit tests see the flag as ON unless a suite flips it via the seam below:
 // device suites across the repo assert shape classification, and a real flag
 // read would make them depend on the developer's flags.json (the same reasoning
-// as `new Registry()` defaulting every flag to enabled). Vitest sets VITEST in
-// every worker; outside tests the stored flag decides.
-let iosPhysicalFlagForTests: boolean | undefined = process.env.VITEST ? true : undefined;
+// as `new Registry()` defaulting every flag to enabled). The vitest setup file
+// `test/setup/enable-ios-physical-flag.ts` sets the ON default before each test
+// module graph loads; outside tests the override stays undefined and the stored
+// flag decides.
+let iosPhysicalFlagForTests: boolean | undefined;
 
 export function __setIosPhysicalDevicesFlagForTests(value: boolean): void {
   iosPhysicalFlagForTests = value;
