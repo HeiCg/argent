@@ -854,8 +854,19 @@ export function directiveCommandHint(command: string): string | undefined {
  * RUNNER scores a nested step with. A step the recorder refuses is a step the
  * runner would not have passed, so one reader keeps the two in agreement.
  *
- * `undefined` means the nested run finished cleanly. A cancel in the trailing
- * delay after the last declared step is clean: that step ran in full.
+ * `undefined` means the nested run finished cleanly, and only `run-sequence`
+ * can finish cleanly under a cancel: its trailing inter-step delay pushes no
+ * entry, so a cancel there still reads as "every declared step ran", and the
+ * batch records.
+ *
+ * `flow-execute` has no such exit. Its per-step delay sleeps BEFORE the
+ * sub-tool, and `summarize` samples the cancel flag once the steps are done,
+ * whatever they scored — so a composed run whose every declared step PASSED
+ * still comes back `aborted: true`, and this refuses it. That is the runner's
+ * own verdict rather than a second reading of one: the same result scores the
+ * nested step a `skip` inside a parent flow. What the author loses is the whole
+ * batch, which is the general cost of composing mid-recording — record the
+ * actions one call at a time and a cancel costs only the call it lands in.
  */
 function nestedRecordRefusal(
   command: string,

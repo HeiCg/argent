@@ -1739,6 +1739,125 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("sequence-rejected-late")).steps).toEqual([]);
   });
 
+  it("records a run-sequence whose cancel landed in the trailing delay", async () => {
+    // The clean-finish carve-out, through the REAL run-sequence. The cancel
+    // lands in the inter-step delay AFTER the only declared step ran in full,
+    // and that exit pushes no entry — so `steps.length` still equals `total`
+    // and the batch is a completed one. Nothing is lost to a cancel that
+    // arrived too late to take anything away.
+    const controller = new AbortController();
+    const dispatched: string[] = [];
+    const inner = {
+      invokeTool: vi.fn(async (id: string) => {
+        dispatched.push(id);
+        // Fires while the sequence is in its trailing `sleepOrAbort`.
+        setTimeout(() => controller.abort(), 5);
+        return { tapped: true };
+      }),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    const runSequence = createRunSequenceTool(inner);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown, opts?: unknown) =>
+        id === "run-sequence"
+          ? runSequence.execute({}, args as never, opts as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "sequence-late-cancel", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "sequence-late-cancel",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({
+          udid: "ABC",
+          steps: [{ tool: "gesture-tap", args: { x: 0.5, y: 0.3 }, delayMs: 60 }],
+        }),
+      },
+      { signal: controller.signal } as never
+    );
+
+    expect(dispatched).toEqual(["gesture-tap"]);
+    expect(controller.signal.aborted).toBe(true);
+    expect(result.recorded).toBeDefined();
+    expect(result.message).not.toContain("NOT recorded");
+    expect(parseFlow(await onDisk("sequence-late-cancel")).steps).toHaveLength(1);
+  });
+
+  it("refuses a composed flow whose cancel landed after its last step passed", async () => {
+    // The asymmetry the carve-out above does NOT extend to, pinned so the
+    // difference is a decision rather than a surprise. `flow-execute` has no
+    // trailing-delay exit, and `summarize` samples the cancel flag once the
+    // steps are done whatever they scored — so a composed run whose every
+    // declared step PASSED still reports `aborted`, and the recorder refuses
+    // it because the runner would not have passed the step either.
+    const controller = new AbortController();
+    const dispatched: string[] = [];
+    const runnerRegistry = {
+      invokeTool: vi.fn(async (id: string) => {
+        if (id === "list-devices") return { devices: [] };
+        dispatched.push(id);
+        // The author gives up on a call that had already finished.
+        controller.abort();
+        return { tapped: true };
+      }),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+    } as unknown as Registry;
+    const runFlow = createRunFlowTool(runnerRegistry);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown, opts?: unknown) =>
+        id === "flow-execute"
+          ? runFlow.execute({}, args as never, opts as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute({}, { name: "compose-late-cancel", project_root: tmpDir });
+    await writeSiblingFlow(
+      "frag-pass",
+      [
+        'executionPrerequisite: ""',
+        "steps:",
+        "  - tool: gesture-tap",
+        "    args: { x: 0.5, y: 0.3 }",
+        "",
+      ].join("\n")
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "compose-late-cancel",
+        project_root: tmpDir,
+        command: "flow-execute",
+        args: JSON.stringify({
+          name: "frag-pass",
+          project_root: tmpDir,
+          device: "00000000-0000-0000-0000-0000000000ab",
+        }),
+      },
+      { signal: controller.signal } as never
+    );
+
+    expect(dispatched).toEqual(["gesture-tap"]);
+    const nested = result.toolResult as { ok: boolean; aborted?: boolean; passed: number };
+    expect(nested).toMatchObject({ ok: false, aborted: true, passed: 1 });
+    expect(result.recorded).toBeUndefined();
+    expect(result.message).toContain("step NOT recorded");
+    expect(parseFlow(await onDisk("compose-late-cancel")).steps).toEqual([]);
+  });
+
   it("warns when a cancelled composed sequence had already dispatched", async () => {
     // The whole chain as the field sees it: the recorder over a real
     // flow-execute over a real run-sequence, with only the leaf gesture doubled
