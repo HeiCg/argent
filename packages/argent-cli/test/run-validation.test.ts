@@ -236,8 +236,6 @@ describe("describeServerValidationFailure", () => {
   });
 
   describe("reads the issue list the live server sends beside its prose", () => {
-    // The server's message is a sentence now; the issues ride in their own
-    // field. Parsing the message would fail on every one of these.
     const withIssues = (issues: unknown[], message = "`x`: Too big. You sent: `udid`, `x`, `y`.") =>
       Object.assign(new Error(message), { issues });
 
@@ -267,8 +265,6 @@ describe("describeServerValidationFailure", () => {
       ["an empty list", []],
       ["a list of non-issues", [{ a: 1 }]],
     ])("still refuses %s, whichever channel carried it", (_label, issues) => {
-      // A structured field is not a licence to skip the shape check: this must
-      // fall through to ordinary error handling, not be dressed up as user error.
       expect(forGestureTap(withIssues(issues, "Simulator not booted"))).toBeNull();
     });
   });
