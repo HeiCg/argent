@@ -123,14 +123,17 @@ extension ArgentRunnerSession {
     }
   }
 
-  /// Resolves the target app and guarantees it is frontmost — without ever
-  /// LAUNCHING it. On a `.notRunning` app, `activate()` performs a full
-  /// launch: after launch X → HOME, any app-scoped command would silently put
-  /// X back over the home screen and report success while the screenshot
-  /// channel shows otherwise. Launching stays an explicit, named action
-  /// (launch-app). A backgrounded or suspended target is still re-fronted for
-  /// resilience, and the reply is stamped `reactivated: true` so the agent
-  /// learns the foreground changed underneath the command.
+  /// Resolves the target app and brings it frontmost, refusing a target that
+  /// reports `.notRunning`: on a not-running app `activate()` performs a full
+  /// launch — after launch X → HOME, an app-scoped command would silently put
+  /// X back over the home screen — and launching stays an explicit, named
+  /// action (launch-app). A backgrounded or suspended target is re-fronted,
+  /// and the reply is stamped `reactivated: true` so the agent learns the
+  /// foreground changed underneath the command.
+  ///
+  /// The refusal is best-effort, not a guarantee: on hardware a swipe-killed
+  /// app this session never launched reports `.unknown`, not `.notRunning`,
+  /// so the activate arm below can amount to a full launch for such targets.
   ///
   /// A fresh XCUIApplication proxy per command is deliberate: proxies are
   /// cheap, and never caching them removes the whole class of stale-target
@@ -150,9 +153,11 @@ extension ArgentRunnerSession {
         )
       )
     default:
-      // .runningBackground, .runningBackgroundSuspended, .unknown: the app is
-      // alive (or its state unreadable), so activation is resumption, not a
-      // launch.
+      // .runningBackground / .runningBackgroundSuspended: activation resumes.
+      // .unknown is riskier: hardware reports it for a swipe-killed foreign
+      // app too, where this activate becomes a launch — but whether a live
+      // foreign app ever reads .unknown is unprobed, so refusing it could
+      // break legitimate commands.
       app.activate()
       guard app.wait(for: .runningForeground, timeout: 15) else {
         return .unavailable(

@@ -512,7 +512,7 @@ describe("list-devices", () => {
     // Live-captured shapes: a cabled phone is "wired", a Wi-Fi-paired phone
     // last seen days ago lists as "disconnected"/"localNetwork", and a freshly
     // unplugged phone keeps tunnelState "connected" while the tunnel migrates
-    // to Wi-Fi (hardware-verified 2026-08-25). Only the wired one is reachable
+    // to Wi-Fi (hardware-verified, devicectl 518.x). Only the wired one is reachable
     // over usbmux, so only it may present as "connected".
     flagEnabledMock.mockImplementation((name: string) => name === "ios-physical-devices");
     vi.mocked(listIosPhysicalDevices).mockResolvedValueOnce([

@@ -359,9 +359,7 @@ async function buildRunnerArtifact(
   const args = [
     ...staticArgs,
     "-destination",
-    // A concrete device destination (with -allowProvisioningDeviceRegistration)
-    // makes automatic signing regenerate the profile to INCLUDE that device —
-    // the recovery for plugging in a new phone after the artifact was minted.
+    // Concrete-destination why: see rebuildRunnerArtifactForDevice.
     destinationUdid ? `platform=iOS,id=${destinationUdid}` : "generic/platform=iOS",
     "-derivedDataPath",
     derivedDataPath,

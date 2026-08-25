@@ -84,16 +84,13 @@ export async function openUsbmuxRunnerSocket(
 
 /**
  * Map a non-zero `Connect` result to the typed verdict the send layer and
- * runner-client branch on. Result 2 (device gone) must land on the same unattached path as
- * a missing `ListDevices` entry — it covers the device being unplugged between
- * the lookup and the connect, and both then surface the same actionable
- * connect-the-cable hint. Result 3
- * means the opposite: the device is attached and only the runner port is not
- * bound yet, which resolves on its own once the runner finishes starting — so
- * it is the one retryable verdict.
- *
- * Exported for tests; pure so the result-code mapping can be verified without
- * sockets.
+ * runner-client branch on. Result 2 (device gone) lands on the same
+ * unattached path as a missing `ListDevices` entry — it covers an unplug
+ * between lookup and connect, and both surface the connect-the-cable hint.
+ * Result 3 is the opposite: the device is attached and only the runner port
+ * is unbound, which resolves once the runner finishes starting — the one
+ * retryable verdict. Exported for tests; pure so the mapping is verifiable
+ * without sockets.
  */
 export function buildUsbmuxConnectError(
   result: number | undefined,

@@ -4,14 +4,11 @@ import Network
 /// Minimal single-purpose HTTP/1.1 endpoint on NWListener: each connection
 /// carries one POSTed JSON command and receives one JSON reply, then closes.
 ///
-/// The listener is restricted to loopback. Transport is USB-only: the host
-/// reaches the runner through a usbmux-forwarded stream that terminates on
-/// the device's loopback, so loopback is the whole reachable surface — the
-/// old any-interface bind only exposed this unauthenticated command listener
-/// to every peer on the phone's Wi-Fi network. Contingency: the loopback
-/// termination is asserted, not measured — if hardware shows usbmux
-/// connections arriving on a non-loopback interface, the bind reverts to all
-/// interfaces (that decision rides the next hardware session).
+/// The listener is unauthenticated, so it binds loopback-only. That covers
+/// the whole transport: the host reaches the runner through a usbmux
+/// forwarded stream that terminates on the device's own loopback — verified
+/// on hardware (a full session runs end-to-end over the loopback bind, and
+/// an off-loopback probe to the runner port is refused).
 /// Transport-level framing lives here and nothing else does: bodies are
 /// opaque bytes handed to the dispatch closure.
 final class RunnerHTTPServer {

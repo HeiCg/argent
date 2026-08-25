@@ -73,8 +73,8 @@ export function dispatchByPlatform<
         throw new NotImplementedOnPlatformError({
           toolId: opts.toolId,
           platform: "ios",
-          // The shared template above derives ios.ts and tells the reader to add
-          // a capability block — both wrong for hardware, so override explicitly.
+          // The class's stock message derives platforms/ios.ts and says to add
+          // a capability block — both wrong for hardware, so the hint corrects.
           hint:
             `For physical iOS devices, implement ` +
             `tools/${opts.toolId}/platforms/ios-device.ts instead; the capability ` +

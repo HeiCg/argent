@@ -59,7 +59,7 @@ describe("devicectl failures carry a structured failure signal", () => {
     expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICECTL_COMMAND_FAILED);
     expect(signal?.error_kind).toBe("subprocess");
     expect(signal?.failure_exit_code).toBe(1);
-    // Stamping must not disturb the error surface T01 relies on.
+    // Stamping must not disturb the hint-folded error surface.
     expect((error as Error).name).toBe("IosDeviceControlError");
     expect((error as { hint?: string | null }).hint).toContain("Unlock the device");
   });

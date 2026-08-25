@@ -47,10 +47,11 @@ export async function describeIosDevice(
  * XCUITest element types → the AX-style content roles the describe formatter
  * emits unconditionally (see format-tree.ts CONTENT_ROLES). Covers the runner's
  * interactive allowlist so icon-only Cells, compact date pickers, and valueless
- * toggles survive the formatter's content gate; the mapping is grounded in the
+ * toggles survive the formatter's content gate. The mapping is grounded in the
  * simulator trait adapter (button-ish traits → AXButton, adjustable →
- * AXAdjustable), with on-device confirmation of the real XCTest
- * type/label/value reporting still pending (DEVICE-TEST-PLAN item 20).
+ * AXAdjustable) and partially confirmed on hardware — Tables render scrollable
+ * and toggles emit as AXAdjustable with values; the rest of the widget matrix
+ * (icon-only Cells, compact date pickers) is unconfirmed on-device.
  * Unmapped types (Window, Other, NavigationBar, …) keep their XCTest name and
  * surface via the nested renderer's container rules — printed when labeled or
  * when they have printable descendants. SegmentedControl stays unmapped on

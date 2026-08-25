@@ -9,7 +9,7 @@ import { FAILURE_CODES, subprocessFailureMetadata, withFailureSignal } from "@ar
 const execFileAsync = promisify(execFile);
 
 /**
- * Wrappers around `xcrun devicectl` - Apple's CoreDevice CLI (Xcode 15+) and
+ * Wrappers around `xcrun devicectl` — Apple's CoreDevice CLI (Xcode 15+) and
  * the control plane for physical iPhones/iPads: discovery, app lifecycle,
  * screenshots, and tunnel readiness. The XCUITest runner (interaction/
  * snapshot path) is separate; see runner-build.ts / the ios-device-runner
@@ -41,7 +41,11 @@ export interface IosPhysicalDevice {
   developerModeEnabled: boolean | null;
   /** CoreDevice pairing state, e.g. "paired". */
   pairingState: string | null;
-  /** usb | localNetwork — how CoreDevice currently sees the device. */
+  /**
+   * How CoreDevice currently reaches the device: "wired" while cabled,
+   * "localNetwork" once unplugged (live-verified values, devicectl 518.x).
+   * Reachability for argent's usbmux transport gates on "wired" alone.
+   */
   transportType: string | null;
   tunnelState: string | null;
 }
@@ -68,11 +72,8 @@ class IosDeviceControlError extends Error {
   }
 }
 
-/**
- * Map devicectl failure output to an actionable hint. The strings are stable
- * across recent Xcodes; Developer Mode off is the most common first-run
- * failure on an otherwise paired-and-trusted device.
- */
+/** Map devicectl failure output to an actionable hint; the matched strings are
+ * stable across recent Xcodes. */
 function resolveDevicectlHint(output: string): string {
   const lower = output.toLowerCase();
   // CoreDeviceError 10002 "The application failed to launch" is what a locked
@@ -94,7 +95,7 @@ function resolveDevicectlHint(output: string): string {
     return "Keep the device unlocked and connected until it shows as available in Xcode > Devices, then retry.";
   }
   if (lower.includes("timed out")) {
-    return "Reconnect the cable (or check Wi-Fi), unlock the device, and retry; restarting Xcode's device services can help.";
+    return "Reconnect the cable, unlock the device, and retry; restarting Xcode's device services can help.";
   }
   return "Ensure the device is unlocked, trusted, and visible in Xcode > Devices, then retry.";
 }
@@ -195,10 +196,11 @@ interface DevicectlListPayload {
 }
 
 /**
- * List physical iOS-family devices CoreDevice can currently see (cabled, or
- * recently paired over Wi-Fi). Returns [] when devicectl is missing or fails,
- * so discovery composes with the other platform listers on non-mac hosts —
- * same contract as `listIosSimulators`.
+ * List physical iOS-family devices CoreDevice can currently see. Rows can
+ * include devices CoreDevice only remembers or reaches over the network;
+ * callers gate reachability on `transportType === "wired"`. Returns [] when
+ * devicectl is missing or fails, so discovery composes with the other
+ * platform listers on non-mac hosts — same contract as `listIosSimulators`.
  */
 export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
   if (process.platform !== "darwin") return [];
@@ -283,10 +285,10 @@ export async function launchApp(
 }
 
 /**
- * Capture a PNG screenshot host-side. Requires a devicectl new enough to have
- * the screenshot subcommand (Xcode 16-class) — consult
- * {@link supportsHostScreenshot} first, and treat an unknown-subcommand error
- * that still slips through as "use the runner path".
+ * Capture a PNG screenshot host-side. Requires a devicectl that has the
+ * screenshot subcommand — consult {@link supportsHostScreenshot} first, and
+ * treat an unknown-subcommand error that still slips through as "use the
+ * runner path".
  */
 export async function captureScreenshot(udid: string, outPath: string): Promise<void> {
   await runDevicectl(["device", "screenshot", "--device", udid, outPath], "capture screenshot", {

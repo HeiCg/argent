@@ -411,7 +411,7 @@ describe("planRunnerStorageSweep", () => {
       cacheDirNames: [
         "cache-aaaa111122223333", // current — the in-flight artifact
         "cache-0123456789abcdef", // pre-update key
-        "cache-ffff000011112222", // pre-T20 key shape, also stale
+        "cache-ffff000011112222", // older key shape, also stale
       ],
     });
 

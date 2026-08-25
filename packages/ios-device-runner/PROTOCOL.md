@@ -34,10 +34,9 @@ the agent to re-observe the screen and confirm the effect. Suppressed noise
 never flips `ok` (those shapes accompany healthy mutations; that is why the
 suppression exists). Read-only commands never carry the field, it composes
 with `reactivated` (one reply can carry both), and it is encoded only when
-set, so clean replies stay byte-identical on the wire. The field is
-provisional: if the hardware calibration pass shows it firing on most
-healthy heavy-screen gestures, it will be dropped and the suppressed-delta
-case accepted by design.
+set, so clean replies stay byte-identical on the wire. Hardware calibration
+kept the field: a long gesture flow on a heavy app produced zero warnings on
+healthy gestures, so a warning that does appear is signal, not noise.
 
 ## Request fields
 
@@ -57,9 +56,11 @@ case accepted by design.
 ## Commands
 
 App-scoped (require `appBundleId`; a backgrounded target is re-fronted first
-and the reply stamped `reactivated: true`, while a not-running target fails
-with `APP_NOT_AVAILABLE` — the runner never launches an app as a side effect
-of a command; launching is launch-app's job):
+and the reply stamped `reactivated: true`, while a target that reports
+`.notRunning` fails with `APP_NOT_AVAILABLE` — launching is launch-app's
+job, never a command side effect. That refusal is best-effort: on hardware a
+killed app this session never launched can report an unreadable state, and
+the re-front then amounts to a launch, still stamped `reactivated: true`):
 
 - `viewport` → `{x, y, width, height}` — `XCUIApplication.frame` (full app,
   keyboard included). Same rect describe normalizes against, so 0–1 tap

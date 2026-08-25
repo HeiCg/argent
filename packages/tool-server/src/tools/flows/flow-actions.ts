@@ -218,23 +218,18 @@ const POLL_INTERVAL_MS = 300;
 const TYPE_FOCUS_SETTLE_MS = 500;
 const TYPE_FOCUS_TIMEOUT_MS = 3000;
 
-// Tree sources whose `focused` flag the focus wait may poll. Every source
-// outside the set skips the poll (a single look, then bail) and types after
-// the fixed TYPE_FOCUS_SETTLE_MS head start alone. The exclusions, each
-// deliberate:
+// Tree sources whose `focused` flag the focus wait may poll. A source outside
+// the set gets one look and then bails, leaving typing only the fixed
+// TYPE_FOCUS_SETTLE_MS head start. Both exclusions are deliberate:
 //
-// - Vega's toolkit page source: never reports `focused`, so polling would
-//   burn the whole timeout on every type step.
-// - "xcuitest-runner" (physical iOS): the device tree DOES emit `focused` —
-//   the runner snapshot maps XCTest's `hasFocus` onto it — but whether that
-//   flag tracks first-responder handoff promptly enough to gate typing on is
-//   unverified on hardware, so we deliberately fall back to the fixed settle
-//   rather than risk polling a flag that lags (or never flips) and burning
-//   the timeout. PENDING hardware probe to flip this: on a connected iPhone,
-//   tap a text field and watch describe output — if the tapped field reports
-//   `focused: true` promptly and reliably (including an RN TextInput, where
-//   the focus race is worst), add "xcuitest-runner" here and cover it in
-//   test/flows/flow-type-focus.test.ts.
+// - Vega's toolkit page source never reports `focused`; polling would burn
+//   the whole timeout on every type step.
+// - "xcuitest-runner" (physical iOS) does emit `focused` (the runner maps
+//   XCTest's `hasFocus`), but whether it tracks first-responder handoff
+//   promptly enough to gate typing on is unverified on hardware, so the
+//   fixed settle wins over polling a flag that may lag or never flip. If a
+//   hardware probe shows a tapped field reporting `focused: true` promptly
+//   (worst case: an RN TextInput), add the source here.
 const FOCUS_REPORTING_SOURCES: ReadonlySet<DescribeSource> = new Set([
   "native-devtools",
   "android-devtools",

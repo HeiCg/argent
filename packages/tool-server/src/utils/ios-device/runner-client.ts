@@ -29,7 +29,6 @@ const RUNNER_READY_POLL_INTERVAL_MS = 250;
 /** Readiness probes are cheap; keep each one short so a dead port fails fast. */
 const RUNNER_READY_PROBE_TIMEOUT_MS = 2_000;
 
-/** The command codes the runner flags as safe to retry after it answered. */
 const RUNNER_BUSY_ERROR_CODE = "RUNNER_BUSY";
 
 export interface RunnerCommand {
