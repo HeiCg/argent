@@ -222,7 +222,7 @@ A `script:` step runs a local `.mjs` file in a new Node process. Use it for work
 ### What the script gets
 
 - The working directory is `project_root`, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
-- The environment is an allowlist: `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. All other names are absent, such as `NODE_ENV`, `DATABASE_URL` and each value in a project `.env`. Let the script read what it needs from a file.
+- The environment is an allowlist, not a copy of your shell: `PATH`, `HOME`, the identity, shell, locale, terminal, temp-directory, cache and Windows platform names, the proxy and TLS names, the Node, npm, Android, Java and Apple toolchain names, `CI`, `SSH_AUTH_SOCK`, and every `npm_config_` name. All other names are absent, such as `NODE_ENV`, `DATABASE_URL`, each value in a project `.env`, and the tool-server's own token and port. Two of the names that do pass carry a credential: `SSH_AUTH_SOCK` reaches the SSH agent, and an `npm_config_` name can hold a registry token. Let the script read what it needs from a file.
 
 ### What the step reports
 

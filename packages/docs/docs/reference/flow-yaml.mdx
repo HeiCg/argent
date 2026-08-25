@@ -255,7 +255,18 @@ The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 | `path`    | yes      | A file with a lowercase `.mjs` suffix. The path resolves as a `run` path does. The letter case must match the file on disk |
 | `timeout` | no       | The limit of the step in milliseconds. The minimum is 100, and the default is 30000                                        |
 
-Argent runs the script with the project root as the working directory. The script does not inherit your environment. Argent does not read a project `.env` file. Argent passes only `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. There is no `env` key. Let the script read a secret or a URL from a file.
+Argent runs the script with the project root as the working directory. Argent gives the script an allowlist of environment names, not your full environment. The allowlist holds these groups:
+
+- `PATH`, `HOME` and the equivalent Windows names
+- The identity, shell, locale, terminal, temporary-directory and cache names of the host
+- The Windows platform names
+- The proxy names and the TLS certificate names
+- The Node, npm, Android, Java and Apple toolchain names
+- `CI`, `SSH_AUTH_SOCK`, and each name that starts with `npm_config_`
+
+Argent removes each other name. Argent removes its own token, its own port and each `ARGENT_SECRET_` value. Argent does not read a project `.env` file, so a name such as `NODE_ENV` or `DATABASE_URL` is absent. There is no `env` key. Let the script read a secret or a URL from a file.
+
+Two groups in the list carry access to a credential. `SSH_AUTH_SOCK` reaches your SSH agent. An `npm_config_` name can hold a registry token. Run a script only when you trust it.
 
 Argent prints the standard output and the standard error below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. **Argent does not redact this log.** Do not print a credential from a script.
 
