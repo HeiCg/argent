@@ -258,6 +258,66 @@ describe("a nested run-sequence reports its own verdict", () => {
   });
 });
 
+describe("a cancelled nested run says whether it reached a step", () => {
+  // `skip` is the runner's "did not run" status, and a nested orchestrator is
+  // the one producer of it whose reach its own branch cannot settle: the
+  // sub-run reports which of ITS steps went to the device. The recorder reads
+  // `reached` to decide whether to warn that the device may have moved, so an
+  // unmarked skip here calls a batch that DID dispatch untouched.
+  it("marks a cancelled sequence that had already dispatched", async () => {
+    const { result } = await run("run-sequence", {
+      completed: 1,
+      total: 2,
+      steps: [{ tool: "gesture-swipe", result: { swiped: true } }],
+    });
+
+    expect(result.steps[0].status).toBe("skip");
+    expect(result.steps[0].reached).toBe(true);
+  });
+
+  it("leaves a sequence cancelled before its first step unmarked", async () => {
+    // The control: same status, same reason shape, nothing dispatched.
+    const { result } = await run("run-sequence", { completed: 0, total: 2, steps: [] });
+
+    expect(result.steps[0].status).toBe("skip");
+    expect(result.steps[0].reached).toBeUndefined();
+  });
+
+  it("marks a cancelled composed flow whose own step was reached", async () => {
+    const { result } = await run("flow-execute", {
+      ...FAILED_SUBFLOW,
+      aborted: true,
+      failed: 0,
+      skipped: 1,
+      steps: [{ index: 0, kind: "launch", status: "skip", reason: "run aborted", reached: true }],
+    });
+
+    expect(result.steps[0].status).toBe("skip");
+    expect(result.steps[0].reached).toBe(true);
+  });
+
+  it("leaves a composed flow whose every step was skipped unmarked", async () => {
+    const { result } = await run("flow-execute", {
+      ...FAILED_SUBFLOW,
+      aborted: true,
+      failed: 0,
+      skipped: 1,
+      steps: [{ index: 0, kind: "tap", status: "skip", reason: "run aborted" }],
+    });
+
+    expect(result.steps[0].status).toBe("skip");
+    expect(result.steps[0].reached).toBeUndefined();
+  });
+
+  it("leaves a nested run that FAILED unmarked", async () => {
+    // `reached` qualifies a skip alone. A `fail` already says the step ran.
+    const { result } = await run("flow-execute", FAILED_SUBFLOW);
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reached).toBeUndefined();
+  });
+});
+
 describe("the check is deliberately scoped to the two orchestrator tools", () => {
   // There is no `ok` contract in this codebase to generalise: await-ui-element
   // spells it `success`, run-sequence spells it neither way, and the generic

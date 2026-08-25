@@ -24,25 +24,24 @@ import { FAILURE_CODES } from "./failure-codes";
 import { parseURN } from "./urn";
 import { zodObjectToJsonSchema } from "./zod-to-json-schema";
 import { randomUUID } from "node:crypto";
-import type { $ZodIssue as ZodIssue } from "zod/v4/core";
+import type { z } from "zod";
+
+type ZodIssue = z.core.$ZodIssue;
 
 export class Registry {
-  /** Single map: URN -> ServiceNode (all instances). */
   private services = new Map<string, ServiceNode>();
   private blueprints = new Map<string, ServiceBlueprint>();
   private tools = new Map<string, ToolRecord>();
   /**
-   * Predicate that decides whether a feature-flagged tool is currently enabled.
-   * Injected (rather than importing `@argent/cli` here) so the registry stays
-   * free of a CLI dependency. The default treats every flag as enabled, so
-   * existing `new Registry()` call sites (tests, non-flag deployments) keep
-   * their previous behavior. The tool-server wires the real `isFlagEnabled`.
+   * Injected so the registry needs no dependency on the flag store; the
+   * tool-server wires the real check. The default enables every flag, so a
+   * plain `new Registry()` (tests, non-flag deployments) gates nothing.
    */
   private readonly isFlagEnabled: (flag: string) => boolean;
   /**
-   * Host files produced by tools, registered during `execute` and served by the
-   * `/artifacts/:id` route. Owned here (one per registry/process) so the tool
-   * path and the HTTP route resolve the same instance — no module singleton.
+   * Host files produced by tools, served by the tool-server's `/artifacts/:id`
+   * route. Owned per registry rather than as a module singleton, so the tool
+   * path and the HTTP route see the same store.
    */
   public readonly artifacts = new ArtifactStore();
   public readonly events = new TypedEventEmitter<RegistryEvents>();
@@ -68,8 +67,8 @@ export class Registry {
   }
 
   /**
-   * Resolve a service by URN. JIT-instantiates from blueprint if not yet created.
-   * Optional options are passed to the blueprint's factory (e.g. token for SimulatorServer).
+   * Resolve a service by URN, JIT-instantiating from its blueprint on first use.
+   * `options` reach the blueprint factory only on that first instantiation.
    */
   resolveService<T = unknown>(urn: URN, options?: Record<string, unknown>): Promise<T> {
     return this._resolve<T>(urn, [], options);
@@ -81,7 +80,6 @@ export class Registry {
     if (this.tools.has(definition.id)) {
       throw new Error(`Tool "${definition.id}" already registered`);
     }
-    // Auto-derive inputSchema from zodSchema if not explicitly provided
     if (definition.zodSchema && !definition.inputSchema) {
       definition.inputSchema = zodObjectToJsonSchema(definition.zodSchema);
     }
@@ -99,10 +97,9 @@ export class Registry {
 
     const { definition } = record;
 
-    // Feature-flag gate, enforced for EVERY dispatch path (HTTP, flow-execute,
-    // flow-add-step, run-sequence) — not just the HTTP edge. A flag-gated tool
-    // whose flag is off is treated as "not found", mirroring the HTTP 404, so a
-    // flow can't smuggle an invocation of a disabled tool through the registry.
+    // Gated on every dispatch path, not just the HTTP edge: a disabled tool
+    // reads as "not found" (mirroring the HTTP 404) so a flow can't smuggle an
+    // invocation of it through the registry.
     if (definition.featureFlag && !this.isFlagEnabled(definition.featureFlag)) {
       throw new ToolNotFoundError(id);
     }
@@ -118,33 +115,19 @@ export class Registry {
     this.events.emit("toolInvoked", id, toolInvocationId, startedMsg);
 
     try {
-      // Validate params against the tool's zod schema for EVERY dispatch path,
-      // not just the HTTP layer. Internal callers (flow-execute, flow-add-step,
-      // run-sequence) previously reached `execute` with raw, unvalidated args,
-      // which let a flow YAML smuggle a string into a `z.number()` port or
-      // shell metacharacters past a tool's regex (→ injection at the sink).
-      // `params ?? {}` mirrors the HTTP layer (express.json yields {} for an
-      // empty body) so no-arg internal invokes still validate cleanly.
+      // Validated here, not just at the HTTP layer: internal callers
+      // (flow-execute, flow-add-step, run-sequence) would otherwise reach
+      // `execute` with raw args, letting a flow YAML smuggle a string into a
+      // `z.number()` port or shell metacharacters past a tool's regex.
+      // `params ?? {}` mirrors express.json's {} for an empty body.
       if (definition.zodSchema) {
         const parsed = definition.zodSchema.safeParse(params ?? {});
         if (!parsed.success) {
-          // A schema miss is a client-input error wherever it is caught. The
-          // same rejection can land here or inside a tool, and telemetry must
-          // not read those as different kinds of failure — an unsignalled Error
-          // is wrapped as REGISTRY_TOOL_EXECUTION_FAILED / `error_kind:
-          // "unknown"`, i.e. an internal fault the caller could not have
-          // avoided. Signalling here makes both read as `validation`, and gives
-          // the HTTP boundary the code to answer a nested miss with a 400.
           throw new FailureError(
             `Invalid params for tool "${id}": ${describeParamIssues(parsed.error, params)}`,
             {
               error_code: FAILURE_CODES.TOOL_INPUT_INVALID,
               failure_stage: "tool_params_parse",
-              // "registry", not "tool_server": the area names WHO raised the
-              // signal, and this parse runs before `execute` is entered.
-              // "tool_server" is reserved for a signal the tool itself
-              // attached, so using it here would make every non-HTTP schema
-              // miss read as the tool rejecting its own arguments.
               failure_area: "registry",
               error_kind: "validation",
             }
@@ -153,9 +136,8 @@ export class Registry {
         effectiveParams = parsed.data;
       }
 
-      // The alias→URN mapping is pure (derived from params), so compute it once
-      // up front — we need the URNs to know which services to recover if the
-      // tool fails against a dead-but-cached instance.
+      // Computed up front because the URNs are needed to know which services to
+      // recover if the tool fails against a dead-but-cached instance.
       const aliasToRef = definition.services(effectiveParams);
       const refs = Object.entries(aliasToRef).map(([alias, ref]) => ({
         alias,
@@ -163,13 +145,10 @@ export class Registry {
         options: typeof ref === "string" ? undefined : ref.options,
       }));
 
-      // Build the per-invocation context: caller options (e.g. signal) plus the
-      // registry-owned artifact store, so any tool can register host files via
-      // `ctx.artifacts` without declaring a per-tool service. The invocation id
-      // is always populated — when the caller supplied none, the id minted
-      // above (the one toolInvoked/toolCompleted carry) is exposed here, so an
-      // event a tool emits keyed on ctx.toolInvocationId joins the lifecycle
-      // pair on every dispatch path, not only attributed HTTP requests.
+      // `toolInvocationId` falls back to the id minted above, so events a tool
+      // emits keyed on it join the toolInvoked/toolCompleted pair on every
+      // dispatch path, not only attributed HTTP requests. `artifacts` lets any
+      // tool register host files without declaring a per-tool service.
       const ctx: ToolContext = { ...options, toolInvocationId, artifacts: this.artifacts };
 
       const runOnce = async (): Promise<TResult> => {
@@ -184,11 +163,9 @@ export class Registry {
       try {
         result = await runOnce();
       } catch (execError) {
-        // Self-heal a cached-but-dead service: if any service this tool resolved
-        // declares this error recoverable (its underlying process is gone even
-        // though the handle was still cached), dispose it and retry the tool
-        // once against a freshly re-created instance. Bounded to a single retry
-        // so a genuinely broken service can't spin.
+        // Self-heal a cached-but-dead service: dispose the resolved services
+        // that call this error recoverable and retry against fresh ones.
+        // Bounded to a single retry so a genuinely broken service can't spin.
         const recovered = await this._recoverFailedServices(refs, execError);
         if (!recovered) throw execError;
         result = await runOnce();
@@ -265,14 +242,10 @@ export class Registry {
   }
 
   /**
-   * After a tool failed, ask each service it resolved whether the error means
-   * that service's instance is dead (`blueprint.recoverable(error)`). Dispose
-   * every one that says yes so the next `resolveService` re-creates it, and
-   * report whether anything was disposed (i.e. whether a retry is worthwhile).
-   *
-   * Only currently-RUNNING nodes are considered: a service that already
-   * errored/torn down during resolution needs no recovery here, and a URN this
-   * tool never resolved must not be touched.
+   * Dispose every service in `refs` whose blueprint calls `error` recoverable, so
+   * the next `resolveService` re-creates it; returns whether anything was
+   * disposed, i.e. whether retrying the tool is worthwhile. Only RUNNING nodes
+   * qualify — one that already errored or tore down needs no recovery.
    */
   private async _recoverFailedServices(
     refs: ReadonlyArray<{ urn: URN }>,
@@ -293,10 +266,7 @@ export class Registry {
     return recoveredAny;
   }
 
-  /**
-   * Tear down a single service by URN (and cascade to its dependents).
-   * After disposal the service returns to IDLE and can be re-resolved.
-   */
+  /** Tear down a service and its dependents; it returns to IDLE and can be re-resolved. */
   async disposeService(urn: URN): Promise<void> {
     const node = this.services.get(urn);
     if (!node) throw new ServiceNotFoundError(urn);
@@ -310,8 +280,6 @@ export class Registry {
       }
     }
   }
-
-  // ── Private: Resolution ──
 
   private _resolve<T>(
     urn: URN,
@@ -390,7 +358,7 @@ export class Registry {
 
       const instance = await blueprint.factory(resolvedDeps, payload, options);
 
-      // Guard: if the node was terminated while factory was running, discard the new instance
+      // Terminated while the factory was awaited: discard the fresh instance.
       if (node.state !== ServiceState.STARTING) {
         try {
           await instance.dispose();
@@ -451,7 +419,7 @@ export class Registry {
       try {
         await node.instance.dispose();
       } catch {
-        /* logged but not thrown */
+        /* ignore */
       }
     }
 
@@ -471,10 +439,10 @@ export class Registry {
 }
 
 /**
- * Cause for the two registry-manufactured ServiceInitializationErrors raised
- * when a resolve races an in-flight teardown. Without a cause they fall back to
- * the catch-all REGISTRY_SERVICE_INITIALIZATION_FAILED signal, which hides this
- * transient window from telemetry and from callers that classify by code.
+ * Cause for the ServiceInitializationErrors raised when a resolve races an
+ * in-flight teardown. Without it they fall back to the catch-all
+ * REGISTRY_SERVICE_INITIALIZATION_FAILED signal, hiding this transient window
+ * from telemetry and from callers that classify by code.
  */
 function terminatingSignalCause(message: string): FailureError {
   return new FailureError(message, {
@@ -485,19 +453,12 @@ function terminatingSignalCause(message: string): FailureError {
   });
 }
 
-/**
- * The value at a Zod issue's `path` within the caller's params, or `undefined`
- * when any segment is absent (or the parent is not indexable). Used to tell an
- * OMITTED field from a present-but-wrong one, without parsing Zod's message.
- */
 function valueAtPath(root: unknown, path: readonly PropertyKey[]): unknown {
   let current: unknown = root;
   for (const key of path) {
     if (current === null || typeof current !== "object") return undefined;
-    // Own-property only: an omitted field named after an `Object.prototype`
-    // member (`toString`, `constructor`, …) must read as absent. A bare
-    // `current[key]` returns the inherited function, so it would be
-    // misreported as a type error instead of "is required".
+    // Own-property only: an omitted field named `toString` or `constructor`
+    // must read as absent, not as the inherited prototype member.
     if (!Object.hasOwn(current as object, key)) return undefined;
     current = (current as Record<PropertyKey, unknown>)[key];
   }
@@ -505,57 +466,34 @@ function valueAtPath(root: unknown, path: readonly PropertyKey[]): unknown {
 }
 
 /**
- * How many branch reasons a union parameter's message enumerates before it
- * stops and says so. No well-formed call reaches this; it bounds the case where
- * the branch is an array and the issue count follows the caller's input rather
- * than the schema.
+ * Cap on the branch reasons a union's message enumerates. A union branch that
+ * is an array yields one issue per element, so the count follows the caller's
+ * input, not the schema.
  */
 const MAX_UNION_ALTERNATIVES = 12;
 
-/**
- * A schema failure as one sentence per bad parameter, instead of Zod's raw
- * issue JSON. The raw form names the parameter the tool wanted but never the
- * one the caller sent, so a reader who wrote `flow_name` for `name` cannot see
- * it. Naming the unrecognized keys alongside the missing ones makes the mistake
- * self-evident.
- */
 export function describeParamIssues(
   error: { issues: readonly ZodIssue[] },
   params: unknown
 ): string {
-  // Key names only, never values: a params object can carry a secret, and this
-  // string reaches logs, telemetry and the agent transcript. An array's keys
-  // are indices, which say nothing, so skip it.
+  // Key names only, never values: this string reaches logs, telemetry and the
+  // agent transcript, and params can carry a secret. Array indices say nothing.
   const allKeys =
     params !== null && typeof params === "object" && !Array.isArray(params)
       ? Object.keys(params as object)
       : [];
-  // Cap the echoed list, but SIGNAL the cut: when the schema strips unknowns
-  // this list is the only clue to a misspelled key, so a silent truncation
-  // could drop the very key it exists to surface.
   const supplied = allKeys.slice(0, 24);
   const truncated = allKeys.length > supplied.length;
   const parts = error.issues.map((issue) => {
     const at = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-    // A custom refinement's message is author-written, so it is never
-    // rewritten the way the branches below rewrite Zod's own wording — the
-    // absence check must not turn it into "`flow_path` is required", naming a
-    // field the caller may have omitted deliberately. Hence this arm comes
-    // FIRST.
-    //
-    // The PATH is still printed, because a `.refine()` BOUND to a field
-    // (`selector.text`'s visible-character rule) reads as prose about some
-    // parameter the sentence does not identify — `await-ui-element` declares
-    // both `selector.text` and `expectedText`. A cross-field rule anchors at
-    // the root instead, where there is no field to name.
+    // First, so the absence check below cannot rewrite an author-written
+    // message anchored on an omitted field into "`expectedText` is required".
     if (issue.code === "custom") {
       return issue.path.length > 0 ? `\`${at}\`: ${issue.message}` : issue.message;
     }
-    // Decide "missing" from the INPUT, not the rendered message: Zod signals
-    // absence as `invalid_type` for a plain field but `invalid_value` for an
-    // omitted enum, whose "Invalid option: expected one of …" reads as if a bad
-    // value had been sent. An `undefined` at the issue's path is absence
-    // whatever the code, and nested paths count the same as top-level ones.
+    // Decide "missing" from the input, not the issue code: Zod reports an
+    // omitted enum as `invalid_value` ("Invalid option: expected one of …"),
+    // which reads as if a bad value had been sent.
     if (valueAtPath(params, issue.path) === undefined) {
       const expected = (issue as { expected?: unknown }).expected;
       const kind = typeof expected === "string" ? ` (${expected})` : "";
@@ -563,35 +501,23 @@ export function describeParamIssues(
     }
     if (issue.code === "unrecognized_keys") {
       const keys = (issue as { keys?: readonly string[] }).keys ?? [];
-      // Qualify by path, like every other branch: a key nested in `selector`
-      // reported bare contradicts the top-level-only "You sent:" list one
-      // clause later. The hottest instance is flow YAML's `id` against the
-      // schema's `identifier`.
       const at = issue.path.length > 0 ? `${issue.path.join(".")}.` : "";
       return `unknown parameter${keys.length === 1 ? "" : "s"} ${keys.map((k) => `\`${at}${k}\``).join(", ")}`;
     }
-    // A union's own message is the bare "Invalid input"; everything the caller
-    // needs sits in the per-branch issue arrays the fallback never reads. Those
-    // carry the most actionable text a schema produces — `tv-remote`'s `button`
-    // enumerates 16 legal values — so render every branch's reason instead.
+    // A union's own message is the bare "Invalid input"; the actionable text
+    // (`tv-remote`'s `button` enumerates 16 legal values) sits in the
+    // per-branch issue arrays, which the fallback never reads.
     if (issue.code === "invalid_union") {
       const branches = (issue as { errors?: readonly (readonly ZodIssue[])[] }).errors ?? [];
       const alternatives: string[] = [];
-      // A `Set` for the seen-check, and a hard cap on what is collected: branch
-      // issues are CALLER-sized, since a union whose branch is an array reports
-      // one issue per element. A linear `includes` scan would be quadratic on
-      // the request thread, and an unbounded join renders megabytes. The cap
-      // keeps the work proportional to what is printed, not to what was sent.
       const seen = new Set<string>();
       let moreAlternatives = false;
       for (const branch of branches) {
         for (const inner of branch) {
-          // Inner paths are relative to the union's own path, so qualify them
-          // rather than print a bare tail that reads as a top-level key.
+          // Inner paths are relative to the union's own path; a bare tail
+          // would read as a top-level key.
           const innerAt = inner.path.length > 0 ? `${at}.${inner.path.join(".")}: ` : "";
           const text = `${innerAt}${inner.message}`;
-          // Two branches can fail identically (a union of enums over the same
-          // values); saying it twice is noise.
           if (seen.has(text)) continue;
           if (alternatives.length >= MAX_UNION_ALTERNATIVES) {
             moreAlternatives = true;
@@ -603,9 +529,6 @@ export function describeParamIssues(
         if (moreAlternatives) break;
       }
       if (alternatives.length > 0) {
-        // Signal the cut: a silently shortened enumeration reads as the
-        // complete set of legal forms, so the caller would rule out the branch
-        // they wanted.
         return `\`${at}\`: ${alternatives.join("; or ")}${moreAlternatives ? "; or …" : ""}`;
       }
     }
@@ -615,11 +538,9 @@ export function describeParamIssues(
     supplied.length > 0
       ? ` You sent: ${supplied.map((k) => `\`${k}\``).join(", ")}${truncated ? ", …" : ""}.`
       : "";
-  // Guard the (exported, call-site-unreachable) empty-issues case so it never
-  // renders a bare leading ".", and drop a part's own trailing full stop before
-  // adding this one: a custom refinement's message survives verbatim, so one
-  // that ends in a period rendered a double one ("…<name>.yaml.. You sent: …").
-  // Only a period is trimmed — "?" and "!" keep their own punctuation.
+  // Guard the empty-issues case so the body never starts with a bare ".", and
+  // trim a part's own trailing period: a custom message survives verbatim, so
+  // one ending in a period rendered "…yaml.. You sent: …".
   const body = parts.length > 0 ? `${parts.map((p) => p.replace(/\.$/, "")).join("; ")}.` : "";
   return `${body}${sent}`.trim() || "invalid parameters";
 }
