@@ -9,11 +9,19 @@ const darkCodeTheme = require("prism-react-renderer").themes.vsDark;
 // an ordinary build has none and the block is left out of themeConfig
 // altogether: the classic preset loads the search theme only when it is there,
 // and a search UI without credentials answers every query with "no results".
+const algoliaAppId = process.env.ALGOLIA_APP_ID;
+const algoliaApiKey = process.env.ALGOLIA_API_KEY;
+if (Boolean(algoliaAppId) !== Boolean(algoliaApiKey)) {
+  console.warn(
+    "ALGOLIA_APP_ID and ALGOLIA_API_KEY must be set together — only one of them " +
+      "is set, so DocSearch stays disabled for this build."
+  );
+}
 const algolia =
-  process.env.ALGOLIA_APP_ID && process.env.ALGOLIA_API_KEY
+  algoliaAppId && algoliaApiKey
     ? {
-        appId: process.env.ALGOLIA_APP_ID,
-        apiKey: process.env.ALGOLIA_API_KEY,
+        appId: algoliaAppId,
+        apiKey: algoliaApiKey,
         indexName: process.env.ALGOLIA_INDEX_NAME ?? "argent",
         // The site is unversioned, so there are no version facets to filter by.
         contextualSearch: false,
