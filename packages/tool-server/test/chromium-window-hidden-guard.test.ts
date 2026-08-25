@@ -73,7 +73,7 @@ describe("hidden-window guard on chromium mouse tools", () => {
     expect(api.dispatchMouseEvent).not.toHaveBeenCalled();
   });
 
-  it("gesture-scroll reports the dedicated failure code (migrated off CHROMIUM_INPUT_INVALID)", async () => {
+  it("gesture-scroll refuses before dispatching any wheel event", async () => {
     const api = fakeChromiumApi("hidden");
     const err = await captureFailure(
       gestureScrollTool.execute(
@@ -87,6 +87,7 @@ describe("hidden-window guard on chromium mouse tools", () => {
       )
     );
     expect(err.message).toMatch(/^Cannot scroll: the Chromium window is hidden/);
+    expect(api.server.sendWheel).not.toHaveBeenCalled();
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.CHROMIUM_WINDOW_HIDDEN);
     // The scroll stage predates the CHROMIUM_WINDOW_HIDDEN migration, which kept
     // the spelling so rows from either side of it stay joinable.

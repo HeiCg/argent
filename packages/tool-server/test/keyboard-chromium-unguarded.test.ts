@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { Registry, type DeviceInfo } from "@argent/registry";
 import { makeChromiumImpl } from "../src/tools/keyboard/platforms/chromium";
+import { createKeyboardTool } from "../src/tools/keyboard";
 import { buttonTool } from "../src/tools/button";
 import { assertSupported, UnsupportedOperationError } from "../src/utils/capability";
 
@@ -71,6 +72,18 @@ describe("keyboard on chromium — deliberately unguarded on a hidden window", (
     expect(result).toEqual({ typed: "enter", keys: 1 });
     // keyDown + keyUp for the named key.
     expect(dispatchKeyEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("stays unguarded through the full tool wrapper, not just the impl", async () => {
+    // The two cases above hold the exemption below makeChromiumImpl; this one
+    // drives createKeyboardTool().execute, so a guard added at the wrapper
+    // level (before dispatchByPlatform) goes red here too.
+    const { registry } = hiddenWindowRegistry();
+    const result = await createKeyboardTool(registry).execute(
+      {},
+      { udid: chromiumDevice.id, text: "hi", delayMs: 0 }
+    );
+    expect(result).toEqual({ typed: "hi", keys: 2 });
   });
 });
 
