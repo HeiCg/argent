@@ -102,6 +102,10 @@ Flat list in emission order; `parentIndex` links reconstruct the tree.
 ```
 
 - `type` — XCUIElement type name (`Button`, `StaticText`, `Cell`, …).
+- `rect` — viewport points. Non-finite or integer-overflowing coordinates
+  encode as `0`: the conversion is total by contract, because a geometry-less
+  AX element must degrade to a zeroed rect, never kill the runner mid-snapshot
+  (`keyCoordinate` in `ArgentRunnerSession+Snapshot.swift`).
 - Included nodes: interactive types, scroll containers, and anything with a
   label/identifier/value; visible in the viewport; deduped by
   type+texts+geometry. Hard cap 1500 nodes (`quality.state` becomes
