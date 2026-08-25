@@ -445,6 +445,22 @@ describe("flow script executor — redaction", () => {
     expect(result.log).toBe("id={{secret:OKEN}} and {{secret:TOKEN_ABC}}\n");
   });
 
+  it("refuses a document whose redacted key would replace a sibling", async () => {
+    const ws = workspace();
+    const script = ws.write("collide.mjs", `output.doc = { "ab": 1, "{{secret:s}}": 2 };`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [{ name: "s", value: "ab" }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("Two keys in the script's output become \"");
+    expect(result.failure?.message).toContain("{{secret:s}}");
+    expect(result.output).toBeUndefined();
+  });
+
   it("replaces a value that starts inside marker-shaped text the script printed", async () => {
     const ws = workspace();
     // The shape a script echoing an unresolved placeholder writes: it looks

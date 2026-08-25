@@ -725,7 +725,19 @@ function redactSecrets(
   secrets: readonly FlowScriptSecret[]
 ): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
   if (secrets.length === 0) return verdict;
-  if (verdict.output) scrubDocument(verdict.output, secrets);
+  if (verdict.output) {
+    const collision = scrubDocument(verdict.output, secrets);
+    // Refused rather than resolved: the document cannot be both redacted and
+    // whole, and dropping whichever entry lost would take it out of the
+    // document later steps read with nothing to say it had ever been there.
+    if (collision) {
+      return failed(
+        "output",
+        `Two keys in the script's output become "${collision}" once the secret in them is ` +
+          `redacted, so one would silently replace the other. Rename one of them.`
+      );
+    }
+  }
   const failure = verdict.failure;
   if (!failure) return verdict;
   return {
@@ -742,8 +754,15 @@ function redactSecrets(
  * Iterative rather than recursive: the document came from a child that ran
  * arbitrary code, and a megabyte of `[[[[…` is legal JSON that would overflow
  * the stack inside `execute`, which owes its caller a verdict, not a throw.
+ *
+ * Returns the redacted spelling two keys of one object share, when a rewrite
+ * would land on a sibling that is already spelled that way; the caller refuses
+ * the document rather than let one entry replace the other.
  */
-function scrubDocument(root: Record<string, unknown>, secrets: readonly FlowScriptSecret[]): void {
+function scrubDocument(
+  root: Record<string, unknown>,
+  secrets: readonly FlowScriptSecret[]
+): string | undefined {
   const pending: unknown[] = [root];
   while (pending.length > 0) {
     const node = pending.pop();
@@ -762,12 +781,13 @@ function scrubDocument(root: Record<string, unknown>, secrets: readonly FlowScri
       if (typeof value === "string") record[key] = scrubSecretValues(value, secrets);
       else if (value !== null && typeof value === "object") pending.push(value);
       const scrubbedKey = scrubSecretValues(key, secrets);
-      if (scrubbedKey !== key) {
-        record[scrubbedKey] = record[key];
-        delete record[key];
-      }
+      if (scrubbedKey === key) continue;
+      if (Object.prototype.hasOwnProperty.call(record, scrubbedKey)) return scrubbedKey;
+      record[scrubbedKey] = record[key];
+      delete record[key];
     }
   }
+  return undefined;
 }
 
 function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
