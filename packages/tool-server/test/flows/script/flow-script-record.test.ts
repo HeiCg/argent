@@ -634,6 +634,30 @@ describe("the paths flow-add-script accepts", () => {
     expect(message).toBe(parseError('path: "../../scripts/seed.mjs", timeout: 0'));
     expect(await steps("paths")).toEqual([]);
   });
+
+  // The floor is the parser's second timeout rejection, and it admits values
+  // the non-positive check lets through — so parity has to be pinned on one of
+  // those too, or the recorder could keep running a limit `parseFlow` refuses.
+  it("rejects a timeout under the floor exactly as the YAML parser does", async () => {
+    const ran = path.join(root, "ran.txt");
+    await write(
+      "scripts/seed.mjs",
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(ran)}, "1");\n`
+    );
+    await start("paths");
+    let message = "";
+    try {
+      await addScript("paths", "../../scripts/seed.mjs", { timeout: 50 });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toBe(parseError('path: "../../scripts/seed.mjs", timeout: 50'));
+    expect(message).toMatch(/script.timeout is in milliseconds and needs at least 100/);
+    expect(await steps("paths")).toEqual([]);
+    // Refused at parse, so the run never started — the recorder must not have
+    // spent the script's side effects on a step it then refuses to record.
+    await expect(fs.access(ran)).rejects.toThrow();
+  });
 });
 
 describe("a recording this server cannot reach", () => {

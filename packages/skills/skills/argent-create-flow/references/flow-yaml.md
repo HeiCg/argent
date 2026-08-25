@@ -207,7 +207,7 @@ A `script:` step runs a local `.mjs` file in a new Node process. It drives no de
 Record one live with `flow-add-script` rather than typing it in afterward. See [Live authoring](live-authoring.md#recorder-contract).
 
 - **`path`** resolves against the directory of the flow file that **contains the step**, so a fragment finds the same script in each flow that composes it. Always write the extension, and match the letter case on disk: a mis-cased name is refused rather than run, because macOS and Windows open it and Linux CI does not.
-- **`timeout`** is milliseconds, default 30000, capped by the host's `scripts.maxTimeoutMs` (default five minutes). A clamped value is reported in the step's reason, not refused.
+- **`timeout`** is milliseconds, default 30000, and at least 100: the step starts a Node process before the script runs, and that start alone costs tens of milliseconds, so parse refuses a smaller limit outright. The host's `scripts.maxTimeoutMs` (default five minutes) caps it at the other end, and a value over that cap is clamped and reported in the step's reason, not refused.
 - **The working directory is `project_root`**, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
 - **The environment is a fixed list**: the standard shell, proxy, TLS, Node, npm, Android and Java names. Every other name is absent, `NODE_ENV` and `DATABASE_URL` included, as is each value in a project `.env`. Let the script read what it needs from a file.
 

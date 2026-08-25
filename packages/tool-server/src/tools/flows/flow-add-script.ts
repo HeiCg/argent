@@ -42,7 +42,7 @@ const zodSchema = z.object({
     .number()
     .optional()
     .describe(
-      "Hard time limit for the script, in milliseconds (default 30000, capped by the host's `scripts.maxTimeoutMs`). Recorded verbatim as the step's `timeout`, so the run here and the replay share one limit."
+      "Hard time limit for the script, in milliseconds (default 30000, minimum 100, capped by the host's `scripts.maxTimeoutMs`). Below the minimum the step would spend the limit starting its own Node process, so it is refused here rather than run. Recorded verbatim as the step's `timeout`, so the run here and the replay share one limit."
     ),
 });
 

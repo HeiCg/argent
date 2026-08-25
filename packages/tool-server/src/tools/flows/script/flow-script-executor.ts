@@ -20,7 +20,11 @@ import {
 } from "@argent/configuration-core";
 import { isElectronHostedEnv } from "../../../utils/electron-env";
 import { formatErrorForAgent } from "../../../utils/format-error";
-import { scrubSecretChunk, scrubSecretValues } from "../../../utils/secrets";
+import {
+  scrubSecretChunk,
+  scrubSecretValues,
+  SECRET_PLACEHOLDER_MARKER,
+} from "../../../utils/secrets";
 import { sleep } from "../../../utils/timing";
 import {
   isTerminalResponse,
@@ -280,30 +284,45 @@ class ScriptSetupError extends Error {
 export class FlowScriptExecutor {
   private running = 0;
   private readonly waiting: QueueWaiter[] = [];
-  private bounds: ResolvedBounds | undefined;
+  private concurrencyLimit: number | undefined;
 
   constructor(private readonly options: FlowScriptExecutorOptions = {}) {}
 
+  /**
+   * Read again for every step, never memoized: both bounds below are
+   * schema-driven configuration, and the reference page promises that editing
+   * either file takes effect on the next request. The executor a tool server
+   * runs steps through is shared and lives as long as the process, so holding
+   * these would make that promise "on the next restart" for these two keys
+   * alone.
+   */
   private resolveBounds(): ResolvedBounds {
-    if (!this.bounds) {
-      this.bounds = {
-        concurrency: positive(this.options.concurrency) ?? defaultConcurrency(),
-        maxTimeoutMs: Math.min(
-          MAX_TIMER_MS,
-          positive(this.options.maxTimeoutMs) ??
-            configuredNumber("scripts.maxTimeoutMs") ??
-            5 * 60_000
-        ),
-        // Floored, not just defaulted: a heap too small to start V8 fails
-        // during the child's own startup, naming neither this bound nor the
-        // value that caused it.
-        heapLimitMb: Math.max(
-          MIN_SCRIPT_HEAP_LIMIT_MB,
-          positive(this.options.heapLimitMb) ?? configuredNumber("scripts.heapLimitMb") ?? 512
-        ),
-      };
-    }
-    return this.bounds;
+    return {
+      concurrency: this.concurrency(),
+      maxTimeoutMs: Math.min(
+        MAX_TIMER_MS,
+        positive(this.options.maxTimeoutMs) ??
+          configuredNumber("scripts.maxTimeoutMs") ??
+          5 * 60_000
+      ),
+      // Floored, not just defaulted: a heap too small to start V8 fails
+      // during the child's own startup, naming neither this bound nor the
+      // value that caused it.
+      heapLimitMb: Math.max(
+        MIN_SCRIPT_HEAP_LIMIT_MB,
+        positive(this.options.heapLimitMb) ?? configuredNumber("scripts.heapLimitMb") ?? 512
+      ),
+    };
+  }
+
+  /**
+   * Settled once, unlike the two above: it is not configuration, and the queue
+   * counts against it while steps are in flight — a limit that moved under a
+   * half-drained queue would let more run at once than either value allows.
+   */
+  private concurrency(): number {
+    this.concurrencyLimit ??= positive(this.options.concurrency) ?? defaultConcurrency();
+    return this.concurrencyLimit;
   }
 
   get activeCount(): number {
@@ -354,7 +373,7 @@ export class FlowScriptExecutor {
         new ScriptCancelledError("The run was cancelled before the script started.")
       );
     }
-    if (this.running < this.resolveBounds().concurrency) {
+    if (this.running < this.concurrency()) {
       this.running += 1;
       return Promise.resolve(release);
     }
@@ -410,7 +429,7 @@ export class FlowScriptExecutor {
   }
 
   private drain(): void {
-    const limit = this.resolveBounds().concurrency;
+    const limit = this.concurrency();
     while (this.running < limit) {
       const waiter = this.waiting.shift();
       if (!waiter) return;
@@ -482,9 +501,20 @@ export class FlowScriptExecutor {
           "--import",
           pathToFileURL(runnerPath).href,
         ],
+        // Index 3 is a sink, and the protocol channel sits above it. The
+        // channel is inherited by the script, Node parses it inside its own
+        // read callback, and a line that is not JSON throws from there — which
+        // reaches the tool server as an uncaughtException and takes the whole
+        // process down with it, the one thing this child exists to prevent. A
+        // write to descriptor 3 is the shape that reaches it: it is the first
+        // free number, so a feature-detecting shim or a daemonizing helper
+        // finds it without looking. Pointed at the null device, such a write
+        // fails on its own instead. Node deletes `NODE_CHANNEL_FD` from the
+        // child's environment, so nothing names the real one.
+        //
         // Index 4 is the lifeline: a pipe the parent holds open and never uses.
         // Its closing is how a runner learns its parent is gone.
-        stdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],
+        stdio: ["ignore", "pipe", "pipe", "ignore", "pipe", "ipc"],
         // On POSIX the runner leads its own process group so a group stop
         // aimed at the tool server does not also stop it, and so a group stop
         // aimed at the runner reaches its descendants. Windows has no such
@@ -721,7 +751,19 @@ function redactSecrets(
   secrets: readonly FlowScriptSecret[]
 ): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
   if (secrets.length === 0) return verdict;
-  if (verdict.output) scrubDocument(verdict.output, secrets);
+  if (verdict.output) {
+    const collision = scrubDocument(verdict.output, secrets);
+    // Refused rather than resolved: the document cannot be both redacted and
+    // whole, and dropping whichever entry lost would take it out of the
+    // document later steps read with nothing to say it had ever been there.
+    if (collision) {
+      return failed(
+        "output",
+        `Two keys in the script's output become "${collision}" once the secret in them is ` +
+          `redacted, so one would silently replace the other. Rename one of them.`
+      );
+    }
+  }
   const failure = verdict.failure;
   if (!failure) return verdict;
   return {
@@ -738,8 +780,15 @@ function redactSecrets(
  * Iterative rather than recursive: the document came from a child that ran
  * arbitrary code, and a megabyte of `[[[[…` is legal JSON that would overflow
  * the stack inside `execute`, which owes its caller a verdict, not a throw.
+ *
+ * Returns the redacted spelling two keys of one object share, when a rewrite
+ * would land on a sibling that is already spelled that way; the caller refuses
+ * the document rather than let one entry replace the other.
  */
-function scrubDocument(root: Record<string, unknown>, secrets: readonly FlowScriptSecret[]): void {
+function scrubDocument(
+  root: Record<string, unknown>,
+  secrets: readonly FlowScriptSecret[]
+): string | undefined {
   const pending: unknown[] = [root];
   while (pending.length > 0) {
     const node = pending.pop();
@@ -758,12 +807,13 @@ function scrubDocument(root: Record<string, unknown>, secrets: readonly FlowScri
       if (typeof value === "string") record[key] = scrubSecretValues(value, secrets);
       else if (value !== null && typeof value === "object") pending.push(value);
       const scrubbedKey = scrubSecretValues(key, secrets);
-      if (scrubbedKey !== key) {
-        record[scrubbedKey] = record[key];
-        delete record[key];
-      }
+      if (scrubbedKey === key) continue;
+      if (Object.prototype.hasOwnProperty.call(record, scrubbedKey)) return scrubbedKey;
+      record[scrubbedKey] = record[key];
+      delete record[key];
     }
   }
+  return undefined;
 }
 
 function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
@@ -784,7 +834,59 @@ function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return failed("output", "The script's output was not an object.");
   }
+  const polluted = findOwnProtoKey(parsed as Record<string, unknown>);
+  if (polluted !== undefined) {
+    return failed(
+      "output",
+      `${polluted} has an own "__proto__" key; output must be JSON-compatible data.`
+    );
+  }
   return { ok: true, output: parsed as Record<string, unknown> };
+}
+
+/**
+ * The runner refuses this before it encodes, and the parent re-checks for the
+ * same reason it re-checks the size and the failure-text ceilings: the loader
+ * resolves whichever `.mjs` sits beside the compiled executor, so a stale or
+ * mismatched runner copy reaches this path. `JSON.parse` makes `__proto__` an
+ * own key, and committing one hands whatever merges the document into flow
+ * state a prototype to write rather than a property.
+ *
+ * Iterative for the reason `scrubDocument` is: the document came from a child
+ * that ran arbitrary code, and a deep one would overflow the stack inside a
+ * call that owes its caller a verdict, not a throw.
+ */
+function findOwnProtoKey(root: Record<string, unknown>): string | undefined {
+  const pending: Array<{ node: unknown; at: string }> = [{ node: root, at: "output" }];
+  while (pending.length > 0) {
+    const { node, at } = pending.pop()!;
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        const value = node[i];
+        if (value !== null && typeof value === "object") {
+          pending.push({ node: value, at: `${at}[${i}]` });
+        }
+      }
+      continue;
+    }
+    if (node === null || typeof node !== "object") continue;
+    const record = node as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (key === "__proto__") return at;
+      const value = record[key];
+      if (value !== null && typeof value === "object") {
+        pending.push({ node: value, at: `${at}${memberPath(key)}` });
+      }
+    }
+  }
+  return undefined;
+}
+
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/** Follows the runner's own `memberPath`, which this file cannot import. */
+function memberPath(key: string): string {
+  return IDENTIFIER_RE.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`;
 }
 
 /**
@@ -979,6 +1081,13 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   }
 
   for (const [name, value] of Object.entries(overrides ?? {})) {
+    const problem = describeEnvNameProblem(name);
+    if (problem) {
+      throw new ScriptSetupError(
+        "invalid",
+        `${JSON.stringify(name)} cannot be an environment variable name for a script: it ${problem}.`
+      );
+    }
     if (reservedName(name)) {
       throw new ScriptSetupError(
         "invalid",
@@ -995,6 +1104,21 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   // activated preload in either would wait for a request that is never sent.
   env[RUNNER_ACTIVATION_ENV] = "1";
   return env;
+}
+
+/**
+ * Refused up front rather than handed to the operating system, which carries an
+ * environment as `NAME=value` strings and has no way to say a name was
+ * malformed: `=` in a name moves the split, so the script is given a variable
+ * the flow never asked for and the step passes anyway, and a name that is empty
+ * or holds a NUL leaves the child with an entry no reader can name. The map
+ * comes from the step's `env:`, so the author is the one who can fix it.
+ */
+function describeEnvNameProblem(name: string): string | null {
+  if (name === "") return "is empty";
+  if (name.includes("=")) return 'contains "=", which is what separates a name from its value';
+  if (name.includes("\0")) return "contains a NUL character";
+  return null;
 }
 
 function clampTimeout(
@@ -1153,6 +1277,7 @@ class ScriptLogCapture {
   private readonly streams = new Map<string, StreamState>();
   private stepRemaining: number;
   private truncatedFlag = false;
+  private cut = false;
   private heapFatalFlag = false;
   private heapFatalTail = "";
 
@@ -1257,12 +1382,24 @@ class ScriptLogCapture {
       ? Math.max(0, this.runBudget.remainingBytes)
       : Number.POSITIVE_INFINITY;
     const allowed = Math.min(this.stepRemaining, runRemaining);
-    if (allowed <= 0) {
+    // Once a cut has happened the log ends there: what follows would read as
+    // the text that came next, and the bytes the cut gave back — a partial
+    // character, a partial marker — are room enough to admit some of it.
+    if (this.cut || allowed <= 0) {
       this.truncatedFlag = true;
       return;
     }
     const buffer = Buffer.from(text, "utf8");
-    const taken = buffer.length <= allowed ? buffer.length : utf8SafeCut(buffer, allowed);
+    let taken = buffer.length <= allowed ? buffer.length : utf8SafeCut(buffer, allowed);
+    if (taken < buffer.length) {
+      this.truncatedFlag = true;
+      this.cut = true;
+      // The cut lands wherever the budget runs out, which may be inside a
+      // marker the scrub wrote. No value escapes either way, but a downstream
+      // reader parsing markers would read a placeholder naming no secret, so
+      // the fragment is given back rather than committed.
+      taken = withoutPartialMarker(buffer, taken);
+    }
     if (taken > 0) {
       const kept = taken === buffer.length ? text : buffer.subarray(0, taken).toString("utf8");
       if (at === undefined) this.parts.push(kept);
@@ -1270,8 +1407,25 @@ class ScriptLogCapture {
       this.stepRemaining -= taken;
       if (this.runBudget) this.runBudget.remainingBytes -= taken;
     }
-    if (taken < buffer.length) this.truncatedFlag = true;
   }
+}
+
+/**
+ * How much of `buffer` is left once a trailing fragment of a
+ * `{{secret:NAME}}` marker is dropped: an opening the cut never closed, or the
+ * beginning of one. Marker text is ASCII, so byte offsets are character
+ * offsets here.
+ */
+function withoutPartialMarker(buffer: Buffer, taken: number): number {
+  const text = buffer.subarray(0, taken).toString("utf8");
+  const open = text.lastIndexOf(SECRET_PLACEHOLDER_MARKER);
+  if (open >= 0 && !text.includes("}}", open + SECRET_PLACEHOLDER_MARKER.length)) {
+    return Buffer.byteLength(text.slice(0, open), "utf8");
+  }
+  for (let n = Math.min(SECRET_PLACEHOLDER_MARKER.length - 1, text.length); n > 0; n--) {
+    if (text.endsWith(SECRET_PLACEHOLDER_MARKER.slice(0, n))) return taken - n;
+  }
+  return taken;
 }
 
 function partialSecretTail(text: string, secrets: readonly FlowScriptSecret[]): number {
@@ -1402,6 +1556,9 @@ function describeBytes(bytes: number): string {
 }
 
 function describeDuration(ms: number): string {
+  // A step may ask for `Infinity`, which the clamp handles but no unit does:
+  // rendering it as a number would append the minutes suffix to a word.
+  if (!Number.isFinite(ms)) return "unbounded";
   if (ms >= 60_000) {
     const minutes = ms / 60_000;
     return `${minutes.toFixed(minutes % 1 === 0 ? 0 : 1)}m`;

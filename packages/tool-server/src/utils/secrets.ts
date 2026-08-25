@@ -141,8 +141,14 @@ export function scrubSecretChunk(
     // A marker one pass wrote is not text the next may look inside: a value
     // that occurs in some *name* would otherwise be replaced there, nesting one
     // marker inside another and leaving neither the shape a reader parses.
+    //
+    // Only while the span really is a marker, though. A value that starts
+    // inside it and reaches past its end belongs to text that merely looks like
+    // one — a script echoing an unresolved `{{secret:NAME}}` — and jumping the
+    // span would leave that value in plaintext, here and in the whole-text pass
+    // that skips by this same rule. A marker left nested is the lesser fault.
     const marker = markerLengthAt(text, at, names, longestName);
-    if (marker > 0) {
+    if (marker > 0 && !valueLeavesMarker(text, at, at + marker, ordered)) {
       at += marker;
       continue;
     }
@@ -168,6 +174,24 @@ export function scrubSecretChunk(
     emit: copied === 0 ? text.slice(0, at) : out + text.slice(copied, at),
     held: text.length - at,
   };
+}
+
+/**
+ * Whether a value occurs inside `[from, end)` and does not fit within it. The
+ * span is bounded by the longest name there is, so this walk is too.
+ */
+function valueLeavesMarker(
+  text: string,
+  from: number,
+  end: number,
+  ordered: ReadonlyArray<{ value: string }>
+): boolean {
+  for (let at = from; at < end; at++) {
+    for (const { value } of ordered) {
+      if (at + value.length >= end && text.startsWith(value, at)) return true;
+    }
+  }
+  return false;
 }
 
 function beginsAValue(
