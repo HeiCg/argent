@@ -169,8 +169,16 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
         'and count rows/columns to build the path (e.g. one row down and two columns right → ["down","right","right","select"]).'
     );
   } else {
+    // Physical iOS: the XCUITest runner drives single-finger gestures only, so
+    // recommending gesture-pinch here would point agents (who follow this
+    // header verbatim) at a guaranteed capability reject. Every other source
+    // keeps the generic line byte-identical.
     header.push(
-      "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space."
+      opts.source === "xcuitest-runner"
+        ? "Pass them straight to gesture-tap / gesture-swipe, which expect this same space. " +
+            "Two-finger gestures (pinch/rotate) are unavailable on physical iOS devices; " +
+            "drive zoom via the app's UI."
+        : "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space."
     );
     header.push(
       "To tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2."
