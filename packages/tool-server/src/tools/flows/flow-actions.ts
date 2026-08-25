@@ -6,6 +6,7 @@ import {
   type DescribeSource,
   type DescribeTreeData,
 } from "../describe/contract";
+import { isBlindRead } from "../describe/blind-read";
 import {
   selectorToFrame,
   findAll,
@@ -1262,7 +1263,8 @@ async function runType(
  * - `assert` ({@link DEFAULT_ASSERT_TIMEOUT_MS}) — a correctness check that only
  *   absorbs the latency of an update landing a frame after an action.
  *
- * Mirrors `await-ui-element`'s blind-read guard: an EMPTY tree is not
+ * Applies the shared blind-read guard ({@link isBlindRead}), the same one
+ * `await-ui-element` polls with: an EMPTY tree is not
  * trustworthy evidence for `hidden` (the only condition an empty tree satisfies)
  * when the adapter flagged the read as degraded or the selector had matched on
  * an earlier poll — a transient blank frame mid-navigation must not confirm the
@@ -1298,8 +1300,7 @@ async function waitForCondition(
       lastMatches = flowFindAll(data.tree, step.selector);
       fetchError = undefined;
       everMatched ||= lastMatches.length > 0;
-      const blind =
-        data.tree.children.length === 0 && Boolean(data.hint || data.should_restart || everMatched);
+      const blind = isBlindRead(data, everMatched);
       if (!blind) lastTrustedReadAt = Date.now();
       lastReadTrusted = !blind;
       if (

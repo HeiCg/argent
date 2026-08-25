@@ -15,6 +15,7 @@ import { assertSupported } from "../../utils/capability";
 import { ensureDeps } from "../../utils/check-deps";
 import { pollDescribeTree } from "../../utils/poll-describe-tree";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
+import { isBlindRead } from "../describe/blind-read";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeIosDevice } from "../describe/platforms/ios-device";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
@@ -257,16 +258,6 @@ const capability: ToolCapability = {
 // params-shaped wrapper for this tool and its tests.
 export function evaluateMatches(params: Params, matches: DescribeNode[]): boolean {
   return evaluateCondition(params.condition, params.expectedText, matches, params.textMatch);
-}
-
-// An empty tree is not trustworthy evidence the element is gone, so `hidden` —
-// the only condition that resolves true on one — must not resolve off it when
-// the adapter flagged the read (`describeIos` returns an empty tree plus a hint /
-// should_restart instead of throwing), or when the selector matched on an earlier
-// poll and the tree has since gone blank mid-navigation.
-function isBlindRead(data: DescribeTreeData, everMatched: boolean): boolean {
-  if (data.tree.children.length > 0) return false;
-  return Boolean(data.hint || data.should_restart || everMatched);
 }
 
 // Fold the read's hint / restart prompt into the timeout note so the agent sees
