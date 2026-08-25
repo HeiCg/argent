@@ -18,7 +18,7 @@ import {
   type RecordingSession,
 } from "./flow-utils";
 import { canonicalFlowPath } from "./flow-file-refs";
-import { runFlowScriptStep } from "./flow-script-step";
+import { runFlowScriptStep, type ScriptRan } from "./flow-script-step";
 import { utf8SafeCut } from "./script/flow-script-executor";
 import { summarizeStep } from "./flow-finish-recording";
 
@@ -92,6 +92,32 @@ async function recordedStepCount(
       `valid in-memory snapshot rather than from the file.`,
   };
 }
+
+/**
+ * How a failed call opens, and what it asks the author to do next. The two are
+ * written as one entry because the lead may claim no more than the move below
+ * it: an agent reads the first clause and stops, so a headline saying the
+ * script could not be run answers "is there state to check?" with a no that the
+ * rest of the same message then takes back.
+ */
+const FAILED_CALL: Record<ScriptRan, { lead: string; nextMove: string }> = {
+  yes: {
+    lead: "failed",
+    nextMove:
+      `Whatever the script did before it stopped is still done: nothing was rolled back, so ` +
+      `either make the re-run safe to repeat or clean up first, then call this again.`,
+  },
+  no: {
+    lead: "could not be run",
+    nextMove: `Nothing ran, so there is nothing to clean up — the reason above says what stopped it.`,
+  },
+  unknown: {
+    lead: "did not report a result",
+    nextMove:
+      `The runner failed around the script rather than inside it, so the script may never have ` +
+      `started — check the state it touches before you call this again.`,
+  },
+};
 
 function renderOutput(output: Record<string, unknown>): {
   outputJson: string;
@@ -192,21 +218,13 @@ Refused when the recording's project root is not on this tool server's filesyste
     };
 
     if (outcome.status !== "pass") {
-      const nextMove =
-        ran === "yes"
-          ? `Whatever the script did before it stopped is still done: nothing was rolled back, so ` +
-            `either make the re-run safe to repeat or clean up first, then call this again.`
-          : ran === "no"
-            ? `Nothing ran, so there is nothing to clean up — the reason above says what stopped it.`
-            : `The runner failed around the script rather than inside it, so the script may never ` +
-              `have started — check the state it touches before you call this again.`;
+      const { lead, nextMove } = FAILED_CALL[ran];
       const { stepCount, note } = await recordedStepCount(session);
       return {
         ...common,
         message:
-          `The script "${step.path}" ${ran === "yes" ? "failed" : "could not be run"} — nothing ` +
-          `was recorded in "${params.name}", so the flow is exactly as it was. ${nextMove}` +
-          `${note ? ` ${note}` : ""}`,
+          `The script "${step.path}" ${lead} — nothing was recorded in "${params.name}", so the ` +
+          `flow is exactly as it was. ${nextMove}${note ? ` ${note}` : ""}`,
         stepCount,
       };
     }

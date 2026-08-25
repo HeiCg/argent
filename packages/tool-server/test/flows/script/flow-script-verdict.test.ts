@@ -129,6 +129,24 @@ const RAN: Record<FlowScriptFailureKind, ScriptRan> = {
   heap: "yes",
 };
 
+/** The move each answer asks the author to make. */
+const NEXT_MOVE: Record<ScriptRan, string> = {
+  yes: "Whatever the script did before it stopped is still done",
+  no: "Nothing ran, so there is nothing to clean up",
+  unknown: "the script may never have started",
+};
+
+/** How the same answer opens, anchored so a later "failed" cannot match it. */
+const LEAD: Record<ScriptRan, string> = {
+  yes: "failed",
+  no: "could not be run",
+  unknown: "did not report a result",
+};
+
+function headline(ran: ScriptRan): string {
+  return `The script "../../scripts/seed.mjs" ${LEAD[ran]} —`;
+}
+
 describe("which side of the fail/error line a script failure lands on", () => {
   it.each(Object.entries(VERDICTS))("reports a %s failure as %s", async (kind, status) => {
     executeMock.mockResolvedValue(
@@ -225,14 +243,12 @@ describe("the recorder reports the verdict the runner will", () => {
       const recorded = await recordScript();
 
       expect(recorded.status).not.toBe("pass");
-      if (ran === "yes") {
-        expect(recorded.message).toContain("is still done");
-        expect(recorded.message).toContain("failed");
-      } else {
-        expect(recorded.message).toContain("could not be run");
-        expect(recorded.message).toContain(
-          ran === "no" ? "Nothing ran, so there is nothing to clean up" : "may never have started"
-        );
+      expect(recorded.message).toContain(NEXT_MOVE[ran]);
+      expect(recorded.message).toContain(headline(ran));
+      // The headline is the clause an agent acts on first, so it may not answer
+      // "is there state to check?" differently from the move that follows it.
+      for (const other of Object.keys(NEXT_MOVE) as ScriptRan[]) {
+        if (other !== ran) expect(recorded.message).not.toContain(headline(other));
       }
       expect(await recordedSteps()).toEqual([]);
     }
@@ -250,9 +266,10 @@ describe("the recorder reports the verdict the runner will", () => {
 
       const recorded = await recordScript();
 
-      expect(recorded.message).toContain("Nothing ran, so there is nothing to clean up");
-      expect(recorded.message).not.toContain("is still done");
-      expect(recorded.message).not.toContain("may never have started");
+      expect(recorded.message).toContain(NEXT_MOVE.no);
+      expect(recorded.message).toContain(headline("no"));
+      expect(recorded.message).not.toContain(NEXT_MOVE.yes);
+      expect(recorded.message).not.toContain(NEXT_MOVE.unknown);
       expect(await recordedSteps()).toEqual([]);
     }
   );
