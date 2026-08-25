@@ -22,6 +22,7 @@ import {
   describeExpectedValue,
   getConfigDefinition,
   MIN_SCRIPT_HEAP_LIMIT_MB,
+  MIN_SCRIPT_TIMEOUT_MS,
   type ConfigDefinition,
 } from "../src/config-schema.js";
 
@@ -399,9 +400,24 @@ describe("flow script host bounds", () => {
     );
   });
 
-  it("says what it wants when it refuses one", () => {
-    const def = getConfigDefinition("scripts.heapLimitMb")!;
-    expect(describeExpectedValue(def)).toContain(`at least ${MIN_SCRIPT_HEAP_LIMIT_MB}`);
+  it("refuses a ceiling the step spends on starting its own process", () => {
+    expect(() => setConfigValue("scripts.maxTimeoutMs", 30, "global", opts())).toThrow(
+      ConfigValidationError
+    );
+    expect(() => setConfigValue("scripts.maxTimeoutMs", 99, "global", opts())).toThrow(
+      ConfigValidationError
+    );
+    expect(setConfigValue("scripts.maxTimeoutMs", MIN_SCRIPT_TIMEOUT_MS, "global", opts())).toBe(
+      MIN_SCRIPT_TIMEOUT_MS
+    );
+  });
+
+  it.each([
+    ["scripts.heapLimitMb", MIN_SCRIPT_HEAP_LIMIT_MB],
+    ["scripts.maxTimeoutMs", MIN_SCRIPT_TIMEOUT_MS],
+  ])("says what %s wants when it refuses one", (key, min) => {
+    const def = getConfigDefinition(key)!;
+    expect(describeExpectedValue(def)).toContain(`at least ${min}`);
   });
 
   it.each(["scripts.maxTimeoutMs", "scripts.heapLimitMb"])(
