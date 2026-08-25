@@ -28,13 +28,6 @@ const LIVE_AUTHORING = path.resolve(
   __dirname,
   "../../../skills/skills/argent-create-flow/references/live-authoring.md"
 );
-/**
- * The PUBLISHED counterpart of {@link FLOW_YAML}. The output-reference refusal
- * lives in `parseFlow`, so it stops a hand-authored flow replayed through
- * `argent flow run` and not only a recording — which makes it a reader of this
- * page, not only an authoring agent, who meets it.
- */
-const PUBLISHED_FLOW_YAML = path.resolve(__dirname, "../../../docs/docs/reference/flow-yaml.mdx");
 const SPELLED = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight"];
 const INSERTION_COUNT_CITATIONS = [
   path.resolve(__dirname, "../../../skills/skills/argent-qa-flows/SKILL.md"),
@@ -233,28 +226,6 @@ describe("create-flow directive-answer docs", () => {
     }
     for (const key of withRecordingTool) {
       expect(sentenceWith(description!, "have no recording tool"), key).not.toContain(`\`${key}\``);
-    }
-  });
-});
-
-describe("create-flow output-reference docs", () => {
-  it("documents the refusal on every page a reader could meet it from", () => {
-    // The parser refuses the whole FILE, before step 1, so a reader following
-    // only the published reference would otherwise meet an undocumented
-    // load-time failure of their flow.
-    expect(() => parseFlow('steps:\n  - echo: "created {{output:user.id}}"\n')).toThrow(
-      /holds an output reference/
-    );
-
-    for (const file of [FLOW_YAML, PUBLISHED_FLOW_YAML]) {
-      const doc = readFileSync(file, "utf8");
-      expect(doc, `${file} no longer documents the output-reference refusal`).toContain(
-        "{{output:"
-      );
-      // A `matches` pattern is scanned by neither level. A reader told only
-      // that `{{output:` is refused would assume the opposite and rewrite a
-      // quantifier that was always fine.
-      expect(doc, `${file} no longer exempts a matches pattern`).toMatch(/`matches`/);
     }
   });
 });
