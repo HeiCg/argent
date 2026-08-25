@@ -36,6 +36,9 @@ import {
   getUdidFromArgs,
   shouldAutoScreenshot,
   getAutoScreenshotDelayMs,
+  autoDescribeEnabled,
+  shouldAutoDescribe,
+  AUTO_DESCRIBE_HEADER,
 } from "./auto-screenshot.js";
 import { toMcpTool } from "./tool-mapping.js";
 import { getInstalledVersion } from "./installed-version.js";
@@ -105,6 +108,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
   // isFlagEnabled hits disk, so resolve it once at startup rather than on every
   // tool call. A flag change therefore needs an MCP restart to take effect.
   const autoScreenshotOn = autoScreenshotEnabled();
+  const autoDescribeOn = autoDescribeEnabled();
 
   let TOOLS_URL: string;
   let AUTH_TOKEN: string;
@@ -234,7 +238,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
       capabilities: { tools: {} },
       instructions:
         "Argent — iOS Simulator, Android Emulator, and Chromium app control for interacting, testing, profiling and debugging mobile and Chromium applications. " +
-        "Always use discovery tools (describe / debugger-component-tree / screenshot) before tapping — never guess coordinates. " +
+        "Interaction tools return the screen after the action: a screenshot plus the accessibility element tree with normalized tap frames. Take coordinates from that tree; call describe (or debugger-component-tree) only when no fresh tree is available — never guess coordinates from pixels. " +
         "On session end: call stop-all-simulator-servers with devices: [...] naming the devices this session used, and perform any necessary cleanup. " +
         "One tool-server is shared by every agent using this argent install, so an unscoped call tears down their devices too — reserve it for a deliberate machine-wide cleanup. " +
         "Full guidance is in the argent rule loaded from .claude/rules/argent.md.",
@@ -361,6 +365,39 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
           }
         } catch {
           /* best-effort */
+        }
+
+        // Append the element tree the agent would otherwise have to fetch with
+        // a `describe` round-trip before its next tap. Measured on Sonnet over
+        // 70 runs: −21% turns, −23% wall time, −17% cost at equal task success
+        // (see PR description). The tree is a few hundred tokens per action.
+        if (autoDescribeOn && shouldAutoDescribe(params.name)) {
+          const t1 = Date.now();
+          try {
+            const d = await callTool("describe", { udid });
+            const desc = (d.result as { description?: unknown } | null)?.description;
+            if (typeof desc === "string" && desc.length > 0) {
+              content = [
+                ...content,
+                { type: "text" as const, text: `${AUTO_DESCRIBE_HEADER}\n${desc}` },
+              ];
+            }
+            await spyLog({
+              ts: new Date().toISOString(),
+              event: "auto_describe",
+              name: params.name,
+              durationMs: Date.now() - t1,
+              chars: typeof desc === "string" ? desc.length : 0,
+            });
+          } catch (e) {
+            await spyLog({
+              ts: new Date().toISOString(),
+              event: "auto_describe",
+              name: params.name,
+              durationMs: Date.now() - t1,
+              error: String(e instanceof Error ? e.message : e),
+            });
+          }
         }
       }
 

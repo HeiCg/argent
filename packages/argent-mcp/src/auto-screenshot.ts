@@ -57,6 +57,26 @@ export function autoScreenshotEnabled(options?: FlagsPathOptions): boolean {
 }
 
 /**
+ * Opt-out only: the `disable-auto-describe` flag is off by default. The
+ * element tree rides along with the auto-screenshot, so it also goes away when
+ * auto-screenshot itself is disabled.
+ */
+export function autoDescribeEnabled(options?: FlagsPathOptions): boolean {
+  return !isFlagEnabled("disable-auto-describe", options);
+}
+
+/** Header line that introduces the element tree appended after an action. */
+export const AUTO_DESCRIBE_HEADER = "--- Elements after action (describe) ---";
+
+/**
+ * Whether the auto-describe tree follows the auto-screenshot for this tool.
+ * `describe` is excluded: its own result already is the tree.
+ */
+export function shouldAutoDescribe(toolName: string): boolean {
+  return shouldAutoScreenshot(toolName) && normalizeToolName(toolName) !== "describe";
+}
+
+/**
  * Marker of a server-side secret placeholder (`{{secret:NAME}}`, resolved by
  * the tool-server before typing). Copy of SECRET_PLACEHOLDER_MARKER in
  * packages/tool-server/src/utils/secrets.ts, which argent-mcp does not depend
