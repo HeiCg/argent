@@ -115,6 +115,40 @@ describe("run cancellation mid-directive", () => {
     expect(calls).not.toContain("gesture-tap");
   });
 
+  it("marks a cancelled directive reached, and the guard's skip not", async () => {
+    // Two identical taps and one cancel. The first reaches `runDirective` and
+    // takes its abort exit; the second never starts, so the pre-step guard
+    // skips it. Same kind, same status, same reason — only `reached` separates
+    // "the gesture may already have gone out" from "provably nothing did". The
+    // marker is deliberately conservative on this exit: the outcome does not
+    // say which side of the dispatch the cancel landed on.
+    const controller = new AbortController();
+    let reads = 0;
+    currentFetch = () => {
+      reads++;
+      if (reads >= 3) controller.abort();
+      return {
+        tree: screen([n({ label: "Other", frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.1 } })]),
+        source: "native-devtools",
+      };
+    };
+
+    await writeFlow("cancelled-tap-pair", {
+      executionPrerequisite: "",
+      steps: [
+        { kind: "tap", selector: { text: "Checkout", loose: true } },
+        { kind: "tap", selector: { text: "Checkout", loose: true } },
+      ],
+    });
+
+    const result = await run("cancelled-tap-pair", mockRegistry([]), controller.signal);
+
+    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["tap:skip", "tap:skip"]);
+    expect(result.steps.map((s) => s.reason)).toEqual(["run aborted", "run aborted"]);
+    expect(result.steps[0].reached).toBe(true);
+    expect(result.steps[1].reached).toBeUndefined();
+  });
+
   it("dispatches no tap when the run is cancelled during the settle-completing tree read", async () => {
     const controller = new AbortController();
     // The target is visible and the tree is stable, so read 2 is the read that

@@ -414,9 +414,6 @@ describe("run-sequence", () => {
   });
 
   describe("a step whose args the sub-tool rejects", () => {
-    // A REAL registry, not a stub: the rejection must come from the same schema
-    // check the live dispatch runs, and the events it emits are half of what
-    // these tests assert.
     const liveRegistry = () => {
       const registry = new Registry();
       const executed: string[] = [];
@@ -444,9 +441,6 @@ describe("run-sequence", () => {
     };
 
     it("names only the keys the AUTHOR wrote, not the injected udid", async () => {
-      // `udid` is injected into every step — the tool's own docs tell authors to
-      // leave it out — so listing it beside the misspelling the list exists to
-      // expose points at a key they never typed.
       const { registry } = liveRegistry();
       const tool = createRunSequenceTool(registry);
 
@@ -462,10 +456,6 @@ describe("run-sequence", () => {
     });
 
     it("STOPS the sequence, leaving the later steps un-run", async () => {
-      // Two steps, because a single-step sequence cannot tell `break` from
-      // `continue`, and the existing multi-step "stops on first error" tests
-      // all exercise the INVOKE path. A regression here types into whatever
-      // screen the un-tapped app is still on.
       const { registry, executed } = liveRegistry();
       const tool = createRunSequenceTool(registry);
 
@@ -483,7 +473,7 @@ describe("run-sequence", () => {
       expect(result.steps).toHaveLength(1);
       expect(result.completed).toBe(0);
       expect(result.total).toBe(2);
-      expect(executed).toEqual([]); // neither step reached the device
+      expect(executed).toEqual([]);
     });
 
     it("marks the entry `dispatched: false`, since the parse precedes execute", async () => {
@@ -530,11 +520,6 @@ describe("run-sequence", () => {
     });
 
     it("still emits the step's own invoked/failed events", async () => {
-      // The rejection is re-rendered from the registry's failure rather than
-      // pre-empting the dispatch, so the step stays visible to the telemetry
-      // listener and the event log. A pre-flight that returned before invoking
-      // would make an invalid step emit nothing while the outer call still
-      // reported completion.
       const { registry } = liveRegistry();
       const events: string[] = [];
       registry.events.on("toolInvoked", (id) => events.push(`invoked:${id}`));

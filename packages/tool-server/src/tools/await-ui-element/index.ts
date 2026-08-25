@@ -32,18 +32,14 @@ import {
   quoteScreenText,
 } from "../../utils/ui-tree-match";
 
-// Tool id. Exported so run-sequence can both allow this tool and recognise its
-// result shape (it returns { success: false } instead of throwing on an unmet
-// condition) without hard-coding the string in two places.
+// Exported so run-sequence can allowlist this tool without repeating the string.
 export const AWAIT_UI_ELEMENT_TOOL_ID = "await-ui-element";
 
-// True when `result` is an unmet `await-ui-element` outcome — it reports a
-// timed-out condition by returning { success: false } rather than throwing.
-// The orchestrating tools (`run-sequence`, `flow-execute`) use this to STOP a
-// sequence at a wait that never held, instead of running the next step (often a
-// tap) blind against a screen that never settled. Shared here so the result
-// shape lives in one place. Result is `unknown` because it crosses the registry
-// boundary untyped.
+// True when `result` is a timed-out `await-ui-element`: an unmet condition is
+// reported as { success: false } rather than thrown. `run-sequence` and
+// `flow-execute` use this to stop a sequence instead of running the next step
+// against a screen that never settled. `unknown` because the result crosses the
+// registry boundary untyped.
 export function isUnmetUiWaitResult(tool: string, result: unknown): boolean {
   return (
     tool === AWAIT_UI_ELEMENT_TOOL_ID &&
@@ -145,8 +141,7 @@ export function vacuousHiddenSelectors(tool: string, result: unknown, args: unkn
 }
 
 // The `success: false` notes that are NOT a verdict on the condition. Named
-// here and reused where the notes are built, so a reader can tell them apart
-// from a genuine miss without re-typing the prose.
+// here, and used below where the notes are built.
 const WAIT_CANCELLED_NOTE = "wait was cancelled before the condition was met";
 const TREE_FETCH_FAILED_NOTE_PREFIX = "last tree fetch failed: ";
 const HIDDEN_UNREADABLE_NOTE =
@@ -154,13 +149,12 @@ const HIDDEN_UNREADABLE_NOTE =
 
 /**
  * WHY an unmet wait came back `success: false`. {@link isUnmetUiWaitResult}
- * answers "did this wait fail", which is all `run-sequence` and `flow-run` need
- * — they stop the run on every cause alike. A caller that NARRATES the failure
- * needs more, because only one of the three judges the condition:
+ * answers "did this wait fail", which is all `run-sequence` and `flow-run`
+ * need. A caller that NARRATES the failure needs more, because only one cause
+ * judges the condition:
  *
  * - `unmet` — the tree was read and the condition was false there.
- * - `unreadable` — the tree source never answered, or answered blind, so
- *   nothing was observed. The condition may be perfectly satisfiable.
+ * - `unreadable` — the tree source never answered, so nothing was observed.
  * - `cancelled` — the caller gave up before the deadline. Also no verdict.
  */
 export type UnmetUiWaitCause = "unmet" | "unreadable" | "cancelled";
@@ -168,15 +162,13 @@ export type UnmetUiWaitCause = "unmet" | "unreadable" | "cancelled";
 /**
  * The cause this wait recorded, or the closest its `note` can be read for.
  *
- * The cause is carried on the RESULT ({@link WaitResult.cause}), decided where
- * the evidence is: the loop knows which of its reads were trustworthy, which
- * the prose cannot say. On `visible`/`exists`/`text` a wholly blind window
- * produces prose byte-identical to a genuine miss, so three of the four
- * conditions have no distinguishable note at all.
+ * The loop decides the cause and carries it on the result, because only the
+ * loop knows which reads were trustworthy. The note cannot say: a wholly blind
+ * window produces prose identical to a genuine miss on three of the four
+ * conditions.
  *
- * The note fallback stays for a result that crossed a boundary without the
- * field (an older tool-server, a hand-built fixture). It defaults to `unmet`,
- * the cause every caller acted on before this classification existed.
+ * The note fallback is for a result that crossed a boundary without the field —
+ * an older tool-server, or a hand-built fixture.
  */
 export function unmetUiWaitCause(result: unknown): UnmetUiWaitCause {
   const carried = (result as { cause?: unknown } | null)?.cause;
@@ -281,27 +273,21 @@ interface WaitResult {
 /**
  * How far behind the loop's exit the last TRUSTED read may lie before "the
  * condition was false" stops being honest, as a multiple of the poll interval.
- * The same tolerance as `CONDITION_DARK_TAIL_TOLERANCE_MS` in the flow runner's
- * copy of this loop: one interval of sleep since the last clean read, plus one
- * interval of latency for the deadline poll to come back dark too. Longer means
- * consecutive reads went dark, and a verdict from the reads before the darkness
- * describes a screen nobody saw at the deadline.
+ * One interval of sleep, plus one interval of latency for the deadline poll to
+ * also come back dark. The flow runner's copy of this loop uses the same
+ * tolerance as `CONDITION_DARK_TAIL_TOLERANCE_MS`.
  */
 const DARK_TAIL_TOLERANCE_INTERVALS = 2;
 
 /**
- * The same tolerance in absolute time, past which no poll interval buys more.
+ * The same tolerance in absolute time. `pollIntervalMs` is the caller's, up to
+ * 5000ms, so the multiple alone would reach 10s — and a source that answered
+ * once and then went silent would still come back `unmet`. Past a couple of
+ * seconds the trusted reads no longer credibly describe the deadline, however
+ * sparsely the caller polls.
  *
- * `pollIntervalMs` is the CALLER's, up to 5000ms, so the multiple above alone
- * would let the tolerance reach 10s: a source that answered once and then went
- * silent would still come back `unmet`, the one cause that licenses an author
- * to rewrite the step. Past a couple of seconds "the trusted reads still
- * describe the deadline" stops being credible however sparsely the caller
- * polls.
- *
- * Set above the default interval's own tolerance (2 × 400ms), so nothing at or
- * below a 1000ms interval is affected — the routine deadline straddle still
- * reads as the blip it is.
+ * Set above the default interval's own tolerance (2 x 400ms), so the routine
+ * deadline straddle still reads as the blip it is.
  */
 const DARK_TAIL_TOLERANCE_MAX_MS = 2000;
 
@@ -319,27 +305,21 @@ type FinalRead = "trusted" | "untrusted" | "unsettled";
 /**
  * WHY a wait that reached its deadline came back `success: false`.
  *
- * Only `unmet` judges the condition, so it must be earned: some read must have
- * been trustworthy, and the reads must still describe the screen at the
- * deadline. Three tiers, mirroring `waitForCondition`'s post-timeout verdict in
- * flow-actions.ts:
+ * Only `unmet` judges the condition, so it has to be earned: some read must
+ * have been trustworthy, and the reads must still describe the screen at the
+ * deadline. Three tiers, mirroring `waitForCondition` in flow-actions.ts:
  *
- * 1. No trusted read in the whole window — nothing ever evaluated the
- *    condition.
- * 2. Trusted reads existed but the window went dark at the end. `hidden` is
- *    held to a stricter bar, since there the element LEAVING is the transition
- *    being waited on and an unjudgeable final read leaves gone-ness
- *    unconfirmable. For the rest, a dark tail beyond
- *    {@link DARK_TAIL_TOLERANCE_INTERVALS} or
- *    {@link DARK_TAIL_TOLERANCE_MAX_MS}, whichever is shorter.
+ * 1. No trusted read at all — nothing ever evaluated the condition.
+ * 2. Trusted reads, but the window went dark at the end. `hidden` is stricter,
+ *    because there the element LEAVING is the transition being waited on.
  * 3. A dark tail inside the tolerance — a last-poll blip, which must not turn a
- *    real miss into "nothing was ever compared".
+ *    real miss into "nothing was compared".
  *
- * An `unsettled` final attempt takes the dark-tail measure on EVERY condition,
- * `hidden` included: that attempt is no evidence either way, and the loop makes
- * one on almost every timeout (the poll sleep is clamped to the deadline, so
- * the next iteration straddles it). Holding `hidden` to the strict bar there
- * would make every ordinary `hidden` timeout `unreadable`.
+ * An `unsettled` final attempt takes the dark-tail measure on every condition.
+ * The loop makes one on almost every timeout, because the poll sleep is clamped
+ * to the deadline and the next iteration straddles it. The age of the last
+ * trusted read is what separates that straddle from a source that stopped
+ * answering.
  */
 function timeoutCause(
   condition: Params["condition"],
@@ -365,41 +345,25 @@ const capability: ToolCapability = {
   vega: { vvd: true },
 };
 
-// ── Tree matching ────────────────────────────────────────────────────────
-// The matching engine (matchNode, findAll, isVisible, firstInReadingOrder, …)
-// lives in utils/ui-tree-match so the flow directives and recorder reuse the
-// exact selector semantics. `evaluateMatches` is kept as a params-shaped wrapper
-// for this tool and its tests.
-
+// The matching engine lives in utils/ui-tree-match so the flow directives and
+// recorder reuse the exact selector semantics; `evaluateMatches` is a
+// params-shaped wrapper for this tool and its tests.
 export function evaluateMatches(params: Params, matches: DescribeNode[]): boolean {
   return evaluateCondition(params.condition, params.expectedText, matches, params.textMatch);
 }
 
-// A degraded / blind read: the tree came back EMPTY and that emptiness is not
-// trustworthy evidence the element is gone, so we must not let `hidden` (the only
-// condition that resolves true on an empty tree) resolve positively off it. Two
-// ways an empty tree is untrustworthy:
-//   - the adapter flagged it as unreliable: iOS AX down, native injection
-//     pending, or a native hierarchy that could not be read at all (nothing
-//     connected to auto-target, the service down, the query failing) →
-//     `describeIos` returns an empty tree plus a hint / should_restart instead
-//     of throwing. Android / Chromium never set these flags.
-//   - the selector matched on an EARLIER poll (`everMatched`) yet the whole tree
-//     is now empty. A genuinely-hidden element leaves the rest of the screen
-//     behind; a wholly empty tree after we'd already read content is a transient
-//     blank frame mid-navigation, not the element being hidden. This is the only
-//     guard that fires on Android / Chromium, where an empty tree is otherwise
-//     taken at face value — without it an `everMatched` `hidden` wait would
-//     falsely resolve on a one-frame blink and release a gated tap against a
-//     screen that only briefly went blank.
+// An empty tree is not trustworthy evidence the element is gone, so `hidden` —
+// the only condition that resolves true on one — must not resolve off it when
+// the adapter flagged the read (`describeIos` returns an empty tree plus a hint /
+// should_restart instead of throwing), or when the selector matched on an earlier
+// poll and the tree has since gone blank mid-navigation.
 function isBlindRead(data: DescribeTreeData, everMatched: boolean): boolean {
   if (data.tree.children.length > 0) return false;
   return Boolean(data.hint || data.should_restart || everMatched);
 }
 
-// Fold an unreliable-read hint / restart prompt onto a timeout note so the agent
-// learns the real cause (degraded AX, native injection pending) rather than a
-// bare "no element matched".
+// Fold the read's hint / restart prompt into the timeout note so the agent sees
+// the real cause rather than a bare "no element matched".
 function appendDiagnostics(base: string, lastData: DescribeTreeData | null): string {
   if (!lastData) return base;
   const extras: string[] = [];
@@ -434,8 +398,8 @@ function timeoutNote(
   let base: string;
   switch (params.condition) {
     case "text": {
-      // Visible-first, mirroring evaluateCondition — the note must quote the
-      // same element the check read, or the two can contradict each other.
+      // Visible-first, mirroring evaluateCondition, so the note quotes the
+      // element the check read.
       const first = firstInReadingOrder(matches.filter(isVisible)) ?? firstInReadingOrder(matches);
       const wanted = params.textMatch === "equals" ? "equal" : "contain";
       if (!first) {
@@ -478,12 +442,10 @@ function timeoutNote(
   return appendDiagnostics(base, lastData);
 }
 
-// ── Tool ─────────────────────────────────────────────────────────────────
-
-// `await-ui-element` is a factory (like `describe`) because the iOS / Android
-// tree fetch resolves the AX / android-devtools services through the registry
-// rather than through the tool's own services() declaration. Only the Chromium
-// CDP session flows in as a normal service.
+// A factory (like `describe`) because the iOS / Android tree fetch resolves the
+// AX / android-devtools services through the registry rather than through the
+// tool's own services() declaration. Only the Chromium CDP session flows in as a
+// normal service.
 export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Params, WaitResult> {
   async function fetchTree(
     device: DeviceInfo,
@@ -565,15 +527,13 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       else if (device.platform === "android") await ensureDeps(androidRequires);
       else if (device.platform === "vega") await ensureDeps(vegaRequires);
 
-      // Resolve once, outside the poll loop — re-probing `xcrun` per fetch would
-      // blow the per-fetch budget for a fake UDID that never caches. Same for
-      // the Android TV probe: a serial that isn't listed is never cached, so
-      // leaving it inside `describeAndroid` would spawn `adb devices` per poll.
+      // Resolve once, outside the poll loop: an id that isn't listed is never
+      // cached, so probing per fetch would re-run `simctl list` / `adb devices`
+      // on every poll.
       const isTvOs = device.platform === "ios" && (await isTvOsSimulator(device.id));
       const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));
 
-      // Start the wait clock after setup so its fixed cost isn't charged against
-      // timeoutMs (the deadline should bound polling, not device resolution).
+      // Clock starts after setup so its fixed cost isn't charged to timeoutMs.
       const start = Date.now();
       const cancelled = (): WaitResult => ({
         success: false,
@@ -586,9 +546,8 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       const pollIntervalMs = params.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
       const selector = params.selector;
 
-      // For `hidden`: did the selector ever match across polls? Distinguishes
-      // "the element was there and disappeared" from "the selector never matched
-      // at all" — otherwise a typo'd selector is an instant false-positive.
+      // Whether the selector ever matched, so a `hidden` wait that resolves on
+      // the first poll can report it may have had nothing to wait for.
       let everMatched = false;
       // When the last read that could EVALUATE the condition landed. Still
       // undefined at the deadline means no read ever did.
@@ -602,8 +561,6 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
         onSample: (data, nowMs) => {
           const matches = findAll(data.tree, selector);
           if (matches.length > 0) everMatched = true;
-          // Compute `blind` after `everMatched` so an empty tree that follows an
-          // earlier match counts as a transient blank, not a confirmed read.
           const blind = isBlindRead(data, everMatched);
           if (!blind) lastTrustedReadAt = nowMs;
           if (!blind && evaluateMatches(params, matches)) {
@@ -622,10 +579,10 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       if (poll.aborted) return cancelled();
       if (poll.result) return poll.result;
 
-      // The final read attempt: trusted only if it settled and returned
-      // something the condition could be judged on. `lastError` alone cannot
-      // say — the loop leaves it unset for an attempt it abandoned at the
-      // deadline, so its absence does not mean the last read landed.
+      // The final attempt is trusted only if it settled and came back with a
+      // tree the condition could be judged on. `lastError` alone cannot say:
+      // the loop leaves it unset for an attempt it abandoned at the deadline,
+      // so that the note can still be built from an older tree.
       const finalRead: FinalRead = !poll.lastAttemptSettled
         ? "unsettled"
         : poll.lastError === undefined &&

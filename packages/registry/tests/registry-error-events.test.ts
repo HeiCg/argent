@@ -180,11 +180,6 @@ describe("Registry — failure signals", () => {
   });
 
   it("attributes a schema miss to the REGISTRY, not to the tool that never ran", async () => {
-    // The signal names WHO raised the failure, and this parse runs before
-    // `execute` is entered. The test beside it pins the other half: a signal
-    // the tool ATTACHED keeps `failure_area: "tool_server"`. Conflating the two
-    // leaves a dashboard unable to tell "the registry rejected the params" from
-    // "the tool did" on every non-HTTP dispatch path.
     const registry = new Registry();
     const execute = vi.fn();
     registry.registerTool({
