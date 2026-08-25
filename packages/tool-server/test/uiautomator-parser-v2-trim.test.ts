@@ -1,6 +1,6 @@
 // Inline-XML coverage for the v2 interactables-only trim. Each trim rule
 // has a dedicated case below — duplicate-wrapper collapse, password
-// redaction, WebView opacity, descendant aggregation, scroll-clip, system
+// redaction, WebView DOM passthrough, descendant aggregation, scroll-clip, system
 // chrome — so the suite stays runnable without an external dump fixture.
 import { describe, it, expect } from "vitest";
 import {
@@ -92,20 +92,145 @@ describe("parseUiAutomatorDump — v2 trim focused behaviour", () => {
     expect(flatten(tree).map((n) => n.label)).toContain("[password]");
   });
 
-  it("treats WebView as an opaque single leaf", () => {
+  it("keeps the WebView as a landmark and preserves its DOM subtree", () => {
     const xml = `<?xml version='1.0' encoding='UTF-8'?>
 <hierarchy>
   <node class="android.webkit.WebView" bounds="[0,0][100,100]" content-desc="checkout">
-    <node class="android.view.View" bounds="[10,10][50,50]" content-desc="leaked-from-dom"/>
+    <node class="android.view.View" bounds="[10,10][50,50]" content-desc="from-dom"/>
   </node>
 </hierarchy>`;
     const tree = parseUiAutomatorDump(xml, 100, 100);
     const webview = flatten(tree).find((n) => n.role === "WebView");
     expect(webview).toBeDefined();
-    expect(webview?.children).toHaveLength(0);
-    expect(webview?.label).toContain("[web-view]");
-    // The DOM-side content-desc must NOT bleed through as a sibling node.
-    expect(flatten(tree).some((n) => n.label === "leaked-from-dom")).toBe(false);
+    // The landmark keeps the page title verbatim — no "[web-view]" marker,
+    // which only ever meant "content deliberately withheld".
+    expect(webview?.label).toBe("checkout");
+    // Chromium publishes the DOM to the accessibility tree; it must survive.
+    expect(webview?.children).toHaveLength(1);
+    expect(flatten(tree).some((n) => n.label === "from-dom")).toBe(true);
+  });
+
+  it("keeps a zero-area WebView whose DOM children are still on screen", () => {
+    // Every other branch drops a node only when it is both invisible AND
+    // contributes nothing; the WebView branch used to drop on !visible alone,
+    // taking a live subtree down with it.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][0,0]">
+    <node class="android.widget.Button" bounds="[10,10][50,50]" text="Pay" clickable="true"/>
+  </node>
+</hierarchy>`;
+    const tree = parseUiAutomatorDump(xml, 100, 100);
+    expect(flatten(tree).some((n) => n.label === "Pay")).toBe(true);
+  });
+
+  it("drops a WebView that is off screen and has no surviving children", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[500,500][600,600]" content-desc="offscreen"/>
+</hierarchy>`;
+    const tree = parseUiAutomatorDump(xml, 100, 100);
+    expect(flatten(tree).some((n) => n.role === "WebView")).toBe(false);
+  });
+
+  it("redacts a password input inside a WebView", () => {
+    // Chromium sets password="true" on a web <input type=password>. The
+    // existing redaction must cover it, and the plaintext must not ride out on
+    // any node — including an ancestor that borrows descendant text.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.widget.FrameLayout" bounds="[0,0][100,100]" clickable="true">
+    <node class="android.webkit.WebView" bounds="[0,0][100,100]" content-desc="Login Page">
+      <node class="android.widget.EditText" bounds="[10,10][90,40]" resource-id="password" password="true" focusable="true" text="hunter2"/>
+    </node>
+  </node>
+</hierarchy>`;
+    const tree = parseUiAutomatorDump(xml, 100, 100);
+    const all = flatten(tree);
+    const field = all.find((n) => n.role === "TextField");
+    expect(field?.label).toBe("[password]");
+    expect(field?.password).toBe(true);
+    expect(field?.value).toBeUndefined();
+    // Nothing anywhere in the tree carries the secret — not as a label, not as
+    // a value borrowed onto the clickable ancestor via descendantText().
+    const strings = all.flatMap((n) => [n.label, n.value].filter((x): x is string => !!x));
+    expect(strings.join(" | ")).not.toContain("hunter2");
+  });
+
+  it("exposes an HTML id as the node identifier", () => {
+    // Chromium maps an HTML `id` onto `resource-id`, which is what makes a web
+    // control selector-addressable the same way a native one is.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][100,100]" content-desc="Login Page">
+    <node class="android.widget.EditText" bounds="[10,10][90,40]" resource-id="username" clickable="true" focusable="true"/>
+    <node class="android.widget.Button" bounds="[10,50][90,80]" resource-id="login" text="Login" clickable="true"/>
+  </node>
+</hierarchy>`;
+    const tree = parseUiAutomatorDump(xml, 100, 100);
+    const ids = flatten(tree).map((n) => n.identifier);
+    expect(ids).toContain("username");
+    expect(ids).toContain("login");
+  });
+
+  it("collapses the doubled WebView Chromium emits with 1-2px bounds drift", () => {
+    // The generic duplicate-wrapper collapse needs exact bounds equality AND
+    // both nodes clickable, so it never fires here.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,220][1080,2154]">
+    <node class="android.webkit.WebView" bounds="[0,220][1081,2156]" content-desc="The Internet">
+      <node class="android.widget.Button" bounds="[10,300][90,380]" text="Login" clickable="true"/>
+    </node>
+  </node>
+</hierarchy>`;
+    const tree = parseUiAutomatorDump(xml, 1080, 2400);
+    const webviews = flatten(tree).filter((n) => n.role === "WebView");
+    expect(webviews).toHaveLength(1);
+    // The surviving landmark keeps whichever of the two carried the page title.
+    expect(webviews[0]?.label).toBe("The Internet");
+    expect(webviews[0]?.children.some((c) => c.label === "Login")).toBe(true);
+  });
+
+  it("keeps the interaction flags either half of the doubled WebView carried", () => {
+    // Chrome marks the outer node scrollable; the in-app WebView marks the
+    // inner one. The merged landmark must not drop whichever side had them.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][200,400]" resource-id="host_web_view">
+    <node class="android.webkit.WebView" bounds="[0,0][201,402]" scrollable="true" clickable="true" content-desc="Docs">
+      <node class="android.widget.TextView" bounds="[10,10][190,40]" text="Chapter 1"/>
+    </node>
+  </node>
+</hierarchy>`;
+    const tree = parseUiAutomatorDump(xml, 200, 400);
+    const webview = flatten(tree).find((n) => n.role === "WebView");
+    expect(webview?.scrollable).toBe(true);
+    expect(webview?.clickable).toBe(true);
+    expect(webview?.identifier).toBe("host_web_view");
+  });
+
+  it("reads a bare web text container as StaticText, and only inside a WebView", () => {
+    // Chromium maps a generic web text run onto android.view.View, which
+    // deriveUiAutomatorRole reports as "View" — unmatchable by an
+    // `await-ui-element` role: StaticText. The remap must be contextual: the
+    // same class on a native (Compose) screen keeps its current role.
+    const xml = `<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy>
+  <node class="android.webkit.WebView" bounds="[0,0][200,200]" content-desc="Login Page">
+    <node class="android.view.View" bounds="[10,10][190,40]" text="Username"/>
+    <node class="android.view.View" bounds="[10,50][190,80]" text="Open docs" clickable="true"/>
+  </node>
+  <node class="android.view.View" bounds="[10,120][190,150]" text="Native label"/>
+</hierarchy>`;
+    const tree = parseUiAutomatorDump(xml, 200, 200);
+    const byLabel = new Map(flatten(tree).map((n) => [n.label, n.role]));
+    expect(byLabel.get("Username")).toBe("StaticText");
+    // A clickable web node is a control, not text — leave its role alone.
+    expect(byLabel.get("Open docs")).toBe("View");
+    // Same class outside the WebView is untouched (regression guard for the
+    // shared deriveUiAutomatorRole used by the flow selector tree).
+    expect(byLabel.get("Native label")).toBe("View");
   });
 
   it("aggregates descendant labels into a clickable container with no own label", () => {

@@ -56,7 +56,7 @@ describe("formatDescribeTree", () => {
             }),
             leaf({
               role: "WebView",
-              label: "[web-view] About",
+              label: "About",
               frame: { x: 0, y: 0.4, width: 1, height: 0.4 },
             }),
           ],
@@ -67,7 +67,7 @@ describe("formatDescribeTree", () => {
     expect(out).toContain("Mode: nested");
     expect(out).toContain("ScrollView");
     expect(out).toMatch(/Button\s+"Like".*\[clickable\]/);
-    expect(out).toContain("[web-view] About");
+    expect(out).toMatch(/WebView\s+"About"/);
     const lines = out.split("\n");
     const buttonLine = lines.find((l) => l.includes('"Like"'))!;
     const scrollLine = lines.find((l) => l.includes("ScrollView"))!;
