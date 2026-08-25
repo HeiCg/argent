@@ -26,8 +26,9 @@ describe("flow param errors over HTTP", () => {
   });
 
   it("returns 400 for a source-less flow-execute, with the guidance in the body", async () => {
-    // The schema's exactly-one rule answers this and `execute` is never
-    // entered, so it cannot stand in for the mapping the next test covers.
+    // A caller who spelled the name under a key zod strips lands here, so both
+    // halves of the body have to carry the parameter it actually wants: the
+    // prose an agent reads, and the raw issue JSON an older CLI parses.
     const registry = new Registry();
     registry.registerTool(createRunFlowTool(registry) as never);
     const { app } = createHttpApp(registry);
@@ -37,27 +38,9 @@ describe("flow param errors over HTTP", () => {
       .send({ project_root: "/tmp/does-not-matter", prerequisiteAcknowledged: true });
 
     expect(res.status).toBe(400);
+    expect(res.body.message).toContain("needs the flow's name in `name`");
+    expect(res.body.message).toContain(".argent/flows/<name>.yaml");
     expect(res.body.error).toContain("needs the flow's name in `name`");
-    expect(res.body.error).toContain("`flow_name` is accepted as an alias");
-  });
-
-  it("returns 400 (not 500) when resolveFlowName itself rejects the call", async () => {
-    // An empty `name` counts as a named source to the schema, so zod passes and
-    // `execute` runs. Its InvalidToolInputError is what maps to 400; a plain
-    // Error would be 500.
-    const registry = new Registry();
-    registry.registerTool(createRunFlowTool(registry) as never);
-    const { app } = createHttpApp(registry);
-
-    for (const body of [{ name: "" }, { flow_name: "" }]) {
-      const res = await request(app)
-        .post("/tools/flow-execute")
-        .send({ ...body, project_root: "/tmp/does-not-matter", prerequisiteAcknowledged: true });
-
-      expect(res.status, JSON.stringify(body)).toBe(400);
-      expect(res.body.error).toContain("needs the flow's name in `name`");
-      expect(res.body.error_kind).toBe("validation");
-    }
   });
 
   it("renders the 400 body as prose that names the caller's own keys, not raw Zod JSON", async () => {

@@ -859,11 +859,7 @@ async function rewriteSiblingFlowPath(
 ): Promise<void> {
   const flowPath = args.flow_path;
   // A call naming both sources — or neither — is flow-execute's schema to judge.
-  // `flow_name` is flow-execute's alias, so it counts as a name here too:
-  // reading `name` alone would let the rewrite delete flow_path and record a
-  // different flow than the caller named.
-  if (typeof flowPath !== "string" || args.name !== undefined || args.flow_name !== undefined)
-    return;
+  if (typeof flowPath !== "string" || args.name !== undefined) return;
 
   const invalid = (detail: string): FailureError =>
     new FailureError(
@@ -1013,12 +1009,8 @@ async function captureRunTarget(
   session: RecordingSession,
   args: Record<string, unknown>
 ): Promise<{ flow?: string; warning?: string }> {
-  // `flow-execute`'s `flow_name` alias, on `resolveFlowName`'s precedence. An
-  // alias-only call runs fine, so reading `args.name` alone would keep a raw
-  // step and print a false "no flow name".
-  const named = args.name || args.flow_name;
-  const name = typeof named === "string" ? named : undefined;
-  if (name === undefined || name === "") {
+  const name = typeof args.name === "string" ? args.name : undefined;
+  if (name === undefined) {
     return { warning: "flow-execute call had no flow name; kept the raw step" };
   }
   if (session.persist !== "host") {
