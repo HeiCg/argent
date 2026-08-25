@@ -1196,10 +1196,6 @@ describe("flow-add-step", () => {
   });
 
   it("names the flow_path the author wrote when the rewritten call is rejected", async () => {
-    // `rewriteSiblingFlowPath` does `delete args.flow_path; args.name = stem`,
-    // so the registry sees a `name` the author never typed. A real registry,
-    // because `platform: "iOS"` has to miss flow-execute's own lowercase enum,
-    // which also means `execute` is never entered and no device is needed.
     const registry = new Registry();
     registry.registerTool(createRunFlowTool(registry) as never);
     const tool = createFlowAddStepTool(registry);
@@ -1226,7 +1222,6 @@ describe("flow-add-step", () => {
     expect(authored).toContain("You sent: `flow_path`, `project_root`, `platform`.");
     expect(authored).not.toContain("`name`");
 
-    // Control: the reframe must not be satisfied by never printing `name`.
     const byName = await tool
       .execute(
         {},

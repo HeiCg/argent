@@ -1923,8 +1923,7 @@ function parseLaunch(raw: unknown): Launch {
 }
 
 // The directive key that names each step kind, used to reject a step carrying
-// zero, several, or misspelled ones. Exported so tests can hold flow-add-step's
-// directive guidance against the whole vocabulary.
+// zero, several, or misspelled ones.
 export const STEP_DIRECTIVE_KEYS: readonly string[] = [
   "echo",
   "launch",

@@ -359,7 +359,6 @@ describe("run-sequence", () => {
   });
 
   describe("a step whose args the sub-tool rejects", () => {
-    // A real registry, not the stub above: the rejection must come from the live schema check.
     const liveRegistry = () => {
       const registry = new Registry();
       const executed: string[] = [];
@@ -387,7 +386,6 @@ describe("run-sequence", () => {
     };
 
     it("names only the keys the AUTHOR wrote, not the injected udid", async () => {
-      // run-sequence injects `udid` into every step, so the author never typed it.
       const { registry } = liveRegistry();
       const tool = createRunSequenceTool(registry);
 
@@ -403,7 +401,6 @@ describe("run-sequence", () => {
     });
 
     it("STOPS the sequence, leaving the later steps un-run", async () => {
-      // Two steps: a single-step sequence cannot tell `break` from `continue`.
       const { registry, executed } = liveRegistry();
       const tool = createRunSequenceTool(registry);
 

@@ -26,8 +26,6 @@ afterEach(async () => {
 
 describe("flow-execute parameter handling", () => {
   it("names an invalid enum value by its parameter, not as raw Zod JSON", async () => {
-    // flow-execute's schema is flat, so the missing and nested branches are
-    // covered in registry's describe-param-issues.test.ts instead.
     let message = "";
     try {
       await registry().invokeTool("flow-execute", {
@@ -43,9 +41,6 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("says which parameter it needs when no flow source is present", async () => {
-    // Zod strips a misspelled key, so a caller who wrote `flowName` arrives
-    // here indistinguishable from one who named nothing: the exactly-one-source
-    // rule has to spell out the parameter and where it resolves.
     await expect(
       registry().invokeTool("flow-execute", {
         project_root: tmpDir,
@@ -55,7 +50,6 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("classifies a source-less call as a client-input VALIDATION error, not an internal fault", async () => {
-    // The validation signal is what maps this to a 400 at the HTTP boundary.
     let caught: unknown;
     try {
       await registry().invokeTool("flow-execute", {
@@ -84,17 +78,12 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("never renders 'undefined' in the interaction line for a name-less call", () => {
-    // `startedMsg` fires inside `invokeTool` before the schema rejects the
-    // call, so it is emitted for a source-less call too.
     const tool = createRunFlowTool(new Registry());
     const nameless = tool.interaction!.startedMsg!({ params: { project_root: "/x" } as never });
     expect(nameless).not.toContain("undefined");
   });
 
   it("names only the keys the flow AUTHOR wrote, not the bound device key", async () => {
-    // `bindDeviceArgs` re-injects the resolved device key, so `udid` is in the
-    // dispatched args though the recorder strips it from the YAML. It must not
-    // be listed beside the misspelling.
     const dir = path.join(tmpDir, ".argent", "flows");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
@@ -103,7 +92,6 @@ describe("flow-execute parameter handling", () => {
       "utf8"
     );
 
-    // A real Registry: a stub `invokeTool` runs no schema check at all.
     const r = new Registry();
     r.registerTool(createRunFlowTool(r) as never);
     r.registerTool({
@@ -129,11 +117,6 @@ describe("flow-execute parameter handling", () => {
   });
 
   it("leaves a tool's OWN input rejection alone when the dispatched args parsed fine", async () => {
-    // `describeNestedParamError` gates on `TOOL_INPUT_INVALID`, which
-    // `InvalidToolInputError` defaults to, so a tool that rejects its own
-    // arguments inside `execute` passes that gate with args zod accepted. Its
-    // own message is already right, and re-rendering a schema failure that
-    // never happened would replace it with one about nothing.
     const dir = path.join(tmpDir, ".argent", "flows");
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(
@@ -195,17 +178,12 @@ describe("flow-read-prerequisite parameter handling", () => {
   });
 
   it("names the parameter it needs when no flow source is present", async () => {
-    // Callers read the prerequisite before flow-execute, so one who named the
-    // flow under a key zod stripped meets this tool first.
     await expect(
       prereqRegistry().invokeTool("flow-read-prerequisite", { project_root: tmpDir })
     ).rejects.toThrow(/needs the flow's name in `name`.*\.argent\/flows\/<name>\.yaml/s);
   });
 
   it("anchors the exactly-one-source rule at the ROOT, not on flow_path", async () => {
-    // The rule spans the source fields. Anchored on `flow_path` it renders as
-    // "`flow_path`: …" to an agent and as `--flow_path` to `argent run`, both
-    // naming a field the caller may have got right.
     for (const tool of [createRunFlowTool(new Registry()), flowReadPrerequisiteTool]) {
       const parsed = tool.zodSchema!.safeParse({ project_root: tmpDir });
       expect(parsed.success, tool.id).toBe(false);
@@ -218,7 +196,6 @@ describe("flow-read-prerequisite parameter handling", () => {
   });
 
   it("stays terse when the caller named BOTH sources", async () => {
-    // Two sources named is not a spelling problem, so the guidance is noise.
     let message = "";
     try {
       await prereqRegistry().invokeTool("flow-read-prerequisite", {

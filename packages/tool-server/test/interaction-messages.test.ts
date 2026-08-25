@@ -243,7 +243,6 @@ describe("tool interaction messages", () => {
   });
 
   it("does not announce a recorded step on the paths that record nothing", () => {
-    // The guidance paths (a nested recorder tool, a flow directive) succeed and record nothing.
     const completedMsg =
       definitionsById(createRegistry()).get("flow-add-step")!.interaction!.completedMsg!;
     const params = { name: "checkout", project_root: "/tmp/proj", command: "echo" };
@@ -260,8 +259,6 @@ describe("tool interaction messages", () => {
   });
 
   it("joins the record-nothing RESULT to the line the registry actually logs", async () => {
-    // The case above builds the result by hand, so `recorded: ""` in `recordNothing` would
-    // flip this line with the suite green. Drive a real recording instead.
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "interaction-msg-"));
     try {
       await flowStartRecordingTool.execute(
@@ -274,7 +271,6 @@ describe("tool interaction messages", () => {
       const completions: string[] = [];
       registry.events.on("toolCompleted", (_id, _callId, _ms, msg) => completions.push(msg));
 
-      // `echo` is a flow directive, not a tool, so flow-add-step records nothing.
       const result = await registry.invokeTool<{ recorded?: string }>("flow-add-step", {
         name: "checkout",
         project_root: tmpDir,

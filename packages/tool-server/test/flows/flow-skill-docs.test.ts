@@ -162,30 +162,19 @@ describe("create-flow idle docs", () => {
   });
 });
 
-/**
- * The two surfaces that enumerate the directive answers instead of citing them:
- * flow-add-step's `command` parameter description and the tool's own
- * `description`. Both reach the agent at the moment of the call, which is why
- * the create-flow reference cites the recorder contract rather than repeating
- * this list — a third copy is a third thing to keep in step.
- */
 describe("create-flow directive-answer docs", () => {
   const answered = STEP_DIRECTIVE_KEYS.filter((key) => directiveCommandHint(key) !== undefined);
-  // flow-record-cross-tree.test.ts pins this phrase with the per-directive
-  // reason that follows it.
   const withoutRecordingTool = answered.filter((key) =>
     directiveCommandHint(key)!.includes("records one")
   );
   const withRecordingTool = answered.filter((key) => !withoutRecordingTool.includes(key));
 
-  /** The sentence carrying `marker`, so one clause cannot satisfy the other. */
   function sentenceWith(paragraph: string, marker: string): string {
     const hit = paragraph.split(". ").find((s) => s.includes(marker));
     expect(hit, `no sentence mentions "${marker}"`).toBeDefined();
     return hit!;
   }
 
-  /** The `command` parameter's own description, as an agent receives it. */
   function commandParamDescription(): string {
     const schema = zodObjectToJsonSchema(createFlowAddStepTool({} as Registry).zodSchema!) as {
       properties: Record<string, { description?: string }>;
@@ -196,7 +185,6 @@ describe("create-flow directive-answer docs", () => {
   }
 
   it("names every directive it answers, so a new one cannot go unmentioned", () => {
-    // An empty bucket would agree with every list.
     expect(answered.length).toBeGreaterThan(0);
     const clause = sentenceWith(commandParamDescription(), "is answered with guidance");
     for (const key of answered) expect(clause, key).toContain(`"${key}"`);
@@ -204,15 +192,12 @@ describe("create-flow directive-answer docs", () => {
 
   it("names each directive that has no recording tool, on both surfaces", () => {
     expect(withoutRecordingTool.length).toBeGreaterThan(0);
-    // An absent `description` would read as a surface that lists nothing.
     const { description } = createFlowAddStepTool({} as Registry);
     expect(description, "flow-add-step no longer declares a description").toBeDefined();
     for (const key of withoutRecordingTool) {
       expect(sentenceWith(description!, "have no recording tool"), key).toContain(`\`${key}\``);
       expect(commandParamDescription(), key).toContain(`"${key}"`);
     }
-    // The bucket that DOES have a recording tool must not be swept into the
-    // same clause, or the answer an author reads sends them nowhere.
     for (const key of withRecordingTool) {
       expect(sentenceWith(description!, "have no recording tool"), key).not.toContain(`\`${key}\``);
     }

@@ -52,15 +52,9 @@ export function findMissingRequired(
 }
 
 /**
- * The server's schema-validation issue list, or null when this failure did not carry one.
- *
  * Two channels, because the wire grew one: a tool-server now sends the issue list in `issues`,
  * where before the list WAS the message. Reading the structured field first and falling back to
  * parsing the message covers a new client against an old server.
- *
- * The other direction is covered on the server, which keeps the raw list in `error` for a CLI
- * released before `issues` — `argent link` can point one at a newer tool-server, and neither side
- * announces a version.
  */
 function serverIssueList(err: unknown): ValidationIssue[] | null {
   const carried = (err as { issues?: unknown } | null)?.issues;

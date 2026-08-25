@@ -139,8 +139,6 @@ const zodSchema = z
     if ((params.name === undefined) === (params.flow_path === undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        // A call with NO source may have named the flow under a key zod
-        // stripped, so that one gets the parameter it needs spelled out.
         message:
           params.name !== undefined
             ? "Pass exactly one flow source: name or flow_path."
@@ -2427,8 +2425,6 @@ async function execLeafStep(
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
-        // Re-render a schema miss from the step's RECORDED args: `bindDeviceArgs`
-        // injects the resolved device key, which the flow author never wrote.
         const reframed = describeNestedParamError(registry, err, step.name, args, step.args ?? {});
         return { ...base, status: "error", tool: step.name, reason: reframed ?? errMsg(err) };
       }

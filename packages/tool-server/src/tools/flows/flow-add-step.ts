@@ -642,10 +642,6 @@ async function captureTapSelector(
   }
 }
 
-/**
- * Step count for a response that records nothing. Host mode re-reads the file,
- * so a mid-recording hand edit is counted.
- */
 async function activeFlowState(
   session: RecordingSession
 ): Promise<{ stepCount: number; note?: string }> {
@@ -664,10 +660,6 @@ async function activeFlowState(
   return { stepCount: session.flow.steps.length };
 }
 
-/**
- * The reply for a path that answers with guidance and runs nothing. It succeeds
- * rather than throws, and omits `recorded` because no line was appended.
- */
 async function recordNothing(
   session: RecordingSession,
   guidance: string
@@ -686,18 +678,9 @@ async function recordNothing(
   };
 }
 
-/**
- * The tool that records a flow directive. An author reaching for the directive
- * name gets the registry's bare "Tool not found" without this.
- */
 interface DirectiveHint {
   tool: string;
-  /**
-   * Whether the recorder converts that call into a directive step. The rest are
-   * kept as raw `tool:` steps for the polish pass.
-   */
   rewritten: boolean;
-  /** Arg-shape condition on a conditional rewrite. Omitted when there is none. */
   rewriteCondition?: string;
 }
 
@@ -723,15 +706,8 @@ const DIRECTIVE_COMMAND_HINTS: Record<string, DirectiveHint> = {
   await: { tool: AWAIT_UI_ELEMENT_TOOL_ID, rewritten: false },
   assert: { tool: AWAIT_UI_ELEMENT_TOOL_ID, rewritten: false },
   pinch: { tool: "gesture-pinch", rewritten: false },
-  // The rest need an answer this table cannot express: `directiveCommandHint`
-  // below answers them, or {@link UNHINTED_DIRECTIVE_KEYS} lists them.
 };
 
-/**
- * Recorder tools refused as `command`. Each mutates the recording, and the call
- * would also append a `tool: <recorder>` step that re-runs it at replay, with no
- * recording open. The damage differs per entry, so each carries its own text.
- */
 const NESTED_RECORDER_TOOLS: Record<string, string> = {
   "flow-add-echo":
     "`flow-add-echo` records a step itself, so it must be called DIRECTLY, not through " +
@@ -748,9 +724,8 @@ const NESTED_RECORDER_TOOLS: Record<string, string> = {
 };
 
 /**
- * Did the registry have no tool named `command`? Keyed on the error's identity
- * and its `toolId`, so a tool that ran and reported its own "not found" is not
- * read as the command being absent.
+ * Keyed on the error's identity and its `toolId`, so a tool that ran and
+ * reported its own "not found" is not read as the command being absent.
  */
 function isToolNotFound(err: unknown, command: string): boolean {
   return err instanceof ToolNotFoundError && err.toolId === command;
@@ -824,9 +799,7 @@ export function directiveCommandHint(command: string): string | undefined {
     `"${command}" is a flow directive, not a tool. Record it by calling \`${hint.tool}\` ` +
     `through flow-add-step` +
     (hint.rewritten
-      ? // "Where the call is recorded at all" scopes the `delayMs` clause: `run`
-        // refuses a non-sibling `flow_path` before the invoke, whatever it says.
-        ` — the recorder rewrites it into the \`${command}:\` step ${hint.rewriteCondition ?? "for you"}. ` +
+      ? ` — the recorder rewrites it into the \`${command}:\` step ${hint.rewriteCondition ?? "for you"}. ` +
         `Where the call is recorded at all, a \`delayMs\` on it opts out of the rewrite: the step is then ` +
         `kept in its raw \`tool: ${hint.tool}\` form (a replay delay has no directive form), so leave ` +
         `\`delayMs\` off if you want the \`${command}:\` step.`
@@ -1129,10 +1102,6 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
     message: string;
     toolResult: unknown;
     stepCount: number;
-    /**
-     * The flow line just appended. Absent on the two paths that succeed and
-     * record nothing, which is also how the completion message tells them apart.
-     */
     recorded?: string;
     savedTo: FlowSavedTo;
   }
@@ -1143,8 +1112,6 @@ export function createFlowAddStepTool(registry: Registry): ToolDefinition<
       // Name the flow: recordings are concurrent, so several of these lines can
       // interleave in one log and "the recorded flow" would not say which.
       startedMsg: ({ params }) => `Adding ${params.command} step to flow ${params.name}`,
-      // A guidance path succeeds and records nothing, so an unconditional
-      // "Added …" line would contradict its own result body.
       completedMsg: ({ params, result }) =>
         result.recorded === undefined
           ? `Recorded no ${params.command} step in flow ${params.name}`
@@ -1220,15 +1187,11 @@ If a step was recorded by mistake, remove it from the .yaml after \`flow-finish-
       try {
         toolResult = await invokeSubTool(registry, ctx, params.command, args);
       } catch (err) {
-        // Only a genuine not-found; a tool that ran and failed reports its own error.
         const hint = isToolNotFound(err, params.command)
           ? directiveCommandHint(params.command)
           : undefined;
         if (hint) return recordNothing(session, hint);
 
-        // `rewriteSiblingFlowPath` swaps a sibling `flow_path` for the
-        // equivalent `name`, and the registry can only describe what it was
-        // handed, so re-render against the keys the author sent.
         const reframed = describeNestedParamError(
           registry,
           err,

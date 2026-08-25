@@ -34,8 +34,6 @@ const zodSchema = z
     if ((params.name === undefined) === (params.flow_path === undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        // Same split as flow-execute: a call with NO source may have named the
-        // flow under a key zod stripped, so that one gets the parameter spelled out.
         message:
           params.name !== undefined
             ? "Pass exactly one flow source: name or flow_path."
