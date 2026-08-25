@@ -7,6 +7,7 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { FAILURE_CODES, FailureError, withFailureSignal } from "@argent/registry";
+import { withKeyedLock } from "../keyed-lock";
 import {
   pidIsAlive,
   pollPidsUntilGone,
@@ -299,7 +300,7 @@ export async function rebuildRunnerArtifactForDevice(
  * In-process build serialization, keyed by artifact cache key: the registry
  * dedups per-URN (per-device) only, so two device factories in one server
  * would otherwise race `build-for-testing` into the same derived dir, the
- * origin of torn artifacts. Same promise-chain pattern as withFlowFileLock
+ * origin of torn artifacts. Same shared mutex as withFlowFileLock
  * (flow-utils.ts). Deliberately NO cross-process file lock: one tool-server
  * per Mac is the deployment, the storage sweep already tolerates
  * cross-process races best-effort, and the blueprint's cache self-heal turns
@@ -309,16 +310,7 @@ export async function rebuildRunnerArtifactForDevice(
 const runnerBuildLocks = new Map<string, Promise<unknown>>();
 
 async function withRunnerBuildLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const previous = runnerBuildLocks.get(key) ?? Promise.resolve();
-  // `previous` is always an already-swallowed promise, so a failed holder can
-  // never wedge or reject the chain.
-  const run = previous.then(() => fn());
-  const held = run.catch(() => {});
-  runnerBuildLocks.set(key, held);
-  void held.then(() => {
-    if (runnerBuildLocks.get(key) === held) runnerBuildLocks.delete(key);
-  });
-  return run;
+  return withKeyedLock(runnerBuildLocks, key, fn);
 }
 
 /**

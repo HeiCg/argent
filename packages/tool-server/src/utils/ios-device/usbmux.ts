@@ -327,7 +327,13 @@ export function createDeadline(timeoutMs: number): Deadline {
   return { remainingMs: () => expiresAt - Date.now() };
 }
 
-function requireTimeRemaining(timeoutMs: number, action: string): void {
+/**
+ * Guard a stage against an already-spent budget: throws the retryable typed
+ * timeout naming `action` when nothing remains. Exported next to
+ * createDeadline because runner-http, the Deadline's other spender, guards
+ * its stages with the same check.
+ */
+export function requireTimeRemaining(timeoutMs: number, action: string): void {
   if (timeoutMs > 0) return;
   throw new IosDeviceTransportError("timeout", `No time remaining to ${action}`, {
     retryable: true,

@@ -1,4 +1,3 @@
-import * as net from "node:net";
 import {
   FAILURE_CODES,
   FailureError,
@@ -9,6 +8,7 @@ import {
   type ServiceEvents,
   type ServiceInstance,
 } from "@argent/registry";
+import { pickFreePort } from "../utils/free-port";
 import { ensureDeviceReady } from "../utils/ios-device/devicectl";
 import {
   ensureRunnerArtifact,
@@ -158,18 +158,6 @@ export function iosDeviceRunnerRef(device: DeviceInfo): {
   };
 }
 
-function getFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : null;
-      server.close(() => (port ? resolve(port) : reject(new Error("no port assigned"))));
-    });
-  });
-}
-
 /** Runner startup budget: testmanagerd install and launch, then the listener bind. */
 const RUNNER_READY_TIMEOUT_MS = 120_000;
 
@@ -203,7 +191,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
     const startRunner = async (
       artifact: RunnerArtifact
     ): Promise<{ launched: LaunchedRunner; client: RunnerClient; derivedDataPath: string }> => {
-      const port = await getFreePort();
+      const port = await pickFreePort();
       const xctestrunPath = await prepareXctestrunWithPort(artifact.xctestrunPath, port);
       const launched = await launchRunner({
         udid,

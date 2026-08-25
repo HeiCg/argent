@@ -1,6 +1,11 @@
+import { sleep } from "../timing";
 import { postRunnerCommand } from "./runner-http";
 import { createDeadline, openUsbmuxRunnerSocket, type Deadline } from "./usbmux";
 import { isIosDeviceTransportError } from "./usbmux-protocol";
+
+// Re-exported for runner-client's readiness poll, which imports its sleep from
+// this module; the implementation is the shared utils/timing one.
+export { sleep };
 
 /**
  * The usbmux send for physical iOS devices, wrapped in retry policy: mutating
@@ -91,9 +96,4 @@ function defaultSendViaUsbmux(
     body,
     deadline,
   });
-}
-
-/** Also serves runner-client's readiness poll, deliberately defined once. */
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

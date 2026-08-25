@@ -1,12 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as path from "node:path";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import { ensureCdpReachable } from "../../blueprints/chromium-cdp";
 import { chromiumIdFromPort } from "../../utils/device-info";
 import { trackChromiumPort } from "../../utils/chromium-discovery";
 import { electronGuiChildEnv } from "../../utils/electron-env";
+import { pickFreePort } from "../../utils/free-port";
 import { scheduleGroupSigkill, signalGroup } from "../../utils/process-kill";
 
 // An Electron app boots as a Chromium/CDP runtime, so the device id, platform
@@ -38,23 +38,6 @@ const DEFAULT_READY_TIMEOUT_MS = 30_000;
  * already-dead instance. Every successful boot pays this latency.
  */
 const BOOT_CONFIRM_WINDOW_MS = 300;
-
-async function pickFreePort(): Promise<number> {
-  return new Promise<number>((resolve, reject) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.on("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      if (addr && typeof addr === "object") {
-        const { port } = addr;
-        srv.close(() => resolve(port));
-      } else {
-        srv.close(() => reject(new Error("Could not allocate a free TCP port")));
-      }
-    });
-  });
-}
 
 /**
  * Resolve the Electron binary for `appPath`: a `.app` bundle yields its

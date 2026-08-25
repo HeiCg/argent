@@ -1,6 +1,6 @@
 import http from "node:http";
 import net from "node:net";
-import type { Deadline } from "./usbmux";
+import { requireTimeRemaining, type Deadline } from "./usbmux";
 import { IosDeviceTransportError } from "./usbmux-protocol";
 
 /**
@@ -42,7 +42,7 @@ interface PostRunnerCommandOptions {
 
 /** POST one runner command over a pre-connected socket; resolves with the parsed JSON body. */
 export async function postRunnerCommand(options: PostRunnerCommandOptions): Promise<unknown> {
-  requireTimeRemaining(options.deadline.remainingMs());
+  requireTimeRemaining(options.deadline.remainingMs(), "send runner command");
   const socket = await options.socketFactory();
   const agent = new http.Agent({ keepAlive: false });
   // @types/node exposes createConnection on Agent instances; returning the
@@ -60,7 +60,7 @@ export async function postRunnerCommand(options: PostRunnerCommandOptions): Prom
     // handshake that ate everything must fail here, not start a zero-ms HTTP
     // request.
     const httpTimeoutMs = options.deadline.remainingMs();
-    requireTimeRemaining(httpTimeoutMs);
+    requireTimeRemaining(httpTimeoutMs, "send runner command");
     const response = await requestOverAgent(agent, socket, payload, httpTimeoutMs);
     return parseRunnerResponseBody(response.statusCode, response.body);
   } finally {
@@ -157,11 +157,4 @@ function parseRunnerResponseBody(statusCode: number, body: Buffer): unknown {
       { retryable: false }
     );
   }
-}
-
-function requireTimeRemaining(timeoutMs: number): void {
-  if (timeoutMs > 0) return;
-  throw new IosDeviceTransportError("timeout", "No time remaining to send runner command", {
-    retryable: true,
-  });
 }
