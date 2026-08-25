@@ -116,6 +116,14 @@ async function xcodeVersionFingerprint(): Promise<string> {
 export interface RunnerArtifact {
   xctestrunPath: string;
   derivedDataPath: string;
+  /**
+   * True when this call reused an existing artifact instead of running the
+   * build. The blueprint's cache self-heal keys on this: only a CACHED
+   * artifact's prepare-time XctestrunFormatError means poisoning worth a
+   * wipe-and-rebuild; the same error from a fresh build is genuine format
+   * drift and retrying would loop a deterministic failure.
+   */
+  fromCache: boolean;
 }
 
 function cacheRoot(): string {
@@ -130,6 +138,14 @@ function logsRoot(): string {
  * Find the base (non-env-clone) device .xctestrun under a derived-data dir.
  * Env clones are named `*.env.*.xctestrun` and must never be picked as the
  * base — they carry a previous session's port.
+ *
+ * Existence is trusted as validity: a hit here is what makes
+ * `ensureRunnerArtifact` skip the build, so a torn file (an interrupted
+ * build) keeps hitting until something intervenes. That is deliberate — a
+ * content probe would re-parse the plist on every start — because the
+ * poisoning IS caught one step later, when `prepareXctestrunWithPort` throws
+ * `XctestrunFormatError`, and the blueprint self-heals a cached artifact by
+ * wiping this derived dir and forcing one rebuild.
  */
 function findBaseXctestrun(derivedDataPath: string): string | null {
   const productsDir = path.join(derivedDataPath, "Build", "Products");
@@ -259,13 +275,46 @@ export async function rebuildRunnerArtifactForDevice(
 }
 
 /**
+ * In-process build serialization, keyed by artifact cache key — the registry
+ * dedups per-URN (per-device) only, so two device factories in one server
+ * would otherwise race `build-for-testing` into the same derived dir, the
+ * origin of torn artifacts. Same promise-chain pattern as withFlowFileLock
+ * (flow-utils.ts). Deliberately NO cross-process file lock: one tool-server
+ * per Mac is the deployment, the storage sweep already tolerates
+ * cross-process races best-effort, and the blueprint's cache self-heal turns
+ * a residual torn artifact into a one-rebuild recovery, not a permanent
+ * failure.
+ */
+const runnerBuildLocks = new Map<string, Promise<unknown>>();
+
+async function withRunnerBuildLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = runnerBuildLocks.get(key) ?? Promise.resolve();
+  // `previous` is always an already-swallowed promise, so a failed holder can
+  // never wedge or reject the chain.
+  const run = previous.then(() => fn());
+  const held = run.catch(() => {});
+  runnerBuildLocks.set(key, held);
+  void held.then(() => {
+    if (runnerBuildLocks.get(key) === held) runnerBuildLocks.delete(key);
+  });
+  return run;
+}
+
+/**
  * Ensure a built device runner artifact exists for the current sources +
  * toolchain + signing config, building it if needed. First build takes
- * minutes; subsequent calls are a cache hit.
+ * minutes; subsequent calls are a cache hit. `force` skips the cache check
+ * and always rebuilds — the profile-missing-device retry and the blueprint's
+ * poisoned-cache self-heal both use it.
  */
 export async function ensureRunnerArtifact(
   config: RunnerSigningConfig = resolveRunnerSigningConfig(),
-  opts: { destinationUdid?: string; force?: boolean } = {}
+  opts: {
+    destinationUdid?: string;
+    force?: boolean;
+    /** Test seam over the xcodebuild arm; defaults to the real build. */
+    build?: typeof buildRunnerArtifact;
+  } = {}
 ): Promise<RunnerArtifact> {
   const projectPath = resolveRunnerProjectPath();
   const [sourcesHash, xcodeVersion] = await Promise.all([
@@ -275,12 +324,19 @@ export async function ensureRunnerArtifact(
   const staticArgs = runnerBuildStaticArgs(projectPath, config);
   const cacheKey = computeRunnerCacheKey(sourcesHash, xcodeVersion, staticArgs);
   const derivedDataPath = path.join(cacheRoot(), `cache-${cacheKey}`);
+  const build = opts.build ?? buildRunnerArtifact;
 
-  const cached = findBaseXctestrun(derivedDataPath);
-  const artifact =
-    cached && !opts.force
-      ? { xctestrunPath: cached, derivedDataPath }
-      : await buildRunnerArtifact(derivedDataPath, staticArgs, opts.destinationUdid);
+  // The cache check sits INSIDE the per-key lock: a hit while a build for the
+  // SAME key is in flight would hand out the half-written file that build is
+  // producing, so it must wait that build out — after which the check finds
+  // the finished artifact and concurrent cold-cache callers pay exactly one
+  // build between them. With no build in flight the chain is empty and a hit
+  // costs one microtask; other keys have their own chains and never queue.
+  const artifact = await withRunnerBuildLock(cacheKey, async (): Promise<RunnerArtifact> => {
+    const cached = opts.force ? null : findBaseXctestrun(derivedDataPath);
+    if (cached) return { xctestrunPath: cached, derivedDataPath, fromCache: true };
+    return build(derivedDataPath, staticArgs, opts.destinationUdid);
+  });
 
   // Success-only, fire-and-forget storage sweep. Only after the current
   // artifact is known good may its superseded siblings go: on a FAILED build
@@ -334,7 +390,7 @@ async function buildRunnerArtifact(
       `xcodebuild reported success but no iphoneos .xctestrun was found under ${derivedDataPath}/Build/Products.`
     );
   }
-  return { xctestrunPath: built, derivedDataPath };
+  return { xctestrunPath: built, derivedDataPath, fromCache: false };
 }
 
 /** How many runner-*.log launch logs a sweep keeps (newest first). */
@@ -447,15 +503,20 @@ function listNamesSync(dir: string): string[] {
 }
 
 /**
- * Thrown when an .xctestrun contains no test target this module recognizes —
- * Apple format drift. Typed so the failure surfaces at prepare time with the
- * true cause; a portless clone would instead launch a runner that never binds
- * its port, burn the whole ready timeout, and blame signing or a locked
- * screen.
+ * Thrown when an .xctestrun cannot be prepared for launch: it does not parse
+ * as a plist (a truncated file, the signature of a build interrupted
+ * mid-write), or it parses but contains no test target this module
+ * recognizes (Apple format drift). Typed so the failure surfaces at prepare
+ * time with the true cause; a portless clone would instead launch a runner
+ * that never binds its port, burn the whole ready timeout, and blame signing
+ * or a locked screen. One class for both shapes on purpose — the blueprint's
+ * cache self-heal keys on it: a first occurrence on a CACHED artifact means
+ * cache poisoning (wipe the derived dir, force one rebuild), while on a
+ * freshly built artifact it propagates as genuine drift.
  */
 export class XctestrunFormatError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "XctestrunFormatError";
   }
 }
@@ -465,16 +526,31 @@ export class XctestrunFormatError extends Error {
  * target's env dictionaries (all four maps — xctestrun format v2 nests targets
  * under TestConfigurations). The Swift runner reads the port from its
  * environment and binds it on the device's loopback, where usbmux's
- * device-side connect terminates. Throws `XctestrunFormatError` when no target is found.
+ * device-side connect terminates. Throws `XctestrunFormatError` when the
+ * plist cannot be parsed or no target is found.
  */
 export async function prepareXctestrunWithPort(
   xctestrunPath: string,
   port: number
 ): Promise<string> {
-  const { stdout } = await execFileAsync("plutil", ["-convert", "json", "-o", "-", xctestrunPath], {
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  const plist = JSON.parse(stdout) as Record<string, unknown>;
+  let plist: Record<string, unknown>;
+  try {
+    const { stdout } = await execFileAsync(
+      "plutil",
+      ["-convert", "json", "-o", "-", xctestrunPath],
+      { maxBuffer: 32 * 1024 * 1024 }
+    );
+    plist = JSON.parse(stdout) as Record<string, unknown>;
+  } catch (error) {
+    // A raw plutil failure here would read as an infrastructure error; typed,
+    // the blueprint recognizes a torn cached artifact and self-heals it.
+    throw new XctestrunFormatError(
+      `xctestrun at ${xctestrunPath} could not be parsed as a plist: ` +
+        `${(error as Error).message}. The file is truncated or not a plist at all; ` +
+        `a cached artifact torn by an interrupted build is the common cause.`,
+      { cause: error }
+    );
+  }
 
   const envKeys = [
     "EnvironmentVariables",

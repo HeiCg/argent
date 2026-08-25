@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   computeRunnerCacheKey,
+  ensureRunnerArtifact,
   killStaleRunnersForDevice,
   launchRunner,
   MAX_RUNNER_LOG_FILES,
@@ -16,6 +17,7 @@ import {
   sweepRunnerStorage,
   waitForPidsToExit,
   XctestrunFormatError,
+  type RunnerArtifact,
   type RunnerSigningConfig,
 } from "../src/utils/ios-device/runner-build";
 
@@ -134,6 +136,26 @@ describe("prepareXctestrunWithPort", () => {
     const leftovers = (await fsp.readdir(tmpRoot)).filter((n) => n.startsWith("drifted.env."));
     expect(leftovers).toEqual([]);
   });
+
+  it("wraps an unparseable (truncated) xctestrun in the same typed format error", async () => {
+    const truncatedPath = path.join(tmpRoot, "truncated.xctestrun");
+    // The head of a real plist, torn mid-write: plutil cannot parse it. Before
+    // the wrap this surfaced as a raw execFileAsync error the blueprint's
+    // self-heal could not key on.
+    await fsp.writeFile(
+      truncatedPath,
+      '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n<key>TestConfig'
+    );
+
+    const error = await prepareXctestrunWithPort(truncatedPath, 50505).catch(
+      (caught: unknown) => caught
+    );
+
+    expect(error).toBeInstanceOf(XctestrunFormatError);
+    expect((error as Error).message).toContain("could not be parsed as a plist");
+    expect((error as Error).message).toContain(truncatedPath);
+    expect((error as Error).cause).toBeDefined(); // the raw plutil failure rides along
+  });
 });
 
 const PROJECT = "/opt/argent/ios-device-runner/ArgentRunner/ArgentRunner.xcodeproj";
@@ -187,6 +209,153 @@ describe("computeRunnerCacheKey", () => {
     const args = runnerBuildStaticArgs(PROJECT, CONFIG);
     expect(args).not.toContain("-destination");
     expect(args).not.toContain("-derivedDataPath");
+  });
+});
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+/** Yield the event loop until `cond` holds (bounded, then assert it). */
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 1_000 && !cond(); i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  expect(cond()).toBe(true);
+}
+
+describe("ensureRunnerArtifact", () => {
+  let fakeProject: string;
+  let emptyBin: string;
+
+  beforeAll(async () => {
+    // resolveRunnerProjectPath returns the override verbatim; only its parent
+    // dir is walked by the source fingerprint, so an empty one suffices.
+    fakeProject = path.join(tmpRoot, "fake-runner-proj", "ArgentRunner.xcodeproj");
+    await fsp.mkdir(path.dirname(fakeProject), { recursive: true });
+    // An empty PATH dir makes the toolchain fingerprint deterministically
+    // fall back to "unknown-xcode" instead of shelling out to real Xcode.
+    emptyBin = path.join(tmpRoot, "ensure-empty-bin");
+    await fsp.mkdir(emptyBin, { recursive: true });
+  });
+
+  /**
+   * Run `fn` with HOME moved under a per-test dir (so cacheRoot() and the
+   * fire-and-forget sweep stay inside the fixture tree), PATH emptied, and
+   * the project override pointed at the fake — the env-swap fixture pattern
+   * launchRunner's tests established.
+   */
+  async function withEnsureEnv<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const saved = {
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      PROJECT: process.env.ARGENT_IOS_RUNNER_PROJECT,
+    };
+    process.env.HOME = path.join(tmpRoot, `ensure-home-${name}`);
+    process.env.PATH = emptyBin;
+    process.env.ARGENT_IOS_RUNNER_PROJECT = fakeProject;
+    try {
+      return await fn();
+    } finally {
+      process.env.HOME = saved.HOME;
+      process.env.PATH = saved.PATH;
+      if (saved.PROJECT === undefined) delete process.env.ARGENT_IOS_RUNNER_PROJECT;
+      else process.env.ARGENT_IOS_RUNNER_PROJECT = saved.PROJECT;
+    }
+  }
+
+  /**
+   * A build seam that mints the base xctestrun exactly where the real build
+   * arm would, counting invocations; `gate` holds the build mid-flight (after
+   * the count, before any file exists) so a test can pin what happens while a
+   * build is provably in progress.
+   */
+  function fakeBuild(counter: { builds: number }, gate?: Promise<void>) {
+    return async (derivedDataPath: string): Promise<RunnerArtifact> => {
+      counter.builds += 1;
+      if (gate) await gate;
+      const productsDir = path.join(derivedDataPath, "Build", "Products");
+      await fsp.mkdir(productsDir, { recursive: true });
+      const xctestrunPath = path.join(productsDir, "ArgentRunner_iphoneos18.0-arm64.xctestrun");
+      await fsp.writeFile(xctestrunPath, "plist");
+      return { xctestrunPath, derivedDataPath, fromCache: false };
+    };
+  }
+
+  it("reports fromCache honestly and rebuilds the same key only when forced", async () => {
+    await withEnsureEnv("hit-and-force", async () => {
+      const counter = { builds: 0 };
+      const build = fakeBuild(counter);
+
+      const first = await ensureRunnerArtifact(CONFIG, { build });
+      expect(first.fromCache).toBe(false);
+
+      const hit = await ensureRunnerArtifact(CONFIG, { build });
+      expect(hit.fromCache).toBe(true);
+      expect(hit.xctestrunPath).toBe(first.xctestrunPath);
+      expect(counter.builds).toBe(1);
+
+      const forced = await ensureRunnerArtifact(CONFIG, { build, force: true });
+      expect(forced.fromCache).toBe(false);
+      expect(counter.builds).toBe(2);
+    });
+  });
+
+  it("serializes concurrent same-key ensures into exactly one build", async () => {
+    await withEnsureEnv("same-key", async () => {
+      const counter = { builds: 0 };
+      const gate = deferred();
+      const build = fakeBuild(counter, gate.promise);
+
+      const first = ensureRunnerArtifact(CONFIG, { build });
+      // The first call provably holds the key's lock mid-build before the
+      // second even starts, so the second MUST queue, not race.
+      await until(() => counter.builds === 1);
+      const second = ensureRunnerArtifact(CONFIG, { build });
+      gate.resolve();
+
+      const [a, b] = await Promise.all([first, second]);
+      expect(counter.builds).toBe(1); // the straggler waited, then hit the cache
+      expect(a.fromCache).toBe(false);
+      expect(b.fromCache).toBe(true);
+      expect(b.xctestrunPath).toBe(a.xctestrunPath);
+    });
+  });
+
+  it("does not queue a different key's ensure behind an in-flight build", async () => {
+    await withEnsureEnv("cross-key", async () => {
+      const slowCounter = { builds: 0 };
+      const slowGate = deferred();
+      const slow = ensureRunnerArtifact(CONFIG, {
+        build: fakeBuild(slowCounter, slowGate.promise),
+      });
+      let slowSettled = false;
+      void slow.then(
+        () => (slowSettled = true),
+        () => (slowSettled = true)
+      );
+      await until(() => slowCounter.builds === 1);
+
+      // A different bundle id changes the static args and thus the cache key;
+      // its ensure must complete while the first key's build still runs.
+      const otherConfig: RunnerSigningConfig = {
+        ...CONFIG,
+        appBundleId: "com.other.argent.runner",
+        testBundleId: "com.other.argent.runner.uitests",
+      };
+      const fastCounter = { builds: 0 };
+      const fast = await ensureRunnerArtifact(otherConfig, { build: fakeBuild(fastCounter) });
+      expect(fast.fromCache).toBe(false);
+      expect(fastCounter.builds).toBe(1);
+      expect(slowSettled).toBe(false); // the other key never waited on this one
+
+      slowGate.resolve();
+      expect((await slow).fromCache).toBe(false);
+    });
   });
 });
 

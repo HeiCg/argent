@@ -19,6 +19,7 @@ import {
   prepareXctestrunWithPort,
   rebuildRunnerArtifactForDevice,
   resolveRunnerSigningConfig,
+  XctestrunFormatError,
   type LaunchedRunner,
   type RunnerArtifact,
 } from "../utils/ios-device/runner-build";
@@ -268,15 +269,28 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
     };
 
     let started: Awaited<ReturnType<typeof startRunner>>;
+    const artifact = await ensureRunnerArtifact(signing);
     try {
-      started = await startRunner(await ensureRunnerArtifact(signing));
+      started = await startRunner(artifact);
     } catch (error) {
-      const logText = (error as { runnerLogText?: string }).runnerLogText ?? "";
-      if (!isProfileMissingDeviceFailure(logText)) throw error;
-      // A newly connected device is not in the (locally provisioned) profile.
-      // Rebuild against this concrete device so automatic signing regenerates
-      // the profile to include it, then retry once.
-      started = await startRunner(await rebuildRunnerArtifactForDevice(udid, signing));
+      if (error instanceof XctestrunFormatError && artifact.fromCache) {
+        // A CACHED artifact whose xctestrun cannot be prepared is a poisoned
+        // cache (torn by an interrupted build), not format drift — and since
+        // findBaseXctestrun keys hits on mere file existence, it would
+        // hard-fail every session until a human deleted the directory. Wipe
+        // it and rebuild once. Only the cached case heals: the same error
+        // from the FRESH artifact below is genuine drift and propagates
+        // loudly, so a deterministic failure never loops.
+        await fs.rm(artifact.derivedDataPath, { recursive: true, force: true });
+        started = await startRunner(await ensureRunnerArtifact(signing, { force: true }));
+      } else {
+        const logText = (error as { runnerLogText?: string }).runnerLogText ?? "";
+        if (!isProfileMissingDeviceFailure(logText)) throw error;
+        // A newly connected device is not in the (locally provisioned) profile.
+        // Rebuild against this concrete device so automatic signing regenerates
+        // the profile to include it, then retry once.
+        started = await startRunner(await rebuildRunnerArtifactForDevice(udid, signing));
+      }
     }
     const { launched, client, derivedDataPath } = started;
 

@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
+import * as fsp from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 import { iosDeviceRunnerBlueprint } from "../../src/blueprints/ios-device-runner";
@@ -10,38 +13,49 @@ import {
   RunnerCommandError,
 } from "../../src/utils/ios-device/runner-client";
 import {
+  ensureRunnerArtifact,
   isProfileMissingDeviceFailure,
   killRunnerProcess,
   launchRunner,
+  prepareXctestrunWithPort,
   rebuildRunnerArtifactForDevice,
+  XctestrunFormatError,
 } from "../../src/utils/ios-device/runner-build";
 import { readRunnerCrashSummary } from "../../src/utils/ios-device/runner-crash";
 
 // The factory's device I/O is stubbed at its module seams (devicectl probe,
 // xcodebuild build/launch, crash-summary read, runner client) so the tests
 // exercise only what the blueprint owns: death classification, the post-mortem
-// enrichment, and recoverable(). The runner client is stubbed per test; the
-// child process is a bare EventEmitter whose "exit" event simulates the
-// xcodebuild child dying.
+// enrichment, the poisoned-cache self-heal, and recoverable(). The runner
+// client is stubbed per test; the child process is a bare EventEmitter whose
+// "exit" event simulates the xcodebuild child dying.
 vi.mock("../../src/utils/ios-device/devicectl", () => ({
   ensureDeviceReady: vi.fn(async () => {}),
 }));
-vi.mock("../../src/utils/ios-device/runner-build", () => ({
-  ensureRunnerArtifact: vi.fn(async () => ({
-    xctestrunPath: "/tmp/argent-test/base.xctestrun",
-    derivedDataPath: "/tmp/argent-test/derived",
-  })),
-  isProfileMissingDeviceFailure: vi.fn(() => false),
-  killRunnerProcess: vi.fn(),
-  killStaleRunnersForDevice: vi.fn(async () => {}),
-  launchRunner: vi.fn(),
-  prepareXctestrunWithPort: vi.fn(async (xctestrunPath: string) => xctestrunPath),
-  rebuildRunnerArtifactForDevice: vi.fn(async () => ({
-    xctestrunPath: "/tmp/argent-test/rebuilt.xctestrun",
-    derivedDataPath: "/tmp/argent-test/rebuilt-derived",
-  })),
-  resolveRunnerSigningConfig: vi.fn(() => ({})),
-}));
+vi.mock("../../src/utils/ios-device/runner-build", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/utils/ios-device/runner-build")>();
+  return {
+    // The real class rides along so the factory's instanceof self-heal check
+    // sees the same identity the tests throw.
+    XctestrunFormatError: actual.XctestrunFormatError,
+    ensureRunnerArtifact: vi.fn(async () => ({
+      xctestrunPath: "/tmp/argent-test/base.xctestrun",
+      derivedDataPath: "/tmp/argent-test/derived",
+      fromCache: true,
+    })),
+    isProfileMissingDeviceFailure: vi.fn(() => false),
+    killRunnerProcess: vi.fn(),
+    killStaleRunnersForDevice: vi.fn(async () => {}),
+    launchRunner: vi.fn(),
+    prepareXctestrunWithPort: vi.fn(async (xctestrunPath: string) => xctestrunPath),
+    rebuildRunnerArtifactForDevice: vi.fn(async () => ({
+      xctestrunPath: "/tmp/argent-test/rebuilt.xctestrun",
+      derivedDataPath: "/tmp/argent-test/rebuilt-derived",
+      fromCache: false,
+    })),
+    resolveRunnerSigningConfig: vi.fn(() => ({})),
+  };
+});
 vi.mock("../../src/utils/ios-device/runner-crash", () => ({
   readRunnerCrashSummary: vi.fn(async () => null),
 }));
@@ -274,6 +288,85 @@ describe("ios-device-runner blueprint — launch child exits during the readines
 
     expect(terminated).toHaveLength(1);
     expect(unhandled).toEqual([]);
+  });
+});
+
+describe("ios-device-runner blueprint — poisoned cache self-heal", () => {
+  /** A real on-disk stand-in for the artifact's derived-data dir, so the wipe
+   * (or its absence) is asserted against the filesystem, not a mock. */
+  async function makeDerivedDir(): Promise<string> {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "argent-heal-derived-"));
+    await fsp.writeFile(path.join(dir, "poisoned.xctestrun"), "torn");
+    return dir;
+  }
+
+  function artifactIn(dir: string, fromCache: boolean) {
+    return {
+      xctestrunPath: path.join(dir, "poisoned.xctestrun"),
+      derivedDataPath: dir,
+      fromCache,
+    };
+  }
+
+  const FRESH_ARTIFACT = {
+    xctestrunPath: "/tmp/argent-test/healed.xctestrun",
+    derivedDataPath: "/tmp/argent-test/healed-derived",
+    fromCache: false,
+  };
+
+  it("wipes the derived dir of a poisoned CACHED artifact and succeeds via one forced rebuild", async () => {
+    const derived = await makeDerivedDir();
+    vi.mocked(ensureRunnerArtifact)
+      .mockResolvedValueOnce(artifactIn(derived, true))
+      .mockResolvedValueOnce(FRESH_ARTIFACT);
+    vi.mocked(prepareXctestrunWithPort).mockRejectedValueOnce(
+      new XctestrunFormatError("xctestrun format not recognized")
+    );
+    stubLaunch();
+
+    await callFactory();
+
+    // The poisoned cache dir is gone from disk, not merely marked.
+    await expect(fsp.access(derived)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(ensureRunnerArtifact).toHaveBeenCalledTimes(2);
+    expect(ensureRunnerArtifact).toHaveBeenNthCalledWith(2, {}, { force: true });
+    // The poisoned attempt died at prepare time; only the healed one launched.
+    expect(launchRunner).toHaveBeenCalledTimes(1);
+    expect(rebuildRunnerArtifactForDevice).not.toHaveBeenCalled();
+  });
+
+  it("propagates a second format error after the heal as genuine drift, never looping", async () => {
+    const derived = await makeDerivedDir();
+    vi.mocked(ensureRunnerArtifact)
+      .mockResolvedValueOnce(artifactIn(derived, true))
+      .mockResolvedValueOnce(FRESH_ARTIFACT);
+    const drift = new XctestrunFormatError("xctestrun format not recognized");
+    vi.mocked(prepareXctestrunWithPort)
+      .mockRejectedValueOnce(new XctestrunFormatError("poisoned cache"))
+      .mockRejectedValueOnce(drift);
+    stubLaunch();
+
+    expect(await rejectionOf(callFactory())).toBe(drift);
+    // Exactly one heal attempt: wipe, forced rebuild, then fail loudly.
+    expect(ensureRunnerArtifact).toHaveBeenCalledTimes(2);
+    expect(launchRunner).not.toHaveBeenCalled();
+  });
+
+  it("fails immediately on a FRESH artifact's format error: no wipe, no retry", async () => {
+    const derived = await makeDerivedDir();
+    try {
+      vi.mocked(ensureRunnerArtifact).mockResolvedValueOnce(artifactIn(derived, false));
+      const drift = new XctestrunFormatError("xctestrun format not recognized");
+      vi.mocked(prepareXctestrunWithPort).mockRejectedValueOnce(drift);
+      stubLaunch();
+
+      expect(await rejectionOf(callFactory())).toBe(drift);
+      expect(ensureRunnerArtifact).toHaveBeenCalledTimes(1);
+      // A fresh build's derived dir survives untouched for the postmortem.
+      await expect(fsp.access(derived)).resolves.toBeUndefined();
+    } finally {
+      await fsp.rm(derived, { recursive: true, force: true });
+    }
   });
 });
 
