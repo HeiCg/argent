@@ -19,7 +19,7 @@ import {
 // Re-exported for native-devtools-env.test.ts, which imports it from here.
 export { buildDyldInsertLibraries };
 
-export type NativeDevtoolsTransport = "unix" | "tcp";
+type NativeDevtoolsTransport = "unix" | "tcp";
 
 export const NATIVE_DEVTOOLS_NAMESPACE = "NativeDevtools";
 
