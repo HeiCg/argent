@@ -49,6 +49,12 @@ export interface RunnerResponseEnvelope {
   ok: boolean;
   data?: unknown;
   error?: RunnerResponseError;
+  /**
+   * The runner re-fronted a backgrounded target app before executing this
+   * command (PROTOCOL.md, Envelope). Encoded only when true — an
+   * already-foreground target's reply never carries the field.
+   */
+  reactivated?: boolean;
 }
 
 /**
@@ -233,11 +239,26 @@ function unwrapEnvelope(response: unknown): unknown {
       code: "INVALID_RUNNER_RESPONSE",
     });
   }
-  if (envelope.ok) return envelope.data;
+  if (envelope.ok) return withReactivationFlag(envelope);
   throw new RunnerCommandError(envelope.error?.message ?? "Runner command failed", {
     code: envelope.error?.code,
     hint: envelope.error?.hint,
   });
+}
+
+/**
+ * `reactivated: true` on a success envelope means the runner re-fronted a
+ * backgrounded target before executing — the foreground screen changed as a
+ * side effect of the command. Success replies have no hint channel (hints are
+ * folded into error messages only), so the flag is copied onto the returned
+ * data object for the tool layer to surface. An envelope without the marker
+ * returns its data untouched — same reference, byte-identical behavior.
+ */
+function withReactivationFlag(envelope: RunnerResponseEnvelope): unknown {
+  if (envelope.reactivated !== true) return envelope.data;
+  const data = envelope.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return data;
+  return { ...data, reactivated: true };
 }
 
 function asEnvelope(response: unknown): RunnerResponseEnvelope | null {

@@ -153,13 +153,30 @@ struct Envelope: Encodable {
   let ok: Bool
   let data: AnyEncodable?
   let error: ErrorPayload?
+  /// True only when the runner re-fronted a backgrounded target app before
+  /// executing the command (`foregroundTarget`). nil is omitted by the
+  /// synthesized encoder, so replies from an already-foreground target stay
+  /// byte-identical on the wire.
+  let reactivated: Bool?
 
   static func success<T: Encodable>(_ payload: T) -> Envelope {
-    Envelope(ok: true, data: AnyEncodable(payload), error: nil)
+    Envelope(ok: true, data: AnyEncodable(payload), error: nil, reactivated: nil)
   }
 
   static func failure(_ code: RunnerErrorCode, _ message: String, hint: String? = nil) -> Envelope {
-    Envelope(ok: false, data: nil, error: ErrorPayload(code: code.rawValue, message: message, hint: hint))
+    Envelope(
+      ok: false,
+      data: nil,
+      error: ErrorPayload(code: code.rawValue, message: message, hint: hint),
+      reactivated: nil
+    )
+  }
+
+  /// A copy of this reply stamped `reactivated: true` — the marker that the
+  /// target app was backgrounded and had to be re-fronted, so the foreground
+  /// screen changed as a side effect of the command.
+  func withReactivated() -> Envelope {
+    Envelope(ok: ok, data: data, error: error, reactivated: true)
   }
 }
 

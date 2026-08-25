@@ -2,7 +2,9 @@ import XCTest
 
 extension ArgentRunnerSession {
   enum TargetResolution {
-    case ready(XCUIApplication)
+    /// `reactivated` is true when the target was backgrounded (or its state
+    /// unreadable) and the runner had to re-front it for this command.
+    case ready(XCUIApplication, reactivated: Bool)
     case unavailable(Envelope)
   }
 
@@ -66,8 +68,9 @@ extension ArgentRunnerSession {
       switch foregroundTarget(bundleId: bundleId) {
       case .unavailable(let envelope):
         return envelope
-      case .ready(let app):
-        return performAppCommand(request, on: app)
+      case .ready(let app, let reactivated):
+        let result = performAppCommand(request, on: app)
+        return reactivated && result.ok ? result.withReactivated() : result
       }
     }
     switch request.command {
@@ -106,14 +109,38 @@ extension ArgentRunnerSession {
     }
   }
 
-  /// Resolves the target app and guarantees it is frontmost. A fresh
-  /// XCUIApplication proxy per command is deliberate: proxies are cheap, and
-  /// never caching them removes the whole class of stale-target bugs after an
-  /// app is relaunched behind the runner's back. When the app is already
-  /// foreground this costs a single state read.
+  /// Resolves the target app and guarantees it is frontmost — without ever
+  /// LAUNCHING it. On a `.notRunning` app, `activate()` performs a full
+  /// launch: after launch X → HOME, any app-scoped command would silently put
+  /// X back over the home screen and report success while the screenshot
+  /// channel shows otherwise. Launching stays an explicit, named action
+  /// (launch-app). A backgrounded or suspended target is still re-fronted for
+  /// resilience, and the reply is stamped `reactivated: true` so the agent
+  /// learns the foreground changed underneath the command.
+  ///
+  /// A fresh XCUIApplication proxy per command is deliberate: proxies are
+  /// cheap, and never caching them removes the whole class of stale-target
+  /// bugs after an app is relaunched behind the runner's back. When the app
+  /// is already foreground this costs a single state read.
   private func foregroundTarget(bundleId: String) -> TargetResolution {
     let app = XCUIApplication(bundleIdentifier: bundleId)
-    if app.state != .runningForeground {
+    switch app.state {
+    case .runningForeground:
+      return .ready(app, reactivated: false)
+    case .notRunning:
+      return .unavailable(
+        .failure(
+          .appNotAvailable,
+          "app '\(bundleId)' is not running",
+          hint:
+            "Launch it first with launch-app; the runner does not launch apps "
+            + "as a side effect of a command."
+        )
+      )
+    default:
+      // .runningBackground, .runningBackgroundSuspended, .unknown: the app is
+      // alive (or its state unreadable), so activation is resumption, not a
+      // launch.
       app.activate()
       guard app.wait(for: .runningForeground, timeout: 15) else {
         return .unavailable(
@@ -121,14 +148,14 @@ extension ArgentRunnerSession {
             .appNotAvailable,
             "app '\(bundleId)' did not reach the foreground",
             hint:
-              "Verify the bundle id and that the app is installed; launch it first "
-              + "(devicectl) if it is not running."
+              "The app was running but could not be brought forward; check the "
+              + "device screen and retry, or relaunch it with launch-app."
           )
         )
       }
       // Give the first frame of a fresh activation a beat before interacting.
       Thread.sleep(forTimeInterval: 0.25)
+      return .ready(app, reactivated: true)
     }
-    return .ready(app)
   }
 }

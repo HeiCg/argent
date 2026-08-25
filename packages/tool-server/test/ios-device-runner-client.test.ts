@@ -138,6 +138,59 @@ describe("createRunnerClient", () => {
     expect((error as RunnerCommandError).message).toBe("busy");
   });
 
+  describe("reactivated pass-through", () => {
+    it("copies a success envelope's reactivated marker onto the returned data object", async () => {
+      const { send } = createFakeSend([
+        {
+          ok: true,
+          data: { message: "tapped" },
+          reactivated: true,
+        } satisfies RunnerResponseEnvelope,
+      ]);
+      const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+      const result = await client.run({ command: "tap", x: 1, y: 2 });
+
+      // The runner re-fronted a backgrounded target before the tap: the flag
+      // rides the data object so the tool layer can tell the agent the
+      // foreground screen changed underneath the command.
+      expect(result).toEqual({ message: "tapped", reactivated: true });
+    });
+
+    it("returns the data untouched (same reference) when the envelope has no marker", async () => {
+      const data = { message: "tapped" };
+      const { send } = createFakeSend([{ ok: true, data } satisfies RunnerResponseEnvelope]);
+      const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+      const result = await client.run({ command: "tap", x: 1, y: 2 });
+
+      // Byte-identical behavior for the common case: no copy, no added keys.
+      expect(result).toBe(data);
+    });
+
+    it("resurfaces the marker from a journal-retained response", async () => {
+      const { send } = createFakeSend([
+        transportError(),
+        {
+          ok: true,
+          data: {
+            state: "completed",
+            responseJson: JSON.stringify({
+              ok: true,
+              data: { message: "tapped" },
+              reactivated: true,
+            }),
+          },
+        },
+      ]);
+      const client = createRunnerClient({ udid: UDID, port: PORT, send });
+
+      const result = await client.run({ command: "tap", x: 1, y: 2 });
+
+      expect(result).toEqual({ message: "tapped", reactivated: true });
+    });
+  });
+
   describe("status recovery after a lost mutating-command response", () => {
     it("returns the retained response when the runner reports the command completed", async () => {
       const { send, sent } = createFakeSend([

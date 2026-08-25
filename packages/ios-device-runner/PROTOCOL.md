@@ -19,6 +19,13 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 
 `hint` is optional, phrased for the agent operating the device.
 
+A success envelope for an app-scoped command may additionally carry a
+top-level `reactivated: true`: the target app was alive but backgrounded, and
+the runner re-fronted it before executing — the foreground screen changed as
+a side effect of the command. The field is encoded only when true, so a
+command against an already-foreground target stays byte-identical on the
+wire.
+
 ## Request fields
 
 | Field                 | Used by             | Meaning                                                                 |
@@ -36,7 +43,10 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 
 ## Commands
 
-App-scoped (require `appBundleId`; the runner foregrounds the target first):
+App-scoped (require `appBundleId`; a backgrounded target is re-fronted first
+and the reply stamped `reactivated: true`, while a not-running target fails
+with `APP_NOT_AVAILABLE` — the runner never launches an app as a side effect
+of a command; launching is launch-app's job):
 
 - `viewport` → `{x, y, width, height}` — `XCUIApplication.frame` (full app,
   keyboard included). Same rect describe normalizes against, so 0–1 tap
