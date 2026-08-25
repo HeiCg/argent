@@ -246,17 +246,18 @@ Use a snapshot for layout, color, spacing, typography, clipping and icons. Do no
 - script: { path: ../../scripts/seed-order.mjs, timeout: 60000 }
 ```
 
-A `script` step runs a local JavaScript file in a new Node process. Use a script for work that no device step does: a call to an API, a command-line tool, a fixture file, or a cleanup after the run. The step drives no device. Thus a flow of only script steps runs with no booted device.
+A `script` step runs a local `.mjs` file in a new Node process. Use a script for work that no device step does: a call to an API, a database seed, or a cleanup after the run.
 
-The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`. `path` is required. `timeout` is the limit of the step in milliseconds. The default `timeout` is 30000.
+The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 
-`path` resolves against the directory of the flow file that contains the step, as a `run` path does. The filename ends with a lowercase `.mjs`. Write the path with the letter case of the file on disk. macOS and Windows open a file whose case does not agree, but Linux fails with `ENOENT`. Argent refuses a mis-cased filename and prints the spelling on disk.
+| Key       | Required | Description                                                                                                                |
+| --------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `path`    | yes      | A file with a lowercase `.mjs` suffix. The path resolves as a `run` path does. The letter case must match the file on disk |
+| `timeout` | no       | The limit of the step in milliseconds. The default is 30000                                                                |
 
-Argent runs the script with the project root as the working directory. Argent gives the process an allowlist of environment names: `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. Every other name is absent, including each value in a project `.env` file. Let the script read what it needs from a file. There is no `env` key.
+Argent runs the script with the project root as the working directory. The script does not inherit your environment. Argent does not read a project `.env` file. Argent passes only `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. There is no `env` key. Let the script read a secret or a URL from a file.
 
-The script can set the `output` global. No step reads the value yet. Argent fails the step when it cannot serialize the value.
-
-Do not write `{{output:...}}` in a step. Argent refuses a flow file that holds this reference, and the run stops before step 1. Argent looks for the reference in each field that a later release resolves it in:
+The script can set the `output` global. No step reads the value yet, and Argent refuses a flow file that writes `{{output:...}}` into a step: the run stops before step 1. Argent looks for the reference in each field that a later release resolves it in:
 
 - The message of an `echo` step.
 - The text of a `type` step.
@@ -266,20 +267,18 @@ Do not write `{{output:...}}` in a step. Argent refuses a flow file that holds t
 
 A `matches` pattern is not one of these fields. `matches` takes a regular expression, and Argent reads `{{` in a pattern as text.
 
-Argent prints the standard output and the standard error of the script below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. Argent prints a line of its own when it cuts the output. **Argent does not redact this log.** Do not print a credential from a script.
+Argent prints the standard output and the standard error below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. **Argent does not redact this log.** Do not print a credential from a script.
 
-The verdict of a failed step names the side that caused the failure. Both verdicts stop the flow.
+A failed step stops the flow. The verdict names the side that caused the failure.
 
-| Verdict | Cause      | Examples                                                                                                                                                           |
-| ------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Failed  | The script | The script threw an error, did not load, exited with a non-zero code, or set an `output` value that Argent cannot serialize                                        |
-| Errored | The host   | A time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a filename whose letter case does not match the file on disk |
+| Verdict | Cause      | Examples                                                                                                                   |
+| ------- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Failed  | The script | An error, a load failure, a non-zero exit code, or a value in the `output` global that Argent cannot serialize             |
+| Errored | The host   | A time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a mis-cased filename |
 
-`scripts.maxTimeoutMs` caps the `timeout` of each step. A larger `timeout` runs at the cap, and the report says so. `scripts.heapLimitMb` sets the heap of the process. Argent reads both keys from the global configuration file only. See [Available keys](/docs/reference/configuration#available-keys).
+`scripts.maxTimeoutMs` caps the `timeout` of each step, and `scripts.heapLimitMb` sets the heap of the process. Argent reads both keys from the global configuration file only. See [Available keys](/docs/reference/configuration#available-keys).
 
 On iOS, Android and Vega, a `script` step above the `launch` step runs before Argent restarts the app. On Chromium, Argent boots the app before step 1, so the same script runs while the app is up.
-
-A `script` step needs one filesystem for the client and the tool-server. Argent rejects a `script` step in an uploaded flow, because the `.mjs` file stays on the client.
 
 ## The `argent flow` command
 
@@ -315,7 +314,7 @@ Pin `--platform` and `--device` on iOS, Android and Vega. On Chromium, pass `--p
 
 ## Remote runs
 
-The `flow-execute` tool takes one flow source: `name` for a saved flow, or `flow_path` for any file. `run:` targets and baselines resolve on the file system of the tool-server. When the tool-server runs on a different machine, a `name` run sends only that one file. Argent checks the whole flow before it runs any step, and rejects a `run:` or `snapshot` step at any depth with an error about the missing co-location, not about a missing fragment or baseline. `flow_path` is refused when the agent and the tool-server do not share a file system.
+The `flow-execute` tool takes one flow source: `name` for a saved flow, or `flow_path` for any file. `run:` targets and baselines resolve on the file system of the tool-server. When the tool-server runs on a different machine, a `name` run sends only that one file. Argent checks the whole flow before it runs any step, and rejects a `run:`, `script:` or `snapshot` step at any depth with an error about the missing co-location, not about a missing fragment, script or baseline. `flow_path` is refused when the agent and the tool-server do not share a file system.
 
 ## YAML safety
 

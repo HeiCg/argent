@@ -4,7 +4,10 @@ import {
   FlowScriptExecutor,
   type FlowScriptResult,
 } from "../../../src/tools/flows/script/flow-script-executor";
-import { SCRIPT_MAX_FAILURE_MESSAGE_CHARS } from "../../../src/tools/flows/script/flow-script-protocol";
+import {
+  SCRIPT_MAX_FAILURE_MESSAGE_CHARS,
+  SCRIPT_MAX_OUTPUT_BYTES,
+} from "../../../src/tools/flows/script/flow-script-protocol";
 import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 
 const workspaces: ScriptWorkspace[] = [];
@@ -137,6 +140,18 @@ describe("flow script executor — output validation", () => {
     const result = await run(`output.blob = "x".repeat(1024 * 1000);`);
     expect(result.failure).toBeUndefined();
     expect((result.output?.blob as string).length).toBe(1024 * 1000);
+  });
+
+  it("accepts output of exactly the limit", async () => {
+    // `{"blob":"…"}` is 11 characters around the payload, all single-byte, so
+    // this document encodes to the limit itself — the one size at which the
+    // bound and the document agree, and the one neither the runner's copy of
+    // the check nor the executor's is exercised at.
+    const payload = SCRIPT_MAX_OUTPUT_BYTES - `{"blob":""}`.length;
+    const result = await run(`output.blob = "x".repeat(${payload});`);
+
+    expect(result.failure).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(result.output), "utf8")).toBe(SCRIPT_MAX_OUTPUT_BYTES);
   });
 
   it("encodes a sparse array the way JSON.stringify does", async () => {
