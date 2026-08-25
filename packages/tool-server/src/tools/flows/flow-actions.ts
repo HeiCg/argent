@@ -833,8 +833,8 @@ export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise
       ok: false,
       reason:
         step.kind === "pinch"
-          ? "pinch is unsupported on a physical iOS device: the XCUITest runner drives single-finger gestures only (XCTest exposes no two-finger coordinate API on hardware); run this flow on a simulator or drive the app's zoom UI with tap steps instead"
-          : "rotate is unsupported on a physical iOS device: the XCUITest runner drives single-finger gestures only (XCTest exposes no two-finger coordinate API on hardware); run this flow on a simulator or drive the app's rotate controls with tap steps instead",
+          ? "pinch is unsupported on a physical iOS device: XCTest exposes no two-finger coordinate API on hardware; run this flow on a simulator or drive the app's zoom UI with tap steps instead"
+          : "rotate is unsupported on a physical iOS device: XCTest exposes no two-finger coordinate API on hardware; run this flow on a simulator or drive the app's rotate controls with tap steps instead",
     };
   }
   switch (step.kind) {

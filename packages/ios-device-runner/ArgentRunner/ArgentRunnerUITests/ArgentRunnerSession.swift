@@ -268,7 +268,7 @@ final class ArgentRunnerSession: XCTestCase {
         "The runner is still finishing a previous command that overran its watchdog "
           + "(usually an accessibility capture on a heavy or animating screen).",
         hint:
-          "Wait a few seconds and retry. If snapshots keep failing on this screen, use "
+          "Wait a few seconds and retry; if snapshots keep failing on this screen, use "
           + "screenshot as visual truth and interact by coordinates."
       )
     case .wedged(let seconds):

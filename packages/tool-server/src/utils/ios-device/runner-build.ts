@@ -546,8 +546,8 @@ export async function prepareXctestrunWithPort(
     // the blueprint recognizes a torn cached artifact and self-heals it.
     throw new XctestrunFormatError(
       `xctestrun at ${xctestrunPath} could not be parsed as a plist: ` +
-        `${(error as Error).message}. The file is truncated or not a plist at all; ` +
-        `a cached artifact torn by an interrupted build is the common cause.`,
+        `${(error as Error).message}. Delete ~/.argent/ios-device-runner and retry to ` +
+        `force a rebuild.`,
       { cause: error }
     );
   }
@@ -585,10 +585,9 @@ export async function prepareXctestrunWithPort(
 
   if (injectedTargets === 0) {
     throw new XctestrunFormatError(
-      `xctestrun format not recognized; cannot inject the runner port into ${xctestrunPath}: ` +
-        `no test target with TestBundlePath/TestHostPath found under TestConfigurations or at ` +
-        `the top level. Xcode's .xctestrun format has likely drifted past what this version of ` +
-        `Argent understands.`
+      `xctestrun format not recognized: no test target found in ${xctestrunPath}. ` +
+        `Xcode's .xctestrun format has likely drifted past what this Argent version ` +
+        `understands; update Argent.`
     );
   }
 

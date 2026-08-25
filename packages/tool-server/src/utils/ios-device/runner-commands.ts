@@ -47,7 +47,9 @@ export async function getViewport(
     height: data.height ?? 0,
   };
   if (!(viewport.width > 0) || !(viewport.height > 0)) {
-    throw new Error("The app's interaction viewport is unavailable; is the app foregrounded?");
+    throw new Error(
+      "The app's interaction viewport is unavailable. Bring the app to the foreground, then retry."
+    );
   }
   return viewport;
 }

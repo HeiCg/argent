@@ -422,7 +422,7 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
     expect(error).toBeInstanceOf(IosDeviceTransportError);
     expect((error as IosDeviceTransportError).kind).toBe("protocol");
     expect((error as IosDeviceTransportError).message).toMatch(
-      /usbmuxd runs on every macOS install/
+      /check that no sandbox blocks \/var\/run/
     );
   });
 

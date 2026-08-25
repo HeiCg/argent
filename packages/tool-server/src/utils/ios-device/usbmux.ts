@@ -42,9 +42,9 @@ const USBMUX_RESULT_CONNECTION_REFUSED = 3;
 const DEVICE_UNATTACHED_HINT =
   "Connect the device by cable, trust this Mac, keep it unlocked, and retry.";
 const RUNNER_NOT_LISTENING_HINT =
-  "The device is reachable but nothing is bound to the runner port yet; this resolves once the runner finishes starting.";
+  "The device is reachable but the runner has not bound its port yet; wait a few seconds and retry.";
 const USBMUXD_UNREACHABLE_HINT =
-  "usbmuxd runs on every macOS install; a missing socket usually means this is not a Mac or a sandbox blocks /var/run.";
+  "Physical iOS devices require macOS; if this is a Mac, check that no sandbox blocks /var/run.";
 
 /**
  * Fold the recovery hint into the message at construction time: agent-facing

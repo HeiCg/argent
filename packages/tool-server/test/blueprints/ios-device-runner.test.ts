@@ -169,9 +169,9 @@ describe("ios-device-runner blueprint — mid-command runner death", () => {
     )) as Error;
     expect(second.message).toBe(
       `iOS device runner exited (code null) while executing 'tap'.` +
-        ` This is runner death #2 touching com.example.escalate in the last 10 minutes:` +
-        ` the app's current screen state is likely crashing XCTest itself;` +
-        ` call restart-app for com.example.escalate to reset that state, then retry. Log: ${LOG_PATH}`
+        ` Runner death #2 for com.example.escalate in the last 10 minutes;` +
+        ` the app's current screen is likely crashing XCTest.` +
+        ` Run restart-app for com.example.escalate, then retry. Log: ${LOG_PATH}`
     );
     expect(recoverable(second)).toBe(true);
   });

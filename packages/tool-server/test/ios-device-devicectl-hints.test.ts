@@ -29,8 +29,8 @@ describe("devicectl error hints are folded into the message", () => {
     expect((error as Error).name).toBe("IosDeviceControlError");
     expect((error as Error).message).toBe(
       "Failed to launch com.example.app: ERROR: The application failed to launch. " +
-        "Hint: Unlock the device and keep the screen awake, then retry. " +
-        "(A locked iPhone refuses app launches.)"
+        "Hint: Unlock the device and keep the screen awake, then retry; " +
+        "a locked iPhone refuses app launches."
     );
     // The property survives for callers that branch on it.
     expect((error as { hint?: string | null }).hint).toContain("Unlock the device");

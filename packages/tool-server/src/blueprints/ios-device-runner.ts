@@ -101,9 +101,9 @@ async function explainRunnerDeath(options: {
   const crash = await readRunnerCrashSummary(options.derivedDataPath);
   const recovery =
     deaths >= 2 && bundleId
-      ? ` This is runner death #${deaths} touching ${bundleId} in the last ` +
-        `${CRASH_MEMORY_MS / 60_000} minutes: the app's current screen state is likely ` +
-        `crashing XCTest itself; call restart-app for ${bundleId} to reset that state, then retry.`
+      ? ` Runner death #${deaths} for ${bundleId} in the last ` +
+        `${CRASH_MEMORY_MS / 60_000} minutes; the app's current screen is likely crashing ` +
+        `XCTest. Run restart-app for ${bundleId}, then retry.`
       : ` The runner respawns on the next call; re-observe the screen and retry.`;
   // The marker keeps recoverable() matching, so the registry still tears the
   // instance down and the next call respawns.
@@ -242,10 +242,9 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
           withFailureSignal(
             new Error(
               `The on-device runner did not become ready: ${String((error as Error).message)}. ` +
-                `Check the xcodebuild log at ${launched.logPath}; signing/provisioning issues and ` +
-                `a locked device screen are the two common causes. The device must be unlocked ` +
-                `the first time so you can trust the developer app (Settings > General > VPN & ` +
-                `Device Management) if iOS asks.`,
+                `Check the log at ${launched.logPath}. If this is the first run, unlock the ` +
+                `device and trust the developer app under Settings > General > VPN & Device ` +
+                `Management.`,
               { cause: error }
             ),
             {

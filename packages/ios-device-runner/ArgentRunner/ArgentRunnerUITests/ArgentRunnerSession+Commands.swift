@@ -76,9 +76,7 @@ extension ArgentRunnerSession {
         return .failure(
           .appBundleIdRequired,
           "\(request.command.rawValue) requires appBundleId",
-          hint:
-            "Launch or target an app first; the runner never redirects app commands "
-            + "to its own host app."
+          hint: "Launch or target an app first with launch-app."
         )
       }
       switch foregroundTarget(bundleId: bundleId) {
@@ -99,7 +97,7 @@ extension ArgentRunnerSession {
       return .success(MessagePayload(message: "shutting down"))
     default:
       return .failure(
-        .invalidRequest, "\(request.command.rawValue) is not executable on this path"
+        .invalidRequest, "\(request.command.rawValue) is not a device-scoped command"
       )
     }
   }
@@ -148,9 +146,7 @@ extension ArgentRunnerSession {
         .failure(
           .appNotAvailable,
           "app '\(bundleId)' is not running",
-          hint:
-            "Launch it first with launch-app; the runner does not launch apps "
-            + "as a side effect of a command."
+          hint: "Launch it first with launch-app."
         )
       )
     default:
@@ -163,9 +159,7 @@ extension ArgentRunnerSession {
           .failure(
             .appNotAvailable,
             "app '\(bundleId)' did not reach the foreground",
-            hint:
-              "The app was running but could not be brought forward; check the "
-              + "device screen and retry, or relaunch it with launch-app."
+            hint: "Check the device screen and retry, or relaunch it with launch-app."
           )
         )
       }

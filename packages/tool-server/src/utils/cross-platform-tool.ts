@@ -76,11 +76,9 @@ export function dispatchByPlatform<
           // The shared template above derives ios.ts and tells the reader to add
           // a capability block — both wrong for hardware, so override explicitly.
           hint:
-            `This is a physical iOS device — ignore the ios.ts guidance above: ` +
-            `the file convention for hardware is tools/${opts.toolId}/platforms/ios-device.ts, ` +
-            `wired in as the iosDevice branch of dispatchByPlatform(), and the ` +
-            `capability is already declared (reaching this error required ` +
-            `apple: { device: true } to pass assertSupported).`,
+            `For physical iOS devices, implement ` +
+            `tools/${opts.toolId}/platforms/ios-device.ts instead; the capability ` +
+            `block already exists.`,
         });
       }
       if (opts.iosDevice.requires?.length) {

@@ -100,7 +100,8 @@ extension ArgentRunnerSession {
     guard !frame.isNull, !frame.isInfinite, !frame.isEmpty else {
       return .failure(
         .appNotAvailable,
-        "the app's interaction viewport is unavailable; is the app foregrounded?"
+        "the app's interaction viewport is unavailable",
+        hint: "Bring the app to the foreground, then retry."
       )
     }
 

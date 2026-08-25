@@ -64,8 +64,8 @@ describe("NotImplementedOnPlatformError", () => {
 
   it("appends the hint after the shared template, so a hint can override its guidance", () => {
     // The iosDevice miss in cross-platform-tool.ts relies on this ordering: its
-    // hint says "ignore the ios.ts guidance above" to correct the template's
-    // derived file path and capability advice for physical devices.
+    // hint points at platforms/ios-device.ts to correct the template's derived
+    // file path and capability advice for physical devices.
     const err = new NotImplementedOnPlatformError({
       toolId: "demo-tool",
       platform: "android",

@@ -130,11 +130,9 @@ describe("dispatchByPlatform", () => {
         "The cross-platform architecture is in place — fill in " +
         "tools/no-device-branch/platforms/ios.ts and add the matching " +
         "'ios' block to the tool's capability declaration. " +
-        "This is a physical iOS device — ignore the ios.ts guidance above: " +
-        "the file convention for hardware is tools/no-device-branch/platforms/ios-device.ts, " +
-        "wired in as the iosDevice branch of dispatchByPlatform(), and the " +
-        "capability is already declared (reaching this error required " +
-        "apple: { device: true } to pass assertSupported)."
+        "For physical iOS devices, implement " +
+        "tools/no-device-branch/platforms/ios-device.ts instead; the capability " +
+        "block already exists."
     );
   });
 

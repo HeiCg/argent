@@ -9,7 +9,7 @@ import { FAILURE_CODES, subprocessFailureMetadata, withFailureSignal } from "@ar
 const execFileAsync = promisify(execFile);
 
 /**
- * Wrappers around `xcrun devicectl` — Apple's CoreDevice CLI (Xcode 15+) and
+ * Wrappers around `xcrun devicectl` - Apple's CoreDevice CLI (Xcode 15+) and
  * the control plane for physical iPhones/iPads: discovery, app lifecycle,
  * screenshots, and tunnel readiness. The XCUITest runner (interaction/
  * snapshot path) is separate; see runner-build.ts / the ios-device-runner
@@ -79,7 +79,7 @@ function resolveDevicectlHint(output: string): string {
   // screen produces — seen live on iOS 26. Surface unlock first: it is by far
   // the most common cause on an otherwise healthy paired device.
   if (lower.includes("failed to launch") || lower.includes("10002")) {
-    return "Unlock the device and keep the screen awake, then retry. (A locked iPhone refuses app launches.)";
+    return "Unlock the device and keep the screen awake, then retry; a locked iPhone refuses app launches.";
   }
   if (lower.includes("developer disk image") || lower.includes("developer mode is disabled")) {
     return (
