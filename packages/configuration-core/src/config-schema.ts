@@ -59,6 +59,17 @@ export function asPositiveInteger(raw: unknown): number | undefined {
 
 export const MIN_SCRIPT_HEAP_LIMIT_MB = 32;
 
+/**
+ * The smallest ceiling a flow `script` step can run under and still report on
+ * the script rather than on the host. The step starts a Node process before
+ * the script runs, and that start alone costs tens of milliseconds, so under
+ * this the same script passes or times out according to how busy the machine
+ * was. Floored rather than defaulted for the reason the heap limit is: the
+ * step that loses the race errors, and names neither this bound nor the value
+ * that caused it.
+ */
+export const MIN_SCRIPT_TIMEOUT_MS = 100;
+
 /** Accept an array of non-blank strings (blank entries dropped). */
 export function asStringArray(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined;
@@ -149,9 +160,15 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     key: "scripts.maxTimeoutMs",
     description:
       "Upper bound, in milliseconds, on the time limit a flow `script` step may ask for " +
-      "(default 300000 — five minutes). Bounds how long one script can occupy the host.",
+      "(default 300000 — five minutes). Bounds how long one script can occupy the host. " +
+      `Values below ${MIN_SCRIPT_TIMEOUT_MS} ms are refused: the step starts a Node process ` +
+      "before the script runs, so a smaller ceiling ends a script that did nothing wrong.",
     scopes: ["global"],
-    parse: asPositiveInteger,
+    parse: (raw) => {
+      const value = asPositiveInteger(raw);
+      return value !== undefined && value >= MIN_SCRIPT_TIMEOUT_MS ? value : undefined;
+    },
+    expected: `a whole number of milliseconds, at least ${MIN_SCRIPT_TIMEOUT_MS}`,
     merge: "prioritize-global",
     default: 5 * 60_000,
     example: "300000",

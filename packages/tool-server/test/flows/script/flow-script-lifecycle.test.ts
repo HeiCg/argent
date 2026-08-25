@@ -40,6 +40,21 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Windows reports an aborted child as an exit code, never as a signal, so the
+ * heap row there cannot be reached from a POSIX host without saying which
+ * platform the executor believes it is on.
+ */
+async function onWindows<T>(run: () => Promise<T>): Promise<T> {
+  const real = process.platform;
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  try {
+    return await run();
+  } finally {
+    Object.defineProperty(process, "platform", { value: real, configurable: true });
+  }
+}
+
 function stallFor(startMs: number, lengthMs: number): () => void {
   const timer = setTimeout(() => {
     const until = Date.now() + lengthMs;
@@ -644,6 +659,43 @@ describe("flow script executor — exit classification", () => {
     expect(result.failure?.kind).toBe("exit");
     expect(result.failure?.message).toContain("exit code 134");
   }, 60_000);
+
+  it("calls an abort carrying the heap banner a heap limit, as Windows delivers one", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "windows-oom.mjs",
+      `process.stderr.write(
+         "\\n<--- Last few GCs --->\\n" +
+         "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\\n"
+       );
+       process.exit(3);`
+    );
+    const result = await onWindows(() =>
+      executor({ heapLimitMb: 64 }).execute({
+        scriptPath: script,
+        projectRoot: ws.dir,
+        timeoutMs: 30_000,
+      })
+    );
+
+    expect(result.failure?.kind).toBe("heap");
+    expect(result.failure?.message).toBe("The script exceeded its 64 MiB heap limit.");
+  }, 30_000);
+
+  it("does not call a Windows abort code without the heap banner a heap limit", async () => {
+    const ws = workspace();
+    const script = ws.write("plain-exit.mjs", `console.log("done"); process.exit(3);`);
+    const result = await onWindows(() =>
+      executor({ heapLimitMb: 64 }).execute({
+        scriptPath: script,
+        projectRoot: ws.dir,
+        timeoutMs: 30_000,
+      })
+    );
+
+    expect(result.failure?.kind).toBe("exit");
+    expect(result.failure?.message).toContain("exit code 3");
+  }, 30_000);
 });
 
 describe("flow script executor — process cleanup", () => {

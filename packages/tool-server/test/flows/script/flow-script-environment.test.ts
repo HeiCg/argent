@@ -306,6 +306,22 @@ describe("flow script executor — the host's configured bounds", () => {
     expect(result.durationMs).toBeLessThan(15_000);
   }, 30_000);
 
+  it("ignores a scripts.maxTimeoutMs a step would spend on starting its process", async () => {
+    const ws = workspace();
+    // Refused by the schema, so the key reads as unset and the default stands.
+    // Honoured, this would cap every step at 30ms — including one that asks
+    // for nothing — and error a script by how busy the machine was.
+    configuredHome(ws, { scripts: { maxTimeoutMs: 30 } });
+    const script = ws.write("slow.mjs", `await new Promise((r) => setTimeout(r, 400));`);
+    const result = await new FlowScriptExecutor({ concurrency: 4 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.notes.join(" ")).not.toContain("this host's maximum");
+  }, 30_000);
+
   it("gives a script the configured scripts.heapLimitMb", async () => {
     const ws = workspace();
     configuredHome(ws, { scripts: { heapLimitMb: 96 } });

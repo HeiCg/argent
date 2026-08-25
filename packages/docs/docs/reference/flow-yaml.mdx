@@ -33,12 +33,12 @@ The file has two top-level keys:
 
 A flow has one of two shapes:
 
-| Shape           | First step that is not `echo` or `script` | Start state                                         |
-| --------------- | ----------------------------------------- | --------------------------------------------------- |
-| End-to-end flow | `launch:`                                 | Argent starts the app from scratch                  |
-| Fragment        | Any other step                            | The app is already in the state that the flow needs |
+| Shape           | First step that is not `echo:` or `script:` | Start state                                         |
+| --------------- | ------------------------------------------- | --------------------------------------------------- |
+| End-to-end flow | `launch:`                                   | Argent starts the app from scratch                  |
+| Fragment        | Any other step                              | The app is already in the state that the flow needs |
 
-Argent skips leading `echo` and `script` steps when it classifies a flow. A flow that opens with an `echo` or `script` step and then a `launch:` step is still end-to-end. Put the named start state of an end-to-end flow in a leading `echo` step.
+Argent skips leading `echo` and `script` steps when it classifies a flow. A flow that opens with an `echo` step and then a `launch:` step is still end-to-end. A flow that opens with a `script` step and then a `launch:` step is also end-to-end. Put the named start state of an end-to-end flow in a leading `echo` step.
 
 A file does not store a device id. The runner selects the device. A `launch:` restarts the process but does not clear the app data, the account or the backend data.
 
@@ -255,7 +255,18 @@ The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 | `path`    | yes      | An `.mjs` file, relative to the flow file that holds the step. Write the extension in lowercase, and match the letter case on disk |
 | `timeout` | no       | The time limit of the step in milliseconds. The minimum is 100, and the default is 30000                                           |
 
-The working directory is the project root. Argent passes a fixed list of environment variables: the standard shell names, the proxy and TLS names, and the Node, npm, Android and Java toolchain names. A name outside the list does not reach the script, for example `DATABASE_URL`. Argent does not read a project `.env` file. Let the script read a secret or a URL from a file.
+Argent runs the script with the project root as the working directory. Argent gives the script an allowlist of environment names, not your full environment. The allowlist holds these groups:
+
+- `PATH`, `HOME` and the equivalent Windows names
+- The identity, shell, locale, terminal, temporary-directory and cache names of the host
+- The Windows platform names
+- The proxy names and the TLS certificate names
+- The Node, npm, Android, Java and Apple toolchain names
+- `CI`, `SSH_AUTH_SOCK`, and each name that starts with `npm_config_`
+
+Argent removes each other name. Argent removes its own token, its own port and each `ARGENT_SECRET_` value. Argent does not read a project `.env` file, so a name such as `NODE_ENV` or `DATABASE_URL` is absent. There is no `env` key. Let the script read a secret or a URL from a file.
+
+Two groups in the list carry access to a credential. `SSH_AUTH_SOCK` reaches your SSH agent. An `npm_config_` name can hold a registry token. Run a script only when you trust it.
 
 Argent prints the standard output and the standard error below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. The report marks a cut on its own line. **Argent does not redact this log.** Do not print a credential from a script.
 

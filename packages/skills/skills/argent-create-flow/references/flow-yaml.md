@@ -75,6 +75,12 @@ On iOS, Android, and Chromium, an id absent from `describe` can still resolve in
 
 The recorder rechecks each successful `await-ui-element` against the runner tree. Follow any `message` warning and replay each conversion. On Vega, a mismatch usually means the screen changed. A `text` check can also select different elements from the same source. See [Live waits and checks](live-authoring.md#live-waits-and-checks).
 
+**On iOS, a `launch:` step also decides which app the runner reads.** A successful `launch:` pins later runner-tree reads to that app, so a read probes only that app instead of fanning out over every connected one to find the frontmost. A pinned read still refuses, naming the reason, when the app has no foreground presence left, when it stops answering after an earlier read got through, when its devtools connection dropped, or when the pinned id is a `com.apple.*` system app.
+
+Any raw `tool:` step ends the pin, because its effect on the screen is opaque to the runner, and reads auto-detect the frontmost app again until the next `launch:` re-pins. A tool that cannot change the foreground app leaves the launched id as an unpinned fallback, which takes the read only when auto-detection times out and the launched app vouches for itself with a probe of its own. `launch-app`, `restart-app`, `reinstall-app`, `open-url`, and `button` drop even that; `launch-app` and `restart-app` replace it with the app they just started, still unpinned. Nested `run:` fragments inherit both the pin and its clearing.
+
+So on iOS recording and replay can read different apps, not only different projections: recording has no run state and always auto-detects the frontmost connected app, while a replay read between a `launch:` and the next raw `tool:` step reads the launched app.
+
 **On iOS, never copy a `role` from `describe` into a flow selector.** The runner derives iOS roles from the UIView class name and `describe` from accessibility traits, so a React Native `Pressable` (class `RCTView`) is `AXGroup` to the runner and `AXButton` to `describe`. Select on `id`/`text`, or confirm the role against the runner's own tree.
 
 When several nodes match, the directive decides:
@@ -104,7 +110,7 @@ Scopes can combine and nest, with at most six scope keys. Use strict selectors f
 
 Directives stop the flow on failure and skip later steps. `flow-execute` documents their shapes. The available directives are `launch`, `tap`, `long-press`, `type`, `scroll-to`, `pinch`, `rotate`, `await`, `assert`, `wait`, `snapshot`, `run`, `script`, `when`, `echo`, and `tool`.
 
-Use the launch map for cross-platform flows. A bare launch applies everywhere and becomes an app path on Chromium. The map takes `native:`, `ios:`, `android:`, `vega:`, and `chromium:`. `native:` is one id shared by iOS, Android, and Vega, and a per-platform key overrides it for that platform. `chromium:` accepts a relative or absolute app path. A launch that declares no id for the run's platform is an error, not a cue to switch platforms.
+Use the launch map for cross-platform flows. A bare launch applies everywhere and becomes an app path on Chromium. The map takes `native:`, `ios:`, `android:`, `vega:`, and `chromium:`. `native:` is one id shared by iOS, Android, and Vega, and a per-platform key overrides it for that platform. `chromium:` accepts a relative or absolute app path. A launch that declares no id for the run's platform is an error, not a cue to switch platforms. On iOS, a successful launch also pins later tree reads to that app until the next raw `tool:` step, so read [The runner tree is not the discovery tree](#the-runner-tree-is-not-the-discovery-tree) when a read describes the wrong screen.
 
 ```yaml
 - launch: { native: com.acme.app, chromium: ../../app }
@@ -209,7 +215,7 @@ Record one live with `flow-add-script` rather than typing it in afterward. See [
 - **`path`** resolves against the directory of the flow file that **contains the step**, so a fragment finds the same script in each flow that composes it. Always write the extension, and match the letter case on disk: a mis-cased name is refused rather than run, because macOS and Windows open it and Linux CI does not.
 - **`timeout`** is milliseconds, default 30000, and at least 100: the step starts a Node process before the script runs, and that start alone costs tens of milliseconds, so parse refuses a smaller limit outright. The host's `scripts.maxTimeoutMs` (default five minutes) caps it at the other end, and a value over that cap is clamped and reported in the step's reason, not refused.
 - **The working directory is `project_root`**, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.
-- **The environment is a fixed list**: the standard shell, proxy, TLS, Node, npm, Android and Java names. Every other name is absent, `NODE_ENV` and `DATABASE_URL` included, as is each value in a project `.env`. Let the script read what it needs from a file.
+- **The environment is an allowlist**, not a copy of your shell: `PATH`, `HOME`, the identity, shell, locale, terminal, temp-directory, cache and Windows platform names, the proxy and TLS names, the Node, npm, Android, Java and Apple toolchain names, `CI`, `SSH_AUTH_SOCK`, and every `npm_config_` name. Every other name is absent, `NODE_ENV` and `DATABASE_URL` included, as is each value in a project `.env` and the tool-server's own token and port. Two names that do pass carry a credential: `SSH_AUTH_SOCK` reaches the SSH agent, and an `npm_config_` name can hold a registry token. Let the script read what it needs from a file.
 
 The step report carries the stdout and stderr of the script and prints them below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run, and the report marks a cut on its own line. **The log has no redaction**, and it reaches the terminal and every CI log. Do not print a credential from a script.
 

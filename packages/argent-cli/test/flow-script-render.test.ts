@@ -81,6 +81,43 @@ describe("script log rendering", () => {
     expect(lines[1]).toContain("│ POST /orders -> 500");
   });
 
+  it("carries a passing script's log into batch mode, the surface CI reads", () => {
+    const lines = renderFailedSteps(report([PASSING]));
+    expect(lines[0]).toContain("✓  1 script scripts/seed.mjs");
+    expect(lines[1]).toContain("│ creating order");
+    expect(lines[2]).toContain("│ order 4711 created");
+  });
+
+  it("keeps a passing seed script's log beside the later step that failed", () => {
+    const failed: StepReport = {
+      index: 1,
+      kind: "tap",
+      status: "fail",
+      target: "#checkout",
+      reason: "not found",
+    };
+    const lines = renderFailedSteps(report([PASSING, failed]));
+    expect(lines[0]).toContain("✓  1 script scripts/seed.mjs");
+    expect(lines[1]).toContain("│ creating order");
+    expect(lines.at(-1)).toContain("✗  2 tap #checkout — not found");
+  });
+
+  it("prints a passing script's truncation notice in batch mode as well", () => {
+    const lines = renderFailedSteps(
+      report([{ ...PASSING, scriptLog: undefined, scriptLogTruncated: true }])
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("✓  1 script scripts/seed.mjs");
+    expect(lines[1]).toContain("… output truncated");
+  });
+
+  it("leaves a passing step that wrote no log out of batch mode", () => {
+    const tapped: StepReport = { index: 0, kind: "tap", status: "pass", target: "#checkout" };
+    const lines = renderFailedSteps(report([tapped, PASSING]));
+    expect(lines.some((l) => l.includes("tap #checkout"))).toBe(false);
+    expect(lines[0]).toContain("✓  2 script scripts/seed.mjs");
+  });
+
   it("indents a nested script step's log with the step, not against the margin", () => {
     const nested = renderScriptLogLines({ ...PASSING, depth: 2 }, 3);
     expect(nested[0]).toBe(`${" ".repeat(7)}    │ creating order`);

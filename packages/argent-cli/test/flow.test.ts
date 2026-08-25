@@ -234,9 +234,9 @@ describe("parseRunArgs", () => {
 
   it("rejects unknown flags instead of silently dropping them", () => {
     expect(() => parseRunArgs(["checkout.yaml", "--verbose"])).toThrow(FlagParseException);
-    expect(() => parseRunArgs(["checkout.yaml", "--verbose"])).toThrow(/unknown flag/);
+    expect(() => parseRunArgs(["checkout.yaml", "--verbose"])).toThrow(/Unknown flag/);
     // A typo'd value flag must not fall back to device auto-detection.
-    expect(() => parseRunArgs(["checkout.yaml", "--platfrom=ios"])).toThrow(/unknown flag/);
+    expect(() => parseRunArgs(["checkout.yaml", "--platfrom=ios"])).toThrow(/Unknown flag/);
   });
 
   it("rejects extra positional arguments", () => {
@@ -248,7 +248,7 @@ describe("parseRunArgs", () => {
   it("takes everything after -- as the flow, so a name may start with a hyphen", () => {
     // The flow-name charset admits a leading "-", so without the marker such a
     // saved flow would be addressable by path only.
-    expect(() => parseRunArgs(["-nightly"])).toThrow(/unknown flag/);
+    expect(() => parseRunArgs(["-nightly"])).toThrow(/Unknown flag/);
     expect(parseRunArgs(["--device", "SIM-1", "--", "-nightly"])).toEqual({
       flowRef: "-nightly",
       device: "SIM-1",
@@ -447,7 +447,7 @@ describe("argent flow run", () => {
     );
 
     expect(toolsClientMock.callTool).not.toHaveBeenCalled();
-    expect(errs.join("\n")).toContain("unknown flag");
+    expect(errs.join("\n")).toContain("Unknown flag");
   });
 
   it("exits 2 when no flow name or path is given", async () => {
@@ -1661,6 +1661,32 @@ describe("argent flow run <dir>", () => {
     // Passing steps stay silent in batch mode.
     expect(out).not.toMatch(/✓ {2}1 tap/);
     expect(out).toContain("PASS — 2 flows: 2 passed, 0 failed, 0 skipped");
+  });
+
+  it("prints a passing script's output, the only record a green batch run leaves", async () => {
+    toolsClientMock.callTool.mockResolvedValue({
+      data: report({
+        steps: [
+          {
+            index: 0,
+            kind: "script",
+            status: "pass",
+            target: "scripts/seed.mjs",
+            scriptLog: "seeded order 4711\n",
+          },
+          { index: 1, kind: "tap", status: "pass" },
+        ],
+        passed: 2,
+      }),
+    });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:0");
+
+    const out = logs.join("\n");
+    expect(out).toContain("✓  1 script scripts/seed.mjs");
+    expect(out).toContain("│ seeded order 4711");
+    // The widened gate still admits only the script step, not its neighbour.
+    expect(out).not.toMatch(/✓ {2}2 tap/);
   });
 
   it("rejects directory runs with --json-stream", async () => {
