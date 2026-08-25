@@ -69,7 +69,7 @@ export function flowsDirFor(root: string): string {
 }
 
 /** The flows dir under a root that has not been validated yet. */
-export function getFlowsDir(projectRoot: string): string {
+function getFlowsDir(projectRoot: string): string {
   assertValidProjectRoot(projectRoot);
   return flowsDirFor(projectRoot);
 }
@@ -142,7 +142,7 @@ export function getFlowPath(projectRoot: string, name: string): string {
  */
 // `async`, so `getFlowPath`'s validation throws land as a rejection like every
 // other failure here rather than synchronously out of a promise-returning call.
-export async function resolveFlowKey(projectRoot: string, name: string): Promise<string> {
+async function resolveFlowKey(projectRoot: string, name: string): Promise<string> {
   const spelled = getFlowPath(projectRoot, name);
   const inFlight = keyResolutions.get(spelled);
   if (inFlight) return inFlight;
@@ -407,7 +407,7 @@ function evictIfOverCapacity(): void {
   }
 }
 
-export interface RecordingSessionInit {
+interface RecordingSessionInit {
   name: string;
   projectRoot: string;
   persist: FlowPersistMode;
@@ -777,7 +777,7 @@ export function precedesLeadingLaunch(step: FlowStep): boolean {
  * a flow controls its own start state, so it must not declare an
  * `executionPrerequisite`. Everything else is a fragment.
  */
-export function isE2eFlow(flow: FlowFile): boolean {
+function isE2eFlow(flow: FlowFile): boolean {
   const first = flow.steps.find((s) => !precedesLeadingLaunch(s));
   return first?.kind === "launch";
 }
@@ -3301,7 +3301,7 @@ export async function countStepsOnDisk(filePath: string): Promise<number | undef
 }
 
 /** Read and parse the flow file, append a step, write it back. */
-export async function appendStep(filePath: string, step: FlowStep): Promise<string> {
+async function appendStep(filePath: string, step: FlowStep): Promise<string> {
   const content = await fs.readFile(filePath, "utf8");
   const flow = parseFlow(content);
   flow.steps.push(step);

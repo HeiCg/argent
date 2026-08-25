@@ -950,13 +950,24 @@ function isHeapAbort(
   exit: { code: number | null; signal: NodeJS.Signals | null },
   heapFatalSeen: boolean
 ): boolean {
+  if (!heapFatalSeen) return false;
   // A signal, never an exit code. 128+SIGABRT is a *shell's* way of reporting
   // an aborted child, and there is no shell between the executor and the
   // runner — but there often is one inside the script: a wrapper forwarding a
   // build's status returns 134 while allocating nothing itself, and the build's
   // own banner lands in the inherited stream.
-  return exit.signal === "SIGABRT" && heapFatalSeen;
+  if (exit.signal === "SIGABRT") return true;
+  // Windows has no signal to report: an aborted child arrives as a plain exit
+  // code, so the row above can never be reached there and a genuine heap
+  // exhaustion would be read as a script stopping itself. A wrapper forwarding
+  // one of these codes is the same false positive the 134 rule avoids on
+  // POSIX; there is nothing left to tell the two apart, and mistaking a
+  // forwarded status is the lesser fault of the two.
+  return process.platform === "win32" && exit.code !== null && WINDOWS_ABORT_CODES.has(exit.code);
 }
+
+/** `abort()` through the CRT, and the fast-fail path V8 takes instead of it. */
+const WINDOWS_ABORT_CODES = new Set([3, 0xc0000409]);
 
 function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null }): string {
   if (exit.signal) return `signal ${exit.signal}`;

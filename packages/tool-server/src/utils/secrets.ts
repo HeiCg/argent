@@ -6,7 +6,6 @@ import {
   secretNames,
   secretPlacementAdvice,
   secretSources,
-  SECRET_ENV_PREFIX,
   type SecretSource,
   type SecretSourceOptions,
 } from "@argent/configuration-core";
@@ -24,7 +23,6 @@ import {
  * arbitrary host secrets through the mechanism.
  */
 
-export { SECRET_ENV_PREFIX };
 export type { SecretSourceOptions };
 
 /** Copied in packages/argent-mcp/src/auto-screenshot.ts, which cannot depend on this package. */
@@ -37,7 +35,7 @@ export function availableSecretNames(options: SecretSourceOptions = {}): string[
   return secretNames(secretSources(options));
 }
 
-export interface ResolvedSecretText {
+interface ResolvedSecretText {
   /** The input with every placeholder replaced by its secret value. */
   text: string;
   /** The substituted secrets; empty when the input had none. */
@@ -177,8 +175,13 @@ export function scrubSecretChunk(
 }
 
 /**
- * Whether a value occurs inside `[from, end)` and does not fit within it. The
- * span is bounded by the longest name there is, so this walk is too.
+ * Whether a value starts inside `[from, end)` and runs to the end of the span
+ * or past it. A value that ends exactly at `end` counts: it holds the closing
+ * characters a reader parses the marker by, and the boundary is set on the
+ * scrubbing side on purpose — the cost of counting one is a marker nested in
+ * another, the cost of missing one is a value shipped in plaintext.
+ *
+ * The span is bounded by the longest name there is, so this walk is too.
  */
 function valueLeavesMarker(
   text: string,
