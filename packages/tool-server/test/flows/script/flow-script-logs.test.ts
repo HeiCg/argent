@@ -121,6 +121,31 @@ describe("flow script executor — cutting the log", () => {
     expect(result.log).not.toContain("\uFFFD");
     expect(Buffer.byteLength(result.log, "utf8")).toBeLessThanOrEqual(SCRIPT_STEP_LOG_LIMIT_BYTES);
   }, 30_000);
+
+  it("never cuts a redaction marker in half", async () => {
+    const ws = workspace();
+    const secret: FlowScriptSecret = { name: "VERY_LONG_SECRET_NAME", value: "s3cr3t-value" };
+    // Padded so the budget runs out a few characters into the marker the scrub
+    // writes for the value printed right after it.
+    const script = ws.write(
+      "cut-marker.mjs",
+      `process.stdout.write("x".repeat(${SCRIPT_STEP_LOG_LIMIT_BYTES - 6}));
+       process.stdout.write(process.env.SECRET);
+       output.ok = true;`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      env: { SECRET: secret.value },
+      secrets: [secret],
+    });
+
+    expect(result.logTruncated).toBe(true);
+    expect(result.log).not.toContain(secret.value);
+    expect(result.log.endsWith("x")).toBe(true);
+    const opened = result.log.lastIndexOf("{{secret:");
+    expect(opened === -1 || result.log.includes("}}", opened)).toBe(true);
+  }, 30_000);
 });
 
 describe("flow script executor — the heap verdict", () => {
@@ -418,6 +443,41 @@ describe("flow script executor — redaction", () => {
     });
 
     expect(result.log).toBe("id={{secret:OKEN}} and {{secret:TOKEN_ABC}}\n");
+  });
+
+  it("refuses a document whose redacted key would replace a sibling", async () => {
+    const ws = workspace();
+    const script = ws.write("collide.mjs", `output.doc = { "ab": 1, "{{secret:s}}": 2 };`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [{ name: "s", value: "ab" }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain("Two keys in the script's output become \"");
+    expect(result.failure?.message).toContain("{{secret:s}}");
+    expect(result.output).toBeUndefined();
+  });
+
+  it("replaces a value that starts inside marker-shaped text the script printed", async () => {
+    const ws = workspace();
+    // The shape a script echoing an unresolved placeholder writes: it looks
+    // like a marker, so skipping it whole would carry the value out in plain
+    // text — no pass ever visits a position inside a span that was jumped.
+    const script = ws.write("echoed.mjs", `console.log("head {{secret:TOK}}TAIL tail");`);
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      secrets: [
+        { name: "TOK", value: "tok" },
+        { name: "V", value: "TOK}}TAIL" },
+      ],
+    });
+
+    expect(result.log).not.toContain("TOK}}TAIL");
+    expect(result.log).toContain("{{secret:V}}");
   });
 
   it("replaces a secret split across two pipe chunks", async () => {

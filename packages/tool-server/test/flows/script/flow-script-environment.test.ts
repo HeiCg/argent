@@ -152,6 +152,28 @@ describe("flow script executor — the environment allowlist", () => {
     expect(result.failure?.message).toContain(name);
   });
 
+  // The operating system carries an environment as `NAME=value` strings, so
+  // neither of these can survive the trip: the first moves the split and hands
+  // the script `WEIRD="A=yes"`, an environment the flow never asked for, while
+  // the step passes; the second leaves an entry with no name in front of it.
+  it.each([
+    ["a name holding =", "WEIRD=A", 'contains "="'],
+    ["an empty name", "", "is empty"],
+  ])("refuses %s rather than handing it to the operating system", async (_label, name, said) => {
+    const ws = workspace();
+    const script = ws.write("env.mjs", reporter(["WEIRD"]));
+    const result = await executor().execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      env: { [name]: "yes" },
+    });
+
+    expect(result.failure?.kind).toBe("invalid");
+    expect(result.failure?.message).toContain(said);
+    expect(result.failure?.message).toContain(JSON.stringify(name));
+    expect(result.output).toBeUndefined();
+  });
+
   it.each(["ELECTRON_RUN_AS_NODE", "Electron_Run_As_Node"])(
     "boots the child as Node when the server's environment carries %s",
     async (name) => {
@@ -295,6 +317,33 @@ describe("flow script executor — the host's configured bounds", () => {
 
     expect(result.output?.execArgv).toContain("--max-old-space-size=96");
   });
+
+  it("reads both bounds again for every step, as the reference page promises", async () => {
+    const ws = workspace();
+    configuredHome(ws, { scripts: { maxTimeoutMs: 20_000, heapLimitMb: 96 } });
+    const script = ws.write("argv.mjs", `output.execArgv = process.execArgv;`);
+    // One executor across both steps: the tool server shares a single instance
+    // for the life of the process, so a value held from the first step would
+    // outlive every later edit of the file.
+    const shared = new FlowScriptExecutor({ concurrency: 4 });
+    const before = await shared.execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 45_000,
+    });
+    expect(before.notes.join(" ")).toContain("this host's maximum of 20s");
+    expect(before.output?.execArgv).toContain("--max-old-space-size=96");
+
+    configuredHome(ws, { scripts: { maxTimeoutMs: 40_000, heapLimitMb: 128 } });
+    const after = await shared.execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: 45_000,
+    });
+
+    expect(after.notes.join(" ")).toContain("this host's maximum of 40s");
+    expect(after.output?.execArgv).toContain("--max-old-space-size=128");
+  }, 30_000);
 });
 
 describe("flow script executor — the working directory", () => {
