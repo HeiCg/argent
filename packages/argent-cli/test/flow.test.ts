@@ -1663,6 +1663,32 @@ describe("argent flow run <dir>", () => {
     expect(out).toContain("PASS — 2 flows: 2 passed, 0 failed, 0 skipped");
   });
 
+  it("prints a passing script's output, the only record a green batch run leaves", async () => {
+    toolsClientMock.callTool.mockResolvedValue({
+      data: report({
+        steps: [
+          {
+            index: 0,
+            kind: "script",
+            status: "pass",
+            target: "scripts/seed.mjs",
+            scriptLog: "seeded order 4711\n",
+          },
+          { index: 1, kind: "tap", status: "pass" },
+        ],
+        passed: 2,
+      }),
+    });
+
+    await expect(flow(["run", flowsDir], opts)).rejects.toThrow("process.exit:0");
+
+    const out = logs.join("\n");
+    expect(out).toContain("✓  1 script scripts/seed.mjs");
+    expect(out).toContain("│ seeded order 4711");
+    // The widened gate still admits only the script step, not its neighbour.
+    expect(out).not.toMatch(/✓ {2}2 tap/);
+  });
+
   it("rejects directory runs with --json-stream", async () => {
     await expect(flow(["run", flowsDir, "--json-stream"], opts)).rejects.toThrow("process.exit:2");
 
