@@ -192,6 +192,19 @@ describe("flow script executor — a runner that misbehaves", () => {
     expect(result.failure?.stack).toMatch(/… \[\d+ more characters omitted]$/);
   });
 
+  it("re-checks an own __proto__ key even though a compliant child already did", async () => {
+    const result = await withFakeRunner(
+      `process.on("message", () => {
+         process.send({ type: "started" });
+         const doc = '{"settings":{"__proto__":{"injected":"yes"}}}';
+         process.send({ type: "result", outputJson: doc }, () => process.exit(0));
+       });`
+    );
+    expect(result.failure?.kind).toBe("output");
+    expect(result.failure?.message).toContain('output.settings has an own "__proto__" key');
+    expect(result.output).toBeUndefined();
+  });
+
   it("adds the secret fragment it drops to the count the omission reports", async () => {
     // The child clamps the message and has no secret list, so a value straddling
     // its cut leaves behind a prefix no whole-value replacement matches. Dropping

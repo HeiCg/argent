@@ -823,7 +823,59 @@ function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return failed("output", "The script's output was not an object.");
   }
+  const polluted = findOwnProtoKey(parsed as Record<string, unknown>);
+  if (polluted !== undefined) {
+    return failed(
+      "output",
+      `${polluted} has an own "__proto__" key; output must be JSON-compatible data.`
+    );
+  }
   return { ok: true, output: parsed as Record<string, unknown> };
+}
+
+/**
+ * The runner refuses this before it encodes, and the parent re-checks for the
+ * same reason it re-checks the size and the failure-text ceilings: the loader
+ * resolves whichever `.mjs` sits beside the compiled executor, so a stale or
+ * mismatched runner copy reaches this path. `JSON.parse` makes `__proto__` an
+ * own key, and committing one hands whatever merges the document into flow
+ * state a prototype to write rather than a property.
+ *
+ * Iterative for the reason `scrubDocument` is: the document came from a child
+ * that ran arbitrary code, and a deep one would overflow the stack inside a
+ * call that owes its caller a verdict, not a throw.
+ */
+function findOwnProtoKey(root: Record<string, unknown>): string | undefined {
+  const pending: Array<{ node: unknown; at: string }> = [{ node: root, at: "output" }];
+  while (pending.length > 0) {
+    const { node, at } = pending.pop()!;
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        const value = node[i];
+        if (value !== null && typeof value === "object") {
+          pending.push({ node: value, at: `${at}[${i}]` });
+        }
+      }
+      continue;
+    }
+    if (node === null || typeof node !== "object") continue;
+    const record = node as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (key === "__proto__") return at;
+      const value = record[key];
+      if (value !== null && typeof value === "object") {
+        pending.push({ node: value, at: `${at}${memberPath(key)}` });
+      }
+    }
+  }
+  return undefined;
+}
+
+const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/** Follows the runner's own `memberPath`, which this file cannot import. */
+function memberPath(key: string): string {
+  return IDENTIFIER_RE.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`;
 }
 
 /**
