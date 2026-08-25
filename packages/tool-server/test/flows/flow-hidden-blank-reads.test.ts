@@ -415,47 +415,10 @@ describe("compatibility miss note is scoped to a MISS", () => {
     expect(result.steps[0].reason).not.toMatch(/typographic variant/);
   });
 
-  it("quotes the hoisted subtree text twice when the located container near-misses", async () => {
-    // Pins the cost that `FLOW_TREE_MAX_DEPTH`'s note describes. When a `text`
-    // locator matches, the note quotes the located node's hoisted subtreeText,
-    // which `assertReason` already quoted. The reason carries that string twice,
-    // so it grows twice as fast as the cap admits descendants.
-    const HOISTED = "row-a-content row-b-content Add more languages…";
-    currentFetch = () => ({
-      tree: screen([
-        n({
-          identifier: "card",
-          subtreeText: HOISTED,
-          frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.4 },
-        }),
-      ]),
-      source: "native-devtools",
-    });
-
-    await writeFlow("hoisted-compat", {
-      executionPrerequisite: "",
-      steps: [
-        {
-          kind: "assert",
-          condition: "text",
-          selector: { identifier: "card" },
-          expectedText: "Add more languages...",
-        },
-      ],
-    });
-
-    const result = await run("hoisted-compat");
-    const reason = result.steps[0].reason ?? "";
-
-    expect(result.steps[0].status).toBe("fail");
-    expect(reason).toMatch(/typographic variant/);
-    expect(reason.split(HOISTED).length - 1).toBe(2);
-  });
-
   it("does not quote hoisted subtree text on the whole-tree walk an `exists` miss takes", async () => {
-    // The branch the cost note exempts. With nothing located, the walk reads each
-    // node's own label and value, never its subtreeText, so this reason does not
-    // grow with the cap.
+    // With nothing located, the walk reads each node's own label and value, never
+    // its subtreeText, so this reason quotes a leaf and not the whole hoisted
+    // card - which is why it does not grow with the depth cap.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -756,6 +719,47 @@ describe("text/equals failure notes are wired through the runner and scoped to t
 });
 
 describe("compatibility miss note: what it is scoped to", () => {
+  it("does not re-quote a label the reason already carries", async () => {
+    // On the located branch assertReason has already printed `its text was
+    // "<shown>"`. assertText prefers the hoisted subtreeText, so re-printing it
+    // in the note carried the whole aggregated card twice in one reason.
+    const CARD = `${"Total 42. ".repeat(140)}Add more languages…`;
+    const TYPED = `${"Total 42. ".repeat(140)}Add more languages...`;
+    currentFetch = () => ({
+      tree: screen([
+        n({
+          identifier: "card",
+          subtreeText: CARD,
+          frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.4 },
+        }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("compat-no-requote", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { identifier: "card" },
+          expectedText: TYPED,
+          textMatch: "equals",
+        },
+      ],
+    });
+
+    const result = await run("compat-no-requote");
+    const reason = result.steps[0].reason!;
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(reason).toMatch(/typographic variant/);
+    // The label prints once, and the expectation once. Not the label twice: the
+    // reason fits both plus the prose, where a second copy could not.
+    expect(reason.split("Add more languages…").length - 1).toBe(1);
+    expect(reason.length).toBeLessThan(CARD.length + TYPED.length + 1000);
+  });
+
   it("names only an element the REST of the selector could have accepted", async () => {
     // The walk must re-apply role, id and scopes, not the text test alone.
     currentFetch = () => ({
@@ -1074,7 +1078,7 @@ describe("compatibility miss note: what it is scoped to", () => {
 
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/typographic variant/);
-    expect(result.steps[0].reason).toMatch(/does show "Add more languages…"/);
+    expect(result.steps[0].reason).toMatch(/text is "Add more languages…"/);
   });
 
   it("fires on a PARTIAL miss, the default comparator's own shape", async () => {
@@ -1232,7 +1236,7 @@ describe("compatibility miss note: what it is scoped to", () => {
 
     const result = await run("plain-quote");
 
-    expect(result.steps[0].reason).toMatch(/does show "Add more languages…"/);
+    expect(result.steps[0].reason).toMatch(/text is "Add more languages…"/);
     expect(result.steps[0].reason).not.toMatch(/<U\+/);
   });
 
@@ -1341,9 +1345,12 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
     expect(result.steps[0].reason).not.toMatch(/invisible characters/);
   });
 
-  it("stays quiet when the ignorable is not why the pattern missed", async () => {
-    // Without a relevance gate the note fires on every `matches` failure whose
-    // text carries an ignorable, even when the ignorable is not the cause.
+  it("names the invisible without claiming it is why the pattern missed", async () => {
+    // The note states a fact about the text rather than diagnosing the miss.
+    // Re-running the author's pattern on the stripped text to prove causality
+    // is what an ignorable-blocked anchored pattern makes catastrophic, and it
+    // is the more useful sentence anyway: a pattern corrected for some other
+    // reason still has to account for these characters on the next run.
     currentFetch = () => ({
       tree: screen([
         n({
@@ -1372,11 +1379,46 @@ describe("a `matches` (regex) miss still explains an invisible it cannot see", (
 
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/but its text was/);
-    // The text does not match "Alice Jones" with or without the wrapper, so
-    // there is no note. The `<U+202A>` in the quoted label is quoteScreenText.
+    expect(result.steps[0].reason).toMatch(/the text carries/);
+    // It reports what the text holds. It does not say this is the reason.
     expect(result.steps[0].reason).not.toMatch(/must account for/);
+    expect(result.steps[0].reason).toMatch(/has to match them literally/);
+    // The wrapper is dropped from the quoted label, not named: the fold strips
+    // it, so the screen draws none of it.
+    expect(result.steps[0].reason).not.toMatch(/<U\+202A>/);
+    expect(result.steps[0].reason).toMatch(/its text was "Bob Smith"/);
+  });
+
+  it("stays quiet when the pattern already spells the invisible out", async () => {
+    // Nothing to point out: the author accounted for every one of them.
+    currentFetch = () => ({
+      tree: screen([
+        n({
+          identifier: "who",
+          label: "\u202ABob Smith\u202C",
+          frame: { x: 0.1, y: 0.1, width: 0.8, height: 0.05 },
+        }),
+      ]),
+      source: "native-devtools",
+    });
+
+    await writeFlow("matches-spelled", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { identifier: "who" },
+          expectedText: "^\u202AAlice Jones\u202C$",
+          textMatch: "matches",
+        },
+      ],
+    });
+
+    const result = await run("matches-spelled");
+
+    expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).not.toMatch(/the text carries/);
-    expect(result.steps[0].reason).toMatch(/<U\+202A>/);
   });
 
   it("stays quiet when the text carries no invisible at all", async () => {
@@ -1507,6 +1549,6 @@ describe("evidence and tree-source gaps the widened match set now reaches", () =
 
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toMatch(/typographic variant/);
-    expect(result.steps[0].reason).toMatch(/does show "Add more languages…"/);
+    expect(result.steps[0].reason).toMatch(/text is "Add more languages…"/);
   });
 });

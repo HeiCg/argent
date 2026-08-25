@@ -31,11 +31,6 @@ describe("resolveFileInputs", () => {
   });
 
   it("reports which targets the CLIENT derived, so an error need not read them back", async () => {
-    // The distinction is the spec's own template. `${input}` interpolates the
-    // target itself, so the wrapper carries what the caller wrote;
-    // flow-execute's `flow_file` spec is built from `project_root` + `name`, so
-    // the client synthesizes it. Only the second kind may be dropped from a
-    // "You sent:" clause.
     const filePath = path.join(tmpDir, "derived.yaml");
     await fs.writeFile(filePath, "steps: []\n");
     const st = await fs.stat(filePath);
@@ -56,8 +51,6 @@ describe("resolveFileInputs", () => {
   });
 
   it("does not call a derived target the client's when the CALLER set it as a plain value", async () => {
-    // An explicit override is not a wrapper, so the client never built it and
-    // the caller owns the key.
     const specs: FileInputSpec[] = [
       { target: "derived", path: "${root}/flows/${input}.yaml", kind: "file" },
     ];

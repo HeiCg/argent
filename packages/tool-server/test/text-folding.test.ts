@@ -12,7 +12,9 @@ import {
   quoteScreenText,
   includesCI,
   selectorToFrame,
+  ignorableTextNote,
   textMatches,
+  typographicVariantNote,
   uiTreeMatchInternals,
 } from "../src/utils/ui-tree-match";
 import type { DescribeNode } from "../src/tools/describe/contract";
@@ -28,6 +30,8 @@ const BOM = "﻿";
 const SOFT_HYPHEN = "­";
 const VARIATION_SELECTOR_16 = "️";
 const IDEOGRAPHIC_SPACE = "　";
+// U+180B-U+180D and U+180F, the Mongolian block of `\p{Variation_Selector}`.
+const MONGOLIAN_VARIATION_SELECTORS = ["᠋", "᠌", "᠍", "᠏"];
 
 describe("foldText", () => {
   it("reduces every space-like codepoint to a plain space", () => {
@@ -85,6 +89,15 @@ describe("foldText", () => {
     expect(foldText(`ok${VARIATION_SELECTOR_16}`)).not.toBe("ok");
   });
 
+  it("keeps the MONGOLIAN variation selectors, the third block of the property", () => {
+    // U+180B-U+180D and U+180F each pick which glyph form of the preceding
+    // Mongolian letter is drawn, exactly as VS1-16 do elsewhere.
+    for (const fvs of MONGOLIAN_VARIATION_SELECTORS) {
+      expect(foldText(`ᠠ${fvs}`)).not.toBe("ᠠ");
+      expect(equalsCI(`ᠭᠠ${fvs}ᠯ`, "ᠭᠠᠯ")).toBe(false);
+    }
+  });
+
   it("applies NFC, collapses whitespace runs, trims and lowercases", () => {
     expect(foldText("Cafe\u0301")).toBe(foldText("Café"));
     expect(foldText("  Save   Changes \n")).toBe("save changes");
@@ -121,12 +134,30 @@ describe("foldText", () => {
     expect(confusableTextNote("Line one\n\nLine two", "Line one\nLine two")).toBeUndefined();
   });
 
-  it("counts only an INTERIOR break, so outer whitespace stays a space", () => {
-    // A break at the edge separates no glyphs, and foldText trims it. The
-    // untrimmed foldLoose leaves it a space, so a boundary needle still matches.
+  it("counts an EDGE break too, so a needle's own edge stays a break", () => {
+    // foldText trims an edge break away, so the two whole-string comparators
+    // are unaffected. The untrimmed foldLoose keeps it, and a needle's edge is
+    // an interior position of the label, so the two sides must agree there.
     expect(foldText("\nSign in\n")).toBe("sign in");
     expect(includesCI("  Save   Changes \n", "Changes ")).toBe(true);
     expect(equalsCI("Sign in\n", "Sign in")).toBe(true);
+    // A needle copied character-for-character out of a two-line label matches it.
+    expect(includesCI("Line one\nLine two", "\nLine two")).toBe(true);
+    expect(includesCI("Line one\nLine two", "Line one\n")).toBe(true);
+    // And a needle asking for a break does not match a label that has none.
+    expect(includesCI("bar foo", "\nfoo")).toBe(false);
+    expect(includesCI("bar foo", "bar\n")).toBe(false);
+  });
+
+  it("folds the three that move only WHERE the line breaks, a documented cost", () => {
+    // Measured in Chromium at 20px text: "ตา<ZWSP>กลม" draws ตา / กลม and
+    // "ตาก<ZWSP>ลม" draws ตาก / ลม, while U+2060 and U+FEFF move the break the
+    // bare CJK string takes. Dropping a stray ZWSP is the point of the fold, so
+    // this is deliberate — but `equals` therefore cannot pin the segmentation,
+    // and the docs say so rather than claiming the set is inert.
+    expect(equalsCI("ตา​กลม", "ตาก​ลม")).toBe(true);
+    expect(equalsCI("日本語", "日本⁠語")).toBe(true);
+    expect(equalsCI("日本語", "日本﻿語")).toBe(true);
   });
 
   it("keeps COMPATIBILITY variants distinct — the eye can see those", () => {
@@ -428,6 +459,26 @@ describe("confusableTextNote", () => {
     expect(short).toContain("U+0053 U+0061 U+0076 U+0065 U+034F");
   });
 
+  it("windows BOTH dumps on the same region, not each on its own centre", () => {
+    // Only one side holds the blocker, so a per-string centre sent the other
+    // side back to index 0 and the two lists described different parts of the
+    // label — while the note's `actual [...] vs expected [...]` shape invites
+    // reading them side by side.
+    const lead = "Your order was placed on 14 March and will arrive by ";
+    const actual = `${lead}Save${CGJ}Changes tail`;
+    const expected = `${lead}SaveChanges tail`;
+    expect([...actual].length).toBeGreaterThan(48);
+    const note = confusableTextNote(actual, expected)!;
+    const [, gotActual, gotExpected] = /actual \[(.+)\] vs expected \[(.+)\]/.exec(note)!;
+    // Both windows reach the blocker's neighbourhood: each ends on "tail", and
+    // the expected side shows the position the CGJ occupies in the actual one.
+    const TAIL = "U+0074 U+0061 U+0069 U+006C";
+    expect(gotActual.endsWith(TAIL)).toBe(true);
+    expect(gotExpected.endsWith(TAIL)).toBe(true);
+    expect(gotActual).toContain("U+0065 U+034F U+0043");
+    expect(gotExpected).toContain("U+0065 U+0043");
+  });
+
   it("stays silent for a prepended concatenation mark, which is NOT ignorable", () => {
     // U+110BD is category Cf, but it changes how the digits after it render.
     expect(confusableTextNote("PLN 42\u{110BD}", "PLN 42")).toBeUndefined();
@@ -459,6 +510,20 @@ describe("confusableTextNote", () => {
     expect(note).toContain("U+00AD");
   });
 
+  it("never claims the quoted string is DRAWN, because a label may be an a11y name", () => {
+    // `label` is the accessibility name on every adapter that feeds the notes,
+    // so on an icon-only control it is the node's only text and the screen
+    // draws none of it. A soft hyphen in a name that is never laid out paints
+    // no hyphen either, so "the screen and the text really do differ" was the
+    // opposite of the truth for the very string being quoted.
+    const note = confusableTextNote(`Con${SOFT_HYPHEN}firm`, "Confirm")!;
+    expect(note).toContain("changes what IS drawn");
+    expect(note).toContain("a real difference");
+    expect(note).not.toContain("the screen and the text");
+    expect(typographicVariantNote("Loading…")).toContain(`the element's text is "Loading…"`);
+    expect(typographicVariantNote("Loading…")).not.toContain("the screen does show");
+  });
+
   it("says the same of U+180E, which does ZWNJ's job", () => {
     // U+180E breaks the same Arabic cursive run that ZWNJ breaks.
     expect(equalsCI("ب᠎ب", "بب")).toBe(false);
@@ -466,6 +531,15 @@ describe("confusableTextNote", () => {
     expect(note).not.toContain("differ only in invisible characters");
     expect(note).toContain("changes what IS drawn");
     expect(note).toContain("U+180E");
+  });
+
+  it("stays SILENT on a Mongolian variation selector, as it does on VS1-16", () => {
+    // An FVS picks the glyph form of the letter before it, so a difference in
+    // one is a rendering difference. The note must not report it as invisible.
+    for (const fvs of MONGOLIAN_VARIATION_SELECTORS) {
+      expect(confusableTextNote(`ᠭᠠ${fvs}ᠯ`, "ᠭᠠᠯ")).toBeUndefined();
+      expect(confusableTextNoteIn(`ᠭᠠ${fvs}ᠯ`, "ᠭᠠᠯ")).toBeUndefined();
+    }
   });
 
   it("lets the reordering lead win a difference that is both", () => {
@@ -807,12 +881,50 @@ describe("the character sets are pinned member by member, not by a representativ
     expect(foldText(ENGLAND)).not.toBe(foldText("\u{1F3F4}"));
   });
 
-  it("spells out EVERY directional control in quoted screen text, not only RLO", () => {
-    for (const ch of ["؜", "‎", "‏", "‪", "‫", "‬", "‭", "‮", "⁦", "⁧", "⁨", "⁩"]) {
+  it("spells out EVERY directional control the fold keeps, not only RLO", () => {
+    // The RTL-imposing controls always survive the fold, so they always reorder
+    // the rest of the message and are always named.
+    for (const ch of ["؜", "‏", "‫", "‮", "⁧"]) {
       const cp = `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
       expect(quoteScreenText(`a${ch}b`), cp).toBe(`a<${cp}>b`);
     }
+    // The LTR wrappers survive it only beside content the bidi algorithm can
+    // reorder. There they are named too.
+    for (const ch of ["‎", "‪", "‬", "‭", "⁦", "⁨", "⁩"]) {
+      const cp = `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+      expect(quoteScreenText(`شارع${ch}b`), cp).toBe(`شارع<${cp}>b`);
+    }
     expect(quoteScreenText("Add more languages…")).toBe("Add more languages…");
+  });
+
+  it("DROPS an LTR wrapper the fold strips, rather than naming it", () => {
+    // Naming it printed eight characters of ASCII the screen does not draw, one
+    // line above "copy the text exactly as it is quoted here" — and copying
+    // the named form missed a second time.
+    expect(quoteScreenText("‪Add more…‬")).toBe("Add more…");
+    expect(includesCI("‪Add more…‬", quoteScreenText("‪Add more…‬"))).toBe(true);
+    expect(quoteScreenText("‪Hubert Gancarczyk‬")).toBe("Hubert Gancarczyk");
+  });
+
+  it("never re-runs the author's pattern, which is what makes the note explosive", () => {
+    // When an ignorable blocks an ANCHORED pattern the real comparison dies in
+    // O(1) — the engine never enters the quantifier — while the same pattern on
+    // the stripped label backtracks. Node's engine is not interruptible and the
+    // server is single-threaded, so nothing could stop it. Measured before this
+    // guard: 0.015 ms for the comparison, 1,005 ms for the note.
+    const BOMB = "^(A+)+b$";
+    const label = `${ZWSP}${"A".repeat(30)}`;
+    expect(textMatches(label, BOMB, "matches")).toBe(false);
+    const started = performance.now();
+    const note = ignorableTextNote(label, BOMB);
+    expect(performance.now() - started).toBeLessThan(50);
+    expect(note).toContain("U+200B");
+  });
+
+  it("stays silent when the pattern already spells every ignorable out", () => {
+    expect(ignorableTextNote(`a${ZWSP}b`, `a${ZWSP}c`)).toBeUndefined();
+    expect(ignorableTextNote(`a${ZWSP}b`, "a.c")).toContain("U+200B");
+    expect(ignorableTextNote("plain text", "^plain$")).toBeUndefined();
   });
 
   it("keeps compatibilityVariantIn silent when the needle genuinely matches", () => {
