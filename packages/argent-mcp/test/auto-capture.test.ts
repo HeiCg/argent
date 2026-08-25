@@ -15,7 +15,7 @@ import {
   normalizeToolName,
   shouldAutoScreenshot,
   getAutoScreenshotDelayMs,
-} from "../src/auto-screenshot.js";
+} from "../src/auto-capture.js";
 
 // ---------------------------------------------------------------------------
 // normalizeToolName

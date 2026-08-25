@@ -1,6 +1,7 @@
 /**
- * Tunables and predicates for the screenshot the MCP layer appends after a
- * successful interaction tool call.
+ * Tunables and predicates for what the MCP layer appends after a successful
+ * interaction tool call: the auto-screenshot and the auto-describe element
+ * tree. Each has its own tool list and opt-out flag.
  */
 
 import { isFlagEnabled, type FlagsPathOptions } from "@argent/configuration-core";
