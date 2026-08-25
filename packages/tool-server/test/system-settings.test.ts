@@ -35,7 +35,12 @@ import {
 import { systemSettingsTool } from "../src/tools/system-settings";
 import { iosImpl } from "../src/tools/system-settings/platforms/ios";
 import { androidImpl } from "../src/tools/system-settings/platforms/android";
-import { SYSTEM_SETTINGS, TEXT_SIZE_VALUES } from "../src/tools/system-settings/types";
+import {
+  IOS_SUPPORTED_SETTINGS,
+  SETTING_VALUES,
+  SYSTEM_SETTINGS,
+  TEXT_SIZE_VALUES,
+} from "../src/tools/system-settings/types";
 import type { SystemSettingsParams } from "../src/tools/system-settings/types";
 import { adbShell, runAdb } from "../src/utils/adb";
 import { InvalidToolInputError } from "../src/utils/capability";
@@ -107,6 +112,46 @@ describe("system-settings failure codes are defined", () => {
       "ANDROID_SYSTEM_SETTING_FAILED",
     ] as const) {
       expect(typeof FAILURE_CODES[code], code).toBe("string");
+    }
+  });
+});
+
+describe("system-settings capability and mechanism coverage are pinned", () => {
+  // The capability object is load-bearing prose: `apple` is simulator-only
+  // because physical iPhones have no host-side equivalent, `android` covers
+  // emulator/device/unknown because `adb shell cmd uimode` / `settings put`
+  // work on both, and there is deliberately no `appleRemote` (sim-remote does
+  // not forward `simctl ui`, so claiming the block would accept `appearance`
+  // on a remote sim and fail inside the handler). None of that is enforced by
+  // types — assert the exact shape so a dropped flag or an added remote claim
+  // cannot ship silently.
+  it("declares exactly apple-simulator and android-everywhere support", () => {
+    expect(systemSettingsTool.capability).toEqual({
+      apple: { simulator: true },
+      android: { emulator: true, device: true, unknown: true },
+    });
+    expect(systemSettingsTool.capability).not.toHaveProperty("appleRemote");
+  });
+
+  // Every setting advertised as iOS-supported must have an `iosMechanism`
+  // case. The guard in iosImpl checks membership in IOS_SUPPORTED_SETTINGS
+  // while the mechanism switch is coupled to it only by hand: a member added
+  // without a case compiles fine, passes every per-setting test, and only
+  // explodes at runtime with an unclassified `No iOS mechanism for setting`.
+  it("resolves every iOS-supported setting through its real handler", async () => {
+    for (const setting of IOS_SUPPORTED_SETTINGS) {
+      execFileSucceeds();
+      const result = await iosImpl.handler(
+        {},
+        { udid: IOS_UDID, setting, value: SETTING_VALUES[setting][0] },
+        IOS_DEVICE
+      );
+      expect(result.setting, setting).toBe(setting);
+      expect(result.applied, setting).not.toContain("undefined");
+    }
+    // And the list itself stays inside the tool's vocabulary.
+    for (const setting of IOS_SUPPORTED_SETTINGS) {
+      expect(SYSTEM_SETTINGS, setting).toContain(setting);
     }
   });
 });
