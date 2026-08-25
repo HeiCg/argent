@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import { getDescribeTapPoint } from "../src/tools/describe/contract";
 import {
+  captureRunnerScreenshotPng,
   captureSnapshot,
   getViewport,
   tapAt,
@@ -151,5 +152,34 @@ describe("getViewport", () => {
     const signal = getFailureSignal(error);
     expect(signal?.error_code).toBe(FAILURE_CODES.TOOL_INPUT_INVALID);
     expect(signal?.failure_stage).toBe("ios_device_viewport");
+  });
+});
+
+describe("captureRunnerScreenshotPng", () => {
+  it("runs the device-scoped screenshot readOnly under the caller's timeout and decodes the PNG", async () => {
+    const bytes = Buffer.from("png-bytes");
+    const run = vi.fn().mockResolvedValue({ imageBase64: bytes.toString("base64") });
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    const png = await captureRunnerScreenshotPng(api, 4_000);
+
+    expect(png.equals(bytes)).toBe(true);
+    // App-agnostic capture: no appBundleId on the wire, and the timeout is the
+    // caller's own budget (30s for the screenshot tool, the settle's remaining
+    // round for flow-pixels), never a constant baked in here.
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith(
+      { command: "screenshot" },
+      { readOnly: true, timeoutMs: 4_000 }
+    );
+  });
+
+  it("throws the canonical message when the reply carries no inline image data", async () => {
+    const run = vi.fn().mockResolvedValue({});
+    const api: IosDeviceRunnerApi = { udid: "00008110-000978540290401E", run };
+
+    await expect(captureRunnerScreenshotPng(api, 30_000)).rejects.toThrow(
+      "Runner screenshot returned no inline image data."
+    );
   });
 });

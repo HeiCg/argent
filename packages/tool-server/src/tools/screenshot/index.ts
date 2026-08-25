@@ -16,6 +16,7 @@ import {
   supportsHostScreenshot,
 } from "../../utils/ios-device/devicectl";
 import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
+import { captureRunnerScreenshotPng } from "../../utils/ios-device/runner-commands";
 import { simctlArgsForUdid } from "../../utils/ios-device-sets";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { requireArtifacts, type ArtifactHandle } from "../../artifacts";
@@ -118,10 +119,9 @@ async function iosPhysicalScreenshot(
 }
 
 /**
- * Device-wide capture (XCUIScreen) through the on-device XCUITest runner: its
- * `screenshot` command is app-agnostic and always answers with an inline
- * base64 PNG, which lands in `file`. `cause` chains the devicectl failure that
- * sent the capture here, when there was one.
+ * Device-wide capture through the on-device XCUITest runner
+ * (captureRunnerScreenshotPng), landing in `file`. `cause` chains the
+ * devicectl failure that sent the capture here, when there was one.
  */
 async function runnerScreenshotToFile(
   registry: Registry,
@@ -131,17 +131,14 @@ async function runnerScreenshotToFile(
 ): Promise<void> {
   const ref = iosDeviceRunnerRef(device);
   const runner = (await registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
-  const data = (await runner.run(
-    { command: "screenshot" },
-    { readOnly: true, timeoutMs: 30_000 }
-  )) as { imageBase64?: string };
-  if (!data.imageBase64) {
-    throw new Error(
-      "Runner screenshot returned no inline image data.",
-      cause === undefined ? undefined : { cause }
-    );
+  try {
+    await fs.writeFile(file, await captureRunnerScreenshotPng(runner, 30_000));
+  } catch (error) {
+    if (cause !== undefined && error instanceof Error && error.cause === undefined) {
+      error.cause = cause;
+    }
+    throw error;
   }
-  await fs.writeFile(file, Buffer.from(data.imageBase64, "base64"));
 }
 
 /**

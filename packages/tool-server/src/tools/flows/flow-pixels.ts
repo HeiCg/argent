@@ -7,6 +7,7 @@ import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-c
 import { iosDeviceRunnerRef, type IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 import { isAndroidTv } from "../../utils/adb";
 import { isIosPhysicalDevice } from "../../utils/device-info";
+import { captureRunnerScreenshotPng } from "../../utils/ios-device/runner-commands";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { captureVegaScreenshotPng } from "../../utils/vega-screen";
 import { FIRST_FRAME_WAIT_MS, httpScreenshot } from "../../utils/simulator-client";
@@ -328,16 +329,12 @@ async function captureFile(env: ActionEnv, budgetMs: number): Promise<string> {
 async function captureIosDeviceFile(env: ActionEnv, budgetMs: number): Promise<string> {
   const ref = iosDeviceRunnerRef(env.device);
   const runner = (await env.registry.resolveService(ref.urn, ref.options)) as IosDeviceRunnerApi;
-  const data = (await runner.run(
-    { command: "screenshot" },
-    { readOnly: true, timeoutMs: budgetMs }
-  )) as { imageBase64?: string };
-  if (!data.imageBase64) throw new Error("runner screenshot returned no image data");
+  const png = await captureRunnerScreenshotPng(runner, budgetMs);
   const file = path.join(
     os.tmpdir(),
     `argent-ios-device-settle-${env.device.id.slice(0, 8)}-${process.hrtime.bigint()}.png`
   );
-  await fs.writeFile(file, Buffer.from(data.imageBase64, "base64"));
+  await fs.writeFile(file, png);
   await downscalePngInPlace(file, CAPTURE_SCALE, captureAbortSignal(env, budgetMs));
   return file;
 }

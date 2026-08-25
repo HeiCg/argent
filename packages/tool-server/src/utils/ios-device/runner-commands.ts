@@ -176,6 +176,27 @@ export async function pressKeyboardReturn(
   await api.run({ command: "keyboardReturn", appBundleId: bundleId });
 }
 
+/**
+ * Device-wide capture (XCUIScreen) through the runner's `screenshot` command:
+ * app-agnostic (no `appBundleId`), always answered with an inline base64 PNG,
+ * decoded here to bytes. The caller owns the timeout because the two consumers
+ * budget differently: the `screenshot` tool grants a flat 30s, the flow
+ * settle's poll grants whatever remains of its round. File naming, write
+ * location and downscaling stay with the callers too.
+ */
+export async function captureRunnerScreenshotPng(
+  api: IosDeviceRunnerApi,
+  timeoutMs: number
+): Promise<Buffer> {
+  const data = (await api.run({ command: "screenshot" }, { readOnly: true, timeoutMs })) as {
+    imageBase64?: string;
+  };
+  if (!data.imageBase64) {
+    throw new Error("Runner screenshot returned no inline image data.");
+  }
+  return Buffer.from(data.imageBase64, "base64");
+}
+
 export interface RunnerSnapshotNode {
   index: number;
   type: string;
