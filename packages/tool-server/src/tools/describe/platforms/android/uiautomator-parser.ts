@@ -294,6 +294,10 @@ function isInteractive(attrs: Record<string, string>): boolean {
 export function deriveUiAutomatorRoleInContext(
   className: string,
   attrs: Record<string, string>,
+  // `hasChildren` is the RAW published child count, never the count that
+  // survives a trim: the two trees prune differently, so a role derived from
+  // each tree's own survivors would drift apart on exactly the nodes this
+  // function exists to keep in step.
   ctx: { inWebView: boolean; label: string; hasChildren: boolean }
 ): string {
   if (
@@ -628,7 +632,12 @@ function computeNodeOutput(
   const role = deriveUiAutomatorRoleInContext(cls, attrs, {
     inWebView,
     label,
-    hasChildren: keptChildren.length > 0,
+    // The published child count, not `keptChildren`: a text run is childless in
+    // the dump itself, and the flow selector tree reads the same dump with its
+    // own (wider) trim. Reading survivors here would report `StaticText` for a
+    // container whose children this trim dropped while the flow tree still
+    // reported `View` — the mismatch a copied `role` selector then fails on.
+    hasChildren: parsed.children.some((c) => c.tag === "node"),
   });
 
   const node = makeUiNode(attrs, role, bounds, label, keptChildren);

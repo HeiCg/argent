@@ -497,4 +497,27 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
     expect(roleOf(flow, "Native label")).toBe("View");
     expect(roleOf(describeTree, "Native label")).toBe("View");
   });
+
+  // "Childless" has to be read off the dump both trees parse, never off each
+  // tree's own survivors: the two trim differently, so a labelled web container
+  // whose only child the describe trim drops would read as `StaticText` there
+  // and stay `View` here — the same copied-role mismatch, one shape further in.
+  it("agrees on a web container whose only child the describe trim drops", () => {
+    const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" class="android.widget.FrameLayout" package="com.acme.app" bounds="[0,0][1080,1920]">
+    <node index="0" class="android.webkit.WebView" package="com.acme.app" bounds="[0,200][1080,1200]">
+      <node index="0" class="android.view.View" content-desc="Heading" package="com.acme.app" bounds="[20,260][220,320]">
+        <node index="0" class="android.view.View" package="com.acme.app" bounds="[0,0][0,0]" />
+      </node>
+    </node>
+  </node>
+</hierarchy>`;
+    const flow = adaptFullAndroidHierarchyToDescribeResult(xml, SCREEN_W, SCREEN_H);
+    const describeTree = parseUiAutomatorDump(xml, SCREEN_W, SCREEN_H);
+    const roleOf = (tree: DescribeNode, label: string): string | undefined =>
+      findAll(tree, { text: label })[0]?.role;
+
+    expect(roleOf(describeTree, "Heading")).toBe(roleOf(flow, "Heading"));
+  });
 });
