@@ -145,6 +145,15 @@ const CASES = {
       summary: "1. tap: (0.5, 0.25)",
       target: "(0.5, 0.25)",
     },
+    {
+      // The universal selector prints as CSS spells it — the `*` is what keeps
+      // a scope-only target from rendering as an empty label. A scopeless
+      // `{ any: true }` is not authorable: selectorToYaml rejects it, so the
+      // scoped shape below is the reachable one.
+      step: { kind: "tap", selector: { any: true, within: { identifier: "nav" } } },
+      summary: '1. tap: {"any":true,"within":{"id":"nav"}}',
+      target: "* within (id=nav)",
+    },
   ],
   "long-press": [
     {
@@ -163,14 +172,22 @@ const CASES = {
     {
       step: { kind: "type", into: { identifier: "email" }, text: "a@b.c" },
       summary: '1. type: {"id":"email"} ← "a@b.c"',
-      target: "into id=email",
+      target: 'into id=email ← "a@b.c"',
     },
     {
       // The text is JSON-quoted, so embedded quotes and control characters
       // stay unambiguous in the one-line summary.
       step: { kind: "type", into: { identifier: "bio" }, text: 'say "hi"\none' },
       summary: '1. type: {"id":"bio"} ← "say \\"hi\\"\\none"',
-      target: "into id=bio",
+      target: 'into id=bio ← "say \\"hi\\"\\none"',
+    },
+    {
+      // Two steps differing only by the typed text must not collapse to the
+      // same report target, the way await/assert targets carry their
+      // expectation.
+      step: { kind: "type", into: { identifier: "email" }, text: "other@b.c" },
+      summary: '1. type: {"id":"email"} ← "other@b.c"',
+      target: 'into id=email ← "other@b.c"',
     },
   ],
   "await": [

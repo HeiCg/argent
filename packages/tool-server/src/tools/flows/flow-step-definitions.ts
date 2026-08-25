@@ -74,7 +74,11 @@ function selectorLabel(sel: FlowSelector): string {
   // The universal selector prints as CSS spells it, so a scope-only target
   // never renders as an empty label.
   if (sel.any) parts.push("*");
-  if (sel.text !== undefined) parts.push(`"${sel.text}"`);
+  // Text literals use JSON quoting, the module's own convention for literals
+  // (see `yamlTextConditionLabel`): a raw `"…"` delimiter is indistinguishable
+  // from content when the text itself carries quotes, and an embedded newline
+  // breaks the one-line-per-target report shape.
+  if (sel.text !== undefined) parts.push(JSON.stringify(sel.text));
   if (sel.textMatches !== undefined) parts.push(`/${sel.textMatches}/`);
   if (sel.identifier) parts.push(`id=${sel.identifier}`);
   if (sel.role) parts.push(`role=${sel.role}`);
@@ -267,7 +271,10 @@ const FLOW_STEP_DEFINITIONS: {
   "long-press": POINT_GESTURE_STEP,
   "type": {
     summary: (step) => `${yamlSelectorLabel(step.into)} ← ${JSON.stringify(step.text)}`,
-    target: (step) => `into ${selectorLabel(step.into)}`,
+    // The typed text rides along, the way an await/assert target carries its
+    // expectation: two steps into the same field with different text would
+    // otherwise render identical targets.
+    target: (step) => `into ${selectorLabel(step.into)} ← ${JSON.stringify(step.text)}`,
   },
   "await": UI_CONDITION_STEP,
   "assert": UI_CONDITION_STEP,
