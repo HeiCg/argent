@@ -12,7 +12,7 @@ import {
   isIosOrTvOsRuntimeId,
   type IosSimulator,
 } from "../../utils/ios-devices";
-import { simctlListDevices } from "../../utils/sim-remote";
+import { simctlListDevices, listedRuntimeEntries } from "../../utils/sim-remote";
 import { withRemotePrefix } from "../../utils/device-info";
 import { discoverChromiumDevices, type ChromiumDevice } from "../../utils/chromium-discovery";
 import {
@@ -86,7 +86,10 @@ async function listRemoteIosSimulators(): Promise<IosRemoteDevice[]> {
   try {
     const result = await simctlListDevices();
     const out: IosRemoteDevice[] = [];
-    for (const [runtime, devices] of Object.entries(result.devices)) {
+    // The same shape check `getRemoteSimulatorRuntimeKind` throws on, answered this
+    // branch's way — an unreadable payload is an absent platform by decision, not a
+    // TypeError the catch below happens to swallow.
+    for (const [runtime, devices] of listedRuntimeEntries(result) ?? []) {
       // Same iOS/tvOS filter the local listing applies: a remote watchOS / xrOS sim
       // has no interaction surface, so it must not be advertised as an ios-remote target.
       if (!isIosOrTvOsRuntimeId(runtime)) continue;

@@ -67,6 +67,26 @@ export async function simctlListDevices(): Promise<SimRemoteListDevicesResult> {
   }
 }
 
+/**
+ * The listing's runtime-id -> simulators entries, or undefined when the payload
+ * parsed but isn't a listing (e.g. `{"error":...}` at exit 0). A runtime entry
+ * whose value is not an array is dropped, so one malformed entry costs its own
+ * simulators rather than every entry behind it.
+ *
+ * Callers share the shape check but not the verdict on undefined:
+ * `getRemoteSimulatorRuntimeKind` throws, `list-devices` reports the platform
+ * absent.
+ */
+export function listedRuntimeEntries(
+  listed: SimRemoteListDevicesResult
+): Array<[string, SimRemoteDevice[]]> | undefined {
+  const byRuntime = (listed as { devices?: unknown } | null)?.devices;
+  if (typeof byRuntime !== "object" || byRuntime === null) return undefined;
+  return Object.entries(byRuntime).filter((entry): entry is [string, SimRemoteDevice[]] =>
+    Array.isArray(entry[1])
+  );
+}
+
 // A simulator's runtime kind is fixed at creation, so memoize it per bare udid
 // and keep the `sim-remote simctl list` round-trip off repeated calls — the
 // same deal (and the same shape) as the local `getSimulatorRuntimeKind`, down
@@ -94,12 +114,11 @@ export async function getRemoteSimulatorRuntimeKind(
   const listed = await simctlListDevices();
   // A payload that parses but isn't a listing (e.g. `{"error":...}` at exit 0)
   // gets the same descriptive wrap as non-JSON output, not a raw TypeError.
-  const byRuntime = (listed as { devices?: unknown } | null)?.devices;
-  if (typeof byRuntime !== "object" || byRuntime === null) {
+  const entries = listedRuntimeEntries(listed);
+  if (!entries) {
     throw new Error("sim-remote simctl list devices --json returned JSON without a devices map");
   }
-  for (const [runtimeId, devices] of Object.entries(byRuntime)) {
-    if (!Array.isArray(devices)) continue;
+  for (const [runtimeId, devices] of entries) {
     // Mirror the local classifier's runtime filter, so a watchOS / xrOS sim comes
     // back unverifiable instead of falling into the `mobile` default below.
     if (!isIosOrTvOsRuntimeId(runtimeId)) continue;

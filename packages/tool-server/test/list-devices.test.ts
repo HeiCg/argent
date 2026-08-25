@@ -304,6 +304,69 @@ describe("list-devices", () => {
     expect(remote.map((d) => d.udid)).toContain("remote:11111111-1111-1111-1111-111111111111");
   });
 
+  it("reports no ios-remote devices when sim-remote answers JSON that is not a listing", async () => {
+    // An orchestrator that answers `{"error":...}` at exit 0 parses fine.
+    // `getRemoteSimulatorRuntimeKind` turns that into a descriptive throw; here the
+    // platform is simply absent, and the rest of the fan-out must still answer.
+    __resetVegaBinaryCacheForTests();
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "sim-remote" && args[0] === "simctl")
+        return { stdout: JSON.stringify({ error: "not authorized" }), stderr: "" };
+      if (cmd === "adb" && args[0] === "devices") {
+        return { stdout: "List of devices attached\nemulator-5554\tdevice\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const result = await listDevicesTool.execute!({}, {});
+    expect(result.devices.filter((d) => d.platform === "ios-remote")).toHaveLength(0);
+    expect(result.devices.filter((d) => d.platform === "android")).toHaveLength(1);
+  });
+
+  it("skips a runtime entry that is not a device array rather than losing the whole listing", async () => {
+    // A malformed entry under a runtime the filter accepts is the costly one: walking
+    // its value throws mid-loop, discarding every remote simulator already collected.
+    __resetVegaBinaryCacheForTests();
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "sim-remote" && args[0] === "simctl")
+        return {
+          stdout: JSON.stringify({
+            devices: {
+              "com.apple.CoreSimulator.SimRuntime.iOS-17-0": "nope",
+              "com.apple.CoreSimulator.SimRuntime.iOS-18-2": 7,
+              "com.apple.CoreSimulator.SimRuntime.iOS-18-4": [
+                {
+                  udid: "11111111-1111-1111-1111-111111111111",
+                  name: "iPhone 16",
+                  state: "Booted",
+                },
+              ],
+              "com.apple.CoreSimulator.SimRuntime.tvOS-17-5": [
+                {
+                  udid: "22222222-2222-2222-2222-222222222222",
+                  name: "Apple TV",
+                  state: "Shutdown",
+                },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      return { stdout: "", stderr: "" };
+    });
+
+    const result = await listDevicesTool.execute!({}, {});
+    const remote = result.devices.filter((d) => d.platform === "ios-remote") as Array<{
+      udid: string;
+      name: string;
+    }>;
+    expect(remote.map((d) => d.name).sort()).toEqual(["Apple TV", "iPhone 16"]);
+    expect(remote.map((d) => d.udid).sort()).toEqual([
+      "remote:11111111-1111-1111-1111-111111111111",
+      "remote:22222222-2222-2222-2222-222222222222",
+    ]);
+  });
+
   it("silently omits iOS when xcrun is unavailable — other platforms still returned", async () => {
     execFileMock.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "xcrun") {
