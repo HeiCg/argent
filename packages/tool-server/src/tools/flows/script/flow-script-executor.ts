@@ -501,9 +501,20 @@ export class FlowScriptExecutor {
           "--import",
           pathToFileURL(runnerPath).href,
         ],
+        // Index 3 is a sink, and the protocol channel sits above it. The
+        // channel is inherited by the script, Node parses it inside its own
+        // read callback, and a line that is not JSON throws from there — which
+        // reaches the tool server as an uncaughtException and takes the whole
+        // process down with it, the one thing this child exists to prevent. A
+        // write to descriptor 3 is the shape that reaches it: it is the first
+        // free number, so a feature-detecting shim or a daemonizing helper
+        // finds it without looking. Pointed at the null device, such a write
+        // fails on its own instead. Node deletes `NODE_CHANNEL_FD` from the
+        // child's environment, so nothing names the real one.
+        //
         // Index 4 is the lifeline: a pipe the parent holds open and never uses.
         // Its closing is how a runner learns its parent is gone.
-        stdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],
+        stdio: ["ignore", "pipe", "pipe", "ignore", "pipe", "ipc"],
         // On POSIX the runner leads its own process group so a group stop
         // aimed at the tool server does not also stop it, and so a group stop
         // aimed at the runner reaches its descendants. Windows has no such

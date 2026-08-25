@@ -281,6 +281,43 @@ describe("flow script executor — the protocol channel is the runner's alone", 
     expect(result.output).toEqual({ real: true });
   });
 
+  // Descriptor 3 is the first free number, so a feature-detecting shim or a
+  // daemonizing helper finds it without looking for it. While the channel was
+  // there, a line that is not JSON threw inside Node's own read callback in the
+  // parent, which reaches the tool server as an uncaughtException and ends the
+  // process — and half a line ahead of the runner's real frame made a finished
+  // script report as one that stopped its own process with nothing captured.
+  it.each([
+    ["text that is not a message", "garbage not json\n"],
+    ["an unterminated fragment", "X"],
+    [
+      "a whole forged verdict",
+      `${JSON.stringify({ type: "result", outputJson: '{"forged":true}' })}\n`,
+    ],
+  ])("survives a script writing %s onto the first free descriptor", async (_label, written) => {
+    const ws = workspace();
+    const script = ws.write(
+      "writes-fd3.mjs",
+      `import fs from "node:fs";
+       try { fs.writeSync(3, ${JSON.stringify(written)}); } catch {}
+       console.log("did the real work");
+       output.real = true;`
+    );
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown) => uncaught.push(err);
+    process.on("uncaughtException", onUncaught);
+    try {
+      const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
+
+      expect(uncaught).toEqual([]);
+      expect(result.failure).toBeUndefined();
+      expect(result.output).toEqual({ real: true });
+      expect(result.log).toContain("did the real work");
+    } finally {
+      process.off("uncaughtException", onUncaught);
+    }
+  });
+
   it("ignores a script disconnecting the channel", async () => {
     const ws = workspace();
     const script = ws.write("disconnects.mjs", `process.disconnect(); output.ok = true;`);
@@ -449,7 +486,9 @@ describe("flow script runner — the watchdogs, driven directly", () => {
         "--import",
         pathToFileURL(path.join(SOURCE_RUNNER_DIR, "flow-script-runner.mjs")).href,
       ],
-      stdio: ["ignore", "pipe", "pipe", "ipc", "pipe"],
+      // The executor's own layout: a sink where a script would find the
+      // first free descriptor, the lifeline at 4 and the protocol channel above.
+      stdio: ["ignore", "pipe", "pipe", "ignore", "pipe", "ipc"],
       detached: process.platform !== "win32",
     });
     cleanups.push(() => {
