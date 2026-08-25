@@ -107,6 +107,27 @@ const VERDICTS: Record<FlowScriptFailureKind, "fail" | "error"> = {
   invalid: "error",
 };
 
+/**
+ * Whether each failure leaves the author something to clean up. Total over the
+ * kinds, like {@link VERDICTS}: the dangerous mapping is a kind that DID fork
+ * being told "nothing ran", and a table listing only some kinds stays green
+ * while a kind moves in or out of the never-forked set.
+ */
+const RAN: Record<FlowScriptFailureKind, ScriptRan> = {
+  queue: "no",
+  spawn: "no",
+  invalid: "no",
+  protocol: "unknown",
+  load: "yes",
+  runtime: "yes",
+  output: "yes",
+  exit: "yes",
+  timeout: "yes",
+  cancelled: "yes",
+  signal: "yes",
+  heap: "yes",
+};
+
 describe("which side of the fail/error line a script failure lands on", () => {
   it.each(Object.entries(VERDICTS))("reports a %s failure as %s", async (kind, status) => {
     executeMock.mockResolvedValue(
@@ -186,15 +207,7 @@ describe("the recorder reports the verdict the runner will", () => {
     }
   );
 
-  it.each([
-    ["queue", "no"],
-    ["spawn", "no"],
-    ["invalid", "no"],
-    ["runtime", "yes"],
-    ["timeout", "yes"],
-    ["cancelled", "yes"],
-    ["protocol", "unknown"],
-  ] as [FlowScriptFailureKind, ScriptRan][])(
+  it.each(Object.entries(RAN) as [FlowScriptFailureKind, ScriptRan][])(
     "tells the author whether a %s failure left anything behind",
     async (kind, ran) => {
       // The executor answers three of its failures WITHOUT forking anything, so
