@@ -138,15 +138,18 @@ const ALLOWED_ENV_NAMES: readonly string[] = [
   "CI",
 ];
 
-const ALLOWED_ENV_PREFIXES: readonly string[] = ["npm_config_"];
+const NPM_CONFIG_ENV_PREFIX = "npm_config_";
+
+const ALLOWED_ENV_PREFIXES: readonly string[] = [NPM_CONFIG_ENV_PREFIX];
 
 /**
- * npm's own spelling of `NODE_OPTIONS`: it translates its `node-options` config
- * key back into the variable for what it starts, so the `npm_config_` prefix
- * would carry through what the exact name is reserved to keep out. Matched
- * case-insensitively on every platform, as npm reads its config names.
+ * npm config keys that reach `NODE_OPTIONS`, and so carry through the prefix
+ * above what the exact name is reserved to keep out. `node-options` is npm's
+ * own spelling of the variable — it hands the key back as `NODE_OPTIONS` to
+ * what it starts — and `userconfig` and `globalconfig` each name an `.npmrc`
+ * npm would read that key from.
  */
-const NPM_NODE_OPTIONS_ENV = "npm_config_node_options";
+const RESERVED_NPM_CONFIG_KEYS: readonly string[] = ["node-options", "userconfig", "globalconfig"];
 
 /**
  * Refused in a caller-supplied environment map, because each steers the
@@ -159,10 +162,32 @@ const RESERVED_ENV_NAMES: readonly string[] = [
   "NODE_CHANNEL_FD",
   "NODE_UNIQUE_ID",
   "NODE_OPTIONS",
-  NPM_NODE_OPTIONS_ENV,
   "ELECTRON_RUN_AS_NODE",
   RUNNER_ACTIVATION_ENV,
 ];
+
+/**
+ * One npm config has many environment spellings: npm matches the prefix without
+ * regard to case, lowercases the rest, and reads `_` and `-` as the same
+ * character everywhere but the key's first — so `npm_config_node_options`,
+ * `npm_config_node-options` and `NPM_CONFIG_NODE_OPTIONS` are one name to it.
+ * Refusing only the one written out would leave the others open on every
+ * platform, which is why this does not go through the exact list above.
+ */
+function reservedNpmConfigName(name: string): string | undefined {
+  const lower = name.toLowerCase();
+  if (!lower.startsWith(NPM_CONFIG_ENV_PREFIX)) return undefined;
+  const key = lower.slice(NPM_CONFIG_ENV_PREFIX.length).replace(/(?!^)_/g, "-");
+  return RESERVED_NPM_CONFIG_KEYS.includes(key) ? `${NPM_CONFIG_ENV_PREFIX}${key}` : undefined;
+}
+
+/** One spelling of each reserved name, for the refusal to name them all. */
+function reservedEnvNamesForMessage(): string {
+  return [
+    ...RESERVED_ENV_NAMES,
+    ...RESERVED_NPM_CONFIG_KEYS.map((key) => `${NPM_CONFIG_ENV_PREFIX}${key}`),
+  ].join(", ");
+}
 
 export interface FlowScriptSecret {
   name: string;
@@ -932,10 +957,8 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   );
   const reservedName = (name: string) =>
     RESERVED_ENV_NAMES.find((candidate) =>
-      caseInsensitive || candidate === NPM_NODE_OPTIONS_ENV
-        ? candidate.toLowerCase() === name.toLowerCase()
-        : candidate === name
-    );
+      caseInsensitive ? candidate.toLowerCase() === name.toLowerCase() : candidate === name
+    ) ?? reservedNpmConfigName(name);
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
@@ -960,7 +983,7 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
       throw new ScriptSetupError(
         "invalid",
         `${name} cannot be set for a script: it steers the runner's own process ` +
-          `(reserved names: ${RESERVED_ENV_NAMES.join(", ")}).`
+          `(reserved names: ${reservedEnvNamesForMessage()}).`
       );
     }
     env[name] = value;
