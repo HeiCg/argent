@@ -13,7 +13,7 @@ const execFileAsync = promisify(execFile);
 /**
  * Build + launch orchestration for Argent's on-device XCUITest runner
  * (packages/ios-device-runner). The runner is a UI-test bundle whose single
- * `testServeCommands` method hosts an HTTP command server and parks for 24h —
+ * `testServeCommands` method hosts an HTTP command server and parks for 24h;
  * see that package's PROTOCOL.md for the wire contract.
  *
  * Device runners must be signed with the USER's Apple team, so artifacts are
@@ -25,7 +25,7 @@ const execFileAsync = promisify(execFile);
  * a new cache directory and rebuilds, so the wire protocol needs no version
  * handshake. Superseded cache directories (and per-session xctestrun clones
  * and launch logs) are swept best-effort after each successful artifact
- * resolution — see `sweepRunnerStorage`.
+ * resolution; see `sweepRunnerStorage`.
  */
 
 /** Env-configurable signing. Automatic signing + team id covers most setups. */
@@ -54,7 +54,7 @@ export function resolveRunnerSigningConfig(): RunnerSigningConfig {
  * Locate the runner's Xcode project. Both src (ts-node) and dist layouts sit
  * at the same depth below packages/tool-server, so a fixed walk-up works for
  * dev and built runs alike; ARGENT_IOS_RUNNER_PROJECT overrides for exotic
- * installs. `exists` is a test seam over the filesystem probe — the walk-up
+ * installs. `exists` is a test seam over the filesystem probe: the walk-up
  * candidate exists in every real checkout, so the not-found arm is only
  * reachable through it.
  */
@@ -151,12 +151,12 @@ function logsRoot(): string {
 /**
  * Find the base (non-env-clone) device .xctestrun under a derived-data dir.
  * Env clones are named `*.env.*.xctestrun` and must never be picked as the
- * base — they carry a previous session's port.
+ * base; they carry a previous session's port.
  *
  * Existence is trusted as validity: a hit here is what makes
  * `ensureRunnerArtifact` skip the build, so a torn file (an interrupted
- * build) keeps hitting until something intervenes. That is deliberate — a
- * content probe would re-parse the plist on every start — because the
+ * build) keeps hitting until something intervenes. That is deliberate (a
+ * content probe would re-parse the plist on every start) because the
  * poisoning IS caught one step later, when `prepareXctestrunWithPort` throws
  * `XctestrunFormatError`, and the blueprint self-heals a cached artifact by
  * wiping this derived dir and forcing one rebuild.
@@ -204,11 +204,11 @@ export function resolveSigningHint(output: string): string | null {
 const BUILD_TIMEOUT_MS = 15 * 60 * 1000;
 
 /**
- * The static xcodebuild arguments of a runner build — everything except the
+ * The static xcodebuild arguments of a runner build: everything except the
  * per-run `-destination`/`-derivedDataPath` pair. This exact array is both
  * what `ensureRunnerArtifact` spawns and the hashed material of the artifact
- * cache key (`computeRunnerCacheKey`), so any edit here — a flag, signing
- * plumbing, a bundle-id value — changes the key and forces a rebuild instead
+ * cache key (`computeRunnerCacheKey`), so any edit here (a flag, signing
+ * plumbing, a bundle-id value) changes the key and forces a rebuild instead
  * of silently reusing a stale cached artifact.
  */
 export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigningConfig): string[] {
@@ -225,7 +225,7 @@ export function runnerBuildStaticArgs(projectPath: string, config: RunnerSigning
     "-allowProvisioningUpdates",
     "-allowProvisioningDeviceRegistration",
     // Keep the build lean: no index store, coverage, previews, or sandboxed
-    // script phases — none of them matter for a headless runner artifact.
+    // script phases; none of them matter for a headless runner artifact.
     "COMPILER_INDEX_STORE_ENABLE=NO",
     "ENABLE_CODE_COVERAGE=NO",
     "ONLY_ACTIVE_ARCH=YES",
@@ -263,7 +263,7 @@ export function computeRunnerCacheKey(
 
 /**
  * True when a runner install/launch failure means the (locally provisioned)
- * profile does not cover the target device — the signature of plugging in a
+ * profile does not cover the target device, the signature of plugging in a
  * NEW phone after the artifact was minted. Recoverable by rebuilding against
  * the concrete device destination (see `rebuildRunnerArtifactForDevice`).
  */
@@ -278,7 +278,7 @@ export function isProfileMissingDeviceFailure(logText: string): boolean {
 /**
  * Rebuild the runner against a CONCRETE device destination with
  * `-allowProvisioningDeviceRegistration`, so automatic signing regenerates the
- * profile to include that device. Reuses the same derived-data cache dir —
+ * profile to include that device. Reuses the same derived-data cache dir:
  * only the signing changes, so the incremental rebuild is fast.
  */
 export async function rebuildRunnerArtifactForDevice(
@@ -289,7 +289,7 @@ export async function rebuildRunnerArtifactForDevice(
 }
 
 /**
- * In-process build serialization, keyed by artifact cache key — the registry
+ * In-process build serialization, keyed by artifact cache key: the registry
  * dedups per-URN (per-device) only, so two device factories in one server
  * would otherwise race `build-for-testing` into the same derived dir, the
  * origin of torn artifacts. Same promise-chain pattern as withFlowFileLock
@@ -318,7 +318,7 @@ async function withRunnerBuildLock<T>(key: string, fn: () => Promise<T>): Promis
  * Ensure a built device runner artifact exists for the current sources +
  * toolchain + signing config, building it if needed. First build takes
  * minutes; subsequent calls are a cache hit. `force` skips the cache check
- * and always rebuilds — the profile-missing-device retry and the blueprint's
+ * and always rebuilds; the profile-missing-device retry and the blueprint's
  * poisoned-cache self-heal both use it.
  */
 export async function ensureRunnerArtifact(
@@ -342,7 +342,7 @@ export async function ensureRunnerArtifact(
 
   // The cache check sits INSIDE the per-key lock: a hit while a build for the
   // SAME key is in flight would hand out the half-written file that build is
-  // producing, so it must wait that build out — after which the check finds
+  // producing, so it must wait that build out, after which the check finds
   // the finished artifact and concurrent cold-cache callers pay exactly one
   // build between them. With no build in flight the chain is empty and a hit
   // costs one microtask; other keys have their own chains and never queue.
@@ -356,7 +356,7 @@ export async function ensureRunnerArtifact(
   // artifact is known good may its superseded siblings go: on a FAILED build
   // the previous key's directory is the only working artifact a rollback
   // would reuse, so the failure path (the throw above) must never reach this.
-  // The session's own env clone is safe by ordering — sweepRunnerStorage
+  // The session's own env clone is safe by ordering: sweepRunnerStorage
   // snapshots its listings synchronously, before this function resolves,
   // and the clone is only minted later by `prepareXctestrunWithPort`.
   void sweepRunnerStorage({ derivedDataPath });
@@ -408,7 +408,7 @@ async function buildRunnerArtifact(
 /** How many runner-*.log launch logs a sweep keeps (newest first). */
 export const MAX_RUNNER_LOG_FILES = 20;
 
-/** A cache-<key> entry under cacheRoot() — hex-keyed, ours to manage. */
+/** A cache-<key> entry under cacheRoot(), hex-keyed, ours to manage. */
 const CACHE_DIR_NAME_RE = /^cache-[0-9a-f]+$/;
 /** A per-session port-injected clone minted by `prepareXctestrunWithPort`. */
 const ENV_CLONE_NAME_RE = /\.env\.port-\d+\.xctestrun$/;
@@ -423,7 +423,7 @@ export interface RunnerStorageSweepPlan {
 }
 
 /**
- * Decision core of the storage sweep — pure over injected directory listings
+ * Decision core of the storage sweep: pure over injected directory listings
  * (the test seam, like `waitForPidsToExit`'s process-table seams). Three
  * artifact families accumulate forever under ~/.argent/ios-device-runner
  * without this: cache-<key> derived-data dirs (hundreds of MB, a new key per
@@ -434,7 +434,7 @@ export interface RunnerStorageSweepPlan {
  * Names that match none of the families are never touched.
  */
 export function planRunnerStorageSweep(listing: {
-  /** Basename of the current derived-data dir (`cache-<key>`) — kept. */
+  /** Basename of the current derived-data dir (`cache-<key>`); kept. */
   currentCacheDirName: string;
   /** Entries under cacheRoot(). */
   cacheDirNames: readonly string[];
@@ -466,12 +466,12 @@ function logTimestamp(name: string): number {
 
 /**
  * Sweep stale runner storage around a freshly resolved artifact. Listings are
- * snapshotted SYNCHRONOUSLY — before the `void`-ing caller's next await can
- * run — so files created after the call (the session's own env clone) can
+ * snapshotted SYNCHRONOUSLY (before the `void`-ing caller's next await can
+ * run), so files created after the call (the session's own env clone) can
  * never enter the plan; only the deletes are async. Best-effort throughout:
  * a concurrent tool-server may race the same directories, so unreadable
  * listings plan nothing, per-path rm failures are swallowed, and the returned
- * promise never rejects (safe to fire-and-forget). Deliberately silent — this
+ * promise never rejects (safe to fire-and-forget). Deliberately silent: this
  * module logs nothing, and a lost sweep just retries on the next start.
  */
 export function sweepRunnerStorage(opts: {
@@ -521,7 +521,7 @@ function listNamesSync(dir: string): string[] {
  * recognizes (Apple format drift). Typed so the failure surfaces at prepare
  * time with the true cause; a portless clone would instead launch a runner
  * that never binds its port, burn the whole ready timeout, and blame signing
- * or a locked screen. One class for both shapes on purpose — the blueprint's
+ * or a locked screen. One class for both shapes on purpose; the blueprint's
  * cache self-heal keys on it: a first occurrence on a CACHED artifact means
  * cache poisoning (wipe the derived dir, force one rebuild), while on a
  * freshly built artifact it propagates as genuine drift.
@@ -535,7 +535,7 @@ export class XctestrunFormatError extends Error {
 
 /**
  * Clone the .xctestrun with ARGENT_RUNNER_PORT injected into every test
- * target's env dictionaries (all four maps — xctestrun format v2 nests targets
+ * target's env dictionaries (all four maps: xctestrun format v2 nests targets
  * under TestConfigurations). The Swift runner reads the port from its
  * environment and binds it on the device's loopback, where usbmux's
  * device-side connect terminates. Throws `XctestrunFormatError` when the
@@ -621,7 +621,7 @@ export interface LaunchedRunner {
 
 /**
  * Launch the runner on the device via `xcodebuild test-without-building`,
- * detached — testmanagerd installs the `<testBundleId>.xctrunner` app and
+ * detached: testmanagerd installs the `<testBundleId>.xctrunner` app and
  * starts the never-ending test. The child outlives individual commands; the
  * blueprint owns its lifecycle. Log output goes to a file for postmortems.
  *
@@ -692,7 +692,7 @@ export async function launchRunner(opts: {
 }
 
 /**
- * Kill ORPHANED stale runner xcodebuild processes for a device — left behind
+ * Kill ORPHANED stale runner xcodebuild processes for a device, left behind
  * when a previous tool-server process exited without disposing its runner
  * service (the child is spawned detached and survives its parent). Two
  * concurrent test sessions on one device conflict in testmanagerd, so the
@@ -703,14 +703,14 @@ export async function launchRunner(opts: {
  * A match is reaped only when its owner is gone: ppid 1 (the dead
  * tool-server's runner was re-parented to launchd) or a ppid that no longer
  * exists (the kill(ppid, 0) liveness probe fails). A matched runner with a
- * LIVE parent belongs to a peer tool-server and is deliberately spared —
+ * LIVE parent belongs to a peer tool-server and is deliberately spared:
  * reaping on the argv alone made two servers driving one device SIGTERM each
  * other's runners on every factory start. If the spared runner's session
  * genuinely conflicts with ours, testmanagerd raises its own loud
  * two-simultaneous-sessions error at launch, which is the intended outcome.
  *
  * Resolves only once every signaled pid has exited (or been SIGKILLed after
- * `STALE_EXIT_TIMEOUT_MS`) — returning on the bare SIGTERM would let a fast
+ * `STALE_EXIT_TIMEOUT_MS`); returning on the bare SIGTERM would let a fast
  * cache-hit start race the old session's testmanagerd teardown, recreating
  * exactly the conflict this sweep exists to prevent. No stale runners means
  * no wait at all. The ps-snapshot/probe/kill/sleep parameters are test seams,
@@ -778,12 +778,12 @@ async function listProcessTable(): Promise<string> {
   return stdout;
 }
 
-/** SIGTERM-to-SIGKILL escalation delay — mirrors killRunnerProcess's 5s. */
+/** SIGTERM-to-SIGKILL escalation delay; mirrors killRunnerProcess's 5s. */
 const STALE_EXIT_TIMEOUT_MS = 5_000;
 const STALE_EXIT_POLL_INTERVAL_MS = 100;
 
 /**
- * Wait (bounded) for already-signaled pids to exit, then SIGKILL holdouts —
+ * Wait (bounded) for already-signaled pids to exit, then SIGKILL holdouts:
  * process group first with a pid fallback, like killRunnerProcess. Pids dead
  * on entry cost nothing; live ones are re-probed every poll interval, so a
  * cooperative exit returns within one interval. Returns the SIGKILLed pids.

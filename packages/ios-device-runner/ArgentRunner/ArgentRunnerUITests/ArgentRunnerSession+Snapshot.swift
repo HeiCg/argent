@@ -25,7 +25,7 @@ extension ArgentRunnerSession {
   private static let emittedDepthLimit = 60
 
   /// Captures the accessibility tree in ONE XPC round trip (`snapshot()` on
-  /// the app element) and then flattens it in-process — the traversal itself
+  /// the app element) and then flattens it in-process: the traversal itself
   /// never talks to the AX server, which is what keeps this fast and immune
   /// to per-element query stalls.
   func captureSnapshot(of app: XCUIApplication) -> Envelope {
@@ -148,7 +148,7 @@ extension ArgentRunnerSession {
       identifier: snapshot.identifier.isEmpty ? nil : snapshot.identifier,
       value: valueText(snapshot.value),
       // Sanitized: a geometry-less element reports CGRect.null (infinite
-      // origin), and JSONEncoder refuses non-finite doubles — one such node
+      // origin), and JSONEncoder refuses non-finite doubles; one such node
       // must not degrade the whole reply to the encode-failure fallback.
       rect: SnapshotRect(
         x: finite(frame.minX), y: finite(frame.minY),
@@ -174,7 +174,7 @@ extension ArgentRunnerSession {
   }
 
   /// Integer-ish dedup-key text for one frame coordinate. `Int(_: Double)`
-  /// TRAPS on non-finite or > Int.max input — and geometry-less elements
+  /// TRAPS on non-finite or > Int.max input, and geometry-less elements
   /// genuinely reach this walk with CGRect.null frames (infinite origin),
   /// which killed the whole runner process mid-snapshot. A trap cannot be
   /// caught in-process, so every conversion here must be total; the key only

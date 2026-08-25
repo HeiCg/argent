@@ -124,7 +124,7 @@ describe("createRunnerClient", () => {
     expect((error as RunnerCommandError).message).toBe("no such element. Hint: run snapshot");
   });
 
-  it("classifies RUNNER_BUSY as retryable — the runner's explicit try-again verdict", async () => {
+  it("classifies RUNNER_BUSY as retryable, the runner's explicit try-again verdict", async () => {
     const { send } = createFakeSend([
       { ok: false, error: { code: "RUNNER_BUSY", message: "busy" } satisfies RunnerResponseError },
     ]);
@@ -322,7 +322,7 @@ describe("createRunnerClient", () => {
       const error = await client.run({ command: "tap" }).catch((caught: unknown) => caught);
 
       expect(error).toBe(original);
-      // The rethrown object is stamped IN PLACE (T44) — identity above proves
+      // The rethrown object is stamped IN PLACE (T44); identity above proves
       // the stamp cannot have replaced the error callers compare against.
       const signal = getFailureSignal(error);
       expect(signal?.error_code).toBe(FAILURE_CODES.IOS_DEVICE_RUNNER_NOT_READY);
@@ -369,7 +369,7 @@ describe("createRunnerClient", () => {
       ["device-unattached", false],
       ["runner-not-listening", true],
     ] as const)(
-      "does not attempt recovery for the pre-send kind %s — one send, original error rethrown",
+      "does not attempt recovery for the pre-send kind %s: one send, original error rethrown",
       async (kind, retryable) => {
         const original = new IosDeviceTransportError(kind, "usbmux connect failed", { retryable });
         const { send, sent } = createFakeSend([original]);
@@ -390,7 +390,7 @@ describe("createRunnerClient", () => {
       }
     );
 
-    it("still attempts recovery for a post-send timeout — the command may have run", async () => {
+    it("still attempts recovery for a post-send timeout: the command may have run", async () => {
       const original = new IosDeviceTransportError("timeout", "HTTP exchange timed out", {
         retryable: false,
       });
@@ -450,7 +450,7 @@ describe("waitForRunnerReady", () => {
     expect(sent.every((entry) => entry.options.readOnly === true)).toBe(true);
   });
 
-  it("treats a parsed ok:false answer as ready — the transport provably works", async () => {
+  it("treats a parsed ok:false answer as ready: the transport provably works", async () => {
     const { send, sent } = createFakeSend([
       { ok: false, error: { code: "RUNNER_BUSY", message: "busy" } },
     ]);

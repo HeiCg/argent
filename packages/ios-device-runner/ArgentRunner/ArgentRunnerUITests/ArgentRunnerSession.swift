@@ -14,7 +14,7 @@ import XCTest
 /// duplicate-send coalescing, busy gate) → command extensions (XCTest work).
 final class ArgentRunnerSession: XCTestCase {
   /// Set when the session instance is created, before the server accepts its
-  /// first connection — a lazy anchor would report an uptime of ~0 forever.
+  /// first connection; a lazy anchor would report an uptime of ~0 forever.
   private let launchedAt = Date()
 
   let gate = MainThreadGate()
@@ -42,9 +42,9 @@ final class ArgentRunnerSession: XCTestCase {
 
   // MARK: - Issue filtering
 
-  /// The suppression matchers, verbatim. This wording is Apple-owned —
+  /// The suppression matchers, verbatim. This wording is Apple-owned:
   /// XCTIssue exposes no stable code for these shapes, so classification
-  /// substring-matches `compactDescription` — and an Xcode release that
+  /// substring-matches `compactDescription`, and an Xcode release that
   /// rewords any of these strings makes suppression miss silently: recorded
   /// issues accumulate and healthy mutations start failing as
   /// XCTEST_RECORDED_FAILURE. The health payload's `suppressedIssues` /
@@ -52,16 +52,16 @@ final class ArgentRunnerSession: XCTestCase {
   /// (`suppressedIssues` flat while `recordedFailures` climbs is the drift
   /// signal); PROTOCOL.md's `status` section pins the same strings as part of
   /// the contract. Exact strings matched:
-  ///   gate         — "Failed to get matching snapshot"
-  ///   keepRecorded — "Timed out while evaluating UI query"
-  ///   noise        — "kAXError", "No matches found for"
+  ///   gate:          "Failed to get matching snapshot"
+  ///   keepRecorded:  "Timed out while evaluating UI query"
+  ///   noise:         "kAXError", "No matches found for"
   enum SuppressedIssueWording {
     static let gate = "Failed to get matching snapshot"
     static let keepRecorded = "Timed out while evaluating UI query"
     static let noise = ["kAXError", "No matches found for"]
   }
 
-  /// XCTest tears the whole test down once recorded issues accumulate — fatal
+  /// XCTest tears the whole test down once recorded issues accumulate, fatal
   /// for a server that must outlive thousands of commands. Two issue shapes
   /// are pure accessibility noise on heavy screens and are muted: an AX
   /// server error (`kAXError*`) inside a "Failed to get matching snapshot"
@@ -153,7 +153,7 @@ final class ArgentRunnerSession: XCTestCase {
       )
       return
     }
-    // Status is answered inline on the transport queue — it must work exactly
+    // Status is answered inline on the transport queue; it must work exactly
     // when the execution queue does not.
     if request.command == .status {
       deliver(Self.encodeReply(status: 200, envelope: statusEnvelope(for: request)))
@@ -204,7 +204,7 @@ final class ArgentRunnerSession: XCTestCase {
         state: state,
         suppressedIssues: currentSuppressedIssueCount(),
         // Informational monotonic counter; reading it off the main thread is
-        // fine for health reporting — status must answer while a command runs.
+        // fine for health reporting; status must answer while a command runs.
         recordedFailures: testRun?.totalFailureCount ?? 0
       )
     )

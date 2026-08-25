@@ -9,7 +9,7 @@ import type { RestartAppParams, RestartAppResult } from "../types";
 
 /**
  * Physical-iOS restart: devicectl's `--terminate-existing` makes this a single
- * launch call — no separate terminate + pid-join round trip needed.
+ * launch call; no separate terminate + pid-join round trip needed.
  */
 export const iosDeviceImpl: PlatformImpl<
   Record<string, unknown>,

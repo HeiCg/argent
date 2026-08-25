@@ -3,7 +3,7 @@ import XCTest
 extension ArgentRunnerSession {
   /// Wire `x`/`y` are absolute points in the same space as `XCUIElement.frame`
   /// and snapshot rects (screen points). `withOffset` is relative to the app
-  /// element's origin, so subtract that origin — otherwise a non-zero
+  /// element's origin, so subtract that origin; otherwise a non-zero
   /// `app.frame.origin` would be applied twice. XCUICoordinate still handles
   /// interface orientation for us.
   private func point(_ app: XCUIApplication, _ x: Double, _ y: Double) -> XCUICoordinate {
@@ -64,7 +64,7 @@ extension ArgentRunnerSession {
     let end = point(app, toX, toY)
 
     // A `settle` drag rests at the destination before lifting, so the scroll
-    // view reads ~0 release velocity and skips its fling — the hardware
+    // view reads ~0 release velocity and skips its fling, the hardware
     // analogue of the simulator's ease-out swipe.
     let endHold = request.settle == true ? 0.3 : 0.05
 
@@ -89,9 +89,9 @@ extension ArgentRunnerSession {
     return .success(MessagePayload(message: "dragged"))
   }
 
-  /// The 0–1 reference rectangle: `XCUIApplication.frame`, the same rect the
+  /// The 0-1 reference rectangle: `XCUIApplication.frame`, the same rect the
   /// snapshot's Application root uses. Describe normalizes frames against that
-  /// root; taps denormalize through this viewport — they must be the same
+  /// root; taps denormalize through this viewport; they must be the same
   /// space, including the keyboard band. Trimming the keyboard (or using the
   /// window frame) made `y = 0.84` mean a different pixel than describe's 0.84.
   func appViewport(_ app: XCUIApplication) -> Envelope {

@@ -4,7 +4,7 @@ import { FAILURE_CODES, withFailureSignal } from "@argent/registry";
  * Tracks the app under automation per physical device.
  *
  * The XCUITest runner requires an explicit `appBundleId` on interaction and
- * snapshot commands and refuses them otherwise (APP_BUNDLE_ID_REQUIRED) — it
+ * snapshot commands and refuses them otherwise (APP_BUNDLE_ID_REQUIRED); it
  * never redirects an app command to its own host app. Argent's gesture and
  * describe tools don't carry a bundle id in their params; instead, launch-app
  * / restart-app record the launched app here and the tool layer injects it
@@ -12,7 +12,7 @@ import { FAILURE_CODES, withFailureSignal } from "@argent/registry";
  *
  * Lifecycle: an entry means this bundle was started (or attached, for system
  * UI) under automation and has not been knowingly killed by us. It
- * deliberately survives runner respawn and cable unplug — runner death does
+ * deliberately survives runner respawn and cable unplug: runner death does
  * not kill the app, and commands re-attach per call via `appBundleId`. It is
  * invalidated only when we kill the process, which today means reinstall.
  */
@@ -20,7 +20,7 @@ const currentAppByUdid = new Map<string, string>();
 
 /**
  * System-UI processes that are not devicectl-launchable (and never need
- * launching — they are always running). launch-app accepts them as launch
+ * launching; they are always running). launch-app accepts them as launch
  * targets and just registers the automation session, which lets
  * describe/gestures drive their UI through the runner's XCUIApplication
  * attach: SpringBoard owns the home screen, App Library, and many system
@@ -28,7 +28,7 @@ const currentAppByUdid = new Map<string, string>();
  * invisible to a SpringBoard-scoped snapshot). The runner's foreground gate
  * even gives `activate()` a useful meaning here: activating SpringBoard
  * dismisses the foreground app to the home screen. restart-app and
- * reinstall-app reject these ids up front — there is no process to restart
+ * reinstall-app reject these ids up front; there is no process to restart
  * and no bundle to reinstall.
  */
 const SESSION_ONLY_SYSTEM_UI_BUNDLE_IDS = new Set(["com.apple.springboard", "com.apple.Spotlight"]);

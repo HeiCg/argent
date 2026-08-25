@@ -248,7 +248,7 @@ describe("ensureRunnerArtifact", () => {
   /**
    * Run `fn` with HOME moved under a per-test dir (so cacheRoot() and the
    * fire-and-forget sweep stay inside the fixture tree), PATH emptied, and
-   * the project override pointed at the fake — the env-swap fixture pattern
+   * the project override pointed at the fake, the env-swap fixture pattern
    * launchRunner's tests established.
    */
   async function withEnsureEnv<T>(name: string, fn: () => Promise<T>): Promise<T> {
@@ -440,7 +440,7 @@ describe("planRunnerStorageSweep", () => {
     const plan = planRunnerStorageSweep({
       ...EMPTY_LISTING,
       cacheDirNames: [
-        "cache-aaaa111122223333", // current — the in-flight artifact
+        "cache-aaaa111122223333", // current: the in-flight artifact
         "cache-0123456789abcdef", // pre-update key
         "cache-ffff000011112222", // older key shape, also stale
       ],
@@ -458,7 +458,7 @@ describe("planRunnerStorageSweep", () => {
         ".DS_Store",
         "cache-README.txt", // cache- prefix but not a hex key
         "cache-", // no key at all
-        "Cache-0123456789abcdef", // wrong case — not ours
+        "Cache-0123456789abcdef", // wrong case: not ours
         "scratch",
       ],
     });
@@ -470,7 +470,7 @@ describe("planRunnerStorageSweep", () => {
     const plan = planRunnerStorageSweep({
       ...EMPTY_LISTING,
       productNames: [
-        "ArgentRunner_iphoneos18.0-arm64.xctestrun", // base — never a clone
+        "ArgentRunner_iphoneos18.0-arm64.xctestrun", // base: never a clone
         "ArgentRunner_iphoneos18.0-arm64.env.port-50505.xctestrun",
         "ArgentRunner_iphoneos18.0-arm64.env.port-50506.xctestrun",
         "Debug-iphoneos", // build products dir
@@ -504,8 +504,8 @@ describe("planRunnerStorageSweep", () => {
         "runner-00008120-100.log", // oldest
         "runner-00008120-300.log", // newest
         "runner-0000aaaa-200.log",
-        "usbmux.log", // foreign — no runner- prefix
-        "runner-note.txt", // foreign — not a .log with a timestamp
+        "usbmux.log", // foreign: no runner- prefix
+        "runner-note.txt", // foreign: not a .log with a timestamp
       ],
       maxLogFiles: 2,
     });
@@ -609,7 +609,7 @@ describe("launchRunner", () => {
     await fsp.mkdir(emptyBin, { recursive: true });
 
     // Before the spawn/error race, the ENOENT arrived as an unhandled async
-    // "error" event — this test completing green is the no-crash proof.
+    // "error" event; this test completing green is the no-crash proof.
     const error = await launchWithPath(emptyBin).catch((caught: unknown) => caught);
 
     expect((error as Error).name).toBe("FailureError");
@@ -638,7 +638,7 @@ describe("launchRunner", () => {
 });
 
 /**
- * Fake process table driving waitForPidsToExit's seams — no real processes.
+ * Fake process table driving waitForPidsToExit's seams; no real processes.
  * `dyingAfterPolls` maps a pid to the number of sleeps after which its
  * liveness probe starts reporting it gone; pids absent from the map are dead
  * from the start, Infinity ignores SIGTERM forever.
@@ -805,7 +805,7 @@ describe("killStaleRunnersForDevice", () => {
 
   it("SIGTERMs an orphan whose parent pid is no longer alive", async () => {
     // ppid 4242 is absent from the table, so the liveness probe reports it
-    // gone — the owning tool-server died without launchd adoption completing.
+    // gone: the owning tool-server died without launchd adoption completing.
     const deps = fakeSweepDeps({}, [runnerPsLine({ pid: 101, ppid: 4242 })]);
 
     const killed = await killStaleRunnersForDevice(STALE_UDID, deps);

@@ -74,7 +74,7 @@ export function dispatchByPlatform<
           toolId: opts.toolId,
           platform: "ios",
           // The class's stock message derives platforms/ios.ts and says to add
-          // a capability block — both wrong for hardware, so the hint corrects.
+          // a capability block, both wrong for hardware, so the hint corrects.
           hint:
             `For physical iOS devices, implement ` +
             `tools/${opts.toolId}/platforms/ios-device.ts instead; the capability ` +

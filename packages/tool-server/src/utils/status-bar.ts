@@ -17,7 +17,7 @@ const DEMO_BROADCAST = "am broadcast -a com.android.systemui.demo";
  * undone here, so the teardown restore gets another chance.
  */
 export async function pinStatusBar(device: DeviceInfo): Promise<boolean> {
-  // `simctl status_bar` speaks the simulator namespace only — it cannot address
+  // `simctl status_bar` speaks the simulator namespace only; it cannot address
   // a hardware UDID, so the bar stays live; its diff noise is already absorbed
   // by the settle's top-band mask (`statusBarMaskFraction` in flow-pixels).
   if (isIosPhysicalDevice(device)) return false;

@@ -12,7 +12,7 @@ extension ArgentRunnerSession {
   /// exception guard (stale accessibility elements throw NSExceptions that
   /// would otherwise kill the process), read-only commands get one retry
   /// after a beat, and a mutating command whose execution recorded a real
-  /// XCTest failure is reported as failed — the tap that silently missed
+  /// XCTest failure is reported as failed: the tap that silently missed
   /// must not read as success. A mutating command that stays ok while the
   /// suppressed-issue counter grew keeps its ok verdict but gains an advisory
   /// `warning`: the suppressed shapes accompany healthy mutations too often
@@ -125,8 +125,8 @@ extension ArgentRunnerSession {
 
   /// Resolves the target app and brings it frontmost, refusing a target that
   /// reports `.notRunning`: on a not-running app `activate()` performs a full
-  /// launch — after launch X → HOME, an app-scoped command would silently put
-  /// X back over the home screen — and launching stays an explicit, named
+  /// launch (after launch X → HOME, an app-scoped command would silently put
+  /// X back over the home screen), and launching stays an explicit, named
   /// action (launch-app). A backgrounded or suspended target is re-fronted,
   /// and the reply is stamped `reactivated: true` so the agent learns the
   /// foreground changed underneath the command.
@@ -155,7 +155,7 @@ extension ArgentRunnerSession {
     default:
       // .runningBackground / .runningBackgroundSuspended: activation resumes.
       // .unknown is riskier: hardware reports it for a swipe-killed foreign
-      // app too, where this activate becomes a launch — but whether a live
+      // app too, where this activate becomes a launch, but whether a live
       // foreign app ever reads .unknown is unprobed, so refusing it could
       // break legitimate commands.
       app.activate()

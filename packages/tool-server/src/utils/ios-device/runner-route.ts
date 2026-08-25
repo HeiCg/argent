@@ -5,9 +5,9 @@ import { isIosDeviceTransportError } from "./usbmux-protocol";
 /**
  * The usbmux send for physical iOS devices, wrapped in retry policy: mutating
  * commands go out AT MOST ONCE, read-only commands retry with backoff on
- * retryable errors. USB cable is the only transport — the CoreDevice Wi-Fi
- * tunnel could reach a cable-less device too, but it re-probes `devicectl` —
- * seconds per command — and has never been hardware-verified, so it is
+ * retryable errors. USB cable is the only transport: the CoreDevice Wi-Fi
+ * tunnel could reach a cable-less device too, but it re-probes `devicectl`
+ * (seconds per command) and has never been hardware-verified, so it is
  * deliberately not a fallback: a Wi-Fi-only device fails fast with usbmuxd's
  * typed "device-unattached" verdict, whose hint says to connect the cable.
  */
@@ -38,7 +38,7 @@ export function createUsbmuxCommandSender(
   options: {
     /**
      * Test seam: replaces the usbmux socket + HTTP send. The deadline is the
-     * whole send's budget — created fresh per attempt, already ticking.
+     * whole send's budget, created fresh per attempt, already ticking.
      */
     sendViaUsbmux?: (
       udid: string,
@@ -93,7 +93,7 @@ function defaultSendViaUsbmux(
   });
 }
 
-/** Also serves runner-client's readiness poll — deliberately defined once. */
+/** Also serves runner-client's readiness poll, deliberately defined once. */
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

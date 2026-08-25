@@ -10,7 +10,7 @@ import type { KeyboardParams, KeyboardResult } from "../types";
 /**
  * Physical-iOS typing: the XCUITest runner types into the currently-focused
  * element (tap a field first with gesture-tap). Only `enter` is available as a
- * named key — XCTest exposes no per-keycode HID surface on hardware, unlike
+ * named key: XCTest exposes no per-keycode HID surface on hardware, unlike
  * the simulator-server's stdin HID channel.
  */
 export function makeIosDeviceImpl(
@@ -25,7 +25,7 @@ export function makeIosDeviceImpl(
           `Named key '${params.key}' is not supported on physical iOS devices: only 'enter'. ` +
             "Type text into the focused field, or use gesture-tap to press on-screen keys.",
           {
-            // The bucket every unusable `key` value gets across backends — see
+            // The bucket every unusable `key` value gets across backends; see
             // the sibling guards in simulator-server-keys.ts / chromium.ts and
             // the empty-key guard in ../index.ts.
             error_code: FAILURE_CODES.KEYBOARD_KEY_UNSUPPORTED,
@@ -36,14 +36,14 @@ export function makeIosDeviceImpl(
       }
       // The empty request is the tool's documented no-op (see ../index.ts).
       // Return before requiring a tracked app or resolving the runner, so it
-      // touches no device — matching the simulator and Android branches.
+      // touches no device, matching the simulator and Android branches.
       if (!params.text && !key) return { typed: "", keys: 0 };
       const bundleId = requireCurrentIosDeviceApp(device.id);
       const ref = iosDeviceRunnerRef(device);
       const api = await registry.resolveService<IosDeviceRunnerApi>(ref.urn, ref.options);
 
       // Secret placeholders are already resolved by the tool's execute wrapper
-      // (and the placeholder form restored in its reply) — type text verbatim.
+      // (and the placeholder form restored in its reply); type text verbatim.
       let keys = 0;
       if (params.text) {
         await typeText(api, bundleId, params.text);

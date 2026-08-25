@@ -819,7 +819,7 @@ export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise
           : "rotate is unsupported on chromium — desktop apps have no rotate-gesture idiom; drive the app's rotate controls with tap/keyboard instead",
     };
   }
-  // Physical iOS: not "no backend" either — the XCUITest runner drives
+  // Physical iOS: not "no backend" either: the XCUITest runner drives
   // single-finger gestures only (XCTest exposes no two-finger coordinate API
   // on hardware), so fail here rather than let a selector pinch pay the full
   // auto-wait and then surface simulator-server's internal wiring error.

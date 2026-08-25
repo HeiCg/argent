@@ -10,7 +10,7 @@ import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } fro
 
 /**
  * Physical-iOS reinstall via devicectl. The .app must be a DEVICE build
- * (arm64, signed for this device's provisioning) — a simulator build fails at
+ * (arm64, signed for this device's provisioning); a simulator build fails at
  * install time with a CoreDevice error naming the platform mismatch.
  */
 export const iosDeviceImpl: PlatformImpl<

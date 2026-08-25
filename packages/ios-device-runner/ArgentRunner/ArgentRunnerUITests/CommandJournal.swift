@@ -2,7 +2,7 @@ import Foundation
 
 /// Remembers the fate of every identified command so a client whose reply was
 /// lost in transit can ask what happened (`status` + `statusCommandId`)
-/// instead of replaying a mutation that may already have run — the tap that
+/// instead of replaying a mutation that may already have run: the tap that
 /// landed but whose reply died with the cable must not land twice.
 final class CommandJournal {
   enum State: String {

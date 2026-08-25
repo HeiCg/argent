@@ -2,8 +2,8 @@ import UIKit
 
 /// Placeholder host application for the Argent runner's UI-test bundle.
 ///
-/// It never participates in automation — every command targets another app by
-/// bundle id — but XCUITest requires a host app to exist, and testmanagerd
+/// It never participates in automation (every command targets another app by
+/// bundle id), but XCUITest requires a host app to exist, and testmanagerd
 /// launches it once when the session starts. The single black screen makes it
 /// obvious on the device that the runner, not a user app, is frontmost.
 @main

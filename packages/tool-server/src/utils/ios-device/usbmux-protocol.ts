@@ -44,7 +44,7 @@ export type IosDeviceTransportErrorKind =
  *
  * `kind` labels the failure for messages, hints, and tests, and has two
  * structural consumers: runner-client.ts skips lost-response recovery for the
- * pre-send kinds ("device-unattached", "runner-not-listening" — nothing was
+ * pre-send kinds ("device-unattached", "runner-not-listening"; nothing was
  * sent, so nothing can have run), and ios-device-runner.ts's runner-death
  * diagnosis excludes "device-unattached" (the connect-the-cable story wins
  * even when the runner also died). `retryable` is the retry-policy verdict,
@@ -98,7 +98,7 @@ export function encodeUsbmuxPacket(tag: number, payloadXml: string): Buffer {
  * Decode one packet from an accumulating stream buffer. Returns `null` while
  * the buffer does not yet hold a complete packet (the caller keeps reading),
  * and throws a typed protocol error the moment the length prefix is
- * implausible — a length below the header size or above the 4 MiB cap can
+ * implausible: a length below the header size or above the 4 MiB cap can
  * never become valid by reading more bytes.
  */
 export function decodeUsbmuxPacket(buffer: Buffer): UsbmuxPacket | null {
@@ -252,7 +252,7 @@ interface XmlElement {
 
 /**
  * Minimal XML scanner: tags and text only, no comments/CDATA/processing
- * instructions beyond stripping the leading declaration and doctype — usbmuxd
+ * instructions beyond stripping the leading declaration and doctype; usbmuxd
  * never emits those, and rejecting surprises loudly beats guessing.
  */
 function parseXmlElements(xml: string): XmlElement[] {

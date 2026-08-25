@@ -64,13 +64,13 @@ const capability: ToolCapability = {
 };
 
 // Two Down/Up points within half a percent of the screen count as "the same
-// place" — a press-hold, not a drag. Covers float jitter in agent-authored
+// place": a press-hold, not a drag. Covers float jitter in agent-authored
 // coordinates without swallowing genuine short drags.
 const SAME_POINT_EPSILON = 0.005;
 
 /**
  * Physical-iOS backend: XCTest has no raw HID stream, so instead of replaying
- * the event train it maps the two shapes the runner can execute faithfully —
+ * the event train it maps the two shapes the runner can execute faithfully:
  * a press-hold (`Down` then `Up` at the same point → runner `longPress`) and a
  * straight single-finger drag (`Down` then `Up` elsewhere → runner `drag`).
  * Everything else (second finger, waypoint `Move`s) is rejected up front with
@@ -131,7 +131,7 @@ For simple taps use the gesture-tap tool. For straight-line scrolling use the ge
 For pinch gestures use gesture-pinch. For rotation gestures use gesture-rotate.
 All x/y values are normalized 0.0–1.0 (screen fractions, not pixels). delayMs controls the delay before each event (default 16ms ≈ 60fps).
 Set interpolate to auto-generate smooth intermediate Move events between your keyframes.
-On a physical iOS device only two shapes are executable (XCTest has no raw touch stream): a Down followed by an Up at the same point (press-hold) or at another point (straight drag) — no second finger, no Move waypoints; use gesture-swipe for scrolls there.
+On a physical iOS device only two shapes are executable (XCTest has no raw touch stream): a Down followed by an Up at the same point (press-hold) or at another point (straight drag): no second finger, no Move waypoints; use gesture-swipe for scrolls there.
 Returns { events: number } with the total count of events dispatched. Fails if the target device is not booted or an event type is invalid.
 
 Example long-press at center:

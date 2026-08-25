@@ -4,13 +4,13 @@ import type { IosDeviceRunnerApi } from "../../blueprints/ios-device-runner";
 /**
  * Typed helpers over the Argent runner's wire commands (see
  * packages/ios-device-runner/PROTOCOL.md). Every interaction/snapshot command
- * carries `appBundleId` — the runner refuses app commands without an explicit
+ * carries `appBundleId`: the runner refuses app commands without an explicit
  * target (see app-session.ts for how the current app is tracked).
  *
  * Coordinates on the wire are absolute POINTS in `XCUIApplication.frame`
  * (the same rect describe normalizes against). Argent tools speak normalized
- * 0-1 of that full frame — including the keyboard band, matching the
- * simulator HID contract — and convert through `getViewport` + `toPoints`.
+ * 0-1 of that full frame (including the keyboard band, matching the
+ * simulator HID contract) and convert through `getViewport` + `toPoints`.
  */
 
 export interface RunnerViewport {
@@ -90,7 +90,7 @@ export function toPoints(
 const GESTURE_TIMEOUT_MS = 90_000;
 
 /**
- * Tap at a point. A multi-tap (`numberOfTaps` > 1) rides this ONE command —
+ * Tap at a point. A multi-tap (`numberOfTaps` > 1) rides this ONE command:
  * the runner owns the inter-tap timing on-device (2 = native double-tap,
  * >2 = tight tap loop), so wire latency between taps cannot push the gesture
  * outside the OS double-tap window. Single taps omit the field, keeping
@@ -130,7 +130,7 @@ export async function longPressAt(
 /**
  * Coordinate-to-coordinate drag; duration is honored through drag velocity.
  * `settle` rests the touch at the destination before lifting, so the scroll
- * view reads ~0 release velocity and skips its fling — the hardware analogue
+ * view reads ~0 release velocity and skips its fling, the hardware analogue
  * of the simulator's ease-out swipe.
  */
 export async function dragBetween(
@@ -204,7 +204,7 @@ interface SnapshotData {
 
 /**
  * Identical snapshot requests in flight at once share one runner command.
- * Snapshots are the runner's heaviest read, and callers can overlap — a wait
+ * Snapshots are the runner's heaviest read, and callers can overlap: a wait
  * tool's poll abandons a slow fetch client-side while the runner is still
  * chewing on it, then issues the next. Without coalescing those stack up on
  * the runner's serial queue and pile heavy AX work onto an already-struggling

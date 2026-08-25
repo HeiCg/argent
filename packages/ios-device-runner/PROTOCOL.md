@@ -4,7 +4,7 @@ One HTTP POST per command. The request body is a JSON object; the reply is a
 JSON **envelope**. Connections close after each exchange (`Connection:
 close`). The server listens on loopback on the port given by the
 `ARGENT_RUNNER_PORT` environment variable (injected into the `.xctestrun`),
-reachable through usbmux (USB cable only) — the forwarded stream terminates
+reachable through usbmux (USB cable only); the forwarded stream terminates
 on the device's loopback, so a loopback bind covers the whole transport.
 
 There is no version handshake: the tool-server's artifact cache key includes
@@ -21,7 +21,7 @@ the runner sources, so a protocol change always ships with a rebuilt runner.
 
 A success envelope for an app-scoped command may additionally carry a
 top-level `reactivated: true`: the target app was alive but backgrounded, and
-the runner re-fronted it before executing — the foreground screen changed as
+the runner re-fronted it before executing: the foreground screen changed as
 a side effect of the command. The field is encoded only when true, so a
 command against an already-foreground target stays byte-identical on the
 wire.
@@ -45,7 +45,7 @@ healthy gestures, so a warning that does appear is signal, not noise.
 | `command`             | all                 | Command name (below).                                                   |
 | `commandId`           | all but `status`    | Client-stamped id for send-once tracking.                               |
 | `statusCommandId`     | `status`            | Journal lookup key.                                                     |
-| `appBundleId`         | app-scoped commands | Target app. Required — never inferred.                                  |
+| `appBundleId`         | app-scoped commands | Target app. Required, never inferred.                                   |
 | `x`, `y`              | `tap`, `longPress`  | Absolute points in the app's space.                                     |
 | `numberOfTaps`        | `tap`               | Taps in the one gesture (default 1; 2 = native double-tap).             |
 | `fromX/fromY/toX/toY` | `drag`              | Absolute start/end points.                                              |
@@ -57,33 +57,33 @@ healthy gestures, so a warning that does appear is signal, not noise.
 
 App-scoped (require `appBundleId`; a backgrounded target is re-fronted first
 and the reply stamped `reactivated: true`, while a target that reports
-`.notRunning` fails with `APP_NOT_AVAILABLE` — launching is launch-app's
+`.notRunning` fails with `APP_NOT_AVAILABLE`; launching is launch-app's
 job, never a command side effect. That refusal is best-effort: on hardware a
 killed app this session never launched can report an unreadable state, and
 the re-front then amounts to a launch, still stamped `reactivated: true`):
 
-- `viewport` → `{x, y, width, height}` — `XCUIApplication.frame` (full app,
-  keyboard included). Same rect describe normalizes against, so 0–1 tap
+- `viewport` → `{x, y, width, height}`: `XCUIApplication.frame` (full app,
+  keyboard included). Same rect describe normalizes against, so 0-1 tap
   coordinates invert that mapping.
-- `tap`, `longPress`, `drag` → `{message}` — coordinate gestures via
+- `tap`, `longPress`, `drag` → `{message}`: coordinate gestures via
   XCUICoordinate (public API; orientation-safe). `tap` executes
   `numberOfTaps` taps as one on-device gesture: 2 maps to the native
   `doubleTap()`, >2 to a tight tap loop (no native N-tap API; inter-tap
   latency stays on-device, inside the OS multi-tap window).
-- `type` → `{message}` — types into the current first responder.
+- `type` → `{message}`: types into the current first responder.
   `TEXT_INPUT_NOT_FOCUSED` when nothing has keyboard focus.
 - `keyboardReturn` → `{message}`.
-- `snapshot` → `{nodes, quality}` — one-shot accessibility tree (below).
+- `snapshot` → `{nodes, quality}`: one-shot accessibility tree (below).
 
 Device-scoped:
 
-- `status` — without `statusCommandId`: `{uptimeMs, state, suppressedIssues,
+- `status`, without `statusCommandId`: `{uptimeMs, state, suppressedIssues,
 recordedFailures}`. `state` is `idle | busy | wedged`. `suppressedIssues`
   counts the XCTest issues muted as accessibility noise since launch;
-  `recordedFailures` is XCTest's cumulative recorded-failure count — the
+  `recordedFailures` is XCTest's cumulative recorded-failure count, the
   counter that, past suppression, converts successful mutations into
   `XCTEST_RECORDED_FAILURE`. Suppression substring-matches Apple-owned
-  issue wording, pinned here as part of the contract — muted: a
+  issue wording, pinned here as part of the contract. Muted: a
   `Failed to get matching snapshot` description that also contains
   `kAXError` or `No matches found for`; kept recorded: `Timed out while
 evaluating UI query`. If an Xcode release rewords those strings,
@@ -97,14 +97,14 @@ evaluating UI query`. If an Xcode release rewords those strings,
 command?, responseOk?, responseJson?, errorCode?, errorMessage?,
 errorHint?}`. `responseJson` is the completed command's full envelope,
   retained only when the command retains responses (`snapshot`/`screenshot`
-  replies never are — large, read-only, cheaper to replay) AND the encoded
+  replies never are: large, read-only, cheaper to replay) AND the encoded
   envelope is at most 16 KB (`maxRetainedResponseBytes`,
   CommandJournal.swift). Past either gate the journal still records the fate
   and error fields, so recovery can find a command `completed` with no
   `responseJson`: the effect happened, but the response was too large to
   retain.
 - `home` → presses the home button.
-- `screenshot` → `{imageBase64}` — full-screen PNG, always inline.
+- `screenshot` → `{imageBase64}`: full-screen PNG, always inline.
 - `shutdown` → acknowledges, then ends the session cleanly after the reply
   is flushed.
 
@@ -128,8 +128,8 @@ Flat list in emission order; `parentIndex` links reconstruct the tree.
 }
 ```
 
-- `type` — XCUIElement type name (`Button`, `StaticText`, `Cell`, …).
-- `rect` — viewport points. Non-finite or integer-overflowing coordinates
+- `type`: XCUIElement type name (`Button`, `StaticText`, `Cell`, …).
+- `rect`: viewport points. Non-finite or integer-overflowing coordinates
   encode as `0`: the conversion is total by contract, because a geometry-less
   AX element must degrade to a zeroed rect, never kill the runner mid-snapshot
   (`keyCoordinate` in `ArgentRunnerSession+Snapshot.swift`).
@@ -153,8 +153,8 @@ during it), `SNAPSHOT_FAILED`, `COMMAND_TIMED_OUT`, `COMMAND_FAILED`.
 Every command runs under a runner-side main-thread watchdog budget
 (`CommandKind.executionTimeout`, RunnerProtocol.swift); the client sends it
 under a larger transport window (default `RUNNER_COMMAND_TIMEOUT_MS`,
-runner-client.ts; overrides in runner-commands.ts — `GESTURE_TIMEOUT_MS` and
-the `type`/`snapshot` call sites). This table is the authoritative pairing —
+runner-client.ts; overrides in runner-commands.ts: `GESTURE_TIMEOUT_MS` and
+the `type`/`snapshot` call sites). This table is the authoritative pairing;
 the mirrored code comments point here instead of restating the other side's
 numbers.
 
@@ -172,7 +172,7 @@ its budget is abandoned on-device and answered with `COMMAND_TIMED_OUT`
 window at or below the budget would swallow that verdict as a raw transport
 timeout and force journal recovery for an answer the runner was already
 delivering. The client window is one whole-transport deadline per send
-attempt — the usbmux handshake and the HTTP exchange spend from the same
+attempt: the usbmux handshake and the HTTP exchange spend from the same
 budget, so a slow handshake shrinks the HTTP stage's share rather than
 granting each stage the full window.
 

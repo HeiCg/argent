@@ -49,11 +49,11 @@ export async function describeIosDevice(
  * interactive allowlist so icon-only Cells, compact date pickers, and valueless
  * toggles survive the formatter's content gate. The mapping is grounded in the
  * simulator trait adapter (button-ish traits → AXButton, adjustable →
- * AXAdjustable) and partially confirmed on hardware — Tables render scrollable
+ * AXAdjustable) and partially confirmed on hardware: Tables render scrollable
  * and toggles emit as AXAdjustable with values; the rest of the widget matrix
  * (icon-only Cells, compact date pickers) is unconfirmed on-device.
  * Unmapped types (Window, Other, NavigationBar, …) keep their XCTest name and
- * surface via the nested renderer's container rules — printed when labeled or
+ * surface via the nested renderer's container rules: printed when labeled or
  * when they have printable descendants. SegmentedControl stays unmapped on
  * purpose: its Button children carry the interaction, and the container rule
  * emits the control itself whenever it has children.
@@ -81,8 +81,8 @@ const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
 };
 
 // Containers whose content scrolls. Mirrors the Swift runner's
-// scrollContainerTypes (ArgentRunnerUITests/ArgentRunnerSession+Snapshot.swift)
-// — keep the two lists in lockstep. These deliberately get no content role:
+// scrollContainerTypes (ArgentRunnerUITests/ArgentRunnerSession+Snapshot.swift);
+// keep the two lists in lockstep. These deliberately get no content role:
 // `scrollable` alone keeps them emitted even unlabeled and childless, and puts
 // the [scrollable] flag on the rendered line so the agent knows where a swipe
 // can reveal more.
@@ -99,7 +99,7 @@ function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
   }
   // Reference frame: the shallowest node's rect (the Application root, i.e.
   // `XCUIApplication.frame`). Gesture 0-1 is inverted through the runner's
-  // `viewport` command, which returns that same rect — they must stay in lockstep.
+  // `viewport` command, which returns that same rect; they must stay in lockstep.
   // XCTest occasionally reports children a point outside the root, so clamp
   // into [0, 1] to satisfy the contract schema.
   const root = nodes.reduce((a, b) => (b.depth < a.depth ? b : a));

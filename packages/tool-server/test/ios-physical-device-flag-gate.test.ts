@@ -6,8 +6,8 @@
  * with the flag OFF still built, signed, installed and launched the runner on
  * the phone, because tools resolve `iosDeviceRunnerRef` in `services()` and the
  * registry resolves services before execute. The gate now lives in
- * `resolveDevice`'s physical arm — the narrowest waist every hardware path
- * crosses first — so this suite drives a REAL `Registry` (mirroring
+ * `resolveDevice`'s physical arm (the narrowest waist every hardware path
+ * crosses first), so this suite drives a REAL `Registry` (mirroring
  * flow-feature-flag-gate.test.ts) and proves:
  *
  *   - flag OFF → resolveDevice throws a validation FailureError carrying the
@@ -50,7 +50,7 @@ afterEach(() => __setIosPhysicalDevicesFlagForTests(true));
 /**
  * A real Registry wired like production's physical arm: the stub tool mirrors
  * gesture-tap's `services()` (resolveDevice → iosDeviceRunnerRef), and a probe
- * blueprint under the runner's namespace records whether its factory ran — the
+ * blueprint under the runner's namespace records whether its factory ran, the
  * observable "hardware side effect", since the real factory builds, signs and
  * installs the runner on the phone.
  */

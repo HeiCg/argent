@@ -38,8 +38,8 @@ export const IOS_DEVICE_RUNNER_NAMESPACE = "IosDeviceRunner";
 /**
  * Recent runner deaths that interrupted an app-scoped command, keyed
  * `udid|bundleId`. Outlives the service instance on purpose: each death tears
- * the instance down, and the signal that matters — "every fresh runner dies
- * touching this app" — only exists across instances. Entries expire after
+ * the instance down, and the signal that matters ("every fresh runner dies
+ * touching this app") only exists across instances. Entries expire after
  * CRASH_MEMORY_MS; a repeat within the window escalates the error to name the
  * likely cause (the app's current screen state) and the recovery (restart-app).
  */
@@ -76,8 +76,8 @@ function isRunnerExitedError(error: unknown): boolean {
  * beat to land so the race between the failed dial and the exit callback can't
  * hide it. Returns the error `api.run` should throw: the original when the
  * runner is not provably dead (post-send losses with a live child are the
- * client's status recovery's job), or the enriched post-mortem — crash summary
- * from the newest .xcresult, death-count escalation, log path — once the exit
+ * client's status recovery's job), or the enriched post-mortem (crash summary
+ * from the newest .xcresult, death-count escalation, log path) once the exit
  * is confirmed.
  */
 async function explainRunnerDeath(options: {
@@ -86,7 +86,7 @@ async function explainRunnerDeath(options: {
   udid: string;
   derivedDataPath: string;
   logPath: string;
-  /** Resolves once the child has exited, or after `ms` — whichever first. */
+  /** Resolves once the child has exited, or after `ms`, whichever first. */
   settleExit: (ms: number) => Promise<void>;
   /** undefined = still running; the exit code (possibly null) once dead. */
   getExitCode: () => number | null | undefined;
@@ -133,9 +133,9 @@ async function explainRunnerDeath(options: {
  *
  * The factory builds (or reuses) the signed runner artifact, launches it on
  * the device via detached `xcodebuild test-without-building`, and exposes a
- * command client over the usbmux-first transport. Startup is expensive — the
+ * command client over the usbmux-first transport. Startup is expensive: the
  * first ever call pays an xcodebuild build (minutes), every cold start pays
- * the testmanagerd ramp (~25s) — so the instance is cached by the registry
+ * the testmanagerd ramp (~25s), so the instance is cached by the registry
  * and disposed only on tool-server shutdown or `recoverable()` teardown.
  */
 export interface IosDeviceRunnerApi {
@@ -180,7 +180,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
   },
   async factory(_deps, payload, options): Promise<ServiceInstance<IosDeviceRunnerApi>> {
     const deviceFromOpts = (options as { device?: DeviceInfo } | undefined)?.device;
-    // The registry hands the factory the parsed URN payload — always a string
+    // The registry hands the factory the parsed URN payload: always a string
     // (the udid); options.device is the richer channel iosDeviceRunnerRef fills.
     const udid = deviceFromOpts?.id ?? (typeof payload === "string" ? payload : undefined);
     if (!udid) {
@@ -226,7 +226,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
         onExit = (code) =>
           reject(new Error(`xcodebuild exited (code ${code}) before the runner became ready`));
       });
-      // The race's loser must never surface as an unhandled rejection — a
+      // The race's loser must never surface as an unhandled rejection; a
       // post-kill exit on the timeout path still fires onExit.
       exited.catch(() => {});
       launched.child.once("exit", onExit);
@@ -274,7 +274,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
     } catch (error) {
       if (error instanceof XctestrunFormatError && artifact.fromCache) {
         // A CACHED artifact whose xctestrun cannot be prepared is a poisoned
-        // cache (torn by an interrupted build), not format drift — and since
+        // cache (torn by an interrupted build), not format drift, and since
         // findBaseXctestrun keys hits on mere file existence, it would
         // hard-fail every session until a human deleted the directory. Wipe
         // it and rebuild once. Only the cached case heals: the same error
@@ -314,7 +314,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
       }
     });
 
-    /** Resolves once the child has exited, or after `ms` — whichever first. */
+    /** Resolves once the child has exited, or after `ms`, whichever first. */
     const settleExit = (ms: number): Promise<void> =>
       exitCode !== undefined
         ? Promise.resolve()
@@ -362,7 +362,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
   recoverable(error: unknown): boolean {
     // Conservative: only the synthesized runner-death errors, where the child
     // provably exited. RunnerCommandError (the runner answered) is NOT
-    // recoverable — the runner is alive; and transport losses while the child
+    // recoverable: the runner is alive; and transport losses while the child
     // still runs are handled by the client's status recovery, not by instance
     // teardown.
     return isRunnerExitedError(error);

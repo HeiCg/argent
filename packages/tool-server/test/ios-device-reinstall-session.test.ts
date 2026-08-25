@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the devicectl seam so the handler runs without hardware; the app-session
-// module stays real — its map is the state under test.
+// module stays real: its map is the state under test.
 const ensureDeviceReady = vi.fn();
 const uninstallApp = vi.fn();
 const installApp = vi.fn();
@@ -20,7 +20,7 @@ import {
   setCurrentIosDeviceApp,
 } from "../src/utils/ios-device/app-session";
 
-// Physical-iOS UDID shape (8 hex, dash, 16 hex) — see utils/device-info.ts.
+// Physical-iOS UDID shape (8 hex, dash, 16 hex); see utils/device-info.ts.
 const UDID = "00008110-000978540290401E";
 const BUNDLE = "com.example.app";
 
@@ -37,7 +37,7 @@ beforeEach(() => {
   clearCurrentIosDeviceApp(UDID);
 });
 
-describe("ios-device reinstall — app-session invalidation", () => {
+describe("ios-device reinstall: app-session invalidation", () => {
   it("clears the session, so the next app-scoped command demands a fresh launch", async () => {
     setCurrentIosDeviceApp(UDID, BUNDLE);
     await expect(iosDeviceImpl.handler(SERVICES, PARAMS, DEVICE)).resolves.toMatchObject({
@@ -52,14 +52,14 @@ describe("ios-device reinstall — app-session invalidation", () => {
     expect(requireCurrentIosDeviceApp(UDID)).toBe("com.other.app");
   });
 
-  it("clears even when the install fails — the uninstall already killed the process", async () => {
+  it("clears even when the install fails: the uninstall already killed the process", async () => {
     setCurrentIosDeviceApp(UDID, BUNDLE);
     installApp.mockRejectedValue(new Error("install failed"));
     await expect(iosDeviceImpl.handler(SERVICES, PARAMS, DEVICE)).rejects.toThrow(/install failed/);
     expect(() => requireCurrentIosDeviceApp(UDID)).toThrow(/Launch the target app first/);
   });
 
-  it("keeps the session when the uninstall itself fails — nothing was killed", async () => {
+  it("keeps the session when the uninstall itself fails: nothing was killed", async () => {
     setCurrentIosDeviceApp(UDID, BUNDLE);
     uninstallApp.mockRejectedValue(new Error("uninstall failed"));
     await expect(iosDeviceImpl.handler(SERVICES, PARAMS, DEVICE)).rejects.toThrow(

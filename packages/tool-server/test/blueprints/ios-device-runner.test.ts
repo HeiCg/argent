@@ -114,7 +114,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("ios-device-runner blueprint — mid-command runner death", () => {
+describe("ios-device-runner blueprint: mid-command runner death", () => {
   // Regression: the old message-regex classifier missed the 'http' and
   // 'timeout' transport shapes, so a runner dying mid-command skipped the
   // post-mortem on the first error and deferred teardown to the NEXT call.
@@ -236,7 +236,7 @@ describe("ios-device-runner blueprint — mid-command runner death", () => {
   });
 });
 
-describe("ios-device-runner blueprint — launch child exits during the readiness wait", () => {
+describe("ios-device-runner blueprint: launch child exits during the readiness wait", () => {
   /** Readiness never settles on its own; the child dies as soon as it is polled. */
   function hangReadinessThenExit(child: EventEmitter, code: number) {
     vi.mocked(waitForRunnerReady).mockImplementationOnce(() => {
@@ -291,7 +291,7 @@ describe("ios-device-runner blueprint — launch child exits during the readines
   });
 });
 
-describe("ios-device-runner blueprint — poisoned cache self-heal", () => {
+describe("ios-device-runner blueprint: poisoned cache self-heal", () => {
   /** A real on-disk stand-in for the artifact's derived-data dir, so the wipe
    * (or its absence) is asserted against the filesystem, not a mock. */
   async function makeDerivedDir(): Promise<string> {
@@ -370,7 +370,7 @@ describe("ios-device-runner blueprint — poisoned cache self-heal", () => {
   });
 });
 
-describe("ios-device-runner blueprint — recoverable classification", () => {
+describe("ios-device-runner blueprint: recoverable classification", () => {
   it("keys the runner-exited case off the typed marker, not message text", () => {
     expect(recoverable(Object.assign(new Error("anything at all"), { runnerExited: true }))).toBe(
       true
@@ -378,7 +378,7 @@ describe("ios-device-runner blueprint — recoverable classification", () => {
     expect(recoverable(new Error("iOS device runner exited (code 1)"))).toBe(false);
   });
 
-  it("is false for RunnerCommandError — the runner answered, so it is alive", () => {
+  it("is false for RunnerCommandError: the runner answered, so it is alive", () => {
     expect(recoverable(new RunnerCommandError("Element not found"))).toBe(false);
   });
 
@@ -410,7 +410,7 @@ describe("ios-device-runner blueprint — recoverable classification", () => {
   });
 });
 
-describe("ios-device-runner blueprint — failure signals", () => {
+describe("ios-device-runner blueprint: failure signals", () => {
   it("stamps the factory missing-device error with IOS_DEVICE_RUNNER_FACTORY_OPTIONS_MISSING", async () => {
     const thrown = (await rejectionOf(
       iosDeviceRunnerBlueprint.factory({}, undefined as unknown as DeviceInfo, undefined)

@@ -61,9 +61,9 @@ const PHYSICAL_IOS_PORTED_TOOLS: readonly string[] = [
   // Press-hold / straight drags via the runner's longPress + drag; two-finger
   // trains and Move waypoints are rejected with authoring guidance.
   "gesture-custom",
-  // 'home' only — the single hardware button XCUITest exposes.
+  // 'home' only, the single hardware button XCUITest exposes.
   "button",
-  // The wait tools poll describeIosDevice — the same runner snapshot describe
+  // The wait tools poll describeIosDevice, the same runner snapshot describe
   // returns, so waits and taps see identical frames.
   "await-ui-element",
   "await-screen-idle",

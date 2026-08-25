@@ -85,10 +85,10 @@ export async function openUsbmuxRunnerSocket(
 /**
  * Map a non-zero `Connect` result to the typed verdict the send layer and
  * runner-client branch on. Result 2 (device gone) lands on the same
- * unattached path as a missing `ListDevices` entry — it covers an unplug
+ * unattached path as a missing `ListDevices` entry; it covers an unplug
  * between lookup and connect, and both surface the connect-the-cable hint.
  * Result 3 is the opposite: the device is attached and only the runner port
- * is unbound, which resolves once the runner finishes starting — the one
+ * is unbound, which resolves once the runner finishes starting: the one
  * retryable verdict. Exported for tests; pure so the mapping is verifiable
  * without sockets.
  */
@@ -223,7 +223,7 @@ async function connectToUsbmuxd(socketPath: string, deadline: Deadline): Promise
 }
 
 /**
- * The slice of net.Socket the packet writer touches — a structural seam so the
+ * The slice of net.Socket the packet writer touches: a structural seam so the
  * backpressure wait can be unit-tested with a stub whose write() never drains.
  */
 export interface UsbmuxWritableSocket {
@@ -235,7 +235,7 @@ export interface UsbmuxWritableSocket {
 /**
  * Write one framed packet, bounding any backpressure wait by the deadline: a
  * usbmuxd that accepts the connection but stops reading would otherwise hang
- * the tool call forever. Every listener is detached once settled — on the
+ * the tool call forever. Every listener is detached once settled: on the
  * Connect socket a leftover 'error' listener would linger on the socket that
  * goes on to become the raw device pipe.
  */

@@ -9,7 +9,7 @@ import { FAILURE_CODES, subprocessFailureMetadata, withFailureSignal } from "@ar
 const execFileAsync = promisify(execFile);
 
 /**
- * Wrappers around `xcrun devicectl` — Apple's CoreDevice CLI (Xcode 15+) and
+ * Wrappers around `xcrun devicectl`, Apple's CoreDevice CLI (Xcode 15+) and
  * the control plane for physical iPhones/iPads: discovery, app lifecycle,
  * screenshots, and tunnel readiness. The XCUITest runner (interaction/
  * snapshot path) is separate; see runner-build.ts / the ios-device-runner
@@ -21,8 +21,8 @@ const execFileAsync = promisify(execFile);
  * - JSON output goes to a FILE (`--json-output <tmp>`), never stdout. stdout/
  *   stderr are only good for error-hint matching.
  * - Capabilities are feature-PROBED, never version-gated: older Xcodes lack
- *   subcommands/flags, and the reliable detection is asking the binary — the
- *   subcommand list `--help` advertises, or the error text — not a version
+ *   subcommands/flags, and the reliable detection is asking the binary (the
+ *   subcommand list `--help` advertises, or the error text), not a version
  *   comparison.
  */
 
@@ -77,7 +77,7 @@ class IosDeviceControlError extends Error {
 function resolveDevicectlHint(output: string): string {
   const lower = output.toLowerCase();
   // CoreDeviceError 10002 "The application failed to launch" is what a locked
-  // screen produces — seen live on iOS 26. Surface unlock first: it is by far
+  // screen produces (seen live on iOS 26). Surface unlock first: it is by far
   // the most common cause on an otherwise healthy paired device.
   if (lower.includes("failed to launch") || lower.includes("10002")) {
     return "Unlock the device and keep the screen awake, then retry; a locked iPhone refuses app launches.";
@@ -200,7 +200,7 @@ interface DevicectlListPayload {
  * include devices CoreDevice only remembers or reaches over the network;
  * callers gate reachability on `transportType === "wired"`. Returns [] when
  * devicectl is missing or fails, so discovery composes with the other
- * platform listers on non-mac hosts — same contract as `listIosSimulators`.
+ * platform listers on non-mac hosts, same contract as `listIosSimulators`.
  */
 export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
   if (process.platform !== "darwin") return [];
@@ -216,7 +216,7 @@ export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
       const hw = d.hardwareProperties ?? {};
       const udid = hw.udid ?? d.identifier;
       if (!udid) continue;
-      // iPhone/iPad only for now — tvOS/visionOS hardware is untested here.
+      // iPhone/iPad only for now; tvOS/visionOS hardware is untested here.
       const platform = (hw.platform ?? "").toLowerCase();
       const productType = hw.productType ?? "";
       if (platform !== "ios" && !/^(iphone|ipad|ipod)/i.test(productType)) continue;
@@ -286,7 +286,7 @@ export async function launchApp(
 
 /**
  * Capture a PNG screenshot host-side. Requires a devicectl that has the
- * screenshot subcommand — consult {@link supportsHostScreenshot} first, and
+ * screenshot subcommand; consult {@link supportsHostScreenshot} first, and
  * treat an unknown-subcommand error that still slips through as "use the
  * runner path".
  */
@@ -309,16 +309,16 @@ const SCREENSHOT_SUBCOMMAND_ROW = /^[ \t]{1,10}screenshot\b/m;
 
 /**
  * Whether this Xcode's devicectl has the `device screenshot` subcommand at
- * all — no toolchain verified here ships it (devicectl 518.x does not); the
+ * all: no toolchain verified here ships it (devicectl 518.x does not); the
  * probe, not this comment, decides at runtime.
  * Probed structurally, per the header's convention: list the subcommands
- * `devicectl device --help` advertises and look for a `screenshot` row — the
+ * `devicectl device --help` advertises and look for a `screenshot` row, the
  * binary's own declaration of its command tree, independent of Apple's error
  * wording. NOT probed via `device screenshot --help` exiting cleanly: verified
  * live on 518.33, ArgumentParser answers an unknown subcommand's `--help` with
  * the parent's help and exit 0, so that exit status reads "supported" on
- * exactly the toolchains that are not. Memoized for the process — one extra
- * subprocess ever, not one doomed capture attempt each call — and any way of
+ * exactly the toolchains that are not. Memoized for the process (one extra
+ * subprocess ever, not one doomed capture attempt each call), and any way of
  * failing to probe (missing devicectl, timeout) reads as "unsupported", which
  * routes callers to the runner path that works everywhere.
  */
@@ -346,7 +346,7 @@ interface DevicectlDetailsPayload {
 
 /**
  * Read the device's CoreDevice connection details. `tunnelState: "connecting"`
- * means NOT ready — commands issued in that window time out. (The tunnel is
+ * means NOT ready; commands issued in that window time out. (The tunnel is
  * CoreDevice's own control channel and exists over USB too; this is a
  * readiness probe, not a Wi-Fi route.)
  */
@@ -373,7 +373,7 @@ const readyMemo = new Map<string, number>();
 
 /**
  * Ensure the device is reachable and its CoreDevice tunnel is not mid-
- * handshake. Memoized for 5s per device — callers sprinkle this before
+ * handshake. Memoized for 5s per device: callers sprinkle this before
  * commands, and a fresh probe per call would dominate hot-path latency.
  */
 export async function ensureDeviceReady(udid: string): Promise<void> {

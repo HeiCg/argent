@@ -9,7 +9,7 @@ import { formatDescribeTree } from "../src/tools/describe/format-tree";
 // T37: the Swift runner's interactive allowlist ships types the role map used
 // to skip. An unmapped type keeps its raw XCTest name (not in CONTENT_ROLES),
 // so the nested renderer's content gate dropped it whenever it carried no
-// label/value/identifier — icon-only Cells, compact date pickers, and valueless
+// label/value/identifier: icon-only Cells, compact date pickers, and valueless
 // toggles were invisible in hardware describe output, and no device tree ever
 // showed [scrollable]. These fixtures run the real describeIosDevice →
 // formatDescribeTree pipeline and pin the repaired behavior.
@@ -58,7 +58,7 @@ function elementLines(out: string): string[] {
   return out.split("\n").filter((l) => /^\s{2,}\S/.test(l));
 }
 
-describe("describeIosDevice adapter — runner type mapping", () => {
+describe("describeIosDevice adapter: runner type mapping", () => {
   setCurrentIosDeviceApp(DEVICE_UDID, APP);
 
   it("renders an unlabeled, valueless node of each newly mapped type", async () => {
@@ -73,7 +73,7 @@ describe("describeIosDevice adapter — runner type mapping", () => {
         rect: { x: 16, y: 80 + 64 * i, width: 358, height: 48 },
       })
     );
-    // Negative control: a bare Other leaf must still fall to the content gate —
+    // Negative control: a bare Other leaf must still fall to the content gate;
     // the new mappings widen the allowlist, not the gate itself.
     const decorative = node({ index: fixtures.length + 1, depth: 1, parentIndex: 0 });
 

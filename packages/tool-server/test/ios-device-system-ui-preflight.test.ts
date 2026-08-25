@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock the devicectl seam so the handlers run without hardware; the app-session
-// module stays real — its predicate and map are the state under test. The
+// module stays real: its predicate and map are the state under test. The
 // pre-flight must reject system-UI bundle ids BEFORE any of these are called.
 const ensureDeviceReady = vi.fn();
 const launchApp = vi.fn();
@@ -25,7 +25,7 @@ import {
   requireCurrentIosDeviceApp,
 } from "../src/utils/ios-device/app-session";
 
-// Physical-iOS UDID shape (8 hex, dash, 16 hex) — see utils/device-info.ts.
+// Physical-iOS UDID shape (8 hex, dash, 16 hex); see utils/device-info.ts.
 const UDID = "00008110-000978540290401E";
 const SPRINGBOARD = "com.apple.springboard";
 const SPOTLIGHT = "com.apple.Spotlight";
@@ -50,7 +50,7 @@ describe("isSessionOnlySystemUi", () => {
   });
 });
 
-describe("restart-app (ios-device) — system-UI pre-flight", () => {
+describe("restart-app (ios-device): system-UI pre-flight", () => {
   it.each([SPRINGBOARD, SPOTLIGHT])("rejects %s before any device contact", async (bundleId) => {
     const err = await restartImpl
       .handler({}, { udid: UDID, bundleId }, DEVICE)
@@ -75,7 +75,7 @@ describe("restart-app (ios-device) — system-UI pre-flight", () => {
   });
 });
 
-describe("reinstall-app (ios-device) — system-UI pre-flight", () => {
+describe("reinstall-app (ios-device): system-UI pre-flight", () => {
   it.each([SPRINGBOARD, SPOTLIGHT])("rejects %s before any device contact", async (bundleId) => {
     const err = await reinstallImpl
       .handler({}, { udid: UDID, bundleId, appPath: "/tmp/App.app" }, DEVICE)
@@ -92,7 +92,7 @@ describe("reinstall-app (ios-device) — system-UI pre-flight", () => {
   });
 });
 
-describe("launch-app (ios-device) — session-only registration unchanged", () => {
+describe("launch-app (ios-device): session-only registration unchanged", () => {
   it.each([SPRINGBOARD, SPOTLIGHT])(
     "%s registers the session without a devicectl launch",
     async (bundleId) => {

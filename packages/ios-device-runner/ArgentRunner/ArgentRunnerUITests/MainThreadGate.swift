@@ -1,7 +1,7 @@
 import Foundation
 
-/// Marshals command work onto the main thread — pumped by the XCTWaiter in
-/// ArgentRunnerSession — under a hard per-command budget, and remembers work
+/// Marshals command work onto the main thread (pumped by the XCTWaiter in
+/// ArgentRunnerSession) under a hard per-command budget, and remembers work
 /// the budget abandoned.
 ///
 /// XCTest work cannot be cancelled once started: when a block overruns, the
@@ -9,7 +9,7 @@ import Foundation
 /// main thread. Queueing more work behind it would only bury the runner
 /// deeper, so while any abandoned block is still draining the gate reports
 /// `busy` and the session refuses new commands fast. Past `wedgeThreshold`
-/// it reports `wedged`, the signal for the host to recycle the whole runner —
+/// it reports `wedged`, the signal for the host to recycle the whole runner,
 /// the only cure once the main thread is stuck for good.
 final class MainThreadGate {
   enum Availability {

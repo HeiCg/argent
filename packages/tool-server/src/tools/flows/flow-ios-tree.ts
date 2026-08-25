@@ -29,12 +29,12 @@ import {
  * a flow can address a container and its children independently.
  *
  * Physical devices (`queryIosDeviceFlowTree`): DYLD injection does not exist
- * on hardware, so flows read the XCUITest runner's accessibility snapshot —
+ * on hardware, so flows read the XCUITest runner's accessibility snapshot,
  * the same tree `describe` serves.
  *
  * Both sources honor the contract `fetchFlowTree` states: a read that isn't
- * the screen THROWS — the simulator's no-windows guard, the device source's
- * empty-runner-tree guard — rather than hand back a degraded tree. An empty
+ * the screen THROWS (the simulator's no-windows guard, the device source's
+ * empty-runner-tree guard) rather than hand back a degraded tree. An empty
  * tree is the one thing a `hidden`/absent check accepts, and `settleTree`
  * fingerprints two identical blind reads as a settled screen, so returning one
  * would flip flow outcomes; see `fetchFlowTree`.
@@ -545,7 +545,7 @@ function errMsg(err: unknown): string {
  * DYLD injection (and with it `ViewHierarchy.getFullHierarchy`) does not exist
  * on hardware, so flows resolve selectors against the same runner tree the
  * agent-facing `describe` uses. XCTest nodes carry `accessibilityIdentifier`
- * (React Native `testID`), so testID selectors still work — with one semantic
+ * (React Native `testID`), so testID selectors still work, with one semantic
  * caveat vs simulators: the AX tree collapses an `accessible` container into
  * one leaf, so a testID container's children are not independently
  * addressable the way the raw UIView hierarchy allows. Flows that need that
@@ -553,7 +553,7 @@ function errMsg(err: unknown): string {
  *
  * Throws on a blind read, mirroring `queryFullHierarchyTree`'s no-windows
  * guard: `describeIosDevice` maps a zero-node runner snapshot to a childless
- * Application root plus a hint — the right shape for the describe/await tools,
+ * Application root plus a hint, the right shape for the describe/await tools,
  * which surface the hint to the agent, but poison for a flow. `settleTree`
  * reads only `.tree`, so two consecutive blind reads fingerprint identical and
  * "settle", dispatching gestures against a screen nobody saw and reporting a
@@ -564,7 +564,7 @@ export async function queryIosDeviceFlowTree(
   device: DeviceInfo
 ): Promise<DescribeTreeData> {
   const data = await describeIosDevice(registry, device);
-  // Empty children alone is not the signal — a degraded-QUALITY hint rides on
+  // Empty children alone is not the signal: a degraded-QUALITY hint rides on
   // a NON-empty tree (that read has matchable nodes and must resolve). Only
   // the empty-tree-plus-hint pair is describeIosDevice's blind-read shape.
   if (data.tree.children.length === 0 && data.hint) {

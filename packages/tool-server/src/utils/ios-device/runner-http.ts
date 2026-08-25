@@ -17,7 +17,7 @@ import { IosDeviceTransportError } from "./usbmux-protocol";
 
 /**
  * Large snapshot/screenshot payloads are legitimate, but the length is
- * attacker-adjacent data from a USB peripheral — cap it so a corrupt stream
+ * attacker-adjacent data from a USB peripheral; cap it so a corrupt stream
  * cannot drive an unbounded allocation.
  */
 const RUNNER_HTTP_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -81,7 +81,7 @@ async function requestOverAgent(
       const request = http.request(
         {
           method: "POST",
-          // Host header only — the actual connection is the injected socket.
+          // Host header only: the actual connection is the injected socket.
           host: "127.0.0.1",
           path: "/command",
           headers: {
@@ -144,7 +144,7 @@ async function readBoundedBody(response: http.IncomingMessage): Promise<Buffer> 
  * The runner encodes command failures inside its JSON envelope (ok:false), so
  * a parseable body is returned regardless of HTTP status and left to the
  * client layer to interpret. Only an unparseable body is a transport-level
- * failure — at that point the status code is the best diagnostic available.
+ * failure; at that point the status code is the best diagnostic available.
  */
 function parseRunnerResponseBody(statusCode: number, body: Buffer): unknown {
   const text = body.toString("utf8");

@@ -61,7 +61,7 @@ export const buttonTool: ToolDefinition<Params, Result> = {
       `Failed to press ${params.button} button: ${failureSignal.error_code}`,
   },
   description: `Press a device hardware button (iOS simulator or physical device, Android emulator or device). iOS simulators send a Down then Up event automatically; a physical iOS device presses through the XCUITest runner ('home' only); Android injects a single \`adb\` key event.
-Supported buttons depend on the platform: home, back, power, volumeUp, volumeDown, appSwitch, actionButton — buttons not present on the target platform (e.g. 'back' on iOS, 'actionButton' on Android, anything but 'home' on a physical iPhone) are rejected with a clear error.
+Supported buttons depend on the platform: home, back, power, volumeUp, volumeDown, appSwitch, actionButton; buttons not present on the target platform (e.g. 'back' on iOS, 'actionButton' on Android, anything but 'home' on a physical iPhone) are rejected with a clear error.
 Use when you need to trigger hardware button events.
 Returns { pressed: buttonName }.
 Fails if the device backend is not reachable — the simulator-server for iOS, or \`adb\` for Android (Android presses are injected with \`adb shell input keyevent\`).`,
@@ -70,7 +70,7 @@ Fails if the device backend is not reachable — the simulator-server for iOS, o
   // The Android path uses `adb`, so declaring the service for an Android target
   // would spawn a sim-server the tool never uses (up to a 30s ready-wait) and
   // could throw ServiceInitializationError before the adb path even runs.
-  // Physical iOS presses go through the on-device runner — declare only the
+  // Physical iOS presses go through the on-device runner; declare only the
   // service each path actually consumes.
   services: (params): Record<string, ServiceRef> => {
     const device = resolveDevice(params.udid);

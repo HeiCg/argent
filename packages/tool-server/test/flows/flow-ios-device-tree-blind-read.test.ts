@@ -8,7 +8,7 @@ import { queryIosDeviceFlowTree } from "../../src/tools/flows/flow-ios-tree";
 
 // The physical-device half of the no-windows contract (see
 // flow-ios-tree-no-windows.test.ts for the simulator half): on a childless
-// runner snapshot — zero nodes, or still root-only after the settle-and-retry —
+// runner snapshot (zero nodes, or still root-only after the settle-and-retry)
 // describeIosDevice returns a childless Application root plus a hint: the
 // right shape for describe/await, which surface the hint. The flow tree
 // source must THROW on that shape instead: settleTree reads only `.tree`, so
@@ -64,7 +64,7 @@ const BLIND_READ_HINT =
   "The runner returned an empty or root-only accessibility tree. The app may still " +
   "be launching, or this screen exposes no accessibility elements.";
 
-describe("queryIosDeviceFlowTree — blind (childless runner tree) reads", () => {
+describe("queryIosDeviceFlowTree: blind (childless runner tree) reads", () => {
   setCurrentIosDeviceApp(DEVICE_UDID, APP);
 
   it("throws with the runner's own hint when the snapshot has zero nodes", async () => {
@@ -82,7 +82,7 @@ describe("queryIosDeviceFlowTree — blind (childless runner tree) reads", () =>
       await vi.advanceTimersByTimeAsync(2_000);
       const err = await outcome;
       expect(err).toBeInstanceOf(Error);
-      // The runner's hint text travels verbatim — the flow author must see the
+      // The runner's hint text travels verbatim: the flow author must see the
       // real cause, not the offscreen "add a scroll-to step" guess.
       expect((err as Error).message).toContain(BLIND_READ_HINT);
       // The settle-and-retry ran: the throw is a second opinion, not a blip.
@@ -93,7 +93,7 @@ describe("queryIosDeviceFlowTree — blind (childless runner tree) reads", () =>
   });
 
   // The 1-node twin: a snapshot still root-only after the settle-and-retry
-  // adapts to the same childless shape and must carry the same hint — without
+  // adapts to the same childless shape and must carry the same hint; without
   // it, all three blind-read guards downstream are bypassed together (a
   // `hidden` wait resolves success against an unreadable screen, and the flow
   // sources settle on a tree nobody saw).
@@ -129,7 +129,7 @@ describe("queryIosDeviceFlowTree — blind (childless runner tree) reads", () =>
     }
   });
 
-  // The scope fence: a degraded-QUALITY hint rides on a NON-empty tree — that
+  // The scope fence: a degraded-QUALITY hint rides on a NON-empty tree: that
   // read has matchable nodes, so it must resolve (hint intact) rather than throw.
   it("does not throw for a degraded-quality hint on a non-empty tree", async () => {
     const run = vi.fn(async () => ({

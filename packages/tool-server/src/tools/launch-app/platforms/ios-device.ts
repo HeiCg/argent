@@ -8,9 +8,9 @@ import type { LaunchAppParams, LaunchAppResult } from "../types";
 
 /**
  * Physical-iOS launch: `xcrun devicectl device process launch`. No
- * native-devtools env warm-up here — DYLD injection does not exist on
+ * native-devtools env warm-up here: DYLD injection does not exist on
  * hardware, so the launch is a plain CoreDevice process start. System UI
- * (SpringBoard/Spotlight — see isSessionOnlySystemUi) is accepted as a
+ * (SpringBoard/Spotlight; see isSessionOnlySystemUi) is accepted as a
  * session-only target: it is always running, so no launch happens and only
  * the automation session is registered.
  */

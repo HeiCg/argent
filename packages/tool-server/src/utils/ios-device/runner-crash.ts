@@ -50,7 +50,7 @@ async function newestXcresult(derivedDataPath: string): Promise<string | null> {
 
 /**
  * Crash reason recorded for the most recent runner session under this
- * artifact, or null when there is none / it cannot be read. Never throws —
+ * artifact, or null when there is none / it cannot be read. Never throws:
  * this runs on an error path and must not mask the original failure.
  */
 export async function readRunnerCrashSummary(derivedDataPath: string): Promise<string | null> {

@@ -48,7 +48,7 @@ extension CommandKind {
   }
 
   /// Whether the journal keeps the full response JSON for `status` recovery.
-  /// Snapshot and screenshot replies are large and read-only — replaying them
+  /// Snapshot and screenshot replies are large and read-only; replaying them
   /// is cheaper than letting them evict the mutation results the journal
   /// exists to protect.
   var retainsResponseInJournal: Bool {
@@ -64,7 +64,7 @@ extension CommandKind {
   /// XCTest types long strings in real time. Gestures get past XCTest's own
   /// ~60s idle-wait cap: a screen that never reports quiescent (an open
   /// context menu's looping blur, for one) stalls the pre-event idle wait
-  /// until XCTest gives up and synthesizes anyway — a 30s budget turns that
+  /// until XCTest gives up and synthesizes anyway; a 30s budget turns that
   /// recoverable slowness into an abandoned command and a busy runner.
   /// PROTOCOL.md's "Timeout budgets" table is the authoritative pairing with the client windows.
   var executionTimeout: TimeInterval {
@@ -98,7 +98,7 @@ struct CommandRequest: Codable {
   /// `longPress`: press duration. `drag`: duration of the movement.
   let durationMs: Double?
   /// `drag`: rest the touch at the destination before lifting so the scroll
-  /// view reads ~0 release velocity (no fling) — mirrors the simulator's
+  /// view reads ~0 release velocity (no fling); mirrors the simulator's
   /// ease-out `settle` swipe.
   let settle: Bool?
   /// `type`: the text delivered to the focused input.
@@ -179,7 +179,7 @@ struct Envelope: Encodable {
     )
   }
 
-  /// A copy of this reply stamped `reactivated: true` — the marker that the
+  /// A copy of this reply stamped `reactivated: true`, the marker that the
   /// target app was backgrounded and had to be re-fronted, so the foreground
   /// screen changed as a side effect of the command.
   func withReactivated() -> Envelope {
@@ -202,7 +202,7 @@ struct MessagePayload: Encodable {
 
 struct HealthPayload: Encodable {
   let uptimeMs: Double
-  /// "idle" | "busy" | "wedged" — the main-thread gate's view of the runner.
+  /// "idle" | "busy" | "wedged", the main-thread gate's view of the runner.
   let state: String
   /// XCTIssues muted as accessibility noise since launch. Suppression keys on
   /// Apple-owned wording (`ArgentRunnerSession.SuppressedIssueWording`), so a
@@ -210,7 +210,7 @@ struct HealthPayload: Encodable {
   /// means an Xcode release reworded the strings and suppression is missing.
   let suppressedIssues: Int
   /// XCTest's cumulative recorded-failure count for the session
-  /// (`testRun.totalFailureCount`) — the counter that, past suppression,
+  /// (`testRun.totalFailureCount`), the counter that, past suppression,
   /// converts successful mutations into XCTEST_RECORDED_FAILURE.
   let recordedFailures: Int
 }

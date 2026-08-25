@@ -46,7 +46,7 @@ describe("createUsbmuxCommandSender", () => {
     expect(sendViaUsbmux).toHaveBeenCalledTimes(1);
   });
 
-  it("surfaces the unattached verdict as-is — Wi-Fi-only devices are not a route", async () => {
+  it("surfaces the unattached verdict as-is: Wi-Fi-only devices are not a route", async () => {
     const sendViaUsbmux = vi.fn(async () => {
       throw unattachedError();
     });

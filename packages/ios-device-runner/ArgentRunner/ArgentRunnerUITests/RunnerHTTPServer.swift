@@ -6,7 +6,7 @@ import Network
 ///
 /// The listener is unauthenticated, so it binds loopback-only. That covers
 /// the whole transport: the host reaches the runner through a usbmux
-/// forwarded stream that terminates on the device's own loopback — verified
+/// forwarded stream that terminates on the device's own loopback; verified
 /// on hardware (a full session runs end-to-end over the loopback bind, and
 /// an off-loopback probe to the runner port is refused).
 /// Transport-level framing lives here and nothing else does: bodies are
@@ -16,7 +16,7 @@ final class RunnerHTTPServer {
     let status: Int
     let body: Data
     /// When set, the server invokes `onFinish` after this reply has been
-    /// flushed — the shutdown acknowledgement must reach the client before
+    /// flushed: the shutdown acknowledgement must reach the client before
     /// the session tears the listener down.
     let finishAfterSend: Bool
 
@@ -47,7 +47,7 @@ final class RunnerHTTPServer {
     // Loopback via requiredInterfaceType rather than a 127.0.0.1
     // requiredLocalEndpoint: the interface restriction admits loopback
     // traffic of either address family and leaves the port-0 auto-assign
-    // branch — and the .port readback feeding the listening log — untouched.
+    // branch (and the .port readback feeding the listening log) untouched.
     let parameters = NWParameters.tcp
     parameters.requiredInterfaceType = .loopback
     let listener: NWListener
@@ -61,7 +61,7 @@ final class RunnerHTTPServer {
       case .ready:
         NSLog("ARGENT_RUNNER_LISTENING port=%d", Int(self?.listener?.port?.rawValue ?? 0))
       case .failed(let error):
-        // A dead listener means no future command can arrive — end the
+        // A dead listener means no future command can arrive; end the
         // session so the host sees the exit instead of a silent hang.
         NSLog("ARGENT_RUNNER_LISTENER_FAILED error=%@", String(describing: error))
         self?.onFinish()

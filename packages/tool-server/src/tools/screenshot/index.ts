@@ -81,8 +81,8 @@ const capability: ToolCapability = {
 
 /**
  * Physical-iOS screenshot. Primary: host-side `xcrun devicectl device
- * screenshot` (no runner needed). Not every Xcode ships that subcommand —
- * devicectl 518.x (iOS 26 SDK) does not — so the memoized
+ * screenshot` (no runner needed). Not every Xcode ships that subcommand;
+ * devicectl 518.x (iOS 26 SDK) does not, so the memoized
  * `supportsHostScreenshot` probe picks the route structurally up front:
  * unsupported goes straight to the runner with no doomed devicectl attempt per
  * capture, and no dependency on Apple's error wording. On the host-side route
@@ -196,7 +196,7 @@ export async function tvTargetLongSide(file: string, scale: number): Promise<num
 
 /**
  * Best-effort in-place downscale shared by the two physical-iOS routes (this
- * tool's device capture and the flow settle's — flow-pixels.ts): cap the PNG's
+ * tool's device capture and the flow settle's, flow-pixels.ts): cap the PNG's
  * longest actual side at `scale` of itself via `sips -Z`, skipping the spawn
  * entirely at scale 1 and keeping the full-resolution file when `sips` fails,
  * mirroring the tvOS path.
@@ -256,7 +256,7 @@ Fails if the simulator-server / emulator backend / Chromium CDP is not reachable
         return { image };
       }
 
-      // Physical iPhones/iPads capture host-side via devicectl — before the
+      // Physical iPhones/iPads capture host-side via devicectl, before the
       // tvOS probe (which shells out to simctl and can't know hardware UDIDs).
       if (isIosPhysicalDevice(device)) {
         const pngPath = await iosPhysicalScreenshot(registry, device, scale);
