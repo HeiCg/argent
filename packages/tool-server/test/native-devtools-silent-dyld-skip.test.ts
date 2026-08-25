@@ -115,6 +115,9 @@ const UDID = "DD1D0000-1111-2222-3333-444444444444";
 const SOCKET = "/tmp/argent-nd-DD1D0000.sock";
 const BUNDLE = "com.example.silentskip";
 const device: DeviceInfo = { id: UDID, platform: "ios", kind: "simulator" };
+// The launched app as an unpinned tree-read hint: the reader measures it only
+// because nothing at all is connected (see queryFullHierarchyTree).
+const UNPINNED_TARGET = { bundleId: BUNDLE, pinned: false, probeAnswered: false };
 
 /** The tokens a silently-skipped dylib leaves in the process table regardless. */
 const INJECTED_ENV =
@@ -497,7 +500,7 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
       >[0];
 
       advance(10_000);
-      await expect(queryFullHierarchyTree(registry, device, BUNDLE)).rejects.toThrow(
+      await expect(queryFullHierarchyTree(registry, device, UNPINNED_TARGET)).rejects.toThrow(
         /call restart-app then retry/
       );
 
@@ -505,10 +508,10 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
       world.pid += 1;
       advance(PAST_CONNECT_BUDGET_MS);
 
-      await expect(queryFullHierarchyTree(registry, device, BUNDLE)).rejects.toThrow(
+      await expect(queryFullHierarchyTree(registry, device, UNPINNED_TARGET)).rejects.toThrow(
         /was told to relaunch, and the process now running is a different one/
       );
-      await expect(queryFullHierarchyTree(registry, device, BUNDLE)).rejects.toThrow(
+      await expect(queryFullHierarchyTree(registry, device, UNPINNED_TARGET)).rejects.toThrow(
         /takes a point directly and reads no tree/
       );
     } finally {
@@ -688,7 +691,9 @@ describe("native-devtools — a dylib inserted but silently skipped by dyld", ()
       socket.once("close", () => {
         destroyed = true;
       });
-      socket.write(JSON.stringify({ type: "Control", payload: { bundleId: "com.example.ok" } }) + "\n");
+      socket.write(
+        JSON.stringify({ type: "Control", payload: { bundleId: "com.example.ok" } }) + "\n"
+      );
       for (let i = 0; i < 100 && !destroyed; i++) {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
