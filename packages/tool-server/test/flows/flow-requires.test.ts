@@ -108,10 +108,11 @@ const shutdownIosEntry = (udid: string): ListedDevice => ({
   udid,
 });
 /** The other such row: a remote sim, whose id `list-devices` reports in `udid`. */
-const remoteIosEntry = (udid: string): ListedDevice => ({
+const remoteIosEntry = (udid: string, runtimeKind?: "mobile" | "tv"): ListedDevice => ({
   platform: "ios-remote",
   state: "Booted",
   udid,
+  ...(runtimeKind ? { runtimeKind } : {}),
 });
 
 /** A single step that needs a device and always succeeds. */
@@ -892,6 +893,28 @@ describe("requirements narrow device auto-detection", () => {
       new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, kind unknown\\)`)
     );
     expect((err as Error).message).not.toMatch(/\? \(ios-remote/);
+  });
+
+  it("names a remote Apple TV by its kind, which its listing row does report", async () => {
+    // `list-devices` classifies a remote sim off its runtime id exactly as it
+    // classifies a local one, so the enumeration has the answer for these rows.
+    // Calling one `kind unknown` misstated what is known and pointed the caller
+    // at re-listing a device that was never the problem.
+    await writeFlow("tv-only", { requires: { runtimeKind: "tv" } });
+    const { registry } = mockRegistry([
+      androidEntry(ANDROID, "mobile"),
+      remoteIosEntry(IOS_REMOTE, "tv"),
+    ]);
+
+    const err = await run(registry, "tv-only").catch((e: unknown) => e);
+
+    // Still UNMET, not a run: `isBooted` never makes a remote row a candidate,
+    // so the readable `tv` changes the reporting and nothing else.
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_REQUIREMENTS_UNMET);
+    expect((err as Error).message).toMatch(
+      new RegExp(`${IOS_REMOTE} \\(ios-remote, Booted, tv\\)`)
+    );
+    expect((err as Error).message).not.toMatch(/kind unknown/);
   });
 
   it("enumerates a device outside an explicit --platform too", async () => {

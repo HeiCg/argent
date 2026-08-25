@@ -43,6 +43,17 @@ export function isIosOrTvOsRuntimeId(runtimeId: string): boolean {
   return runtimeId.includes("iOS") || runtimeId.includes("tvOS");
 }
 
+/**
+ * TV-vs-mobile verdict for a runtime id {@link isIosOrTvOsRuntimeId} has already
+ * accepted — the one place that reads "tvOS" out of one, so the local listing,
+ * the remote listing and `list-devices`' remote rows cannot drift apart on what
+ * makes a simulator a TV. Everything else falls to `mobile`, which is why that
+ * filter has to run first.
+ */
+export function runtimeKindFromRuntimeId(runtimeId: string): "mobile" | "tv" {
+  return runtimeId.includes("tvOS") ? "tv" : "mobile";
+}
+
 /** List one device set's iOS/tvOS simulators; [] on any failure. */
 async function listDeviceSetSimulators(deviceSet: DeviceSetPath): Promise<IosSimulator[]> {
   // simctl materializes a missing `--set` directory as a side effect, so a
@@ -60,7 +71,7 @@ async function listDeviceSetSimulators(deviceSet: DeviceSetPath): Promise<IosSim
       if (!isIosOrTvOsRuntimeId(runtimeId)) continue;
       for (const d of devices) {
         if (!d.isAvailable) continue;
-        const runtimeKind = runtimeId.includes("tvOS") ? "tv" : "mobile";
+        const runtimeKind = runtimeKindFromRuntimeId(runtimeId);
         out.push({
           udid: d.udid,
           name: d.name,

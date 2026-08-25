@@ -304,6 +304,31 @@ describe("list-devices", () => {
     expect(remote.map((d) => d.udid)).toContain("remote:11111111-1111-1111-1111-111111111111");
   });
 
+  it("tags a remote simulator with the runtimeKind its runtime id states", async () => {
+    // The remote row's runtime id is the same fact the local listing turns into
+    // `runtimeKind`; leaving it raw made every consumer of this payload read a
+    // remote Apple TV as an unclassified device.
+    __resetVegaBinaryCacheForTests();
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "sim-remote" && args[0] === "simctl")
+        return { stdout: simRemoteJson(), stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+
+    const result = await listDevicesTool.execute!({}, {});
+    const remote = result.devices.filter((d) => d.platform === "ios-remote") as Array<{
+      name: string;
+      runtime: string;
+      runtimeKind?: "mobile" | "tv";
+    }>;
+    const appleTv = remote.find((d) => d.name === "Apple TV");
+    const iPhone = remote.find((d) => d.name === "iPhone 16");
+    expect(appleTv?.runtimeKind).toBe("tv");
+    expect(iPhone?.runtimeKind).toBe("mobile");
+    // The raw id stays alongside it — this adds a field rather than replacing one.
+    expect(appleTv?.runtime).toBe("com.apple.CoreSimulator.SimRuntime.tvOS-17-5");
+  });
+
   it("reports no ios-remote devices when sim-remote answers JSON that is not a listing", async () => {
     // An orchestrator that answers `{"error":...}` at exit 0 parses fine.
     // `getRemoteSimulatorRuntimeKind` turns that into a descriptive throw; here the

@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile);
  */
 
 import { stripRemotePrefix } from "./device-info";
-import { isIosOrTvOsRuntimeId } from "./ios-devices";
+import { isIosOrTvOsRuntimeId, runtimeKindFromRuntimeId } from "./ios-devices";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -125,7 +125,7 @@ export async function getRemoteSimulatorRuntimeKind(
     // Mirror `listRemoteIosSimulators`' availability filter, so a simulator
     // `list-devices` hides can't be the one that answers here.
     if (!devices.some((d: SimRemoteDevice) => d.udid === bare && d.isAvailable !== false)) continue;
-    const kind = runtimeId.includes("tvOS") ? "tv" : "mobile";
+    const kind = runtimeKindFromRuntimeId(runtimeId);
     remoteRuntimeKindCache.set(bare, kind);
     return kind;
   }

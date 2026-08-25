@@ -10,6 +10,7 @@ import { listRunningVvdConsolePorts } from "../../utils/vega-process";
 import {
   listIosSimulators,
   isIosOrTvOsRuntimeId,
+  runtimeKindFromRuntimeId,
   type IosSimulator,
 } from "../../utils/ios-devices";
 import { simctlListDevices, listedRuntimeEntries } from "../../utils/sim-remote";
@@ -28,6 +29,10 @@ type IosRemoteDevice = {
   name: string;
   state: string;
   runtime: string;
+  // The verdict the local listing already carries, read off `runtime` — a reader
+  // of this payload must not have to re-derive it from the raw id to tell a
+  // remote Apple TV from a remote iPhone.
+  runtimeKind: "mobile" | "tv";
 };
 
 type AndroidDevice = {
@@ -101,6 +106,7 @@ async function listRemoteIosSimulators(): Promise<IosRemoteDevice[]> {
           name: d.name,
           state: d.state,
           runtime,
+          runtimeKind: runtimeKindFromRuntimeId(runtime),
         });
       }
     }
