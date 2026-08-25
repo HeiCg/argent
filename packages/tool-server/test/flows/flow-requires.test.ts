@@ -49,6 +49,7 @@ const IOS_TV = "00000000-0000-0000-0000-0000000000cd";
 const IOS_REMOTE = "remote:00000000-0000-0000-0000-0000000000ef";
 const ANDROID = "emulator-5554";
 const ANDROID_2 = "emulator-5556";
+const ANDROID_3 = "emulator-5558";
 const CHROMIUM = "chromium-cdp-9222";
 const VEGA = "amazon-4a27df03c9777152";
 
@@ -936,6 +937,43 @@ describe("requirements narrow device auto-detection", () => {
 
     await expect(run(registry, "ios-only")).rejects.toThrow(
       new RegExp(`Available devices: ${IOS} \\(ios, Booted\\), ${IOS_TV} \\(ios, Booted\\)\\.$`)
+    );
+  });
+
+  it("names the rival whose kind went unread in the ambiguity it did not settle", async () => {
+    // The caller is told to pick with --device, so the enumeration owes them
+    // every device they might pick — the unjudged one included, or nothing says
+    // a judged-vs-unjudged choice was even on offer. The count stays at the
+    // devices the requirement was checked against.
+    await writeFlow("tv-only", { requires: { runtimeKind: "tv" } });
+    const { registry } = mockRegistry([
+      androidEntry(ANDROID, "tv"),
+      androidEntry(ANDROID_2, "tv"),
+      androidEntry(ANDROID_3),
+    ]);
+
+    const err = await run(registry, "tv-only").catch((e: unknown) => e);
+
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_DEVICE_RESOLUTION);
+    expect((err as Error).message).toContain(
+      `2 booted devices matched — pass --device to disambiguate. Available devices: ` +
+        `${ANDROID} (android, device, tv), ${ANDROID_2} (android, device, tv), ` +
+        `${ANDROID_3} (android, device, kind unknown).`
+    );
+  });
+
+  it("keeps kinds out of the ambiguity when the whole field was judged", async () => {
+    // The other half of the same rule: with no unread rival every row carries
+    // the kind the requirement asked for, so printing it distinguishes nothing
+    // and the message stays what it has always been.
+    await writeFlow("tv-only", { requires: { runtimeKind: "tv" } });
+    const { registry } = mockRegistry([androidEntry(ANDROID, "tv"), androidEntry(ANDROID_2, "tv")]);
+
+    const err = await run(registry, "tv-only").catch((e: unknown) => e);
+
+    expect((err as Error).message).toContain(
+      `2 booted devices matched — pass --device to disambiguate. Available devices: ` +
+        `${ANDROID} (android, device), ${ANDROID_2} (android, device).`
     );
   });
 

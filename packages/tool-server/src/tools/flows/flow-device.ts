@@ -112,6 +112,9 @@ function isBooted(d: RawDevice): boolean {
  * message and the distinguishing fact in a runtimeKind one, so only the caller
  * whose requirement turns on it asks for it. An unreadable kind is spelled out
  * rather than omitted there — it is the very thing that ruled the device out.
+ * The ambiguity arm is the one that asks for them anyway, in the case where its
+ * rows do NOT agree on a kind: an unjudged rival standing beside the matching
+ * ones, which is the difference the caller picks a `--device` on.
  */
 function describeDevice(d: RawDevice, withRuntimeKind = false): string {
   const state = d.state ? `, ${d.state}` : "";
@@ -119,8 +122,12 @@ function describeDevice(d: RawDevice, withRuntimeKind = false): string {
   return `${deviceEntryId(d) ?? "?"} (${d.platform}${state}${kind})`;
 }
 
-function deviceResolutionError(message: string, all: RawDevice[]): FailureError {
-  const list = all.length ? all.map((d) => describeDevice(d)).join(", ") : "none";
+function deviceResolutionError(
+  message: string,
+  all: RawDevice[],
+  withRuntimeKind = false
+): FailureError {
+  const list = all.length ? all.map((d) => describeDevice(d, withRuntimeKind)).join(", ") : "none";
   return new FailureError(`${message} Available devices: ${list}.`, {
     error_code: FAILURE_CODES.FLOW_DEVICE_RESOLUTION,
     failure_stage: "flow_device_resolution",
@@ -426,9 +433,14 @@ export async function resolveFlowDevice(
   const flags = eligible.every((d) => d.platform === eligible[0].platform)
     ? "--device"
     : "--device or --platform";
+  // An unjudged rival did not match, but it is a device `--device` could name,
+  // and omitting it hides that the field held a judged-vs-unjudged choice at
+  // all. It joins the enumeration and never the COUNT, which speaks only for
+  // devices the requirement was checked against.
   throw deviceResolutionError(
     `${eligible.length} booted devices matched — pass ${flags} to disambiguate.`,
-    eligible
+    [...eligible, ...unread],
+    unread.length > 0
   );
 }
 
