@@ -7,6 +7,7 @@ import { ensureCdpReachable } from "../../blueprints/chromium-cdp";
 import { chromiumIdFromPort } from "../../utils/device-info";
 import { trackChromiumPort } from "../../utils/chromium-discovery";
 import { electronGuiChildEnv } from "../../utils/electron-env";
+import { scheduleGroupSigkill, signalGroup } from "../../utils/process-kill";
 
 // An Electron app boots as a Chromium/CDP runtime, so the device id, platform
 // and tool surface are the generic `chromium` ones; only the launcher here is
@@ -152,22 +153,10 @@ function sanitizeExtraArgs(extra: string[]): string[] {
   });
 }
 
-/**
- * Signal the whole process group led by `pid`, reporting whether anything was
- * there. Detached spawn makes the child its own group leader, so descendants
- * that survive a leader-only SIGTERM — an app trapping it in `before-quit`,
- * helpers outliving a wedged browser — are still reachable: survivors reparent
- * to init but keep their pgid.
- */
-function signalGroup(pid: number, signal: NodeJS.Signals | 0): boolean {
-  try {
-    process.kill(-pid, signal);
-    return true;
-  } catch (err) {
-    // ESRCH = the group is empty; anything else (EPERM) means it isn't.
-    return (err as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
+// signalGroup (imported above) is what makes group signalling meaningful here:
+// detached spawn makes the child its own group leader, so descendants that
+// survive a leader-only SIGTERM (an app trapping it in `before-quit`, helpers
+// outliving a wedged browser) are still reachable through the pgid.
 
 function killChildEscalating(child: ChildProcess): void {
   // SIGTERM through the handle lets Electron run its quit sequence and take its
@@ -283,9 +272,7 @@ function sleepUnref(ms: number): Promise<void> {
  */
 function killChromiumByPidFallback(pid: number): void {
   if (!signalGroup(pid, "SIGTERM")) return; // group already empty, nothing to escalate
-  setTimeout(() => {
-    if (signalGroup(pid, 0)) signalGroup(pid, "SIGKILL");
-  }, 2000).unref();
+  scheduleGroupSigkill(pid, 2000, { gateOnGroupLiveness: true });
 }
 
 /**

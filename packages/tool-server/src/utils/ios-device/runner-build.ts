@@ -7,6 +7,12 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { FAILURE_CODES, FailureError, withFailureSignal } from "@argent/registry";
+import {
+  pidIsAlive,
+  pollPidsUntilGone,
+  scheduleGroupSigkill,
+  signalGroupThenPid,
+} from "../process-kill";
 import { PS_BIN } from "../vega-process";
 
 const execFileAsync = promisify(execFile);
@@ -756,15 +762,7 @@ export async function killStaleRunnersForDevice(
     // cannot be determined, not killing is the recoverable mistake.
     if (!Number.isFinite(pid) || !Number.isFinite(ppid) || pid === process.pid) continue;
     if (ppid !== 1 && isAlive(ppid)) continue; // a live peer tool-server owns it
-    try {
-      kill(-pid, "SIGTERM");
-    } catch {
-      try {
-        kill(pid, "SIGTERM");
-      } catch {
-        continue;
-      }
-    }
+    if (!signalGroupThenPid(kill, pid, "SIGTERM")) continue; // nothing reached, nothing to await
     signaled.push(pid);
   }
   if (signaled.length > 0) await waitForPidsToExit(signaled, opts);
@@ -798,7 +796,8 @@ const STALE_EXIT_POLL_INTERVAL_MS = 100;
  * process group first with a pid fallback, like killRunnerProcess. Pids dead
  * on entry cost nothing; live ones are re-probed every poll interval, so a
  * cooperative exit returns within one interval. Returns the SIGKILLed pids.
- * The probe/kill/sleep parameters are test seams over the process table.
+ * The probe/kill/sleep parameters are test seams over the process table,
+ * forwarded to the shared poll/escalation primitives in utils/process-kill.
  */
 export async function waitForPidsToExit(
   pids: readonly number[],
@@ -810,61 +809,27 @@ export async function waitForPidsToExit(
     sleep?: (ms: number) => Promise<void>;
   } = {}
 ): Promise<number[]> {
-  const timeoutMs = opts.timeoutMs ?? STALE_EXIT_TIMEOUT_MS;
-  const pollIntervalMs = opts.pollIntervalMs ?? STALE_EXIT_POLL_INTERVAL_MS;
-  const isAlive = opts.isAlive ?? pidIsAlive;
   const kill = opts.kill ?? process.kill.bind(process);
-  const sleep =
-    opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-
-  const maxPolls = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
-  let remaining = pids.filter((pid) => isAlive(pid));
-  for (let poll = 0; poll < maxPolls && remaining.length > 0; poll += 1) {
-    await sleep(pollIntervalMs);
-    remaining = remaining.filter((pid) => isAlive(pid));
-  }
+  const remaining = await pollPidsUntilGone(pids, {
+    timeoutMs: opts.timeoutMs ?? STALE_EXIT_TIMEOUT_MS,
+    pollIntervalMs: opts.pollIntervalMs ?? STALE_EXIT_POLL_INTERVAL_MS,
+    isAlive: opts.isAlive,
+    sleep: opts.sleep,
+  });
   for (const pid of remaining) {
-    try {
-      kill(-pid, "SIGKILL");
-    } catch {
-      try {
-        kill(pid, "SIGKILL");
-      } catch {
-        /* exited between the last poll and the escalation */
-      }
-    }
+    // A swallowed double failure means the pid exited between the last poll
+    // and the escalation, which is the desired outcome.
+    signalGroupThenPid(kill, pid, "SIGKILL");
   }
   return remaining;
-}
-
-/** Signal 0 probes liveness without delivering anything. */
-function pidIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Kill a runner's whole process group (xcodebuild spawns helpers). */
 export function killRunnerProcess(child: ChildProcess): void {
   const pid = child.pid;
   if (!pid) return;
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      /* already gone */
-    }
-  }
-  setTimeout(() => {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      /* already gone */
-    }
-  }, 5_000).unref();
+  signalGroupThenPid(process.kill.bind(process), pid, "SIGTERM");
+  // Unconditional after the grace period; this path has always accepted the
+  // recycled-pgid window (boot-electron's fallback gates on a re-probe).
+  scheduleGroupSigkill(pid, 5_000, { gateOnGroupLiveness: false });
 }
