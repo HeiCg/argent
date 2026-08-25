@@ -7,6 +7,7 @@ import {
   AUTO_SCREENSHOT_TOOLS,
   AUTO_SCREENSHOT_DELAY_MS_BY_TOOL,
   autoScreenshotEnabled,
+  AUTO_DESCRIBE_TOOLS,
   autoDescribeEnabled,
   shouldAutoDescribe,
   containsSecretPlaceholder,
@@ -173,15 +174,17 @@ describe("autoDescribeEnabled", () => {
 });
 
 describe("shouldAutoDescribe", () => {
-  it("follows every auto-screenshot tool except describe itself", () => {
-    for (const tool of AUTO_SCREENSHOT_TOOLS) {
-      expect(shouldAutoDescribe(tool)).toBe(tool !== "describe");
+  it("is true for every listed tool, with or without a client prefix", () => {
+    for (const tool of AUTO_DESCRIBE_TOOLS) {
+      expect(shouldAutoDescribe(tool)).toBe(true);
+      expect(shouldAutoDescribe(`mcp__argent__${tool}`)).toBe(true);
     }
   });
 
-  it("is false for describe under a client prefix and for non-interaction tools", () => {
+  it("never follows describe or screenshot, nor non-interaction tools", () => {
+    expect(AUTO_DESCRIBE_TOOLS.has("describe")).toBe(false);
+    expect(shouldAutoDescribe("describe")).toBe(false);
     expect(shouldAutoDescribe("mcp__argent__describe")).toBe(false);
-    expect(shouldAutoDescribe("mcp__argent__gesture-tap")).toBe(true);
     expect(shouldAutoDescribe("screenshot")).toBe(false);
     expect(shouldAutoDescribe("list-devices")).toBe(false);
   });

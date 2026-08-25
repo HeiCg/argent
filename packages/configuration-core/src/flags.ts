@@ -35,8 +35,7 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
   },
   {
     name: "disable-auto-describe",
-    description:
-      "Disable the accessibility element tree appended after interaction tools (the tree rides along with the automatic screenshot).",
+    description: "Disable the accessibility element tree appended after interaction tools.",
   },
   {
     name: "argent-lens",

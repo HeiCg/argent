@@ -57,10 +57,30 @@ export function autoScreenshotEnabled(options?: FlagsPathOptions): boolean {
 }
 
 /**
- * Opt-out only: the `disable-auto-describe` flag is off by default. The
- * element tree rides along with the auto-screenshot, so it also goes away when
- * auto-screenshot itself is disabled.
+ * Tools whose result gets the accessibility element tree appended, so the
+ * agent has fresh tap frames without a separate `describe` round-trip.
+ * Independent of AUTO_SCREENSHOT_TOOLS; `describe` is absent because its own
+ * result already is the tree.
  */
+export const AUTO_DESCRIBE_TOOLS = new Set([
+  "gesture-tap",
+  "gesture-swipe",
+  "gesture-scroll",
+  "gesture-drag",
+  "gesture-custom",
+  "gesture-pinch",
+  "gesture-rotate",
+  "button",
+  "keyboard",
+  "paste",
+  "rotate",
+  "launch-app",
+  "restart-app",
+  "open-url",
+  "run-sequence",
+]);
+
+// Opt-out only: the `disable-auto-describe` flag is off by default.
 export function autoDescribeEnabled(options?: FlagsPathOptions): boolean {
   return !isFlagEnabled("disable-auto-describe", options);
 }
@@ -68,12 +88,8 @@ export function autoDescribeEnabled(options?: FlagsPathOptions): boolean {
 /** Header line that introduces the element tree appended after an action. */
 export const AUTO_DESCRIBE_HEADER = "--- Elements after action (describe) ---";
 
-/**
- * Whether the auto-describe tree follows the auto-screenshot for this tool.
- * `describe` is excluded: its own result already is the tree.
- */
 export function shouldAutoDescribe(toolName: string): boolean {
-  return shouldAutoScreenshot(toolName) && normalizeToolName(toolName) !== "describe";
+  return AUTO_DESCRIBE_TOOLS.has(normalizeToolName(toolName));
 }
 
 /**
