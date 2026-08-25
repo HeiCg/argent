@@ -585,7 +585,7 @@ export async function prepareXctestrunWithPort(
 
   if (injectedTargets === 0) {
     throw new XctestrunFormatError(
-      `xctestrun format not recognized — cannot inject the runner port into ${xctestrunPath}: ` +
+      `xctestrun format not recognized; cannot inject the runner port into ${xctestrunPath}: ` +
         `no test target with TestBundlePath/TestHostPath found under TestConfigurations or at ` +
         `the top level. Xcode's .xctestrun format has likely drifted past what this version of ` +
         `Argent understands.`

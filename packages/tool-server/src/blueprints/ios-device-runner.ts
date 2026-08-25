@@ -102,7 +102,7 @@ async function explainRunnerDeath(options: {
   const recovery =
     deaths >= 2 && bundleId
       ? ` This is runner death #${deaths} touching ${bundleId} in the last ` +
-        `${CRASH_MEMORY_MS / 60_000} minutes — the app's current screen state is likely ` +
+        `${CRASH_MEMORY_MS / 60_000} minutes: the app's current screen state is likely ` +
         `crashing XCTest itself; call restart-app for ${bundleId} to reset that state, then retry.`
       : ` The runner respawns on the next call; re-observe the screen and retry.`;
   // The marker keeps recoverable() matching, so the registry still tears the
@@ -111,7 +111,7 @@ async function explainRunnerDeath(options: {
     withFailureSignal(
       new Error(
         `iOS device runner exited (code ${exitCode}) while executing '${String(command.command)}'` +
-          (crash ? ` — recorded crash: ${crash}.` : ".") +
+          (crash ? `; recorded crash: ${crash}.` : ".") +
           recovery +
           ` Log: ${options.logPath}`,
         { cause: error }
@@ -185,7 +185,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
     const udid = deviceFromOpts?.id ?? (typeof payload === "string" ? payload : undefined);
     if (!udid) {
       throw new FailureError(
-        `${IOS_DEVICE_RUNNER_NAMESPACE}.factory could not determine the device — pass it via iosDeviceRunnerRef(device).`,
+        `${IOS_DEVICE_RUNNER_NAMESPACE}.factory could not determine the device; pass it via iosDeviceRunnerRef(device).`,
         {
           error_code: FAILURE_CODES.IOS_DEVICE_RUNNER_FACTORY_OPTIONS_MISSING,
           failure_stage: "ios_device_runner_factory_options",
@@ -242,7 +242,7 @@ export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, Devi
           withFailureSignal(
             new Error(
               `The on-device runner did not become ready: ${String((error as Error).message)}. ` +
-                `Check the xcodebuild log at ${launched.logPath} — signing/provisioning issues and ` +
+                `Check the xcodebuild log at ${launched.logPath}; signing/provisioning issues and ` +
                 `a locked device screen are the two common causes. The device must be unlocked ` +
                 `the first time so you can trust the developer app (Settings > General > VPN & ` +
                 `Device Management) if iOS asks.`,

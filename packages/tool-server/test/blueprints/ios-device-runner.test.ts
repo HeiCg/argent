@@ -138,7 +138,7 @@ describe("ios-device-runner blueprint — mid-command runner death", () => {
 
     expect(clientRun).toHaveBeenCalledTimes(1);
     expect(thrown.message).toBe(
-      `iOS device runner exited (code 1) while executing 'snapshot' — recorded crash: ${crash}.` +
+      `iOS device runner exited (code 1) while executing 'snapshot'; recorded crash: ${crash}.` +
         ` The runner respawns on the next call; re-observe the screen and retry. Log: ${LOG_PATH}`
     );
     expect(thrown.cause).toBe(transportError);
@@ -169,7 +169,7 @@ describe("ios-device-runner blueprint — mid-command runner death", () => {
     )) as Error;
     expect(second.message).toBe(
       `iOS device runner exited (code null) while executing 'tap'.` +
-        ` This is runner death #2 touching com.example.escalate in the last 10 minutes —` +
+        ` This is runner death #2 touching com.example.escalate in the last 10 minutes:` +
         ` the app's current screen state is likely crashing XCTest itself;` +
         ` call restart-app for com.example.escalate to reset that state, then retry. Log: ${LOG_PATH}`
     );
@@ -417,7 +417,7 @@ describe("ios-device-runner blueprint — failure signals", () => {
     )) as Error;
 
     expect(thrown.message).toBe(
-      "ios-device-runner.factory could not determine the device — pass it via iosDeviceRunnerRef(device)."
+      "ios-device-runner.factory could not determine the device; pass it via iosDeviceRunnerRef(device)."
     );
     expect(getFailureSignal(thrown)?.error_code).toBe(
       FAILURE_CODES.IOS_DEVICE_RUNNER_FACTORY_OPTIONS_MISSING

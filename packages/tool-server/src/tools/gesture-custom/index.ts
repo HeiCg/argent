@@ -86,7 +86,7 @@ async function runOnIosDevice(
   const twoFinger = events.some((e) => e.x2 !== undefined || e.y2 !== undefined);
   if (twoFinger) {
     throw new InvalidToolInputError(
-      "gesture-custom on a physical iOS device supports single-finger gestures only — " +
+      "gesture-custom on a physical iOS device supports single-finger gestures only; " +
         "two-finger event trains (pinch/rotate) have no XCTest coordinate API."
     );
   }

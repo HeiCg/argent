@@ -77,7 +77,7 @@ extension ArgentRunnerSession {
           .appBundleIdRequired,
           "\(request.command.rawValue) requires appBundleId",
           hint:
-            "Launch or target an app first — the runner never redirects app commands "
+            "Launch or target an app first; the runner never redirects app commands "
             + "to its own host app."
         )
       }

@@ -292,7 +292,7 @@ final class ArgentRunnerSession: XCTestCase {
         "\(request.command.rawValue) exceeded its \(Int(request.command.executionTimeout))s "
           + "main-thread budget; the work was abandoned and may still complete on the device.",
         hint:
-          "Retry after a few seconds — the runner reports busy until the abandoned work drains."
+          "Retry after a few seconds; the runner reports busy until the abandoned work drains."
       )
     } catch {
       return .failure(.commandFailed, String(describing: error))
