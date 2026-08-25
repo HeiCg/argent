@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, mkdir, rm, readFile, writeFile, stat, symlink, readdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -440,6 +440,23 @@ describe("durableSaveTarget", () => {
     expect(target.dir).toBe(join(projectRoot, ".argent/recordings"));
     // Space in the filename is sanitized to an underscore.
     expect(target.path).toBe(join(projectRoot, ".argent/recordings", "clip_name.mp4"));
+  });
+
+  it("treats a trailing-separator saveDir as the same destination", () => {
+    // `normalize` keeps the trailing separator, so `.argent/screenshots/` and
+    // `.argent/screenshots` are different strings against the allowlist unless
+    // it is stripped — the separated spelling must not silently degrade to
+    // scratch.
+    for (const dir of [".argent/screenshots", ".argent/recordings"]) {
+      const plain = durableSaveTarget({ ...handle("a", "x.png", "image/png"), saveDir: dir })!;
+      for (const spelling of [`${dir}${sep}`, `${dir}${sep}${sep}`]) {
+        const target = durableSaveTarget({
+          ...handle("a", "x.png", "image/png"),
+          saveDir: spelling,
+        });
+        expect(target, spelling).toEqual(plain);
+      }
+    }
   });
 
   it("anchors at the project root even from a subdirectory", async () => {
