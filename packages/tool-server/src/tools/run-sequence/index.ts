@@ -1,9 +1,10 @@
 import { z } from "zod";
+
 import type { Registry, ToolCapability, ToolContext, ToolDefinition } from "@argent/registry";
 import { resolveDevice } from "../../utils/device-info";
 import { assertSupported, UnsupportedOperationError } from "../../utils/capability";
 import { sleepOrAbort, DEFAULT_INTER_STEP_DELAY_MS } from "../../utils/timing";
-import { invokeSubTool } from "../../utils/sub-invoke";
+import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
 import { AWAIT_UI_ELEMENT_TOOL_ID, isUnmetUiWaitResult } from "../await-ui-element";
 
 const ALLOWED_TOOLS = new Set([
@@ -199,8 +200,9 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           }
         }
 
+        const toolArgs = { ...step.args, udid };
+
         try {
-          const toolArgs = { ...step.args, udid };
           const result = await invokeSubTool(registry, ctx, step.tool, toolArgs);
           if (isUnmetUiWaitResult(step.tool, result)) {
             const note = (result as { note?: string }).note;
@@ -212,9 +214,16 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           }
           results.push({ tool: step.tool, result });
         } catch (err) {
+          const reframed = describeNestedParamError(
+            registry,
+            err,
+            step.tool,
+            toolArgs,
+            step.args ?? {}
+          );
           results.push({
             tool: step.tool,
-            error: err instanceof Error ? err.message : String(err),
+            error: reframed ?? (err instanceof Error ? err.message : String(err)),
           });
           break;
         }
