@@ -1018,6 +1018,13 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   }
 
   for (const [name, value] of Object.entries(overrides ?? {})) {
+    const problem = describeEnvNameProblem(name);
+    if (problem) {
+      throw new ScriptSetupError(
+        "invalid",
+        `${JSON.stringify(name)} cannot be an environment variable name for a script: it ${problem}.`
+      );
+    }
     if (reservedName(name)) {
       throw new ScriptSetupError(
         "invalid",
@@ -1034,6 +1041,21 @@ function buildChildEnv(overrides: Record<string, string> | undefined): NodeJS.Pr
   // activated preload in either would wait for a request that is never sent.
   env[RUNNER_ACTIVATION_ENV] = "1";
   return env;
+}
+
+/**
+ * Refused up front rather than handed to the operating system, which carries an
+ * environment as `NAME=value` strings and has no way to say a name was
+ * malformed: `=` in a name moves the split, so the script is given a variable
+ * the flow never asked for and the step passes anyway, and a name that is empty
+ * or holds a NUL leaves the child with an entry no reader can name. The map
+ * comes from the step's `env:`, so the author is the one who can fix it.
+ */
+function describeEnvNameProblem(name: string): string | null {
+  if (name === "") return "is empty";
+  if (name.includes("=")) return 'contains "=", which is what separates a name from its value';
+  if (name.includes("\0")) return "contains a NUL character";
+  return null;
 }
 
 function clampTimeout(
