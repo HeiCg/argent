@@ -33,12 +33,12 @@ The file has two top-level keys:
 
 A flow has one of two shapes:
 
-| Shape           | First non-echo step | Start state                                         |
-| --------------- | ------------------- | --------------------------------------------------- |
-| End-to-end flow | `launch:`           | Argent starts the app from scratch                  |
-| Fragment        | Any other step      | The app is already in the state that the flow needs |
+| Shape           | First step that is not `echo:` or `script:` | Start state                                         |
+| --------------- | ------------------------------------------- | --------------------------------------------------- |
+| End-to-end flow | `launch:`                                   | Argent starts the app from scratch                  |
+| Fragment        | Any other step                              | The app is already in the state that the flow needs |
 
-Argent skips leading `echo` steps when it classifies a flow. A flow that opens with an `echo` step and then a `launch:` step is still end-to-end. Put the named start state of an end-to-end flow in a leading `echo` step.
+Argent skips leading `echo` and `script` steps when it classifies a flow. A flow that opens with an `echo` step and then a `launch:` step is still end-to-end. A flow that opens with a `script` step and then a `launch:` step is also end-to-end. Put the named start state of an end-to-end flow in a leading `echo` step.
 
 A file does not store a device id. The runner selects the device. A `launch:` restarts the process but does not clear the app data, the account or the backend data.
 
