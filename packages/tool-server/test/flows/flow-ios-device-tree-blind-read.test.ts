@@ -7,13 +7,13 @@ import { describeIosDevice } from "../../src/tools/describe/platforms/ios-device
 import { queryIosDeviceFlowTree } from "../../src/tools/flows/flow-ios-tree";
 
 // The physical-device half of the no-windows contract (see
-// flow-ios-tree-no-windows.test.ts for the simulator half): on a zero-node
-// runner snapshot describeIosDevice returns a childless Application root plus
-// a hint — the right shape for describe/await, which surface the hint. The
-// flow tree source must THROW on that shape instead: settleTree reads only
-// `.tree`, so two blind reads fingerprint identical and "settle", and the step
-// then fails with a misleading offscreen hint while the runner's own hint is
-// dropped.
+// flow-ios-tree-no-windows.test.ts for the simulator half): on a childless
+// runner snapshot — zero nodes, or still root-only after the settle-and-retry —
+// describeIosDevice returns a childless Application root plus a hint: the
+// right shape for describe/await, which surface the hint. The flow tree
+// source must THROW on that shape instead: settleTree reads only `.tree`, so
+// two blind reads fingerprint identical and "settle", and the step then fails
+// with a misleading offscreen hint while the runner's own hint is dropped.
 
 const DEVICE_UDID = "00008110-000978540290401E";
 const APP = "com.example.app";
@@ -60,7 +60,11 @@ function registryFor(api: IosDeviceRunnerApi): Registry {
   return { resolveService: async () => api } as unknown as Registry;
 }
 
-describe("queryIosDeviceFlowTree — blind (empty runner tree) reads", () => {
+const BLIND_READ_HINT =
+  "The runner returned an empty or root-only accessibility tree. The app may still " +
+  "be launching, or this screen exposes no accessibility elements.";
+
+describe("queryIosDeviceFlowTree — blind (childless runner tree) reads", () => {
   setCurrentIosDeviceApp(DEVICE_UDID, APP);
 
   it("throws with the runner's own hint when the snapshot has zero nodes", async () => {
@@ -80,10 +84,46 @@ describe("queryIosDeviceFlowTree — blind (empty runner tree) reads", () => {
       expect(err).toBeInstanceOf(Error);
       // The runner's hint text travels verbatim — the flow author must see the
       // real cause, not the offscreen "add a scroll-to step" guess.
-      expect((err as Error).message).toContain("The runner returned an empty accessibility tree.");
-      expect((err as Error).message).toContain("exposes no accessibility elements");
+      expect((err as Error).message).toContain(BLIND_READ_HINT);
       // The settle-and-retry ran: the throw is a second opinion, not a blip.
       expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The 1-node twin: a snapshot still root-only after the settle-and-retry
+  // adapts to the same childless shape and must carry the same hint — without
+  // it, all three blind-read guards downstream are bypassed together (a
+  // `hidden` wait resolves success against an unreadable screen, and the flow
+  // sources settle on a tree nobody saw).
+  it("hints and throws when the snapshot stays root-only after the retry", async () => {
+    const run = vi.fn(async () => ({ nodes: [appRoot()], quality: null }));
+    const registry = registryFor({ udid: DEVICE_UDID, run });
+
+    vi.useFakeTimers();
+    try {
+      const pending = describeIosDevice(registry, IOS_DEVICE);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const data = await pending;
+      expect(data.tree.role).toBe("Application");
+      expect(data.tree.children).toHaveLength(0);
+      expect(data.hint).toBe(BLIND_READ_HINT);
+      // The settle-and-retry still fired; the hint is a post-retry verdict.
+      expect(run).toHaveBeenCalledTimes(2);
+
+      const flowRun = vi.fn(async () => ({ nodes: [appRoot()], quality: null }));
+      const outcome = queryIosDeviceFlowTree(
+        registryFor({ udid: DEVICE_UDID, run: flowRun }),
+        IOS_DEVICE
+      ).then(
+        () => null,
+        (err: unknown) => err
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      const err = await outcome;
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain(BLIND_READ_HINT);
     } finally {
       vi.useRealTimers();
     }

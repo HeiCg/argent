@@ -27,21 +27,18 @@ export async function describeIosDevice(
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     ({ nodes, quality } = await captureSnapshot(api, bundleId));
   }
-  if (nodes.length === 0) {
-    return {
-      tree: { role: "Application", frame: { x: 0, y: 0, width: 1, height: 1 }, children: [] },
-      source: "xcuitest-runner",
-      hint:
-        "The runner returned an empty accessibility tree. The app may still be launching, " +
-        "or this screen exposes no accessibility elements.",
-    };
-  }
   const data = adaptRunnerSnapshot(nodes);
   if (quality?.state && quality.state !== "healthy") {
     data.hint =
       `Snapshot quality: ${quality.state} (backend ${quality.backend ?? "?"}, ` +
       `reason ${quality.reasonCode ?? quality.reason ?? "?"}). The tree may be incomplete; ` +
       "retry after the UI settles, or fall back to the screenshot.";
+  } else if (data.tree.children.length === 0) {
+    // Downstream blind-read guards (await-ui-element, the flow tree sources)
+    // key off this hint, so every childless tree, empty or root-only, carries one.
+    data.hint =
+      "The runner returned an empty or root-only accessibility tree. The app may still " +
+      "be launching, or this screen exposes no accessibility elements.";
   }
   return data;
 }
@@ -69,6 +66,14 @@ const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
 };
 
 function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
+  // A zero-node snapshot has no root rect to normalize against: hand back the
+  // same childless Application shape a root-only snapshot adapts to.
+  if (nodes.length === 0) {
+    return {
+      tree: { role: "Application", frame: { x: 0, y: 0, width: 1, height: 1 }, children: [] },
+      source: "xcuitest-runner",
+    };
+  }
   // Reference frame: the shallowest node's rect (the Application root, i.e.
   // `XCUIApplication.frame`). Gesture 0-1 is inverted through the runner's
   // `viewport` command, which returns that same rect — they must stay in lockstep.
