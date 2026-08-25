@@ -103,6 +103,28 @@ describe("script step rejections", () => {
     ]);
   });
 
+  it("refuses a time limit the step spends on its own startup", () => {
+    for (const body of [
+      "{ path: seed.mjs, timeout: 0.5 }",
+      "{ path: seed.mjs, timeout: 1 }",
+      "{ path: seed.mjs, timeout: 30 }",
+      "{ path: seed.mjs, timeout: 99.9 }",
+    ]) {
+      expect(() => step(body), body).toThrow(
+        /script.timeout is in milliseconds and needs at least 100/
+      );
+    }
+  });
+
+  it("admits the floor itself and the sub-second limits above it", () => {
+    expect(step("{ path: seed.mjs, timeout: 100 }")).toEqual([
+      { kind: "script", path: "seed.mjs", timeout: 100 },
+    ]);
+    expect(step("{ path: seed.mjs, timeout: 800 }")).toEqual([
+      { kind: "script", path: "seed.mjs", timeout: 800 },
+    ]);
+  });
+
   it("refuses a body that is not a map", () => {
     for (const body of ["", "[seed.mjs]", "42"]) {
       expect(() => step(body), body).toThrow(/script needs \{ path, timeout\? \}|takes a map/);

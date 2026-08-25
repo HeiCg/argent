@@ -211,6 +211,8 @@ A `script:` step runs a local `.mjs` file in a new Node process. Use it for work
 
 `path` resolves against the directory of the flow file that **contains the step**, so a fragment finds the same script in each flow that composes it. Always write the extension.
 
+`timeout` is milliseconds and defaults to 30000. Parse rejects one below 100, because the step starts a Node process first and that start alone costs tens of milliseconds. A smaller limit ends the step at its limit, or makes the verdict depend on the load of the host.
+
 ### What the script gets
 
 - The working directory is `project_root`, not the directory of the script file, so `fs.readFileSync("./fixtures/order.json")` reads `<project_root>/fixtures/order.json`. A bare `import` is different: Node resolves it from the script file and up, so a script outside the project cannot import the project's dependencies.

@@ -2582,14 +2582,43 @@ function parseScriptPath(raw: unknown, value: unknown): string {
 }
 
 /**
+ * Floor on a `script` step's `timeout`, sized from the fixed cost of the step
+ * rather than from the script: a fork, a Node boot, the runner preload and the
+ * script's own import all run before the first line the limit is meant to
+ * bound. Measured with a script whose whole body is one `console.log` — idle,
+ * 0 of 30 runs finished within 26ms and all 30 finished within 35ms; with every
+ * core busy, 0 of 20 finished within 30ms, 1 within 40ms and 17 within 50ms.
+ * 100ms is the lowest round value that finished every trial in both states, so
+ * below it the step is either out of reach or decided by host load.
+ */
+const SCRIPT_MIN_TIMEOUT_MS = 100;
+
+/**
  * The `timeout` a `script` step may carry, in milliseconds. The finiteness
  * check is not redundant: YAML `.inf` is typeof number and greater than 0. The
  * executor clamps whatever survives to the host's configured maximum and says
  * so in the step's report.
+ *
+ * The floor is what separates this from the other millisecond options, which
+ * take any positive value: the work this one bounds starts a process first, so
+ * a limit under the floor buys no short step — it buys one that ends at its
+ * time limit, or one whose verdict tracks how busy the host was, and either way
+ * an errored script step stops the flow. `timeout: 0.5` is the extreme of it:
+ * Node holds no timer under 1ms, so the report quotes back a limit that never
+ * ran. Refused here, deviceless and naming the key, rather than after the run
+ * has started.
  */
 function parseScriptTimeout(raw: unknown, value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     badEntry(raw, "script.timeout needs a positive number of milliseconds (e.g. `timeout: 30000`)");
+  }
+  if (value < SCRIPT_MIN_TIMEOUT_MS) {
+    badEntry(
+      raw,
+      `script.timeout is in milliseconds and needs at least ${SCRIPT_MIN_TIMEOUT_MS} — the step ` +
+        `spends its first tens of milliseconds starting the Node process, so ${value} leaves the ` +
+        `script too little to run in and errors the step (30 seconds is \`timeout: 30000\`)`
+    );
   }
   return value as number;
 }

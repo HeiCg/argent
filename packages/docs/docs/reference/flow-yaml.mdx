@@ -253,7 +253,7 @@ The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 | Key       | Required | Description                                                                                                                |
 | --------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `path`    | yes      | A file with a lowercase `.mjs` suffix. The path resolves as a `run` path does. The letter case must match the file on disk |
-| `timeout` | no       | The limit of the step in milliseconds. The default is 30000                                                                |
+| `timeout` | no       | The limit of the step in milliseconds. The minimum is 100, and the default is 30000                                        |
 
 Argent runs the script with the project root as the working directory. The script does not inherit your environment. Argent does not read a project `.env` file. Argent passes only `PATH`, `HOME`, the proxy and TLS names, and the Node, Android and Java toolchain names. There is no `env` key. Let the script read a secret or a URL from a file.
 
@@ -265,6 +265,8 @@ A failed step stops the flow. The verdict names the side that caused the failure
 | ------- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
 | Failed  | The script | An error, a load failure, a non-zero exit code, or a value in the `output` global that Argent cannot serialize             |
 | Errored | The host   | A time limit, a heap limit, a signal, a process that did not start, a full queue, a cancelled run, or a mis-cased filename |
+
+Parsing rejects a `timeout` below 100 milliseconds. The step starts a Node process before the script runs, and that start alone costs tens of milliseconds. A smaller limit ends the step at the time limit, or makes the result depend on the load of the host.
 
 `scripts.maxTimeoutMs` caps the `timeout` of each step, and `scripts.heapLimitMb` sets the heap of the process. Argent reads both keys from the global configuration file only. See [Available keys](/docs/reference/configuration#available-keys).
 
