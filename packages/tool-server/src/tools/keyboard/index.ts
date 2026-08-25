@@ -59,6 +59,25 @@ const zodSchema = z.object({
 
 type Params = z.infer<typeof zodSchema>;
 
+// True when a `keyboard` result says the typed text demonstrably did not land
+// on an Android phone/tablet read-back (`verified: false`, see
+// platforms/android-verify.ts). The tool reports this verdict instead of
+// throwing, so flow-run's raw `tool: keyboard` steps and run-sequence use it to
+// fail/stop a step that would otherwise count as passed — the same shape gap
+// `isUnmetUiWaitResult` closes for `await-ui-element`. An ABSENT `verified` is
+// deliberately not matched: it means "not checked", never "checked and failed",
+// and failing on it would green-light nothing while breaking every platform
+// that has no read-back. `unknown` because the result crosses the registry
+// boundary untyped.
+export function isUnlandedKeyboardTextResult(
+  toolId: string,
+  result: unknown
+): result is { verified: false; note?: string } {
+  if (toolId !== "keyboard") return false;
+  if (typeof result !== "object" || result === null) return false;
+  return (result as { verified?: unknown }).verified === false;
+}
+
 const capability: ToolCapability = {
   apple: { simulator: true, device: true },
   appleRemote: { simulator: true },

@@ -290,22 +290,35 @@ export function classifyTypedText(before: string, after: string, text: string): 
  *     its true prior state. This is the shape the reported bug takes.
  *
  * Each proof reads the same field a different way, so where BOTH apply they
- * disagree about what is ours and neither can be trusted. That overlap is not
- * exotic: a baseline that is a hint (`FocusedField.text`) can share an edge with
- * the typed text — hint `https://` under `https://example.com`, hint `0` under
- * `100` — and then A measures the growth over a "prior value" that was never
- * in the field. Taking A there deletes `hint.length` too few, the retype appends
- * onto the residue, and the result is a doubled value (`https://https://…`)
- * shaped precisely to satisfy `classifyTypedText`'s first branch — reported as
- * `landed`, with no note, and greened by the flow `type` gate. So the overlap
- * returns null: the two readings are both live, which is the definition of not
- * being able to prove what to delete.
+ * usually disagree about what is ours and neither can be trusted. That overlap
+ * is not exotic: a baseline that is a hint (`FocusedField.text`) can share an
+ * edge with the typed text — hint `https://` under `https://example.com`, hint
+ * `0` under `100` — and then A measures the growth over a "prior value" that
+ * was never in the field. Taking A there deletes `hint.length` too few, the
+ * retype appends onto the residue, and the result is a doubled value
+ * (`https://https://…`) shaped precisely to satisfy `classifyTypedText`'s first
+ * branch — reported as `landed`, with no note, and greened by the flow `type`
+ * gate. So an overlap that DISAGREES returns null: the two readings are both
+ * live, which is the definition of not being able to prove what to delete.
+ *
+ * The one exception is where the two proofs name the SAME count. A deletes
+ * `added`, B deletes `after.length`, and they are equal exactly when `before`
+ * is empty — a hint-less empty field reports `text=""` (uiautomator has nothing
+ * else to say). There both readings describe the same deletion: restore the
+ * empty field. Declining there would leave the PR's own repro shape (typed into
+ * an empty hint-less box, characters dropped) unrepaired every time.
  */
 export function plannedUndoDeletions(before: string, after: string, text: string): number | null {
   const added = after.length - before.length;
   const grewByOneRun = added >= 0 && added <= text.length && coversByEdges(before, after, added);
   const allOurs = isSubsequence(after, text);
-  if (grewByOneRun && allOurs) return null;
+  if (grewByOneRun && allOurs) {
+    // Both proofs apply. They agree only when they name the same deletion
+    // count, which is exactly the empty baseline (see above); otherwise the
+    // readings conflict and nothing can be proven safe to delete.
+    if (added !== after.length) return null;
+    return added;
+  }
   if (grewByOneRun) return added;
   if (allOurs) return after.length;
   return null;
@@ -362,11 +375,15 @@ async function deleteTrailing(serial: string, count: number): Promise<void> {
 /**
  * Advisory prose for every outcome that needs a caveat. No note contains the
  * field's text, so a `keyboard` call that typed a resolved `{{secret:…}}` cannot
- * echo the plaintext back (`../index.ts` scrubs them as well, in case that ever
- * stops being true by construction). The character counts DO reveal the resolved
- * value's length — as `keys` already does for every secret type, verified or not
- * — so this bounds the leak at what the result already exposed, it does not
- * eliminate it.
+ * echo the plaintext back. There is NO backstop behind this: `../index.ts`
+ * deliberately does NOT substitute over `note` (doing so rewrites ordinary
+ * words on healthy calls and swallows the counts these notes exist to report,
+ * while matching whole values only — useless against a partial read-back), so
+ * value-free-by-construction is the ONLY thing keeping a secret out of a note.
+ * A note that starts quoting what the field holds is a plaintext leak. The
+ * character counts DO reveal the resolved value's length — as `keys` already
+ * does for every secret type, verified or not — so this bounds the leak at what
+ * the result already exposed, it does not eliminate it.
  */
 const UNVERIFIED_PREFIX = "The typed text was not verified against the screen";
 

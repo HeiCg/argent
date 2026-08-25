@@ -5,6 +5,7 @@ import { assertSupported, UnsupportedOperationError } from "../../utils/capabili
 import { sleepOrAbort, DEFAULT_INTER_STEP_DELAY_MS } from "../../utils/timing";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { AWAIT_UI_ELEMENT_TOOL_ID, isUnmetUiWaitResult } from "../await-ui-element";
+import { isUnlandedKeyboardTextResult } from "../keyboard";
 
 const ALLOWED_TOOLS = new Set([
   "gesture-tap",
@@ -204,6 +205,17 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
             results.push({
               tool: step.tool,
               error: `await-ui-element condition not met${note ? `: ${note}` : ""}`,
+            });
+            break;
+          }
+          // Same shape gap: a `keyboard` text step reports an Android read-back
+          // failure in its result instead of throwing, so continuing would run
+          // the next step (typically the submit) against the wrong field
+          // contents. Only an explicit `verified: false` stops the sequence.
+          if (isUnlandedKeyboardTextResult(step.tool, result)) {
+            results.push({
+              tool: step.tool,
+              error: `typed text did not land${result.note ? `: ${result.note}` : ""}`,
             });
             break;
           }

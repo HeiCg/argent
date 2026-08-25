@@ -216,6 +216,68 @@ describe("run-sequence", () => {
     expect(result.completed).toBe(2);
   });
 
+  it("stops the sequence when a keyboard step reports the typed text did not land", async () => {
+    // `verified: false` is an Android read-back verdict reported in the result
+    // rather than thrown; continuing would run the next step (typically the
+    // submit tap) against a field holding the wrong value.
+    const registry = mockRegistry((id: string) => {
+      if (id === "keyboard") {
+        return {
+          typed: "abcdefghijkl",
+          keys: 12,
+          verified: false,
+          note: "the field holds 0 characters where 12 were expected",
+        };
+      }
+      return { tapped: true };
+    });
+    const tool = createRunSequenceTool(registry);
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS,
+        steps: [
+          { tool: "gesture-tap", args: { x: 0.5, y: 0.9 } },
+          { tool: "keyboard", args: { text: "abcdefghijkl" } },
+          { tool: "keyboard", args: { key: "enter" } },
+        ],
+      }
+    );
+
+    // The trailing Enter must NOT run against the wrong field contents.
+    expect(registry.invokeTool).toHaveBeenCalledTimes(2);
+    const last = result.steps[1] as { tool: string; error?: string };
+    expect(last.tool).toBe("keyboard");
+    expect(last.error).toMatch(/did not land/i);
+    expect(last.error).toMatch(/holds 0 characters/);
+    expect(result.completed).toBe(1);
+  });
+
+  it("continues past a keyboard step whose verification is absent or true", async () => {
+    // Absent means "not checked" (every platform without a read-back), never
+    // failed — halting on it would break sequences everywhere else.
+    const registry = mockRegistry((id: string) =>
+      id === "keyboard" ? { typed: "hi", keys: 2 } : { typed: "hi", keys: 2, verified: true }
+    );
+    const tool = createRunSequenceTool(registry);
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS,
+        steps: [
+          { tool: "keyboard", args: { text: "hi" } },
+          { tool: "keyboard", args: { text: "hi" } },
+          { tool: "keyboard", args: { key: "enter" } },
+        ],
+      }
+    );
+
+    expect(registry.invokeTool).toHaveBeenCalledTimes(3);
+    expect(result.completed).toBe(3);
+  });
+
   it("forwards the request abort signal into each sub-tool invocation", async () => {
     const registry = mockRegistry(() => ({ tapped: true }));
     const tool = createRunSequenceTool(registry);

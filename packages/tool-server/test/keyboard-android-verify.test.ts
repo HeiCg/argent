@@ -251,6 +251,19 @@ describe("plannedUndoDeletions", () => {
     expect(plannedUndoDeletions("Search settings", "abcdefgh", "abcdefghijkl")).toBe(8);
   });
 
+  it("deletes when both proofs apply but AGREE — a hint-less empty baseline", () => {
+    // before="" makes plan A's count (after.length - 0) equal plan B's
+    // (after.length), so there is no disagreement to distrust. This is the
+    // hint-less empty `TextInput` — uiautomator reports text="" for it, and
+    // without this the repair never runs for exactly the reported repro shape.
+    expect(plannedUndoDeletions("", "abcdefgh", "abcdefghijkl")).toBe(8);
+    const sentence = "The quick brown fox jumps over the lazy dog. The quick brown fox";
+    const dropped = "The quick brown fox jumps over the lazy dog. ";
+    expect(plannedUndoDeletions("", dropped, sentence)).toBe(dropped.length);
+    // An empty baseline where the proofs still disagree stays declined.
+    expect(plannedUndoDeletions("", "abcdefghijklm", "abc")).toBeNull();
+  });
+
   it("refuses the hint overlaps that make the undo double the value", () => {
     // Each pair is an empty field whose hint shares an edge with the typed text,
     // and a first burst that dropped characters. Plan A reads the hint as prior
