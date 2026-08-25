@@ -688,12 +688,21 @@ describe("flow script executor — process cleanup", () => {
     expect(isAlive(result.output?.started as number)).toBe(false);
   }, 30_000);
 
-  it("reaps a spinning orphan when its parent is SIGKILLed", async () => {
+  it("reaps a spinning orphan and its descendants when its parent is SIGKILLed", async () => {
     const ws = workspace();
     const pidFile = ws.resolve("runner.pid");
+    const descendantFile = ws.resolve("orphan-descendant.pid");
+    // A descendant is what a real script leaves behind — an emulator, a Metro
+    // — and the tool server that would have reaped it is the process being
+    // killed here, so the runner's own group kill is the only thing left.
     const script = ws.write(
       "orphan.mjs",
-      `import fs from "node:fs";
+      `import { spawn } from "node:child_process";
+       import fs from "node:fs";
+       const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+         stdio: "ignore",
+       });
+       fs.writeFileSync(${JSON.stringify(descendantFile)}, String(child.pid));
        fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
        for (;;) {}`
     );
@@ -717,20 +726,25 @@ describe("flow script executor — process cleanup", () => {
     });
     try {
       const runnerPid = await readPidFile(pidFile, 30_000, () => driverStderr);
-      strays.push(runnerPid);
+      const descendantPid = await readPidFile(descendantFile, 30_000, () => driverStderr);
+      strays.push(runnerPid, descendantPid);
       expect(isAlive(runnerPid)).toBe(true);
+      expect(isAlive(descendantPid)).toBe(true);
 
       parent.kill("SIGKILL");
       expect(await waitForExit(runnerPid, 15_000)).toBe(true);
+      expect(await waitForExit(descendantPid, 15_000)).toBe(true);
     } finally {
       parent.kill("SIGKILL");
       // Also when the poll above timed out: the runner is detached and spins,
       // so without this it outlives the suite until its own deadline reaps it.
-      try {
-        const written = Number(fs.readFileSync(pidFile, "utf8").trim());
-        if (Number.isInteger(written)) strays.push(written);
-      } catch {
-        // Never written, so there is nothing to reap.
+      for (const file of [pidFile, descendantFile]) {
+        try {
+          const written = Number(fs.readFileSync(file, "utf8").trim());
+          if (Number.isInteger(written)) strays.push(written);
+        } catch {
+          // Never written, so there is nothing to reap.
+        }
       }
     }
   }, 60_000);
@@ -776,6 +790,48 @@ describe("flow script watchdogs", () => {
     // worker would hold the child open to the deadline, turning this into a 40s
     // timeout instead of an output in tens of milliseconds.
     expect(result.durationMs).toBeLessThan(3_000);
+  }, 60_000);
+
+  it("hold the margin open for a stalled tool server, then take the whole group", async () => {
+    const ws = workspace();
+    const pidFile = ws.resolve("stalled-descendant.pid");
+    const script = ws.write(
+      "spawner.mjs",
+      `import { spawn } from "node:child_process";
+       import fs from "node:fs";
+       const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+         stdio: "ignore",
+       });
+       fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+       for (;;) {}`
+    );
+    const timeoutMs = 2_000;
+    const startedAt = Date.now();
+    const pending = executor().execute({ scriptPath: script, projectRoot: ws.dir, timeoutMs });
+    const descendant = await readPidFile(pidFile);
+    strays.push(descendant);
+
+    // Blocked from here on, so nothing this side would do — the time limit's
+    // timer, the process-tree stop it schedules — can run. What reaches this
+    // descendant reaches it from inside the child, through the group its
+    // deadline watchdog kills.
+    const probe = (afterDeadlineMs: number) => {
+      while (Date.now() - startedAt < timeoutMs + afterDeadlineMs) {
+        /* block */
+      }
+      return isAlive(descendant);
+    };
+    const withinMargin = probe(1_200);
+    const pastMargin = probe(3_500);
+    const result = await pending;
+
+    // A stall of an ordinary width — `stop-metro` shells out to `lsof` and
+    // `netstat` — still finds a live child to stop itself.
+    expect(withinMargin).toBe(true);
+    // Past the margin the child stops the whole group rather than only itself,
+    // so a descendant the tool server can no longer reap goes with it.
+    expect(pastMargin).toBe(false);
+    expect(result.failure?.kind).toBe(TIMEOUT);
   }, 60_000);
 });
 

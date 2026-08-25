@@ -91,18 +91,23 @@ describe("flow script executor — the environment allowlist", () => {
     );
   });
 
-  it("keeps npm's own spelling of NODE_OPTIONS out", async () => {
-    // npm defines `node-options` as a real config key and hands it back as
-    // NODE_OPTIONS to what it starts, so the `npm_config_` prefix would carry
-    // through exactly what the exact name is reserved to keep out.
-    withEnv("npm_config_node_options", "--max-old-space-size=8");
+  // npm defines `node-options` as a real config key and hands it back as
+  // NODE_OPTIONS to what it starts, so the `npm_config_` prefix would carry
+  // through exactly what the exact name is reserved to keep out. `userconfig`
+  // and `globalconfig` reach the same key through an `.npmrc` they name, and
+  // npm takes `_` and `-` in a key as the same character.
+  it.each([
+    "npm_config_node_options",
+    "npm_config_node-options",
+    "npm_config_userconfig",
+    "npm_config_globalconfig",
+  ])("keeps %s out of the child's environment", async (name) => {
+    withEnv(name, "--max-old-space-size=8");
     const ws = workspace();
-    const script = ws.write("env.mjs", reporter(["npm_config_node_options"]));
+    const script = ws.write("env.mjs", reporter([name]));
     const result = await executor().execute({ scriptPath: script, projectRoot: ws.dir });
 
-    expect(
-      (result.output?.env as Record<string, string | null>).npm_config_node_options
-    ).toBeNull();
+    expect((result.output?.env as Record<string, string | null>)[name]).toBeNull();
   });
 
   it("copies the caller's own environment values on top", async () => {
@@ -124,9 +129,14 @@ describe("flow script executor — the environment allowlist", () => {
     "NODE_CHANNEL_FD",
     "NODE_UNIQUE_ID",
     "npm_config_node_options",
-    // npm reads its config names without regard to case wherever it runs, so
-    // this spelling is refused on POSIX too, where the others are exact.
+    // npm reads its config names without regard to case wherever it runs, and
+    // takes `_` and `-` in a key as the same character, so these spellings are
+    // refused on POSIX too, where the others are exact.
     "NPM_CONFIG_NODE_OPTIONS",
+    "npm_config_node-options",
+    // Both name an `.npmrc` npm would read `node-options` from.
+    "npm_config_userconfig",
+    "npm_config_globalconfig",
     "ELECTRON_RUN_AS_NODE",
     "ARGENT_FLOW_SCRIPT_RUNNER",
   ])("refuses %s in a caller-supplied environment", async (name) => {
