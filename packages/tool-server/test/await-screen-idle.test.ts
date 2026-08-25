@@ -14,6 +14,25 @@ vi.mock("../src/utils/ios-devices", async () => {
   return { ...actual, isTvOsSimulator: async () => false };
 });
 
+// Android locked-device repro: the legacy uiautomator dump reports its failure
+// as an in-band `ERROR:` line, which describeAndroid turns into a throwing
+// FailureError — the hard, actionable error the tool must not launder into a
+// latency diagnosis.
+vi.mock("../src/utils/adb", async () => {
+  const actual = await vi.importActual<typeof import("../src/utils/adb")>("../src/utils/adb");
+  return {
+    ...actual,
+    isAndroidTv: async () => false,
+    adbExecOutBinary: async () => Buffer.from("ERROR: could not get idle state.", "utf-8"),
+  };
+});
+vi.mock("../src/utils/android-screen", async () => {
+  const actual = await vi.importActual<typeof import("../src/utils/android-screen")>(
+    "../src/utils/android-screen"
+  );
+  return { ...actual, getAndroidScreenSize: async () => ({ width: 1080, height: 2400 }) };
+});
+
 const IOS_UDID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
 const FRAME = { x: 0.1, y: 0.4, width: 0.8, height: 0.05 };
 
@@ -157,6 +176,34 @@ describe("await-screen-idle tool", () => {
     expect(result.settled).toBe(false);
     expect(result.polls).toBeGreaterThan(1);
     expect(result.note).toBeUndefined();
+  });
+
+  // A hard, actionable device error (locked screen, missing helper) must reach
+  // the agent as itself. Every fetch errors here, so `samples` stays 0 — without
+  // an error guard that lands in the same bucket as a tree too slow to read
+  // twice, and the note would tell the agent to raise timeoutMs: advice that
+  // cannot help and hides the real cause.
+  // A hard, actionable device error (locked screen) must reach the agent as
+  // itself. Every fetch throws on the Android legacy path here — the exact
+  // locked-device trigger from review — so `samples` stays 0 and, without an
+  // error guard, that lands in the same bucket as a tree too slow to read twice:
+  // the note would tell the agent to raise timeoutMs, advice that cannot help
+  // and hides the real cause.
+  it("reports a failing tree fetch instead of a slow-read diagnosis", async () => {
+    const tool = createAwaitScreenIdleTool({
+      resolveService: vi.fn(async () => {
+        throw new Error("no android-devtools helper");
+      }),
+    } as any);
+
+    const result = await tool.execute(
+      {},
+      { udid: "emulator-5554", timeoutMs: 200, pollIntervalMs: 10, minStableMs: 30 }
+    );
+
+    expect(result.settled).toBe(false);
+    expect(result.note).toContain("last tree fetch failed:");
+    expect(result.note).toContain("uiautomator could not capture");
   });
 
   it("settles on the first non-empty read when minStableMs is 0", async () => {

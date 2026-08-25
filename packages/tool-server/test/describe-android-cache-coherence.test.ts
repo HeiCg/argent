@@ -106,11 +106,14 @@ describe("Android describe reads bypass the helper's node cache", () => {
   });
 
   // The defect this pins: the helper's cache serves a node's first-seen text
-  // once its event-driven invalidation stops (observed after the inspected app
-  // restarts under the long-lived connection), so a cached read reports a screen
-  // that has already moved on. Every agent-facing reader below turns this tree
-  // into an answer about the current screen — a settled verdict, a selector
-  // match, tap coordinates — so each one must request coherence.
+  // once its event-driven invalidation stops, so a cached read reports a screen
+  // that has already moved on. No app restart is involved — measured on a
+  // freshly-opened connection, 20 cached reads across 30 s of a running
+  // stopwatch all returned the same value; the trigger is simply an app that
+  // emits no accessibility content-change event for a node (see
+  // describe/platforms/android/index.ts). Every agent-facing reader below turns
+  // this tree into an answer about the current screen — a settled verdict, a
+  // selector match, tap coordinates — so each one must request coherence.
   it("await-screen-idle polls uncached trees", async () => {
     const { registry, optionsSeen } = makeRecordingRegistry();
     __primeDepCacheForTests(["adb"]);

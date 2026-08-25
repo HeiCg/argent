@@ -24,6 +24,9 @@ export const AWAIT_SCREEN_IDLE_TOOL_ID = "await-screen-idle";
 const DEFAULT_TIMEOUT_MS = 3000;
 const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_MIN_STABLE_MS = 250;
+// Shared with await-ui-element's timeout note so both wait tools name a failing
+// fetch the same way.
+const TREE_FETCH_FAILED_NOTE_PREFIX = "last tree fetch failed: ";
 
 const zodSchema = z.object({
   udid: z
@@ -65,9 +68,10 @@ interface IdleResult {
   waitedMs: number;
   polls: number;
   /**
-   * Present only when the budget ran out mid-read, which leaves `settled: false`
-   * standing for "never sampled twice" rather than "kept changing". Absent on a
-   * screen that was genuinely still moving.
+   * Present only when `settled: false` does not stand for "the screen kept
+   * changing": either the last tree fetch failed outright (the note carries
+   * that error), or the budget ran out mid-read, which leaves it standing for
+   * "never sampled twice" rather than "kept changing".
    */
   note?: string;
 }
@@ -119,9 +123,11 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
       completedMsg: ({ result }) =>
         result.settled
           ? "Screen settled"
-          : result.note
-            ? "Could not read the screen twice before timeout"
-            : "Screen did not settle before timeout",
+          : result.note?.startsWith(TREE_FETCH_FAILED_NOTE_PREFIX)
+            ? "Screen read failed before timeout"
+            : result.note
+              ? "Could not read the screen twice before timeout"
+              : "Screen did not settle before timeout",
       failedMsg: ({ failureSignal }) =>
         `Failed while waiting for screen to settle: ${failureSignal.error_code}`,
     },
@@ -130,9 +136,10 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
 Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (default ${DEFAULT_POLL_INTERVAL_MS}ms) until it
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
 ${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls, note? } — settled=false means the screen never
-went still before the timeout, except when a note is present: that says the tree could not be read twice inside the
-budget, so whether the screen was still went untested and raising timeoutMs is what resolves it. Use after a
-launch/navigation to wait for the UI to render before screenshotting or tapping.`,
+went still before the timeout, except when a note is present: one kind reports the last tree fetch failing outright
+(fix its cause — e.g. unlock the device); the other says the tree could not be read twice inside the budget, so
+whether the screen was still went untested and raising timeoutMs is what resolves it. Use after a launch/navigation
+to wait for the UI to render before screenshotting or tapping.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
     longRunning: true,
@@ -186,6 +193,23 @@ launch/navigation to wait for the UI to render before screenshotting or tapping.
       });
 
       const settled = poll.result === true;
+      // A fetch that failed outright — a locked screen, a dead helper — must
+      // reach the agent as itself rather than be folded into the latency
+      // diagnosis below: every fetch failing also leaves `samples` at 0, and
+      // telling the agent to raise timeoutMs there is advice that cannot help.
+      // `lastAttemptSettled` keeps this from misfiring on the other arm of the
+      // caveat: the loop leaves `lastError` set (to its own budget-expiry
+      // message) for a read it abandoned at the deadline, and THAT case is a
+      // read too slow to finish, not a failing one. See `lastAttemptSettled` in
+      // poll-describe-tree.
+      if (!settled && poll.lastAttemptSettled && poll.lastError !== undefined) {
+        return {
+          settled,
+          waitedMs: poll.elapsedMs,
+          polls: poll.polls,
+          note: `${TREE_FETCH_FAILED_NOTE_PREFIX}${poll.lastError}`,
+        };
+      }
       return {
         settled,
         waitedMs: poll.elapsedMs,
