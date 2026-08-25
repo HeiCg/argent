@@ -178,6 +178,7 @@ interface DevicectlListPayload {
         platform?: string;
         productType?: string;
         marketingName?: string;
+        reality?: string;
       };
       deviceProperties?: {
         name?: string;
@@ -217,6 +218,12 @@ export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
       const platform = (hw.platform ?? "").toLowerCase();
       const productType = hw.productType ?? "";
       if (platform !== "ios" && !/^(iphone|ipad|ipod)/i.test(productType)) continue;
+      // Physical hardware only. Live-verified payloads: real phones report
+      // reality "physical"; simulators, when CoreDevice lists them, report
+      // "simulated" with otherwise-passing platform/productType. The field is
+      // absent on older toolchains, so only an explicit non-physical value
+      // skips the row.
+      if (hw.reality != null && hw.reality !== "physical") continue;
       out.push({
         udid,
         name: d.deviceProperties?.name ?? productType ?? udid,
@@ -300,7 +307,7 @@ const SCREENSHOT_SUBCOMMAND_ROW = /^[ \t]{1,10}screenshot\b/m;
 
 /**
  * Whether this Xcode's devicectl has the `device screenshot` subcommand at
- * all — Xcode 16-class toolchains do, devicectl 518.x (iOS 26 SDK) does not.
+ * all — some toolchains reportedly do, devicectl 518.x (iOS 26 SDK) does not.
  * Probed structurally, per the header's convention: list the subcommands
  * `devicectl device --help` advertises and look for a `screenshot` row — the
  * binary's own declaration of its command tree, independent of Apple's error
