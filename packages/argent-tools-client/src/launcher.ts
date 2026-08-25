@@ -71,7 +71,10 @@ export interface BuildToolsServerEnvOptions {
   /**
    * Auth token, exported as `ARGENT_AUTH_TOKEN` so the tool-server enforces
    * `Authorization: Bearer <token>`. Omit (or pass empty) to run it
-   * unauthenticated (`argent server start --no-auth`).
+   * unauthenticated (`argent server start --no-auth`): the key is then set to
+   * the empty string, which the tool-server reads as auth disabled — it must
+   * not stay at whatever `baseEnv` carries, or a developer's own export would
+   * authenticate a server that every client was told is open.
    */
   token?: string;
 }
@@ -92,7 +95,10 @@ export function buildToolsServerEnv(
   if (options.idleTimeoutMinutes !== undefined) {
     env.ARGENT_IDLE_TIMEOUT_MINUTES = String(options.idleTimeoutMinutes);
   }
-  if (options.token) env[AUTH_TOKEN_ENV] = options.token;
+  // Always written, never inherited: the empty string is the tool-server's
+  // "auth disabled" value, so an exported ARGENT_AUTH_TOKEN cannot authenticate
+  // a server spawned with `--no-auth`.
+  env[AUTH_TOKEN_ENV] = options.token ?? "";
   if (paths.installKind) env.ARGENT_INSTALL_KIND = paths.installKind;
   if (paths.installProjectRoot) env.ARGENT_PROJECT_ROOT = paths.installProjectRoot;
   return env;
