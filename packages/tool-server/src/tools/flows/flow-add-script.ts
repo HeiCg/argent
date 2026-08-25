@@ -73,9 +73,24 @@ interface FlowAddScriptResult {
  * counts them on the success path. The session's in-memory copy only catches up
  * on each append, so a hand-edit made mid-recording would otherwise make the two
  * paths report counts of two different things.
+ *
+ * A file that will not read or parse leaves only that in-memory copy, which is a
+ * count of a third thing again: the steps as of the last append. The number
+ * still comes back, since nothing else in the answer depends on it, but it says
+ * where it came from — the sibling recorder qualifies the same state the same
+ * way, and a bare number here would be the one writer that does not.
  */
-async function recordedStepCount(session: RecordingSession): Promise<number> {
-  return (await countStepsOnDisk(session.filePath)) ?? session.flow.steps.length;
+async function recordedStepCount(
+  session: RecordingSession
+): Promise<{ stepCount: number; note?: string }> {
+  const onDisk = await countStepsOnDisk(session.filePath);
+  if (onDisk !== undefined) return { stepCount: onDisk };
+  return {
+    stepCount: session.flow.steps.length,
+    note:
+      `${session.filePath} could not be read and parsed, so the step count is from the last ` +
+      `valid in-memory snapshot rather than from the file.`,
+  };
 }
 
 function renderOutput(output: Record<string, unknown>): {
@@ -185,12 +200,14 @@ Refused when the recording's project root is not on this tool server's filesyste
             ? `Nothing ran, so there is nothing to clean up — the reason above says what stopped it.`
             : `The runner failed around the script rather than inside it, so the script may never ` +
               `have started — check the state it touches before you call this again.`;
+      const { stepCount, note } = await recordedStepCount(session);
       return {
         ...common,
         message:
           `The script "${step.path}" ${ran === "yes" ? "failed" : "could not be run"} — nothing ` +
-          `was recorded in "${params.name}", so the flow is exactly as it was. ${nextMove}`,
-        stepCount: await recordedStepCount(session),
+          `was recorded in "${params.name}", so the flow is exactly as it was. ${nextMove}` +
+          `${note ? ` ${note}` : ""}`,
+        stepCount,
       };
     }
 

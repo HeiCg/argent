@@ -534,6 +534,40 @@ describe("a script that did not pass records nothing", () => {
     expect(passed.stepCount).toBe(3);
   });
 
+  // With the file unreadable the only count left is the session's, which is the
+  // steps as of the last append - a third number again. An author comparing it
+  // with what the next append renumbers to has to know which one they are
+  // holding, so it is qualified here as the sibling recorder qualifies it.
+  it("says when the step count could not come off the file", async () => {
+    await start("counted");
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "counted", project_root: root, message: "recorded" }
+    );
+    await fs.appendFile(flowPath("counted"), "  - echo: hand-added\n  - bogus: [\n", "utf8");
+
+    const failed = await addScript("counted", "../../scripts/gone.mjs");
+
+    expect(failed.status).toBe("fail");
+    // The in-memory snapshot, while the file itself holds two steps.
+    expect(failed.stepCount).toBe(1);
+    expect(failed.message).toContain("could not be read and parsed");
+    expect(failed.message).toContain("last valid in-memory snapshot");
+  });
+
+  it("leaves the count unqualified while the file still parses", async () => {
+    await start("counted");
+    await flowInsertEchoTool.execute(
+      {},
+      { name: "counted", project_root: root, message: "recorded" }
+    );
+
+    const failed = await addScript("counted", "../../scripts/gone.mjs");
+
+    expect(failed.stepCount).toBe(1);
+    expect(failed.message).not.toContain("in-memory snapshot");
+  });
+
   it("does not send an author cleaning up after a script that never ran", async () => {
     await start("gone");
 
