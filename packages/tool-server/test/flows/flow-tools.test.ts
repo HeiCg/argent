@@ -361,6 +361,105 @@ describe("flow-start-recording edge cases", () => {
     expect(parseFlow(await readFlowFile("fenced-live")).requires).toEqual(requires);
   });
 
+  it("carries the take's requires block when the flow file was deleted between two starts", async () => {
+    // The one loss path with nothing left to read: the file the fence lived in
+    // is gone, so the take being restarted is its last witness - it read that
+    // block off this same file at the start below. Dropping it here would
+    // rewrite the flow unfenced without a word.
+    const requires = { platform: ["ios" as const] };
+    await fs.mkdir(flowsDirFor(tmpDir), { recursive: true });
+    await overwriteFlowFile("vanished", {
+      executionPrerequisite: "",
+      requires,
+      steps: [{ kind: "echo", message: "old take" }],
+    });
+
+    const first = await flowStartRecordingTool.execute(
+      {},
+      { name: "vanished", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    expect(first.message).toContain("Kept the existing requires block (platform: [ios])");
+    await fs.rm(path.join(flowsDirFor(tmpDir), "vanished.yaml"));
+
+    const result = await flowStartRecordingTool.execute(
+      {},
+      { name: "vanished", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    expect(result.restarted).toBe(true);
+    expect(parseFlow(result.flowFile).requires).toEqual(requires);
+    expect(parseFlow(await readFlowFile("vanished")).requires).toEqual(requires);
+    expect(result.message).toContain(
+      "The previous file was gone, so the requires block (platform: [ios]) was carried over " +
+        "from the take being restarted - edit the YAML to change it."
+    );
+    expect(result.message).not.toContain("did not parse");
+  });
+
+  it("lets a hand edit that removed the block unfence the flow, over the take's copy", async () => {
+    // A readable file is the authority: the edit is part of the take, so the
+    // in-memory block the start below cached must not resurrect the fence.
+    await fs.mkdir(flowsDirFor(tmpDir), { recursive: true });
+    await overwriteFlowFile("unfenced-by-hand", {
+      executionPrerequisite: "",
+      requires: { platform: ["ios" as const] },
+      steps: [],
+    });
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "unfenced-by-hand", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    expect((await getRecordingSession(tmpDir, "unfenced-by-hand"))?.flow.requires).toEqual({
+      platform: ["ios"],
+    });
+    await overwriteFlowFile("unfenced-by-hand", { executionPrerequisite: PREREQ, steps: [] });
+
+    const result = await flowStartRecordingTool.execute(
+      {},
+      { name: "unfenced-by-hand", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    expect(result.message).not.toContain("requires");
+    expect(parseFlow(result.flowFile).requires).toBeUndefined();
+    expect(parseFlow(await readFlowFile("unfenced-by-hand")).requires).toBeUndefined();
+  });
+
+  it("reports the unparseable file's block as dropped rather than reviving the take's copy", async () => {
+    // A file that will not parse may be mid-edit on its own `requires` line,
+    // which is exactly what the in-memory copy cannot know - so this arm keeps
+    // reporting the unknown instead of asserting the block the take holds.
+    await fs.mkdir(flowsDirFor(tmpDir), { recursive: true });
+    await overwriteFlowFile("broken-fenced", {
+      executionPrerequisite: "",
+      requires: { platform: ["ios" as const] },
+      steps: [],
+    });
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "broken-fenced", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+    expect((await getRecordingSession(tmpDir, "broken-fenced"))?.flow.requires).toEqual({
+      platform: ["ios"],
+    });
+    await fs.writeFile(
+      path.join(flowsDirFor(tmpDir), "broken-fenced.yaml"),
+      "requires:\n  platfrom: [ios]\nsteps: []\n",
+      "utf8"
+    );
+
+    const result = await flowStartRecordingTool.execute(
+      {},
+      { name: "broken-fenced", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    expect(result.message).toContain(
+      "The previous file did not parse, so any requires block it held was dropped"
+    );
+    expect(result.message).not.toContain("was carried over");
+    expect(parseFlow(result.flowFile).requires).toBeUndefined();
+    expect(parseFlow(await readFlowFile("broken-fenced")).requires).toBeUndefined();
+  });
+
   it("mentions no requires block when the replaced file had none", async () => {
     await flowStartRecordingTool.execute(
       {},

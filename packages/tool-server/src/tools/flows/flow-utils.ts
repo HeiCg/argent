@@ -3668,16 +3668,20 @@ export async function countStepsOnDisk(filePath: string): Promise<number | undef
  * exactly the files a re-record is meant to repair — so reporting the unknown
  * as "no block" would discard a fence in silence. A missing file is an answer
  * rather than a gap, so a first-time start stays silent.
+ *
+ * `absent` tells that missing file apart from one that parsed and declared
+ * nothing, which the block alone cannot — only the first leaves the flow's
+ * fence unwitnessed here, and so only the first may be answered from elsewhere.
  */
 export async function requiresOnDisk(
   filePath: string
-): Promise<{ requires: DeclaredRequires | undefined } | undefined> {
+): Promise<{ requires: DeclaredRequires | undefined; absent?: true } | undefined> {
   let content: string;
   try {
     content = await fs.readFile(filePath, "utf8");
   } catch (err) {
     const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
-    return code === "ENOENT" ? { requires: undefined } : undefined;
+    return code === "ENOENT" ? { requires: undefined, absent: true } : undefined;
   }
   try {
     return { requires: parseFlow(content, { skipRequires: true }).requires };
