@@ -58,7 +58,7 @@ export async function describeIosDevice(
  * purpose: its Button children carry the interaction, and the container rule
  * emits the control itself whenever it has children.
  */
-const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
+export const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
   Button: "AXButton",
   CheckBox: "AXButton",
   MenuItem: "AXButton",
@@ -86,7 +86,7 @@ const RUNNER_TYPE_TO_ROLE: Record<string, string> = {
 // `scrollable` alone keeps them emitted even unlabeled and childless, and puts
 // the [scrollable] flag on the rendered line so the agent knows where a swipe
 // can reveal more.
-const SCROLL_CONTAINER_TYPES = new Set(["ScrollView", "Table", "CollectionView", "WebView"]);
+export const SCROLL_CONTAINER_TYPES = new Set(["ScrollView", "Table", "CollectionView", "WebView"]);
 
 function adaptRunnerSnapshot(nodes: RunnerSnapshotNode[]): DescribeTreeData {
   // A zero-node snapshot has no root rect to normalize against: hand back the

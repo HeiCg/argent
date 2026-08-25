@@ -85,6 +85,10 @@ export interface DescribeTreeData {
   tree: DescribeNode;
   source: DescribeSource;
   should_restart?: boolean;
+  // Note on "degraded": the word names boot-state on the simulator path (the
+  // pre-boot accessibility prefs were never written) and snapshot completeness
+  // on the device path (the runner truncated the tree at its node budget), and
+  // each path translates its degraded state into this hint exactly once.
   hint?: string;
   // Size the frames were normalized against, in the source's native units
   // (Android px, iOS pt), so only the aspect ratio compares across sources —

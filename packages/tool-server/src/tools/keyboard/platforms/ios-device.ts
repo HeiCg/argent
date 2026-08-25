@@ -11,7 +11,8 @@ import type { KeyboardParams, KeyboardResult } from "../types";
  * Physical-iOS typing: the XCUITest runner types into the currently-focused
  * element (tap a field first with gesture-tap). Only `enter` is available as a
  * named key: XCTest exposes no per-keycode HID surface on hardware, unlike
- * the simulator-server's stdin HID channel.
+ * the simulator-server's stdin HID channel. `delayMs` is accepted but ignored
+ * here: XCTest types whole strings, with no per-keystroke cadence to pace.
  */
 export function makeIosDeviceImpl(
   registry: Registry
