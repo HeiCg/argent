@@ -543,6 +543,32 @@ describe("a script that did not pass records nothing", () => {
     expect(result.message).not.toContain("rolled back");
   });
 
+  // A cancellation reaches this tool from both sides of the fork under one
+  // failure kind, so the kind alone cannot answer it. Driven through the real
+  // executor: the file the script would have written is the proof that the
+  // answer matches what happened, not what the kind suggests.
+  it("does not send an author cleaning up after a cancellation that never forked", async () => {
+    const marker = path.join(root, "seeded.txt");
+    await write(
+      "scripts/seed.mjs",
+      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "x");`
+    );
+    await start("cancelled");
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await addScript("cancelled", "../../scripts/seed.mjs", {}, {
+      signal: controller.signal,
+    } as unknown as ToolContext);
+
+    expect(result.status).toBe("error");
+    expect(result.reason).toContain("before the script started");
+    expect(result.message).toContain("Nothing ran, so there is nothing to clean up");
+    expect(result.message).not.toContain("is still done");
+    await expect(fs.access(marker)).rejects.toThrow();
+    expect(await steps("cancelled")).toEqual([]);
+  });
+
   it("refuses a missing file before any fork, naming what it looked for", async () => {
     await start("gone");
 

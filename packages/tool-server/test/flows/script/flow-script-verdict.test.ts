@@ -108,10 +108,11 @@ const VERDICTS: Record<FlowScriptFailureKind, "fail" | "error"> = {
 };
 
 /**
- * Whether each failure leaves the author something to clean up. Total over the
- * kinds, like {@link VERDICTS}: the dangerous mapping is a kind that DID fork
- * being told "nothing ran", and a table listing only some kinds stays green
- * while a kind moves in or out of the never-forked set.
+ * Whether each failure leaves the author something to clean up, judged from the
+ * KIND alone — the answer for a failure the executor did not mark `beforeFork`.
+ * Total over the kinds, like {@link VERDICTS}: the dangerous mapping is a kind
+ * that DID fork being told "nothing ran", and a table listing only some kinds
+ * stays green while a kind moves in or out of the never-forked set.
  */
 const RAN: Record<FlowScriptFailureKind, ScriptRan> = {
   queue: "no",
@@ -213,11 +214,12 @@ describe("the recorder reports the verdict the runner will", () => {
       // The executor answers three of its failures WITHOUT forking anything, so
       // "there is a result" does not mean "something ran", and telling an
       // author to clean up after a queue that was full sends them hunting for
-      // state that was never created. `cancelled` counts as ran on purpose: it
-      // can land either side of the fork and the result does not say which.
-      // `protocol` is the runner failing around the script - almost always
-      // before the script began, but reachable from a script that has already
-      // done its work, so it claims neither.
+      // state that was never created. `cancelled` counts as ran only once the
+      // executor has NOT marked it `beforeFork` - the half of that kind which
+      // stopped a process that was already running. `protocol` is the runner
+      // failing around the script - almost always before the script began, but
+      // reachable from a script that has already done its work, so it claims
+      // neither.
       executeMock.mockResolvedValue(outcome({ failure: { kind, message: `the ${kind} message` } }));
 
       const recorded = await recordScript();
@@ -232,6 +234,25 @@ describe("the recorder reports the verdict the runner will", () => {
           ran === "no" ? "Nothing ran, so there is nothing to clean up" : "may never have started"
         );
       }
+      expect(await recordedSteps()).toEqual([]);
+    }
+  );
+
+  // The executor's own answer outranks the table above: `cancelled` is the one
+  // kind that reaches this tool from both sides of the fork, and the executor
+  // marks the failures it raised before there was a child to run anything.
+  it.each(Object.keys(RAN) as FlowScriptFailureKind[])(
+    "believes the executor over the kind when a %s failure never forked",
+    async (kind) => {
+      executeMock.mockResolvedValue(
+        outcome({ failure: { kind, message: `the ${kind} message`, beforeFork: true } })
+      );
+
+      const recorded = await recordScript();
+
+      expect(recorded.message).toContain("Nothing ran, so there is nothing to clean up");
+      expect(recorded.message).not.toContain("is still done");
+      expect(recorded.message).not.toContain("may never have started");
       expect(await recordedSteps()).toEqual([]);
     }
   );

@@ -123,6 +123,14 @@ const NEVER_FORKED: ReadonlySet<FlowScriptFailureKind> = new Set(["invalid", "sp
  * answer: the executor returns a full result for a queue it could not admit the
  * step to and for a spawn that never happened.
  *
+ * Read the executor's own `beforeFork` first, because it is the only signal
+ * that separates the two halves of `cancelled`. That kind lands either side of
+ * the fork: a signal already aborted when the call arrived, or one raised while
+ * the step waited for a slot, never reached a child — while a cancellation that
+ * stopped a running process left whatever it had already done. The kinds below
+ * answer from the kind alone; this one cannot, and "nothing to clean up" is the
+ * answer that has to be proved rather than balanced on which half is likelier.
+ *
  * `protocol` is the one kind that cannot be answered either way, so it does not
  * pretend to. It is the runner failing AROUND the script, and every protocol
  * failure the executor raises itself lands before Node evaluates the entry — a
@@ -133,16 +141,12 @@ const NEVER_FORKED: ReadonlySet<FlowScriptFailureKind> = new Set(["invalid", "sp
  * the same kind having already done its work, and "nothing ran" is the more
  * dangerous of the two to claim wrongly.
  *
- * Everything else answers yes, `cancelled` included: a cancellation can land
- * before the fork or after the script has already reached the system it talks
- * to, and the result does not say which — but the fork is immediate, so the
- * half that beats it is the rare one, which is the opposite balance to
- * `protocol`.
+ * Everything else answers yes: the script was forked, so it had the chance.
  */
 function scriptRan(result: FlowScriptResult): ScriptRan {
   if (result.ok || !result.failure) return "yes";
-  const { kind } = result.failure;
-  if (NEVER_FORKED.has(kind)) return "no";
+  const { kind, beforeFork } = result.failure;
+  if (beforeFork || NEVER_FORKED.has(kind)) return "no";
   return kind === "protocol" ? "unknown" : "yes";
 }
 
