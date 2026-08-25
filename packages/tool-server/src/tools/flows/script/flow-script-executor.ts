@@ -1402,6 +1402,9 @@ function describeBytes(bytes: number): string {
 }
 
 function describeDuration(ms: number): string {
+  // A step may ask for `Infinity`, which the clamp handles but no unit does:
+  // rendering it as a number would append the minutes suffix to a word.
+  if (!Number.isFinite(ms)) return "unbounded";
   if (ms >= 60_000) {
     const minutes = ms / 60_000;
     return `${minutes.toFixed(minutes % 1 === 0 ? 0 : 1)}m`;

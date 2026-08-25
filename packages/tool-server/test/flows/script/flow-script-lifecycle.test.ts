@@ -409,6 +409,20 @@ describe("flow script executor — time limits and cancellation", () => {
     expect(result.ok).toBe(true);
     expect(result.notes.join(" ")).toContain("above this host's maximum of 5s");
   });
+
+  it("names a time limit with no number in it as unbounded rather than as a number", async () => {
+    const ws = workspace();
+    const script = ws.write("quick.mjs", `output.ok = true;`);
+    const result = await executor({ maxTimeoutMs: 5_000 }).execute({
+      scriptPath: script,
+      projectRoot: ws.dir,
+      timeoutMs: Infinity,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.notes.join(" ")).toContain("The requested unbounded time limit is above");
+    expect(result.notes.join(" ")).not.toContain("Infinity");
+  });
 });
 
 describe("flow script executor — exit classification", () => {
