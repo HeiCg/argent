@@ -6,6 +6,7 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 import { Server } from "@modelcontextprotocol/sdk/server";
 import {
   ensureToolsServer,
+  errorBodyMessage,
   getResolvedToolsUrl,
   isRemoteRouted,
   getDeviceIdFromArgs,
@@ -184,6 +185,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
     data?: unknown;
     error?: string;
     message?: string;
+    issues?: unknown;
     note?: string;
   }
 
@@ -217,7 +219,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
 
     const json = (await res.json()) as ToolAPIResponse;
 
-    if (!res.ok) throw new Error(json.error ?? json.message ?? res.statusText);
+    if (!res.ok) throw new Error(errorBodyMessage(json) ?? res.statusText);
 
     // File boundary, inbound: persist any client-write directives (files that
     // belong in the agent's project, e.g. recorded flow YAMLs) and rewrite
