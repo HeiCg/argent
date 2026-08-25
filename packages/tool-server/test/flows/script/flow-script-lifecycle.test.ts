@@ -791,6 +791,48 @@ describe("flow script watchdogs", () => {
     // timeout instead of an output in tens of milliseconds.
     expect(result.durationMs).toBeLessThan(3_000);
   }, 60_000);
+
+  it("hold the margin open for a stalled tool server, then take the whole group", async () => {
+    const ws = workspace();
+    const pidFile = ws.resolve("stalled-descendant.pid");
+    const script = ws.write(
+      "spawner.mjs",
+      `import { spawn } from "node:child_process";
+       import fs from "node:fs";
+       const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+         stdio: "ignore",
+       });
+       fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));
+       for (;;) {}`
+    );
+    const timeoutMs = 2_000;
+    const startedAt = Date.now();
+    const pending = executor().execute({ scriptPath: script, projectRoot: ws.dir, timeoutMs });
+    const descendant = await readPidFile(pidFile);
+    strays.push(descendant);
+
+    // Blocked from here on, so nothing this side would do — the time limit's
+    // timer, the process-tree stop it schedules — can run. What reaches this
+    // descendant reaches it from inside the child, through the group its
+    // deadline watchdog kills.
+    const probe = (afterDeadlineMs: number) => {
+      while (Date.now() - startedAt < timeoutMs + afterDeadlineMs) {
+        /* block */
+      }
+      return isAlive(descendant);
+    };
+    const withinMargin = probe(1_200);
+    const pastMargin = probe(3_500);
+    const result = await pending;
+
+    // A stall of an ordinary width — `stop-metro` shells out to `lsof` and
+    // `netstat` — still finds a live child to stop itself.
+    expect(withinMargin).toBe(true);
+    // Past the margin the child stops the whole group rather than only itself,
+    // so a descendant the tool server can no longer reap goes with it.
+    expect(pastMargin).toBe(false);
+    expect(result.failure?.kind).toBe(TIMEOUT);
+  }, 60_000);
 });
 
 describe("flow script executor — the configured maximum", () => {
