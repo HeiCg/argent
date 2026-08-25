@@ -257,6 +257,16 @@ The value is always a map. Parsing rejects a bare `script: scripts/seed.mjs`.
 
 The working directory is the project root. Argent passes a fixed list of environment variables: the standard shell names, the proxy and TLS names, and the Node, npm, Android and Java toolchain names. A name outside the list does not reach the script, for example `DATABASE_URL`. Argent does not read a project `.env` file. Let the script read a secret or a URL from a file.
 
+The script can set the `output` global. No step reads the value yet, and Argent refuses a flow file that writes `{{output:...}}` into a step: the run stops before step 1. Argent looks for the reference in each field that a later release resolves it in:
+
+- The message of an `echo` step.
+- The text of a `type` step.
+- The expected text of an `await` or an `assert` step.
+- The `text`, the `id` and the `role` of a selector.
+- Each string in the `args` of a `tool` step.
+
+A `matches` pattern is not one of these fields. `matches` takes a regular expression, and Argent reads `{{` in a pattern as text.
+
 Argent prints the standard output and the standard error below the step line, on a pass and on a failure. The limit is 64 KiB for one step and 256 KiB for the run. The report marks a cut on its own line. **Argent does not redact this log.** Do not print a credential from a script.
 
 A failed step stops the flow. The verdict names the side that caused the failure.
