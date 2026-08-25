@@ -19,8 +19,6 @@ command: "gesture-tap"
 args: "{\"udid\":\"DEVICE\",\"x\":0.5,\"y\":0.35}"
 ```
 
-`command` takes a **tool** name, never a flow-file directive. A directive name runs nothing and records nothing. For `tap`, `launch`, `run`, `type`, `await`, `assert`, `pinch` and `echo`, the answer names the tool that records the directive. `wait`, `long-press`, `scroll-to`, `snapshot` and `when` have no recording tool, so their answer says what to record or add by hand instead. A recording tool's own name (`flow-add-step`, `flow-add-echo`, `flow-start-recording`, `flow-finish-recording`) is refused the same way. Both answers omit `recorded`, so read that field rather than the call's status to know whether a step was appended. `rotate` is the exception: a device-orientation tool is registered under that name, so passing it runs that tool instead of returning guidance.
-
 A recorded `flow-execute` has two names. The top-level `name` identifies the recording. `args.name` identifies the sibling flow captured as `run:`.
 
 Obey these lifecycle rules:
