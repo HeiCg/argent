@@ -43,7 +43,7 @@ import {
 import type { TextMatchMode, WaitCondition } from "../../utils/ui-tree-match";
 import { sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
-import { isUnmetUiWaitResult } from "../await-ui-element";
+import { isUnmetUiWaitResult, unmetUiWaitCause } from "../await-ui-element";
 import { isDebuggerNotConnectedResult } from "../debugger/not-connected";
 import {
   resolveFlowDevice,
@@ -2384,17 +2384,24 @@ async function execLeafStep(
         // the check below would score that `fail`. That blames the app for the
         // author's own cancel. Score it a skip, as `wait` and the directives do.
         //
+        // The wait's own `cause` decides, not this run's signal. Only the poll
+        // loop knows which side of its final read the cancel landed on, and it
+        // says so: `cancelled` is set where the loop gave up, and never where a
+        // read judged the condition. Asking the signal instead would score a
+        // GENUINE miss that resolved in the same tick as an unrelated cancel a
+        // cancellation. That is the principle the paragraph below rests on — a
+        // tool that finished and answered before the cancel arrived was judged
+        // on that answer, so it keeps its verdict.
+        //
         // Deliberately narrow, not "the signal is set, so this step is a skip".
         // Every other cancellation here already lands correctly. A nested
         // orchestrator reports the cancel IN ITS OWN WORDS below, and a generic
         // skip would drop that sub-report. What a cancel takes away is the
-        // right to TRUST a verdict, not the fact that the step ran: a tool that
-        // finished and answered before the cancel arrived was judged on that
-        // answer, so it keeps its verdict. `reached` is what carries the rest —
-        // several skips in this file are steps that did act (see
-        // {@link StepReport.reached}), so a `skip` is never proof of an
-        // untouched device.
-        if (signal?.aborted && isUnmetUiWaitResult(step.name, result)) {
+        // right to TRUST a verdict, not the fact that the step ran. `reached`
+        // is what carries the rest — several skips in this file are steps that
+        // did act (see {@link StepReport.reached}), so a `skip` is never proof
+        // of an untouched device.
+        if (isUnmetUiWaitResult(step.name, result) && unmetUiWaitCause(result) === "cancelled") {
           // The sub-tool ran and returned, unlike the pre-invoke delay skip.
           return {
             ...base,

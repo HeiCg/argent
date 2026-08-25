@@ -229,6 +229,49 @@ steps:
     expect(result.steps[0]!.reached).toBe(true);
   });
 
+  it("keeps a GENUINE miss a failure when an unrelated cancel lands in the same tick", async () => {
+    // The control for the guard above. Both results are `success: false` and
+    // both arrive with the signal already set; only the wait's own `cause`
+    // separates them. The loop reports `cancelled` where it GAVE UP and
+    // `unmet` where a read judged the condition, so a miss that resolved
+    // beside a cancel keeps the verdict it earned instead of being excused as
+    // a cancellation of the app's doing.
+    const flowFile = await writeFlow(`executionPrerequisite: ""
+steps:
+  - tool: await-ui-element
+    args:
+      udid: X
+      condition: visible
+      selector:
+        text: Continue
+`);
+    const controller = new AbortController();
+    const registry = makeRegistry(async () => {
+      controller.abort();
+      return {
+        success: false,
+        elapsed: 5000,
+        note: "no element matched the selector before timeout",
+        cause: "unmet",
+      };
+    });
+
+    const result = asRun(
+      await createRunFlowTool(registry).execute(
+        {},
+        { name: "gated", project_root: PROJECT_ROOT, flow_file: flowFile, device: "X" },
+        { signal: controller.signal } as never
+      )
+    );
+
+    expect(result.steps[0]).toMatchObject({
+      tool: "await-ui-element",
+      status: "fail",
+    });
+    expect(result.steps[0]!.reason).toContain("condition not met");
+    expect(result.steps[0]!.reason).not.toContain("run aborted");
+  });
+
   it("leaves a step the cancel caught in its pre-invoke delay unmarked", async () => {
     // The control for the marker above. Same status, same kind, one step
     // earlier in the same function — the cancel lands in the delay BEFORE the
