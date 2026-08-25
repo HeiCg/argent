@@ -22,6 +22,7 @@ vi.mock("../src/utils/ios-device/devicectl", async (importOriginal) => ({
 }));
 
 import { createScreenshotTool, downscalePngInPlace } from "../src/tools/screenshot";
+import { IOS_DEVICE_RUNNER_NAMESPACE } from "../src/blueprints/ios-device-runner";
 import {
   captureScreenshot as captureIosDeviceScreenshot,
   supportsHostScreenshot,
@@ -150,7 +151,9 @@ describe("physical-iOS route — probe-picked capture path", () => {
 
     // No doomed devicectl attempt per capture, and no error text to match.
     expect(captureIosDeviceScreenshot).not.toHaveBeenCalled();
-    expect(resolveService).toHaveBeenCalledWith(`ios-device-runner:${UDID}`, { device: DEVICE });
+    expect(resolveService).toHaveBeenCalledWith(`${IOS_DEVICE_RUNNER_NAMESPACE}:${UDID}`, {
+      device: DEVICE,
+    });
     expect(run).toHaveBeenCalledWith(
       { command: "screenshot" },
       { readOnly: true, timeoutMs: 30_000 }

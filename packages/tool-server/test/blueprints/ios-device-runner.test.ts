@@ -417,7 +417,7 @@ describe("ios-device-runner blueprint — failure signals", () => {
     )) as Error;
 
     expect(thrown.message).toBe(
-      "ios-device-runner.factory could not determine the device; pass it via iosDeviceRunnerRef(device)."
+      "IosDeviceRunner.factory could not determine the device; pass it via iosDeviceRunnerRef(device)."
     );
     expect(getFailureSignal(thrown)?.error_code).toBe(
       FAILURE_CODES.IOS_DEVICE_RUNNER_FACTORY_OPTIONS_MISSING

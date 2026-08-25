@@ -34,7 +34,10 @@ import {
   classifyDevice,
   resolveDevice,
 } from "../src/utils/device-info";
-import { iosDeviceRunnerRef } from "../src/blueprints/ios-device-runner";
+import {
+  IOS_DEVICE_RUNNER_NAMESPACE,
+  iosDeviceRunnerRef,
+} from "../src/blueprints/ios-device-runner";
 
 const PHYSICAL_UDID = "00008110-000978540290401E";
 const SIM_UDID = "2E35A650-9618-41E1-9E8D-5E4E7CC20929";
@@ -55,8 +58,8 @@ function buildRegistry(): { registry: Registry; factory: { ran: boolean } } {
   const factory = { ran: false };
   const registry = new Registry();
   registry.registerBlueprint({
-    namespace: "ios-device-runner",
-    getURN: (udid: string) => `ios-device-runner:${udid}`,
+    namespace: IOS_DEVICE_RUNNER_NAMESPACE,
+    getURN: (udid: string) => `${IOS_DEVICE_RUNNER_NAMESPACE}:${udid}`,
     async factory() {
       factory.ran = true;
       return { api: {}, dispose: async () => {}, events: new TypedEventEmitter() };

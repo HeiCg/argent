@@ -16,6 +16,7 @@ import {
   statusBarMaskFraction,
   type PixelFrame,
 } from "../../src/tools/flows/flow-pixels";
+import { IOS_DEVICE_RUNNER_NAMESPACE } from "../../src/blueprints/ios-device-runner";
 import { isAndroidTv } from "../../src/utils/adb";
 import { isTvOsSimulator } from "../../src/utils/ios-devices";
 import { captureVegaScreenshotPng } from "../../src/utils/vega-screen";
@@ -640,7 +641,9 @@ describe("capturePixels routing", () => {
     const pixels = await capture(envFor(device, resolveService));
 
     expect(pixels).toMatchObject({ width: 2, height: 1 });
-    expect(resolveService).toHaveBeenCalledWith(`ios-device-runner:${device.id}`, { device });
+    expect(resolveService).toHaveBeenCalledWith(`${IOS_DEVICE_RUNNER_NAMESPACE}:${device.id}`, {
+      device,
+    });
     expect(run).toHaveBeenCalledWith(
       { command: "screenshot" },
       { readOnly: true, timeoutMs: 4_000 }

@@ -33,7 +33,7 @@ import {
   type RunnerClient,
 } from "../utils/ios-device/runner-client";
 
-const IOS_DEVICE_RUNNER_NAMESPACE = "ios-device-runner";
+export const IOS_DEVICE_RUNNER_NAMESPACE = "IosDeviceRunner";
 
 /**
  * Recent runner deaths that interrupted an app-scoped command, keyed
@@ -170,7 +170,7 @@ function getFreePort(): Promise<number> {
   });
 }
 
-/** Runner startup budget: testmanagerd install + suspend-resume + listener bind. */
+/** Runner startup budget: testmanagerd install and launch, then the listener bind. */
 const RUNNER_READY_TIMEOUT_MS = 120_000;
 
 export const iosDeviceRunnerBlueprint: ServiceBlueprint<IosDeviceRunnerApi, DeviceInfo> = {
