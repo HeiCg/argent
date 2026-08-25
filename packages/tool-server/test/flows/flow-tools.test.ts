@@ -1636,6 +1636,64 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("sequence-bad-args")).steps).toEqual([]);
   });
 
+  it("stays silent when run-sequence's first step was a wait that never held", async () => {
+    // The fourth exit that acts on nothing, and the only one that RUNS: an
+    // unmet `await-ui-element` polls the UI tree and stops there. Its entry
+    // looks exactly like a tool that failed after acting, so without the marker
+    // a sequence gated on a wait warned that the device may have moved while
+    // reporting "after 0 of 2 steps" in the same sentence.
+    const inner = {
+      invokeTool: vi.fn(async (id: string) =>
+        id === "await-ui-element" ? { success: false, elapsed: 5000, note: "not seen" } : { ok: 1 }
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+    const runSequence = createRunSequenceTool(inner);
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: unknown) =>
+        id === "run-sequence"
+          ? runSequence.execute({}, args as never)
+          : Promise.reject(new Error(`Tool "${id}" not found`))
+      ),
+      getTool: vi.fn(() => undefined),
+    } as unknown as Registry;
+
+    const tool = createFlowAddStepTool(registry);
+    await flowStartRecordingTool.execute(
+      {},
+      { name: "sequence-wait-first", project_root: tmpDir, executionPrerequisite: PREREQ }
+    );
+
+    const result = await tool.execute(
+      {},
+      {
+        name: "sequence-wait-first",
+        project_root: tmpDir,
+        command: "run-sequence",
+        args: JSON.stringify({
+          udid: "ABC",
+          steps: [
+            {
+              tool: "await-ui-element",
+              args: { condition: "visible", selector: { text: "Home" } },
+              delayMs: 0,
+            },
+            { tool: "gesture-tap", args: { x: 0.5, y: 0.3 }, delayMs: 0 },
+          ],
+        }),
+      }
+    );
+
+    expect(result.message).toContain("run-sequence stopped at await-ui-element after 0 of 2 steps");
+    expect(result.message).toContain("step NOT recorded");
+    expect(result.message).not.toContain("may already have");
+    // The wait is the only thing that ran, and it only read — the gesture
+    // behind it never went out, which is what makes the silence provable.
+    expect(inner.invokeTool).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(inner.invokeTool).mock.calls[0]![0]).toBe("await-ui-element");
+    expect(parseFlow(await onDisk("sequence-wait-first")).steps).toEqual([]);
+  });
+
   it("still warns when a rejected step follows one that DID run", async () => {
     // The control: the marker must not silence a sequence whose earlier steps
     // dispatched. Same reject, moved to second place.

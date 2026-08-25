@@ -226,6 +226,39 @@ describe("run-sequence", () => {
     expect(result.total).toBe(3);
   });
 
+  it("marks an unmet await-ui-element `dispatched: false` — it polled, it did not act", async () => {
+    // The wait is the one exit that RUNS and still sends nothing to the device:
+    // it reads the UI tree until the deadline. Unmarked, a sequence gated on it
+    // reads as "a step acted and then failed", and the flow recorder warns the
+    // author to go and check a screen nothing touched.
+    const registry = mockRegistry((id: string) =>
+      id === "await-ui-element"
+        ? { success: false, elapsed: 5000, note: "not seen" }
+        : { tapped: true }
+    );
+    const tool = createRunSequenceTool(registry);
+
+    const result = await tool.execute(
+      {},
+      {
+        udid: IOS,
+        steps: [
+          {
+            tool: "await-ui-element",
+            args: { condition: "visible", selector: { text: "Continue" } },
+          },
+          { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+        ],
+      }
+    );
+
+    expect(result.steps[0]).toMatchObject({ tool: "await-ui-element", dispatched: false });
+    // The control for the marker: a wait that HELD leaves a plain result entry,
+    // so nothing here silences a sequence that went on to act.
+    expect(result.completed).toBe(0);
+    expect(registry.invokeTool).toHaveBeenCalledTimes(1);
+  });
+
   it("continues past an await-ui-element step whose condition is met", async () => {
     const registry = mockRegistry((id: string) => {
       if (id === "await-ui-element") return { success: true, elapsed: 120 };
@@ -493,9 +526,9 @@ describe("run-sequence", () => {
     });
 
     it("leaves a tool that rejects its OWN args unmarked", async () => {
-      // The control. `dispatched: false` must mean "never reached the device",
-      // not "the error mentions params". A tool that parses its args and then
-      // throws from inside `execute` DID run.
+      // The control. `dispatched: false` must mean "sent no action to the
+      // device", not "the error mentions params". A tool that parses its args
+      // and then throws from inside `execute` DID act.
       const registry = new Registry();
       const executed: string[] = [];
       registry.registerTool({

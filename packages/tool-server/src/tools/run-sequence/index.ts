@@ -62,13 +62,16 @@ type Params = z.infer<typeof zodSchema>;
 type StepResult =
   | { tool: string; result: unknown }
   /**
-   * `dispatched: false` marks a step rejected BEFORE the device. The causes are
-   * an unlisted tool name, one the target platform does not support, and args
-   * the registry's schema check refuses ahead of `execute`. Without the marker,
-   * such a rejection looks like a step that ran and then failed.
+   * `dispatched: false` marks a step that provably sent NO action to the
+   * device. Three are rejected before the call: an unlisted tool name, one the
+   * target platform does not support, and args the registry's schema check
+   * refuses ahead of `execute`. The fourth does run, and only reads — an
+   * `await-ui-element` whose condition never held polls the UI tree and stops
+   * there. Without the marker, each looks like a step that acted and then
+   * failed.
    *
    * `completed` cannot stand in for it: it counts the EARLIER steps that
-   * SUCCEEDED, so a rejection at any position but the first sits beside a
+   * SUCCEEDED, so such a step at any position but the first sits beside a
    * non-zero count. These entries do carry no `status`. The flow recorder reads
    * the marker to decide whether the device may have moved.
    */
@@ -107,7 +110,7 @@ export function createRunSequenceTool(
     description: `Execute multiple device interaction steps in a single call (iOS simulator, Android emulator, Apple TV / Android TV, or Chromium app).
 Use when you need sequential actions and do NOT need to observe the screen between them
 (e.g. scrolling multiple times, typing then pressing enter, rotating back and forth).
-Returns { completed, total, steps } with per-step results. Fails if an unrecognised tool name is used in a step (error returned at that step, execution stops). A step rejected before it could run — an unlisted tool name, one this target does not support, or args that fail the tool's schema — carries \`dispatched: false\`, so a caller can tell "never touched the device" from "ran and then failed".
+Returns { completed, total, steps } with per-step results. Fails if an unrecognised tool name is used in a step (error returned at that step, execution stops). A step that sent nothing to the device — an unlisted tool name, one this target does not support, args that fail the tool's schema, or an \`await-ui-element\` whose condition never held, which only reads the UI tree — carries \`dispatched: false\`, so a caller can tell "never acted on the device" from "acted and then failed".
 One screenshot is captured automatically after the whole sequence (not per step) — call screenshot separately only for a baseline BEFORE it, or to observe an intermediate step.
 That single capture is also why a secret belongs in this call rather than in two bare ones: the skip is decided from the whole request, so a \`{{secret:...}}\` in any step suppresses the capture that would otherwise follow the submit.
 
@@ -217,9 +220,14 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           const result = await invokeSubTool(registry, ctx, step.tool, toolArgs);
           if (isUnmetUiWaitResult(step.tool, result)) {
             const note = (result as { note?: string }).note;
+            // A wait that polls and gives up sends nothing to the device, so it
+            // carries the same marker as the three rejections above. It is the
+            // one of the four that DID run — the marker is about acting, not
+            // about being invoked.
             results.push({
               tool: step.tool,
               error: `await-ui-element condition not met${note ? `: ${note}` : ""}`,
+              dispatched: false,
             });
             break;
           }

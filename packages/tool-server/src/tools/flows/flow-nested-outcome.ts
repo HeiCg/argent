@@ -58,9 +58,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *
  * `run-sequence` appends one entry per step it got to, so its entries are
  * attempts. The exceptions carry `dispatched: false`: an unlisted tool, one the
- * platform does not support, or args the registry refuses. A sequence rejected
- * on its FIRST step touched nothing, and a warning there would contradict
- * "after 0 of N steps" in the same message.
+ * platform does not support, args the registry refuses, and an unmet
+ * `await-ui-element`, which polls the tree and sends nothing. A sequence that
+ * stopped on its FIRST step for one of those touched nothing, and a warning
+ * there would contradict "after 0 of N steps" in the same message.
  */
 function reachedAStep(steps: unknown): boolean {
   // Only a prerequisite notice has no step list, because it ran nothing, and
