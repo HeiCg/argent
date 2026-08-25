@@ -409,6 +409,27 @@ describe("recording a script step", () => {
     expect(result.log).not.toContain("truncated");
     expect(await steps("chatty")).toHaveLength(1);
   });
+
+  it("flags a log the frame collapser cut, far inside the step limit", async () => {
+    // The cap is not the only thing that raises the flag: the executor also
+    // raises it when its collapser drops a fatal error's frame dump, which
+    // reaches no limit at all. A description naming only the cap would send the
+    // author looking for a log too long to keep.
+    await write(
+      "scripts/framey.mjs",
+      `console.error("FATAL ERROR: build step failed");\n` +
+        `for (let i = 1; i <= 6; i++) console.error(\` \${i}: 0x1049\${i}1aec some symbol\`);\n` +
+        `output.ok = true;`
+    );
+    await start("framey");
+
+    const result = await addScript("framey", "../../scripts/framey.mjs");
+
+    expect(result.status).toBe("pass");
+    expect(result.logTruncated).toBe(true);
+    expect(result.log).toMatch(/\[6 V8 stack frames omitted]/);
+    expect(Buffer.byteLength(result.log!, "utf8")).toBeLessThan(SCRIPT_STEP_LOG_LIMIT_BYTES / 2);
+  });
 });
 
 describe("a script that did not pass records nothing", () => {
